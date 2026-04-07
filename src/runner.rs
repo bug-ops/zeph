@@ -1656,8 +1656,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent.with_graph_config(config.memory.graph.clone());
 
     let agent = {
-        let mut mgr = zeph_core::subagent::SubAgentManager::new(config.agents.max_concurrent);
-        let agent_paths = match zeph_core::subagent::resolve_agent_paths(
+        let mut mgr = zeph_subagent::SubAgentManager::new(config.agents.max_concurrent);
+        let agent_paths = match zeph_subagent::resolve_agent_paths(
             &cli.agents,
             config.agents.user_agents_dir.as_ref(),
             &config.agents.extra_dirs,
@@ -1681,7 +1681,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             .with_subagent_config(config.agents.clone())
     };
     let agent = {
-        let baseline = zeph_core::experiments::ConfigSnapshot::from_config(config);
+        let baseline = zeph_experiments::ConfigSnapshot::from_config(config);
         let agent = agent
             .with_experiment_config(config.experiments.clone())
             .with_experiment_baseline(baseline);
@@ -2127,7 +2127,7 @@ async fn run_experiment_session(
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
-    use zeph_core::experiments::{
+    use zeph_experiments::{
         BenchmarkSet, ConfigSnapshot, Evaluator, ExperimentEngine, ExperimentSource, GridStep,
         SearchSpace,
     };

@@ -17,9 +17,9 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// Returns `Some(status)` if a `Done` action is encountered, `None` otherwise.
     pub(super) fn cancel_agents_from_actions(
         &mut self,
-        cancel_actions: Vec<crate::orchestration::SchedulerAction>,
-    ) -> Option<crate::orchestration::GraphStatus> {
-        use crate::orchestration::SchedulerAction;
+        cancel_actions: Vec<zeph_orchestration::SchedulerAction>,
+    ) -> Option<zeph_orchestration::GraphStatus> {
+        use zeph_orchestration::SchedulerAction;
         for action in cancel_actions {
             match action {
                 SchedulerAction::Cancel { agent_handle_id } => {
@@ -44,13 +44,13 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// `done_status` is `Some` when spawn failure forces the scheduler to emit a `Done` action.
     pub(super) async fn handle_scheduler_spawn_action(
         &mut self,
-        scheduler: &mut crate::orchestration::DagScheduler,
-        task_id: crate::orchestration::TaskId,
+        scheduler: &mut zeph_orchestration::DagScheduler,
+        task_id: zeph_orchestration::TaskId,
         agent_def_name: String,
         prompt: String,
         spawn_counter: &mut usize,
         task_count: usize,
-    ) -> (bool, bool, Option<crate::orchestration::GraphStatus>) {
+    ) -> (bool, bool, Option<zeph_orchestration::GraphStatus>) {
         let task_title = scheduler
             .graph()
             .tasks
@@ -72,8 +72,8 @@ impl<C: crate::channel::Channel> Agent<C> {
             .expect("subagent_manager checked above");
 
         let on_done = {
-            use crate::orchestration::{TaskEvent, TaskOutcome};
-            move |handle_id: String, result: Result<String, crate::subagent::SubAgentError>| {
+            use zeph_orchestration::{TaskEvent, TaskOutcome};
+            move |handle_id: String, result: Result<String, zeph_subagent::SubAgentError>| {
                 let outcome = match &result {
                     Ok(output) => TaskOutcome::Completed {
                         output: output.clone(),
@@ -126,7 +126,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             Err(e) => {
                 tracing::error!(error = %e, %task_id, "spawn_for_task failed");
                 let concurrency_fail =
-                    matches!(e, crate::subagent::SubAgentError::ConcurrencyLimit { .. });
+                    matches!(e, zeph_subagent::SubAgentError::ConcurrencyLimit { .. });
                 let extra = scheduler.record_spawn_failure(task_id, &e);
                 let done_status = self.cancel_agents_from_actions(extra);
                 (false, concurrency_fail, done_status)
@@ -140,8 +140,8 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// loop (or cancels on token fire), and posts the completion event back to the scheduler.
     pub(super) async fn handle_run_inline_action(
         &mut self,
-        scheduler: &mut crate::orchestration::DagScheduler,
-        task_id: crate::orchestration::TaskId,
+        scheduler: &mut zeph_orchestration::DagScheduler,
+        task_id: zeph_orchestration::TaskId,
         prompt: String,
         spawn_counter: usize,
         task_count: usize,
@@ -167,22 +167,22 @@ impl<C: crate::channel::Channel> Agent<C> {
         let outcome = tokio::select! {
             result = self.run_inline_tool_loop(&prompt, max_iter) => {
                 match result {
-                    Ok(output) => crate::orchestration::TaskOutcome::Completed {
+                    Ok(output) => zeph_orchestration::TaskOutcome::Completed {
                         output,
                         artifacts: vec![],
                     },
-                    Err(e) => crate::orchestration::TaskOutcome::Failed {
+                    Err(e) => zeph_orchestration::TaskOutcome::Failed {
                         error: e.to_string(),
                     },
                 }
             }
             () = cancel_token.cancelled() => {
-                crate::orchestration::TaskOutcome::Failed {
+                zeph_orchestration::TaskOutcome::Failed {
                     error: "canceled".to_string(),
                 }
             }
         };
-        let event = crate::orchestration::TaskEvent {
+        let event = zeph_orchestration::TaskEvent {
             task_id,
             agent_handle_id: handle_id,
             outcome,
@@ -214,11 +214,11 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// next iteration after the call completes.
     pub(super) async fn run_scheduler_loop(
         &mut self,
-        scheduler: &mut crate::orchestration::DagScheduler,
+        scheduler: &mut zeph_orchestration::DagScheduler,
         task_count: usize,
         cancel_token: CancellationToken,
-    ) -> Result<crate::orchestration::GraphStatus, error::AgentError> {
-        use crate::orchestration::{PlanVerifier, SchedulerAction};
+    ) -> Result<zeph_orchestration::GraphStatus, error::AgentError> {
+        use zeph_orchestration::{PlanVerifier, SchedulerAction};
 
         let mut spawn_counter: usize = 0;
 
@@ -285,16 +285,14 @@ impl<C: crate::channel::Channel> Agent<C> {
                             .as_ref()
                             .unwrap_or(&self.provider)
                             .clone();
-                        let max_tokens = self.orchestration.orchestration_config.verify_max_tokens;
                         let threshold = self
                             .orchestration
                             .orchestration_config
                             .completeness_threshold;
                         let sanitizer = self.security.sanitizer.clone();
 
-                        let verifier = plan_verifier.get_or_insert_with(|| {
-                            PlanVerifier::new(verify_provider, max_tokens, sanitizer)
-                        });
+                        let verifier = plan_verifier
+                            .get_or_insert_with(|| PlanVerifier::new(verify_provider, sanitizer));
 
                         let task = scheduler.graph().tasks.get(task_id.index()).cloned();
 
@@ -313,8 +311,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                                 && result.gaps.iter().any(|g| {
                                     matches!(
                                         g.severity,
-                                        crate::orchestration::GapSeverity::Critical
-                                            | crate::orchestration::GapSeverity::Important
+                                        zeph_orchestration::GapSeverity::Critical
+                                            | zeph_orchestration::GapSeverity::Important
                                     )
                                 });
 
@@ -369,7 +367,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     if let Some(s) = self.cancel_agents_from_actions(cancel_actions) {
                         break 'tick s;
                     }
-                    break 'tick crate::orchestration::GraphStatus::Canceled;
+                    break 'tick zeph_orchestration::GraphStatus::Canceled;
                 }
                 () = scheduler.wait_event() => {}
                 result = self.channel.recv() => {
@@ -380,7 +378,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                             if let Some(s) = self.cancel_agents_from_actions(cancel_actions) {
                                 break 'tick s;
                             }
-                            break 'tick crate::orchestration::GraphStatus::Canceled;
+                            break 'tick zeph_orchestration::GraphStatus::Canceled;
                         }
                         self.enqueue_or_merge(msg.text, vec![], msg.attachments);
                     } else {
@@ -397,9 +395,9 @@ impl<C: crate::channel::Channel> Agent<C> {
                             .filter(|a| matches!(a, SchedulerAction::Cancel { .. }))
                             .count();
                         let shutdown_status = if self.channel.supports_exit() {
-                            crate::orchestration::GraphStatus::Canceled
+                            zeph_orchestration::GraphStatus::Canceled
                         } else {
-                            crate::orchestration::GraphStatus::Failed
+                            zeph_orchestration::GraphStatus::Failed
                         };
                         tracing::warn!(
                             sub_agents = n,
@@ -421,7 +419,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     if let Some(s) = self.cancel_agents_from_actions(cancel_actions) {
                         break 'tick s;
                     }
-                    break 'tick crate::orchestration::GraphStatus::Canceled;
+                    break 'tick zeph_orchestration::GraphStatus::Canceled;
                 }
             }
         };
@@ -564,7 +562,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                 .orchestration
                 .subagent_manager
                 .as_mut()
-                .and_then(crate::subagent::SubAgentManager::try_recv_secret_request);
+                .and_then(zeph_subagent::SubAgentManager::try_recv_secret_request);
             let Some((req_handle_id, req)) = pending else {
                 break;
             };

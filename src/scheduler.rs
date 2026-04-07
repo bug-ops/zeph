@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, watch};
 #[cfg(feature = "scheduler")]
 use zeph_core::config::Config;
 #[cfg(feature = "scheduler")]
-use zeph_core::experiments::{
+use zeph_experiments::{
     BenchmarkSet, ConfigSnapshot, Evaluator, ExperimentEngine, ExperimentSource, GridStep,
     SearchSpace,
 };

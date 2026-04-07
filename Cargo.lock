@@ -9520,14 +9520,17 @@ dependencies = [
  "zeph-channels",
  "zeph-core",
  "zeph-db",
+ "zeph-experiments",
  "zeph-gateway",
  "zeph-index",
  "zeph-llm",
  "zeph-mcp",
  "zeph-memory",
+ "zeph-orchestration",
  "zeph-sanitizer",
  "zeph-scheduler",
  "zeph-skills",
+ "zeph-subagent",
  "zeph-tools",
  "zeph-tui",
 ]
@@ -10104,6 +10107,7 @@ dependencies = [
  "unicode-width",
  "zeph-common",
  "zeph-core",
+ "zeph-subagent",
 ]
 
 [[package]]

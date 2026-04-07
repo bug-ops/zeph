@@ -568,7 +568,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .as_ref()
             .map(|m| m.definitions().iter().map(|d| d.name.clone()).collect())
             .unwrap_or_default();
-        match crate::subagent::AgentCommand::parse(trimmed, &known) {
+        match zeph_subagent::AgentCommand::parse(trimmed, &known) {
             Ok(cmd) => {
                 if let Some(msg) = self.handle_agent_command(cmd).await
                     && let Err(e) = self.channel.send(&msg).await

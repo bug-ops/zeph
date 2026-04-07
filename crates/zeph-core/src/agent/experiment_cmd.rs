@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use super::{Agent, error::AgentError};
 use crate::channel::Channel;
-use crate::experiments::{
+use zeph_experiments::{
     BenchmarkSet, Evaluator, ExperimentEngine, ExperimentSource, GridStep, SearchSpace,
 };
 

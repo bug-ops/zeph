@@ -1337,7 +1337,7 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
-    pub fn with_subagent_manager(mut self, manager: crate::subagent::SubAgentManager) -> Self {
+    pub fn with_subagent_manager(mut self, manager: zeph_subagent::SubAgentManager) -> Self {
         self.orchestration.subagent_manager = Some(manager);
         self
     }
@@ -1367,10 +1367,7 @@ impl<C: Channel> Agent<C> {
     /// actual runtime config values (temperature, memory params, etc.) rather than
     /// hardcoded defaults. Typically built via `ConfigSnapshot::from_config(&config)`.
     #[must_use]
-    pub fn with_experiment_baseline(
-        mut self,
-        baseline: crate::experiments::ConfigSnapshot,
-    ) -> Self {
+    pub fn with_experiment_baseline(mut self, baseline: zeph_experiments::ConfigSnapshot) -> Self {
         self.experiments.baseline = baseline;
         self
     }

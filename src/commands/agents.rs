@@ -7,8 +7,8 @@ use std::process::Command;
 
 use anyhow::{Context as _, bail};
 use zeph_core::bootstrap::resolve_config_path;
-use zeph_core::subagent::error::SubAgentError;
-use zeph_core::subagent::{SubAgentDef, ToolPolicy, is_valid_agent_name, resolve_agent_paths};
+use zeph_subagent::error::SubAgentError;
+use zeph_subagent::{SubAgentDef, ToolPolicy, is_valid_agent_name, resolve_agent_paths};
 
 use crate::cli::AgentsCommand;
 
@@ -144,7 +144,7 @@ fn handle_create(
     }
     let mut def = SubAgentDef::default_template(name, description);
     if let Some(m) = model {
-        def.model = Some(zeph_core::subagent::ModelSpec::Named(m.to_owned()));
+        def.model = Some(zeph_subagent::ModelSpec::Named(m.to_owned()));
     }
 
     let target = def

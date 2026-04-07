@@ -83,9 +83,6 @@ impl VerificationResult {
 /// All failures are fail-open — verification never blocks task graph execution.
 pub struct PlanVerifier<P: LlmProvider> {
     provider: P,
-    /// Token budget hint for verification LLM calls. Stored for future per-call token limiting.
-    #[allow(dead_code)]
-    max_tokens: u32,
     /// Tracks consecutive LLM failures for misconfiguration detection (S4).
     consecutive_failures: u32,
     /// Sanitizer for task output before inclusion in verify/replan prompts.
@@ -97,10 +94,9 @@ pub struct PlanVerifier<P: LlmProvider> {
 impl<P: LlmProvider> PlanVerifier<P> {
     /// Create a new `PlanVerifier`.
     #[must_use]
-    pub fn new(provider: P, max_tokens: u32, sanitizer: ContentSanitizer) -> Self {
+    pub fn new(provider: P, sanitizer: ContentSanitizer) -> Self {
         Self {
             provider,
-            max_tokens,
             consecutive_failures: 0,
             sanitizer,
         }
@@ -344,12 +340,6 @@ impl<P: LlmProvider> PlanVerifier<P> {
     #[cfg(test)]
     pub fn consecutive_failures(&self) -> u32 {
         self.consecutive_failures
-    }
-
-    /// Return configured `max_tokens` (for testing).
-    #[cfg(test)]
-    pub fn max_tokens(&self) -> u32 {
-        self.max_tokens
     }
 }
 
@@ -751,7 +741,7 @@ mod tests {
         let provider = MockProvider {
             response: Ok(complete_result_json()),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let task = TaskNode::new(0, "write code", "write the implementation");
         let result = verifier.verify(&task, "here is the code: ...").await;
         assert!(result.complete);
@@ -764,7 +754,7 @@ mod tests {
         let provider = MockProvider {
             response: Ok(incomplete_result_json()),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let task = TaskNode::new(0, "write code", "write the implementation");
         let result = verifier.verify(&task, "partial output").await;
         assert!(!result.complete);
@@ -779,7 +769,7 @@ mod tests {
         let provider = MockProvider {
             response: Err(LlmError::Other("timeout".to_string())),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let task = TaskNode::new(0, "write code", "write the implementation");
         let result = verifier.verify(&task, "output").await;
         // Fail-open: complete=true, no gaps, confidence=0.0
@@ -793,7 +783,7 @@ mod tests {
         let provider = MockProvider {
             response: Err(LlmError::Other("error".to_string())),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let task = TaskNode::new(0, "t", "d");
         verifier.verify(&task, "out").await;
         assert_eq!(verifier.consecutive_failures(), 1);
@@ -807,7 +797,7 @@ mod tests {
         let provider = MockProvider {
             response: Ok(r#"{"tasks": []}"#.to_string()),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let task = TaskNode::new(0, "t", "d");
         let gaps = vec![Gap {
             description: "minor issue".to_string(),
@@ -829,7 +819,7 @@ mod tests {
         let provider = MockProvider {
             response: Ok(replan_json),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let task = TaskNode::new(0, "write code", "write implementation");
         let gaps = vec![Gap {
             description: "missing unit tests".to_string(),
@@ -848,7 +838,7 @@ mod tests {
         let provider = MockProvider {
             response: Err(LlmError::Other("replan error".to_string())),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let task = TaskNode::new(0, "t", "d");
         let gaps = vec![Gap {
             description: "critical missing thing".to_string(),
@@ -868,7 +858,7 @@ mod tests {
         let provider = MockProvider {
             response: Ok(complete_result_json()),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let task = TaskNode::new(0, "t", "d");
         // verify() must not panic and must call the LLM (fail-open if needed).
         let result = verifier
@@ -887,7 +877,7 @@ mod tests {
         let provider = MockProvider {
             response: Ok(replan_json),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let task = TaskNode::new(0, "t", "d");
         let gaps = vec![Gap {
             description: long_desc,
@@ -924,7 +914,7 @@ mod tests {
         let provider = MockProvider {
             response: Ok(complete_result_json()),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let result = verifier
             .verify_plan("write a web server", "here is the server code")
             .await;
@@ -938,7 +928,7 @@ mod tests {
         let provider = MockProvider {
             response: Ok(incomplete_result_json()),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let result = verifier
             .verify_plan("write a web server", "partial output")
             .await;
@@ -952,7 +942,7 @@ mod tests {
         let provider = MockProvider {
             response: Err(LlmError::Other("timeout".to_string())),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let result = verifier.verify_plan("goal", "output").await;
         assert!(result.complete);
         assert!(result.gaps.is_empty());
@@ -973,7 +963,7 @@ mod tests {
         let provider = MockProvider {
             response: Ok(replan_json),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let gaps = vec![
             Gap {
                 description: "no auth".to_string(),
@@ -1002,7 +992,7 @@ mod tests {
         let provider = MockProvider {
             response: Ok(r#"{"tasks": []}"#.to_string()),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let gaps = vec![Gap {
             description: "minor issue".to_string(),
             severity: GapSeverity::Minor,
@@ -1019,7 +1009,7 @@ mod tests {
         let provider = MockProvider {
             response: Err(LlmError::Other("network error".to_string())),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let gaps = vec![Gap {
             description: "critical gap".to_string(),
             severity: GapSeverity::Critical,
@@ -1040,7 +1030,7 @@ mod tests {
         let provider = MockProvider {
             response: Ok(json.to_string()),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let result = verifier.verify_plan("goal", "output").await;
         assert!(!result.complete);
         assert!((result.confidence - 0.6).abs() < 0.01);
@@ -1061,7 +1051,7 @@ mod tests {
         let provider = MockProvider {
             response: Ok(json.to_string()),
         };
-        let mut verifier = PlanVerifier::new(provider, 1024, test_sanitizer());
+        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
         let result = verifier.verify_plan("goal", "output").await;
         let threshold = 0.7_f64;
         let should_replan =

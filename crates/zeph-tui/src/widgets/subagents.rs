@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
-use zeph_core::subagent::{ModelSpec, SubAgentDef, ToolPolicy, is_valid_agent_name};
+use zeph_subagent::{ModelSpec, SubAgentDef, ToolPolicy, is_valid_agent_name};
 
 use crate::metrics::{MetricsSnapshot, SubAgentMetrics};
 use crate::theme::Theme;
@@ -282,7 +282,7 @@ impl AgentFormState {
 
         let mut def = SubAgentDef::default_template(name, description);
         if !model.is_empty() {
-            def.model = Some(zeph_core::subagent::ModelSpec::Named(model.to_owned()));
+            def.model = Some(zeph_subagent::ModelSpec::Named(model.to_owned()));
         }
         def.permissions.max_turns = max_turns;
         Ok(def)
@@ -1265,7 +1265,7 @@ mod tests {
     #[test]
     fn agent_manager_form_from_def_populates_fields() {
         let mut def = SubAgentDef::default_template("reviewer", "Reviews code");
-        def.model = Some(zeph_core::subagent::ModelSpec::Named(
+        def.model = Some(zeph_subagent::ModelSpec::Named(
             "claude-sonnet-4-20250514".to_owned(),
         ));
         def.permissions.max_turns = 5;

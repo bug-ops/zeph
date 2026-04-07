@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-mod accessors;
 mod autodream;
 mod builder;
 pub(crate) mod compaction_strategy;
@@ -434,7 +433,7 @@ impl<C: Channel> Agent<C> {
             experiments: ExperimentState {
                 config: crate::config::ExperimentConfig::default(),
                 cancel: None,
-                baseline: crate::experiments::ConfigSnapshot::default(),
+                baseline: zeph_experiments::ConfigSnapshot::default(),
                 eval_provider: None,
                 notify_rx: Some(exp_notify_rx),
                 notify_tx: exp_notify_tx,
@@ -525,9 +524,9 @@ impl<C: Channel> Agent<C> {
             .filter_map(|(id, status)| {
                 if matches!(
                     status.state,
-                    crate::subagent::SubAgentState::Completed
-                        | crate::subagent::SubAgentState::Failed
-                        | crate::subagent::SubAgentState::Canceled
+                    zeph_subagent::SubAgentState::Completed
+                        | zeph_subagent::SubAgentState::Failed
+                        | zeph_subagent::SubAgentState::Canceled
                 ) {
                     Some(id)
                 } else {
@@ -870,7 +869,7 @@ impl<C: Channel> Agent<C> {
                     background: def.is_some_and(|d| d.permissions.background),
                     elapsed_secs: s.started_at.elapsed().as_secs(),
                     permission_mode: def.map_or_else(String::new, |d| {
-                        use crate::subagent::def::PermissionMode;
+                        use zeph_subagent::def::PermissionMode;
                         match d.permissions.permission_mode {
                             PermissionMode::Default => String::new(),
                             PermissionMode::AcceptEdits => "accept_edits".into(),
@@ -1504,7 +1503,7 @@ impl<C: Channel> Agent<C> {
     /// Poll a sub-agent until it reaches a terminal state, bridging secret requests to the
     /// channel. Returns a human-readable status string suitable for sending to the user.
     async fn poll_subagent_until_done(&mut self, task_id: &str, label: &str) -> Option<String> {
-        use crate::subagent::SubAgentState;
+        use zeph_subagent::SubAgentState;
         let result = loop {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -1607,9 +1606,9 @@ impl<C: Channel> Agent<C> {
         let mut out = String::from("Available sub-agents:\n");
         for d in defs {
             let memory_label = match d.memory {
-                Some(crate::subagent::MemoryScope::User) => " [memory:user]",
-                Some(crate::subagent::MemoryScope::Project) => " [memory:project]",
-                Some(crate::subagent::MemoryScope::Local) => " [memory:local]",
+                Some(zeph_subagent::MemoryScope::User) => " [memory:user]",
+                Some(zeph_subagent::MemoryScope::Project) => " [memory:project]",
+                Some(zeph_subagent::MemoryScope::Local) => " [memory:local]",
                 None => "",
             };
             if let Some(ref src) = d.source {
@@ -1646,7 +1645,7 @@ impl<C: Channel> Agent<C> {
             // Show memory directory path for agents with memory enabled.
             if let Some(def) = mgr.agents_def(id)
                 && let Some(scope) = def.memory
-                && let Ok(dir) = crate::subagent::memory::resolve_memory_dir(scope, &def.name)
+                && let Ok(dir) = zeph_subagent::memory::resolve_memory_dir(scope, &def.name)
             {
                 let _ = writeln!(out, "       memory: {}", dir.display());
             }
@@ -1691,8 +1690,8 @@ impl<C: Channel> Agent<C> {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn handle_agent_command(&mut self, cmd: crate::subagent::AgentCommand) -> Option<String> {
-        use crate::subagent::AgentCommand;
+    async fn handle_agent_command(&mut self, cmd: zeph_subagent::AgentCommand) -> Option<String> {
+        use zeph_subagent::AgentCommand;
 
         match cmd {
             AgentCommand::List => self.handle_agent_list(),
@@ -1813,7 +1812,7 @@ impl<C: Channel> Agent<C> {
         let mgr = self.orchestration.subagent_manager.as_ref()?;
         let def = mgr.definitions().iter().find(|d| d.name == agent_name)?;
         let reg = self.skill_state.registry.read();
-        match crate::subagent::filter_skills(&reg, &def.skills) {
+        match zeph_subagent::filter_skills(&reg, &def.skills) {
             Ok(skills) => {
                 let bodies: Vec<String> = skills.into_iter().map(|s| s.body.clone()).collect();
                 if bodies.is_empty() {
@@ -1833,8 +1832,8 @@ impl<C: Channel> Agent<C> {
     fn build_spawn_context(
         &self,
         cfg: &zeph_config::SubAgentConfig,
-    ) -> crate::subagent::SpawnContext {
-        crate::subagent::SpawnContext {
+    ) -> zeph_subagent::SpawnContext {
+        zeph_subagent::SpawnContext {
             parent_messages: self.extract_parent_messages(cfg),
             parent_cancel: Some(self.lifecycle.cancel_token.clone()),
             parent_provider_name: {

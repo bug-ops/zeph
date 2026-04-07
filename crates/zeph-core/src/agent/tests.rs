@@ -1479,12 +1479,12 @@ pub mod agent_tests {
 
     // ── handle_agent_command tests ────────────────────────────────────────────
 
-    use crate::subagent::AgentCommand;
+    use zeph_subagent::AgentCommand;
 
     fn make_agent_with_manager() -> Agent<MockChannel> {
-        use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
-        use crate::subagent::hooks::SubagentHooks;
-        use crate::subagent::{SubAgentDef, SubAgentManager};
+        use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::hooks::SubagentHooks;
+        use zeph_subagent::{SubAgentDef, SubAgentManager};
 
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
@@ -2334,9 +2334,9 @@ mod compaction_e2e {
     /// Scope: spawn → text response → collect (`MockProvider` only supports text responses).
     #[tokio::test]
     async fn subagent_spawn_text_collect_e2e() {
-        use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
-        use crate::subagent::hooks::SubagentHooks;
-        use crate::subagent::{AgentCommand, SubAgentDef, SubAgentManager};
+        use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::hooks::SubagentHooks;
+        use zeph_subagent::{AgentCommand, SubAgentDef, SubAgentManager};
 
         // Provider shared between main agent and sub-agent via Arc clone.
         // We pre-load a response that the sub-agent loop will consume.
@@ -2401,8 +2401,8 @@ mod compaction_e2e {
             let found = statuses.iter().find(|(id, _)| id.starts_with(&short_id));
             if let Some((id, status)) = found {
                 match status.state {
-                    crate::subagent::SubAgentState::Completed => break id.clone(),
-                    crate::subagent::SubAgentState::Failed => {
+                    zeph_subagent::SubAgentState::Completed => break id.clone(),
+                    zeph_subagent::SubAgentState::Failed => {
                         panic!(
                             "sub-agent reached Failed state unexpectedly: {:?}",
                             status.last_message
@@ -2441,9 +2441,9 @@ mod compaction_e2e {
     /// The `MockChannel` `confirm()` is pre-loaded with `true` (approve).
     #[tokio::test]
     async fn foreground_spawn_secret_bridge_approves() {
-        use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
-        use crate::subagent::hooks::SubagentHooks;
-        use crate::subagent::{AgentCommand, SubAgentDef, SubAgentManager};
+        use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::hooks::SubagentHooks;
+        use zeph_subagent::{AgentCommand, SubAgentDef, SubAgentManager};
 
         // Sub-agent loop responses:
         //   turn 1: request a secret
@@ -2507,7 +2507,7 @@ mod compaction_e2e {
 
     // ── /plan handler unit tests ─────────────────────────────────────────────
 
-    use crate::orchestration::{
+    use zeph_orchestration::{
         GraphStatus, PlanCommand, TaskGraph, TaskNode, TaskResult, TaskStatus,
     };
 
@@ -2595,9 +2595,9 @@ mod compaction_e2e {
     /// `resume_from()` accepts it; first `tick()` emits Done{Completed}; aggregation called.
     #[tokio::test]
     async fn plan_confirm_completed_graph_aggregates() {
-        use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
-        use crate::subagent::hooks::SubagentHooks;
-        use crate::subagent::{SubAgentDef, SubAgentManager};
+        use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::hooks::SubagentHooks;
+        use zeph_subagent::{SubAgentDef, SubAgentManager};
 
         // MockProvider returns the aggregation synthesis.
         let provider = mock_provider(vec!["synthesis result".into()]);
@@ -2666,7 +2666,7 @@ mod compaction_e2e {
     /// and `finalize_plan_execution` sends a failure message.
     #[tokio::test]
     async fn plan_confirm_inline_provider_failure_sends_message() {
-        use crate::subagent::SubAgentManager;
+        use zeph_subagent::SubAgentManager;
 
         // Failing provider → chat() always returns an error.
         let provider = mock_provider_failing();
@@ -2789,13 +2789,13 @@ mod compaction_e2e {
     ///    proving the drain was executed.
     #[tokio::test]
     async fn test_secret_drain_after_instant_completion() {
-        use crate::subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
-        use crate::subagent::hooks::SubagentHooks;
-        use crate::subagent::{
+        use tokio_util::sync::CancellationToken;
+        use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::hooks::SubagentHooks;
+        use zeph_subagent::{
             PermissionGrants, SecretRequest, SubAgentDef, SubAgentHandle, SubAgentManager,
             SubAgentState, SubAgentStatus,
         };
-        use tokio_util::sync::CancellationToken;
 
         // Channel with one pre-loaded confirmation (approve) so the bridge can resolve the
         // pending request when it is finally drained.
@@ -2909,7 +2909,7 @@ mod compaction_e2e {
     /// appears in aggregation, `pending_graph` is cleared.
     #[tokio::test]
     async fn plan_confirm_no_subagents_executes_inline() {
-        use crate::subagent::SubAgentManager;
+        use zeph_subagent::SubAgentManager;
 
         // Provider returns task result then aggregation synthesis.
         let provider = mock_provider(vec!["inline task output".into(), "synthesis done".into()]);
@@ -2953,8 +2953,9 @@ mod compaction_e2e {
     /// `GraphStatus::Canceled`. The "Canceling plan..." status must be sent immediately.
     #[tokio::test]
     async fn plan_cancel_during_scheduler_loop_cancels_plan() {
-        use crate::orchestration::{DagScheduler, OrchestrationConfig, RuleBasedRouter};
-        use crate::subagent::SubAgentManager;
+        use crate::config::OrchestrationConfig;
+        use zeph_orchestration::{DagScheduler, RuleBasedRouter};
+        use zeph_subagent::SubAgentManager;
 
         // Channel pre-loaded with "/plan cancel" — returned immediately on first recv().
         let channel = MockChannel::new(vec!["/plan cancel".to_owned()]);
@@ -3009,7 +3010,7 @@ mod compaction_e2e {
     /// `orchestration.tasks_completed` with the count of tasks that finished before cancel.
     #[tokio::test]
     async fn finalize_plan_execution_canceled_does_not_store_graph() {
-        use crate::subagent::SubAgentManager;
+        use zeph_subagent::SubAgentManager;
 
         let channel = MockChannel::new(vec![]);
         let provider = mock_provider(vec![]);
@@ -3073,8 +3074,9 @@ mod compaction_e2e {
     /// `run_scheduler_loop` returns.
     #[tokio::test]
     async fn scheduler_loop_queues_non_cancel_message() {
-        use crate::orchestration::{DagScheduler, OrchestrationConfig, RuleBasedRouter};
-        use crate::subagent::SubAgentManager;
+        use crate::config::OrchestrationConfig;
+        use zeph_orchestration::{DagScheduler, RuleBasedRouter};
+        use zeph_subagent::SubAgentManager;
 
         // Channel pre-loaded with one non-cancel message; second recv() returns None,
         // which terminates the loop with GraphStatus::Failed — acceptable for this test
@@ -3130,8 +3132,9 @@ mod compaction_e2e {
     /// `GraphStatus::Canceled` — no retry needed, stdin EOF is a normal termination.
     #[tokio::test]
     async fn scheduler_loop_channel_close_supports_exit_returns_canceled() {
-        use crate::orchestration::{DagScheduler, OrchestrationConfig, RuleBasedRouter};
-        use crate::subagent::SubAgentManager;
+        use crate::config::OrchestrationConfig;
+        use zeph_orchestration::{DagScheduler, RuleBasedRouter};
+        use zeph_subagent::SubAgentManager;
 
         // Empty channel with exit_supported=true (the default): recv() returns Ok(None) immediately.
         let channel = MockChannel::new(vec![]);
@@ -3173,8 +3176,9 @@ mod compaction_e2e {
     /// after reconnecting.
     #[tokio::test]
     async fn scheduler_loop_channel_close_no_exit_support_returns_failed() {
-        use crate::orchestration::{DagScheduler, OrchestrationConfig, RuleBasedRouter};
-        use crate::subagent::SubAgentManager;
+        use crate::config::OrchestrationConfig;
+        use zeph_orchestration::{DagScheduler, RuleBasedRouter};
+        use zeph_subagent::SubAgentManager;
 
         // Channel with exit_supported=false simulates Telegram/Discord/Slack.
         let channel = MockChannel::new(vec![]).without_exit_support();
@@ -3221,10 +3225,9 @@ mod compaction_e2e {
     /// is still intact.
     #[tokio::test]
     async fn scheduler_loop_channel_close_drain_captures_completion() {
-        use crate::orchestration::{
-            DagScheduler, OrchestrationConfig, RuleBasedRouter, TaskEvent, TaskOutcome,
-        };
-        use crate::subagent::SubAgentManager;
+        use crate::config::OrchestrationConfig;
+        use zeph_orchestration::{DagScheduler, RuleBasedRouter, TaskEvent, TaskOutcome};
+        use zeph_subagent::SubAgentManager;
 
         // Channel is empty: recv() returns Ok(None) immediately, triggering the close path.
         let channel = MockChannel::new(vec![]);
@@ -3374,7 +3377,7 @@ mod compaction_e2e {
     /// "Plan canceled. N/M tasks did not run." and NOT "Plan failed. 0/N tasks failed".
     #[tokio::test]
     async fn finalize_plan_execution_deadlock_emits_cancelled_message() {
-        use crate::subagent::SubAgentManager;
+        use zeph_subagent::SubAgentManager;
 
         let channel = MockChannel::new(vec![]);
         let provider = mock_provider(vec![]);
@@ -3468,7 +3471,7 @@ mod compaction_e2e {
     /// This covers the aggregator metrics path that was not tested end-to-end.
     #[tokio::test]
     async fn finalize_plan_execution_completed_increments_aggregator_metrics() {
-        use crate::subagent::SubAgentManager;
+        use zeph_subagent::SubAgentManager;
 
         // Provider returns the aggregation synthesis.
         let provider = mock_provider(vec!["synthesis".into()]);
@@ -3524,7 +3527,7 @@ mod compaction_e2e {
     /// Message must say "Plan failed. X/M tasks failed, Y canceled:" (not misleading).
     #[tokio::test]
     async fn finalize_plan_execution_mixed_failed_and_cancelled() {
-        use crate::subagent::SubAgentManager;
+        use zeph_subagent::SubAgentManager;
 
         let channel = MockChannel::new(vec![]);
         let provider = mock_provider(vec![]);

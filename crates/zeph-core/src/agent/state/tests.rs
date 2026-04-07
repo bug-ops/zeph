@@ -33,7 +33,7 @@ fn make_experiment_state() -> ExperimentState {
     ExperimentState {
         config: crate::config::ExperimentConfig::default(),
         cancel: None,
-        baseline: crate::experiments::ConfigSnapshot::default(),
+        baseline: zeph_experiments::ConfigSnapshot::default(),
         eval_provider: None,
         notify_rx: Some(notify_rx),
         notify_tx,

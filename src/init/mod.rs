@@ -10,8 +10,8 @@ use zeph_core::config::{
     ProviderName, PruningStrategy, SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig,
     VaultConfig,
 };
-use zeph_core::subagent::def::{MemoryScope, PermissionMode};
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig};
+use zeph_subagent::def::{MemoryScope, PermissionMode};
 
 pub(super) mod agents;
 pub(super) mod llm;

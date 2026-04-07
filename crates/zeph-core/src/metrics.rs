@@ -385,8 +385,8 @@ fn strip_ctrl(s: &str) -> String {
 }
 
 /// Convert a live `TaskGraph` into a lightweight snapshot for TUI display.
-impl From<&crate::orchestration::TaskGraph> for TaskGraphSnapshot {
-    fn from(graph: &crate::orchestration::TaskGraph) -> Self {
+impl From<&zeph_orchestration::TaskGraph> for TaskGraphSnapshot {
+    fn from(graph: &zeph_orchestration::TaskGraph) -> Self {
         let tasks = graph
             .tasks
             .iter()
@@ -394,7 +394,7 @@ impl From<&crate::orchestration::TaskGraph> for TaskGraphSnapshot {
                 let error = t
                     .result
                     .as_ref()
-                    .filter(|_| t.status == crate::orchestration::TaskStatus::Failed)
+                    .filter(|_| t.status == zeph_orchestration::TaskStatus::Failed)
                     .and_then(|r| {
                         if r.output.is_empty() {
                             None
@@ -739,7 +739,7 @@ mod tests {
     // T1: From<&TaskGraph> correctly maps fields including duration_ms and error truncation.
     #[test]
     fn task_graph_snapshot_from_task_graph_maps_fields() {
-        use crate::orchestration::{GraphStatus, TaskGraph, TaskNode, TaskResult, TaskStatus};
+        use zeph_orchestration::{GraphStatus, TaskGraph, TaskNode, TaskResult, TaskStatus};
 
         let mut graph = TaskGraph::new("My goal");
         let mut task = TaskNode::new(0, "Do work", "description");
@@ -770,7 +770,7 @@ mod tests {
     // T2: From impl compiles with orchestration feature active.
     #[test]
     fn task_graph_snapshot_from_compiles_with_feature() {
-        use crate::orchestration::TaskGraph;
+        use zeph_orchestration::TaskGraph;
         let graph = TaskGraph::new("feature flag test");
         let snap = TaskGraphSnapshot::from(&graph);
         assert_eq!(snap.goal, "feature flag test");
@@ -781,7 +781,7 @@ mod tests {
     // T1-extra: long error is truncated with ellipsis.
     #[test]
     fn task_graph_snapshot_error_truncated_at_80_chars() {
-        use crate::orchestration::{TaskGraph, TaskNode, TaskResult, TaskStatus};
+        use zeph_orchestration::{TaskGraph, TaskNode, TaskResult, TaskStatus};
 
         let mut graph = TaskGraph::new("goal");
         let mut task = TaskNode::new(0, "t", "d");
@@ -807,7 +807,7 @@ mod tests {
     // SEC-P6-01: control chars in task title are stripped.
     #[test]
     fn task_graph_snapshot_strips_control_chars_from_title() {
-        use crate::orchestration::{TaskGraph, TaskNode};
+        use zeph_orchestration::{TaskGraph, TaskNode};
 
         let mut graph = TaskGraph::new("goal\x1b[31m");
         let task = TaskNode::new(0, "title\x00injected", "d");

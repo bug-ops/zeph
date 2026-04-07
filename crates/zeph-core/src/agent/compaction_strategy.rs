@@ -635,25 +635,6 @@ pub(crate) fn classify_density(content: &str) -> ContentDensity {
     }
 }
 
-/// Validate that density budget fractions sum to approximately 1.0.
-///
-/// Returns `Ok(())` when `(high + low - 1.0).abs() < 0.01`.
-///
-/// # Errors
-///
-/// Returns an error string when the budgets do not sum to 1.0 within epsilon.
-#[allow(dead_code)]
-pub(crate) fn validate_density_budgets(high: f32, low: f32) -> Result<(), String> {
-    if (high + low - 1.0_f32).abs() < 0.01 {
-        Ok(())
-    } else {
-        Err(format!(
-            "density budgets must sum to 1.0 (got {high} + {low} = {})",
-            high + low
-        ))
-    }
-}
-
 /// Partition messages into (high-density, low-density) groups by content classification.
 ///
 /// System messages and pinned messages are excluded from both groups.
@@ -670,25 +651,6 @@ pub(crate) fn partition_by_density(messages: &[Message]) -> (Vec<Message>, Vec<M
         }
     }
     (high, low)
-}
-
-/// Apply density-aware token budget cap to a message slice.
-///
-/// Returns a vec of messages trimmed to approximately `max_chars` total content length.
-/// Messages are included in order until the budget is exhausted.
-#[allow(dead_code)]
-pub(crate) fn apply_density_budget(messages: &[Message], max_chars: usize) -> Vec<Message> {
-    let mut result = Vec::new();
-    let mut used = 0usize;
-    for msg in messages {
-        let len = msg.content.len();
-        if used + len > max_chars {
-            break;
-        }
-        result.push(msg.clone());
-        used += len;
-    }
-    result
 }
 
 #[cfg(test)]
@@ -1085,40 +1047,6 @@ mod tests {
         let content = "    let x = 5;\n    let y = 6;\nnormal prose\n    return x + y;";
         // 3 structured out of 4 = 75% → High
         assert_eq!(classify_density(content), ContentDensity::High);
-    }
-
-    // ─── validate_density_budgets tests ──────────────────────────────────────
-
-    #[test]
-    fn validate_density_budgets_default_values_ok() {
-        assert!(validate_density_budgets(0.7, 0.3).is_ok());
-    }
-
-    #[test]
-    fn validate_density_budgets_exact_one_ok() {
-        assert!(validate_density_budgets(0.5, 0.5).is_ok());
-        assert!(validate_density_budgets(1.0, 0.0).is_ok());
-        assert!(validate_density_budgets(0.0, 1.0).is_ok());
-    }
-
-    #[test]
-    fn validate_density_budgets_within_epsilon_ok() {
-        // 0.7 + 0.3 + 0.009 < 0.01 threshold
-        assert!(validate_density_budgets(0.7, 0.309).is_ok());
-    }
-
-    #[test]
-    fn validate_density_budgets_over_epsilon_err() {
-        let result = validate_density_budgets(0.5, 0.6);
-        assert!(result.is_err());
-        let msg = result.unwrap_err();
-        assert!(msg.contains("1.0"), "error must mention expected sum");
-    }
-
-    #[test]
-    fn validate_density_budgets_under_sum_err() {
-        let result = validate_density_budgets(0.3, 0.3);
-        assert!(result.is_err());
     }
 
     // ─── KnowledgeBlock eviction order tests ─────────────────────────────────

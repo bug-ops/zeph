@@ -20,41 +20,12 @@ pub mod pipeline;
 pub mod project;
 pub mod redact;
 
-// Re-export experiments module to preserve internal import paths (e.g., `crate::experiments::ExperimentEngine`).
-pub mod experiments {
-    pub use zeph_experiments::{
-        BenchmarkCase, BenchmarkSet, CaseScore, ConfigSnapshot, EvalError, EvalReport, Evaluator,
-        ExperimentEngine, ExperimentResult, ExperimentSessionReport, ExperimentSource,
-        GenerationOverrides, GridStep, JudgeOutput, Neighborhood, ParameterKind, ParameterRange,
-        Random, SearchSpace, Variation, VariationGenerator, VariationValue,
-    };
-}
-pub mod lsp_hooks;
-
-/// Re-export zeph-orchestration crate as a module to preserve internal import paths.
-pub mod orchestration {
-    pub use zeph_orchestration::*;
-    // Re-export submodules so `crate::orchestration::graph::*` paths continue to work.
-    pub use zeph_orchestration::{
-        aggregator, command, dag, error, graph, planner, router, scheduler,
-    };
-    // Re-export OrchestrationConfig to preserve the `crate::orchestration::OrchestrationConfig` path.
-    pub use crate::config::OrchestrationConfig;
-}
-
 pub mod http;
+pub mod lsp_hooks;
 pub mod memory_tools;
 pub mod overflow_tools;
 pub mod runtime_layer;
 pub mod skill_loader;
-/// Re-export zeph-subagent crate as a module to preserve internal import paths.
-pub mod subagent {
-    pub use zeph_subagent::*;
-    // Re-export submodules so `crate::subagent::def::*` paths continue to work.
-    pub use zeph_subagent::{
-        command, def, error, filter, grants, hooks, manager, memory, resolve, state, transcript,
-    };
-}
 pub use zeph_common::text;
 
 #[cfg(test)]

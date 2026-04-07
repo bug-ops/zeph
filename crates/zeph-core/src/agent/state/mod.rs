@@ -395,7 +395,7 @@ pub(crate) struct OrchestrationState {
     /// On `OrchestrationState` for the same reason as `planner_provider`.
     pub(crate) verify_provider: Option<AnyProvider>,
     /// Graph waiting for `/plan confirm` before execution starts.
-    pub(crate) pending_graph: Option<crate::orchestration::TaskGraph>,
+    pub(crate) pending_graph: Option<zeph_orchestration::TaskGraph>,
     /// Cancellation token for the currently executing plan. `None` when no plan is running.
     /// Created fresh in `handle_plan_confirm()`, cancelled in `handle_plan_cancel()`.
     ///
@@ -406,12 +406,12 @@ pub(crate) struct OrchestrationState {
     /// `&mut self`. See follow-up issue #1603 (SEC-M34-002).
     pub(crate) plan_cancel_token: Option<CancellationToken>,
     /// Manages spawned sub-agents.
-    pub(crate) subagent_manager: Option<crate::subagent::SubAgentManager>,
+    pub(crate) subagent_manager: Option<zeph_subagent::SubAgentManager>,
     pub(crate) subagent_config: crate::config::SubAgentConfig,
     pub(crate) orchestration_config: crate::config::OrchestrationConfig,
     /// Lazily initialized plan template cache. `None` until first use or when
     /// memory (`SQLite`) is unavailable.
-    pub(crate) plan_cache: Option<crate::orchestration::PlanCache>,
+    pub(crate) plan_cache: Option<zeph_orchestration::PlanCache>,
     /// Goal embedding from the most recent `plan_with_cache()` call. Consumed by
     /// `finalize_plan_execution()` to cache the completed plan template.
     pub(crate) pending_goal_embedding: Option<Vec<f32>>,
@@ -430,7 +430,7 @@ pub(crate) struct ExperimentState {
     /// Cancellation token for a running experiment session. `Some` means an experiment is active.
     pub(crate) cancel: Option<tokio_util::sync::CancellationToken>,
     /// Pre-built config snapshot used as the experiment baseline (agent path).
-    pub(crate) baseline: crate::experiments::ConfigSnapshot,
+    pub(crate) baseline: zeph_experiments::ConfigSnapshot,
     /// Dedicated judge provider for evaluation. When `Some`, the evaluator uses this provider
     /// instead of the agent's primary provider, eliminating self-judge bias.
     pub(crate) eval_provider: Option<AnyProvider>,

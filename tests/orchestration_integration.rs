@@ -11,14 +11,12 @@
 
 mod orchestration_integration {
     use zeph_core::config::{OrchestrationConfig, ProviderName};
-    use zeph_core::orchestration::{
+    use zeph_llm::mock::MockProvider;
+    use zeph_orchestration::{
         AgentRouter, Aggregator, DagScheduler, FailureStrategy, GraphStatus, LlmAggregator,
         SchedulerAction, TaskEvent, TaskGraph, TaskId, TaskNode, TaskOutcome, TaskStatus,
     };
-    use zeph_core::subagent::{
-        SkillFilter, SubAgentDef, SubAgentPermissions, SubagentHooks, ToolPolicy,
-    };
-    use zeph_llm::mock::MockProvider;
+    use zeph_subagent::{SkillFilter, SubAgentDef, SubAgentPermissions, SubagentHooks, ToolPolicy};
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 

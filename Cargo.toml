@@ -239,7 +239,10 @@ zeph-memory.workspace = true
 zeph-mcp.workspace = true
 zeph-sanitizer.workspace = true
 zeph-scheduler = { workspace = true, optional = true }
+zeph-experiments.workspace = true
+zeph-orchestration.workspace = true
 zeph-skills.workspace = true
+zeph-subagent.workspace = true
 zeph-tools.workspace = true
 zeph-tui = { workspace = true, optional = true }
 

@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Select};
-use zeph_core::subagent::def::{MemoryScope, PermissionMode};
+use zeph_subagent::def::{MemoryScope, PermissionMode};
 
 use super::WizardState;
 

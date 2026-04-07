@@ -7,7 +7,7 @@ use zeph_llm::provider::LlmProvider;
 use super::Agent;
 use super::error;
 
-pub(super) fn format_plan_summary(graph: &crate::orchestration::TaskGraph) -> String {
+pub(super) fn format_plan_summary(graph: &zeph_orchestration::TaskGraph) -> String {
     use std::fmt::Write;
     let mut out = String::new();
     let _ = writeln!(out, "Plan: \"{}\"", graph.goal);
@@ -27,10 +27,10 @@ pub(super) fn format_plan_summary(graph: &crate::orchestration::TaskGraph) -> St
 }
 
 pub(super) fn collect_and_truncate_task_outputs(
-    graph: &crate::orchestration::TaskGraph,
+    graph: &zeph_orchestration::TaskGraph,
     max_tokens: u32,
 ) -> String {
-    use crate::orchestration::TaskStatus;
+    use zeph_orchestration::TaskStatus;
 
     let char_budget = max_tokens as usize * 4;
     let mut raw = String::new();
@@ -59,9 +59,9 @@ pub(super) fn collect_and_truncate_task_outputs(
 impl<C: crate::channel::Channel> Agent<C> {
     pub(super) async fn handle_plan_command(
         &mut self,
-        cmd: crate::orchestration::PlanCommand,
+        cmd: zeph_orchestration::PlanCommand,
     ) -> Result<(), error::AgentError> {
-        use crate::orchestration::PlanCommand;
+        use zeph_orchestration::PlanCommand;
 
         if !self.config_for_orchestration().enabled {
             self.channel
@@ -95,8 +95,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         if let Some(ref memory) = self.memory_state.memory {
             let pool = memory.sqlite().pool().clone();
             let embed_model = self.skill_state.embedding_model.clone();
-            match crate::orchestration::PlanCache::new(pool, plan_cache_config, &embed_model).await
-            {
+            match zeph_orchestration::PlanCache::new(pool, plan_cache_config, &embed_model).await {
                 Ok(cache) => self.orchestration.plan_cache = Some(cache),
                 Err(e) => {
                     tracing::warn!(error = %e, "plan cache: init failed, proceeding without cache");
@@ -108,7 +107,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     pub(super) async fn goal_embedding_for_cache(&self, goal: &str) -> Option<Vec<f32>> {
-        use crate::orchestration::normalize_goal;
+        use zeph_orchestration::normalize_goal;
 
         self.orchestration.plan_cache.as_ref()?;
         let normalized = normalize_goal(goal);
@@ -128,7 +127,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     pub(super) async fn handle_plan_goal(&mut self, goal: &str) -> Result<(), error::AgentError> {
-        use crate::orchestration::{LlmPlanner, plan_with_cache};
+        use zeph_orchestration::{LlmPlanner, plan_with_cache};
 
         if self.orchestration.pending_graph.is_some() {
             self.channel
@@ -228,9 +227,9 @@ impl<C: crate::channel::Channel> Agent<C> {
 
     pub(super) async fn validate_pending_graph(
         &mut self,
-        graph: crate::orchestration::TaskGraph,
-    ) -> Result<crate::orchestration::TaskGraph, ()> {
-        use crate::orchestration::GraphStatus;
+        graph: zeph_orchestration::TaskGraph,
+    ) -> Result<zeph_orchestration::TaskGraph, ()> {
+        use zeph_orchestration::GraphStatus;
 
         if self.orchestration.subagent_manager.is_none() {
             let _ = self
@@ -267,9 +266,9 @@ impl<C: crate::channel::Channel> Agent<C> {
 
     pub(super) fn build_dag_scheduler(
         &mut self,
-        graph: crate::orchestration::TaskGraph,
-    ) -> Result<(crate::orchestration::DagScheduler, usize), error::AgentError> {
-        use crate::orchestration::{DagScheduler, GraphStatus, RuleBasedRouter};
+        graph: zeph_orchestration::TaskGraph,
+    ) -> Result<(zeph_orchestration::DagScheduler, usize), error::AgentError> {
+        use zeph_orchestration::{DagScheduler, GraphStatus, RuleBasedRouter};
 
         let available_agents = self
             .orchestration
@@ -401,10 +400,10 @@ impl<C: crate::channel::Channel> Agent<C> {
 
     pub(super) async fn run_whole_plan_verify(
         &mut self,
-        scheduler: &mut crate::orchestration::DagScheduler,
-        final_status: crate::orchestration::GraphStatus,
-    ) -> Option<Vec<crate::orchestration::TaskNode>> {
-        use crate::orchestration::{GraphStatus, PlanVerifier};
+        scheduler: &mut zeph_orchestration::DagScheduler,
+        final_status: zeph_orchestration::GraphStatus,
+    ) -> Option<Vec<zeph_orchestration::TaskNode>> {
+        use zeph_orchestration::{GraphStatus, PlanVerifier};
 
         if final_status != GraphStatus::Completed
             || !self.orchestration.orchestration_config.verify_completeness
@@ -429,8 +428,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .as_ref()
             .unwrap_or(&self.provider)
             .clone();
-        let mut verifier =
-            PlanVerifier::new(verify_provider, max_tokens, self.security.sanitizer.clone());
+        let mut verifier = PlanVerifier::new(verify_provider, self.security.sanitizer.clone());
         let result = verifier.verify_plan(&goal, &truncated_output).await;
 
         tracing::debug!(
@@ -471,12 +469,12 @@ impl<C: crate::channel::Channel> Agent<C> {
 
     pub(super) async fn execute_partial_replan_dag(
         &mut self,
-        gap_tasks: Vec<crate::orchestration::TaskNode>,
+        gap_tasks: Vec<zeph_orchestration::TaskNode>,
         goal: &str,
-    ) -> Option<Vec<crate::orchestration::TaskNode>> {
-        use crate::orchestration::{DagScheduler, RuleBasedRouter, TaskStatus};
+    ) -> Option<Vec<zeph_orchestration::TaskNode>> {
+        use zeph_orchestration::{DagScheduler, RuleBasedRouter, TaskStatus};
 
-        let mut partial_graph = crate::orchestration::TaskGraph::new(goal);
+        let mut partial_graph = zeph_orchestration::TaskGraph::new(goal);
         partial_graph.tasks = gap_tasks;
 
         let mut partial_config = self.orchestration.orchestration_config.clone();
@@ -535,24 +533,24 @@ impl<C: crate::channel::Channel> Agent<C> {
     #[allow(clippy::too_many_lines)]
     pub(super) async fn finalize_plan_execution(
         &mut self,
-        completed_graph: crate::orchestration::TaskGraph,
-        final_status: crate::orchestration::GraphStatus,
+        completed_graph: zeph_orchestration::TaskGraph,
+        final_status: zeph_orchestration::GraphStatus,
     ) -> Result<&'static str, error::AgentError> {
         use std::fmt::Write;
 
-        use crate::orchestration::{Aggregator, GraphStatus, LlmAggregator};
+        use zeph_orchestration::{Aggregator, GraphStatus, LlmAggregator};
 
         let result_label = match final_status {
             GraphStatus::Completed => {
                 let completed_count = completed_graph
                     .tasks
                     .iter()
-                    .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
+                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Completed)
                     .count() as u64;
                 let skipped_count = completed_graph
                     .tasks
                     .iter()
-                    .filter(|t| t.status == crate::orchestration::TaskStatus::Skipped)
+                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Skipped)
                     .count() as u64;
                 self.update_metrics(|m| {
                     m.orchestration.tasks_completed += completed_count;
@@ -604,22 +602,22 @@ impl<C: crate::channel::Channel> Agent<C> {
                 let failed_tasks: Vec<_> = completed_graph
                     .tasks
                     .iter()
-                    .filter(|t| t.status == crate::orchestration::TaskStatus::Failed)
+                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Failed)
                     .collect();
                 let cancelled_tasks: Vec<_> = completed_graph
                     .tasks
                     .iter()
-                    .filter(|t| t.status == crate::orchestration::TaskStatus::Canceled)
+                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Canceled)
                     .collect();
                 let completed_count = completed_graph
                     .tasks
                     .iter()
-                    .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
+                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Completed)
                     .count() as u64;
                 let skipped_count = completed_graph
                     .tasks
                     .iter()
-                    .filter(|t| t.status == crate::orchestration::TaskStatus::Skipped)
+                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Skipped)
                     .count() as u64;
                 self.update_metrics(|m| {
                     m.orchestration.tasks_failed += failed_tasks.len() as u64;
@@ -686,7 +684,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                 let done_count = completed_graph
                     .tasks
                     .iter()
-                    .filter(|t| t.status == crate::orchestration::TaskStatus::Completed)
+                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Completed)
                     .count();
                 self.update_metrics(|m| m.orchestration.tasks_completed += done_count as u64);
                 let total = completed_graph.tasks.len();
@@ -710,7 +708,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         &mut self,
         _graph_id: Option<&str>,
     ) -> Result<(), error::AgentError> {
-        use crate::orchestration::GraphStatus;
+        use zeph_orchestration::GraphStatus;
         let Some(ref graph) = self.orchestration.pending_graph else {
             self.channel.send("No active plan.").await?;
             return Ok(());
@@ -737,10 +735,10 @@ impl<C: crate::channel::Channel> Agent<C> {
         if let Some(ref graph) = self.orchestration.pending_graph {
             let summary = format_plan_summary(graph);
             let status_label = match graph.status {
-                crate::orchestration::GraphStatus::Created => "awaiting confirmation",
-                crate::orchestration::GraphStatus::Running => "running",
-                crate::orchestration::GraphStatus::Paused => "paused",
-                crate::orchestration::GraphStatus::Failed => "failed (retryable)",
+                zeph_orchestration::GraphStatus::Created => "awaiting confirmation",
+                zeph_orchestration::GraphStatus::Running => "running",
+                zeph_orchestration::GraphStatus::Paused => "paused",
+                zeph_orchestration::GraphStatus::Failed => "failed (retryable)",
                 _ => "unknown",
             };
             self.channel
@@ -779,7 +777,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         &mut self,
         graph_id: Option<&str>,
     ) -> Result<(), error::AgentError> {
-        use crate::orchestration::GraphStatus;
+        use zeph_orchestration::GraphStatus;
 
         let Some(ref graph) = self.orchestration.pending_graph else {
             self.channel
@@ -834,7 +832,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         &mut self,
         graph_id: Option<&str>,
     ) -> Result<(), error::AgentError> {
-        use crate::orchestration::{GraphStatus, dag};
+        use zeph_orchestration::{GraphStatus, dag};
 
         let Some(ref graph) = self.orchestration.pending_graph else {
             self.channel
@@ -871,14 +869,14 @@ impl<C: crate::channel::Channel> Agent<C> {
         let failed_count = graph
             .tasks
             .iter()
-            .filter(|t| t.status == crate::orchestration::TaskStatus::Failed)
+            .filter(|t| t.status == zeph_orchestration::TaskStatus::Failed)
             .count();
 
         dag::reset_for_retry(&mut graph).map_err(|e| error::AgentError::Other(e.to_string()))?;
 
         for task in &mut graph.tasks {
-            if task.status == crate::orchestration::TaskStatus::Running {
-                task.status = crate::orchestration::TaskStatus::Ready;
+            if task.status == zeph_orchestration::TaskStatus::Running {
+                task.status = zeph_orchestration::TaskStatus::Ready;
                 task.assigned_agent = None;
             }
         }
@@ -905,7 +903,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         &mut self,
         trimmed: &str,
     ) -> Result<(), error::AgentError> {
-        match crate::orchestration::PlanCommand::parse(trimmed) {
+        match zeph_orchestration::PlanCommand::parse(trimmed) {
             Ok(cmd) => {
                 self.handle_plan_command(cmd).await?;
             }

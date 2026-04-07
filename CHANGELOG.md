@@ -18,6 +18,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Remove dead `chat_with_named_provider` methods from `AnyProvider`** (`#2786`): deleted `chat_with_named_provider` and `chat_with_named_provider_and_tools` that accepted a `name` parameter but ignored it. Updated 7 call sites across 6 files to use `chat()` / `chat_with_tools()` directly. Removed dead `provider_name` field from `AdversarialPolicyLlmAdapter`, dead `persona_provider` field from `PersonaExtractionConfig`, and dead `model` field from `SubAgentLoopArgs`.
 
+### Removed
+
+- **zeph-core module re-exports of entire crates** (`#2784`): removed `pub mod experiments/orchestration/subagent` shims from `zeph-core/src/lib.rs`; all callers migrated to direct crate imports (`zeph_orchestration::`, `zeph_experiments::`, `zeph_subagent::`).
+
+- **Dead accessor migration** (`#2783`): deleted `crates/zeph-core/src/agent/accessors.rs` (239 lines of unused accessor methods behind blanket `#[allow(dead_code)]`).
+
+- **Dead code behind `#[allow(dead_code)]`** (`#2785`): removed `validate_density_budgets`, `apply_density_budget` from compaction strategy; removed `max_tokens` field from `PlanVerifier`.
+
 ### Added
 
 - **Embed backfill progress tracking with bounded memory and concurrency** (`#2765`): `embed_missing` now accepts a `watch::Sender<Option<BackfillProgress>>` and reports `done/total` progress after each message. Messages are processed in micro-batches of 32 with `buffer_unordered(4)` concurrency, reducing peak memory from all-at-once to ~32 messages worth of content and cutting wall-clock time 3-4x via parallel HTTP embedding calls. The TUI status bar shows `Backfilling embeddings: N/M (X%)` during backfill and clears on completion.
