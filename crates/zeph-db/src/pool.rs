@@ -34,7 +34,7 @@ impl DbConfig {
     ///
     /// Returns [`DbError`] if connection or migration fails.
     pub async fn connect(&self) -> Result<DbPool, DbError> {
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
         {
             Self::connect_sqlite(&self.url, self.max_connections, self.pool_size).await
         }
@@ -44,7 +44,7 @@ impl DbConfig {
         }
     }
 
-    #[cfg(feature = "sqlite")]
+    #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
     async fn connect_sqlite(
         path: &str,
         max_connections: u32,
