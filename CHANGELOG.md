@@ -12,6 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Unbounded memory growth when `context_budget_tokens = 0`** (`#2773`): `auto_budget_tokens()` now falls back to 128k tokens when the resolved budget is 0, preventing silent compaction bypass that let messages accumulate without bound. Defence-in-depth WARN fires when message count exceeds 200 without a budget.
+
+- **TUI `RenderCache::clear()` does not release backing Vec** (`#2774`): replace entry-nulling loop with `Vec::new()` to release heap allocation on trim cycles instead of retaining capacity indefinitely.
+
+- **TUI lockup after `trim_messages` re-render** (`#2775`): add `RenderCache::shift(count)` to drain only evicted entries instead of clearing the entire cache, avoiding full re-render of 2000 messages. Scroll offset adjusted after trim to prevent position drift.
+
 - **Agent stall after tool batch: add timeouts and tracing** (`#2767`): wrap `check_summarization` (30s), `maybe_spawn_graph_extraction` (10s), `record_skill_outcomes_batch` (5s), `is_available` LSP check (2s), and guardrail check (10s) in `tokio::time::timeout`; add `tracing::debug!` checkpoints to `tool_batch` and `persist_message` to make stalls observable.
 
 - **LSP `after_tool` blocks agent loop up to 160s** (`#2750`): wrap the entire LSP hover hook loop in a single 30s `tokio::time::timeout` instead of blocking sequentially per file. Combined with `max_symbols` reduction (10 → 5, `#2752`), worst-case blocking drops from ~160s to 30s.
