@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Truncate graph extraction context messages to 2KB** (`#2759`): cap each cloned message content at `floor_char_boundary(2048)` bytes before passing to `maybe_spawn_graph_extraction`, bounding context allocation to ≤8KB regardless of message size.
 
+- **Cap persona extraction to 8 messages / 2 KiB each** (`#2762`): apply `.take(8)` and `floor_char_boundary(2048)` truncation to the user_messages collection in `maybe_spawn_persona_extraction`, matching the graph extraction guard and bounding allocation to ≤16KB regardless of session length.
+
 ### Changed
 
 - **Embed concurrency cap** (`#2749`): add `embed_concurrency` config field (default 4, 0 = unlimited) backed by `Arc<Semaphore>` in the router. Prevents indexer, backfill, and graph extraction from saturating Ollama embed slots simultaneously.
