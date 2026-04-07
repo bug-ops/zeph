@@ -235,12 +235,8 @@ pub(crate) async fn run_daemon(
 
     let registry = std::sync::Arc::new(RwLock::new(app.build_registry()));
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
-    let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = registry
-        .read()
-        .all_meta()
-        .into_iter()
-        .cloned()
-        .collect();
+    let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> =
+        registry.read().all_meta().into_iter().cloned().collect();
     let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
     let matcher = app
         .build_skill_matcher(&embedding_provider, &all_meta_refs, &memory)

@@ -260,12 +260,8 @@ async fn build_acp_deps(
         });
     }
 
-    let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = registry
-        .read()
-        .all_meta()
-        .into_iter()
-        .cloned()
-        .collect();
+    let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> =
+        registry.read().all_meta().into_iter().cloned().collect();
     let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
     let matcher = app
         .build_skill_matcher(&embedding_provider, &all_meta_refs, &memory)
