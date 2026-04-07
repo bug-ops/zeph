@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- perf(core): cache BPE data in `OnceLock` to avoid repeated disk loads on `TokenCounter` construction (`#2741`)
+
 ### Fixed
 
 - **Unbounded `tokio::spawn` in TUI scheduler metrics refresh** (`#2742`): the `do_refresh` closure in `src/runner.rs` previously called `tokio::spawn` for every `refresh_rx.changed()` event, spawning hundreds of concurrent `SELECT FROM scheduled_jobs` queries during scheduler mutation bursts (up to 849 concurrent queries observed vs. the expected 1 per 30 s). The inner `tokio::spawn` has been removed; `store.list_jobs().await` is now called directly in each `select!` arm. Since the outer loop already runs inside a `tokio::spawn`, at most one query is in flight at a time.

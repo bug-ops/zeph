@@ -3,10 +3,13 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::OnceLock;
 
 use dashmap::DashMap;
 use tiktoken_rs::CoreBPE;
 use zeph_llm::provider::{Message, MessagePart};
+
+static BPE: OnceLock<Option<CoreBPE>> = OnceLock::new();
 
 const CACHE_CAP: usize = 10_000;
 /// Inputs larger than this limit bypass BPE encoding and use the chars/4 fallback.
@@ -36,22 +39,24 @@ const IMAGE_DEFAULT_TOKENS: usize = 1000;
 const THINKING_OVERHEAD: usize = 10;
 
 pub struct TokenCounter {
-    bpe: Option<CoreBPE>,
+    bpe: &'static Option<CoreBPE>,
     cache: DashMap<u64, usize>,
     cache_cap: usize,
 }
 
 impl TokenCounter {
     /// Create a new counter. Falls back to chars/4 if tiktoken init fails.
+    ///
+    /// BPE data is loaded once and cached in a `OnceLock` for the process lifetime.
     #[must_use]
     pub fn new() -> Self {
-        let bpe = match tiktoken_rs::cl100k_base() {
+        let bpe = BPE.get_or_init(|| match tiktoken_rs::cl100k_base() {
             Ok(b) => Some(b),
             Err(e) => {
                 tracing::warn!("tiktoken cl100k_base init failed, using chars/4 fallback: {e}");
                 None
             }
-        };
+        });
         Self {
             bpe,
             cache: DashMap::new(),
@@ -79,7 +84,7 @@ impl TokenCounter {
             return *cached;
         }
 
-        let count = match &self.bpe {
+        let count = match self.bpe {
             Some(bpe) => bpe.encode_with_special_tokens(text).len(),
             None => zeph_common::text::estimate_tokens(text),
         };
@@ -212,6 +217,16 @@ fn count_schema_value(counter: &TokenCounter, value: &serde_json::Value) -> usiz
 mod tests {
     use super::*;
     use zeph_llm::provider::{ImageData, Message, MessageMetadata, MessagePart, Role};
+
+    static BPE_NONE: Option<CoreBPE> = None;
+
+    fn counter_with_no_bpe(cache_cap: usize) -> TokenCounter {
+        TokenCounter {
+            bpe: &BPE_NONE,
+            cache: DashMap::new(),
+            cache_cap,
+        }
+    }
 
     fn make_msg(parts: Vec<MessagePart>) -> Message {
         Message::from_parts(Role::User, parts)
@@ -416,11 +431,7 @@ mod tests {
 
     #[test]
     fn count_tokens_fallback_mode() {
-        let counter = TokenCounter {
-            bpe: None,
-            cache: DashMap::new(),
-            cache_cap: CACHE_CAP,
-        };
+        let counter = counter_with_no_bpe(CACHE_CAP);
         // 8 chars / 4 = 2
         assert_eq!(counter.count_tokens("abcdefgh"), 2);
         assert_eq!(counter.count_tokens(""), 0);
@@ -477,12 +488,15 @@ mod tests {
     }
 
     #[test]
+    fn two_instances_share_bpe_pointer() {
+        let a = TokenCounter::new();
+        let b = TokenCounter::new();
+        assert!(std::ptr::eq(a.bpe, b.bpe));
+    }
+
+    #[test]
     fn cache_eviction_at_capacity() {
-        let counter = TokenCounter {
-            bpe: None,
-            cache: DashMap::new(),
-            cache_cap: 3,
-        };
+        let counter = counter_with_no_bpe(3);
         let _ = counter.count_tokens("aaaa");
         let _ = counter.count_tokens("bbbb");
         let _ = counter.count_tokens("cccc");
