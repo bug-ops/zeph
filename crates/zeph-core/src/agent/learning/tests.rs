@@ -670,7 +670,7 @@ async fn record_skill_outcomes_no_active_skills_is_noop() {
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
-    let agent = Agent::new(provider, channel, registry, None, 5, executor);
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
     // No active skills and no memory → should return immediately without panic
     agent.record_skill_outcomes("success", None, None).await;
@@ -1354,4 +1354,50 @@ async fn inject_learned_preferences_sanitizes_newlines() {
         prompt.contains("concise INJECTED"),
         "embedded newline replaced with space"
     );
+}
+
+#[tokio::test]
+async fn learning_tasks_bounded_skips_at_capacity() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+    use crate::agent::learning_engine::MAX_LEARNING_TASKS;
+
+    // Fill the JoinSet to capacity with tasks that never complete.
+    for _ in 0..MAX_LEARNING_TASKS {
+        agent
+            .learning_engine
+            .learning_tasks
+            .spawn(std::future::pending::<()>());
+    }
+    assert_eq!(
+        agent.learning_engine.learning_tasks.len(),
+        MAX_LEARNING_TASKS
+    );
+
+    // try_spawn_learning_task must reject the new task.
+    let spawned = agent.try_spawn_learning_task(async {});
+    assert!(!spawned, "spawn should be skipped at capacity");
+    // JoinSet size must remain at MAX, not MAX+1.
+    assert_eq!(
+        agent.learning_engine.learning_tasks.len(),
+        MAX_LEARNING_TASKS
+    );
+
+    // After abort_all + draining, the set must be empty and new tasks accepted.
+    agent.learning_engine.learning_tasks.abort_all();
+    // Drain aborted tasks so len() returns to 0.
+    while agent
+        .learning_engine
+        .learning_tasks
+        .join_next()
+        .await
+        .is_some()
+    {}
+    assert_eq!(agent.learning_engine.learning_tasks.len(), 0);
+    let spawned = agent.try_spawn_learning_task(async {});
+    assert!(spawned, "spawn should succeed after drain");
 }

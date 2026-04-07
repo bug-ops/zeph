@@ -71,7 +71,7 @@ impl<C: Channel> Agent<C> {
     /// Fire-and-forget ARISE trace improvement after a successful multi-tool turn.
     ///
     /// All three features (ARISE, STEM, ERL) MUST be background tasks — never awaited inline.
-    pub(crate) fn spawn_arise_trace_improvement(&self, skill_name: &str) {
+    pub(crate) fn spawn_arise_trace_improvement(&mut self, skill_name: &str) {
         let Some(config) = self.learning_engine.config.as_ref() else {
             return;
         };
@@ -112,6 +112,6 @@ impl<C: Channel> Agent<C> {
             domain_success_gate: config.domain_success_gate,
             status_tx,
         };
-        tokio::spawn(super::background::arise_trace_task(args));
+        self.try_spawn_learning_task(super::background::arise_trace_task(args));
     }
 }

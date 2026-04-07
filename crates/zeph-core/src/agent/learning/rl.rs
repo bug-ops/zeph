@@ -8,7 +8,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// No-op when `rl_routing_enabled = false` or no RL head is loaded.
     /// Only updates for the first active skill name (the one that was selected).
-    pub(crate) fn spawn_rl_head_update(&self, outcome: &str) {
+    pub(crate) fn spawn_rl_head_update(&mut self, outcome: &str) {
         let Some(cfg) = self.learning_engine.rl_routing else {
             return;
         };
@@ -30,7 +30,7 @@ impl<C: Channel> Agent<C> {
         let persist_interval = cfg.persist_interval;
         let memory = self.memory_state.memory.clone();
 
-        tokio::spawn(async move {
+        self.try_spawn_learning_task(async move {
             if !rl_head.update(reward, lr) {
                 tracing::debug!(
                     skill = selected_skill,

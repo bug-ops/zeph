@@ -55,7 +55,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Fire-and-forget ERL heuristic extraction after a successful skill+tool turn.
-    pub(crate) fn spawn_erl_reflection(&self, skill_name: &str) {
+    pub(crate) fn spawn_erl_reflection(&mut self, skill_name: &str) {
         let Some(config) = self.learning_engine.config.as_ref() else {
             return;
         };
@@ -90,6 +90,6 @@ impl<C: Channel> Agent<C> {
             dedup_threshold: config.erl_dedup_threshold,
             status_tx,
         };
-        tokio::spawn(erl_reflection_task(args));
+        self.try_spawn_learning_task(erl_reflection_task(args));
     }
 }

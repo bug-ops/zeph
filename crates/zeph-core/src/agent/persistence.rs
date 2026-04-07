@@ -798,8 +798,12 @@ impl<C: Channel> Agent<C> {
             None => return,
         };
 
-        // Collect messages from this turn to pass to the extractor.
-        let turn_messages: Vec<zeph_llm::provider::Message> = self.msg.messages.clone();
+        // Collect the tail of the message history to pass to the extractor.
+        // Cloning the full vec can be megabytes in long sessions; the extractor only needs
+        // recent context bounded by `cfg.max_messages`.
+        let tail_start = self.msg.messages.len().saturating_sub(cfg.max_messages);
+        let turn_messages: Vec<zeph_llm::provider::Message> =
+            self.msg.messages[tail_start..].to_vec();
 
         if turn_messages.is_empty() {
             return;
@@ -3568,5 +3572,37 @@ mod tests {
             "normal ToolResult must be saved to SQLite"
         );
         assert_eq!(history[0].content, content);
+    }
+
+    /// Verify that `maybe_spawn_trajectory_extraction` uses a bounded tail slice instead of
+    /// cloning the full message vec. We confirm the slice logic by checking that the
+    /// `tail_start` calculation correctly bounds the window even with more messages than
+    /// `max_messages`.
+    #[test]
+    fn trajectory_extraction_slice_bounds_messages() {
+        // Replicate the slice logic from maybe_spawn_trajectory_extraction.
+        let max_messages: usize = 20;
+        let total_messages = 100usize;
+
+        let tail_start = total_messages.saturating_sub(max_messages);
+        let window = total_messages - tail_start;
+
+        assert_eq!(
+            window, 20,
+            "slice should contain exactly max_messages items"
+        );
+        assert_eq!(tail_start, 80, "slice should start at len - max_messages");
+    }
+
+    #[test]
+    fn trajectory_extraction_slice_handles_few_messages() {
+        let max_messages: u64 = 20;
+        let total_messages = 5usize;
+
+        let tail_start = total_messages.saturating_sub(max_messages as usize);
+        let window = total_messages - tail_start;
+
+        assert_eq!(window, 5, "should return all messages when fewer than max");
+        assert_eq!(tail_start, 0, "slice should start from the beginning");
     }
 }

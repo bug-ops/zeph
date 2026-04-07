@@ -12,7 +12,7 @@ impl<C: Channel> Agent<C> {
     /// Called when a skill succeeds after a prior reflection (failure + success pair).
     /// Extracts a `StepCorrection` via LLM and stores it in `step_corrections`.
     pub(crate) fn spawn_d2skill_correction_extraction(
-        &self,
+        &mut self,
         skill_name: &str,
         failure_error: &str,
         failure_tool: &str,
@@ -33,7 +33,7 @@ impl<C: Channel> Agent<C> {
         let failure_tool = failure_tool.to_string();
         let successful_response = successful_response.to_string();
 
-        tokio::spawn(async move {
+        self.try_spawn_learning_task(async move {
             let prompt = zeph_skills::evolution::build_correction_extraction_prompt(
                 &skill_name,
                 &failure_error,
@@ -78,7 +78,7 @@ impl<C: Channel> Agent<C> {
     /// Fire-and-forget STEM tool usage log insert + pattern check.
     ///
     /// Called after every tool execution turn regardless of outcome.
-    pub(crate) fn spawn_stem_detection(&self, outcome: &str) {
+    pub(crate) fn spawn_stem_detection(&mut self, outcome: &str) {
         let Some(config) = self.learning_engine.config.as_ref() else {
             return;
         };
@@ -132,7 +132,7 @@ impl<C: Channel> Agent<C> {
             skill_paths: self.skill_state.skill_paths.clone(),
             status_tx,
         };
-        tokio::spawn(super::background::stem_detection_task(args));
+        self.try_spawn_learning_task(super::background::stem_detection_task(args));
     }
 
     /// Retrieve matching step corrections for the current tool failure.

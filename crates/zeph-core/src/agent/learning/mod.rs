@@ -32,7 +32,7 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(crate) async fn record_skill_outcomes(
-        &self,
+        &mut self,
         outcome: &str,
         error_context: Option<&str>,
         outcome_detail: Option<&str>,
@@ -80,6 +80,26 @@ impl<C: Channel> Agent<C> {
                 self.spawn_erl_reflection(name);
             }
         }
+    }
+
+    /// Returns true and spawns `fut` when the learning task cap has not been reached.
+    ///
+    /// When at capacity, logs a debug message and returns false (no abort of existing tasks).
+    pub(super) fn try_spawn_learning_task(
+        &mut self,
+        fut: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> bool {
+        if self.learning_engine.learning_tasks.len()
+            >= crate::agent::learning_engine::MAX_LEARNING_TASKS
+        {
+            tracing::debug!(
+                "learning_tasks at capacity ({}), skipping spawn",
+                crate::agent::learning_engine::MAX_LEARNING_TASKS
+            );
+            return false;
+        }
+        self.learning_engine.learning_tasks.spawn(fut);
+        true
     }
 
     pub(crate) async fn update_skill_confidence_metrics(&self) {

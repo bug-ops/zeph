@@ -1320,6 +1320,8 @@ impl<C: Channel> Agent<C> {
         self.push_message(user_msg);
 
         if let Err(e) = self.process_response().await {
+            // Detach any in-flight learning tasks before mutating message state.
+            self.learning_engine.learning_tasks.detach_all();
             tracing::error!("Response processing failed: {e:#}");
             let user_msg = format!("Error: {e:#}");
             self.channel.send(&user_msg).await?;
@@ -1327,6 +1329,10 @@ impl<C: Channel> Agent<C> {
             self.recompute_prompt_tokens();
             self.channel.flush_chunks().await?;
         } else {
+            // Detach learning tasks spawned this turn — they are fire-and-forget and must not
+            // leak into the next turn's context.
+            self.learning_engine.learning_tasks.detach_all();
+            self.truncate_old_tool_results();
             // MagicDocs: spawn background doc updates if any are due (#2702).
             self.maybe_update_magic_docs();
         }

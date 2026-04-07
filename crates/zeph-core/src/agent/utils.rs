@@ -230,6 +230,40 @@ impl<C: Channel> Agent<C> {
     pub fn context_messages(&self) -> &[Message] {
         &self.msg.messages
     }
+
+    /// Truncate stale tool result content in old messages to bound in-memory growth.
+    ///
+    /// After the LLM has seen and responded to tool output, the full content is no longer
+    /// needed in the hot message list (it is already persisted to `SQLite`). Truncating keeps
+    /// the in-process message vec small across long sessions.
+    ///
+    /// Skips the last 2 messages so the LLM retains full context for the next turn.
+    ///
+    /// Truncated variants: `MessagePart::ToolResult` (content) and `MessagePart::ToolOutput` (body).
+    pub(super) fn truncate_old_tool_results(&mut self) {
+        const LIMIT: usize = 2048;
+        const SUFFIX: &str = "…[truncated]";
+
+        let len = self.msg.messages.len();
+        if len <= 2 {
+            return;
+        }
+        for msg in &mut self.msg.messages[..len - 2] {
+            for part in &mut msg.parts {
+                match part {
+                    MessagePart::ToolResult { content, .. } if content.len() > LIMIT => {
+                        content.truncate(content.floor_char_boundary(LIMIT));
+                        content.push_str(SUFFIX);
+                    }
+                    MessagePart::ToolOutput { body, .. } if body.len() > LIMIT => {
+                        body.truncate(body.floor_char_boundary(LIMIT));
+                        body.push_str(SUFFIX);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -374,5 +408,155 @@ mod tests {
         });
 
         assert_eq!(agent.context_messages().len(), agent.msg.messages.len());
+    }
+
+    #[test]
+    fn truncate_old_tool_results_truncates_stale_content() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let big_content = "x".repeat(4096);
+
+        // Message 0 (old) — should be truncated.
+        agent.msg.messages.push(Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![MessagePart::ToolResult {
+                tool_use_id: "id1".to_string(),
+                content: big_content.clone(),
+                is_error: false,
+            }],
+            metadata: MessageMetadata::default(),
+        });
+        // Message 1 (old) — ToolOutput should also be truncated.
+        agent.msg.messages.push(Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "shell".to_string(),
+                body: big_content.clone(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata::default(),
+        });
+        // Message 2 (recent) — must NOT be truncated.
+        agent.msg.messages.push(Message {
+            role: Role::Assistant,
+            content: "reply".to_string(),
+            parts: vec![MessagePart::ToolResult {
+                tool_use_id: "id3".to_string(),
+                content: big_content.clone(),
+                is_error: false,
+            }],
+            metadata: MessageMetadata::default(),
+        });
+        // Message 3 (most recent) — must NOT be truncated.
+        agent.msg.messages.push(Message {
+            role: Role::User,
+            content: "last".to_string(),
+            parts: vec![MessagePart::ToolResult {
+                tool_use_id: "id4".to_string(),
+                content: big_content.clone(),
+                is_error: false,
+            }],
+            metadata: MessageMetadata::default(),
+        });
+
+        // Agent::new inserts a system prompt at index 0, so our messages are at 1..=4.
+        let base = agent.msg.messages.len() - 4;
+
+        agent.truncate_old_tool_results();
+
+        // Old ToolResult truncated.
+        if let MessagePart::ToolResult { content, .. } = &agent.msg.messages[base].parts[0] {
+            assert!(
+                content.ends_with("…[truncated]"),
+                "msg[base] should be truncated"
+            );
+            assert!(content.len() <= 2048 + 16);
+        } else {
+            panic!("expected ToolResult at msg[base]");
+        }
+
+        // Old ToolOutput truncated.
+        if let MessagePart::ToolOutput { body, .. } = &agent.msg.messages[base + 1].parts[0] {
+            assert!(
+                body.ends_with("…[truncated]"),
+                "msg[base+1] should be truncated"
+            );
+        } else {
+            panic!("expected ToolOutput at msg[base+1]");
+        }
+
+        // Recent messages untouched.
+        if let MessagePart::ToolResult { content, .. } = &agent.msg.messages[base + 2].parts[0] {
+            assert_eq!(content.len(), 4096, "msg[base+2] should NOT be truncated");
+        } else {
+            panic!("expected ToolResult at msg[base+2]");
+        }
+        if let MessagePart::ToolResult { content, .. } = &agent.msg.messages[base + 3].parts[0] {
+            assert_eq!(content.len(), 4096, "msg[base+3] should NOT be truncated");
+        } else {
+            panic!("expected ToolResult at msg[base+3]");
+        }
+    }
+
+    #[test]
+    fn truncate_old_tool_results_noop_when_few_messages() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let big = "y".repeat(4096);
+        agent.msg.messages.push(Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![MessagePart::ToolResult {
+                tool_use_id: "id".to_string(),
+                content: big.clone(),
+                is_error: false,
+            }],
+            metadata: MessageMetadata::default(),
+        });
+        agent.msg.messages.push(Message {
+            role: Role::Assistant,
+            content: "ok".to_string(),
+            parts: vec![MessagePart::ToolResult {
+                tool_use_id: "id2".to_string(),
+                content: big.clone(),
+                is_error: false,
+            }],
+            metadata: MessageMetadata::default(),
+        });
+
+        // Agent::new inserts a system prompt at index 0; our messages are at 1 and 2.
+        let len_before = agent.msg.messages.len();
+        agent.truncate_old_tool_results();
+
+        // Neither message truncated — both fall in the last-2 window (len=3, skip last 2).
+        assert_eq!(agent.msg.messages.len(), len_before);
+        if let MessagePart::ToolResult { content, .. } =
+            &agent.msg.messages[len_before - 2].parts[0]
+        {
+            assert_eq!(
+                content.len(),
+                4096,
+                "second-to-last should not be truncated"
+            );
+        } else {
+            panic!("expected ToolResult");
+        }
+        if let MessagePart::ToolResult { content, .. } =
+            &agent.msg.messages[len_before - 1].parts[0]
+        {
+            assert_eq!(content.len(), 4096, "last should not be truncated");
+        } else {
+            panic!("expected ToolResult");
+        }
     }
 }

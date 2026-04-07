@@ -3,6 +3,12 @@
 
 use crate::config::LearningConfig;
 
+/// Maximum number of concurrent fire-and-forget learning tasks.
+///
+/// When the `JoinSet` reaches this limit, new spawns are skipped (not aborted) so
+/// in-flight work is preserved. The set is detached via `detach_all` at turn boundary.
+pub(crate) const MAX_LEARNING_TASKS: usize = 16;
+
 /// Default number of user turns between preference analysis runs.
 const DEFAULT_ANALYSIS_INTERVAL: u64 = 5;
 
@@ -28,6 +34,11 @@ pub(crate) struct LearningEngine {
     /// Highest correction id processed in the last analysis run (watermark).
     /// Stored as `i64` to match `SQLite` row ids; `0` means no analysis has run yet.
     pub(super) last_analyzed_correction_id: i64,
+    /// Bounded set of in-flight fire-and-forget learning tasks.
+    ///
+    /// Capped at `MAX_LEARNING_TASKS`. New spawns are skipped (not aborted) when the
+    /// cap is reached. The set is detached via `detach_all` at each turn boundary.
+    pub(crate) learning_tasks: tokio::task::JoinSet<()>,
 }
 
 impl LearningEngine {
@@ -41,6 +52,7 @@ impl LearningEngine {
             last_analysis_turn: 0,
             analysis_interval: DEFAULT_ANALYSIS_INTERVAL,
             last_analyzed_correction_id: 0,
+            learning_tasks: tokio::task::JoinSet::new(),
         }
     }
 

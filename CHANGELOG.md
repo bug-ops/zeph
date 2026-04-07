@@ -26,6 +26,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Cap persona extraction to 8 messages / 2 KiB each** (`#2762`): apply `.take(8)` and `floor_char_boundary(2048)` truncation to the user_messages collection in `maybe_spawn_persona_extraction`, matching the graph extraction guard and bounding allocation to ≤16KB regardless of session length.
 
+- **Unbounded learning background tasks accumulate across turns** (`#2758`): `record_skill_outcomes` now uses a `JoinSet<()>` (cap 16) on `LearningEngine` instead of bare `tokio::spawn`. New spawns are skipped (not aborted) when the cap is reached; the set is detached via `detach_all` at each turn boundary to prevent unbounded task accumulation.
+
+- **`maybe_spawn_trajectory_extraction` clones full message vec** (`#2756`): replace `self.msg.messages.clone()` with a bounded tail slice of `cfg.max_messages` entries. The extractor only needs recent context and the full clone was megabytes in long sessions.
+
+- **Old tool result content accumulates in-memory across turns** (`#2760`): after each successful LLM turn, truncate `ToolResult.content` and `ToolOutput.body` in all messages except the last two to 2 KB with a `…[truncated]` suffix. Full content is already persisted to `SQLite`.
+
 ### Changed
 
 - **Embed concurrency cap** (`#2749`): add `embed_concurrency` config field (default 4, 0 = unlimited) backed by `Arc<Semaphore>` in the router. Prevents indexer, backfill, and graph extraction from saturating Ollama embed slots simultaneously.
