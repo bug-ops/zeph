@@ -262,7 +262,6 @@ async fn build_acp_deps(
 
     let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = registry
         .read()
-        .expect("registry read lock")
         .all_meta()
         .into_iter()
         .cloned()
@@ -1247,7 +1246,7 @@ pub(crate) async fn run_acp_http_server(
         session_idle_timeout_secs: app.config().acp.session_idle_timeout_secs,
         permission_file: app.config().acp.permission_file.clone(),
         provider_factory: Some(build_acp_provider_factory(app.config())),
-        available_models: std::sync::Arc::new(RwLock::new(
+        available_models: std::sync::Arc::new(parking_lot::RwLock::new(
             if app.config().acp.available_models.is_empty() {
                 discover_models_from_config(app.config())
             } else {

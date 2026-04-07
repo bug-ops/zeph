@@ -237,7 +237,6 @@ pub(crate) async fn run_daemon(
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
     let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = registry
         .read()
-        .expect("registry read lock")
         .all_meta()
         .into_iter()
         .cloned()
