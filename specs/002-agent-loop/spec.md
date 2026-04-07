@@ -145,3 +145,35 @@ Active subgoal messages (tier 1.0) have their MIG reduction capped so they are n
 - `subgoal` and `SideQuest` strategies must never be active simultaneously — hard error at startup
 - NEVER evict Active-tier messages by scoring — their relevance is 1.0 (protected)
 - NEVER run subgoal extraction synchronously in the tool loop — only between turns
+
+---
+
+## MagicDocs: Auto-Maintained Markdown
+`crates/zeph-core/src/agent/magic_docs.rs`. Implemented in v0.18.5. Closes #2702, #2714, #2727, #2732.
+
+### Overview
+Files containing a `# MAGIC DOC:` header, when read via file-read tools (`read`, `file_read`, `cat`, `view`, `open`), are registered in a per-session registry. After each response, a background `tokio::task` updates due docs (respecting `min_turns_between_updates`) via a single LLM `chat` call.
+
+### Scanner Two-Phase Design
+`scan_messages_for_magic_docs` performs a two-phase scan:
+1. **Phase 1**: builds a `HashMap<tool_use_id → (tool_name, file_path)>` from all `ToolUse` parts in `Role::Assistant` messages.
+2. **Phase 2**: handles both `ToolOutput` (by tool name, matching `Role::User` messages) and `ToolResult` (by `tool_use_id` lookup, native execution path).
+
+### Utility Gate Bypass
+`UtilityScorer` gains `exempt_tools: Vec<String>`. When `MagicDocs` is enabled, the builder automatically extends `exempt_tools` with file-read tool names (`read`, `file_read`, `cat`, `view`, `open`). File-read tools always execute regardless of utility score, ensuring MagicDocs detection sees real file content.
+
+### Config
+```toml
+[magic_docs]
+enabled = false
+min_turns_between_updates = 5
+update_provider = ""   # falls back to primary when empty
+max_iterations = 4
+```
+
+### Key Invariants
+- Doc updates run in a background `tokio::task` — never block the response path
+- Scanner must walk all message roles (not only `Role::Assistant`) — `ToolOutput` parts live in `Role::User` messages
+- `exempt_tools` list is extended additively — user-provided entries are preserved
+- NEVER update a doc that was updated within `min_turns_between_updates` turns
+- File-read tools in `exempt_tools` always bypass utility scoring — never apply utility gate to exempt tools

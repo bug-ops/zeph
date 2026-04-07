@@ -198,6 +198,43 @@ An empty string falls back to the agent's primary provider.
 - `compress_context` is non-cacheable (side effects on context window) — must be in the non-cacheable set
 - NEVER call `compress_context` recursively from within a compress_context execution
 
+## Per-Session Tool Call Quota
+> **Status**: Implemented. Closes #2479.
+
+`max_tool_calls_per_session: Option<u32>` in `[tools]` config and `AgentSessionConfig`. Counter lives in `ToolOrchestrator.session_tool_call_count`, incremented once per logical batch (not per retry). When quota is exhausted, all calls in the batch return a synthetic error without executing. Counter resets on `/clear`.
+
+### Config
+```toml
+[tools]
+max_tool_calls_per_session = null   # null = unlimited (default)
+```
+
+### Key Invariants
+- Quota is incremented once per logical batch — retries within the same call do not consume quota
+- Exhaustion returns a synthetic error for all calls in the batch — no partial execution
+- Counter resets on `/clear` — new session gets full quota
+
+---
+
+## OAP Authorization Config
+> **Status**: Implemented. Closes #2406.
+
+New `[tools.authorization]` TOML section backed by `AuthorizationConfig { enabled: bool, rules: Vec<PolicyRuleConfig> }`. At startup, authorization rules are merged into `PolicyEnforcer` after `policy.rules` (policy takes precedence — first-match-wins). `PolicyRuleConfig` gains a `capabilities: Vec<String>` config-only field; capability matching is deferred until tools expose capability metadata.
+
+### Config
+```toml
+[tools.authorization]
+enabled = false
+rules = []   # same PolicyRuleConfig format as [tools.policy]
+```
+
+### Key Invariants
+- `[tools.policy]` rules are always evaluated first — `[tools.authorization]` rules layer on top (first-match-wins)
+- `enabled = false` means `authorization.rules` are never added to `PolicyEnforcer`
+- `capabilities` field in `PolicyRuleConfig` is stored but matching is deferred until tool capability metadata is available
+
+---
+
 ## Key Invariants
 - Blocklist check is unconditional — PermissionPolicy cannot bypass it
 - `execute_tool_call` and `execute_tool_call_confirmed` are separate codepaths — never collapse them

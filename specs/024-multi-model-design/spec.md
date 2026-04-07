@@ -91,7 +91,7 @@ planner_provider = "quality"     # planning → complex tier
 
 ## 4. Subsystem Provider Mapping
 
-Required `*_provider` fields per subsystem (baseline set):
+Required `*_provider` fields per subsystem (complete set as of v0.18.5):
 
 | Subsystem | Config field | Default tier | Crate |
 |-----------|-------------|-------------|-------|
@@ -104,6 +104,16 @@ Required `*_provider` fields per subsystem (baseline set):
 | STT transcription | `[llm.stt] provider_name` → or unified via `[[llm.providers]]` | simple | `zeph-llm` |
 | Embeddings | via `[[llm.providers]] embedding_model` on selected entry | simple | `zeph-llm` |
 | Response verification | `[agent] verify_provider` | complex | `zeph-core` |
+| Persona extraction | `[memory.persona] persona_provider` | simple | `zeph-memory` |
+| Trajectory extraction | `[memory.trajectory] trajectory_provider` | simple | `zeph-memory` |
+| TiMem consolidation | `[memory.tree] consolidation_provider` | simple | `zeph-memory` |
+| autoDream consolidation | `[memory.autodream] consolidation_provider` | medium | `zeph-core` |
+| MagicDocs updates | `[magic_docs] update_provider` | medium | `zeph-core` |
+| Memory routing (LLM path) | `[memory.store_routing] routing_classifier_provider` | simple | `zeph-memory` |
+| A-MAC goal utility | `[memory.admission] goal_utility_provider` | simple | `zeph-memory` |
+| MCP semantic tool discovery | `[mcp.tool_discovery] embedding_provider` | simple (embed) | `zeph-mcp` |
+| Code indexer embedding | `[index] embed_provider` | simple (embed) | `zeph-index` |
+| Semantic memory embedding | `[memory.semantic] embed_provider` | simple (embed) | `zeph-memory` |
 
 ---
 

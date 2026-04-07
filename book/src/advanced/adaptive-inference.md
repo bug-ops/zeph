@@ -178,8 +178,19 @@ This separates the fallback chain definition (used by all strategies) from the c
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `routing` | `"none"`, `"ema"`, `"thompson"`, `"cascade"`, `"task"`, `"bandit"` | `"none"` | Routing strategy |
+| `quality_gate` | float | `0.0` | Cosine similarity threshold for post-selection quality check; `0.0` disables (Thompson/EMA only) |
 | `thompson_state_path` | string? | `~/.zeph/router_thompson_state.json` | Path for Thompson state persistence |
 | `bandit_state_path` | string? | `~/.config/zeph/router_bandit_state.json` | Path for bandit state persistence |
+
+`[llm.routing.asi]` fields (ASI coherence tracking):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable ASI coherence tracking |
+| `window_size` | usize | `10` | Sliding window of response embeddings per provider |
+| `coherence_threshold` | float | `0.5` | Rolling mean below which a warning is emitted |
+| `penalty_weight` | float | `0.3` | Multiplier applied to Thompson/EMA scores on low coherence |
+| `embedding_provider` | string? | `""` | Provider name for response embeddings; empty = primary |
 
 `[llm.cascade]` fields (when `routing = "cascade"`):
 
@@ -273,6 +284,37 @@ zeph router stats --strategy bandit
 ```
 
 The output includes the estimated reward mean and uncertainty per provider, the number of observations, and the current `alpha`/`decay_factor` parameters.
+
+## ASI Coherence Tracking
+
+The Agent Stability Index (ASI) tracks per-provider response coherence as a sliding window of cosine similarities between successive response embeddings. When coherence drops below `coherence_threshold`, the provider's Thompson beta priors and EMA scores are penalised by `penalty_weight`, reducing its selection probability until it recovers.
+
+Embedding is fire-and-forget via `tokio::spawn` — routing is never blocked. ASI is session-only; state resets on restart.
+
+```toml
+[llm.routing.asi]
+enabled             = false
+window_size         = 10      # Number of response embeddings to retain per provider (default: 10)
+coherence_threshold = 0.5     # Cosine similarity below which a warning is emitted (default: 0.5)
+penalty_weight      = 0.3     # Penalty multiplier applied to Thompson/EMA scores (default: 0.3)
+embedding_provider  = ""      # Provider name for response embeddings; empty = primary
+```
+
+`coherence_threshold` emits a `tracing::warn` when the rolling mean falls below it. Low coherence indicates the provider is producing inconsistent or off-topic responses for the current workload.
+
+> [!NOTE]
+> ASI coherence does not apply to Cascade or Bandit routing — those strategies have their own quality signals.
+
+## Unified Quality Gate
+
+The quality gate adds an optional post-selection embedding similarity check that applies to Thompson and EMA strategies. After a provider is selected and returns a response, the query embedding and response embedding are compared with cosine similarity. If the score falls below `quality_gate`, the next provider in the ordered list is tried. On full exhaustion the best response seen is returned — the gate is fail-open.
+
+```toml
+[llm.routing]
+quality_gate = 0.75    # Cosine threshold for response quality (0.0 = disabled, default: 0.0)
+```
+
+Embed errors on either side cause the quality check to be skipped (fail-open). The check does not apply when only one provider is configured.
 
 ## Known Limitations
 

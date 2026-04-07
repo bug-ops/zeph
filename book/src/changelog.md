@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.5] - 2026-04-07
+
+### Added
+
+- **Per-provider cost breakdown** — `CostTracker` now accumulates per-provider token counts (input, cache read/write, output) and cost. The `/status` CLI command and TUI `/cost` view render a per-provider table sorted by cost. See [Observability & Cost](advanced/observability.md#per-provider-cost-breakdown).
+- **ASI coherence tracking** — per-provider sliding window of response embeddings penalizes Thompson/EMA routing when coherence drops. Enabled via `[llm.routing.asi]`. See [Adaptive Inference](advanced/adaptive-inference.md#asi-coherence-tracking).
+- **Unified quality gate** — optional post-selection embedding similarity check via `[llm.routing] quality_gate`. See [Adaptive Inference](advanced/adaptive-inference.md#unified-quality-gate).
+- **Time-based microcompact** — stale low-value tool outputs are cleared after an idle gap, at zero LLM cost. Configurable via `[memory.microcompact]`. See [Memory & Context](concepts/memory.md#time-based-microcompact).
+- **autoDream background consolidation** — post-session memory consolidation sweep behind a session-count and time gate. Configurable via `[memory.autodream]`. See [Memory & Context](concepts/memory.md#autodream-background-consolidation).
+- **MagicDocs auto-maintained markdown** — files with `# MAGIC DOC:` header are rewritten after tool-call turns by a background LLM task. Configurable via `[magic_docs]`. See [Memory & Context](concepts/memory.md#magicdocs--auto-maintained-markdown).
+- **Key facts semantic dedup** — near-duplicate `key_facts` are silently skipped before Qdrant insertion. Configurable via `memory.key_facts_dedup_threshold`. See [Memory & Context](concepts/memory.md#key-facts-semantic-dedup).
+- **MCP error codes** — `McpErrorCode` enum with `is_retryable()` for caller-side retry classification. See [Tool System](advanced/tools.md#mcp-error-codes).
+- **Caller identity propagation** — `ToolCall.caller_id` and `AuditEntry.policy_match` are now populated from the channel layer. See [Tool System](advanced/tools.md#caller-identity-propagation).
+- **Per-session tool call quota** — `tools.max_tool_calls_per_session` limits tool executions per session. See [Tool System](advanced/tools.md#per-session-tool-call-quota).
+- **OAP authorization config** — `[tools.authorization]` TOML section merges rules into `PolicyEnforcer` at startup. See [Policy Enforcer](advanced/policy-enforcer.md#oap-authorization-config).
+- **Scheduler CLI subcommand** — `zeph schedule list/add/remove/show` for managing jobs outside an agent session. See [Scheduler](concepts/scheduler.md#cli-subcommand).
+
+### Fixed
+
+- `spawn_asi_update` debounce — exactly one embed call per agent turn instead of N concurrent sub-calls.
+- `MagicDocs` scan now detects `ToolOutput` in `Role::User` messages and `ToolResult` in the native execution path.
+- Filter policy-decision language from `key_facts` at store time — transient enforcement facts (`"blocked"`, `"permission denied"`, etc.) are no longer embedded.
+- Compaction failure is now surfaced as a user-visible message instead of a silent `tracing::warn`.
+- MCP manager shuts down explicitly before runtime exit, killing stdio child processes cleanly.
+- BPE tokenizer data is cached in a `OnceLock`, eliminating repeated disk loads on `TokenCounter` construction.
+- Unbounded RSS growth in TUI mode: cancel bridge tasks, message buffer, URL set, and scheduler tick storm all addressed.
+
 ## [0.17.1] - 2026-03-27
 
 ### Added

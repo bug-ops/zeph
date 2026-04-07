@@ -83,6 +83,44 @@ Natural language registration:
 - Task fires by injecting into agent `message_queue` — never calls agent methods directly
 - Task persists across restarts (SQLite)
 
+## Scheduler CLI Subcommand
+> **Status**: Implemented. Closes #2701. Feature-gated under `scheduler`.
+
+New `zeph schedule` subcommand with four sub-commands:
+
+| Sub-command | Action |
+|-------------|--------|
+| `zeph schedule list` | Table of all active jobs |
+| `zeph schedule add <cron> <prompt>` | INSERT new job (fails on duplicate name) |
+| `zeph schedule remove <name>` | Delete job by name |
+| `zeph schedule show <name>` | Full details including stored prompt |
+
+`add` auto-generates job names from a blake3 hash of the prompt when `--name` is not given. Returns `SchedulerError::DuplicateJob` (instead of upsert) to prevent accidental overwrites.
+
+Migration `072_scheduler_task_data` adds `task_data TEXT NOT NULL DEFAULT ''` to `scheduled_jobs` in both SQLite and Postgres. `JobStore` gains `insert_job` (INSERT without ON CONFLICT). `ScheduledTaskInfo` includes `task_data`.
+
+### New Error Variant
+```rust
+SchedulerError::DuplicateJob(String)   // returned by insert_job when name already exists
+```
+
+### Key Invariants
+- `insert_job` uses `INSERT` without `ON CONFLICT` — duplicate job name is always an error
+- `SchedulerError::DuplicateJob` must be surfaced to the user with a clear message
+- `task_data` stores the natural-language prompt for jobs created via CLI or the `scheduler` tool
+
+---
+
+## Tick Loop MissedTickBehavior
+> **Status**: Implemented. Closes #2737.
+
+Both `Scheduler::run_with_interval` and `Scheduler::run` set `MissedTickBehavior::Skip` on their `tokio::time::Interval`. The default `Burst` mode caused hundreds of back-to-back ticks per second when `tick()` took longer than the interval.
+
+### Key Invariant
+- ALWAYS use `MissedTickBehavior::Skip` on scheduler intervals — `Burst` is a correctness hazard for tick-sensitive scheduling logic
+
+---
+
 ## Key Invariants
 
 - `init()` must compute and persist `next_run` for all periodic tasks before first tick

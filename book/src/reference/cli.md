@@ -90,12 +90,14 @@ zeph skill remove my-skill
 
 ### `zeph memory`
 
-Export and import conversation history as portable JSON snapshots.
+Manage conversation history and advanced memory subsystems.
 
 | Subcommand | Description |
 |------------|-------------|
 | `memory export <path>` | Export all conversations, messages, and summaries to a JSON file |
 | `memory import <path>` | Import a snapshot file into the local database (duplicates are skipped) |
+| `memory trajectory` | List trajectory memory entries (procedural and episodic) for the current conversation (requires `[memory.trajectory] enabled = true`) |
+| `memory tree` | Show TiMem memory tree nodes and consolidation statistics (requires `[memory.tree] enabled = true`) |
 
 ```bash
 # Back up all conversation data
@@ -103,6 +105,12 @@ zeph memory export backup.json
 
 # Restore on another machine
 zeph memory import backup.json
+
+# Inspect trajectory entries
+zeph memory trajectory
+
+# Inspect memory tree state
+zeph memory tree
 ```
 
 The snapshot format is versioned (currently v1). Import uses `INSERT OR IGNORE` — re-importing the same file is safe and skips existing records.

@@ -602,6 +602,68 @@ The taxonomy enforces a hard split:
 - **Infrastructure failures** (`RateLimited`, `ServerError`, `NetworkError`, `Timeout`) are never quality failures. They must not trigger self-reflection — the failure is not attributable to LLM output.
 - **Quality failures** (`InvalidParameters`, `TypeMismatch`, `ToolNotFound`) indicate the LLM produced incorrect tool invocations. A single parameter-reformat attempt is made before the failure is final.
 
+## MCP Error Codes
+
+`McpErrorCode` classifies MCP tool call failures for caller-side retry decisions without requiring string parsing:
+
+| Code | `is_retryable()` | Description |
+|------|-----------------|-------------|
+| `Transient` | `true` | Temporary failure; retry is likely to succeed |
+| `RateLimited` | `true` | Server-side rate limit; back off before retrying |
+| `InvalidInput` | `false` | Bad parameters; retry without input change would fail |
+| `AuthFailure` | `false` | Authentication or authorization failure |
+| `ServerError` | `true` | Internal server error; may succeed on retry |
+| `NotFound` | `false` | Tool or resource does not exist |
+| `PolicyBlocked` | `false` | Blocked by local policy enforcer |
+
+`McpError::ToolCall` carries a `code: McpErrorCode` field. `McpError::code()` maps all error variants to typed codes.
+
+## Caller Identity Propagation
+
+Every tool call carries an optional `caller_id: Option<String>` field that is populated from the channel layer (e.g. Telegram user ID, ACP session ID) and propagated to the audit log. `AuditEntry` gains two additional fields:
+
+| Field | Description |
+|-------|-------------|
+| `caller_id` | Opaque identifier of the invoking principal; `null` for CLI sessions |
+| `policy_match` | The `PolicyDecision::trace` from the allow/deny decision; `null` when no policy matched |
+
+Both fields are omitted from the JSON audit log when `null`.
+
+## Per-Session Tool Call Quota
+
+Limit the total number of tool executions per session to prevent runaway agent loops or cost overruns.
+
+```toml
+[tools]
+max_tool_calls_per_session = 50   # Maximum tool calls allowed per session (default: unset = unlimited)
+```
+
+The counter increments once per logical batch (not per retry). When the quota is exhausted, all calls in the batch return a synthetic `quota_blocked` error without executing. The counter resets when the user runs `/clear`.
+
+## OAP Authorization Config
+
+In addition to the declarative `[tools.policy]` rules, a supplementary authorization layer can be configured via `[tools.authorization]`. Rules from this section are merged into `PolicyEnforcer` after the `policy.rules` entries (policy takes precedence — first-match-wins).
+
+```toml
+[tools.authorization]
+enabled = true
+
+[[tools.authorization.rules]]
+effect = "deny"
+tool   = "bash"
+args_match = ".*sudo.*"
+
+[[tools.authorization.rules]]
+effect = "allow"
+tool   = "read"
+paths  = ["/home/*"]
+```
+
+`PolicyRuleConfig` accepts the same fields as `[[tools.policy.rules]]` (see [Policy Enforcer](policy-enforcer.md)). A `capabilities` field is reserved for future use when tools expose capability metadata.
+
+> [!NOTE]
+> `[tools.authorization]` requires the `policy-enforcer` feature. It is disabled by default even when the feature is compiled in.
+
 ## Anomaly detection
 
 `AnomalyDetector` monitors tool failure rates in a sliding window. When the fraction of failed executions in the last `window_size` calls exceeds `failure_threshold`, a `Severity::Critical` alert is raised and the tool is automatically blocked via the trust system — no manual intervention required.

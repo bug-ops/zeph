@@ -233,6 +233,20 @@ ibct_key_rotation_secs = 3600
 
 ---
 
+## OAP: Declarative Authorization Layer
+> **Status**: Implemented. Closes #2406. See also `006-tools/spec.md`.
+
+`[tools.authorization]` TOML section provides a second policy layer that layers on top of `[tools.policy]`. Rules use the same `PolicyRuleConfig` format. At startup they are merged into `PolicyEnforcer` after `policy.rules` so that safety deny-rules always take precedence (first-match-wins).
+
+`PolicyRuleConfig` gains a `capabilities: Vec<String>` field for future capability-based matching; capability matching is deferred until tools expose capability metadata.
+
+### Key Invariants
+- `[tools.policy]` rules evaluate first — `[tools.authorization]` rules can only narrow, never override policy denies
+- `enabled = false` means authorization rules are never loaded — zero performance cost when disabled
+- Policy audit trail includes `policy_match` field from `PolicyDecision::trace` on every allow/deny
+
+---
+
 ## Credential Env Var Scrubbing
 > **Status**: Implemented. Closes #2449, #2446.
 

@@ -52,6 +52,23 @@ Budget resets at UTC midnight. When `max_daily_cents` is reached, LLM calls are 
 
 Current spend is exposed as `cost_spent_cents` in `MetricsSnapshot` and visible in the TUI dashboard.
 
+### Per-Provider Cost Breakdown
+
+`CostTracker` records token usage per provider name alongside the aggregate totals. Cache pricing is applied automatically per provider type (Claude: cache read = 10% of prompt, cache write = 125%; OpenAI: cache read = 50%; others: 0%).
+
+The `/status` CLI command renders a per-provider table when cost tracking is enabled:
+
+```
+Provider         Input    Cache R   Cache W   Output    Cost ($)   Reqs
+─────────────────────────────────────────────────────────────────────────
+claude           12 500      4 200     1 100    3 200    0.0043      8
+openai            5 000      2 000         0    1 500    0.0012      3
+```
+
+The same table is available in the TUI via the `/cost` command. Providers are sorted by cost descending. The breakdown resets alongside the daily spending total at UTC midnight.
+
+`MetricsSnapshot.provider_cost_breakdown` exposes the per-provider data for programmatic access.
+
 ### Token Counting
 
 Completion token counts use the `output_tokens` field from the API response (OpenAI, Ollama, and Compatible providers). Streaming paths retain a byte-length heuristic (`response.len() / 4`) as a fallback when the provider returns no usage data. Structured-output calls (`chat_typed`) also record usage so `eval_budget_tokens` enforcement reflects real token counts.

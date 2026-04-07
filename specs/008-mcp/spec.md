@@ -379,6 +379,39 @@ When `env_isolation = true` for a server, the child process is spawned with an e
 
 ---
 
+## MCP Error Codes
+> **Status**: Implemented. Closes #2479.
+
+`McpErrorCode` enum in `crates/zeph-mcp/src/error.rs`:
+
+| Code | Retryable | Description |
+|------|-----------|-------------|
+| `Transient` | Yes | Retry likely to succeed |
+| `RateLimited` | Yes | Back off and retry |
+| `InvalidInput` | No | Do not retry without changing parameters |
+| `AuthFailure` | No | Re-authenticate or escalate |
+| `ServerError` | Yes | May be transient, retry with backoff |
+| `NotFound` | No | Resource or tool does not exist |
+| `PolicyBlocked` | No | Blocked by policy rules |
+
+`McpError::ToolCall` carries `code: McpErrorCode`. `McpError::code()` maps all variants to typed codes. Enables caller-side retry classification without string parsing.
+
+### Key Invariants
+- `is_retryable()` is the canonical check for retry decisions — never parse error message strings
+- `PolicyBlocked` is never retryable — policy decisions are not transient
+
+---
+
+## Caller Identity Propagation
+> **Status**: Implemented. Closes #2479.
+
+`ToolCall` gains `caller_id: Option<String>` — propagated from the channel layer to `AuditEntry`. `AuditEntry` records `caller_id` and `policy_match` fields (`skip_serializing_if = None`). Policy gate populates `policy_match` from `PolicyDecision::trace` on every allow/deny decision.
+
+### Key Invariant
+- `caller_id` is set at the channel layer, not inside tool executors — never synthesize it from tool context
+
+---
+
 ## Intent-Anchor Nonce Wrapper
 >  **Status**: Implemented.
 

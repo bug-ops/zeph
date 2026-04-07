@@ -651,6 +651,207 @@ density_baseline_tokens = 200    # baseline token count used for budget normaliz
 
 ---
 
+## Persona Memory Layer
+> **Status**: Implemented. Closes #2461. Migration 066.
+
+`crates/zeph-memory/src/semantic/persona.rs` — fourth memory tier. User attributes (preferences, domain knowledge, working style, communication style, background) are extracted from conversation history via a cheap LLM provider and injected into context assembly immediately after the system prompt.
+
+Extraction uses a self-referential language heuristic gate to avoid unnecessary LLM calls. Contradictory facts are resolved via `supersedes_id` FK: the extraction LLM classifies extracted facts as NEW or UPDATE and marks older conflicting facts as superseded so they are excluded from context.
+
+### Config
+```toml
+[memory.persona]
+enabled = false
+persona_provider = ""          # cheap/fast model; falls back to primary when empty
+min_confidence = 0.6           # minimum confidence for facts included in context
+min_messages = 3               # minimum user messages before extraction runs
+max_messages = 10              # maximum messages per extraction pass
+extraction_timeout_secs = 10
+context_budget_tokens = 500
+```
+
+### Key Invariants
+- Persona extraction is fire-and-forget (`tokio::spawn`) — never block the agent turn
+- `supersedes_id` FK marks superseded facts so they are excluded from context injection
+- Facts with `source_conversation_id` pointing to a deleted conversation are stored with `NULL` provenance — fact is preserved, provenance link is dropped
+- NEVER inject superseded facts into context
+
+---
+
+## Multi-Agent Memory Consistency
+> **Status**: Implemented. Closes #2478. Migrations 067–068.
+
+### Write Buffer
+Session-scoped `WriteBuffer` batches memory writes per turn into a single `BEGIN IMMEDIATE` SQLite transaction, reducing lock contention.
+
+### Advisory Entity Locking
+`entity_advisory_locks` table (migration 067) with 120s TTL and `extend_lock()` method prevents duplicate entity resolution when concurrent sessions run.
+
+### Epoch-Based Qdrant Invalidation
+`embedding_epoch` column (migration 068) detects stale embeddings via `EmbeddingStore::is_epoch_current()`.
+
+### Key Invariants
+- `WriteBuffer` uses `BEGIN IMMEDIATE` — prevents write-write conflicts from concurrent sessions
+- Advisory locks have a 120s TTL — never hold indefinitely
+- Epoch invalidation is lazy — stale embeddings are detected on read, not eagerly purged
+
+---
+
+## Trajectory-Informed Memory
+> **Status**: Implemented. Closes #2498. Migrations 069.
+
+`crates/zeph-memory/src/semantic/trajectory.rs` — after each agent turn containing tool calls, a fast LLM provider extracts procedural (reusable how-to patterns) and episodic (one-off event) entries. Entries are stored per-conversation in `trajectory_memory` / `trajectory_meta` tables. Top-k procedural entries above a confidence threshold are injected into context assembly as "past experience" hints.
+
+Extraction is fire-and-forget (`tokio::spawn`) — no latency added. Per-conversation watermarking via `trajectory_meta(conversation_id PK)` prevents duplicate extraction across concurrent sessions.
+
+CLI: `zeph memory trajectory`. TUI: `/memory trajectory`.
+
+### Config
+```toml
+[memory.trajectory]
+enabled = false
+trajectory_provider = ""       # fast/cheap model; falls back to primary when empty
+context_budget_tokens = 400
+max_messages = 10
+extraction_timeout_secs = 10
+recall_top_k = 5
+min_confidence = 0.6
+```
+
+### Key Invariants
+- Extraction is always fire-and-forget — never block the agent turn
+- Per-conversation watermarking via `trajectory_meta` prevents duplicate extraction
+- Only procedural entries are injected into context (not episodic)
+- `with_trajectory_config` must be called in all entry points (`runner.rs`, `acp.rs`, `daemon.rs`) — omission silently disables trajectory extraction
+
+---
+
+## Category-Aware Memory
+> **Status**: Implemented. Closes #2428. Migration 070.
+
+Nullable `category TEXT` column added to `messages` table with a partial index for filtered recall. `SearchFilter` gains an optional `category` field that adds a Qdrant `FieldCondition` when set. Auto-tagging from active skill/tool context via `save_message_with_category`.
+
+### Config
+```toml
+[memory.category]
+enabled = false
+auto_tag = true   # automatically assign category from skill/tool context
+```
+
+### Key Invariants
+- Category column is nullable — uncategorized messages are never excluded from recall
+- `auto_tag` uses skill metadata and tool type at write time — not re-tagged retroactively
+- `with_category_config` must be called in all entry points — omission silently disables auto-tagging
+
+---
+
+## TiMem: Temporal-Hierarchical Memory Tree
+> **Status**: Implemented. Closes #2262. Migration 071.
+
+`memory_tree` SQLite table stores leaf nodes at level 0 and LLM-merged summaries at higher levels. A background consolidation loop clusters unconsolidated leaf nodes by cosine similarity and merges each cluster into a parent node via LLM summarization. Each cluster merge runs in its own SQLite transaction (prevents `SQLITE_BUSY` contention). Traversal from leaf to root via `traverse_tree_up`.
+
+CLI: `zeph memory tree`. TUI: `/memory tree`.
+
+### Config
+```toml
+[memory.tree]
+enabled = false
+consolidation_provider = ""    # fast/cheap model; falls back to primary when empty
+sweep_interval_secs = 300
+batch_size = 20
+similarity_threshold = 0.8
+max_level = 3
+min_cluster_size = 2
+recall_top_k = 5
+context_budget_tokens = 400
+```
+
+### Key Invariants
+- Background consolidation loop runs in a separate tokio task — never blocks agent turns
+- Each cluster merge is its own SQLite transaction — prevents `SQLITE_BUSY` under concurrent writes
+- `max_level` caps tree depth — never create nodes above this level
+- NEVER merge two tree nodes once created; create a new higher-level parent node instead
+
+---
+
+## Key Facts Semantic Dedup
+> **Status**: Implemented. Closes #2717.
+
+`store_key_facts` checks for near-duplicate entries before inserting into `zeph_key_facts`. Before each insert, the fact's embedding vector queries the collection for the top-1 nearest neighbour; if the best cosine score is >= `key_facts_dedup_threshold` the fact is silently skipped.
+
+Dedup is fail-open: a search error causes the fact to be stored, not dropped.
+
+### Config
+```toml
+[memory]
+key_facts_dedup_threshold = 0.95   # cosine threshold for considering a fact a duplicate
+```
+
+### Key Invariants
+- Dedup check runs before every insert — never skip
+- A search error means the fact is stored (fail-open) — dedup failure must not lose data
+- Policy-decision facts (containing `"blocked"`, `"skipped"`, `"cannot access"`, `"permission denied"`, etc.) are filtered at store time before dedup check — they are never stored
+
+---
+
+## Policy-Decision Fact Filtering
+> **Status**: Implemented. Closes #2724.
+
+`is_policy_decision_fact()` performs case-insensitive substring matching. Facts containing transient enforcement language are rejected before embedding and Qdrant insertion. Prevents the agent from believing previously-blocked tool calls are permanently unavailable.
+
+Blocked terms include: `"blocked"`, `"skipped"`, `"cannot access"`, `"permission denied"`.
+
+### Key Invariant
+- Filter runs before embedding and dedup — no policy-decision fact ever reaches Qdrant
+
+---
+
+## Time-Based Microcompact
+> **Status**: Implemented. Closes #2699.
+
+After an idle gap exceeding `gap_threshold_minutes`, stale low-value tool outputs (`bash`, `shell`, `grep`, `read`, `web_fetch`, etc.) are stripped in-place from the context window and replaced with a `[cleared — stale tool output after Xmin idle]` sentinel. Zero LLM cost — purely in-memory. Wired to `advance_context_lifecycle()`.
+
+A cache-expiry warning is also emitted before the next LLM turn when `microcompact.enabled` and the gap threshold passes: `"Cache expired (~N tokens will be sent uncached on next turn)"`. Uses `providers.cached_prompt_tokens` when non-zero; falls back to a generic message.
+
+### Config
+```toml
+[memory.microcompact]
+enabled = false
+gap_threshold_minutes = 60   # minimum idle gap before clearing stale tool outputs
+keep_recent = 3               # most recent compactable tool messages to preserve
+```
+
+### Key Invariants
+- Microcompact is always in-memory — zero LLM cost, zero persistence
+- `keep_recent` most-recent compactable tool messages are always preserved
+- Cache-expiry warning reuses `microcompact.enabled` and `gap_threshold_minutes` — no separate config
+- NEVER microcompact `focus_pinned` messages
+
+---
+
+## autoDream Background Memory Consolidation
+> **Status**: Implemented. Closes #2697.
+
+Post-session hook that runs `zeph_memory::run_consolidation_sweep()` in the background when both a session-count gate (`min_sessions`) and a time gate (`min_hours`) pass. Uses a configurable `consolidation_provider`. Bounded by `max_iterations * 30s` timeout. State is in-process only (resets on restart).
+
+### Config
+```toml
+[memory.autodream]
+enabled = false
+min_sessions = 3              # minimum sessions between consolidations
+min_hours = 24                # minimum hours between consolidations
+consolidation_provider = ""   # falls back to primary when empty
+max_iterations = 8            # agent loop iterations for consolidation subagent
+```
+
+### Key Invariants
+- autoDream runs only after the agent loop exits — never during an active session
+- State is session-only (`AutoDreamState`) — both gates reset on process restart
+- Consolidation is bounded by `max_iterations * 30s` timeout — never runs indefinitely
+- NEVER block session startup or shutdown on autoDream consolidation
+
+---
+
 ## SleepGate Forgetting Pass
 > **Status**: Implemented. Closes #2614.
 

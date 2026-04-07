@@ -14,7 +14,7 @@ See `constitution.md` for project-wide non-negotiable rules.
 
 | Doc | Contents | Crate |
 |---|---|---|
-| `002-agent-loop/spec.md` | Agent loop, turn lifecycle, context pressure, HiAgent subgoal-aware compaction | `zeph-core` |
+| `002-agent-loop/spec.md` | Agent loop, turn lifecycle, context pressure, HiAgent subgoal-aware compaction, MagicDocs auto-maintained markdown | `zeph-core` |
 | `027-runtime-layer/spec.md` | RuntimeLayer middleware — before/after chat and tool hooks, catch_unwind guard | `zeph-core` |
 | `028-hooks/spec.md` | Reactive hooks: cwd_changed / file_changed events, FileChangeWatcher, ZEPH_* env vars | `zeph-core` |
 | `020-config-loading/spec.md` | Config resolution order, mode-agnostic defaults | `zeph-core` |
@@ -23,17 +23,17 @@ See `constitution.md` for project-wide non-negotiable rules.
 
 | Doc | Contents | Crate |
 |---|---|---|
-| `003-llm-providers/spec.md` | LlmProvider trait, AnyProvider, prompt caching | `zeph-llm` |
+| `003-llm-providers/spec.md` | LlmProvider trait, AnyProvider, prompt caching, ASI coherence tracking, quality gate, per-provider cost breakdown | `zeph-llm` |
 | `022-config-simplification/spec.md` | Provider Registry Architecture: [[llm.providers]], PILOT LinUCB bandit routing, BaRP, MAR | `zeph-config`, `zeph-core` |
 | `023-complexity-triage-routing/spec.md` | Pre-inference complexity classification: ComplexityTier, TriageRouter, context escalation | `zeph-llm`, `zeph-config` |
-| `024-multi-model-design/spec.md` | Multi-model design principle: complexity tiers, *_provider subsystem reference pattern | cross-cutting |
+| `024-multi-model-design/spec.md` | Multi-model design principle: complexity tiers, *_provider subsystem reference pattern (19 subsystems) | cross-cutting |
 | `025-classifiers/spec.md` | Candle ML classifiers: injection detection, PII detection, LlmClassifier for feedback | `zeph-classifiers` |
 
 ## Memory
 
 | Doc | Contents | Crate |
 |---|---|---|
-| `004-memory/spec.md` | SQLite + Qdrant, compaction, A-MAC, MemScene, Kumiho, D-MEM, CraniMem, ACON, AsyncMemoryRouter, multi-vector chunking, GAAMA, BATS, Focus compression, SleepGate | `zeph-memory` |
+| `004-memory/spec.md` | SQLite + Qdrant, compaction, A-MAC, MemScene, Kumiho, D-MEM, CraniMem, ACON, AsyncMemoryRouter, multi-vector chunking, GAAMA, BATS, Focus compression, SleepGate, persona memory, trajectory memory, category memory, TiMem memory tree, key facts dedup, microcompact, autoDream, multi-agent consistency | `zeph-memory` |
 | `012-graph-memory/spec.md` | Entity graph, BFS recall, community detection, MAGMA typed edges, SYNAPSE spreading activation | `zeph-memory` |
 | `database-abstraction/spec.md` | PostgreSQL backend: zeph-db crate, DatabaseDriver trait, Dialect trait, sql!() macro, migrations | `zeph-db` |
 
@@ -48,7 +48,7 @@ See `constitution.md` for project-wide non-negotiable rules.
 
 | Doc | Contents | Crate |
 |---|---|---|
-| `006-tools/spec.md` | ToolExecutor, CompositeExecutor, TAFC, utility gate, adversarial policy gate, shell sandbox, file read sandbox, tool invocation phase taxonomy | `zeph-tools` |
+| `006-tools/spec.md` | ToolExecutor, CompositeExecutor, TAFC, utility gate, adversarial policy gate, shell sandbox, file read sandbox, tool invocation phase taxonomy, per-session quota, OAP authorization | `zeph-tools` |
 | `016-output-filtering/spec.md` | FilterPipeline, CommandMatcher, SecurityPatterns | `zeph-tools` |
 
 ## Channels & I/O
@@ -59,13 +59,13 @@ See `constitution.md` for project-wide non-negotiable rules.
 | `011-tui/spec.md` | ratatui dashboard, spinner rule, TuiChannel | `zeph-tui` |
 | `026-tui-subagent-management/spec.md` | Interactive TUI subagent sidebar, j/k navigation, JSONL transcript viewer | `zeph-tui` |
 | `019-gateway/spec.md` | HTTP webhook ingestion, bearer auth | `zeph-gateway` |
-| `018-scheduler/spec.md` | Cron scheduler, SQLite persistence | `zeph-scheduler` |
+| `018-scheduler/spec.md` | Cron scheduler, SQLite persistence, CLI subcommand, MissedTickBehavior::Skip | `zeph-scheduler` |
 
 ## Protocols
 
 | Doc | Contents | Crate |
 |---|---|---|
-| `008-mcp/spec.md` | MCP client, server lifecycle, semantic tool discovery, elicitation, tool collision detection, intent-anchor nonce | `zeph-mcp` |
+| `008-mcp/spec.md` | MCP client, server lifecycle, semantic tool discovery, elicitation, tool collision detection, intent-anchor nonce, MCP error codes, caller identity propagation | `zeph-mcp` |
 | `013-acp/spec.md` | ACP transports, sessions, permissions, fork/resume, capability advertisement, /agent.json | `zeph-acp` |
 | `014-a2a/spec.md` | A2A protocol, agent discovery, JSON-RPC 2.0, IBCT tokens | `zeph-a2a` |
 | `handoff-skill-system/spec.md` | Skill-based YAML handoff protocol for inter-agent communication | `zeph-orchestration` |
@@ -81,7 +81,7 @@ See `constitution.md` for project-wide non-negotiable rules.
 
 | Doc | Contents | Crate |
 |---|---|---|
-| `010-security/spec.md` | Vault, shell sandbox, content isolation, SSRF, IPI defense, PII NER, cross-tool injection correlation, AgentRFC audit, IBCT, credential scrubbing | cross-cutting |
+| `010-security/spec.md` | Vault, shell sandbox, content isolation, SSRF, IPI defense, PII NER, cross-tool injection correlation, AgentRFC audit, IBCT, credential scrubbing, OAP declarative authorization | cross-cutting |
 
 ## Code Intelligence
 

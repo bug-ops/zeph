@@ -156,6 +156,30 @@ enabled = true
 destination = ".zeph/audit.jsonl"
 ```
 
+## OAP Authorization Config
+
+A separate `[tools.authorization]` section provides a supplementary authorization layer that sits alongside the policy enforcer. Unlike the inline `[[tools.policy.rules]]`, authorization rules are merged into `PolicyEnforcer` at startup after policy rules (policy takes precedence). This lets you split operational rules (in `[tools.policy]`) from access-control rules (in `[tools.authorization]`) across different config files or config management systems.
+
+```toml
+[tools.authorization]
+enabled = true
+
+[[tools.authorization.rules]]
+effect    = "deny"
+tool      = "bash"
+args_match = ".*sudo.*"
+
+[[tools.authorization.rules]]
+effect = "allow"
+tool   = "read"
+paths  = ["/home/user/*"]
+```
+
+Rule fields are identical to `[[tools.policy.rules]]`. The `capabilities` field on `PolicyRuleConfig` is reserved for future use when tools expose structured capability metadata (M4).
+
+> [!NOTE]
+> Authorization rules do not replace policy rules — they extend them. The wiring order is: `[tools.policy.rules]` first, then `[tools.authorization.rules]`. First-match-wins semantics apply across the merged set.
+
 ## Migrate Config
 
 When upgrading from a config that predates policy enforcer support, run:

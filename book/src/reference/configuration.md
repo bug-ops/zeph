@@ -156,6 +156,17 @@ correction_min_similarity = 0.75      # Min cosine similarity for correction rec
 # max_cascade_tokens = 0              # Cumulative token cap across escalation levels; 0 = unlimited
 # cost_tiers = ["ollama", "claude"]   # Explicit cost ordering (cheapest first)
 
+# Quality gate for Thompson/EMA routing — post-selection embedding similarity check.
+# quality_gate = 0.0    # Cosine threshold; 0.0 = disabled (default: 0.0). Applies to thompson/ema only.
+
+# ASI coherence tracking — penalizes providers with low response coherence.
+# [llm.routing.asi]
+# enabled             = false
+# window_size         = 10      # Sliding window of response embeddings per provider (default: 10)
+# coherence_threshold = 0.5     # Warn when rolling mean drops below this (default: 0.5)
+# penalty_weight      = 0.3     # Multiplier applied to Thompson/EMA scores (default: 0.3)
+# embedding_provider  = ""      # Provider name for response embeddings; empty = primary
+
 # Complexity triage routing options (when routing = "triage").
 # [llm.complexity_routing]
 # triage_provider = "fast"            # Provider name used for classification (required)
@@ -273,6 +284,58 @@ redact_credentials = true     # Scrub credential patterns from LLM context (defa
 autosave_assistant = false    # Persist assistant responses to SQLite and embed (default: false)
 autosave_min_length = 20      # Min content length for assistant embedding (default: 20)
 tool_call_cutoff = 6          # Summarize oldest tool pair when visible pairs exceed this (default: 6)
+# key_facts_dedup_threshold = 0.95  # Cosine similarity threshold for near-duplicate key_facts suppression (default: 0.95)
+
+# Persona memory — extract and inject stable user preference and domain facts.
+# [memory.persona]
+# enabled                 = false
+# persona_provider        = "fast"   # cheap extraction model; falls back to primary
+# min_confidence          = 0.6      # facts below this are discarded (default: 0.6)
+# min_messages            = 3        # minimum user messages before first extraction (default: 3)
+# max_messages            = 10       # messages fed to LLM per extraction pass (default: 10)
+# extraction_timeout_secs = 10       # timeout for extraction LLM call (default: 10)
+# context_budget_tokens   = 500      # token budget for injected persona facts (default: 500)
+
+# Trajectory memory — extract procedural/episodic entries from tool-call turns.
+# [memory.trajectory]
+# enabled                 = false
+# trajectory_provider     = "fast"   # cheap extraction model; falls back to primary
+# context_budget_tokens   = 400      # token budget for injected trajectory hints (default: 400)
+# recall_top_k            = 5        # procedural entries retrieved per turn (default: 5)
+# min_confidence          = 0.6      # entries below this are discarded (default: 0.6)
+# max_messages            = 10       # messages fed to LLM per extraction pass (default: 10)
+# extraction_timeout_secs = 10       # timeout for extraction LLM call (default: 10)
+
+# Category-aware memory — tag messages with a category from active skill/tool context.
+# [memory.category]
+# enabled  = false
+# auto_tag = true    # derive category from active skill or tool type automatically (default: true)
+
+# TiMem temporal-hierarchical memory tree — hierarchical summary consolidation.
+# [memory.tree]
+# enabled                = false
+# consolidation_provider = "fast"  # falls back to primary
+# sweep_interval_secs    = 300     # background consolidation interval (default: 300)
+# batch_size             = 20      # leaves processed per sweep (default: 20)
+# similarity_threshold   = 0.8     # cosine threshold for clustering (default: 0.8)
+# max_level              = 3       # maximum tree depth above leaves (default: 3)
+# context_budget_tokens  = 400     # token budget for tree traversal in context (default: 400)
+# recall_top_k           = 5       # nodes retrieved per turn (default: 5)
+# min_cluster_size       = 2       # minimum cluster size to trigger LLM consolidation (default: 2)
+
+# Time-based microcompact — clear stale low-value tool outputs after an idle gap.
+# [memory.microcompact]
+# enabled               = false
+# gap_threshold_minutes = 60   # idle gap in minutes before clearing stale outputs (default: 60)
+# keep_recent           = 3    # most recent low-value tool outputs to preserve (default: 3)
+
+# autoDream — background memory consolidation after session-count and time gates pass.
+# [memory.autodream]
+# enabled                = false
+# min_sessions           = 3     # sessions since last consolidation (default: 3)
+# min_hours              = 24    # hours since last consolidation (default: 24)
+# consolidation_provider = ""    # provider name; falls back to primary
+# max_iterations         = 8     # safety bound for consolidation sweep (default: 8)
 
 [memory.semantic]
 enabled = false               # Enable semantic search via Qdrant
@@ -355,6 +418,7 @@ edge_history_limit = 100               # Max historical edge versions per source
 [tools]
 enabled = true
 summarize_output = false      # LLM-based summarization for long tool outputs
+# max_tool_calls_per_session = 50  # Hard cap on tool executions per session; resets on /clear (default: unset = unlimited)
 
 [tools.shell]
 timeout = 30
@@ -431,6 +495,21 @@ enabled = true              # Enable smart output filtering for tool results
 # tool = "shell"
 # paths = ["/tmp/*"]
 
+# Supplementary OAP authorization layer (requires policy-enforcer feature).
+# Rules are merged into PolicyEnforcer after [tools.policy.rules] (policy takes precedence).
+# [tools.authorization]
+# enabled = false            # Enable OAP authorization (default: false)
+#
+# [[tools.authorization.rules]]
+# effect    = "deny"         # "allow" or "deny"
+# tool      = "bash"         # Glob pattern for tool name
+# args_match = ".*sudo.*"   # Optional: regex matched against string param values
+#
+# [[tools.authorization.rules]]
+# effect = "allow"
+# tool   = "read"
+# paths  = ["/home/*"]
+
 [tools.result_cache]
 # enabled = true             # Enable tool result caching (default: true)
 # ttl_secs = 300             # Cache entry lifetime in seconds, 0 = no expiry (default: 300)
@@ -454,6 +533,13 @@ retention_days = 7          # Days to retain overflow entries before age-based c
 [tools.audit]
 enabled = false             # Structured JSON audit log for tool executions
 destination = "stdout"      # "stdout" or file path
+
+# MagicDocs — auto-maintained markdown files with a "# MAGIC DOC:" header.
+# [magic_docs]
+# enabled                   = false
+# min_turns_between_updates = 5    # turns between updates for the same file (default: 5)
+# update_provider           = ""   # provider name; falls back to primary
+# max_iterations            = 4    # max iterations per update LLM call (default: 4)
 
 [security]
 redact_secrets = true       # Redact API keys/tokens in LLM responses

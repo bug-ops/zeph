@@ -493,6 +493,17 @@ extraction_timeout_secs = 10
 context_budget_tokens   = 500
 ```
 
+## Key Facts Semantic Dedup
+
+When storing key facts via `memory_save`, Zeph can skip near-duplicate entries that are already present in the Qdrant collection. Before each insert, the new fact's embedding is compared to the nearest neighbour in `zeph_key_facts`. If the cosine similarity is at or above `key_facts_dedup_threshold`, the fact is silently discarded. This prevents the key-facts collection from accumulating paraphrased versions of the same information.
+
+The check is fail-open: if the similarity search returns an error, the fact is stored rather than dropped.
+
+```toml
+[memory]
+key_facts_dedup_threshold = 0.95   # Cosine similarity above which a near-duplicate is suppressed (default: 0.95)
+```
+
 ## Trajectory Memory
 
 Trajectory memory captures procedural ("how to do X") and episodic ("what happened in turn N") entries from tool-call turns. Procedural entries are injected as "past experience" during context assembly, helping the agent reuse successful tool patterns across sessions.
@@ -573,8 +584,10 @@ Updates run every `min_turns_between_updates` tool-call turns. Only one backgrou
 
 To mark a file as auto-maintained, add `# MAGIC DOC: <description>` as the first line.
 
+When MagicDocs is enabled, the file-read tools (`read`, `file_read`, `cat`, `view`, `open`) are automatically added to `utility_scorer.exempt_tools`, bypassing utility scoring so the files are always read and their content reaches the scanner. Any user-configured `exempt_tools` entries are preserved and merged.
+
 ```toml
-[memory.magic_docs]
+[magic_docs]
 enabled                   = false
 min_turns_between_updates = 5    # turns between updates for the same file
 update_provider           = ""   # provider name; falls back to primary
