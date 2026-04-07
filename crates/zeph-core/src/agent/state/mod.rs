@@ -12,6 +12,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use tokio::sync::{Notify, mpsc, watch};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::Message;
@@ -318,6 +319,9 @@ pub(crate) struct LifecycleState {
     pub(crate) start_time: Instant,
     pub(crate) cancel_signal: Arc<Notify>,
     pub(crate) cancel_token: CancellationToken,
+    /// Handle to the cancel bridge task spawned each turn. Aborted before a new one is created
+    /// to prevent unbounded task accumulation across turns.
+    pub(crate) cancel_bridge_handle: Option<JoinHandle<()>>,
     pub(crate) config_path: Option<PathBuf>,
     pub(crate) config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
     pub(crate) warmup_ready: Option<watch::Receiver<bool>>,

@@ -452,6 +452,7 @@ impl<C: Channel> Agent<C> {
                 start_time: Instant::now(),
                 cancel_signal: Arc::new(Notify::new()),
                 cancel_token: CancellationToken::new(),
+                cancel_bridge_handle: None,
                 config_path: None,
                 config_reload_rx: None,
                 warmup_ready: None,
@@ -1272,10 +1273,15 @@ impl<C: Channel> Agent<C> {
         self.lifecycle.cancel_token = CancellationToken::new();
         let signal = Arc::clone(&self.lifecycle.cancel_signal);
         let token = self.lifecycle.cancel_token.clone();
-        tokio::spawn(async move {
+        // Abort the previous cancel bridge task before spawning a new one to prevent
+        // unbounded task accumulation across turns (fix for #2737 leak 1).
+        if let Some(prev) = self.lifecycle.cancel_bridge_handle.take() {
+            prev.abort();
+        }
+        self.lifecycle.cancel_bridge_handle = Some(tokio::spawn(async move {
             signal.notified().await;
             token.cancel();
-        });
+        }));
         let trimmed = text.trim();
 
         if let Some(result) = self.dispatch_slash_command(trimmed).await {
@@ -1292,6 +1298,11 @@ impl<C: Channel> Agent<C> {
 
         let user_msg = self.build_user_message(&text, image_parts);
 
+        // Clear URLs from the previous turn before re-populating for this turn.
+        // The set is per-turn context; accumulating across turns causes unbounded growth (#2737).
+        if let Ok(mut set) = self.security.user_provided_urls.write() {
+            set.clear();
+        }
         // Extract URLs from user input and add to user_provided_urls for grounding checks.
         let urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
         if !urls.is_empty()

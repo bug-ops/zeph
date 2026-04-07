@@ -21,6 +21,13 @@ use crate::widgets::slash_autocomplete::{SlashAutocompleteState, command_id_to_s
 pub use crate::render_cache::{RenderCache, RenderCacheEntry, RenderCacheKey, content_hash};
 pub use crate::types::{ChatMessage, InputMode, MessageRole};
 
+/// Maximum number of chat messages retained in the TUI message buffer.
+/// Older messages are evicted from the front when the limit is exceeded (#2737).
+const MAX_TUI_MESSAGES: usize = 2000;
+
+/// Maximum number of input history entries retained in the TUI (#2737).
+const MAX_INPUT_HISTORY: usize = 500;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
     Chat,
@@ -314,6 +321,8 @@ impl App {
             }
             self.messages.push(ChatMessage::new(role, content));
         }
+        // Enforce the message buffer cap on initial history load as well.
+        self.trim_messages();
         if !self.messages.is_empty() {
             self.show_splash = false;
         }
@@ -532,6 +541,18 @@ impl App {
         }
     }
 
+    /// Evict oldest messages when the buffer exceeds `MAX_TUI_MESSAGES` (#2737).
+    ///
+    /// Render-cache indices shift after a drain, so the entire cache is cleared.
+    /// The cache is rebuilt on the next render — this is cheaper than re-indexing.
+    fn trim_messages(&mut self) {
+        if self.messages.len() > MAX_TUI_MESSAGES {
+            let excess = self.messages.len() - MAX_TUI_MESSAGES;
+            self.messages.drain(0..excess);
+            self.render_cache.clear();
+        }
+    }
+
     #[must_use]
     pub fn messages(&self) -> &[ChatMessage] {
         &self.messages
@@ -677,6 +698,7 @@ impl App {
                 } else {
                     self.messages
                         .push(ChatMessage::new(MessageRole::Assistant, text).streaming());
+                    self.trim_messages();
                 }
                 let last_idx = self.messages.len().saturating_sub(1);
                 self.render_cache.invalidate(last_idx);
@@ -687,6 +709,7 @@ impl App {
                 if !text.starts_with("[tool output") {
                     self.messages
                         .push(ChatMessage::new(MessageRole::Assistant, text));
+                    self.trim_messages();
                 }
                 self.auto_scroll();
             }
@@ -714,6 +737,7 @@ impl App {
                         .streaming()
                         .with_tool(tool_name),
                 );
+                self.trim_messages();
                 self.auto_scroll();
             }
             AgentEvent::ToolOutputChunk { chunk, .. } => {
@@ -765,6 +789,7 @@ impl App {
                 self.command_palette = None;
                 self.messages
                     .push(ChatMessage::new(MessageRole::System, output));
+                self.trim_messages();
                 self.auto_scroll();
             }
             AgentEvent::SetCancelSignal(signal) => {
@@ -829,6 +854,7 @@ impl App {
             msg.filter_stats = filter_stats;
             msg.kept_lines = kept_lines;
             self.messages.push(msg);
+            self.trim_messages();
         } else if let Some(msg) = self
             .messages
             .iter_mut()
@@ -1914,10 +1940,15 @@ impl App {
         }
         self.show_splash = false;
         self.input_history.push(text.clone());
+        if self.input_history.len() > MAX_INPUT_HISTORY {
+            let excess = self.input_history.len() - MAX_INPUT_HISTORY;
+            self.input_history.drain(0..excess);
+        }
         self.history_index = None;
         self.draft_input.clear();
         self.messages
             .push(ChatMessage::new(MessageRole::User, text.clone()));
+        self.trim_messages();
         self.input.clear();
         self.cursor_position = 0;
         self.scroll_offset = 0;
