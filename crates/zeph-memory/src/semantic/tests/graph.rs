@@ -328,6 +328,7 @@ async fn memory_with_in_memory_vector_store() -> (
         tier_boost_semantic: 1.3,
         admission_control: None,
         key_facts_dedup_threshold: 0.95,
+        embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     };
 
     (memory, embedding_store)

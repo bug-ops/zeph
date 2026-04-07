@@ -84,6 +84,208 @@ pub struct RecalledMessage {
     pub score: f32,
 }
 
+/// Maximum number of concurrent background embed tasks per `SemanticMemory` instance.
+const MAX_EMBED_BG_TASKS: usize = 64;
+
+/// Shared arguments for background embed tasks.
+struct EmbedBgArgs {
+    qdrant: std::sync::Arc<crate::embedding_store::EmbeddingStore>,
+    embed_provider: zeph_llm::any::AnyProvider,
+    embedding_model: String,
+    message_id: MessageId,
+    conversation_id: ConversationId,
+    role: String,
+    content: String,
+}
+
+/// Background task: embed chunks and store as regular message vectors.
+///
+/// All errors are logged as warnings; the function never panics.
+async fn embed_and_store_regular_bg(args: EmbedBgArgs) {
+    let EmbedBgArgs {
+        qdrant,
+        embed_provider,
+        embedding_model,
+        message_id,
+        conversation_id,
+        role,
+        content,
+    } = args;
+    let chunks = chunk_text(&content);
+    let chunk_count = chunks.len();
+
+    let vectors = match embed_provider.embed_batch(&chunks).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("bg embed_regular: failed to embed chunks for msg {message_id}: {e:#}");
+            return;
+        }
+    };
+
+    let Some(first) = vectors.first() else {
+        return;
+    };
+    let vector_size = first.len() as u64;
+    if let Err(e) = qdrant.ensure_collection(vector_size).await {
+        tracing::warn!("bg embed_regular: failed to ensure Qdrant collection: {e:#}");
+        return;
+    }
+
+    for (chunk_index, vector) in vectors.into_iter().enumerate() {
+        let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
+        if let Err(e) = qdrant
+            .store(
+                message_id,
+                conversation_id,
+                &role,
+                vector,
+                MessageKind::Regular,
+                &embedding_model,
+                chunk_index_u32,
+            )
+            .await
+        {
+            tracing::warn!(
+                "bg embed_regular: failed to store chunk {chunk_index}/{chunk_count} \
+                 for msg {message_id}: {e:#}"
+            );
+        }
+    }
+}
+
+/// Background task: embed chunks with tool context metadata and store in Qdrant.
+///
+/// All errors are logged as warnings; the function never panics.
+async fn embed_chunks_with_tool_context_bg(args: EmbedBgArgs, embed_ctx: EmbedContext) {
+    let EmbedBgArgs {
+        qdrant,
+        embed_provider,
+        embedding_model,
+        message_id,
+        conversation_id,
+        role,
+        content,
+    } = args;
+    let chunks = chunk_text(&content);
+    let chunk_count = chunks.len();
+
+    let vectors = match embed_provider.embed_batch(&chunks).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                "bg embed_tool: failed to embed tool-output chunks for msg {message_id}: {e:#}"
+            );
+            return;
+        }
+    };
+
+    if let Some(first) = vectors.first() {
+        let vector_size = first.len() as u64;
+        if let Err(e) = qdrant.ensure_collection(vector_size).await {
+            tracing::warn!("bg embed_tool: failed to ensure Qdrant collection: {e:#}");
+            return;
+        }
+    }
+
+    for (chunk_index, vector) in vectors.into_iter().enumerate() {
+        let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
+        let result = if let Some(ref tool_name) = embed_ctx.tool_name {
+            qdrant
+                .store_with_tool_context(
+                    message_id,
+                    conversation_id,
+                    &role,
+                    vector,
+                    MessageKind::Regular,
+                    &embedding_model,
+                    chunk_index_u32,
+                    tool_name,
+                    embed_ctx.exit_code,
+                    embed_ctx.timestamp.as_deref(),
+                )
+                .await
+                .map(|_| ())
+        } else {
+            qdrant
+                .store(
+                    message_id,
+                    conversation_id,
+                    &role,
+                    vector,
+                    MessageKind::Regular,
+                    &embedding_model,
+                    chunk_index_u32,
+                )
+                .await
+                .map(|_| ())
+        };
+        if let Err(e) = result {
+            tracing::warn!(
+                "bg embed_tool: failed to store chunk {chunk_index}/{chunk_count} \
+                 for msg {message_id}: {e:#}"
+            );
+        }
+    }
+}
+
+/// Background task: embed chunks with optional category and store in Qdrant.
+///
+/// All errors are logged as warnings; the function never panics.
+async fn embed_and_store_with_category_bg(args: EmbedBgArgs, category: Option<String>) {
+    let EmbedBgArgs {
+        qdrant,
+        embed_provider,
+        embedding_model,
+        message_id,
+        conversation_id,
+        role,
+        content,
+    } = args;
+    let chunks = chunk_text(&content);
+    let chunk_count = chunks.len();
+
+    let vectors = match embed_provider.embed_batch(&chunks).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                "bg embed_category: failed to embed categorized chunks for msg {message_id}: {e:#}"
+            );
+            return;
+        }
+    };
+
+    let Some(first) = vectors.first() else {
+        return;
+    };
+    let vector_size = first.len() as u64;
+    if let Err(e) = qdrant.ensure_collection(vector_size).await {
+        tracing::warn!("bg embed_category: failed to ensure Qdrant collection: {e:#}");
+        return;
+    }
+
+    for (chunk_index, vector) in vectors.into_iter().enumerate() {
+        let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
+        if let Err(e) = qdrant
+            .store_with_category(
+                message_id,
+                conversation_id,
+                &role,
+                vector,
+                MessageKind::Regular,
+                &embedding_model,
+                chunk_index_u32,
+                category.as_deref(),
+            )
+            .await
+        {
+            tracing::warn!(
+                "bg embed_category: failed to store chunk {chunk_index}/{chunk_count} \
+                 for msg {message_id}: {e:#}"
+            );
+        }
+    }
+}
+
 impl SemanticMemory {
     /// Save a message to `SQLite` and optionally embed and store in Qdrant.
     ///
@@ -124,8 +326,7 @@ impl SemanticMemory {
             .save_message(conversation_id, role, content)
             .await?;
 
-        self.embed_and_store_regular(message_id, conversation_id, role, content)
-            .await;
+        self.embed_and_store_regular(message_id, conversation_id, role, content);
 
         Ok(Some(message_id))
     }
@@ -169,9 +370,8 @@ impl SemanticMemory {
             .save_message_with_parts(conversation_id, role, content, parts_json)
             .await?;
 
-        let embedding_stored = self
-            .embed_and_store_regular(message_id, conversation_id, role, content)
-            .await;
+        let embedding_stored =
+            self.embed_and_store_regular(message_id, conversation_id, role, content);
 
         Ok((Some(message_id), embedding_stored))
     }
@@ -211,9 +411,13 @@ impl SemanticMemory {
             .save_message_with_parts(conversation_id, role, content, parts_json)
             .await?;
 
-        let embedding_stored = self
-            .embed_chunks_with_tool_context(message_id, conversation_id, role, content, embed_ctx)
-            .await;
+        let embedding_stored = self.embed_chunks_with_tool_context(
+            message_id,
+            conversation_id,
+            role,
+            content,
+            embed_ctx,
+        );
 
         Ok((Some(message_id), embedding_stored))
     }
@@ -258,8 +462,7 @@ impl SemanticMemory {
             .save_message_with_category(conversation_id, role, content, category)
             .await?;
 
-        self.embed_and_store_with_category(message_id, conversation_id, role, content, category)
-            .await;
+        self.embed_and_store_with_category(message_id, conversation_id, role, content, category);
 
         Ok(Some(message_id))
     }
@@ -285,8 +488,40 @@ impl SemanticMemory {
         self.recall(query, limit, filter_with_category).await
     }
 
+    /// Reap completed background embed tasks (non-blocking).
+    ///
+    /// Call at turn boundaries to release handles for finished tasks.
+    pub fn reap_embed_tasks(&self) {
+        if let Ok(mut tasks) = self.embed_tasks.lock() {
+            while tasks.try_join_next().is_some() {}
+        }
+    }
+
+    /// Spawn `fut` as a bounded background embed task.
+    ///
+    /// If the task limit is reached, the task is dropped and a debug message is logged.
+    fn spawn_embed_bg<F>(&self, fut: F) -> bool
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let Ok(mut tasks) = self.embed_tasks.lock() else {
+            return false;
+        };
+        // Reap any finished tasks before checking capacity.
+        while tasks.try_join_next().is_some() {}
+        if tasks.len() >= MAX_EMBED_BG_TASKS {
+            tracing::debug!("background embed task limit reached, skipping");
+            return false;
+        }
+        tasks.spawn(fut);
+        // embedding dispatched to background; metric not incremented
+        false
+    }
+
     /// Embed content chunks and store each with an optional category payload field.
-    async fn embed_and_store_with_category(
+    ///
+    /// Spawns a bounded background task; returns immediately.
+    fn embed_and_store_with_category(
         &self,
         message_id: MessageId,
         conversation_id: ConversationId,
@@ -294,130 +529,59 @@ impl SemanticMemory {
         content: &str,
         category: Option<&str>,
     ) -> bool {
-        let Some(qdrant) = &self.qdrant else {
+        let Some(qdrant) = self.qdrant.clone() else {
             return false;
         };
-        let embed_provider = self.effective_embed_provider();
+        let embed_provider = self.effective_embed_provider().clone();
         if !embed_provider.supports_embeddings() {
             return false;
         }
-
-        let chunks = chunk_text(content);
-        let chunk_count = chunks.len();
-
-        let vectors = match embed_provider.embed_batch(&chunks).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("Failed to embed categorized chunks for msg {message_id}: {e:#}");
-                return false;
-            }
-        };
-
-        let Some(first) = vectors.first() else {
-            return false;
-        };
-        let vector_size = u64::try_from(first.len()).unwrap_or(896);
-        if let Err(e) = qdrant.ensure_collection(vector_size).await {
-            tracing::warn!("Failed to ensure Qdrant collection for categorized msg: {e:#}");
-            return false;
-        }
-
-        let mut stored = false;
-        for (chunk_index, vector) in vectors.into_iter().enumerate() {
-            let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
-            match qdrant
-                .store_with_category(
-                    message_id,
-                    conversation_id,
-                    role,
-                    vector,
-                    MessageKind::Regular,
-                    &self.embedding_model,
-                    chunk_index_u32,
-                    category,
-                )
-                .await
-            {
-                Ok(_) => stored = true,
-                Err(e) => tracing::warn!(
-                    "Failed to store categorized chunk {chunk_index}/{chunk_count} \
-                     for msg {message_id}: {e:#}"
-                ),
-            }
-        }
-
-        stored
+        self.spawn_embed_bg(embed_and_store_with_category_bg(
+            EmbedBgArgs {
+                qdrant,
+                embed_provider,
+                embedding_model: self.embedding_model.clone(),
+                message_id,
+                conversation_id,
+                role: role.to_owned(),
+                content: content.to_owned(),
+            },
+            category.map(str::to_owned),
+        ))
     }
 
     /// Embed content chunks and store each as a regular (non-tool) message vector.
     ///
-    /// Handles: chunking → `embed_batch` → `ensure_collection` → per-chunk `store`.
-    /// Returns `true` if at least one chunk was successfully stored.
-    async fn embed_and_store_regular(
+    /// Spawns a bounded background task; returns immediately.
+    fn embed_and_store_regular(
         &self,
         message_id: MessageId,
         conversation_id: ConversationId,
         role: &str,
         content: &str,
     ) -> bool {
-        let Some(qdrant) = &self.qdrant else {
+        let Some(qdrant) = self.qdrant.clone() else {
             return false;
         };
-        let embed_provider = self.effective_embed_provider();
+        let embed_provider = self.effective_embed_provider().clone();
         if !embed_provider.supports_embeddings() {
             return false;
         }
-
-        let chunks = chunk_text(content);
-        let chunk_count = chunks.len();
-
-        let vectors = match embed_provider.embed_batch(&chunks).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("Failed to embed chunks for msg {message_id}: {e:#}");
-                return false;
-            }
-        };
-
-        let Some(first) = vectors.first() else {
-            return false;
-        };
-        let vector_size = u64::try_from(first.len()).unwrap_or(896);
-        if let Err(e) = qdrant.ensure_collection(vector_size).await {
-            tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
-            return false;
-        }
-
-        let mut stored = false;
-        for (chunk_index, vector) in vectors.into_iter().enumerate() {
-            let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
-            match qdrant
-                .store(
-                    message_id,
-                    conversation_id,
-                    role,
-                    vector,
-                    MessageKind::Regular,
-                    &self.embedding_model,
-                    chunk_index_u32,
-                )
-                .await
-            {
-                Ok(_) => stored = true,
-                Err(e) => tracing::warn!(
-                    "Failed to store chunk {chunk_index}/{chunk_count} \
-                     for msg {message_id}: {e:#}"
-                ),
-            }
-        }
-
-        stored
+        self.spawn_embed_bg(embed_and_store_regular_bg(EmbedBgArgs {
+            qdrant,
+            embed_provider,
+            embedding_model: self.embedding_model.clone(),
+            message_id,
+            conversation_id,
+            role: role.to_owned(),
+            content: content.to_owned(),
+        }))
     }
 
     /// Embed content chunks, enriching Qdrant payload with tool metadata when present.
     ///
-    /// Returns `true` if at least one chunk was successfully stored.
-    async fn embed_chunks_with_tool_context(
+    /// Spawns a bounded background task; returns immediately.
+    fn embed_chunks_with_tool_context(
         &self,
         message_id: MessageId,
         conversation_id: ConversationId,
@@ -425,78 +589,25 @@ impl SemanticMemory {
         content: &str,
         embed_ctx: EmbedContext,
     ) -> bool {
-        let Some(qdrant) = &self.qdrant else {
+        let Some(qdrant) = self.qdrant.clone() else {
             return false;
         };
-        let embed_provider = self.effective_embed_provider();
+        let embed_provider = self.effective_embed_provider().clone();
         if !embed_provider.supports_embeddings() {
             return false;
         }
-
-        let chunks = chunk_text(content);
-        let chunk_count = chunks.len();
-        let mut stored = false;
-
-        // Embed all chunks in a single batch call.
-        // Batch semantics are atomic: if the batch fails, skip embedding for this message.
-        let vectors = match embed_provider.embed_batch(&chunks).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("Failed to embed tool-output chunks for msg {message_id}: {e:#}");
-                return false;
-            }
-        };
-
-        if let Some(first) = vectors.first() {
-            let vector_size = u64::try_from(first.len()).unwrap_or(896);
-            if let Err(e) = qdrant.ensure_collection(vector_size).await {
-                tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
-                return false;
-            }
-        }
-
-        for (chunk_index, vector) in vectors.into_iter().enumerate() {
-            let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
-            let result = if let Some(ref tool_name) = embed_ctx.tool_name {
-                qdrant
-                    .store_with_tool_context(
-                        message_id,
-                        conversation_id,
-                        role,
-                        vector,
-                        MessageKind::Regular,
-                        &self.embedding_model,
-                        chunk_index_u32,
-                        tool_name,
-                        embed_ctx.exit_code,
-                        embed_ctx.timestamp.as_deref(),
-                    )
-                    .await
-                    .map(|_| ())
-            } else {
-                qdrant
-                    .store(
-                        message_id,
-                        conversation_id,
-                        role,
-                        vector,
-                        MessageKind::Regular,
-                        &self.embedding_model,
-                        chunk_index_u32,
-                    )
-                    .await
-                    .map(|_| ())
-            };
-            match result {
-                Ok(()) => stored = true,
-                Err(e) => tracing::warn!(
-                    "Failed to store tool-output chunk {chunk_index}/{chunk_count} \
-                     for msg {message_id}: {e:#}"
-                ),
-            }
-        }
-
-        stored
+        self.spawn_embed_bg(embed_chunks_with_tool_context_bg(
+            EmbedBgArgs {
+                qdrant,
+                embed_provider,
+                embedding_model: self.embedding_model.clone(),
+                message_id,
+                conversation_id,
+                role: role.to_owned(),
+                content: content.to_owned(),
+            },
+            embed_ctx,
+        ))
     }
 
     /// Save a message to `SQLite` without generating an embedding.
@@ -1184,7 +1295,6 @@ impl SemanticMemory {
             let results: Vec<bool> = futures::stream::iter(rows)
                 .map(|(msg_id, conv_id, role, content)| async move {
                     self.embed_and_store_regular(msg_id, conv_id, &role, &content)
-                        .await
                 })
                 .buffer_unordered(4)
                 .collect()

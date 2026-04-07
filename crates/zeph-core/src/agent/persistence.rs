@@ -496,6 +496,9 @@ impl<C: Channel> Agent<C> {
 
         let goal_text = self.memory_state.goal_text.clone();
 
+        tracing::debug!(
+            "persist_message: calling remember_with_parts, embed dispatched to background"
+        );
         let (embedding_stored, was_persisted) = if should_embed {
             match memory
                 .remember_with_parts(
@@ -549,7 +552,8 @@ impl<C: Channel> Agent<C> {
             }
         });
 
-        tracing::debug!("persist_message: db insert complete");
+        tracing::debug!("persist_message: db insert complete, embedding running in background");
+        memory.reap_embed_tasks();
 
         tracing::debug!("persist_message: calling check_summarization");
         self.check_summarization().await;

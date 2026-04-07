@@ -17,6 +17,7 @@ pub(crate) mod write_buffer;
 mod tests;
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 
 use zeph_llm::any::AnyProvider;
@@ -91,6 +92,12 @@ pub struct SemanticMemory {
     /// When a new fact's nearest neighbour in `zeph_key_facts` has score >= this value,
     /// the fact is considered a duplicate and not inserted.  Default: `0.95`.
     pub(crate) key_facts_dedup_threshold: f32,
+    /// Bounded set of in-flight background embed tasks.
+    ///
+    /// Guarded by a `Mutex` because `SemanticMemory` is shared via `Arc` and
+    /// `JoinSet` requires `&mut self` for `spawn`. Capacity is capped at
+    /// `MAX_EMBED_BG_TASKS`; tasks that exceed the limit are dropped with a debug log.
+    pub(crate) embed_tasks: Mutex<tokio::task::JoinSet<()>>,
 }
 
 impl SemanticMemory {
@@ -191,6 +198,7 @@ impl SemanticMemory {
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
             admission_control: None,
             key_facts_dedup_threshold: 0.95,
+            embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         })
     }
 
@@ -237,6 +245,7 @@ impl SemanticMemory {
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
             admission_control: None,
             key_facts_dedup_threshold: 0.95,
+            embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         })
     }
 
@@ -377,6 +386,7 @@ impl SemanticMemory {
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
             admission_control: None,
             key_facts_dedup_threshold: 0.95,
+            embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         }
     }
 
@@ -442,6 +452,7 @@ impl SemanticMemory {
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
             admission_control: None,
             key_facts_dedup_threshold: 0.95,
+            embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         })
     }
 

@@ -49,6 +49,7 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
         tier_boost_semantic: 1.3,
         admission_control: None,
         key_facts_dedup_threshold: 0.95,
+        embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     }
 }
 
@@ -477,6 +478,7 @@ async fn store_correction_embedding_sqlite_clean_db_roundtrip() {
         tier_boost_semantic: 1.3,
         admission_control: None,
         key_facts_dedup_threshold: 0.95,
+        embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     };
 
     memory

@@ -68,6 +68,7 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         tier_boost_semantic: 1.3,
         admission_control: None,
         key_facts_dedup_threshold: 0.95,
+        embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();

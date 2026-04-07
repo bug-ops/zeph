@@ -337,6 +337,7 @@ async fn summarize_fails_when_provider_chat_fails() {
         tier_boost_semantic: 1.3,
         admission_control: None,
         key_facts_dedup_threshold: 0.95,
+        embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     };
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -400,6 +401,7 @@ async fn summarize_fallback_to_plain_text_when_structured_fails() {
         tier_boost_semantic: 1.3,
         admission_control: None,
         key_facts_dedup_threshold: 0.95,
+        embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -548,6 +550,7 @@ async fn make_embed_memory_with_threshold(threshold: f32) -> super::super::Seman
         tier_boost_semantic: 1.3,
         admission_control: None,
         key_facts_dedup_threshold: threshold,
+        embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     }
 }
 
@@ -639,6 +642,7 @@ async fn store_key_facts_fail_open_on_search_error() {
         tier_boost_semantic: 1.3,
         admission_control: None,
         key_facts_dedup_threshold: 0.95,
+        embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
