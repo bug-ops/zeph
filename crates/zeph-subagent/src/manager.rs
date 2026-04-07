@@ -18,7 +18,7 @@ use zeph_config::SubAgentConfig;
 
 use crate::agent_loop::{AgentLoopArgs, run_agent_loop};
 
-use super::def::{MemoryScope, ModelSpec, PermissionMode, SubAgentDef, ToolPolicy};
+use super::def::{MemoryScope, PermissionMode, SubAgentDef, ToolPolicy};
 use super::error::SubAgentError;
 use super::filter::{FilteredToolExecutor, PlanModeExecutor};
 use super::grants::{PermissionGrants, SecretRequest};
@@ -39,7 +39,7 @@ pub struct SpawnContext {
     pub parent_messages: Vec<Message>,
     /// Parent's cancellation token for linked cancellation (foreground spawns).
     pub parent_cancel: Option<CancellationToken>,
-    /// Parent's active provider name for `ModelSpec::Inherit` resolution.
+    /// Parent's active provider name (for context propagation).
     pub parent_provider_name: Option<String>,
     /// Current spawn depth (0 = top-level agent).
     pub spawn_depth: u32,
@@ -618,13 +618,6 @@ impl SubAgentManager {
         // be constructed AFTER this call to pick up the updated tool list.
         let system_prompt = build_system_prompt_with_memory(&mut def, effective_memory);
 
-        // Resolve model: Inherit uses parent's active provider, Named uses the given name.
-        let resolved_model = match &def.model {
-            Some(ModelSpec::Inherit) => ctx.parent_provider_name.clone(),
-            Some(ModelSpec::Named(name)) => Some(name.clone()),
-            None => None,
-        };
-
         // Apply context injection: prepend last assistant turn to task prompt when configured.
         let effective_task_prompt = apply_context_injection(
             task_prompt,
@@ -667,7 +660,6 @@ impl SubAgentManager {
                 agent_name: agent_name_clone,
                 initial_messages: parent_messages,
                 transcript_writer,
-                model: resolved_model,
                 spawn_depth: spawn_depth + 1,
                 mcp_tool_names,
             }));
@@ -1125,10 +1117,6 @@ impl SubAgentManager {
                 agent_name: agent_name_clone,
                 initial_messages,
                 transcript_writer,
-                model: match &def.model {
-                    Some(ModelSpec::Named(name)) => Some(name.clone()),
-                    Some(ModelSpec::Inherit) | None => None,
-                },
                 spawn_depth: 0,
                 mcp_tool_names: Vec::new(),
             }));
@@ -1363,7 +1351,7 @@ mod tests {
     use serial_test::serial;
 
     use crate::agent_loop::{AgentLoopArgs, make_message, run_agent_loop};
-    use crate::def::MemoryScope;
+    use crate::def::{MemoryScope, ModelSpec};
     use zeph_config::SubAgentConfig;
     use zeph_llm::provider::ChatResponse;
 
@@ -3073,7 +3061,6 @@ mod tests {
             agent_name: "test-bot".into(),
             initial_messages: vec![],
             transcript_writer: None,
-            model: None,
             spawn_depth: 0,
             mcp_tool_names: Vec::new(),
         }

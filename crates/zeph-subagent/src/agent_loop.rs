@@ -50,7 +50,6 @@ pub(super) struct AgentLoopArgs {
     pub(super) agent_name: String,
     pub(super) initial_messages: Vec<Message>,
     pub(super) transcript_writer: Option<TranscriptWriter>,
-    pub(super) model: Option<String>,
     pub(super) spawn_depth: u32,
     pub(super) mcp_tool_names: Vec<String>,
 }
@@ -212,7 +211,6 @@ pub(super) async fn run_agent_loop(
         agent_name,
         initial_messages,
         mut transcript_writer,
-        model,
         spawn_depth: _spawn_depth,
         mcp_tool_names,
     } = args;
@@ -279,13 +277,7 @@ pub(super) async fn run_agent_loop(
             break;
         }
 
-        let llm_result = if let Some(ref m) = model {
-            provider
-                .chat_with_named_provider_and_tools(m, &messages, &tool_defs)
-                .await
-        } else {
-            provider.chat_with_tools(&messages, &tool_defs).await
-        };
+        let llm_result = provider.chat_with_tools(&messages, &tool_defs).await;
         let response = match llm_result {
             Ok(r) => r,
             Err(e) => {

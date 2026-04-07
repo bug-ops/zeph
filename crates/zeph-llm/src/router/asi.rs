@@ -20,6 +20,8 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use zeph_common::math::cosine_similarity;
+
 /// Per-provider sliding window of response embeddings + derived coherence score.
 #[derive(Debug, Clone)]
 struct AsiWindow {
@@ -107,44 +109,9 @@ fn mean_embedding(window: &VecDeque<Vec<f32>>) -> Vec<f32> {
     mean
 }
 
-/// Cosine similarity of two vectors. Returns `0.0` when either vector has zero norm.
-#[must_use]
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|&x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|&x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    (dot / (norm_a * norm_b)).clamp(-1.0, 1.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cosine_similarity_identical_vectors() {
-        let v = vec![1.0, 2.0, 3.0];
-        assert!((cosine_similarity(&v, &v) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn cosine_similarity_orthogonal_vectors() {
-        let a = vec![1.0, 0.0];
-        let b = vec![0.0, 1.0];
-        assert!((cosine_similarity(&a, &b)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn cosine_similarity_zero_norm() {
-        let z = vec![0.0, 0.0];
-        let v = vec![1.0, 0.0];
-        assert!((cosine_similarity(&z, &v) - 0.0).abs() < f32::EPSILON);
-    }
 
     #[test]
     fn asi_state_returns_one_before_warmup() {

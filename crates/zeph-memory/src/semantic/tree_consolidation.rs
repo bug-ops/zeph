@@ -300,7 +300,7 @@ async fn merge_via_llm(provider: &AnyProvider, contents: &[&str]) -> Result<Stri
     ];
 
     let response = provider
-        .chat_with_named_provider("tree_consolidation", &llm_messages)
+        .chat(&llm_messages)
         .await
         .map_err(MemoryError::Llm)?;
 

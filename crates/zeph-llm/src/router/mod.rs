@@ -32,6 +32,7 @@ use bandit::{BanditState, embedding_to_features};
 use cascade::{CascadeState, ClassifierMode, heuristic_score};
 use reputation::ReputationTracker;
 use thompson::ThompsonState;
+use zeph_common::math::cosine_similarity;
 
 /// Simple bounded embedding cache for bandit feature vectors.
 ///
@@ -1262,7 +1263,7 @@ impl LlmProvider for RouterProvider {
                             let resp_emb = router.embed(&r).await.ok();
                             let similarity = resp_emb
                                 .as_ref()
-                                .map_or(threshold, |e| asi::cosine_similarity(qemb, e)); // fail-open: None → treat as passing
+                                .map_or(threshold, |e| cosine_similarity(qemb, e)); // fail-open: None → treat as passing
                             if similarity < threshold {
                                 tracing::info!(
                                     provider = p.name(),

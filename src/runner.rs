@@ -51,12 +51,11 @@ use zeph_llm::provider::LlmProvider;
 
 use zeph_core::config::Config;
 
-/// Adapter that bridges `PolicyLlmClient` to `AnyProvider::chat_with_named_provider`.
+/// Adapter that bridges `PolicyLlmClient` to `AnyProvider::chat`.
 ///
 /// Defined in `runner.rs` to keep `zeph-tools` decoupled from `zeph-llm`.
 struct AdversarialPolicyLlmAdapter {
     provider: LlmAnyProvider,
-    provider_name: String,
 }
 impl zeph_tools::PolicyLlmClient for AdversarialPolicyLlmAdapter {
     fn chat<'a>(
@@ -78,10 +77,8 @@ impl zeph_tools::PolicyLlmClient for AdversarialPolicyLlmAdapter {
                 })
                 .collect();
 
-            let result: Result<String, zeph_llm::LlmError> = self
-                .provider
-                .chat_with_named_provider(&self.provider_name, &llm_messages)
-                .await;
+            let result: Result<String, zeph_llm::LlmError> =
+                self.provider.chat(&llm_messages).await;
             result.map_err(|e| e.to_string())
         })
     }
@@ -1149,12 +1146,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 adv_cfg.exempt_tools.clone(),
             ));
 
-            let provider_name = adv_cfg.policy_provider.clone();
-            let llm_provider = provider.clone();
             let llm_client: std::sync::Arc<dyn zeph_tools::PolicyLlmClient> =
                 std::sync::Arc::new(AdversarialPolicyLlmAdapter {
-                    provider: llm_provider,
-                    provider_name,
+                    provider: provider.clone(),
                 });
 
             let mut gate =

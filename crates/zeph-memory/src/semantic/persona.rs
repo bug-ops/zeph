@@ -14,7 +14,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::{Message, Role};
+use zeph_llm::provider::{LlmProvider as _, Message, Role};
 
 use crate::error::MemoryError;
 use crate::store::DbStore;
@@ -51,8 +51,6 @@ Output JSON array of objects:
 /// Configuration for persona extraction.
 pub struct PersonaExtractionConfig {
     pub enabled: bool,
-    /// Provider name from `[[llm.providers]]` for extraction. Falls back to default when empty.
-    pub persona_provider: String,
     /// Minimum user messages in a session before extraction runs.
     pub min_messages: usize,
     /// Maximum user messages sent to LLM per extraction pass.
@@ -128,18 +126,7 @@ pub async fn extract_persona_facts(
     ];
 
     let extraction_timeout = Duration::from_secs(config.extraction_timeout_secs);
-    // Use the configured provider name; fall back to "persona" label if empty.
-    let provider_name = if config.persona_provider.is_empty() {
-        "persona"
-    } else {
-        &config.persona_provider
-    };
-    let response = match timeout(
-        extraction_timeout,
-        provider.chat_with_named_provider(provider_name, &llm_messages),
-    )
-    .await
-    {
+    let response = match timeout(extraction_timeout, provider.chat(&llm_messages)).await {
         Ok(Ok(text)) => text,
         Ok(Err(e)) => return Err(MemoryError::Llm(e)),
         Err(_) => {
@@ -312,7 +299,6 @@ mod tests {
         // and test the self-ref gate separately by passing non-self-ref messages.
         let cfg = PersonaExtractionConfig {
             enabled: true,
-            persona_provider: String::new(),
             min_messages: 1,
             max_messages: 10,
             extraction_timeout_secs: 5,
@@ -323,7 +309,6 @@ mod tests {
         // (already tested above) and via the enabled=false path here.
         let cfg_disabled = PersonaExtractionConfig {
             enabled: false,
-            persona_provider: String::new(),
             min_messages: 1,
             max_messages: 10,
             extraction_timeout_secs: 5,
@@ -333,7 +318,6 @@ mod tests {
         // min_messages gate instead.
         let cfg_min = PersonaExtractionConfig {
             enabled: true,
-            persona_provider: String::new(),
             min_messages: 5,
             max_messages: 10,
             extraction_timeout_secs: 5,

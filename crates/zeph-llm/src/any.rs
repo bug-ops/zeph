@@ -195,44 +195,6 @@ impl AnyProvider {
         }
     }
 
-    /// Route to a specific named provider, or fall through to default routing.
-    ///
-    /// The `name` parameter is informational only (used for logging/tracing);
-    /// routing is always performed by the underlying provider's default strategy.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::LlmError`] if the underlying provider call fails.
-    pub async fn chat_with_named_provider(
-        &self,
-        name: &str,
-        messages: &[Message],
-    ) -> Result<String, crate::LlmError> {
-        tracing::debug!(name, "chat_with_named_provider: delegating to provider");
-        self.chat(messages).await
-    }
-
-    /// Route a tool-aware request to a specific named provider, or fall through to default routing.
-    ///
-    /// The `name` parameter is informational only (used for logging/tracing);
-    /// routing is always performed by the underlying provider's default strategy.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::LlmError`] if the underlying provider call fails.
-    pub async fn chat_with_named_provider_and_tools(
-        &self,
-        name: &str,
-        messages: &[Message],
-        tools: &[crate::provider::ToolDefinition],
-    ) -> Result<crate::provider::ChatResponse, crate::LlmError> {
-        tracing::debug!(
-            name,
-            "chat_with_named_provider_and_tools: delegating to provider"
-        );
-        self.chat_with_tools(messages, tools).await
-    }
-
     /// Propagate a status sender to the inner provider (where supported).
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         match self {

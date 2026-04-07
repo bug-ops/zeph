@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::{Message, Role};
+use zeph_llm::provider::{LlmProvider as _, Message, Role};
 
 use crate::error::MemoryError;
 
@@ -104,12 +104,7 @@ pub async fn extract_trajectory_entries(
     ];
 
     let extraction_timeout = Duration::from_secs(config.extraction_timeout_secs);
-    let response = match timeout(
-        extraction_timeout,
-        provider.chat_with_named_provider("trajectory", &llm_messages),
-    )
-    .await
-    {
+    let response = match timeout(extraction_timeout, provider.chat(&llm_messages)).await {
         Ok(Ok(text)) => text,
         Ok(Err(e)) => return Err(MemoryError::Llm(e)),
         Err(_) => {

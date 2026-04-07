@@ -776,7 +776,6 @@ impl<C: Channel> Agent<C> {
         let timeout_secs = cfg.extraction_timeout_secs;
         let extraction_cfg = PersonaExtractionConfig {
             enabled: cfg.enabled,
-            persona_provider: cfg.persona_provider.as_str().to_owned(),
             min_messages: cfg.min_messages,
             max_messages: cfg.max_messages,
             extraction_timeout_secs: timeout_secs,

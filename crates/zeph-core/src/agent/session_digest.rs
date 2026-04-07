@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use regex::Regex;
 use zeph_common::text::estimate_tokens;
-use zeph_llm::provider::{Message, MessageMetadata, Role};
+use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
 use zeph_memory::TokenCounter;
 
 /// Strip prompt-injection patterns from LLM-generated digest text.
@@ -128,7 +128,7 @@ pub(super) async fn generate_and_store_digest(
             tracing::warn!("session digest (/new): LLM call timed out");
             return;
         }
-        result = provider.chat_with_named_provider(&digest_config.provider, &chat_messages) => {
+        result = provider.chat(&chat_messages) => {
             match result {
                 Ok(text) => text,
                 Err(e) => {
@@ -175,7 +175,6 @@ impl<C: Channel> Agent<C> {
 
         let max_input = self.memory_state.digest_config.max_input_messages;
         let max_tokens = self.memory_state.digest_config.max_tokens;
-        let provider_name = self.memory_state.digest_config.provider.clone();
 
         // Collect last N non-system messages.
         let non_system: Vec<_> = self
@@ -232,7 +231,7 @@ impl<C: Channel> Agent<C> {
                 let _ = self.channel.send_status("").await;
                 return;
             }
-            result = self.provider.chat_with_named_provider(&provider_name, &chat_messages) => {
+            result = self.provider.chat(&chat_messages) => {
                 match result {
                     Ok(text) => text,
                     Err(e) => {
