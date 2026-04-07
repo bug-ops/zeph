@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Unbounded `tokio::spawn` in TUI scheduler metrics refresh** (`#2742`): the `do_refresh` closure in `src/runner.rs` previously called `tokio::spawn` for every `refresh_rx.changed()` event, spawning hundreds of concurrent `SELECT FROM scheduled_jobs` queries during scheduler mutation bursts (up to 849 concurrent queries observed vs. the expected 1 per 30 s). The inner `tokio::spawn` has been removed; `store.list_jobs().await` is now called directly in each `select!` arm. Since the outer loop already runs inside a `tokio::spawn`, at most one query is in flight at a time.
+
 - **Unbounded RSS growth in TUI mode — 4 leak sites** (`#2737`):
   - *Cancel bridge task accumulation (critical)*: `process_user_message_inner` now stores the cancel bridge `JoinHandle` in `LifecycleState::cancel_bridge_handle` and aborts it before spawning a new one each turn. Previously N turns leaked N tasks waiting indefinitely on `Arc<Notify>`.
   - *TUI message buffer (high)*: `App::messages` and `render_cache` are now capped at 2000 entries; `input_history` is capped at 500. Oldest entries are evicted from the front when limits are exceeded. Render cache is cleared on eviction (indices shift after a drain; cache is rebuilt on next render).

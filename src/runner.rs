@@ -1933,35 +1933,38 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             let mut refresh_rx = sched_refresh_rx.take();
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-                let do_refresh = |store: &std::sync::Arc<zeph_scheduler::JobStore>,
-                                  tx: &tokio::sync::watch::Sender<
-                    zeph_core::metrics::MetricsSnapshot,
-                >| {
-                    let store = std::sync::Arc::clone(store);
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        if let Ok(jobs) = store.list_jobs().await {
-                            tx.send_modify(|m| {
-                                m.scheduled_tasks = jobs
-                                    .into_iter()
-                                    .map(|(name, kind, mode, next_run)| {
-                                        [name, kind, mode, next_run]
-                                    })
-                                    .collect();
-                            });
-                        }
-                    });
-                };
                 loop {
                     tokio::select! {
-                        _ = interval.tick() => do_refresh(&store, &tx_clone),
+                        _ = interval.tick() => {
+                            if let Ok(jobs) = store.list_jobs().await {
+                                tx_clone.send_modify(|m| {
+                                    m.scheduled_tasks = jobs
+                                        .into_iter()
+                                        .map(|(name, kind, mode, next_run)| {
+                                            [name, kind, mode, next_run]
+                                        })
+                                        .collect();
+                                });
+                            }
+                        }
                         () = async {
                             if let Some(ref mut rx) = refresh_rx {
                                 let _ = rx.changed().await;
                             } else {
                                 std::future::pending::<()>().await;
                             }
-                        } => do_refresh(&store, &tx_clone),
+                        } => {
+                            if let Ok(jobs) = store.list_jobs().await {
+                                tx_clone.send_modify(|m| {
+                                    m.scheduled_tasks = jobs
+                                        .into_iter()
+                                        .map(|(name, kind, mode, next_run)| {
+                                            [name, kind, mode, next_run]
+                                        })
+                                        .collect();
+                                });
+                            }
+                        }
                         _ = shutdown.changed() => break,
                     }
                 }
