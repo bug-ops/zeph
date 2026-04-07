@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-mod legacy;
 mod native;
 mod sanitize;
 mod tool_call_dag;
@@ -66,20 +65,6 @@ fn doom_loop_hash(content: &str) -> u64 {
         }
     }
     hasher.finish()
-}
-
-/// Extracts the language identifier from the first fenced code block in `response`
-/// (e.g. "bash" from ` ```bash `). Returns "tool" as fallback.
-fn first_tool_name(response: &str) -> &str {
-    if let Some(pos) = response.find("```") {
-        let after = &response[pos + 3..];
-        let line = after.split_once('\n').map_or(after, |(l, _)| l).trim();
-        let lang = line.split_whitespace().next().unwrap_or("");
-        if !lang.is_empty() {
-            return lang;
-        }
-    }
-    "tool"
 }
 
 fn hash_tool_result_in_place(hasher: &mut impl std::hash::Hasher, rest: &mut &str, start: usize) {
@@ -379,28 +364,6 @@ impl<C: Channel> Agent<C> {
             }
         } else {
             std::borrow::Cow::Borrowed(text)
-        }
-    }
-
-    /// Walk a JSON value and apply `maybe_redact` to every string leaf.
-    ///
-    /// Used to sanitize `raw_response` before it is forwarded to `claudeCode.toolResponse`
-    /// in the ACP notification. Without this, file content and shell stdout would bypass
-    /// the `redact_secrets` pipeline even when it is enabled.
-    pub(super) fn redact_json(&self, value: serde_json::Value) -> serde_json::Value {
-        match value {
-            serde_json::Value::String(s) => {
-                serde_json::Value::String(self.maybe_redact(&s).into_owned())
-            }
-            serde_json::Value::Array(arr) => {
-                serde_json::Value::Array(arr.into_iter().map(|v| self.redact_json(v)).collect())
-            }
-            serde_json::Value::Object(map) => serde_json::Value::Object(
-                map.into_iter()
-                    .map(|(k, v)| (k, self.redact_json(v)))
-                    .collect(),
-            ),
-            other => other,
         }
     }
 

@@ -915,15 +915,14 @@ fn start_index_watcher(
 pub(crate) fn apply_code_retrieval<C: Channel>(
     agent: Agent<C>,
     config: &IndexConfig,
-    retriever: Option<Arc<CodeRetriever>>,
-    provider_has_tools: bool,
+    _retriever: Option<Arc<CodeRetriever>>,
 ) -> Agent<C> {
     if !config.enabled {
         return agent;
     }
 
     // When mcp_enabled, skip static repo-map injection and register IndexMcpServer instead.
-    let agent = if config.mcp_enabled {
+    if config.mcp_enabled {
         if config.repo_map_tokens > 0 {
             tracing::warn!(
                 "index.repo_map_tokens is set but index.mcp_enabled=true — \
@@ -934,19 +933,6 @@ pub(crate) fn apply_code_retrieval<C: Channel>(
         agent.with_index_mcp_server(cwd)
     } else if config.repo_map_tokens > 0 {
         agent.with_repo_map(config.repo_map_tokens, config.repo_map_ttl_secs)
-    } else {
-        agent
-    };
-
-    if provider_has_tools {
-        tracing::info!(
-            "code retrieval (semantic search) skipped: provider supports native tool_use"
-        );
-        return agent;
-    }
-
-    if let Some(retriever) = retriever {
-        agent.with_code_retriever(retriever)
     } else {
         agent
     }
@@ -1322,7 +1308,7 @@ mod tests {
             enabled: false,
             ..IndexConfig::default()
         };
-        let result = apply_code_retrieval(agent, &config, None, true);
+        let result = apply_code_retrieval(agent, &config, None);
         drop(result);
     }
 }

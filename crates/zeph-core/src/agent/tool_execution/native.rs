@@ -71,6 +71,11 @@ impl<C: Channel> Agent<C> {
         unreachable!("loop covers all attempts")
     }
 
+    pub(crate) async fn process_response(&mut self) -> Result<(), super::super::error::AgentError> {
+        self.security.flagged_urls.clear();
+        self.process_response_native_tools().await
+    }
+
     #[allow(clippy::too_many_lines)] // tool loop with dependency gate, filter, and doom-loop checks
     pub(super) async fn process_response_native_tools(
         &mut self,
@@ -205,6 +210,475 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_stop_hint(StopHint::MaxTurnRequests).await;
         self.channel.flush_chunks().await?;
         Ok(())
+    }
+
+    /// Returns `true` if a doom loop was detected and the caller should break.
+    async fn check_doom_loop(
+        &mut self,
+        iteration: usize,
+    ) -> Result<bool, super::super::error::AgentError> {
+        if let Some(last_msg) = self.msg.messages.last() {
+            let hash = super::doom_loop_hash(&last_msg.content);
+            tracing::debug!(
+                iteration,
+                hash,
+                content_len = last_msg.content.len(),
+                content_preview = &last_msg.content[..last_msg.content.len().min(120)],
+                "doom-loop hash recorded"
+            );
+            self.tool_orchestrator.push_doom_hash(hash);
+            if self.tool_orchestrator.is_doom_loop() {
+                tracing::warn!(
+                    iteration,
+                    hash,
+                    content_len = last_msg.content.len(),
+                    content_preview = &last_msg.content[..last_msg.content.len().min(200)],
+                    "doom-loop detected: {} consecutive identical outputs",
+                    super::super::DOOM_LOOP_WINDOW
+                );
+                self.channel
+                    .send("Stopping: detected repeated identical tool outputs.")
+                    .await?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    #[cfg(test)]
+    pub(super) async fn call_llm_with_timeout(
+        &mut self,
+    ) -> Result<Option<String>, super::super::error::AgentError> {
+        if self.lifecycle.cancel_token.is_cancelled() {
+            return Ok(None);
+        }
+
+        if let Some(ref tracker) = self.metrics.cost_tracker
+            && let Err(e) = tracker.check_budget()
+        {
+            self.channel
+                .send(&format!("Budget limit reached: {e}"))
+                .await?;
+            return Ok(None);
+        }
+
+        let query_embedding = match self.check_response_cache().await? {
+            super::CacheCheckResult::Hit(resp) => return Ok(Some(resp)),
+            super::CacheCheckResult::Miss { query_embedding } => query_embedding,
+        };
+
+        let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
+        let start = std::time::Instant::now();
+        let prompt_estimate = self.providers.cached_prompt_tokens;
+
+        let dump_id =
+            self.debug_state
+                .debug_dumper
+                .as_ref()
+                .map(|d: &crate::debug_dump::DebugDumper| {
+                    let provider_request = if d.is_trace_format() {
+                        serde_json::Value::Null
+                    } else {
+                        self.provider.debug_request_json(
+                            &self.msg.messages,
+                            &[],
+                            self.provider.supports_streaming(),
+                        )
+                    };
+                    d.dump_request(&crate::debug_dump::RequestDebugDump {
+                        model_name: &self.runtime.model_name,
+                        messages: &self.msg.messages,
+                        tools: &[],
+                        provider_request,
+                    })
+                });
+
+        let trace_guard = self.debug_state.trace_collector.as_ref().and_then(|tc| {
+            self.debug_state
+                .current_iteration_span_id
+                .map(|id| tc.begin_llm_request(id))
+        });
+
+        let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
+        let result = self
+            .call_llm_non_streaming(
+                llm_timeout,
+                start,
+                prompt_estimate,
+                dump_id,
+                llm_span,
+                query_embedding,
+            )
+            .await;
+
+        if let Some(guard) = trace_guard
+            && let Some(ref mut tc) = self.debug_state.trace_collector
+        {
+            let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let (prompt_tokens, completion_tokens) =
+                self.provider.last_usage().unwrap_or((prompt_estimate, 0));
+            tc.end_llm_request(
+                guard,
+                &crate::debug_dump::trace::LlmAttributes {
+                    model: self.runtime.model_name.clone(),
+                    prompt_tokens,
+                    completion_tokens,
+                    latency_ms: latency,
+                    streaming: false,
+                    cache_hit: false,
+                },
+            );
+        }
+
+        result
+    }
+
+    #[cfg(test)]
+    async fn call_llm_non_streaming(
+        &mut self,
+        llm_timeout: std::time::Duration,
+        start: std::time::Instant,
+        prompt_estimate: u64,
+        dump_id: Option<u32>,
+        llm_span: tracing::Span,
+        query_embedding: Option<Vec<f32>>,
+    ) -> Result<Option<String>, super::super::error::AgentError> {
+        let cancel = self.lifecycle.cancel_token.clone();
+        let chat_fut = self.provider.chat(&self.msg.messages).instrument(llm_span);
+        let result = tokio::select! {
+            r = tokio::time::timeout(llm_timeout, chat_fut) => r,
+            () = cancel.cancelled() => {
+                tracing::info!("LLM call cancelled by user");
+                self.update_metrics(|m| m.cancellations += 1);
+                self.channel.send("[Cancelled]").await?;
+                return Ok(None);
+            }
+        };
+        match result {
+            Ok(Ok(resp)) => {
+                let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let completion_heuristic = estimate_tokens(&resp) as u64;
+                let (final_prompt, final_completion) = self
+                    .provider
+                    .last_usage()
+                    .unwrap_or((prompt_estimate, completion_heuristic));
+                self.update_metrics(|m| {
+                    m.api_calls += 1;
+                    m.last_llm_latency_ms = latency;
+                    m.context_tokens = final_prompt;
+                    m.prompt_tokens += final_prompt;
+                    m.completion_tokens += final_completion;
+                    m.total_tokens = m.prompt_tokens + m.completion_tokens;
+                });
+                self.record_cost_and_cache(final_prompt, final_completion);
+                if self.run_response_verification(&resp) {
+                    let _ = self
+                        .channel
+                        .send("[security] Response blocked by injection detection.")
+                        .await;
+                    return Ok(None);
+                }
+                let cleaned = self.scan_output_and_warn(&resp);
+                if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {
+                    d.dump_response(id, &cleaned);
+                }
+                let display = self.maybe_redact(&cleaned);
+                self.channel.send(&display).await?;
+                self.store_response_in_cache(&cleaned, query_embedding)
+                    .await;
+                Ok(Some(cleaned))
+            }
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => {
+                self.channel
+                    .send("LLM request timed out. Please try again.")
+                    .await?;
+                Ok(None)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::agent) async fn call_llm_with_retry(
+        &mut self,
+        max_attempts: usize,
+    ) -> Result<Option<String>, super::super::error::AgentError> {
+        for attempt in 0..max_attempts {
+            match self.call_llm_with_timeout().await {
+                Ok(result) => return Ok(result),
+                Err(e) if e.is_context_length_error() && attempt + 1 < max_attempts => {
+                    tracing::warn!(
+                        attempt,
+                        "LLM context length exceeded, compacting and retrying"
+                    );
+                    let _ = self
+                        .channel
+                        .send_status("context too long, compacting...")
+                        .await;
+                    self.compact_context().await?;
+                    let _ = self.channel.send_status("").await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!("loop covers all attempts")
+    }
+
+    #[cfg(test)]
+    pub(super) async fn handle_tool_result(
+        &mut self,
+        response: &str,
+        result: Result<Option<zeph_tools::executor::ToolOutput>, zeph_tools::executor::ToolError>,
+    ) -> Result<bool, super::super::error::AgentError> {
+        use zeph_sanitizer::{ContentSource, ContentSourceKind};
+        use zeph_skills::evolution::FailureKind;
+        use zeph_tools::executor::ToolError;
+        match result {
+            Ok(Some(output)) => self.process_successful_tool_output(output).await,
+            Ok(None) => {
+                self.record_skill_outcomes("success", None, None).await;
+                self.record_anomaly_outcome(super::AnomalyOutcome::Success)
+                    .await?;
+                Ok(false)
+            }
+            Err(ToolError::Blocked { command }) => {
+                tracing::warn!("blocked command: {command}");
+                self.channel
+                    .send("This command is blocked by security policy.")
+                    .await?;
+                self.record_anomaly_outcome(super::AnomalyOutcome::Blocked)
+                    .await?;
+                Ok(false)
+            }
+            Err(ToolError::ConfirmationRequired { command }) => {
+                self.handle_confirmation_required(response, &command).await
+            }
+            Err(ToolError::Cancelled) => {
+                tracing::info!("tool execution cancelled");
+                self.update_metrics(|m| m.cancellations += 1);
+                self.channel.send("[Cancelled]").await?;
+                Ok(false)
+            }
+            Err(ToolError::SandboxViolation { path }) => {
+                tracing::warn!("sandbox violation: {path}");
+                self.channel
+                    .send("Command targets a path outside the sandbox.")
+                    .await?;
+                self.record_anomaly_outcome(super::AnomalyOutcome::Error)
+                    .await?;
+                Ok(false)
+            }
+            Err(e) => {
+                let category = e.category();
+                let err_str = format!("{e:#}");
+                tracing::error!("tool execution error: {err_str}");
+                if let Some(ref d) = self.debug_state.debug_dumper {
+                    d.dump_tool_error("legacy", &e);
+                }
+                let kind = FailureKind::from(category);
+                let sanitized_err = self
+                    .security
+                    .sanitizer
+                    .sanitize(&err_str, ContentSource::new(ContentSourceKind::McpResponse))
+                    .body;
+                self.record_skill_outcomes("tool_failure", Some(&err_str), Some(kind.as_str()))
+                    .await;
+                self.record_anomaly_outcome(super::AnomalyOutcome::Error)
+                    .await?;
+
+                if !self.learning_engine.was_reflection_used()
+                    && self.attempt_self_reflection(&sanitized_err, "").await?
+                {
+                    return Ok(false);
+                }
+
+                self.channel
+                    .send("Tool execution failed. Please try a different approach.")
+                    .await?;
+                Ok(false)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    async fn process_successful_tool_output(
+        &mut self,
+        output: zeph_tools::executor::ToolOutput,
+    ) -> Result<bool, super::super::error::AgentError> {
+        use super::super::format_tool_output;
+        use crate::channel::{ToolOutputEvent, ToolStartEvent};
+        use zeph_llm::provider::{Message, MessagePart, Role};
+        use zeph_skills::evolution::FailureKind;
+
+        if let Some(ref fs) = output.filter_stats {
+            self.record_filter_metrics(fs);
+        }
+        if output.summary.trim().is_empty() {
+            tracing::warn!("tool execution returned empty output");
+            self.record_skill_outcomes("success", None, None).await;
+            return Ok(false);
+        }
+
+        if output.summary.contains("[error]") || output.summary.contains("[exit code") {
+            let kind = FailureKind::from_error(&output.summary);
+            self.record_skill_outcomes("tool_failure", Some(&output.summary), Some(kind.as_str()))
+                .await;
+
+            if !self.learning_engine.was_reflection_used()
+                && self
+                    .attempt_self_reflection(&output.summary, &output.summary)
+                    .await?
+            {
+                return Ok(false);
+            }
+        } else {
+            self.record_skill_outcomes("success", None, None).await;
+        }
+
+        let tool_call_id = uuid::Uuid::new_v4().to_string();
+        let tool_started_at = std::time::Instant::now();
+        self.channel
+            .send_tool_start(ToolStartEvent {
+                tool_name: &output.tool_name,
+                tool_call_id: &tool_call_id,
+                params: None,
+                parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+            })
+            .await?;
+        if let Some(ref d) = self.debug_state.debug_dumper {
+            let dump_content = if self.security.pii_filter.is_enabled() {
+                self.security.pii_filter.scrub(&output.summary).into_owned()
+            } else {
+                output.summary.clone()
+            };
+            d.dump_tool_output(&output.tool_name, &dump_content);
+        }
+        let processed = self.maybe_summarize_tool_output(&output.summary).await;
+        let body = if let Some(ref fs) = output.filter_stats
+            && fs.filtered_chars < fs.raw_chars
+        {
+            format!("{}\n{processed}", fs.format_inline(&output.tool_name))
+        } else {
+            processed.clone()
+        };
+        let filter_stats_inline = output.filter_stats.as_ref().and_then(|fs| {
+            (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&output.tool_name))
+        });
+        let formatted_output = format_tool_output(&output.tool_name, &body);
+        self.channel
+            .send_tool_output(ToolOutputEvent {
+                tool_name: &output.tool_name,
+                body: &self.maybe_redact(&body),
+                diff: None,
+                filter_stats: filter_stats_inline,
+                kept_lines: None,
+                locations: output.locations,
+                tool_call_id: &tool_call_id,
+                is_error: false,
+                parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+                raw_response: None,
+                started_at: Some(tool_started_at),
+            })
+            .await?;
+
+        let (llm_body, has_injection_flags) = self
+            .sanitize_tool_output(&processed, &output.tool_name)
+            .await;
+        let user_msg = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolOutput {
+                tool_name: output.tool_name.clone(),
+                body: llm_body,
+                compacted_at: None,
+            }],
+        );
+        self.persist_message(
+            Role::User,
+            &formatted_output,
+            &user_msg.parts,
+            has_injection_flags || !self.security.flagged_urls.is_empty(),
+        )
+        .await;
+        self.push_message(user_msg);
+        let outcome = if output.summary.contains("[error]") || output.summary.contains("[stderr]") {
+            super::AnomalyOutcome::Error
+        } else {
+            super::AnomalyOutcome::Success
+        };
+        self.record_anomaly_outcome(outcome).await?;
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    async fn handle_confirmation_required(
+        &mut self,
+        response: &str,
+        command: &str,
+    ) -> Result<bool, super::super::error::AgentError> {
+        use super::super::format_tool_output;
+        use crate::channel::{ToolOutputEvent, ToolStartEvent};
+        use zeph_llm::provider::{Message, MessagePart, Role};
+        let prompt = format!("Allow command: {command}?");
+        if self.channel.confirm(&prompt).await? {
+            if let Ok(Some(out)) = self.tool_executor.execute_confirmed_erased(response).await {
+                let confirmed_tool_call_id = uuid::Uuid::new_v4().to_string();
+                let confirmed_started_at = std::time::Instant::now();
+                self.channel
+                    .send_tool_start(ToolStartEvent {
+                        tool_name: &out.tool_name,
+                        tool_call_id: &confirmed_tool_call_id,
+                        params: None,
+                        parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+                    })
+                    .await?;
+                if let Some(ref d) = self.debug_state.debug_dumper {
+                    let dump_content = if self.security.pii_filter.is_enabled() {
+                        self.security.pii_filter.scrub(&out.summary).into_owned()
+                    } else {
+                        out.summary.clone()
+                    };
+                    d.dump_tool_output(&out.tool_name, &dump_content);
+                }
+                let processed = self.maybe_summarize_tool_output(&out.summary).await;
+                let formatted = format_tool_output(&out.tool_name, &processed);
+                self.channel
+                    .send_tool_output(ToolOutputEvent {
+                        tool_name: &out.tool_name,
+                        body: &self.maybe_redact(&processed),
+                        diff: None,
+                        filter_stats: None,
+                        kept_lines: None,
+                        locations: out.locations,
+                        tool_call_id: &confirmed_tool_call_id,
+                        is_error: false,
+                        parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+                        raw_response: None,
+                        started_at: Some(confirmed_started_at),
+                    })
+                    .await?;
+                let (llm_body, has_injection_flags) =
+                    self.sanitize_tool_output(&processed, &out.tool_name).await;
+                let confirmed_msg = Message::from_parts(
+                    Role::User,
+                    vec![MessagePart::ToolOutput {
+                        tool_name: out.tool_name.clone(),
+                        body: llm_body,
+                        compacted_at: None,
+                    }],
+                );
+                self.persist_message(
+                    Role::User,
+                    &formatted,
+                    &confirmed_msg.parts,
+                    has_injection_flags || !self.security.flagged_urls.is_empty(),
+                )
+                .await;
+                self.push_message(confirmed_msg);
+            }
+        } else {
+            self.channel.send("Command cancelled.").await?;
+        }
+        Ok(false)
     }
 
     /// Execute one turn of the native tool loop. Returns `Ok(Some(()))` when the LLM produced

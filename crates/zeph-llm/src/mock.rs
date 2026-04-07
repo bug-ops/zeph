@@ -27,8 +27,6 @@ pub struct MockProvider {
     errors: Arc<Mutex<VecDeque<crate::LlmError>>>,
     /// When set, every `chat()` call appends a clone of the messages slice here.
     recorded: Option<Arc<Mutex<Vec<Vec<Message>>>>>,
-    /// Whether this mock reports native `tool_use` support.
-    pub tool_use: bool,
     /// Pre-configured `ChatResponse` sequence returned from `chat_with_tools()`.
     /// When exhausted, falls back to `ChatResponse::Text` via `chat()`.
     tool_responses: Arc<Mutex<VecDeque<ChatResponse>>>,
@@ -54,7 +52,6 @@ impl Default for MockProvider {
             delay_ms: 0,
             errors: Arc::new(Mutex::new(VecDeque::new())),
             recorded: None,
-            tool_use: false,
             tool_responses: Arc::new(Mutex::new(VecDeque::new())),
             tool_call_count: Arc::new(Mutex::new(0)),
             models: vec![],
@@ -148,7 +145,6 @@ impl MockProvider {
     /// so tests can assert the LLM was called exactly once (cache hit) or twice (cache miss).
     #[must_use]
     pub fn with_tool_use(mut self, responses: Vec<ChatResponse>) -> (Self, Arc<Mutex<u32>>) {
-        self.tool_use = true;
         self.tool_responses = Arc::new(Mutex::new(VecDeque::from(responses)));
         let counter = Arc::clone(&self.tool_call_count);
         (self, counter)
@@ -223,10 +219,6 @@ impl LlmProvider for MockProvider {
 
     fn supports_embeddings(&self) -> bool {
         self.supports_embeddings
-    }
-
-    fn supports_tool_use(&self) -> bool {
-        self.tool_use
     }
 
     async fn chat_with_tools(

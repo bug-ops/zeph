@@ -1284,7 +1284,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             },
         )
         .unwrap_or_else(|| provider.clone());
-    let provider_has_tools = provider.supports_tool_use();
     let index_qdrant_ops = app.qdrant_ops().cloned();
     let config_path = app.config_path().to_owned();
     let cache_pool = memory.sqlite().pool().clone();
@@ -1584,8 +1583,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     }
     #[cfg(not(feature = "tui"))]
     let _ = index_progress_rx;
-    let agent =
-        agent_setup::apply_code_retrieval(agent, &config.index, code_retriever, provider_has_tools);
+    let agent = agent_setup::apply_code_retrieval(agent, &config.index, code_retriever);
     let agent = if let Some(search_executor) = agent_setup::build_search_code_executor(
         config,
         app.qdrant_ops().cloned(),

@@ -336,11 +336,6 @@ impl<C: Channel> Agent<C> {
                 system_prompt.push_str(&instructions);
             }
         }
-        // When native tool_use is active, MCP tools flow through the executor chain
-        // as ToolDefinitions — skip text prompt injection to avoid duplication.
-        if self.provider.supports_tool_use() {
-            return;
-        }
         if !matched_tools.is_empty() {
             let tool_names: Vec<&str> = matched_tools.iter().map(|t| t.name.as_str()).collect();
             tracing::debug!(

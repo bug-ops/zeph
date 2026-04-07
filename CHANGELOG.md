@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **Delete legacy text-extraction tool path** (`#2782`): removed `crates/zeph-core/src/agent/tool_execution/legacy.rs` (896 lines). All tool execution now goes through the native `tool_use` path. `LlmProvider::supports_tool_use()` default changed from `false` to `true`; the `tool_use: bool` field was removed from `OllamaProvider`, `MockProvider`, and `ProviderEntry` config. Callers in context assembly, MCP, `agent_setup`, and `runner` were simplified accordingly.
+
+- **Retain `async-trait` in `zeph-core`, `zeph-mcp`, `zeph-acp`** (`#2781`): these crates depend on `rmcp` and `agent-client-protocol` which re-export `#[async_trait]` macros; removal is blocked by upstream and tracked for future cleanup.
+
 ### Refactored
 
 - **Extract security pipeline methods into `SecurityState` impl block** (`#2802`): moved PII scrubbing, guardrail pre-screening, and NER circuit breaker management from Agent wrappers into `impl SecurityState` in `agent/state/security.rs`. New `PiiScrubResult` value type carries metric descriptors; Agent wrappers apply side effects from the result struct.

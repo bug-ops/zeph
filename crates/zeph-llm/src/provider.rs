@@ -541,7 +541,7 @@ pub trait LlmProvider: Send + Sync {
 
     /// Whether this provider supports native `tool_use` / function calling.
     fn supports_tool_use(&self) -> bool {
-        false
+        true
     }
 
     /// Send messages with tool definitions, returning a structured response.
@@ -1145,14 +1145,6 @@ mod tests {
         let deserialized: ToolDefinition = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.name, "bash");
         assert_eq!(deserialized.description, "Execute a shell command");
-    }
-
-    #[tokio::test]
-    async fn supports_tool_use_default_returns_false() {
-        let provider = StubProvider {
-            response: String::new(),
-        };
-        assert!(!provider.supports_tool_use());
     }
 
     #[tokio::test]

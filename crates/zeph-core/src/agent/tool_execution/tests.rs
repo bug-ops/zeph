@@ -341,86 +341,6 @@ fn maybe_redact_enabled_redacts_secrets() {
 }
 
 #[test]
-fn redact_json_sanitizes_string_leaves() {
-    use super::super::agent_tests::{
-        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-    };
-
-    let provider = mock_provider(vec![]);
-    let channel = MockChannel::new(vec![]);
-    let registry = create_test_registry();
-    let executor = MockToolExecutor::no_tools();
-    let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
-    agent.runtime.security.redact_secrets = false;
-
-    // With redaction disabled, strings pass through unchanged.
-    let val = serde_json::json!({
-        "file": { "content": "hello", "filePath": "/tmp/a.rs" },
-        "count": 42,
-        "tags": ["a", "b"]
-    });
-    let result = agent.redact_json(val.clone());
-    assert_eq!(result, val);
-
-    // With redaction enabled, secret patterns inside nested strings are replaced.
-    agent.runtime.security.redact_secrets = true;
-    let secret = "sk-abc123def456";
-    let val_with_secret = serde_json::json!({
-        "file": {
-            "content": format!("api_key = {secret}"),
-            "filePath": "/tmp/config.rs"
-        },
-        "stdout": format!("loaded key {secret} ok"),
-        "count": 1
-    });
-    let redacted = agent.redact_json(val_with_secret);
-    let content = redacted["file"]["content"].as_str().unwrap();
-    let stdout = redacted["stdout"].as_str().unwrap();
-    assert!(
-        !content.contains(secret),
-        "secret must not appear in file.content after redaction"
-    );
-    assert!(
-        content.contains("[REDACTED]"),
-        "file.content must contain [REDACTED]"
-    );
-    assert!(
-        !stdout.contains(secret),
-        "secret must not appear in stdout after redaction"
-    );
-    assert!(
-        stdout.contains("[REDACTED]"),
-        "stdout must contain [REDACTED]"
-    );
-    // Non-string fields must remain intact.
-    assert_eq!(redacted["count"], 1);
-}
-
-#[test]
-fn redact_json_preserves_non_string_types() {
-    use super::super::agent_tests::{
-        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-    };
-
-    let provider = mock_provider(vec![]);
-    let channel = MockChannel::new(vec![]);
-    let registry = create_test_registry();
-    let executor = MockToolExecutor::no_tools();
-    let agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
-
-    let val = serde_json::json!({
-        "n": 1,
-        "b": true,
-        "null_val": null,
-        "arr": [1, 2, 3]
-    });
-    let result = agent.redact_json(val.clone());
-    assert_eq!(result["n"], 1);
-    assert_eq!(result["b"], true);
-    assert!(result["null_val"].is_null());
-}
-
-#[test]
 fn last_user_query_finds_latest_user_message() {
     use super::super::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
@@ -892,40 +812,6 @@ fn inject_active_skill_env_clears_after_call() {
 }
 
 #[tokio::test]
-async fn streaming_chunk_with_secret_is_redacted_before_channel_send() {
-    use super::super::agent_tests::*;
-    use zeph_llm::provider::{Message, MessageMetadata, Role};
-
-    // Streaming provider returns a chunk containing an AWS-style access key.
-    let secret_chunk = "AKIA1234567890ABCDEF".to_string();
-    let provider = mock_provider_streaming(vec![secret_chunk.clone()]);
-    let channel = MockChannel::new(vec![]);
-    let registry = create_test_registry();
-    let executor = MockToolExecutor::no_tools();
-    let mut agent = super::super::Agent::new(provider, channel, registry, None, 5, executor);
-    agent.runtime.security.redact_secrets = true;
-
-    agent.msg.messages.push(Message {
-        role: Role::User,
-        content: "tell me a secret".into(),
-        parts: vec![],
-        metadata: MessageMetadata::default(),
-    });
-
-    let _ = agent.process_response_streaming().await.unwrap();
-
-    // The raw secret must not appear in any chunk sent to the channel.
-    let chunks = agent.channel.sent_chunks();
-    assert!(!chunks.is_empty(), "at least one chunk must have been sent");
-    for chunk in &chunks {
-        assert!(
-            !chunk.contains(&secret_chunk),
-            "raw secret must not appear in sent chunk: {chunk:?}"
-        );
-    }
-}
-
-#[tokio::test]
 async fn call_llm_returns_cached_response_without_provider_call() {
     use super::super::agent_tests::*;
     use std::sync::Arc;
@@ -979,8 +865,8 @@ async fn store_response_in_cache_enables_second_call_to_return_cached() {
     use zeph_llm::provider::{Message, MessageMetadata, Role};
     use zeph_memory::{ResponseCache, store::SqliteStore};
 
-    // Streaming provider has one response; the second call must come from cache.
-    let provider = mock_provider_streaming(vec!["provider response".into()]);
+    // Non-streaming provider has one response; the second call must come from cache.
+    let provider = mock_provider(vec!["provider response".into()]);
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
@@ -1009,19 +895,11 @@ async fn store_response_in_cache_enables_second_call_to_return_cached() {
         "second call must return cached response"
     );
 
-    // First call: streaming provider sends chunks; second call: cache sends via send().
-    // Chunks for the first call contain individual characters of "provider response".
-    let chunks = agent.channel.sent_chunks();
-    let reconstructed: String = chunks.concat();
-    assert_eq!(
-        reconstructed, "provider response",
-        "first call must have streamed the response as chunks"
-    );
-    // Second call (cache hit) sends via channel.send() — one full message.
+    // Both first call (provider) and second call (cache hit) send via channel.send().
     let sent = agent.channel.sent_messages();
     assert!(
         sent.iter().any(|s| s == "provider response"),
-        "second call (cache hit) must have sent the response via send()"
+        "provider response must have been sent via channel"
     );
 }
 
@@ -1523,49 +1401,6 @@ fn anomaly_detector_5_of_20_errors_no_critical_alert() {
         result.is_none(),
         "5/20 errors must not trigger any alert, got: {result:?}"
     );
-}
-
-use super::first_tool_name;
-
-#[test]
-fn first_tool_name_bash() {
-    assert_eq!(first_tool_name("```bash\necho hi\n```"), "bash");
-}
-
-#[test]
-fn first_tool_name_python() {
-    assert_eq!(first_tool_name("```python\nprint(1)\n```"), "python");
-}
-
-#[test]
-fn first_tool_name_with_leading_text() {
-    assert_eq!(
-        first_tool_name("Here is the command:\n```bash\nls\n```"),
-        "bash"
-    );
-}
-
-#[test]
-fn first_tool_name_empty_lang_falls_back_to_tool() {
-    assert_eq!(first_tool_name("```\nsome code\n```"), "tool");
-}
-
-#[test]
-fn first_tool_name_no_fenced_block_falls_back_to_tool() {
-    assert_eq!(first_tool_name("plain text response"), "tool");
-}
-
-#[test]
-fn first_tool_name_picks_first_of_multiple_blocks() {
-    assert_eq!(
-        first_tool_name("```bash\necho 1\n```\n```python\nprint(2)\n```"),
-        "bash"
-    );
-}
-
-#[test]
-fn first_tool_name_empty_input_falls_back_to_tool() {
-    assert_eq!(first_tool_name(""), "tool");
 }
 
 // --- sanitize_tool_output source kind differentiation ---

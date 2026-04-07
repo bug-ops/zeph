@@ -334,8 +334,7 @@ pub fn build_provider_from_entry(
                 .embedding_model
                 .clone()
                 .unwrap_or_else(|| config.llm.embedding_model.clone());
-            let tool_use = entry.tool_use;
-            let mut provider = OllamaProvider::new(base_url, model, embed).with_tool_use(tool_use);
+            let mut provider = OllamaProvider::new(base_url, model, embed);
             if let Some(ref vm) = entry.vision_model {
                 provider = provider.with_vision_model(vm.clone());
             }

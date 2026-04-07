@@ -1017,10 +1017,6 @@ pub struct ProviderEntry {
     #[serde(default)]
     pub include_thoughts: Option<bool>,
 
-    // --- Ollama-specific ---
-    #[serde(default)]
-    pub tool_use: bool,
-
     // --- Compatible-specific: optional inline api_key ---
     #[serde(default)]
     pub api_key: Option<String>,
@@ -1057,7 +1053,6 @@ impl Default for ProviderEntry {
             thinking_level: None,
             thinking_budget: None,
             include_thoughts: None,
-            tool_use: false,
             api_key: None,
             candle: None,
             vision_model: None,
@@ -1144,12 +1139,6 @@ impl ProviderEntry {
                         "fields `thinking_level`/`thinking_budget` are only used by Gemini providers"
                     );
                 }
-                if self.tool_use {
-                    tracing::warn!(
-                        provider = self.effective_name(),
-                        "field `tool_use` is only used by Ollama providers"
-                    );
-                }
             }
             ProviderKind::OpenAi => {
                 if self.thinking.is_some() {
@@ -1164,12 +1153,6 @@ impl ProviderEntry {
                         "fields `thinking_level`/`thinking_budget` are only used by Gemini providers"
                     );
                 }
-                if self.tool_use {
-                    tracing::warn!(
-                        provider = self.effective_name(),
-                        "field `tool_use` is only used by Ollama providers"
-                    );
-                }
             }
             ProviderKind::Gemini => {
                 if self.thinking.is_some() {
@@ -1182,12 +1165,6 @@ impl ProviderEntry {
                     tracing::warn!(
                         provider = self.effective_name(),
                         "field `reasoning_effort` is only used by OpenAI providers"
-                    );
-                }
-                if self.tool_use {
-                    tracing::warn!(
-                        provider = self.effective_name(),
-                        "field `tool_use` is only used by Ollama providers"
                     );
                 }
             }

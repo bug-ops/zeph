@@ -31,7 +31,6 @@ pub struct OllamaProvider {
     embedding_model: String,
     context_window_size: Option<usize>,
     vision_model: Option<String>,
-    tool_use: bool,
     generation_overrides: Option<GenerationOverrides>,
     usage: UsageTracker,
 }
@@ -68,7 +67,6 @@ impl OllamaProvider {
             embedding_model,
             context_window_size: None,
             vision_model: None,
-            tool_use: false,
             generation_overrides: None,
             usage: UsageTracker::default(),
         }
@@ -83,12 +81,6 @@ impl OllamaProvider {
     #[must_use]
     pub fn with_vision_model(mut self, model: String) -> Self {
         self.vision_model = Some(model);
-        self
-    }
-
-    #[must_use]
-    pub fn with_tool_use(mut self, enabled: bool) -> Self {
-        self.tool_use = enabled;
         self
     }
 
@@ -304,10 +296,6 @@ impl LlmProvider for OllamaProvider {
         }
         serde_json::to_value(&request)
             .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
-    }
-
-    fn supports_tool_use(&self) -> bool {
-        self.tool_use
     }
 
     async fn chat_with_tools(
@@ -1072,27 +1060,6 @@ mod tests {
     }
 
     #[test]
-    fn supports_tool_use_default_false() {
-        let provider = OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into());
-        assert!(!provider.supports_tool_use());
-    }
-
-    #[test]
-    fn supports_tool_use_enabled_via_builder() {
-        let provider = OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into())
-            .with_tool_use(true);
-        assert!(provider.supports_tool_use());
-    }
-
-    #[test]
-    fn with_tool_use_false_disables() {
-        let provider = OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into())
-            .with_tool_use(true)
-            .with_tool_use(false);
-        assert!(!provider.supports_tool_use());
-    }
-
-    #[test]
     fn convert_message_structured_tool_result_emits_tool_role() {
         let msg = Message::from_parts(
             Role::User,
@@ -1171,15 +1138,14 @@ mod tests {
     #[tokio::test]
     async fn chat_with_tools_unreachable_endpoint_errors() {
         let provider =
-            OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into())
-                .with_tool_use(true);
+            OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into());
         let messages = vec![Message::from_legacy(Role::User, "hello")];
         let tools = vec![ToolDefinition {
             name: "test_tool".into(),
             description: "A test tool".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
         }];
-        let result = provider.chat_with_tools(&messages, &tools).await;
+        let result: Result<_, _> = provider.chat_with_tools(&messages, &tools).await;
         assert!(result.is_err());
     }
 

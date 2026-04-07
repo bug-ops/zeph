@@ -25,7 +25,7 @@ pub mod agent_tests {
     use std::sync::{Arc, Mutex};
     pub(crate) use tokio::sync::{Notify, mpsc, watch};
     pub(crate) use zeph_llm::any::AnyProvider;
-    use zeph_llm::mock::MockProvider;
+    pub(crate) use zeph_llm::mock::MockProvider;
     pub(crate) use zeph_llm::provider::{Message, MessageMetadata, Role};
     pub(crate) use zeph_memory::semantic::SemanticMemory;
     pub(crate) use zeph_skills::registry::SkillRegistry;
@@ -122,6 +122,7 @@ pub mod agent_tests {
             self.sent.lock().unwrap().clone()
         }
 
+        #[allow(dead_code)]
         pub(crate) fn sent_chunks(&self) -> Vec<String> {
             self.chunks.lock().unwrap().clone()
         }
@@ -205,6 +206,18 @@ pub mod agent_tests {
 
     impl ToolExecutor for MockToolExecutor {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            let mut outputs = self.outputs.lock().unwrap();
+            if outputs.is_empty() {
+                Ok(None)
+            } else {
+                outputs.remove(0)
+            }
+        }
+
+        async fn execute_tool_call(
+            &self,
+            _call: &zeph_tools::executor::ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
             let mut outputs = self.outputs.lock().unwrap();
             if outputs.is_empty() {
                 Ok(None)
@@ -379,27 +392,36 @@ pub mod agent_tests {
 
     #[tokio::test]
     async fn agent_process_response_handles_empty_response() {
+        // In the native path, an empty LLM response is treated as a completed turn (no text
+        // to display). The agent should complete without error and without sending a message.
         let provider = mock_provider(vec![String::new()]);
-        let _channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
         let agent_channel = MockChannel::new(vec!["test".to_string()]);
-        let sent = agent_channel.sent.clone();
 
         let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
 
         let result = agent.run().await;
         assert!(result.is_ok());
-
-        let sent_msgs = sent.lock().unwrap();
-        assert!(sent_msgs.iter().any(|m| m.contains("empty response")));
     }
 
     #[tokio::test]
     async fn agent_handles_tool_execution_success() {
-        let provider = mock_provider(vec!["response with tool".to_string()]);
-        let _channel = MockChannel::new(vec!["execute tool".to_string()]);
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        let tool_call = ToolUseRequest {
+            id: "call1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        };
+        let (mock, _) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![tool_call],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("done".into()),
+        ]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Ok(Some(ToolOutput {
             tool_name: "bash".to_string(),
@@ -417,7 +439,14 @@ pub mod agent_tests {
         let agent_channel = MockChannel::new(vec!["execute tool".to_string()]);
         let sent = agent_channel.sent.clone();
 
-        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+        let mut agent = Agent::new(
+            AnyProvider::Mock(mock),
+            agent_channel,
+            registry,
+            None,
+            5,
+            executor,
+        );
 
         let result = agent.run().await;
         assert!(result.is_ok());
@@ -432,8 +461,20 @@ pub mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_tool_blocked_error() {
-        let provider = mock_provider(vec!["run blocked command".to_string()]);
-        let _channel = MockChannel::new(vec!["test".to_string()]);
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        let tool_call = ToolUseRequest {
+            id: "call1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        };
+        let (mock, _) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![tool_call],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("done".into()),
+        ]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::Blocked {
             command: "rm -rf /".to_string(),
@@ -442,7 +483,14 @@ pub mod agent_tests {
         let agent_channel = MockChannel::new(vec!["test".to_string()]);
         let sent = agent_channel.sent.clone();
 
-        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+        let mut agent = Agent::new(
+            AnyProvider::Mock(mock),
+            agent_channel,
+            registry,
+            None,
+            5,
+            executor,
+        );
 
         let result = agent.run().await;
         assert!(result.is_ok());
@@ -457,8 +505,20 @@ pub mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_tool_sandbox_violation() {
-        let provider = mock_provider(vec!["access forbidden path".to_string()]);
-        let _channel = MockChannel::new(vec!["test".to_string()]);
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        let tool_call = ToolUseRequest {
+            id: "call1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        };
+        let (mock, _) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![tool_call],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("done".into()),
+        ]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::SandboxViolation {
             path: "/etc/passwd".to_string(),
@@ -467,19 +527,45 @@ pub mod agent_tests {
         let agent_channel = MockChannel::new(vec!["test".to_string()]);
         let sent = agent_channel.sent.clone();
 
-        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+        let mut agent = Agent::new(
+            AnyProvider::Mock(mock),
+            agent_channel,
+            registry,
+            None,
+            5,
+            executor,
+        );
 
         let result = agent.run().await;
         assert!(result.is_ok());
 
         let sent_msgs = sent.lock().unwrap();
-        assert!(sent_msgs.iter().any(|m| m.contains("outside the sandbox")));
+        // In the native path, SandboxViolation is classified as PolicyBlocked and formatted
+        // as a tool_result feedback string (not a direct user message). The ToolError display
+        // string ("path not allowed by sandbox") appears in the tool output sent to the channel.
+        assert!(
+            sent_msgs
+                .iter()
+                .any(|m| m.contains("path not allowed by sandbox"))
+        );
     }
 
     #[tokio::test]
     async fn agent_handles_tool_confirmation_approved() {
-        let provider = mock_provider(vec!["needs confirmation".to_string()]);
-        let _channel = MockChannel::new(vec!["test".to_string()]);
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        let tool_call = ToolUseRequest {
+            id: "call1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        };
+        let (mock, _) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![tool_call],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("done".into()),
+        ]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::ConfirmationRequired {
             command: "dangerous command".to_string(),
@@ -489,7 +575,14 @@ pub mod agent_tests {
             MockChannel::new(vec!["test".to_string()]).with_confirmations(vec![true]);
         let sent = agent_channel.sent.clone();
 
-        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+        let mut agent = Agent::new(
+            AnyProvider::Mock(mock),
+            agent_channel,
+            registry,
+            None,
+            5,
+            executor,
+        );
 
         let result = agent.run().await;
         assert!(result.is_ok());
@@ -500,8 +593,20 @@ pub mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_tool_confirmation_denied() {
-        let provider = mock_provider(vec!["needs confirmation".to_string()]);
-        let _channel = MockChannel::new(vec!["test".to_string()]);
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        let tool_call = ToolUseRequest {
+            id: "call1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        };
+        let (mock, _) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![tool_call],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("done".into()),
+        ]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::ConfirmationRequired {
             command: "dangerous command".to_string(),
@@ -511,32 +616,50 @@ pub mod agent_tests {
             MockChannel::new(vec!["test".to_string()]).with_confirmations(vec![false]);
         let sent = agent_channel.sent.clone();
 
-        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+        let mut agent = Agent::new(
+            AnyProvider::Mock(mock),
+            agent_channel,
+            registry,
+            None,
+            5,
+            executor,
+        );
 
         let result = agent.run().await;
         assert!(result.is_ok());
 
         let sent_msgs = sent.lock().unwrap();
-        assert!(sent_msgs.iter().any(|m| m.contains("Command cancelled")));
+        // In the native path, a denied confirmation results in a "[cancelled by user]" tool
+        // output sent via send_tool_output (not a direct "Command cancelled" user message).
+        assert!(sent_msgs.iter().any(|m| m.contains("[cancelled by user]")));
     }
 
     #[tokio::test]
     async fn agent_handles_streaming_response() {
-        let provider = mock_provider_streaming(vec!["streaming response".to_string()]);
-        let _channel = MockChannel::new(vec!["test".to_string()]);
+        let (mock, _) =
+            MockProvider::default().with_tool_use(vec![zeph_llm::provider::ChatResponse::Text(
+                "streaming response".to_string(),
+            )]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
         let agent_channel = MockChannel::new(vec!["test".to_string()]);
-        let chunks = agent_channel.chunks.clone();
+        let sent = agent_channel.sent.clone();
 
-        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+        let mut agent = Agent::new(
+            AnyProvider::Mock(mock),
+            agent_channel,
+            registry,
+            None,
+            5,
+            executor,
+        );
 
         let result = agent.run().await;
         assert!(result.is_ok());
 
-        let sent_chunks = chunks.lock().unwrap();
-        assert!(!sent_chunks.is_empty());
+        let sent_msgs = sent.lock().unwrap();
+        assert!(!sent_msgs.is_empty());
     }
 
     #[tokio::test]
@@ -699,55 +822,92 @@ pub mod agent_tests {
 
     #[tokio::test]
     async fn agent_handles_tool_execution_error() {
-        let provider = mock_provider(vec!["response".to_string()]);
-        let _channel = MockChannel::new(vec!["test".to_string()]);
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        let tool_call = ToolUseRequest {
+            id: "call1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        };
+        let (mock, _) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![tool_call],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("done".into()),
+        ]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Err(ToolError::Timeout { timeout_secs: 30 })]);
 
         let agent_channel = MockChannel::new(vec!["test".to_string()]);
         let sent = agent_channel.sent.clone();
 
-        let mut agent = Agent::new(provider, agent_channel, registry, None, 5, executor);
+        let mut agent = Agent::new(
+            AnyProvider::Mock(mock),
+            agent_channel,
+            registry,
+            None,
+            5,
+            executor,
+        );
 
         let result = agent.run().await;
         assert!(result.is_ok());
 
         let sent_msgs = sent.lock().unwrap();
+        // In the native path, Timeout errors are formatted as tool_result feedback sent via
+        // send_tool_output. The error string ("command timed out") appears in the tool output.
         assert!(
             sent_msgs
                 .iter()
-                .any(|m| m.contains("Tool execution failed"))
+                .any(|m| m.contains("timed out") || m.contains("timeout"))
         );
     }
 
     #[tokio::test]
     async fn agent_processes_multi_turn_tool_execution() {
-        let provider = mock_provider(vec![
-            "first response".to_string(),
-            "second response".to_string(),
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        let tool_call = ToolUseRequest {
+            id: "call1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        };
+        // Native path: LLM returns ToolUse first, then a final Text after tool results.
+        let (mock, _) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![tool_call],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("step complete".into()),
         ]);
         let channel = MockChannel::new(vec!["start task".to_string()]);
         let registry = create_test_registry();
-        let executor = MockToolExecutor::new(vec![
-            Ok(Some(ToolOutput {
-                tool_name: "bash".to_string(),
-                summary: "step 1 complete".to_string(),
-                blocks_executed: 1,
-                filter_stats: None,
-                diff: None,
-                streamed: false,
-                terminal_id: None,
-                locations: None,
-                raw_response: None,
-                claim_source: None,
-            })),
-            Ok(None),
-        ]);
+        let executor = MockToolExecutor::new(vec![Ok(Some(ToolOutput {
+            tool_name: "bash".to_string(),
+            summary: "step 1 complete".to_string(),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+            claim_source: None,
+        }))]);
 
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let mut agent = Agent::new(
+            AnyProvider::Mock(mock),
+            channel,
+            registry,
+            None,
+            5,
+            executor,
+        );
 
         let result = agent.run().await;
         assert!(result.is_ok());
+        // Native path: user message + assistant tool_use + user tool_result + assistant response.
         assert!(agent.msg.messages.len() > 3);
     }
 
