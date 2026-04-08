@@ -334,7 +334,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        bundle: [desktop, ide, server, chat, ml]
+        bundle: [desktop, ide, server, chat, ml, bench]
         include:
           - bundle: ml
             allow_failure: true
