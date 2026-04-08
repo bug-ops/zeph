@@ -100,7 +100,7 @@ impl<C: Channel> Agent<C> {
         let all_tool_defs = tool_defs.clone();
 
         // Iteration 0: apply dynamic tool schema filter (#2020) if cached IDs are available.
-        if let Some(ref filtered_ids) = self.cached_filtered_tool_ids {
+        if let Some(ref filtered_ids) = self.tool_state.cached_filtered_tool_ids {
             tool_defs.retain(|d| filtered_ids.contains(&d.name));
             tracing::debug!(
                 filtered = tool_defs.len(),
@@ -146,25 +146,30 @@ impl<C: Channel> Agent<C> {
             let gated_iter1_defs: Vec<ToolDefinition>;
             let defs_for_turn: &[ToolDefinition] = if iteration == 0 {
                 &tool_defs
-            } else if let Some(ref dep_graph) = self.dependency_graph
+            } else if let Some(ref dep_graph) = self.tool_state.dependency_graph
                 && !dep_graph.is_empty()
             {
                 let names: Vec<&str> = all_tool_defs.iter().map(|d| d.name.as_str()).collect();
                 let allowed = dep_graph.filter_tool_names(
                     &names,
-                    &self.completed_tool_ids,
-                    &self.dependency_always_on,
+                    &self.tool_state.completed_tool_ids,
+                    &self.tool_state.dependency_always_on,
                 );
                 let allowed_set: std::collections::HashSet<&str> = allowed.into_iter().collect();
                 // Deadlock fallback: if all non-always-on tools would be blocked,
                 // use the full set for this iteration.
                 let non_ao_allowed = allowed_set
                     .iter()
-                    .filter(|n| !self.dependency_always_on.contains(**n))
+                    .filter(|n| !self.tool_state.dependency_always_on.contains(**n))
                     .count();
                 let non_ao_total = all_tool_defs
                     .iter()
-                    .filter(|d| !self.dependency_always_on.contains(d.name.as_str()))
+                    .filter(|d| {
+                        !self
+                            .tool_state
+                            .dependency_always_on
+                            .contains(d.name.as_str())
+                    })
                     .count();
                 if non_ao_allowed == 0 && non_ao_total > 0 {
                     tracing::warn!(
@@ -212,7 +217,7 @@ impl<C: Channel> Agent<C> {
         query_embedding: Option<Vec<f32>>,
     ) -> Result<Option<()>, super::super::error::AgentError> {
         // Track iteration for BudgetHint injection (#2267).
-        self.current_tool_iteration = iteration;
+        self.tool_state.current_tool_iteration = iteration;
         self.channel.send_typing().await?;
 
         // Inject any pending LSP notes as a Role::System message before calling
@@ -1452,8 +1457,10 @@ impl<C: Channel> Agent<C> {
 
                 // Record successful tool completions for the dependency graph (#2024).
                 // Only record on success (non-error) so `requires` chains work correctly.
-                if !is_failed && self.dependency_graph.is_some() {
-                    self.completed_tool_ids.insert(tool_calls[idx].name.clone());
+                if !is_failed && self.tool_state.dependency_graph.is_some() {
+                    self.tool_state
+                        .completed_tool_ids
+                        .insert(tool_calls[idx].name.clone());
                 }
 
                 // RuntimeLayer after_tool hooks.

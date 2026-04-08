@@ -470,6 +470,22 @@ pub(crate) struct CompressionState {
     pub(crate) subgoal_user_msg_hash: Option<u64>,
 }
 
+/// Groups runtime tool filtering, dependency tracking, and iteration bookkeeping.
+pub(crate) struct ToolState {
+    /// Dynamic tool schema filter: pre-computed tool embeddings for per-turn filtering (#2020).
+    pub(crate) tool_schema_filter: Option<zeph_tools::ToolSchemaFilter>,
+    /// Cached filtered tool IDs for the current user turn.
+    pub(crate) cached_filtered_tool_ids: Option<HashSet<String>>,
+    /// Tool dependency graph for sequential tool availability (#2024).
+    pub(crate) dependency_graph: Option<zeph_tools::ToolDependencyGraph>,
+    /// Always-on tool IDs, mirrored from the tool schema filter for dependency gate bypass.
+    pub(crate) dependency_always_on: HashSet<String>,
+    /// Tool IDs that completed successfully in the current session.
+    pub(crate) completed_tool_ids: HashSet<String>,
+    /// Current tool loop iteration index within the active user turn.
+    pub(crate) current_tool_iteration: usize,
+}
+
 /// Groups per-session I/O and policy state.
 pub(crate) struct SessionState {
     pub(crate) env_context: EnvironmentContext,

@@ -4336,7 +4336,7 @@ async fn probe_rejected_does_not_trigger_exhausted() {
 
 // --- #2475: memory_save session hint in system prompt ---
 
-/// When `memory_save` is present in `completed_tool_ids`, `rebuild_system_prompt`
+/// When `memory_save` is present in `tool_state.completed_tool_ids`, `rebuild_system_prompt`
 /// must append the disambiguation hint directing the model to use `memory_search`
 /// rather than `search_code` for user-provided facts.
 #[tokio::test]
@@ -4348,7 +4348,10 @@ async fn rebuild_system_prompt_injects_memory_save_hint_when_tool_was_used() {
     let executor = MockToolExecutor::no_tools();
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.completed_tool_ids.insert("memory_save".to_owned());
+    agent
+        .tool_state
+        .completed_tool_ids
+        .insert("memory_save".to_owned());
     agent.rebuild_system_prompt("test query").await;
 
     let prompt = &agent.msg.messages[0].content;
@@ -4358,7 +4361,7 @@ async fn rebuild_system_prompt_injects_memory_save_hint_when_tool_was_used() {
     );
 }
 
-/// When `completed_tool_ids` does NOT contain `memory_save`, no hint must be
+/// When `tool_state.completed_tool_ids` does NOT contain `memory_save`, no hint must be
 /// appended — the system prompt must stay clean to avoid unnecessary noise.
 #[tokio::test]
 async fn rebuild_system_prompt_omits_memory_save_hint_when_tool_not_used() {
@@ -4369,7 +4372,7 @@ async fn rebuild_system_prompt_omits_memory_save_hint_when_tool_not_used() {
     let executor = MockToolExecutor::no_tools();
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    // completed_tool_ids is empty by default — no memory_save.
+    // tool_state.completed_tool_ids is empty by default — no memory_save.
     agent.rebuild_system_prompt("test query").await;
 
     let prompt = &agent.msg.messages[0].content;

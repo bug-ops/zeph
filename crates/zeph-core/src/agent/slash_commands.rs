@@ -740,7 +740,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         );
         let _ = writeln!(out, "Skills:    {skill_count}");
         let _ = writeln!(out, "MCP:       {mcp_servers} server(s)");
-        if let Some(ref tf) = self.tool_schema_filter {
+        if let Some(ref tf) = self.tool_state.tool_schema_filter {
             let _ = writeln!(
                 out,
                 "Filter:    enabled (top_k={}, always_on={}, {} embeddings)",

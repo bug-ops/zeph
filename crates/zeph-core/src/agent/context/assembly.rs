@@ -37,7 +37,7 @@ impl<C: Channel> Agent<C> {
         }
         // Clear completed tool IDs along with message history: dependency state is
         // session-scoped and should reset when the conversation resets.
-        self.completed_tool_ids.clear();
+        self.tool_state.completed_tool_ids.clear();
         self.recompute_prompt_tokens();
     }
 
@@ -658,7 +658,7 @@ impl<C: Channel> Agent<C> {
         self.last_persisted_message_id = None;
         self.deferred_db_hide_ids.clear();
         self.deferred_db_summaries.clear();
-        self.cached_filtered_tool_ids = None;
+        self.tool_state.cached_filtered_tool_ids = None;
         self.providers.cached_prompt_tokens = 0;
 
         // --- Step 10: update conversation ID and memory state ---
@@ -1871,8 +1871,8 @@ impl<C: Channel> Agent<C> {
         // Dynamic tool schema filtering (#2020): compute once per turn, cache for native path.
         // Query embedding is computed here; when strategy=Embedding already computed it above,
         // but providers are stateless so a second embed() call is acceptable for MVP.
-        self.cached_filtered_tool_ids = None;
-        if let Some(ref filter) = self.tool_schema_filter
+        self.tool_state.cached_filtered_tool_ids = None;
+        if let Some(ref filter) = self.tool_state.tool_schema_filter
             && self.provider.supports_tool_use()
         {
             let defs = self.tool_executor.tool_definitions_erased();
@@ -1890,14 +1890,14 @@ impl<C: Channel> Agent<C> {
                     // Apply dependency graph AFTER schema filter (and after any TAFC
                     // augmentation that may have added tools). This ensures hard gates
                     // are the final word on tool availability (MED-04 fix).
-                    if let Some(ref dep_graph) = self.dependency_graph {
+                    if let Some(ref dep_graph) = self.tool_state.dependency_graph {
                         let dep_config = &self.runtime.dependency_config;
                         dep_graph.apply(
                             &mut result,
-                            &self.completed_tool_ids,
+                            &self.tool_state.completed_tool_ids,
                             dep_config.boost_per_dep,
                             dep_config.max_total_boost,
-                            &self.dependency_always_on,
+                            &self.tool_state.dependency_always_on,
                         );
                         if !result.dependency_exclusions.is_empty() {
                             tracing::info!(
@@ -1927,7 +1927,7 @@ impl<C: Channel> Agent<C> {
                     for (tool_id, reason) in &result.inclusion_reasons {
                         tracing::debug!(tool_id, ?reason, "tool inclusion reason");
                     }
-                    self.cached_filtered_tool_ids = Some(result.included);
+                    self.tool_state.cached_filtered_tool_ids = Some(result.included);
                 }
                 Err(e) => {
                     tracing::warn!("tool filter: query embed failed, using all tools: {e:#}");
@@ -2014,7 +2014,7 @@ impl<C: Channel> Agent<C> {
 
         // If memory_save was used this session, remind the model to use memory_search
         // (not search_code) to recall user-provided facts (#2475).
-        if self.completed_tool_ids.contains("memory_save") {
+        if self.tool_state.completed_tool_ids.contains("memory_save") {
             system_prompt.push_str(
                 "\n\nFacts provided by the user in this session have been saved with memory_save — use memory_search to recall them, not search_code.",
             );
@@ -2037,7 +2037,8 @@ impl<C: Channel> Agent<C> {
                 if max > 0.0 { Some(max) } else { None }
             });
             let max_tool_calls = self.tool_orchestrator.max_iterations;
-            let remaining_tool_calls = max_tool_calls.saturating_sub(self.current_tool_iteration);
+            let remaining_tool_calls =
+                max_tool_calls.saturating_sub(self.tool_state.current_tool_iteration);
             let hint = BudgetHint {
                 remaining_cost_cents,
                 total_budget_cents,

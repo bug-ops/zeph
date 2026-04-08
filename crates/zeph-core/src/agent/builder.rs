@@ -1393,7 +1393,7 @@ impl<C: Channel> Agent<C> {
     /// Set the dynamic tool schema filter (pre-computed tool embeddings).
     #[must_use]
     pub fn with_tool_schema_filter(mut self, filter: zeph_tools::ToolSchemaFilter) -> Self {
-        self.tool_schema_filter = Some(filter);
+        self.tool_state.tool_schema_filter = Some(filter);
         self
     }
 
@@ -1414,8 +1414,8 @@ impl<C: Channel> Agent<C> {
         graph: zeph_tools::ToolDependencyGraph,
         always_on: std::collections::HashSet<String>,
     ) -> Self {
-        self.dependency_graph = Some(graph);
-        self.dependency_always_on = always_on;
+        self.tool_state.dependency_graph = Some(graph);
+        self.tool_state.dependency_always_on = always_on;
         self
     }
 
@@ -1481,7 +1481,7 @@ impl<C: Channel> Agent<C> {
             config.min_description_words,
             embeddings,
         );
-        self.tool_schema_filter = Some(filter);
+        self.tool_state.tool_schema_filter = Some(filter);
         self
     }
 

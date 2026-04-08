@@ -76,7 +76,7 @@ use state::CompressionState;
 use state::{
     DebugState, ExperimentState, FeedbackState, IndexState, InstructionState, LifecycleState,
     McpState, MemoryState, MessageState, MetricsState, OrchestrationState, ProviderState,
-    RuntimeConfig, SecurityState, SessionState, SkillState,
+    RuntimeConfig, SecurityState, SessionState, SkillState, ToolState,
 };
 
 pub(crate) const DOOM_LOOP_WINDOW: usize = 3;
@@ -144,20 +144,8 @@ pub struct Agent<C: Channel> {
     pub(super) focus: focus::FocusState,
     /// `SideQuest` state: cursor tracking, turn counter, eviction stats (#1885).
     pub(super) sidequest: sidequest::SidequestState,
-    /// Dynamic tool schema filter: pre-computed tool embeddings for per-turn filtering (#2020).
-    pub(super) tool_schema_filter: Option<zeph_tools::ToolSchemaFilter>,
-    /// Cached filtered tool IDs for the current user turn. Set by `compute_filtered_tool_ids()`
-    /// in `rebuild_system_prompt()`, consumed by the native tool loop on iteration 0.
-    pub(super) cached_filtered_tool_ids: Option<HashSet<String>>,
-    /// Tool dependency graph for sequential tool availability (issue #2024).
-    /// Built once from config, applied per-turn after tool schema filtering.
-    pub(super) dependency_graph: Option<zeph_tools::ToolDependencyGraph>,
-    /// Always-on tool IDs, mirrored from the tool schema filter for dependency gate bypass.
-    pub(super) dependency_always_on: HashSet<String>,
-    /// Tool IDs that completed successfully in the current session.
-    /// Grows monotonically per session; cleared on `/clear`.
-    /// NOTE: bounded by session length, typically < 1000 entries.
-    pub(super) completed_tool_ids: HashSet<String>,
+    /// Tool filtering, dependency tracking, and iteration bookkeeping.
+    pub(super) tool_state: ToolState,
     /// DB row ID of the most recently persisted message. Set by `persist_message`;
     /// consumed by `push_message` call sites to populate `metadata.db_id` on in-memory messages.
     pub(super) last_persisted_message_id: Option<i64>,
@@ -169,9 +157,6 @@ pub struct Agent<C: Channel> {
     ///
     /// Default: empty vec (zero-cost — loops never iterate).
     pub(super) runtime_layers: Vec<std::sync::Arc<dyn crate::runtime_layer::RuntimeLayer>>,
-    /// Current tool loop iteration index within the active user turn. Reset to 0 at turn start,
-    /// incremented each iteration. Used to compute remaining tool call budget for `BudgetHint` (#2267).
-    pub(super) current_tool_iteration: usize,
     /// autoDream session state (#2697). Tracks session count and last consolidation time.
     pub(super) autodream_state: autodream::AutoDreamState,
     /// `MagicDocs` session state (#2702). Tracks registered doc paths and last update turn.
@@ -494,16 +479,18 @@ impl<C: Channel> Agent<C> {
             },
             focus: focus::FocusState::default(),
             sidequest: sidequest::SidequestState::default(),
-            tool_schema_filter: None,
-            cached_filtered_tool_ids: None,
-            dependency_graph: None,
-            dependency_always_on: HashSet::new(),
-            completed_tool_ids: HashSet::new(),
+            tool_state: ToolState {
+                tool_schema_filter: None,
+                cached_filtered_tool_ids: None,
+                dependency_graph: None,
+                dependency_always_on: HashSet::new(),
+                completed_tool_ids: HashSet::new(),
+                current_tool_iteration: 0,
+            },
             last_persisted_message_id: None,
             deferred_db_hide_ids: Vec::new(),
             deferred_db_summaries: Vec::new(),
             runtime_layers: Vec::new(),
-            current_tool_iteration: 0,
             autodream_state: autodream::AutoDreamState::new(),
             magic_docs_state: magic_docs::MagicDocsState::new(),
         }
