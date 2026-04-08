@@ -126,11 +126,15 @@ jobs:
         run: cargo +nightly fmt --check
 
   lint-clippy:
-    name: Lint (clippy)
+    name: Lint (clippy, ${{ matrix.features }})
     needs: detect-changes
     if: needs.detect-changes.outputs.run-full-ci == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [full, bench]
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
@@ -143,10 +147,10 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: "false"
-          shared-key: "ci"
+          shared-key: "ci-clippy-${{ matrix.features }}"
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - name: Clippy
-        run: cargo clippy --profile ci --workspace --features full -- -D warnings
+        run: cargo clippy --profile ci --workspace --features ${{ matrix.features }} -- -D warnings
 
   build-tests:
     name: Build Tests (${{ matrix.os }})
