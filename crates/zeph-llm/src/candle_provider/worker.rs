@@ -25,6 +25,16 @@ pub struct InferenceRequest {
     pub reply: tokio::sync::oneshot::Sender<Result<GenerationOutput, LlmError>>,
 }
 
+/// Static configuration for an inference worker (passed once at spawn time).
+pub(crate) struct WorkerConfig {
+    pub weights: ModelWeights,
+    pub tokenizer: std::sync::Arc<Tokenizer>,
+    pub eos_token_id: u32,
+    pub template: ChatTemplate,
+    pub generation_config: GenerationConfig,
+    pub device: candle_core::Device,
+}
+
 /// Bounded inference worker that owns `ModelWeights` and processes requests
 /// sequentially through a `tokio::sync::mpsc` channel.
 ///
@@ -43,27 +53,14 @@ pub(crate) struct InferenceWorker {
 impl InferenceWorker {
     /// Spawn the worker. Returns immediately; the worker runs in the background.
     pub fn spawn(
-        weights: ModelWeights,
-        tokenizer: std::sync::Arc<Tokenizer>,
-        eos_token_id: u32,
-        template: ChatTemplate,
-        generation_config: GenerationConfig,
-        device: candle_core::Device,
+        config: WorkerConfig,
         channel_capacity: usize,
         inference_timeout: Duration,
     ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel::<InferenceRequest>(channel_capacity);
 
         let handle = tokio::task::spawn_blocking(move || {
-            worker_loop(
-                weights,
-                tokenizer,
-                eos_token_id,
-                template,
-                generation_config,
-                device,
-                rx,
-            );
+            worker_loop(config, rx);
         });
 
         Self {
@@ -75,23 +72,15 @@ impl InferenceWorker {
 }
 
 /// The blocking worker loop. Runs until all `Sender`s are dropped.
-fn worker_loop(
-    mut weights: ModelWeights,
-    tokenizer: std::sync::Arc<Tokenizer>,
-    eos_token_id: u32,
-    template: ChatTemplate,
-    generation_config: GenerationConfig,
-    device: candle_core::Device,
-    mut rx: tokio::sync::mpsc::Receiver<InferenceRequest>,
-) {
+fn worker_loop(mut config: WorkerConfig, mut rx: tokio::sync::mpsc::Receiver<InferenceRequest>) {
     while let Some(req) = rx.blocking_recv() {
         let result = generate_sync(
-            &mut weights,
-            &tokenizer,
-            eos_token_id,
-            &template,
-            &generation_config,
-            &device,
+            &mut config.weights,
+            &config.tokenizer,
+            config.eos_token_id,
+            config.template,
+            &config.generation_config,
+            &config.device,
             &req.messages,
         );
         // If the caller timed out and dropped the receiver, ignore the send error.
@@ -105,7 +94,7 @@ fn generate_sync(
     weights: &mut ModelWeights,
     tokenizer: &Tokenizer,
     eos_token_id: u32,
-    template: &ChatTemplate,
+    template: ChatTemplate,
     generation_config: &GenerationConfig,
     device: &candle_core::Device,
     messages: &[Message],
@@ -152,17 +141,18 @@ mod tests {
             reply: tx,
         };
 
-        let expected = GenerationOutput {
-            text: "world".into(),
+        let expected_text = "world";
+        let output = GenerationOutput {
+            text: expected_text.into(),
             tokens_generated: 1,
         };
         req.reply
-            .send(Ok(expected.clone()))
+            .send(Ok(output))
             .expect("send must succeed when receiver is live");
 
         let result = rx.try_recv().expect("reply must be immediately available");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().text, expected.text);
+        assert_eq!(result.unwrap().text, expected_text);
     }
 
     /// Verify that the worker loop does not panic when a caller drops its receiver

@@ -18,7 +18,9 @@ use self::embed::EmbedModel;
 use self::generate::GenerationConfig;
 use self::loader::{LoadedModel, ModelSource, load_chat_model};
 use self::template::ChatTemplate;
-use self::worker::{DEFAULT_INFERENCE_TIMEOUT_SECS, InferenceRequest, InferenceWorker};
+use self::worker::{
+    DEFAULT_INFERENCE_TIMEOUT_SECS, InferenceRequest, InferenceWorker, WorkerConfig,
+};
 use crate::provider::{ChatStream, LlmProvider, Message, StreamChunk};
 
 /// Bounded channel capacity for inference requests.
@@ -61,7 +63,7 @@ impl Clone for CandleProvider {
             },
             tokenizer: std::sync::Arc::clone(&self.tokenizer),
             eos_token_id: self.eos_token_id,
-            template: self.template.clone(),
+            template: self.template,
             generation_config: self.generation_config.clone(),
             embed_model: self.embed_model.clone(),
             device: self.device.clone(),
@@ -124,12 +126,14 @@ impl CandleProvider {
 
         let tokenizer = std::sync::Arc::new(tokenizer);
         let worker = InferenceWorker::spawn(
-            weights,
-            std::sync::Arc::clone(&tokenizer),
-            eos_token_id,
-            template.clone(),
-            generation_config.clone(),
-            device.clone(),
+            WorkerConfig {
+                weights,
+                tokenizer: std::sync::Arc::clone(&tokenizer),
+                eos_token_id,
+                template,
+                generation_config: generation_config.clone(),
+                device: device.clone(),
+            },
             WORKER_CHANNEL_CAPACITY,
             inference_timeout,
         );
