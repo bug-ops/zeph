@@ -949,6 +949,12 @@ pub struct CandleInlineConfig {
     pub hf_token: Option<String>,
     #[serde(default)]
     pub generation: GenerationParams,
+    /// Maximum wall-clock seconds to wait for a single inference request.
+    ///
+    /// Effective timeout is `2 × inference_timeout_secs` (send + recv each have this budget).
+    /// CPU inference can be slow; 120s is a conservative default. Floored at 1s.
+    #[serde(default = "default_inference_timeout_secs")]
+    pub inference_timeout_secs: u64,
 }
 
 impl Default for CandleInlineConfig {
@@ -962,6 +968,7 @@ impl Default for CandleInlineConfig {
             embedding_repo: None,
             hf_token: None,
             generation: GenerationParams::default(),
+            inference_timeout_secs: default_inference_timeout_secs(),
         }
     }
 }
