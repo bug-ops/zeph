@@ -68,10 +68,4 @@ jobs:
         with:
           name: nextest-archive-${{ matrix.os }}
       - name: "Run tests (shard ${{ matrix.partition }})"
-        run: |
-          cargo nextest run \
-            --config-file .github/nextest.toml \
-            --archive-file nextest-archive.tar.zst \
-            --workspace-remap . \
-            --profile ci-partition \
-            --partition hash:${{ matrix.partition }}
+        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap . --profile ci-partition --partition "hash:${{ matrix.partition }}"
