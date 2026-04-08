@@ -7,12 +7,39 @@ use zeph_core::agent::Agent;
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
+use zeph_llm::provider::{ChatResponse, ToolUseRequest};
 use zeph_skills::registry::SkillRegistry;
-use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
+use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 
 fn mock_provider(response: &str) -> AnyProvider {
     let mut p = MockProvider::default();
     p.default_response = response.to_string();
+    AnyProvider::Mock(p)
+}
+
+fn tool_use_provider(final_text: &str) -> AnyProvider {
+    let tool_call = ToolUseRequest {
+        id: "call1".into(),
+        name: "bash".into(),
+        input: serde_json::json!({}),
+    };
+    let (p, _) = MockProvider::default().with_tool_use(vec![
+        ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![tool_call],
+            thinking_blocks: vec![],
+        },
+        ChatResponse::Text(final_text.to_string()),
+    ]);
+    AnyProvider::Mock(p)
+}
+
+fn multi_message_provider(count: usize) -> AnyProvider {
+    let mut responses = Vec::new();
+    for _ in 0..count {
+        responses.push(ChatResponse::Text("response".to_string()));
+    }
+    let (p, _) = MockProvider::default().with_tool_use(responses);
     AnyProvider::Mock(p)
 }
 
@@ -84,36 +111,48 @@ impl InstrumentedMockExecutor {
 }
 
 impl ToolExecutor for InstrumentedMockExecutor {
-    async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        Ok(None)
+    }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         let start = Instant::now();
-
-        // Simulate minimal work: just check for bash blocks
-        let has_blocks = response.contains("```bash");
-
         let elapsed = start.elapsed();
 
         *self.execution_time.lock().unwrap() = Some(elapsed);
         *self.call_count.lock().unwrap() += 1;
         self.execution_log.lock().unwrap().push(format!(
-            "execute() called, has_blocks={has_blocks}, elapsed={elapsed:?}",
+            "execute_tool_call() called, tool={}, elapsed={elapsed:?}",
+            call.tool_id,
         ));
 
-        if has_blocks {
-            Ok(Some(ToolOutput {
-                tool_name: "bash".to_string(),
-                summary: "$ echo test\ntest".to_string(),
-                blocks_executed: 1,
-                filter_stats: None,
-                diff: None,
-                streamed: false,
-                terminal_id: None,
-                locations: None,
-                raw_response: None,
-                claim_source: None,
-            }))
-        } else {
-            Ok(None)
-        }
+        Ok(Some(ToolOutput {
+            tool_name: call.tool_id.clone(),
+            summary: "mock output".to_string(),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+            claim_source: None,
+        }))
+    }
+}
+
+#[derive(Clone)]
+struct BlockingMockExecutor;
+
+impl ToolExecutor for BlockingMockExecutor {
+    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        Ok(None)
+    }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        Err(ToolError::Blocked {
+            command: call.tool_id.clone(),
+        })
     }
 }
 
@@ -147,8 +186,8 @@ async fn agent_integration_no_bash_blocks() {
         "Agent run should be fast for non-bash response: {elapsed:?}",
     );
 
-    // Tool executor should be called exactly once (for the single response)
-    assert_eq!(executor.get_call_count(), 1);
+    // Plain text response doesn't trigger tool execution (native tool_use path)
+    assert_eq!(executor.get_call_count(), 0);
 
     // Should have sent the response back
     let outputs = output_sent.lock().unwrap();
@@ -158,10 +197,8 @@ async fn agent_integration_no_bash_blocks() {
 
 #[tokio::test]
 async fn agent_integration_with_safe_bash_blocks() {
-    // Note: Agent runs the process_response loop up to MAX_SHELL_ITERATIONS (3) times
-    // Each iteration calls execute() once. When no bash blocks in next iteration,
-    // the loop exits. So total calls = # of messages processed.
-    let provider = mock_provider("Here's a command:\n```bash\necho hello\n```\nDone.");
+    // Native tool_use path: provider returns ToolUse then Text.
+    let provider = tool_use_provider("Done.");
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["run echo"], output_sent.clone());
     let executor = InstrumentedMockExecutor::new();
@@ -179,19 +216,19 @@ async fn agent_integration_with_safe_bash_blocks() {
     let _ = agent.run().await;
     let elapsed = start.elapsed();
 
-    // Should complete reasonably (bash subprocess is the bottleneck, not tool executor)
+    // Should complete reasonably
     assert!(
         elapsed.as_millis() < 1000,
         "Agent run should complete: {elapsed:?}",
     );
 
-    // With bash blocks in response, execute is called at least once
+    // Native tool_use path calls execute_tool_call at least once
     assert!(executor.get_call_count() >= 1);
 }
 
 #[tokio::test]
 async fn tool_executor_overhead_is_minimal() {
-    let provider = mock_provider("response");
+    let provider = tool_use_provider("done");
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["test"], output_sent.clone());
     let executor = InstrumentedMockExecutor::new();
@@ -362,7 +399,7 @@ async fn integration_agent_tool_executor_types() {
 #[tokio::test]
 async fn agent_throughput_multiple_responses() {
     // Test throughput: how many responses can be processed
-    let provider = mock_provider("plain response without bash");
+    let provider = multi_message_provider(5);
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(
         vec!["msg1", "msg2", "msg3", "msg4", "msg5"],
@@ -383,8 +420,13 @@ async fn agent_throughput_multiple_responses() {
     let _ = agent.run().await;
     let elapsed = start.elapsed();
 
-    // Should process 5 messages (1 execute call per message)
-    assert_eq!(executor.get_call_count(), 5);
+    // Should process 5 messages — each produces a text response sent to channel
+    let outputs = output_sent.lock().unwrap();
+    assert!(
+        outputs.len() >= 5,
+        "expected at least 5 outputs, got {}",
+        outputs.len()
+    );
 
     // Sanity check: should complete in reasonable time
     assert!(
@@ -439,21 +481,11 @@ async fn tool_executor_pattern_matching_overhead() {
 
 #[tokio::test]
 async fn agent_no_regression_in_error_handling() {
-    use zeph_tools::config::ShellConfig;
-    use zeph_tools::shell::ShellExecutor;
-
-    // Test that blocked commands are handled properly
-    let shell_config = ShellConfig {
-        timeout: 30,
-        blocked_commands: vec!["dangerous".to_string()],
-        allowed_commands: vec![],
-        ..ShellConfig::default()
-    };
-    let executor = ShellExecutor::new(&shell_config);
-
-    let provider = mock_provider("Try this:\n```bash\ndangerous command\n```");
+    // Test that blocked tool calls are handled properly via native tool_use path
+    let provider = tool_use_provider("Done after error.");
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["test"], output_sent.clone());
+    let executor = BlockingMockExecutor;
 
     let mut agent = Agent::new(
         provider,
@@ -467,12 +499,15 @@ async fn agent_no_regression_in_error_handling() {
     // Should run without panic
     let _ = agent.run().await;
 
-    // Should have sent a blocked message
+    // Should have sent some output (error or recovery message)
     let outputs = output_sent.lock().unwrap();
-    let blocked_msg = outputs
-        .iter()
-        .find(|msg| msg.contains("blocked") || msg.contains("Blocked"));
-    assert!(blocked_msg.is_some(), "Should send blocked message");
+    assert!(!outputs.is_empty(), "Should produce output");
+    assert!(
+        outputs.iter().any(|msg| {
+            msg.contains("blocked") || msg.contains("tool_error") || msg.contains("forbidden")
+        }),
+        "Should send blocked/error message, got: {outputs:?}",
+    );
 }
 
 // ==========================
@@ -483,7 +518,7 @@ async fn agent_no_regression_in_error_handling() {
 async fn agent_no_memory_leaks_in_loop() {
     // Test that repeated message processing doesn't leak memory
     // (This is a sanity check; actual memory profiling would need valgrind/heaptrack)
-    let provider = mock_provider("response");
+    let provider = multi_message_provider(10);
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(
         vec!["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"],
@@ -503,26 +538,21 @@ async fn agent_no_memory_leaks_in_loop() {
     // This should run without panics or excessive allocations
     let _ = agent.run().await;
 
-    assert_eq!(executor.get_call_count(), 10);
+    let outputs = output_sent.lock().unwrap();
+    assert!(
+        outputs.len() >= 10,
+        "expected at least 10 outputs, got {}",
+        outputs.len()
+    );
 }
 
 #[tokio::test]
 async fn agent_tool_executor_error_recovery() {
-    use zeph_tools::config::ShellConfig;
-    use zeph_tools::shell::ShellExecutor;
-
-    // Create executor that will reject one type of command
-    let shell_config = ShellConfig {
-        timeout: 30,
-        blocked_commands: vec!["forbidden".to_string()],
-        allowed_commands: vec![],
-        ..ShellConfig::default()
-    };
-    let executor = ShellExecutor::new(&shell_config);
-
-    let provider = mock_provider("```bash\nforbidden action\n```");
+    // Use native tool_use path with an executor that returns Blocked error
+    let provider = tool_use_provider("recovered");
     let output_sent = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["user input"], output_sent.clone());
+    let executor = BlockingMockExecutor;
 
     let mut agent = Agent::new(
         provider,
@@ -537,10 +567,10 @@ async fn agent_tool_executor_error_recovery() {
     let result = agent.run().await;
     assert!(result.is_ok(), "Agent should recover from blocked commands");
 
-    // Should have sent error message
+    // Should have sent error/recovery message
     let outputs = output_sent.lock().unwrap();
     assert!(
-        outputs.iter().any(|msg| msg.contains("blocked")),
-        "Should inform user of blocked command"
+        !outputs.is_empty(),
+        "Should produce output even when tool is blocked"
     );
 }
