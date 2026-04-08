@@ -1567,7 +1567,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     if config.index.enabled {
         tui_status!("Indexing codebase...");
     }
-    let (code_retriever, _index_watcher, index_progress_rx) = agent_setup::apply_code_indexer(
+    let (_index_watcher, index_progress_rx) = agent_setup::apply_code_indexer(
         &config.index,
         index_qdrant_ops,
         index_provider,
@@ -1583,7 +1583,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     }
     #[cfg(not(feature = "tui"))]
     let _ = index_progress_rx;
-    let agent = agent_setup::apply_code_retrieval(agent, &config.index, code_retriever);
+    let agent = agent_setup::apply_code_retrieval(agent, &config.index);
     let agent = if let Some(search_executor) = agent_setup::build_search_code_executor(
         config,
         app.qdrant_ops().cloned(),

@@ -129,10 +129,6 @@ impl LlmProvider for CompatibleProvider {
         self.inner.chat_typed(messages).await
     }
 
-    fn supports_tool_use(&self) -> bool {
-        self.inner.supports_tool_use()
-    }
-
     async fn chat_with_tools(
         &self,
         messages: &[Message],
@@ -206,11 +202,6 @@ mod tests {
             Some("embed-model".into()),
         );
         assert!(p.supports_embeddings());
-    }
-
-    #[test]
-    fn supports_tool_use_delegates() {
-        assert!(test_provider().supports_tool_use());
     }
 
     #[test]

@@ -1227,15 +1227,6 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    #[must_use]
-    pub fn with_code_retriever(
-        mut self,
-        retriever: std::sync::Arc<zeph_index::retriever::CodeRetriever>,
-    ) -> Self {
-        self.index.retriever = Some(retriever);
-        self
-    }
-
     /// Add an in-process `IndexMcpServer` as a tool executor.
     ///
     /// When enabled, the LLM can call `symbol_definition`, `find_text_references`,

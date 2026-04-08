@@ -65,9 +65,7 @@ use zeph_tools::executor::{ErasedToolExecutor, ToolExecutor};
 use crate::channel::Channel;
 use crate::config::Config;
 use crate::config::{SecurityConfig, SkillPromptMode, TimeoutConfig};
-use crate::context::{
-    ContextBudget, EnvironmentContext, build_system_prompt, build_system_prompt_with_instructions,
-};
+use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
 use zeph_common::text::estimate_tokens;
 use zeph_sanitizer::ContentSanitizer;
 
@@ -199,7 +197,7 @@ impl<C: Channel> Agent<C> {
         let empty_trust = HashMap::new();
         let empty_health: HashMap<String, (f64, u32)> = HashMap::new();
         let skills_prompt = format_skills_prompt(&all_skills, &empty_trust, &empty_health);
-        let system_prompt = build_system_prompt(&skills_prompt, None, None, false);
+        let system_prompt = build_system_prompt(&skills_prompt, None);
         tracing::debug!(len = system_prompt.len(), "initial system prompt built");
         tracing::trace!(prompt = %system_prompt, "full system prompt");
 
@@ -1972,7 +1970,7 @@ impl<C: Channel> Agent<C> {
         self.skill_state
             .last_skills_prompt
             .clone_from(&skills_prompt);
-        let system_prompt = build_system_prompt(&skills_prompt, None, None, false);
+        let system_prompt = build_system_prompt(&skills_prompt, None);
         if let Some(msg) = self.msg.messages.first_mut() {
             msg.content = system_prompt;
         }

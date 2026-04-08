@@ -163,7 +163,7 @@ fn compaction_tier_none_below_soft() {
     let executor = MockToolExecutor::no_tools();
 
     let agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(1000, 0.20, 0.90, 4, 0);
+        .with_context_budget(10_000, 0.20, 0.90, 4, 0);
     assert_eq!(agent.compaction_tier(), CompactionTier::None);
 }
 

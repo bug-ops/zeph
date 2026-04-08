@@ -26,12 +26,6 @@ fn gemini_supports_streaming_true() {
 }
 
 #[test]
-fn gemini_supports_tool_use_true() {
-    let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
-    assert!(p.supports_tool_use());
-}
-
-#[test]
 fn gemini_supports_embeddings_false() {
     let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
     assert!(!p.supports_embeddings());

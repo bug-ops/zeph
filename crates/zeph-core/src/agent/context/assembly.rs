@@ -21,10 +21,11 @@ use super::super::LSP_NOTE_PREFIX;
 use super::super::{
     Agent, CODE_CONTEXT_PREFIX, CORRECTIONS_PREFIX, CROSS_SESSION_PREFIX, DOCUMENT_RAG_PREFIX,
     GRAPH_FACTS_PREFIX, MemoryState, RECALL_PREFIX, SESSION_DIGEST_PREFIX, SUMMARY_PREFIX, Skill,
-    build_system_prompt_with_instructions, format_skills_prompt,
+    format_skills_prompt,
 };
 use super::ContextSlot;
 use crate::channel::Channel;
+use crate::context::build_system_prompt_with_instructions;
 use crate::redact::scrub_content;
 use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
 
@@ -1941,8 +1942,6 @@ impl<C: Channel> Agent<C> {
         let mut system_prompt = build_system_prompt_with_instructions(
             &skills_prompt,
             Some(&self.session.env_context),
-            None,
-            true,
             &self.instructions.blocks,
         );
 

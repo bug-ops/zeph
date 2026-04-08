@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
-- **Delete legacy text-extraction tool path** (`#2782`): removed `crates/zeph-core/src/agent/tool_execution/legacy.rs` (896 lines). All tool execution now goes through the native `tool_use` path. `LlmProvider::supports_tool_use()` default changed from `false` to `true`; the `tool_use: bool` field was removed from `OllamaProvider`, `MockProvider`, and `ProviderEntry` config. Callers in context assembly, MCP, `agent_setup`, and `runner` were simplified accordingly.
+- **Delete legacy text-extraction tool path** (`#2782`): removed `crates/zeph-core/src/agent/tool_execution/legacy.rs` (896 lines). All tool execution now goes through the native `tool_use` path. `LlmProvider::supports_tool_use()` default changed from `false` to `true`; the `tool_use: bool` field was removed from `OllamaProvider`, `MockProvider`, and `ProviderEntry` config. Callers in context assembly, MCP, `agent_setup`, and `runner` were simplified accordingly. Existing `config.toml` files that still contain `tool_use = true/false` under `[[llm.providers]]` are silently accepted by serde (field is unknown and ignored) — no migration required.
 
 - **Retain `async-trait` in `zeph-core`, `zeph-mcp`, `zeph-acp`** (`#2781`): these crates depend on `rmcp` and `agent-client-protocol` which re-export `#[async_trait]` macros; removal is blocked by upstream and tracked for future cleanup.
 
