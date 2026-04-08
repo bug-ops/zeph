@@ -128,8 +128,6 @@ impl Channel for MockChannel {
     }
 }
 
-
-
 struct ConfirmMockChannel {
     inputs: VecDeque<String>,
     outputs: Arc<Mutex<Vec<String>>>,
