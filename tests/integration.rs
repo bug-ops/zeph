@@ -3,7 +3,6 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use zeph_core::agent::Agent;
@@ -129,36 +128,7 @@ impl Channel for MockChannel {
     }
 }
 
-struct ChunkTrackingChannel {
-    inputs: VecDeque<String>,
-    outputs: Arc<Mutex<Vec<String>>>,
-    chunks: Arc<Mutex<Vec<String>>>,
-    flush_count: Arc<AtomicUsize>,
-}
 
-impl Channel for ChunkTrackingChannel {
-    async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-        Ok(self.inputs.pop_front().map(|text| ChannelMessage {
-            text,
-            attachments: vec![],
-        }))
-    }
-
-    async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
-        self.outputs.lock().unwrap().push(text.to_string());
-        Ok(())
-    }
-
-    async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
-        self.chunks.lock().unwrap().push(chunk.to_string());
-        Ok(())
-    }
-
-    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        self.flush_count.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-}
 
 struct ConfirmMockChannel {
     inputs: VecDeque<String>,
