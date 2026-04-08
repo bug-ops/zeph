@@ -3194,6 +3194,8 @@ fn make_mem_state(
         microcompact_config: crate::config::MicrocompactConfig::default(),
         autodream_config: crate::config::AutoDreamConfig::default(),
         magic_docs_config: crate::config::MagicDocsConfig::default(),
+        autodream: crate::agent::autodream::AutoDreamState::new(),
+        magic_docs: crate::agent::magic_docs::MagicDocsState::new(),
     }
 }
 

@@ -51,6 +51,9 @@ fn make_message_state() -> MessageState {
         }],
         message_queue: VecDeque::new(),
         pending_image_parts: Vec::new(),
+        last_persisted_message_id: None,
+        deferred_db_hide_ids: Vec::new(),
+        deferred_db_summaries: Vec::new(),
     }
 }
 
@@ -84,6 +87,7 @@ fn make_runtime_config() -> RuntimeConfig {
         spawn_depth: 0,
         budget_hint_enabled: true,
         channel_skills: zeph_config::ChannelSkillsConfig::default(),
+        layers: Vec::new(),
     }
 }
 

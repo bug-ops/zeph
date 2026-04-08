@@ -1725,9 +1725,9 @@ impl<C: Channel> Agent<C> {
             self.msg.messages[resp_idx].metadata.deferred_summary = None;
 
             if let (Some(req_id), Some(resp_id)) = (req_db_id, resp_db_id) {
-                self.deferred_db_hide_ids.push(req_id);
-                self.deferred_db_hide_ids.push(resp_id);
-                self.deferred_db_summaries.push(summary.clone());
+                self.msg.deferred_db_hide_ids.push(req_id);
+                self.msg.deferred_db_hide_ids.push(resp_id);
+                self.msg.deferred_db_summaries.push(summary.clone());
             }
 
             let content = format!("[tool summary] {summary}");
@@ -1746,18 +1746,18 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(in crate::agent) async fn flush_deferred_summaries(&mut self) {
-        if self.deferred_db_hide_ids.is_empty() {
+        if self.msg.deferred_db_hide_ids.is_empty() {
             return;
         }
         let (Some(memory), Some(cid)) =
             (&self.memory_state.memory, self.memory_state.conversation_id)
         else {
-            self.deferred_db_hide_ids.clear();
-            self.deferred_db_summaries.clear();
+            self.msg.deferred_db_hide_ids.clear();
+            self.msg.deferred_db_summaries.clear();
             return;
         };
-        let hide_ids = std::mem::take(&mut self.deferred_db_hide_ids);
-        let summaries = std::mem::take(&mut self.deferred_db_summaries);
+        let hide_ids = std::mem::take(&mut self.msg.deferred_db_hide_ids);
+        let summaries = std::mem::take(&mut self.msg.deferred_db_summaries);
         if let Err(e) = memory
             .sqlite()
             .apply_tool_pair_summaries(cid, &hide_ids, &summaries)

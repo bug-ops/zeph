@@ -511,7 +511,7 @@ impl<C: Channel> Agent<C> {
                 .await
             {
                 Ok((Some(message_id), stored)) => {
-                    self.last_persisted_message_id = Some(message_id.0);
+                    self.msg.last_persisted_message_id = Some(message_id.0);
                     (stored, true)
                 }
                 Ok((None, _)) => {
@@ -529,7 +529,7 @@ impl<C: Channel> Agent<C> {
                 .await
             {
                 Ok(message_id) => {
-                    self.last_persisted_message_id = Some(message_id.0);
+                    self.msg.last_persisted_message_id = Some(message_id.0);
                     (false, true)
                 }
                 Err(e) => {

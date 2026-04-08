@@ -146,21 +146,6 @@ pub struct Agent<C: Channel> {
     pub(super) sidequest: sidequest::SidequestState,
     /// Tool filtering, dependency tracking, and iteration bookkeeping.
     pub(super) tool_state: ToolState,
-    /// DB row ID of the most recently persisted message. Set by `persist_message`;
-    /// consumed by `push_message` call sites to populate `metadata.db_id` on in-memory messages.
-    pub(super) last_persisted_message_id: Option<i64>,
-    /// DB message IDs pending hide after deferred tool pair summarization.
-    pub(super) deferred_db_hide_ids: Vec<i64>,
-    /// Summary texts pending insertion after deferred tool pair summarization.
-    pub(super) deferred_db_summaries: Vec<String>,
-    /// Runtime middleware layers for LLM calls and tool dispatch (#2286).
-    ///
-    /// Default: empty vec (zero-cost — loops never iterate).
-    pub(super) runtime_layers: Vec<std::sync::Arc<dyn crate::runtime_layer::RuntimeLayer>>,
-    /// autoDream session state (#2697). Tracks session count and last consolidation time.
-    pub(super) autodream_state: autodream::AutoDreamState,
-    /// `MagicDocs` session state (#2702). Tracks registered doc paths and last update turn.
-    pub(super) magic_docs_state: magic_docs::MagicDocsState,
 }
 
 impl<C: Channel> Agent<C> {
@@ -239,6 +224,9 @@ impl<C: Channel> Agent<C> {
                 }],
                 message_queue: VecDeque::new(),
                 pending_image_parts: Vec::new(),
+                last_persisted_message_id: None,
+                deferred_db_hide_ids: Vec::new(),
+                deferred_db_summaries: Vec::new(),
             },
             memory_state: MemoryState {
                 memory: None,
@@ -274,6 +262,8 @@ impl<C: Channel> Agent<C> {
                 microcompact_config: crate::config::MicrocompactConfig::default(),
                 autodream_config: crate::config::AutoDreamConfig::default(),
                 magic_docs_config: crate::config::MagicDocsConfig::default(),
+                autodream: autodream::AutoDreamState::new(),
+                magic_docs: magic_docs::MagicDocsState::new(),
             },
             skill_state: SkillState {
                 registry,
@@ -340,6 +330,7 @@ impl<C: Channel> Agent<C> {
                 spawn_depth: 0,
                 budget_hint_enabled: true,
                 channel_skills: zeph_config::ChannelSkillsConfig::default(),
+                layers: Vec::new(),
             },
             mcp: McpState {
                 tools: Vec::new(),
@@ -487,12 +478,6 @@ impl<C: Channel> Agent<C> {
                 completed_tool_ids: HashSet::new(),
                 current_tool_iteration: 0,
             },
-            last_persisted_message_id: None,
-            deferred_db_hide_ids: Vec::new(),
-            deferred_db_summaries: Vec::new(),
-            runtime_layers: Vec::new(),
-            autodream_state: autodream::AutoDreamState::new(),
-            magic_docs_state: magic_docs::MagicDocsState::new(),
         }
     }
 
@@ -1948,13 +1933,13 @@ impl<C: Channel> Agent<C> {
         if self.skill_state.hybrid_search {
             let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
             let _ = self.channel.send_status("rebuilding search index...").await;
-            self.skill_state.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
+            self.skill_state.rebuild_bm25(&descs);
         }
     }
 
     async fn reload_skills(&mut self) {
         let new_registry = SkillRegistry::load(&self.skill_state.skill_paths);
-        if new_registry.fingerprint() == self.skill_state.registry.read().fingerprint() {
+        if new_registry.fingerprint() == self.skill_state.fingerprint() {
             return;
         }
         let _ = self.channel.send_status("reloading skills...").await;
@@ -1983,7 +1968,7 @@ impl<C: Channel> Agent<C> {
         };
         let trust_map = self.build_skill_trust_map().await;
         let empty_health: HashMap<String, (f64, u32)> = HashMap::new();
-        let skills_prompt = format_skills_prompt(&all_skills, &trust_map, &empty_health);
+        let skills_prompt = SkillState::rebuild_prompt(&all_skills, &trust_map, &empty_health);
         self.skill_state
             .last_skills_prompt
             .clone_from(&skills_prompt);

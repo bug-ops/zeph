@@ -96,6 +96,10 @@ pub(crate) struct MemoryState {
     /// Background tree consolidation loop handle — kept alive for the agent's lifetime (#2262).
     /// `None` when tree consolidation is disabled or memory is not initialized.
     pub(crate) tree_consolidation_handle: Option<tokio::task::JoinHandle<()>>,
+    /// autoDream session state (#2697). Tracks session count and last consolidation time.
+    pub(crate) autodream: super::autodream::AutoDreamState,
+    /// `MagicDocs` session state (#2702). Tracks registered doc paths and last update turn.
+    pub(crate) magic_docs: super::magic_docs::MagicDocsState,
 }
 
 pub(crate) struct SkillState {
@@ -232,6 +236,10 @@ pub(crate) struct RuntimeConfig {
     /// Per-channel skill allowlist. Skills not matching the allowlist are excluded from the
     /// prompt. An empty `allowed` list means all skills are permitted (default).
     pub(crate) channel_skills: zeph_config::ChannelSkillsConfig,
+    /// Runtime middleware layers for LLM calls and tool dispatch (#2286).
+    ///
+    /// Default: empty vec (zero-cost — loops never iterate).
+    pub(crate) layers: Vec<std::sync::Arc<dyn crate::runtime_layer::RuntimeLayer>>,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.
@@ -526,6 +534,13 @@ pub(crate) struct MessageState {
     pub(crate) message_queue: VecDeque<QueuedMessage>,
     /// Image parts staged by `/image` commands, attached to the next user message.
     pub(crate) pending_image_parts: Vec<zeph_llm::provider::MessagePart>,
+    /// DB row ID of the most recently persisted message. Set by `persist_message`;
+    /// consumed by `push_message` call sites to populate `metadata.db_id` on in-memory messages.
+    pub(crate) last_persisted_message_id: Option<i64>,
+    /// DB message IDs pending hide after deferred tool pair summarization.
+    pub(crate) deferred_db_hide_ids: Vec<i64>,
+    /// Summary texts pending insertion after deferred tool pair summarization.
+    pub(crate) deferred_db_summaries: Vec<String>,
 }
 
 impl McpState {
@@ -682,6 +697,9 @@ impl DebugState {
         d.dump_response(id, &text);
     }
 }
+
+pub(super) mod security;
+pub(super) mod skill;
 
 #[cfg(test)]
 mod tests;

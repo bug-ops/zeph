@@ -71,14 +71,15 @@ impl<C: Channel> super::Agent<C> {
             return;
         }
 
-        self.autodream_state.record_session();
+        self.memory_state.autodream.record_session();
 
         if !self
-            .autodream_state
+            .memory_state
+            .autodream
             .should_consolidate(cfg.min_sessions, cfg.min_hours)
         {
             tracing::debug!(
-                sessions = self.autodream_state.sessions_since_consolidation,
+                sessions = self.memory_state.autodream.sessions_since_consolidation,
                 min_sessions = cfg.min_sessions,
                 "autoDream: gates not met, skipping"
             );
@@ -149,7 +150,7 @@ impl<C: Channel> super::Agent<C> {
                     elapsed_ms = start.elapsed().as_millis(),
                     "autoDream: consolidation complete"
                 );
-                self.autodream_state.mark_consolidated();
+                self.memory_state.autodream.mark_consolidated();
             }
             Ok(Err(e)) => {
                 tracing::warn!(error = %e, "autoDream: consolidation failed");

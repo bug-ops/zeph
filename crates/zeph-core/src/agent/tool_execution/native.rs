@@ -372,13 +372,13 @@ impl<C: Channel> Agent<C> {
                 });
 
         // RuntimeLayer before_chat hooks (MVP: empty vec = zero iterations).
-        if !self.runtime_layers.is_empty() {
+        if !self.runtime.layers.is_empty() {
             let conv_id_str = self.memory_state.conversation_id.map(|id| id.0.to_string());
             let ctx = crate::runtime_layer::LayerContext {
                 conversation_id: conv_id_str.as_deref(),
                 turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
             };
-            for layer in &self.runtime_layers {
+            for layer in &self.runtime.layers {
                 let hook_result = std::panic::AssertUnwindSafe(layer.before_chat(
                     &ctx,
                     &self.msg.messages,
@@ -454,13 +454,13 @@ impl<C: Channel> Agent<C> {
             .write_chat_debug_dump(dump_id, &result, &self.security.pii_filter);
 
         // RuntimeLayer after_chat hooks (MVP: empty vec = zero iterations).
-        if !self.runtime_layers.is_empty() {
+        if !self.runtime.layers.is_empty() {
             let conv_id_str = self.memory_state.conversation_id.map(|id| id.0.to_string());
             let ctx = crate::runtime_layer::LayerContext {
                 conversation_id: conv_id_str.as_deref(),
                 turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
             };
-            for layer in &self.runtime_layers {
+            for layer in &self.runtime.layers {
                 let hook_result = std::panic::AssertUnwindSafe(layer.after_chat(&ctx, &result))
                     .catch_unwind()
                     .await;
@@ -634,9 +634,10 @@ impl<C: Channel> Agent<C> {
         )
         .await;
         self.push_message(assistant_msg);
-        if let (Some(id), Some(last)) =
-            (self.last_persisted_message_id, self.msg.messages.last_mut())
-        {
+        if let (Some(id), Some(last)) = (
+            self.msg.last_persisted_message_id,
+            self.msg.messages.last_mut(),
+        ) {
             last.metadata.db_id = Some(id);
         }
 
@@ -1313,14 +1314,14 @@ impl<C: Channel> Agent<C> {
                 }
 
                 // RuntimeLayer before_tool hooks: may short-circuit execution.
-                if !self.runtime_layers.is_empty() {
+                if !self.runtime.layers.is_empty() {
                     let conv_id_str = self.memory_state.conversation_id.map(|id| id.0.to_string());
                     let ctx = crate::runtime_layer::LayerContext {
                         conversation_id: conv_id_str.as_deref(),
                         turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
                     };
                     let mut sc_result: crate::runtime_layer::BeforeToolResult = None;
-                    for layer in &self.runtime_layers {
+                    for layer in &self.runtime.layers {
                         let hook_result =
                             std::panic::AssertUnwindSafe(layer.before_tool(&ctx, call))
                                 .catch_unwind()
@@ -1441,13 +1442,13 @@ impl<C: Channel> Agent<C> {
                 }
 
                 // RuntimeLayer after_tool hooks.
-                if !self.runtime_layers.is_empty() {
+                if !self.runtime.layers.is_empty() {
                     let conv_id_str = self.memory_state.conversation_id.map(|id| id.0.to_string());
                     let ctx = crate::runtime_layer::LayerContext {
                         conversation_id: conv_id_str.as_deref(),
                         turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
                     };
-                    for layer in &self.runtime_layers {
+                    for layer in &self.runtime.layers {
                         let hook_result = std::panic::AssertUnwindSafe(layer.after_tool(
                             &ctx,
                             &calls[idx],
@@ -2039,9 +2040,10 @@ impl<C: Channel> Agent<C> {
         tracing::debug!("tool_batch: persist_message done, pushing message");
         self.push_message(user_msg);
         tracing::debug!("tool_batch: message pushed, starting LSP hooks");
-        if let (Some(id), Some(last)) =
-            (self.last_persisted_message_id, self.msg.messages.last_mut())
-        {
+        if let (Some(id), Some(last)) = (
+            self.msg.last_persisted_message_id,
+            self.msg.messages.last_mut(),
+        ) {
             last.metadata.db_id = Some(id);
         }
 

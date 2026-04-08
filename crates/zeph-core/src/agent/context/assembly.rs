@@ -655,9 +655,9 @@ impl<C: Channel> Agent<C> {
 
         // --- Step 9: reset misc session-scoped fields ---
         self.debug_state.iteration_counter = 0;
-        self.last_persisted_message_id = None;
-        self.deferred_db_hide_ids.clear();
-        self.deferred_db_summaries.clear();
+        self.msg.last_persisted_message_id = None;
+        self.msg.deferred_db_hide_ids.clear();
+        self.msg.deferred_db_summaries.clear();
         self.tool_state.cached_filtered_tool_ids = None;
         self.providers.cached_prompt_tokens = 0;
 

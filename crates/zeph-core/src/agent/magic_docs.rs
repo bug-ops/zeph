@@ -135,7 +135,8 @@ impl<C: Channel> super::Agent<C> {
         }
 
         for path in detected_paths {
-            self.magic_docs_state
+            self.memory_state
+                .magic_docs
                 .registered
                 .entry(path.clone())
                 .or_insert(turn);
@@ -149,12 +150,12 @@ impl<C: Channel> super::Agent<C> {
     /// No-op when `MagicDocs` is disabled, no docs are registered, or update is not due.
     pub(super) fn maybe_update_magic_docs(&mut self) {
         let cfg = self.memory_state.magic_docs_config.clone();
-        if !cfg.enabled || self.magic_docs_state.registered.is_empty() {
+        if !cfg.enabled || self.memory_state.magic_docs.registered.is_empty() {
             return;
         }
 
         // Await any previous pending update before spawning another.
-        if let Some(handle) = self.magic_docs_state.pending.take()
+        if let Some(handle) = self.memory_state.magic_docs.pending.take()
             && !handle.is_finished()
         {
             tracing::debug!("magic_docs: previous update still running, skipping this turn");
@@ -163,7 +164,8 @@ impl<C: Channel> super::Agent<C> {
 
         let current_turn = u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX);
         let due_paths: Vec<PathBuf> = self
-            .magic_docs_state
+            .memory_state
+            .magic_docs
             .registered
             .iter()
             .filter(|(_, last_turn)| {
@@ -225,13 +227,13 @@ impl<C: Channel> super::Agent<C> {
         });
 
         // Mark all due paths as updated (due_paths moved into spawn — use registered keys).
-        for path in self.magic_docs_state.registered.values_mut() {
+        for path in self.memory_state.magic_docs.registered.values_mut() {
             if current_turn.saturating_sub(*path) >= cfg.min_turns_between_updates {
                 *path = current_turn;
             }
         }
 
-        self.magic_docs_state.pending = Some(handle);
+        self.memory_state.magic_docs.pending = Some(handle);
     }
 }
 

@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Refactored
 
+- **Extract security pipeline methods into `SecurityState` impl block** (`#2802`): moved PII scrubbing, guardrail pre-screening, and NER circuit breaker management from Agent wrappers into `impl SecurityState` in `agent/state/security.rs`. New `PiiScrubResult` value type carries metric descriptors; Agent wrappers apply side effects from the result struct.
+
+- **Extract skill management methods into `SkillState` impl block** (`#2803`): moved `rebuild_prompt()`, `rebuild_bm25()`, and `fingerprint()` from Agent into `impl SkillState` in `agent/state/skill.rs`. Agent methods delegate to these helpers. Methods requiring channel/memory/provider access remain on Agent.
+
+- **Consolidate 6 standalone fields into existing sub-structs** (`#2805`): relocated `last_persisted_message_id`, `deferred_db_hide_ids`, `deferred_db_summaries` to `MessageState`; `runtime_layers` to `RuntimeConfig` (as `layers`); `autodream_state` to `MemoryState` (as `autodream`); `magic_docs_state` to `MemoryState` (as `magic_docs`). ~20 call sites updated. Agent top-level field count reduced by 6.
+
 - **Consolidate 6 tool fields into `ToolState` sub-struct** (`#2798`): extracted `tool_schema_filter`, `cached_filtered_tool_ids`, `dependency_graph`, `dependency_always_on`, `completed_tool_ids`, and `current_tool_iteration` from `Agent` into a new `pub(crate) ToolState` struct in `agent/state/mod.rs`, following the existing `*State` pattern. All 7 affected files updated with `tool_state.` prefix. No logic changes.
 
 - **Extract MCP, Index, Debug methods into State impl blocks** (`#2799`, `#2800`, `#2801`): moved pure data operations from `impl Agent<C>` into `impl McpState` (3 methods), `impl IndexState` (1 method), and `impl DebugState` (4 methods). Agent methods requiring channel/provider context remain as thin wrappers. Part of Agent struct decomposition (`#2787`). 6 files changed, net -0 logic lines.
