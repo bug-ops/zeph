@@ -39,6 +39,7 @@ pub(crate) mod sidequest;
 mod skill_management;
 pub mod slash_commands;
 pub(crate) mod state;
+pub(crate) mod supervisor;
 pub(crate) mod tool_execution;
 pub(crate) mod tool_orchestrator;
 mod trust_commands;
@@ -573,6 +574,8 @@ impl<C: Channel> Agent<C> {
         // startup strips the orphaned ToolUse and emits warnings.
         self.flush_orphaned_tool_use_on_shutdown().await;
 
+        self.lifecycle.supervisor.abort_all();
+
         self.maybe_store_shutdown_summary().await;
         self.maybe_store_session_digest().await;
 
@@ -963,6 +966,24 @@ impl<C: Channel> Agent<C> {
         iteration_index: usize,
     ) -> Result<(), error::AgentError> {
         let _ = iteration_index; // Used indirectly via debug_state.current_iteration_span_id.
+
+        // Reap completed background tasks from the previous turn. The summarization signal
+        // is applied here — between turns — so `unsummarized_count` is always reset on the
+        // foreground without shared mutable state across tasks (S1 fix from critic review).
+        let bg_signal = self.lifecycle.supervisor.reap();
+        if bg_signal.did_summarize {
+            self.memory_state.unsummarized_count = 0;
+            tracing::debug!("background summarization completed; unsummarized_count reset");
+        }
+        {
+            let snap = self.lifecycle.supervisor.metrics_snapshot();
+            self.update_metrics(|m| {
+                m.bg_inflight = snap.inflight as u64;
+                m.bg_dropped = snap.total_dropped();
+                m.bg_completed = snap.total_completed();
+            });
+        }
+
         self.lifecycle.cancel_token = CancellationToken::new();
         let signal = Arc::clone(&self.lifecycle.cancel_signal);
         let token = self.lifecycle.cancel_token.clone();

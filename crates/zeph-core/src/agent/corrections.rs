@@ -87,8 +87,9 @@ impl<C: crate::channel::Channel> Agent<C> {
     ///
     /// # Notes
     ///
-    /// TODO(I3): `JoinHandle`s are not tracked — outstanding tasks may be aborted on runtime
-    /// shutdown before `store_user_correction` completes. Acceptable for MVP.
+    /// Tasks are supervised via [`BackgroundSupervisor`] (`TaskClass::Enrichment`).
+    /// If the concurrency limit is reached, the correction check is silently dropped —
+    /// corrections are non-critical lossy data.
     #[allow(clippy::too_many_lines)]
     pub(super) fn spawn_judge_correction_check(
         &mut self,
@@ -118,43 +119,49 @@ impl<C: crate::channel::Channel> Agent<C> {
             let skill_name2 = skill_name.clone();
             let classifier_metrics_bg = self.metrics.classifier_metrics.clone();
             let metrics_tx_bg = self.metrics.metrics_tx.clone();
-            tokio::spawn(async move {
-                match llm_classifier
-                    .classify_feedback(&user_msg, &assistant, confidence_threshold)
-                    .await
-                {
-                    Ok(verdict) => {
-                        if let (Some(ref cm), Some(ref tx)) = (classifier_metrics_bg, metrics_tx_bg)
-                        {
-                            let snap = cm.snapshot();
-                            tx.send_modify(|ms| ms.classifier = snap);
+            self.lifecycle.supervisor.spawn(
+                super::supervisor::TaskClass::Enrichment,
+                "llm_classifier_correction",
+                async move {
+                    match llm_classifier
+                        .classify_feedback(&user_msg, &assistant, confidence_threshold)
+                        .await
+                    {
+                        Ok(verdict) => {
+                            if let (Some(ref cm), Some(ref tx)) =
+                                (classifier_metrics_bg, metrics_tx_bg)
+                            {
+                                let snap = cm.snapshot();
+                                tx.send_modify(|ms| ms.classifier = snap);
+                            }
+                            if let Some(signal) = feedback_verdict_into_signal(&verdict, &user_msg)
+                            {
+                                let is_self_correction = signal.kind
+                                    == feedback_detector::CorrectionKind::SelfCorrection;
+                                tracing::info!(
+                                    kind = signal.kind.as_str(),
+                                    confidence = signal.confidence,
+                                    source = "llm-classifier",
+                                    is_self_correction,
+                                    "correction signal detected"
+                                );
+                                store_correction_in_memory(
+                                    memory_arc2,
+                                    conv_id_bg,
+                                    &assistant,
+                                    &user_msg,
+                                    skill_name2,
+                                    signal.kind.as_str(),
+                                )
+                                .await;
+                            }
                         }
-                        if let Some(signal) = feedback_verdict_into_signal(&verdict, &user_msg) {
-                            let is_self_correction =
-                                signal.kind == feedback_detector::CorrectionKind::SelfCorrection;
-                            tracing::info!(
-                                kind = signal.kind.as_str(),
-                                confidence = signal.confidence,
-                                source = "llm-classifier",
-                                is_self_correction,
-                                "correction signal detected"
-                            );
-                            store_correction_in_memory(
-                                memory_arc2,
-                                conv_id_bg,
-                                &assistant,
-                                &user_msg,
-                                skill_name2,
-                                signal.kind.as_str(),
-                            )
-                            .await;
+                        Err(e) => {
+                            tracing::warn!("llm-classifier failed: {e:#}");
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!("llm-classifier failed: {e:#}");
-                    }
-                }
-            });
+                },
+            );
         } else {
             let judge_provider = self
                 .providers
@@ -163,42 +170,46 @@ impl<C: crate::channel::Channel> Agent<C> {
                 .unwrap_or_else(|| self.provider.clone());
             let user_msg = user_msg_owned.clone();
             let assistant = assistant_snippet.clone();
-            tokio::spawn(async move {
-                match feedback_detector::JudgeDetector::evaluate(
-                    &judge_provider,
-                    &user_msg,
-                    &assistant,
-                    confidence_threshold,
-                )
-                .await
-                {
-                    Ok(verdict) => {
-                        if let Some(signal) = verdict.into_signal(&user_msg) {
-                            let is_self_correction =
-                                signal.kind == feedback_detector::CorrectionKind::SelfCorrection;
-                            tracing::info!(
-                                kind = signal.kind.as_str(),
-                                confidence = signal.confidence,
-                                source = "judge",
-                                is_self_correction,
-                                "correction signal detected"
-                            );
-                            store_correction_in_memory(
-                                memory_arc,
-                                conv_id_bg,
-                                &assistant,
-                                &user_msg,
-                                skill_name,
-                                signal.kind.as_str(),
-                            )
-                            .await;
+            self.lifecycle.supervisor.spawn(
+                super::supervisor::TaskClass::Enrichment,
+                "judge_correction",
+                async move {
+                    match feedback_detector::JudgeDetector::evaluate(
+                        &judge_provider,
+                        &user_msg,
+                        &assistant,
+                        confidence_threshold,
+                    )
+                    .await
+                    {
+                        Ok(verdict) => {
+                            if let Some(signal) = verdict.into_signal(&user_msg) {
+                                let is_self_correction = signal.kind
+                                    == feedback_detector::CorrectionKind::SelfCorrection;
+                                tracing::info!(
+                                    kind = signal.kind.as_str(),
+                                    confidence = signal.confidence,
+                                    source = "judge",
+                                    is_self_correction,
+                                    "correction signal detected"
+                                );
+                                store_correction_in_memory(
+                                    memory_arc,
+                                    conv_id_bg,
+                                    &assistant,
+                                    &user_msg,
+                                    skill_name,
+                                    signal.kind.as_str(),
+                                )
+                                .await;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("judge detector failed: {e:#}");
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!("judge detector failed: {e:#}");
-                    }
-                }
-            });
+                },
+            );
         }
     }
 

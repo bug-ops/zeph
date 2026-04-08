@@ -25,6 +25,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   session-level `embed_call_count` / `embed_cache_hits` counters (exposed via
   `RouterProvider::embed_cache_metrics()`).
 
+### Added
+
+- **Supervised bounded background task management** (`#2816`, `#2821`): introduced `BackgroundSupervisor` in `zeph-core` with per-class concurrency limits (Enrichment=4, Telemetry=8) and drop-on-overflow policy. Background tasks use an `InflightGuard` drop-guard to free concurrency slots immediately on completion. Metrics (`bg_inflight`, `bg_dropped`, `bg_completed`) added to `AgentMetrics`. `persist_message()` refactored into two phases: foreground commit (SQLite/Qdrant write, essential metrics) and background enrichment (summarization, graph extraction, persona extraction, trajectory extraction). Two fire-and-forget `tokio::spawn` sites in `corrections.rs` migrated to the supervisor. Foreground turns no longer await enrichment work; tail latency from post-persist processing is eliminated.
+
 ### Fixed
 
 - **MCP handshake timeout not enforced** (`#2815`): `connect()`, `connect_url()`, and `connect_url_with_headers()` now wrap `handler.serve(transport)` with `tokio::time::timeout(timeout, ...)`, returning `McpError::Timeout` on expiry. `list_tools()` applies the same guard to `list_all_tools()`. Previously, a stalled MCP server during the initialize handshake or tool listing would block `connect_all()` indefinitely, causing TUI startup to hang at "Connecting tools..." forever. Only `call_tool` had a timeout; the fix brings the other paths to parity.

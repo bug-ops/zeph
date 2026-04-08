@@ -343,6 +343,9 @@ pub(crate) struct LifecycleState {
     pub(crate) file_changed_rx: Option<mpsc::Receiver<FileChangedEvent>>,
     /// Keeps the `FileChangeWatcher` alive for the agent's lifetime. Dropping it aborts the watcher task.
     pub(crate) file_watcher: Option<crate::file_watcher::FileChangeWatcher>,
+    /// Supervised background task manager. Owned by the agent; call `reap()` between turns
+    /// and `abort_all()` on shutdown.
+    pub(crate) supervisor: super::supervisor::BackgroundSupervisor,
 }
 
 /// Minimal config snapshot needed to reconstruct a provider at runtime via `/provider <name>`.
@@ -921,6 +924,7 @@ impl LifecycleState {
             last_known_cwd: std::env::current_dir().unwrap_or_default(),
             file_changed_rx: None,
             file_watcher: None,
+            supervisor: super::supervisor::BackgroundSupervisor::new(),
         }
     }
 }

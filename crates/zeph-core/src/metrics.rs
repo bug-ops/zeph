@@ -343,6 +343,12 @@ pub struct MetricsSnapshot {
     pub vault_backend: String,
     /// Active I/O channel name: `"cli"`, `"telegram"`, `"tui"`, `"discord"`, `"slack"`.
     pub active_channel: String,
+    /// Background supervisor: inflight tasks across all classes.
+    pub bg_inflight: u64,
+    /// Background supervisor: total tasks dropped due to concurrency limit (all classes).
+    pub bg_dropped: u64,
+    /// Background supervisor: total tasks completed (all classes).
+    pub bg_completed: u64,
     /// Whether self-learning (skill evolution) is enabled.
     pub self_learning_enabled: bool,
     /// Whether the semantic response cache is enabled.

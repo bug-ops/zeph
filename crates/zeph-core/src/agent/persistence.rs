@@ -555,9 +555,10 @@ impl<C: Channel> Agent<C> {
         tracing::debug!("persist_message: db insert complete, embedding running in background");
         memory.reap_embed_tasks();
 
-        tracing::debug!("persist_message: calling check_summarization");
-        self.check_summarization().await;
-        tracing::debug!("persist_message: check_summarization complete");
+        // Phase 2: enqueue enrichment tasks via supervisor (non-blocking).
+        // check_summarization signals completion via SummarizationSignal, consumed in reap()
+        // between turns — no shared mutable state across tasks (S1 fix).
+        self.enqueue_summarization_task();
 
         // FIX-1: skip graph extraction for tool result messages — they contain raw structured
         // output (TOML, JSON, code) that pollutes the entity graph with noise.
@@ -565,28 +566,70 @@ impl<C: Channel> Agent<C> {
             .iter()
             .any(|p| matches!(p, MessagePart::ToolResult { .. }));
 
-        tracing::debug!("persist_message: calling maybe_spawn_graph_extraction");
-        self.maybe_spawn_graph_extraction(content, has_injection_flags, has_tool_result_parts)
+        self.enqueue_graph_extraction_task(content, has_injection_flags, has_tool_result_parts)
             .await;
-        tracing::debug!("persist_message: maybe_spawn_graph_extraction complete");
 
         // Persona extraction: run only for user messages that are not tool results and not injected.
         if role == Role::User && !has_tool_result_parts && !has_injection_flags {
-            tracing::debug!("persist_message: calling persona extraction");
-            self.maybe_spawn_persona_extraction().await;
-            tracing::debug!("persist_message: persona extraction complete");
+            self.enqueue_persona_extraction_task();
         }
 
         // Trajectory extraction: run after turns that contained tool results.
         if has_tool_result_parts {
-            tracing::debug!("persist_message: calling trajectory extraction");
-            self.maybe_spawn_trajectory_extraction();
-            tracing::debug!("persist_message: trajectory extraction complete");
+            self.enqueue_trajectory_extraction_task();
         }
     }
 
+    /// Enqueue background summarization via the supervisor (S1 fix: no shared `AtomicUsize`).
+    fn enqueue_summarization_task(&mut self) {
+        let (Some(memory), Some(cid)) = (
+            self.memory_state.memory.clone(),
+            self.memory_state.conversation_id,
+        ) else {
+            return;
+        };
+
+        if self.memory_state.unsummarized_count <= self.memory_state.summarization_threshold {
+            return;
+        }
+
+        let batch_size = self.memory_state.summarization_threshold / 2;
+
+        self.lifecycle.supervisor.spawn_summarization("summarization", async move {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                memory.summarize(cid, batch_size),
+            )
+            .await
+            {
+                Ok(Ok(Some(summary_id))) => {
+                    tracing::info!(
+                        "background summarization: created summary {summary_id} for conversation {cid}"
+                    );
+                    true
+                }
+                Ok(Ok(None)) => {
+                    tracing::debug!("background summarization: no summarization needed");
+                    false
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("background summarization failed: {e:#}");
+                    false
+                }
+                Err(_) => {
+                    tracing::warn!("background summarization timed out after 30s");
+                    false
+                }
+            }
+        });
+    }
+
+    /// Prepare graph extraction guards in foreground, then enqueue heavy work via supervisor.
+    ///
+    /// Guards (enabled check, injection/tool-result skip) stay on the foreground path.
+    /// The RPE check and actual extraction run in background (S2: no `send_status`).
     #[allow(clippy::too_many_lines)]
-    async fn maybe_spawn_graph_extraction(
+    async fn enqueue_graph_extraction_task(
         &mut self,
         content: &str,
         has_injection_flags: bool,
@@ -597,21 +640,15 @@ impl<C: Channel> Agent<C> {
         if self.memory_state.memory.is_none() || self.memory_state.conversation_id.is_none() {
             return;
         }
-
-        // FIX-1: skip extraction for tool result messages — raw tool output is structural data,
-        // not conversational content. Extracting entities from it produces graph noise.
         if has_tool_result_parts {
             tracing::debug!("graph extraction skipped: message contains ToolResult parts");
             return;
         }
-
-        // S2: skip extraction when injection flags detected — content is untrusted LLM input
         if has_injection_flags {
             tracing::warn!("graph extraction skipped: injection patterns detected in content");
             return;
         }
 
-        // Collect extraction config — borrow ends before send_status call
         let extraction_cfg = {
             let cfg = &self.memory_state.graph_config;
             if !cfg.enabled {
@@ -641,15 +678,13 @@ impl<C: Channel> Agent<C> {
             }
         };
 
-        // D-MEM RPE routing: skip extraction when the turn has low surprise.
+        // RPE check: embed + compute surprise score. Stays on foreground to avoid
+        // capturing the rpe_router mutex in a background task.
         if self.rpe_should_skip(content).await {
             tracing::debug!("D-MEM RPE: low-surprise turn, skipping graph extraction");
             return;
         }
 
-        // FIX-2: collect last 4 genuine conversational user messages as context for extraction.
-        // Exclude tool result messages (Role::User with ToolResult parts) — they contain
-        // raw structured output and would pollute the extraction context with noise.
         let context_messages: Vec<String> = self
             .msg
             .messages
@@ -672,69 +707,124 @@ impl<C: Channel> Agent<C> {
             })
             .collect();
 
-        let _ = self.channel.send_status("saving to graph...").await;
+        let Some(memory) = self.memory_state.memory.clone() else {
+            return;
+        };
 
-        if let Some(memory) = &self.memory_state.memory {
-            // Build optional validation callback from MemoryWriteValidator (S3 fix).
-            // zeph-memory receives a generic Fn predicate — it does not depend on security types.
-            let validator: zeph_memory::semantic::PostExtractValidator =
-                if self.security.memory_validator.is_enabled() {
-                    let v = self.security.memory_validator.clone();
-                    Some(Box::new(move |result| {
-                        v.validate_graph_extraction(result)
-                            .map_err(|e| e.to_string())
-                    }))
-                } else {
-                    None
-                };
-            let extraction_handle = memory.spawn_graph_extraction(
-                content.to_owned(),
-                context_messages,
-                extraction_cfg,
-                validator,
-            );
-            // After the background extraction completes, refresh graph counts in metrics.
-            // This ensures the TUI panel reflects actual DB counts rather than stale zeros.
-            if let (Some(store), Some(tx)) =
-                (memory.graph_store.clone(), self.metrics.metrics_tx.clone())
-            {
-                let start = self.lifecycle.start_time;
-                tokio::spawn(async move {
+        let validator: zeph_memory::semantic::PostExtractValidator =
+            if self.security.memory_validator.is_enabled() {
+                let v = self.security.memory_validator.clone();
+                Some(Box::new(move |result| {
+                    v.validate_graph_extraction(result)
+                        .map_err(|e| e.to_string())
+                }))
+            } else {
+                None
+            };
+
+        let content_owned = content.to_owned();
+        let graph_store = memory.graph_store.clone();
+        let metrics_tx = self.metrics.metrics_tx.clone();
+        let start_time = self.lifecycle.start_time;
+
+        self.lifecycle.supervisor.spawn(
+            super::supervisor::TaskClass::Enrichment,
+            "graph_extraction",
+            async move {
+                let extraction_handle = memory.spawn_graph_extraction(
+                    content_owned,
+                    context_messages,
+                    extraction_cfg,
+                    validator,
+                );
+
+                // After extraction completes, refresh graph count metrics (was Telemetry spawn).
+                if let (Some(store), Some(tx)) = (graph_store, metrics_tx) {
                     let _ = extraction_handle.await;
                     let (entities, edges, communities) = tokio::join!(
                         store.entity_count(),
                         store.active_edge_count(),
                         store.community_count()
                     );
-                    let elapsed = start.elapsed().as_secs();
+                    let elapsed = start_time.elapsed().as_secs();
                     tx.send_modify(|m| {
                         m.uptime_seconds = elapsed;
                         m.graph_entities_total = entities.unwrap_or(0).cast_unsigned();
                         m.graph_edges_total = edges.unwrap_or(0).cast_unsigned();
                         m.graph_communities_total = communities.unwrap_or(0).cast_unsigned();
                     });
-                });
-            }
-        }
-        let _ = self.channel.send_status("").await;
+                } else {
+                    let _ = extraction_handle.await;
+                }
+
+                tracing::debug!("background graph extraction complete");
+            },
+        );
+
+        // Sync community failures and extraction metrics (cheap, foreground-safe).
         self.sync_community_detection_failures();
         self.sync_graph_extraction_metrics();
-        match tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            self.sync_graph_counts().await;
-            self.sync_guidelines_status().await;
-        })
-        .await
-        {
-            Ok(()) => {}
-            Err(_) => {
-                tracing::warn!("persist_message: maybe_spawn_graph_extraction timed out after 10s");
-            }
-        }
+        // sync_graph_counts and sync_guidelines_status are DB reads; move to Telemetry background.
+        let memory_for_sync = self.memory_state.memory.clone();
+        let metrics_tx_sync = self.metrics.metrics_tx.clone();
+        let start_time_sync = self.lifecycle.start_time;
+        let cid_sync = self.memory_state.conversation_id;
+        let graph_store_sync = memory_for_sync.as_ref().and_then(|m| m.graph_store.clone());
+        let sqlite_sync = memory_for_sync.as_ref().map(|m| m.sqlite().clone());
+        let guidelines_enabled = self.memory_state.graph_config.enabled;
+
+        self.lifecycle.supervisor.spawn(
+            super::supervisor::TaskClass::Telemetry,
+            "graph_count_sync",
+            async move {
+                let Some(store) = graph_store_sync else {
+                    return;
+                };
+                let Some(tx) = metrics_tx_sync else { return };
+
+                let (entities, edges, communities) = tokio::join!(
+                    store.entity_count(),
+                    store.active_edge_count(),
+                    store.community_count()
+                );
+                let elapsed = start_time_sync.elapsed().as_secs();
+                tx.send_modify(|m| {
+                    m.uptime_seconds = elapsed;
+                    m.graph_entities_total = entities.unwrap_or(0).cast_unsigned();
+                    m.graph_edges_total = edges.unwrap_or(0).cast_unsigned();
+                    m.graph_communities_total = communities.unwrap_or(0).cast_unsigned();
+                });
+
+                // Sync guidelines status.
+                if guidelines_enabled && let Some(sqlite) = sqlite_sync {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        sqlite.load_compression_guidelines_meta(cid_sync),
+                    )
+                    .await
+                    {
+                        Ok(Ok((version, created_at))) => {
+                            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                            let version_u32 = u32::try_from(version).unwrap_or(0);
+                            tx.send_modify(|m| {
+                                m.guidelines_version = version_u32;
+                                m.guidelines_updated_at = created_at;
+                            });
+                        }
+                        Ok(Err(e)) => {
+                            tracing::debug!("guidelines status sync failed: {e:#}");
+                        }
+                        Err(_) => {
+                            tracing::debug!("guidelines status sync timed out");
+                        }
+                    }
+                }
+            },
+        );
     }
 
-    async fn maybe_spawn_persona_extraction(&mut self) {
-        use std::time::Duration;
-
+    /// Enqueue persona extraction via supervisor (background, no `send_status`).
+    fn enqueue_persona_extraction_task(&mut self) {
         use zeph_memory::semantic::{PersonaExtractionConfig, extract_persona_facts};
 
         let cfg = &self.memory_state.persona_config;
@@ -746,8 +836,6 @@ impl<C: Channel> Agent<C> {
             return;
         };
 
-        // Collect recent user messages for extraction.
-        // Cap at 8 messages and 2 KiB per message to bound LLM prompt size.
         let user_messages: Vec<String> = self
             .msg
             .messages
@@ -785,25 +873,34 @@ impl<C: Channel> Agent<C> {
         let store = memory.sqlite().clone();
         let conversation_id = self.memory_state.conversation_id.map(|c| c.0);
 
-        let user_message_refs: Vec<&str> = user_messages.iter().map(String::as_str).collect();
-        let fut = extract_persona_facts(
-            &store,
-            &provider,
-            &user_message_refs,
-            &extraction_cfg,
-            conversation_id,
+        self.lifecycle.supervisor.spawn(
+            super::supervisor::TaskClass::Enrichment,
+            "persona_extraction",
+            async move {
+                let user_message_refs: Vec<&str> =
+                    user_messages.iter().map(String::as_str).collect();
+                let fut = extract_persona_facts(
+                    &store,
+                    &provider,
+                    &user_message_refs,
+                    &extraction_cfg,
+                    conversation_id,
+                );
+                match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fut).await
+                {
+                    Ok(Ok(n)) => tracing::debug!(upserted = n, "persona extraction complete"),
+                    Ok(Err(e)) => tracing::warn!(error = %e, "persona extraction failed"),
+                    Err(_) => tracing::warn!(
+                        timeout_secs,
+                        "persona extraction timed out — no facts written this turn"
+                    ),
+                }
+            },
         );
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), fut).await {
-            Ok(Ok(n)) => tracing::debug!(upserted = n, "persona extraction complete"),
-            Ok(Err(e)) => tracing::warn!(error = %e, "persona extraction failed"),
-            Err(_) => tracing::warn!(
-                timeout_secs,
-                "persona extraction timed out — no facts written this turn"
-            ),
-        }
     }
 
-    fn maybe_spawn_trajectory_extraction(&mut self) {
+    /// Enqueue trajectory extraction via supervisor (background).
+    fn enqueue_trajectory_extraction_task(&mut self) {
         use zeph_memory::semantic::{TrajectoryExtractionConfig, extract_trajectory_entries};
 
         let cfg = self.memory_state.trajectory_config.clone();
@@ -820,9 +917,6 @@ impl<C: Channel> Agent<C> {
             None => return,
         };
 
-        // Collect the tail of the message history to pass to the extractor.
-        // Cloning the full vec can be megabytes in long sessions; the extractor only needs
-        // recent context bounded by `cfg.max_messages`.
         let tail_start = self.msg.messages.len().saturating_sub(cfg.max_messages);
         let turn_messages: Vec<zeph_llm::provider::Message> =
             self.msg.messages[tail_start..].to_vec();
@@ -841,70 +935,70 @@ impl<C: Channel> Agent<C> {
         let store = memory.sqlite().clone();
         let min_confidence = cfg.min_confidence;
 
-        // Fire-and-forget: do not block response path (critic M3).
-        tokio::spawn(async move {
-            let entries = match extract_trajectory_entries(
-                &provider,
-                &turn_messages,
-                &extraction_cfg,
-            )
-            .await
-            {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::warn!(error = %e, "trajectory extraction failed");
-                    return;
-                }
-            };
-
-            // Get or initialize the watermark for this conversation.
-            let last_id = store
-                .trajectory_last_extracted_message_id(conversation_id)
-                .await
-                .unwrap_or(0);
-
-            let mut max_id = last_id;
-            for entry in &entries {
-                if entry.confidence < min_confidence {
-                    continue;
-                }
-                let tools_json =
-                    serde_json::to_string(&entry.tools_used).unwrap_or_else(|_| "[]".to_string());
-                match store
-                    .insert_trajectory_entry(zeph_memory::NewTrajectoryEntry {
-                        conversation_id: Some(conversation_id),
-                        turn_index: 0, // turn_index placeholder (best effort)
-                        kind: &entry.kind,
-                        intent: &entry.intent,
-                        outcome: &entry.outcome,
-                        tools_used: &tools_json,
-                        confidence: entry.confidence,
-                    })
-                    .await
-                {
-                    Ok(id) => {
-                        if id > max_id {
-                            max_id = id;
+        self.lifecycle.supervisor.spawn(
+            super::supervisor::TaskClass::Enrichment,
+            "trajectory_extraction",
+            async move {
+                let entries =
+                    match extract_trajectory_entries(&provider, &turn_messages, &extraction_cfg)
+                        .await
+                    {
+                        Ok(e) => e,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "trajectory extraction failed");
+                            return;
                         }
+                    };
+
+                let last_id = store
+                    .trajectory_last_extracted_message_id(conversation_id)
+                    .await
+                    .unwrap_or(0);
+
+                let mut max_id = last_id;
+                for entry in &entries {
+                    if entry.confidence < min_confidence {
+                        continue;
                     }
-                    Err(e) => tracing::warn!(error = %e, "failed to insert trajectory entry"),
+                    let tools_json = serde_json::to_string(&entry.tools_used)
+                        .unwrap_or_else(|_| "[]".to_string());
+                    match store
+                        .insert_trajectory_entry(zeph_memory::NewTrajectoryEntry {
+                            conversation_id: Some(conversation_id),
+                            turn_index: 0,
+                            kind: &entry.kind,
+                            intent: &entry.intent,
+                            outcome: &entry.outcome,
+                            tools_used: &tools_json,
+                            confidence: entry.confidence,
+                        })
+                        .await
+                    {
+                        Ok(id) => {
+                            if id > max_id {
+                                max_id = id;
+                            }
+                        }
+                        Err(e) => tracing::warn!(error = %e, "failed to insert trajectory entry"),
+                    }
                 }
-            }
 
-            if max_id > last_id {
-                let _ = store
-                    .set_trajectory_last_extracted_message_id(conversation_id, max_id)
-                    .await;
-            }
+                if max_id > last_id {
+                    let _ = store
+                        .set_trajectory_last_extracted_message_id(conversation_id, max_id)
+                        .await;
+                }
 
-            tracing::debug!(
-                count = entries.len(),
-                conversation_id,
-                "trajectory extraction complete"
-            );
-        });
+                tracing::debug!(
+                    count = entries.len(),
+                    conversation_id,
+                    "trajectory extraction complete"
+                );
+            },
+        );
     }
 
+    #[cfg(test)]
     pub(crate) async fn check_summarization(&mut self) {
         let (Some(memory), Some(cid)) =
             (&self.memory_state.memory, self.memory_state.conversation_id)
@@ -1409,7 +1503,7 @@ mod tests {
         assert_eq!(agent.memory_state.unsummarized_count, 0);
     }
 
-    // R-CRIT-01: unit tests for maybe_spawn_graph_extraction guard conditions.
+    // R-CRIT-01: unit tests for enqueue_graph_extraction_task guard conditions.
     mod graph_extraction_guards {
         use super::*;
         use crate::config::GraphConfig;
@@ -1457,7 +1551,7 @@ mod tests {
                 .clone();
 
             agent
-                .maybe_spawn_graph_extraction("I use Rust", true, false)
+                .enqueue_graph_extraction_task("I use Rust", true, false)
                 .await;
 
             // Give any accidental spawn time to settle.
@@ -1490,7 +1584,7 @@ mod tests {
                 .clone();
 
             agent
-                .maybe_spawn_graph_extraction("I use Rust", false, false)
+                .enqueue_graph_extraction_task("I use Rust", false, false)
                 .await;
 
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1519,7 +1613,7 @@ mod tests {
                 .clone();
 
             agent
-                .maybe_spawn_graph_extraction("I use Rust for systems programming", false, false)
+                .enqueue_graph_extraction_task("I use Rust for systems programming", false, false)
                 .await;
 
             // Wait for the spawned task to complete.
@@ -1550,7 +1644,7 @@ mod tests {
                 .clone();
 
             agent
-                .maybe_spawn_graph_extraction(
+                .enqueue_graph_extraction_task(
                     "[tool_result: abc123]\nprovider_type = \"claude\"\nallowed_commands = []",
                     false,
                     true, // has_tool_result_parts
@@ -1570,7 +1664,7 @@ mod tests {
         #[tokio::test]
         async fn context_filter_excludes_tool_result_messages() {
             // FIX-2: context_messages must not include tool result user messages.
-            // When maybe_spawn_graph_extraction collects context, it filters out
+            // When enqueue_graph_extraction_task collects context, it filters out
             // Role::User messages that contain ToolResult parts — only conversational
             // user messages are included as extraction context.
             //
@@ -1606,7 +1700,11 @@ mod tests {
 
             // Trigger extraction for a conversational message (not a tool result).
             agent
-                .maybe_spawn_graph_extraction("I prefer Rust for systems programming", false, false)
+                .enqueue_graph_extraction_task(
+                    "I prefer Rust for systems programming",
+                    false,
+                    false,
+                )
                 .await;
 
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1621,7 +1719,7 @@ mod tests {
         }
     }
 
-    // R-PERS-01: unit tests for maybe_spawn_persona_extraction guard conditions.
+    // R-PERS-01: unit tests for enqueue_persona_extraction_task guard conditions.
     mod persona_extraction_guards {
         use super::*;
         use zeph_config::PersonaConfig;
@@ -1676,7 +1774,7 @@ mod tests {
                 metadata: MessageMetadata::default(),
             });
 
-            agent.maybe_spawn_persona_extraction().await;
+            agent.enqueue_persona_extraction_task();
 
             let store = agent.memory_state.memory.as_ref().unwrap().sqlite().clone();
             let count = store.count_persona_facts().await.unwrap();
@@ -1706,7 +1804,7 @@ mod tests {
                 });
             }
 
-            agent.maybe_spawn_persona_extraction().await;
+            agent.enqueue_persona_extraction_task();
 
             let store = agent.memory_state.memory.as_ref().unwrap().sqlite().clone();
             let count = store.count_persona_facts().await.unwrap();
@@ -1733,7 +1831,7 @@ mod tests {
             });
 
             // Must not panic even without memory.
-            agent.maybe_spawn_persona_extraction().await;
+            agent.enqueue_persona_extraction_task();
         }
 
         #[tokio::test]
@@ -1752,7 +1850,10 @@ mod tests {
                 metadata: MessageMetadata::default(),
             });
 
-            agent.maybe_spawn_persona_extraction().await;
+            agent.enqueue_persona_extraction_task();
+
+            // Persona extraction runs via BackgroundSupervisor. Wait for tasks to complete.
+            agent.lifecycle.supervisor.join_all_for_test().await;
 
             let calls = recorded.lock().unwrap();
             assert!(
@@ -1779,7 +1880,10 @@ mod tests {
                 });
             }
 
-            agent.maybe_spawn_persona_extraction().await;
+            agent.enqueue_persona_extraction_task();
+
+            // Allow the background task to complete before asserting.
+            agent.lifecycle.supervisor.join_all_for_test().await;
 
             // Verify extraction ran (provider was called).
             let calls = recorded.lock().unwrap();
@@ -1805,7 +1909,7 @@ mod tests {
         #[test]
         fn long_message_truncated_at_char_boundary() {
             // Directly verify the per-message truncation logic applied in
-            // maybe_spawn_persona_extraction: a content > 2048 bytes must be capped
+            // enqueue_persona_extraction_task: a content > 2048 bytes must be capped
             // to exactly floor_char_boundary(2048).
             let long_content = "x".repeat(3000);
             let truncated = if long_content.len() > 2048 {
@@ -3617,13 +3721,13 @@ mod tests {
         assert_eq!(history[0].content, content);
     }
 
-    /// Verify that `maybe_spawn_trajectory_extraction` uses a bounded tail slice instead of
+    /// Verify that `enqueue_trajectory_extraction_task` uses a bounded tail slice instead of
     /// cloning the full message vec. We confirm the slice logic by checking that the
     /// `tail_start` calculation correctly bounds the window even with more messages than
     /// `max_messages`.
     #[test]
     fn trajectory_extraction_slice_bounds_messages() {
-        // Replicate the slice logic from maybe_spawn_trajectory_extraction.
+        // Replicate the slice logic from enqueue_trajectory_extraction_task.
         let max_messages: usize = 20;
         let total_messages = 100usize;
 
