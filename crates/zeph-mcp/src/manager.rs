@@ -2291,8 +2291,10 @@ mod tests {
     #[test]
     fn validate_roots_file_uri_is_kept() {
         use rmcp::model::Root;
-        // Use a path that exists on any Unix system.
-        let root = Root::new("file:///tmp");
+        // Use temp_dir which exists on all platforms (Unix, macOS, Windows).
+        let tmp = std::env::temp_dir();
+        let uri = format!("file://{}", tmp.display());
+        let root = Root::new(uri);
         let result = validate_roots(&[root], "srv");
         assert_eq!(result.len(), 1);
         // URI is canonicalized — on macOS /tmp resolves to /private/tmp.
@@ -2320,8 +2322,9 @@ mod tests {
     #[test]
     fn validate_roots_mixed_uris_keeps_only_file() {
         use rmcp::model::Root;
+        let tmp = std::env::temp_dir();
         let roots = vec![
-            Root::new("file:///tmp"),
+            Root::new(format!("file://{}", tmp.display())),
             Root::new("https://evil.example.com"),
             Root::new("file:///nonexistent-path-xyz"),
         ];
@@ -2359,8 +2362,14 @@ mod tests {
     #[test]
     fn validate_roots_file_uri_traversal_is_canonicalized() {
         use rmcp::model::Root;
-        // file:///etc/../tmp exists but has traversal — canonicalize resolves it.
-        let root = Root::new("file:///etc/../tmp");
+        // Build a traversal path using temp_dir, which exists on all platforms.
+        let tmp = std::env::temp_dir();
+        let parent = tmp.parent().unwrap_or(&tmp);
+        let dir_name = tmp.file_name().unwrap_or_default();
+        // Construct: <parent>/<dir_name>/../<dir_name>  →  canonicalizes to <tmp>
+        let traversal = parent.join(dir_name).join("..").join(dir_name);
+        let uri = format!("file://{}", traversal.display());
+        let root = Root::new(uri);
         let result = validate_roots(&[root], "srv");
         assert_eq!(result.len(), 1);
         // After canonicalize, the traversal component must be gone.
@@ -2468,7 +2477,8 @@ mod tests {
     #[test]
     fn validate_roots_preserves_name() {
         use rmcp::model::Root;
-        let root = Root::new("file:///tmp").with_name("workspace");
+        let tmp = std::env::temp_dir();
+        let root = Root::new(format!("file://{}", tmp.display())).with_name("workspace");
         let result = validate_roots(&[root], "srv");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name.as_deref(), Some("workspace"));
