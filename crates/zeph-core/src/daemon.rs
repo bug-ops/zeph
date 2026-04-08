@@ -144,13 +144,7 @@ pub fn is_process_alive(pid: u32) -> bool {
     #[cfg(windows)]
     {
         std::process::Command::new("tasklist")
-            .args([
-                "/FI",
-                &format!("PID eq {pid}"),
-                "/NH",
-                "/FO",
-                "CSV",
-            ])
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
             .output()
             .map(|o| {
                 let stdout = String::from_utf8_lossy(&o.stdout);
