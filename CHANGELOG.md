@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.6] - 2026-04-08
+
 ### Removed
 
 - **Delete legacy text-extraction tool path** (`#2782`): removed `crates/zeph-core/src/agent/tool_execution/legacy.rs` (896 lines). All tool execution now goes through the native `tool_use` path. `LlmProvider::supports_tool_use()` default changed from `false` to `true`; the `tool_use: bool` field was removed from `OllamaProvider`, `MockProvider`, and `ProviderEntry` config. Callers in context assembly, MCP, `agent_setup`, and `runner` were simplified accordingly. Existing `config.toml` files that still contain `tool_use = true/false` under `[[llm.providers]]` are silently accepted by serde (field is unknown and ignored) — no migration required.
@@ -3488,7 +3490,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.18.5...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.18.6...HEAD
+[0.18.6]: https://github.com/bug-ops/zeph/compare/v0.18.5...v0.18.6
 [0.18.5]: https://github.com/bug-ops/zeph/compare/v0.18.4...v0.18.5
 [0.18.4]: https://github.com/bug-ops/zeph/compare/v0.18.3...v0.18.4
 [0.18.3]: https://github.com/bug-ops/zeph/compare/v0.18.2...v0.18.3

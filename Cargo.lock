@@ -9482,7 +9482,7 @@ dependencies = [
 
 [[package]]
 name = "zeph"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9537,7 +9537,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-a2a"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "axum 0.8.8",
  "base64 0.22.1",
@@ -9567,7 +9567,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-acp"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "agent-client-protocol",
  "async-stream",
@@ -9606,7 +9606,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-channels"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "axum 0.8.8",
  "criterion",
@@ -9631,7 +9631,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-common"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "blake3",
  "serde",
@@ -9648,7 +9648,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-config"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "dirs",
  "insta",
@@ -9669,7 +9669,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-core"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "age",
  "async-trait",
@@ -9724,7 +9724,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-db"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "regex",
  "sqlx",
@@ -9737,7 +9737,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-experiments"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "futures",
  "ordered-float 5.3.0",
@@ -9760,7 +9760,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-gateway"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "axum 0.8.8",
  "blake3",
@@ -9778,7 +9778,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-index"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "futures",
  "ignore",
@@ -9812,7 +9812,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-llm"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "async-stream",
  "audioadapter-buffers",
@@ -9853,7 +9853,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-mcp"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "async-trait",
  "blake3",
@@ -9884,7 +9884,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-memory"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "blake3",
  "chrono",
@@ -9918,7 +9918,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-orchestration"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "blake3",
  "futures",
@@ -9940,7 +9940,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-sanitizer"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "proptest",
  "regex",
@@ -9960,7 +9960,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-scheduler"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "chrono",
  "cron",
@@ -9978,7 +9978,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-skills"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "anyhow",
  "blake3",
@@ -10013,7 +10013,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-subagent"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "dirs",
  "indoc",
@@ -10039,7 +10039,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tools"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "dirs",
  "glob",
@@ -10077,7 +10077,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tui"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "chrono",
  "crossterm",
@@ -10112,7 +10112,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-vault"
-version = "0.18.5"
+version = "0.18.6"
 dependencies = [
  "age",
  "proptest",
