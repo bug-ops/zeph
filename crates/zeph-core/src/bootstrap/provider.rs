@@ -262,13 +262,19 @@ fn build_candle_provider(
         repeat_last_n: candle_cfg.generation.repeat_last_n,
     };
     let device = select_device(device_pref)?;
-    zeph_llm::candle_provider::CandleProvider::new(
+    // S1: floor at 1s so that inference_timeout_secs = 0 does not cause every request to
+    // immediately time out. The effective maximum wait per request is 2 × this value because
+    // dispatch() applies the timeout once to the channel send and once to the oneshot recv.
+    let inference_timeout =
+        std::time::Duration::from_secs(candle_cfg.inference_timeout_secs.max(1));
+    zeph_llm::candle_provider::CandleProvider::new_with_timeout(
         source,
         template,
         gen_config,
         candle_cfg.embedding_repo.as_deref(),
         candle_cfg.hf_token.as_deref(),
         device,
+        inference_timeout,
     )
     .map(AnyProvider::Candle)
     .map_err(|e| BootstrapError::Provider(e.to_string()))
@@ -490,6 +496,7 @@ pub fn build_provider_from_entry(
                 embedding_repo: candle.embedding_repo.clone(),
                 hf_token: candle.hf_token.clone(),
                 generation: candle.generation.clone(),
+                inference_timeout_secs: candle.inference_timeout_secs,
             };
             build_candle_provider(&source, &candle_cfg_adapter, &candle.device)
         }

@@ -190,6 +190,18 @@ pub struct SubAgentMetrics {
     pub transcript_dir: Option<String>,
 }
 
+/// Per-turn latency breakdown for the four agent hot-path phases.
+///
+/// Populated with `Instant`-based measurements at each phase boundary.
+/// All values are in milliseconds.
+#[derive(Debug, Clone, Default)]
+pub struct TurnTimings {
+    pub prepare_context_ms: u64,
+    pub llm_chat_ms: u64,
+    pub tool_exec_ms: u64,
+    pub persist_message_ms: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MetricsSnapshot {
@@ -359,6 +371,16 @@ pub struct MetricsSnapshot {
     pub autosave_enabled: bool,
     /// Classifier p50/p95 latency metrics per task (injection, pii, feedback).
     pub classifier: ClassifierMetricsSnapshot,
+    /// Latency breakdown for the most recently completed agent turn.
+    pub last_turn_timings: TurnTimings,
+    /// Rolling average of per-phase latency over the last 10 turns.
+    pub avg_turn_timings: TurnTimings,
+    /// Maximum per-phase latency observed within the rolling window (tail-latency visibility).
+    ///
+    /// M3: exposes `max_in_window` alongside the rolling average for operational monitoring.
+    pub max_turn_timings: TurnTimings,
+    /// Number of turns included in `avg_turn_timings` and `max_turn_timings` (capped at 10).
+    pub timing_sample_count: u64,
 }
 
 /// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.

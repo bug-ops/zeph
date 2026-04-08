@@ -5,26 +5,31 @@ pub mod embed;
 pub mod generate;
 pub mod loader;
 pub mod template;
+pub mod worker;
 
 pub use candle_core::Device;
 
+use std::time::Duration;
 use tokenizers::Tokenizer;
 
 use crate::error::LlmError;
 
 use self::embed::EmbedModel;
-use self::generate::{GenerationConfig, GenerationOutput, generate_tokens};
+use self::generate::GenerationConfig;
 use self::loader::{LoadedModel, ModelSource, load_chat_model};
 use self::template::ChatTemplate;
+use self::worker::{DEFAULT_INFERENCE_TIMEOUT_SECS, InferenceRequest, InferenceWorker};
 use crate::provider::{ChatStream, LlmProvider, Message, StreamChunk};
 
-use candle_transformers::models::quantized_llama::ModelWeights;
+/// Bounded channel capacity for inference requests.
+///
+/// At most 4 requests may be queued. Callers block (async) when full, providing
+/// natural backpressure.  Capacity 4 covers the concurrent `chat` + `chat_stream`
+/// + speculative calls edge case without unbounded growth.
+const WORKER_CHANNEL_CAPACITY: usize = 4;
 
-#[derive(Clone)]
 pub struct CandleProvider {
-    // NOTE: MVP — std::sync::Mutex serializes inference. Consider per-request model clone
-    // or tokio::sync::Mutex for async fairness.
-    weights: std::sync::Arc<std::sync::Mutex<ModelWeights>>,
+    worker: InferenceWorker,
     tokenizer: std::sync::Arc<Tokenizer>,
     eos_token_id: u32,
     template: ChatTemplate,
@@ -44,6 +49,26 @@ impl std::fmt::Debug for CandleProvider {
     }
 }
 
+impl Clone for CandleProvider {
+    fn clone(&self) -> Self {
+        Self {
+            // Clone the Sender — both copies route to the same worker.
+            worker: InferenceWorker {
+                tx: self.worker.tx.clone(),
+                inference_timeout: self.worker.inference_timeout,
+                // None on clones: the original InferenceWorker owns the JoinHandle.
+                _handle: None,
+            },
+            tokenizer: std::sync::Arc::clone(&self.tokenizer),
+            eos_token_id: self.eos_token_id,
+            template: self.template.clone(),
+            generation_config: self.generation_config.clone(),
+            embed_model: self.embed_model.clone(),
+            device: self.device.clone(),
+        }
+    }
+}
+
 impl CandleProvider {
     /// Create a new `CandleProvider` from a model source.
     ///
@@ -57,6 +82,31 @@ impl CandleProvider {
         embedding_repo: Option<&str>,
         hf_token: Option<&str>,
         device: Device,
+    ) -> Result<Self, LlmError> {
+        Self::new_with_timeout(
+            source,
+            template,
+            generation_config,
+            embedding_repo,
+            hf_token,
+            device,
+            Duration::from_secs(DEFAULT_INFERENCE_TIMEOUT_SECS),
+        )
+    }
+
+    /// Create a new `CandleProvider` with a custom inference timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if model loading or embedding model initialization fails.
+    pub fn new_with_timeout(
+        source: &ModelSource,
+        template: ChatTemplate,
+        generation_config: GenerationConfig,
+        embedding_repo: Option<&str>,
+        hf_token: Option<&str>,
+        device: Device,
+        inference_timeout: Duration,
     ) -> Result<Self, LlmError> {
         let LoadedModel {
             weights,
@@ -72,9 +122,21 @@ impl CandleProvider {
             None
         };
 
+        let tokenizer = std::sync::Arc::new(tokenizer);
+        let worker = InferenceWorker::spawn(
+            weights,
+            std::sync::Arc::clone(&tokenizer),
+            eos_token_id,
+            template.clone(),
+            generation_config.clone(),
+            device.clone(),
+            WORKER_CHANNEL_CAPACITY,
+            inference_timeout,
+        );
+
         Ok(Self {
-            weights: std::sync::Arc::new(std::sync::Mutex::new(weights)),
-            tokenizer: std::sync::Arc::new(tokenizer),
+            worker,
+            tokenizer,
             eos_token_id,
             template,
             generation_config,
@@ -92,72 +154,57 @@ impl CandleProvider {
         }
     }
 
-    fn generate_sync(&self, messages: &[Message]) -> Result<String, LlmError> {
-        let prompt = self.template.format(messages);
-        let encoding = self
-            .tokenizer
-            .encode(prompt.as_str(), false)
-            .map_err(|e| LlmError::Inference(format!("tokenizer encode failed: {e}")))?;
-        let input_tokens = encoding.get_ids();
+    /// Send an inference request to the worker and await the result.
+    ///
+    /// Applies `inference_timeout` to both the channel send and the oneshot recv.
+    /// Maps `RecvError` (worker panic / drop) to `LlmError::Inference`.
+    async fn dispatch(&self, messages: Vec<Message>) -> Result<String, LlmError> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        let req = InferenceRequest {
+            messages,
+            reply: reply_tx,
+        };
 
-        let weights = self.weights.clone();
-        let mut forward_fn =
-            |input: &candle_core::Tensor, pos: usize| -> Result<candle_core::Tensor, LlmError> {
-                let mut w = weights
-                    .lock()
-                    .map_err(|e| LlmError::Inference(format!("model lock poisoned: {e}")))?;
-                w.forward(input, pos).map_err(LlmError::Candle)
-            };
+        // M2: bounded send with timeout — blocks if channel is full.
+        tokio::time::timeout(self.worker.inference_timeout, self.worker.tx.send(req))
+            .await
+            .map_err(|_| LlmError::Inference("inference worker send timed out".into()))?
+            .map_err(|_| LlmError::Inference("inference worker channel closed".into()))?;
 
-        let GenerationOutput {
-            text,
-            tokens_generated,
-        } = generate_tokens(
-            &mut forward_fn,
-            &self.tokenizer,
-            input_tokens,
-            &self.generation_config,
-            self.eos_token_id,
-            &self.device,
-        )?;
+        // M2: bounded recv with timeout — blocks until worker replies.
+        let output = tokio::time::timeout(self.worker.inference_timeout, reply_rx)
+            .await
+            .map_err(|_| LlmError::Inference("inference worker reply timed out".into()))?
+            // M1: RecvError means the worker panicked or was dropped.
+            .map_err(|_| LlmError::Inference("inference worker died".into()))??;
 
-        tracing::debug!("generated {tokens_generated} token(s)");
-        Ok(text)
+        tracing::debug!("generated {} token(s)", output.tokens_generated);
+        Ok(output.text)
     }
 }
 
 impl LlmProvider for CandleProvider {
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
-        let provider = self.clone();
-        let messages = messages.to_vec();
-        tokio::task::spawn_blocking(move || provider.generate_sync(&messages))
-            .await
-            .map_err(|e| LlmError::Inference(format!("candle generation task failed: {e}")))?
+        self.dispatch(messages.to_vec()).await
     }
 
     // NOTE: MVP fake streaming — generates all tokens then chunks
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
+        let text = self.dispatch(messages.to_vec()).await?;
         let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let provider = self.clone();
-        let messages = messages.to_vec();
 
-        tokio::task::spawn_blocking(move || match provider.generate_sync(&messages) {
-            Ok(text) => {
-                let mut start = 0;
-                while start < text.len() {
-                    let mut end = (start + 32).min(text.len());
-                    while !text.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    let chunk = StreamChunk::Content(text[start..end].to_string());
-                    if tx.blocking_send(Ok(chunk)).is_err() {
-                        break;
-                    }
-                    start = end;
+        tokio::spawn(async move {
+            let mut start = 0;
+            while start < text.len() {
+                let mut end = (start + 32).min(text.len());
+                while !text.is_char_boundary(end) {
+                    end -= 1;
                 }
-            }
-            Err(e) => {
-                let _ = tx.blocking_send(Err(e));
+                let chunk = StreamChunk::Content(text[start..end].to_string());
+                if tx.send(Ok(chunk)).await.is_err() {
+                    break;
+                }
+                start = end;
             }
         });
 

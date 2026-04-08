@@ -127,6 +127,53 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Flush `metrics.pending_timings` into the rolling window and publish to the metrics snapshot.
+    ///
+    /// Call once per turn after all four phases have written to `pending_timings`.
+    /// Resets `pending_timings` to default after flushing.
+    pub(super) fn flush_turn_timings(&mut self) {
+        let timings = std::mem::take(&mut self.metrics.pending_timings);
+        tracing::debug!(
+            prepare_context_ms = timings.prepare_context_ms,
+            llm_chat_ms = timings.llm_chat_ms,
+            tool_exec_ms = timings.tool_exec_ms,
+            persist_message_ms = timings.persist_message_ms,
+            "turn timings"
+        );
+
+        if self.metrics.timing_window.len() >= 10 {
+            self.metrics.timing_window.pop_front();
+        }
+        self.metrics.timing_window.push_back(timings.clone());
+
+        let count = self.metrics.timing_window.len();
+        let mut avg = crate::metrics::TurnTimings::default();
+        let mut max = crate::metrics::TurnTimings::default();
+        for t in &self.metrics.timing_window {
+            avg.prepare_context_ms = avg.prepare_context_ms.saturating_add(t.prepare_context_ms);
+            avg.llm_chat_ms = avg.llm_chat_ms.saturating_add(t.llm_chat_ms);
+            avg.tool_exec_ms = avg.tool_exec_ms.saturating_add(t.tool_exec_ms);
+            avg.persist_message_ms = avg.persist_message_ms.saturating_add(t.persist_message_ms);
+
+            max.prepare_context_ms = max.prepare_context_ms.max(t.prepare_context_ms);
+            max.llm_chat_ms = max.llm_chat_ms.max(t.llm_chat_ms);
+            max.tool_exec_ms = max.tool_exec_ms.max(t.tool_exec_ms);
+            max.persist_message_ms = max.persist_message_ms.max(t.persist_message_ms);
+        }
+        let n = count as u64;
+        avg.prepare_context_ms /= n;
+        avg.llm_chat_ms /= n;
+        avg.tool_exec_ms /= n;
+        avg.persist_message_ms /= n;
+
+        self.update_metrics(|m| {
+            m.last_turn_timings = timings;
+            m.avg_turn_timings = avg;
+            m.max_turn_timings = max;
+            m.timing_sample_count = n;
+        });
+    }
+
     /// Push the current classifier metrics snapshot into `MetricsSnapshot`.
     ///
     /// Call this after any classifier invocation (injection, PII, feedback) so the TUI panel
@@ -558,5 +605,86 @@ mod tests {
         } else {
             panic!("expected ToolResult");
         }
+    }
+
+    fn make_timings(ctx: u64, llm: u64, tool: u64, persist: u64) -> crate::metrics::TurnTimings {
+        crate::metrics::TurnTimings {
+            prepare_context_ms: ctx,
+            llm_chat_ms: llm,
+            tool_exec_ms: tool,
+            persist_message_ms: persist,
+        }
+    }
+
+    fn agent_with_metrics_watch() -> (
+        Agent<MockChannel>,
+        tokio::sync::watch::Receiver<crate::metrics::MetricsSnapshot>,
+    ) {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let (tx, rx) = tokio::sync::watch::channel(crate::metrics::MetricsSnapshot::default());
+        agent.metrics.metrics_tx = Some(tx);
+        (agent, rx)
+    }
+
+    // T1-a: single flush — last_turn_timings equals the flushed value, count == 1.
+    #[test]
+    fn flush_turn_timings_single_flush() {
+        let (mut agent, rx) = agent_with_metrics_watch();
+
+        agent.metrics.pending_timings = make_timings(10, 200, 50, 5);
+        agent.flush_turn_timings();
+
+        let snap = rx.borrow();
+        assert_eq!(snap.last_turn_timings.prepare_context_ms, 10);
+        assert_eq!(snap.last_turn_timings.llm_chat_ms, 200);
+        assert_eq!(snap.last_turn_timings.tool_exec_ms, 50);
+        assert_eq!(snap.last_turn_timings.persist_message_ms, 5);
+        assert_eq!(snap.timing_sample_count, 1);
+        // avg == last when sample_count == 1
+        assert_eq!(snap.avg_turn_timings.llm_chat_ms, 200);
+    }
+
+    // T1-b: pending_timings reset to default after flush.
+    #[test]
+    fn flush_turn_timings_resets_pending() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.metrics.pending_timings = make_timings(10, 200, 50, 5);
+        agent.flush_turn_timings();
+
+        let p = &agent.metrics.pending_timings;
+        assert_eq!(p.prepare_context_ms, 0);
+        assert_eq!(p.llm_chat_ms, 0);
+        assert_eq!(p.tool_exec_ms, 0);
+        assert_eq!(p.persist_message_ms, 0);
+    }
+
+    // T1-c: window capped at 10; avg and max computed correctly.
+    #[test]
+    fn flush_turn_timings_window_capped_at_10() {
+        let (mut agent, rx) = agent_with_metrics_watch();
+
+        // Push 12 turns: llm_chat_ms = i * 10 for i in 1..=12.
+        for i in 1_u64..=12 {
+            agent.metrics.pending_timings = make_timings(0, i * 10, 0, 0);
+            agent.flush_turn_timings();
+        }
+
+        let snap = rx.borrow();
+        // Window holds last 10: turns 3..=12, llm values 30..=120.
+        assert_eq!(snap.timing_sample_count, 10);
+        // max = 120
+        assert_eq!(snap.max_turn_timings.llm_chat_ms, 120);
+        // avg of 30,40,...,120 = (30+120)*10/2/10 = 75
+        assert_eq!(snap.avg_turn_timings.llm_chat_ms, 75);
     }
 }

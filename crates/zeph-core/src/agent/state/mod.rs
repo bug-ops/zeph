@@ -395,6 +395,10 @@ pub(crate) struct MetricsState {
     /// Shared classifier latency ring buffer. Populated by `ContentSanitizer` (injection, PII)
     /// and `LlmClassifier` (feedback). `None` when classifiers are not configured.
     pub(crate) classifier_metrics: Option<Arc<zeph_llm::ClassifierMetrics>>,
+    /// Rolling window of per-turn latency samples (last 10 turns).
+    pub(crate) timing_window: std::collections::VecDeque<crate::metrics::TurnTimings>,
+    /// Accumulator for the current turn's timings. Flushed at turn end via `flush_turn_timings`.
+    pub(crate) pending_timings: crate::metrics::TurnTimings,
 }
 
 /// Groups task orchestration and subagent state.
@@ -954,6 +958,8 @@ impl MetricsState {
             token_counter,
             extended_context: false,
             classifier_metrics: None,
+            timing_window: std::collections::VecDeque::new(),
+            pending_timings: crate::metrics::TurnTimings::default(),
         }
     }
 }

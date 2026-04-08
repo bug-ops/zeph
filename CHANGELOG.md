@@ -29,6 +29,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Supervised bounded background task management** (`#2816`, `#2821`): introduced `BackgroundSupervisor` in `zeph-core` with per-class concurrency limits (Enrichment=4, Telemetry=8) and drop-on-overflow policy. Background tasks use an `InflightGuard` drop-guard to free concurrency slots immediately on completion. Metrics (`bg_inflight`, `bg_dropped`, `bg_completed`) added to `AgentMetrics`. `persist_message()` refactored into two phases: foreground commit (SQLite/Qdrant write, essential metrics) and background enrichment (summarization, graph extraction, persona extraction, trajectory extraction). Two fire-and-forget `tokio::spawn` sites in `corrections.rs` migrated to the supervisor. Foreground turns no longer await enrichment work; tail latency from post-persist processing is eliminated.
 
+- **Bounded Candle inference worker** (`#2818`): replaced `Arc<Mutex<ModelWeights>>` with a
+  dedicated `InferenceWorker` that owns weights exclusively and processes requests through a
+  bounded `tokio::sync::mpsc(4)` channel. Callers send an `InferenceRequest` with an embedded
+  oneshot sender and await the reply. Both channel send and oneshot recv are wrapped in
+  `tokio::time::timeout` (default 120s, configurable via `inference_timeout_secs` in
+  `[llm.candle]`). Worker panic maps to `LlmError::Inference("inference worker died")`. Embed
+  path is unchanged (`Arc<EmbedModel>` was already lock-free).
+
+- **Turn-level latency metrics** (`#2820`): introduced `TurnTimings` struct with four
+  `u64` fields (`prepare_context_ms`, `llm_chat_ms`, `tool_exec_ms`, `persist_message_ms`).
+  `MetricsSnapshot` gains `last_turn_timings`, `avg_turn_timings`, `max_turn_timings`
+  (M3: tail-latency visibility), and `timing_sample_count`. Rolling window of 10 turns
+  maintained in agent state. TUI Resources panel displays the latency section after the
+  first completed turn.
+
 ### Fixed
 
 - **MCP handshake timeout not enforced** (`#2815`): `connect()`, `connect_url()`, and `connect_url_with_headers()` now wrap `handler.serve(transport)` with `tokio::time::timeout(timeout, ...)`, returning `McpError::Timeout` on expiry. `list_tools()` applies the same guard to `list_all_tools()`. Previously, a stalled MCP server during the initialize handshake or tool listing would block `connect_all()` indefinitely, causing TUI startup to hang at "Connecting tools..." forever. Only `call_tool` had a timeout; the fix brings the other paths to parity.

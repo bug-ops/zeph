@@ -905,6 +905,14 @@ impl<C: Channel> Agent<C> {
 
         self.record_chat_metrics_and_compact(start, &result).await?;
 
+        // Accumulate LLM chat latency into the per-turn timing accumulator (#2820).
+        let llm_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.metrics.pending_timings.llm_chat_ms = self
+            .metrics
+            .pending_timings
+            .llm_chat_ms
+            .saturating_add(llm_ms);
+
         // CR-01: close LLM span after the call completes.
         if let Some(guard) = trace_guard
             && let Some(ref mut tc) = self.debug_state.trace_collector
@@ -1070,6 +1078,8 @@ impl<C: Channel> Agent<C> {
         text: Option<&str>,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
     ) -> Result<(), super::super::error::AgentError> {
+        let t_tool_exec = std::time::Instant::now();
+        tracing::debug!("turn timing: tool_exec start");
         // S4: scan text accompanying ToolUse responses for markdown image exfiltration.
         let cleaned_text: Option<String> = if let Some(t) = text
             && !t.is_empty()
@@ -2582,6 +2592,14 @@ impl<C: Channel> Agent<C> {
         // Normally only changes via set_working_directory; this also catches any
         // future code path that calls set_current_dir.
         self.check_cwd_changed().await;
+
+        let tool_exec_ms = u64::try_from(t_tool_exec.elapsed().as_millis()).unwrap_or(u64::MAX);
+        tracing::debug!(ms = tool_exec_ms, "turn timing: tool_exec done");
+        self.metrics.pending_timings.tool_exec_ms = self
+            .metrics
+            .pending_timings
+            .tool_exec_ms
+            .saturating_add(tool_exec_ms);
 
         Ok(())
     }

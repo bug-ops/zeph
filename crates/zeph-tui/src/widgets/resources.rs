@@ -135,6 +135,28 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         }
     }
 
+    // Turn latency section — only shown after at least one turn has completed (#2820).
+    if metrics.timing_sample_count > 0 {
+        let last = &metrics.last_turn_timings;
+        let avg = &metrics.avg_turn_timings;
+        let max = &metrics.max_turn_timings;
+        lines.push(Line::from("  Turn Latency"));
+        lines.push(Line::from(format!(
+            "    ctx:{}ms llm:{}ms tool:{}ms persist:{}ms",
+            last.prepare_context_ms, last.llm_chat_ms, last.tool_exec_ms, last.persist_message_ms,
+        )));
+        if metrics.timing_sample_count > 1 {
+            lines.push(Line::from(format!(
+                "    avg ctx:{}ms llm:{}ms (n={})",
+                avg.prepare_context_ms, avg.llm_chat_ms, metrics.timing_sample_count,
+            )));
+            lines.push(Line::from(format!(
+                "    max ctx:{}ms llm:{}ms tool:{}ms",
+                max.prepare_context_ms, max.llm_chat_ms, max.tool_exec_ms,
+            )));
+        }
+    }
+
     // Classifier latency section — only shown when at least one task has been called.
     let clf = &metrics.classifier;
     let has_classifier_data =

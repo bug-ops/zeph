@@ -1008,7 +1008,18 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
+        // Reset pending timings for this turn.
+        self.metrics.pending_timings = crate::metrics::TurnTimings::default();
+
+        let t_ctx = std::time::Instant::now();
+        tracing::debug!("turn timing: prepare_context start");
         self.advance_context_lifecycle(&text, trimmed).await;
+        self.metrics.pending_timings.prepare_context_ms =
+            u64::try_from(t_ctx.elapsed().as_millis()).unwrap_or(u64::MAX);
+        tracing::debug!(
+            ms = self.metrics.pending_timings.prepare_context_ms,
+            "turn timing: prepare_context done"
+        );
 
         let user_msg = self.build_user_message(&text, image_parts);
 
@@ -1025,10 +1036,21 @@ impl<C: Channel> Agent<C> {
         // Derived from the raw input text before context assembly to avoid timing dependencies.
         self.memory_state.goal_text = Some(text.clone());
 
+        let t_persist = std::time::Instant::now();
+        tracing::debug!("turn timing: persist_message(user) start");
         // Image parts intentionally excluded — base64 payloads too large for message history.
         self.persist_message(Role::User, &text, &[], false).await;
+        self.metrics.pending_timings.persist_message_ms =
+            u64::try_from(t_persist.elapsed().as_millis()).unwrap_or(u64::MAX);
+        tracing::debug!(
+            ms = self.metrics.pending_timings.persist_message_ms,
+            "turn timing: persist_message(user) done"
+        );
         self.push_message(user_msg);
 
+        // llm_chat_ms and tool_exec_ms are accumulated inside call_chat_with_tools and
+        // handle_native_tool_calls respectively via metrics.pending_timings.
+        tracing::debug!("turn timing: process_response start");
         if let Err(e) = self.process_response().await {
             // Detach any in-flight learning tasks before mutating message state.
             self.learning_engine.learning_tasks.detach_all();
@@ -1046,6 +1068,9 @@ impl<C: Channel> Agent<C> {
             // MagicDocs: spawn background doc updates if any are due (#2702).
             self.maybe_update_magic_docs();
         }
+        tracing::debug!("turn timing: process_response done");
+
+        self.flush_turn_timings();
 
         Ok(())
     }

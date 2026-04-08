@@ -765,6 +765,20 @@ pub struct CandleConfig {
     pub hf_token: Option<String>,
     #[serde(default)]
     pub generation: GenerationParams,
+    /// Maximum seconds to wait for each half of a single inference request.
+    ///
+    /// The timeout is applied **twice** per `chat()` call: once for the channel send
+    /// (waiting for a free slot) and once for the oneshot reply (waiting for the worker
+    /// to finish). The effective maximum wall-clock wait per request is therefore
+    /// `2 × inference_timeout_secs`. CPU inference can be slow; 120s is a conservative
+    /// default for large models, giving up to 240s total before an error is returned.
+    /// Values of 0 are silently promoted to 1 at bootstrap.
+    #[serde(default = "default_inference_timeout_secs")]
+    pub inference_timeout_secs: u64,
+}
+
+fn default_inference_timeout_secs() -> u64 {
+    120
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

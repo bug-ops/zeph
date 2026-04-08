@@ -61,6 +61,11 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"
 wiremock.workspace = true
 
 [[bench]]
+name = "candle_inference"
+harness = false
+required-features = ["candle"]
+
+[[bench]]
 name = "classifier"
 harness = false
 required-features = ["classifiers"]
