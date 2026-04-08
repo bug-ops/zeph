@@ -6,9 +6,11 @@ pub mod cli;
 pub mod dataset;
 pub mod deterministic;
 pub mod error;
+pub mod results;
 
 pub use channel::BenchmarkChannel;
 pub use cli::BenchCommand;
 pub use dataset::{DatasetFormat, DatasetMeta, DatasetRegistry};
 pub use deterministic::apply_deterministic_overrides;
 pub use error::BenchError;
+pub use results::{Aggregate, BenchRun, ResultWriter, RunStatus, ScenarioResult};

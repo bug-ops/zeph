@@ -22,5 +22,8 @@ zeph-config.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true
