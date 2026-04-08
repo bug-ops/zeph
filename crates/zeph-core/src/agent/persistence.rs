@@ -998,44 +998,6 @@ impl<C: Channel> Agent<C> {
         );
     }
 
-    #[cfg(test)]
-    pub(crate) async fn check_summarization(&mut self) {
-        let (Some(memory), Some(cid)) =
-            (&self.memory_state.memory, self.memory_state.conversation_id)
-        else {
-            return;
-        };
-
-        if self.memory_state.unsummarized_count > self.memory_state.summarization_threshold {
-            let _ = self.channel.send_status("summarizing...").await;
-            let batch_size = self.memory_state.summarization_threshold / 2;
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                memory.summarize(cid, batch_size),
-            )
-            .await
-            {
-                Ok(Ok(Some(summary_id))) => {
-                    tracing::info!("created summary {summary_id} for conversation {cid}");
-                    self.memory_state.unsummarized_count = 0;
-                    self.update_metrics(|m| {
-                        m.summaries_count += 1;
-                    });
-                }
-                Ok(Ok(None)) => {
-                    tracing::debug!("no summarization needed");
-                }
-                Ok(Err(e)) => {
-                    tracing::error!("summarization failed: {e:#}");
-                }
-                Err(_) => {
-                    tracing::warn!("persist_message: check_summarization timed out after 30s");
-                }
-            }
-            let _ = self.channel.send_status("").await;
-        }
-    }
-
     /// D-MEM RPE check: returns `true` when the current turn should skip graph extraction.
     ///
     /// Embeds `content`, computes RPE via the router, and updates the router state.
