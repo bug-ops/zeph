@@ -120,9 +120,9 @@ impl DaemonSupervisor {
 
 /// Check whether a process with the given PID is currently alive.
 ///
-/// On Unix, uses `kill -0` via a subprocess, which returns success if the process exists
-/// and the current user has permission to signal it.
-/// On non-Unix platforms, always returns `false` (conservatively assumes the process is dead).
+/// On Unix, uses `kill -0` which returns success if the process exists and the current user
+/// has permission to signal it.
+/// On Windows, uses `tasklist /FI "PID eq <pid>"` and checks for the PID in the output.
 #[must_use]
 pub fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
@@ -141,7 +141,26 @@ pub fn is_process_alive(pid: u32) -> bool {
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        std::process::Command::new("tasklist")
+            .args([
+                "/FI",
+                &format!("PID eq {pid}"),
+                "/NH",
+                "/FO",
+                "CSV",
+            ])
+            .output()
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                // tasklist outputs lines like: "process.exe","PID","..."
+                // We look for the PID appearing as a quoted field.
+                stdout.contains(&format!("\"{pid}\""))
+            })
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         false
