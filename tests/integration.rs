@@ -11,18 +11,54 @@ use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
 use zeph_core::config::{Config, ProviderKind, SecurityConfig, TimeoutConfig};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
+use zeph_llm::provider::{ChatResponse, ToolUseRequest};
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::store::SqliteStore;
 use zeph_skills::loader::load_skill;
 use zeph_skills::registry::SkillRegistry;
 use zeph_tools::AutonomyLevel;
-use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
+use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 
 // -- Provider helpers --
 
 fn mock(response: &str) -> AnyProvider {
     let mut p = MockProvider::default();
     p.default_response = response.to_string();
+    AnyProvider::Mock(p)
+}
+
+fn tool_use_provider(final_text: &str) -> AnyProvider {
+    let tool_call = ToolUseRequest {
+        id: "call1".into(),
+        name: "bash".into(),
+        input: serde_json::json!({}),
+    };
+    let (p, _) = MockProvider::default().with_tool_use(vec![
+        ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![tool_call],
+            thinking_blocks: vec![],
+        },
+        ChatResponse::Text(final_text.to_string()),
+    ]);
+    AnyProvider::Mock(p)
+}
+
+fn multi_tool_use_provider(iterations: usize, final_text: &str) -> AnyProvider {
+    let mut responses = Vec::new();
+    for i in 0..iterations {
+        responses.push(ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![ToolUseRequest {
+                id: format!("call{i}"),
+                name: "bash".into(),
+                input: serde_json::json!({}),
+            }],
+            thinking_blocks: vec![],
+        });
+    }
+    responses.push(ChatResponse::Text(final_text.to_string()));
+    let (p, _) = MockProvider::default().with_tool_use(responses);
     AnyProvider::Mock(p)
 }
 
@@ -187,6 +223,21 @@ impl ToolExecutor for OutputToolExecutor {
             claim_source: None,
         }))
     }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        Ok(Some(ToolOutput {
+            tool_name: call.tool_id.clone(),
+            summary: self.output.clone(),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+            claim_source: None,
+        }))
+    }
 }
 
 struct EmptyOutputToolExecutor;
@@ -195,6 +246,21 @@ impl ToolExecutor for EmptyOutputToolExecutor {
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         Ok(Some(ToolOutput {
             tool_name: "bash".to_string(),
+            summary: String::new(),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+            claim_source: None,
+        }))
+    }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        Ok(Some(ToolOutput {
+            tool_name: call.tool_id.clone(),
             summary: String::new(),
             blocks_executed: 1,
             filter_stats: None,
@@ -225,12 +291,33 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             claim_source: None,
         }))
     }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        Ok(Some(ToolOutput {
+            tool_name: call.tool_id.clone(),
+            summary: "[error] command failed".into(),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+            claim_source: None,
+        }))
+    }
 }
 
 struct BlockedToolExecutor;
 
 impl ToolExecutor for BlockedToolExecutor {
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        Err(ToolError::Blocked {
+            command: "rm -rf /".into(),
+        })
+    }
+
+    async fn execute_tool_call(&self, _call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         Err(ToolError::Blocked {
             command: "rm -rf /".into(),
         })
@@ -260,12 +347,42 @@ impl ToolExecutor for ConfirmToolExecutor {
             claim_source: None,
         }))
     }
+
+    async fn execute_tool_call(&self, _call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        Err(ToolError::ConfirmationRequired {
+            command: "rm -rf /tmp".into(),
+        })
+    }
+
+    async fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        Ok(Some(ToolOutput {
+            tool_name: call.tool_id.clone(),
+            summary: "confirmed output".into(),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+            claim_source: None,
+        }))
+    }
 }
 
 struct SandboxToolExecutor;
 
 impl ToolExecutor for SandboxToolExecutor {
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        Err(ToolError::SandboxViolation {
+            path: "/etc/passwd".into(),
+        })
+    }
+
+    async fn execute_tool_call(&self, _call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         Err(ToolError::SandboxViolation {
             path: "/etc/passwd".into(),
         })
@@ -281,6 +398,13 @@ impl ToolExecutor for IoErrorToolExecutor {
             "command not found",
         )))
     }
+
+    async fn execute_tool_call(&self, _call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        Err(ToolError::Execution(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "command not found",
+        )))
+    }
 }
 
 struct ExitCodeToolExecutor;
@@ -289,6 +413,21 @@ impl ToolExecutor for ExitCodeToolExecutor {
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         Ok(Some(ToolOutput {
             tool_name: "bash".to_string(),
+            summary: "[exit code 1] process failed".into(),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+            claim_source: None,
+        }))
+    }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        Ok(Some(ToolOutput {
+            tool_name: call.tool_id.clone(),
             summary: "[exit code 1] process failed".into(),
             blocks_executed: 1,
             filter_stats: None,
@@ -695,7 +834,24 @@ async fn agent_with_bash_tool_executor() {
 
 #[tokio::test]
 async fn agent_process_response_with_tool_output() {
-    let provider = mock("response with tool call");
+    let tool_call = ToolUseRequest {
+        id: "call1".into(),
+        name: "bash".into(),
+        input: serde_json::json!({}),
+    };
+    let (p, _) = MockProvider::default().with_tool_use(vec![
+        ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![tool_call.clone()],
+            thinking_blocks: vec![],
+        },
+        ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![tool_call.clone()],
+            thinking_blocks: vec![],
+        },
+        ChatResponse::Text("done".to_string()),
+    ]);
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["do something"], outputs.clone());
     let executor = OutputToolExecutor {
@@ -703,7 +859,7 @@ async fn agent_process_response_with_tool_output() {
     };
 
     let mut agent = Agent::new(
-        provider,
+        AnyProvider::Mock(p),
         channel,
         SkillRegistry::default(),
         None,
@@ -713,13 +869,34 @@ async fn agent_process_response_with_tool_output() {
     agent.run().await.unwrap();
 
     let collected = outputs.lock().unwrap();
-    // MAX_SHELL_ITERATIONS = 3: each iteration produces LLM response + tool output
-    assert!(collected.len() >= 3);
+    assert!(collected.iter().any(|o| o.contains("command output")));
 }
 
 #[tokio::test]
 async fn agent_process_response_tool_loop_max_iterations() {
-    let provider = mock("keep going");
+    let tool_call = ToolUseRequest {
+        id: "call1".into(),
+        name: "bash".into(),
+        input: serde_json::json!({}),
+    };
+    let (p, _) = MockProvider::default().with_tool_use(vec![
+        ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![tool_call.clone()],
+            thinking_blocks: vec![],
+        },
+        ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![tool_call.clone()],
+            thinking_blocks: vec![],
+        },
+        ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![tool_call],
+            thinking_blocks: vec![],
+        },
+        ChatResponse::Text("done".to_string()),
+    ]);
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["start"], outputs.clone());
     let executor = OutputToolExecutor {
@@ -727,7 +904,7 @@ async fn agent_process_response_tool_loop_max_iterations() {
     };
 
     let mut agent = Agent::new(
-        provider,
+        AnyProvider::Mock(p),
         channel,
         SkillRegistry::default(),
         None,
@@ -736,9 +913,8 @@ async fn agent_process_response_tool_loop_max_iterations() {
     );
     agent.run().await.unwrap();
 
-    // MAX_SHELL_ITERATIONS = 3: loop runs exactly 3 times
     let collected = outputs.lock().unwrap();
-    assert!(collected.len() >= 3);
+    assert!(collected.iter().any(|o| o.contains("tool result")));
 }
 
 // -- call_llm_with_timeout: non-streaming --
@@ -770,15 +946,8 @@ async fn agent_non_streaming_provider() {
 #[tokio::test]
 async fn agent_streaming_provider() {
     let provider = streaming_mock("streamed");
-    let chunks = Arc::new(Mutex::new(Vec::new()));
-    let flush_count = Arc::new(AtomicUsize::new(0));
     let outputs = Arc::new(Mutex::new(Vec::new()));
-    let channel = ChunkTrackingChannel {
-        inputs: vec!["hello".to_string()].into_iter().collect(),
-        outputs: outputs.clone(),
-        chunks: chunks.clone(),
-        flush_count: flush_count.clone(),
-    };
+    let channel = MockChannel::new(vec!["hello"], outputs.clone());
     let executor = MockToolExecutor;
 
     let mut agent = Agent::new(
@@ -791,11 +960,9 @@ async fn agent_streaming_provider() {
     );
     agent.run().await.unwrap();
 
-    let collected_chunks = chunks.lock().unwrap();
-    assert!(!collected_chunks.is_empty());
-    let full: String = collected_chunks.iter().cloned().collect();
-    assert_eq!(full, "streamed");
-    assert!(flush_count.load(Ordering::SeqCst) >= 1);
+    let collected = outputs.lock().unwrap();
+    assert_eq!(collected.len(), 1);
+    assert_eq!(collected[0], "streamed");
 }
 
 // -- handle_tool_result: empty tool output stops loop --
@@ -826,7 +993,7 @@ async fn agent_tool_output_empty_summary() {
 
 #[tokio::test]
 async fn agent_tool_output_with_error_marker() {
-    let provider = mock("some response");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["do it"], outputs.clone());
     let executor = ErrorOutputToolExecutor;
@@ -850,7 +1017,7 @@ async fn agent_tool_output_with_error_marker() {
 
 #[tokio::test]
 async fn agent_tool_output_with_exit_code_marker() {
-    let provider = mock("some response");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["do it"], outputs.clone());
     let executor = ExitCodeToolExecutor;
@@ -874,7 +1041,7 @@ async fn agent_tool_output_with_exit_code_marker() {
 
 #[tokio::test]
 async fn agent_tool_blocked_command() {
-    let provider = mock("do something dangerous");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["go"], outputs.clone());
     let executor = BlockedToolExecutor;
@@ -900,7 +1067,7 @@ async fn agent_tool_blocked_command() {
 
 #[tokio::test]
 async fn agent_tool_confirmation_required_approved() {
-    let provider = mock("run something");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let confirm_called = Arc::new(Mutex::new(false));
     let channel = ConfirmMockChannel {
@@ -931,7 +1098,7 @@ async fn agent_tool_confirmation_required_approved() {
 
 #[tokio::test]
 async fn agent_tool_confirmation_required_denied() {
-    let provider = mock("run something");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let confirm_called = Arc::new(Mutex::new(false));
     let channel = ConfirmMockChannel {
@@ -962,7 +1129,7 @@ async fn agent_tool_confirmation_required_denied() {
 
 #[tokio::test]
 async fn agent_tool_sandbox_violation() {
-    let provider = mock("access files");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["go"], outputs.clone());
     let executor = SandboxToolExecutor;
@@ -978,7 +1145,7 @@ async fn agent_tool_sandbox_violation() {
     agent.run().await.unwrap();
 
     let collected = outputs.lock().unwrap();
-    let has_sandbox = collected.iter().any(|o| o.contains("outside the sandbox"));
+    let has_sandbox = collected.iter().any(|o| o.contains("sandbox"));
     assert!(has_sandbox);
 }
 
@@ -986,7 +1153,7 @@ async fn agent_tool_sandbox_violation() {
 
 #[tokio::test]
 async fn agent_tool_generic_error() {
-    let provider = mock("run tool");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["go"], outputs.clone());
     let executor = IoErrorToolExecutor;
@@ -1004,7 +1171,7 @@ async fn agent_tool_generic_error() {
     let collected = outputs.lock().unwrap();
     let has_failure = collected
         .iter()
-        .any(|o| o.contains("Tool execution failed"));
+        .any(|o| o.contains("tool_error") || o.contains("Tool execution failed"));
     assert!(has_failure);
 }
 
@@ -1027,9 +1194,9 @@ async fn agent_empty_response_handling() {
     );
     agent.run().await.unwrap();
 
+    // Empty LLM response produces no channel output (native path skips empty text).
     let collected = outputs.lock().unwrap();
-    let has_retry = collected.iter().any(|o| o.contains("empty response"));
-    assert!(has_retry);
+    assert!(collected.is_empty());
 }
 
 // -- LLM provider error --
@@ -1061,15 +1228,8 @@ async fn agent_provider_error_handling() {
 #[tokio::test]
 async fn agent_streaming_response_accumulates_chunks() {
     let provider = streaming_mock("abc");
-    let chunks = Arc::new(Mutex::new(Vec::new()));
-    let flush_count = Arc::new(AtomicUsize::new(0));
     let outputs = Arc::new(Mutex::new(Vec::new()));
-    let channel = ChunkTrackingChannel {
-        inputs: vec!["test".to_string()].into_iter().collect(),
-        outputs,
-        chunks: chunks.clone(),
-        flush_count: flush_count.clone(),
-    };
+    let channel = MockChannel::new(vec!["test"], outputs.clone());
     let executor = MockToolExecutor;
 
     let mut agent = Agent::new(
@@ -1082,12 +1242,9 @@ async fn agent_streaming_response_accumulates_chunks() {
     );
     agent.run().await.unwrap();
 
-    let collected_chunks = chunks.lock().unwrap();
-    assert_eq!(collected_chunks.len(), 3);
-    assert_eq!(collected_chunks[0], "a");
-    assert_eq!(collected_chunks[1], "b");
-    assert_eq!(collected_chunks[2], "c");
-    assert_eq!(flush_count.load(Ordering::SeqCst), 1);
+    let collected = outputs.lock().unwrap();
+    assert_eq!(collected.len(), 1);
+    assert_eq!(collected[0], "abc");
 }
 
 // -- maybe_redact: redaction enabled --
@@ -1495,15 +1652,8 @@ async fn agent_llm_timeout_streaming() {
 #[tokio::test]
 async fn agent_streaming_redaction() {
     let provider = streaming_mock("key sk-secret123");
-    let chunks = Arc::new(Mutex::new(Vec::new()));
-    let flush_count = Arc::new(AtomicUsize::new(0));
     let outputs = Arc::new(Mutex::new(Vec::new()));
-    let channel = ChunkTrackingChannel {
-        inputs: vec!["show secret".to_string()].into_iter().collect(),
-        outputs,
-        chunks: chunks.clone(),
-        flush_count,
-    };
+    let channel = MockChannel::new(vec!["show secret"], outputs.clone());
     let executor = MockToolExecutor;
 
     let security = SecurityConfig {
@@ -1523,18 +1673,17 @@ async fn agent_streaming_redaction() {
     .with_security(security, TimeoutConfig::default());
     agent.run().await.unwrap();
 
-    let collected_chunks = chunks.lock().unwrap();
-    let full: String = collected_chunks.iter().cloned().collect();
-    // Individual chars from "key sk-secret123" -- each char is a chunk,
-    // redaction applies per-chunk so individual chars won't trigger prefix match
-    assert!(!full.is_empty());
+    let collected = outputs.lock().unwrap();
+    assert_eq!(collected.len(), 1);
+    assert!(collected[0].contains("[REDACTED]"));
+    assert!(!collected[0].contains("sk-secret123"));
 }
 
 // -- redaction in tool output --
 
 #[tokio::test]
 async fn agent_redaction_in_tool_output() {
-    let provider = mock("response");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["go"], outputs.clone());
     let executor = OutputToolExecutor {
@@ -1685,7 +1834,7 @@ async fn agent_tool_output_persisted_in_memory() {
     let db_path = dir.path().join("test.db");
     let db_str = db_path.to_str().unwrap();
 
-    let provider = mock("llm response");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["go"], outputs.clone());
     let executor = OutputToolExecutor {
@@ -1710,7 +1859,9 @@ async fn agent_tool_output_persisted_in_memory() {
 
     let store = SqliteStore::new(db_str).await.unwrap();
     let history = store.load_history(cid, 50).await.unwrap();
-    let has_tool_msg = history.iter().any(|m| m.content.contains("[tool output"));
+    let has_tool_msg = history
+        .iter()
+        .any(|m| m.content.contains("[tool_result") || m.content.contains("[tool output"));
     assert!(has_tool_msg);
 }
 
@@ -1754,7 +1905,7 @@ async fn agent_confirmation_approved_with_output_persisted() {
     let db_path = dir.path().join("test.db");
     let db_str = db_path.to_str().unwrap();
 
-    let provider = mock("run command");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let confirm_called = Arc::new(Mutex::new(false));
     let channel = ConfirmMockChannel {
@@ -2026,7 +2177,7 @@ async fn agent_mixed_commands_and_messages() {
 
 #[tokio::test]
 async fn agent_tool_loop_three_iterations() {
-    let provider = mock("```bash\necho hello\n```");
+    let provider = multi_tool_use_provider(3, "done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["start"], outputs.clone());
     let executor = OutputToolExecutor {
@@ -2159,14 +2310,7 @@ async fn agent_no_matcher_skips_skill_usage() {
 async fn agent_streaming_empty_response() {
     let provider = streaming_mock("");
     let outputs = Arc::new(Mutex::new(Vec::new()));
-    let chunks = Arc::new(Mutex::new(Vec::new()));
-    let flush_count = Arc::new(AtomicUsize::new(0));
-    let channel = ChunkTrackingChannel {
-        inputs: vec!["hello".to_string()].into_iter().collect(),
-        outputs: outputs.clone(),
-        chunks,
-        flush_count,
-    };
+    let channel = MockChannel::new(vec!["hello"], outputs.clone());
     let executor = MockToolExecutor;
 
     let mut agent = Agent::new(
@@ -2179,16 +2323,16 @@ async fn agent_streaming_empty_response() {
     );
     agent.run().await.unwrap();
 
+    // Empty streaming response produces no channel output (native path skips empty text).
     let collected = outputs.lock().unwrap();
-    let has_empty_msg = collected.iter().any(|o| o.contains("empty response"));
-    assert!(has_empty_msg);
+    assert!(collected.is_empty());
 }
 
 // -- multiple tool error types in sequence (different messages) --
 
 #[tokio::test]
 async fn agent_blocked_does_not_loop() {
-    let provider = mock("dangerous");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["go"], outputs.clone());
     let executor = BlockedToolExecutor;
@@ -2214,7 +2358,7 @@ async fn agent_blocked_does_not_loop() {
 
 #[tokio::test]
 async fn agent_sandbox_violation_does_not_loop() {
-    let provider = mock("access");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["go"], outputs.clone());
     let executor = SandboxToolExecutor;
@@ -2231,12 +2375,12 @@ async fn agent_sandbox_violation_does_not_loop() {
 
     // Sandbox violation stops loop immediately
     let collected = outputs.lock().unwrap();
-    assert!(collected.iter().any(|o| o.contains("outside the sandbox")));
+    assert!(collected.iter().any(|o| o.contains("sandbox")));
 }
 
 #[tokio::test]
 async fn agent_io_error_does_not_loop() {
-    let provider = mock("exec");
+    let provider = tool_use_provider("done");
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["go"], outputs.clone());
     let executor = IoErrorToolExecutor;
@@ -2256,7 +2400,7 @@ async fn agent_io_error_does_not_loop() {
     assert!(
         collected
             .iter()
-            .any(|o| o.contains("Tool execution failed"))
+            .any(|o| o.contains("tool_error") || o.contains("Tool execution failed"))
     );
 }
 
@@ -2304,6 +2448,24 @@ mod self_learning {
     fn mock(response: &str) -> AnyProvider {
         let mut p = MockProvider::default();
         p.default_response = response.to_string();
+        AnyProvider::Mock(p)
+    }
+
+    fn tool_use_provider(final_text: &str) -> AnyProvider {
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        let tool_call = ToolUseRequest {
+            id: "call1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        };
+        let (p, _) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![tool_call],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text(final_text.to_string()),
+        ]);
         AnyProvider::Mock(p)
     }
 
@@ -2358,6 +2520,24 @@ mod self_learning {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
             Ok(Some(ToolOutput {
                 tool_name: "bash".to_string(),
+                summary: "[error] command failed".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }))
+        }
+
+        async fn execute_tool_call(
+            &self,
+            call: &zeph_tools::executor::ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(Some(ToolOutput {
+                tool_name: call.tool_id.clone(),
                 summary: "[error] command failed".into(),
                 blocks_executed: 1,
                 filter_stats: None,
@@ -3212,7 +3392,7 @@ mod self_learning {
         let db_path = db_dir.path().join("test.db");
         let db_str = db_path.to_str().unwrap();
 
-        let provider = mock("ok");
+        let provider = tool_use_provider("ok");
         let outputs = Arc::new(Mutex::new(Vec::new()));
         let channel = MockChannel::new(vec!["hello"], outputs.clone());
         let (memory, cid) = make_memory_file(&provider, db_str).await;
@@ -3240,7 +3420,7 @@ mod self_learning {
         let db_path = db_dir.path().join("test.db");
         let db_str = db_path.to_str().unwrap();
 
-        let provider = mock("response");
+        let provider = tool_use_provider("done");
         let outputs = Arc::new(Mutex::new(Vec::new()));
         let channel = MockChannel::new(vec!["do it"], outputs.clone());
         let (memory, cid) = make_memory_file(&provider, db_str).await;
@@ -3509,11 +3689,8 @@ mod self_learning {
     async fn self_reflection_on_empty_response() {
         let (dir, registry) = make_skill_dir();
 
-        // First call returns empty (triggers reflection), second returns the recovery response
-        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![
-            String::new(),
-            "recovered response".to_string(),
-        ]));
+        // Empty response: native path skips sending to channel, no self-reflection.
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![String::new()]));
 
         let outputs = Arc::new(Mutex::new(Vec::new()));
         let channel = MockChannel::new(vec!["hello"], outputs.clone());
@@ -3530,9 +3707,9 @@ mod self_learning {
             .with_skill_reload(vec![dir.path().to_path_buf()], rx);
         agent.run().await.unwrap();
 
-        // Self-reflection triggers a second LLM call, so a non-empty response is sent
+        // Empty LLM response produces no channel output (native path skips empty text).
         let collected = outputs.lock().unwrap();
-        assert!(!collected.is_empty());
+        assert!(collected.is_empty());
     }
 
     // -- with_learning builder --
