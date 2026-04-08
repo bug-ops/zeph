@@ -135,7 +135,7 @@ mod tests {
     fn inference_request_oneshot_roundtrip() {
         use crate::provider::Message;
 
-        let (tx, rx) = tokio::sync::oneshot::channel::<Result<GenerationOutput, LlmError>>();
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<Result<GenerationOutput, LlmError>>();
         let req = InferenceRequest {
             messages: vec![Message::from_legacy(crate::provider::Role::User, "hello")],
             reply: tx,
