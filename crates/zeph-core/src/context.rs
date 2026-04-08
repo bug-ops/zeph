@@ -217,6 +217,23 @@ pub struct BudgetAllocation {
     pub session_digest: usize,
 }
 
+impl BudgetAllocation {
+    /// Count of context source slots with non-zero token budgets.
+    #[must_use]
+    pub fn active_sources(&self) -> usize {
+        [
+            self.summaries,
+            self.semantic_recall,
+            self.cross_session,
+            self.code_context,
+            self.graph_facts,
+        ]
+        .iter()
+        .filter(|&&t| t > 0)
+        .count()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ContextBudget {
     max_tokens: usize,

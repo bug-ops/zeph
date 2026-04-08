@@ -38,6 +38,8 @@ pub struct MockProvider {
     pub name_override: Option<String>,
     /// When true, `embed()` returns `LlmError::InvalidInput` regardless of `supports_embeddings`.
     pub embed_invalid_input: bool,
+    /// Tracks how many times `embed()` was called. Useful for verifying embed reuse.
+    pub embed_call_count: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Default for MockProvider {
@@ -57,6 +59,7 @@ impl Default for MockProvider {
             models: vec![],
             name_override: None,
             embed_invalid_input: false,
+            embed_call_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 }
@@ -197,6 +200,8 @@ impl LlmProvider for MockProvider {
     }
 
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, crate::LlmError> {
+        self.embed_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut errors) = self.errors.lock()
             && !errors.is_empty()
         {

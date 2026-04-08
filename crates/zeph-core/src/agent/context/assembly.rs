@@ -1022,66 +1022,88 @@ impl<C: Channel> Agent<C> {
 
             let mut fetchers: FuturesUnordered<CtxFuture<'_>> = FuturesUnordered::new();
 
-            fetchers.push(Box::pin(async {
-                Self::fetch_summaries(memory_state, alloc.summaries, &tc)
+            tracing::debug!(
+                active_sources = alloc.active_sources(),
+                "context budget allocated"
+            );
+
+            if alloc.summaries > 0 {
+                fetchers.push(Box::pin(async {
+                    Self::fetch_summaries(memory_state, alloc.summaries, &tc)
+                        .await
+                        .map(ContextSlot::Summaries)
+                }));
+            }
+            if alloc.cross_session > 0 {
+                fetchers.push(Box::pin(async {
+                    Self::fetch_cross_session(memory_state, &query, alloc.cross_session, &tc)
+                        .await
+                        .map(ContextSlot::CrossSession)
+                }));
+            }
+            if alloc.semantic_recall > 0 {
+                fetchers.push(Box::pin(async {
+                    Self::fetch_semantic_recall(
+                        memory_state,
+                        &query,
+                        alloc.semantic_recall,
+                        &tc,
+                        Some(router_ref),
+                    )
                     .await
-                    .map(ContextSlot::Summaries)
-            }));
-            fetchers.push(Box::pin(async {
-                Self::fetch_cross_session(memory_state, &query, alloc.cross_session, &tc)
-                    .await
-                    .map(ContextSlot::CrossSession)
-            }));
-            fetchers.push(Box::pin(async {
-                Self::fetch_semantic_recall(
-                    memory_state,
-                    &query,
-                    alloc.semantic_recall,
-                    &tc,
-                    Some(router_ref),
-                )
-                .await
-                .map(|(msg, score)| ContextSlot::SemanticRecall(msg, score))
-            }));
-            fetchers.push(Box::pin(async {
-                Self::fetch_document_rag(memory_state, &query, alloc.semantic_recall, &tc)
-                    .await
-                    .map(ContextSlot::DocumentRag)
-            }));
+                    .map(|(msg, score)| ContextSlot::SemanticRecall(msg, score))
+                }));
+                fetchers.push(Box::pin(async {
+                    Self::fetch_document_rag(memory_state, &query, alloc.semantic_recall, &tc)
+                        .await
+                        .map(ContextSlot::DocumentRag)
+                }));
+            }
+            // Corrections are safety-critical and never budget-gated.
             fetchers.push(Box::pin(async {
                 Self::fetch_corrections(memory_state, &query, recall_limit, min_sim)
                     .await
                     .map(ContextSlot::Corrections)
             }));
-            fetchers.push(Box::pin(async {
-                index
-                    .fetch_code_rag(&query, alloc.code_context)
-                    .await
-                    .map(ContextSlot::CodeContext)
-            }));
-            fetchers.push(Box::pin(async {
-                Self::fetch_graph_facts(memory_state, &query, alloc.graph_facts, &tc)
-                    .await
-                    .map(ContextSlot::GraphFacts)
-            }));
-            fetchers.push(Box::pin(async {
-                let persona_budget = memory_state.persona_config.context_budget_tokens;
-                Self::fetch_persona_facts(memory_state, persona_budget, &tc)
-                    .await
-                    .map(ContextSlot::PersonaFacts)
-            }));
-            fetchers.push(Box::pin(async {
-                let budget = memory_state.trajectory_config.context_budget_tokens;
-                Self::fetch_trajectory_hints(memory_state, budget, &tc)
-                    .await
-                    .map(ContextSlot::TrajectoryHints)
-            }));
-            fetchers.push(Box::pin(async {
-                let budget = memory_state.tree_config.context_budget_tokens;
-                Self::fetch_tree_memory(memory_state, budget, &tc)
-                    .await
-                    .map(ContextSlot::TreeMemory)
-            }));
+            if alloc.code_context > 0 {
+                fetchers.push(Box::pin(async {
+                    index
+                        .fetch_code_rag(&query, alloc.code_context)
+                        .await
+                        .map(ContextSlot::CodeContext)
+                }));
+            }
+            if alloc.graph_facts > 0 {
+                fetchers.push(Box::pin(async {
+                    Self::fetch_graph_facts(memory_state, &query, alloc.graph_facts, &tc)
+                        .await
+                        .map(ContextSlot::GraphFacts)
+                }));
+            }
+            if memory_state.persona_config.context_budget_tokens > 0 {
+                fetchers.push(Box::pin(async {
+                    let persona_budget = memory_state.persona_config.context_budget_tokens;
+                    Self::fetch_persona_facts(memory_state, persona_budget, &tc)
+                        .await
+                        .map(ContextSlot::PersonaFacts)
+                }));
+            }
+            if memory_state.trajectory_config.context_budget_tokens > 0 {
+                fetchers.push(Box::pin(async {
+                    let budget = memory_state.trajectory_config.context_budget_tokens;
+                    Self::fetch_trajectory_hints(memory_state, budget, &tc)
+                        .await
+                        .map(ContextSlot::TrajectoryHints)
+                }));
+            }
+            if memory_state.tree_config.context_budget_tokens > 0 {
+                fetchers.push(Box::pin(async {
+                    let budget = memory_state.tree_config.context_budget_tokens;
+                    Self::fetch_tree_memory(memory_state, budget, &tc)
+                        .await
+                        .map(ContextSlot::TreeMemory)
+                }));
+            }
 
             while let Some(result) = fetchers.next().await {
                 match result {
@@ -2103,20 +2125,46 @@ impl BudgetHint {
 /// provider returns HTTP 400.
 ///
 /// `history_start` is the index of the first non-system message (typically 1).
+/// Maximum number of messages scanned backward by `memory_first_keep_tail` before
+/// stopping at the next non-`ToolResult` boundary to avoid O(N) scans on long sessions.
+const MAX_KEEP_TAIL_SCAN: usize = 50;
+
 fn memory_first_keep_tail(messages: &[Message], history_start: usize) -> usize {
     let mut keep_tail = 2usize;
     let len = messages.len();
+    let max = len.saturating_sub(history_start);
 
-    while keep_tail < len.saturating_sub(history_start) {
+    while keep_tail < max {
         let first_retained = &messages[len - keep_tail];
-        if first_retained.role == Role::User
+        let is_tool_result = first_retained.role == Role::User
             && first_retained
                 .parts
                 .iter()
-                .any(|p| matches!(p, MessagePart::ToolResult { .. }))
-        {
+                .any(|p| matches!(p, MessagePart::ToolResult { .. }));
+
+        if is_tool_result {
             keep_tail += 1;
         } else {
+            // Non-ToolResult boundary — safe to stop regardless of cap.
+            break;
+        }
+
+        if keep_tail >= MAX_KEEP_TAIL_SCAN {
+            // Cap reached. Check whether the message just before the retained tail is a
+            // ToolUse (Assistant message with ToolUse parts). If so, include it to avoid
+            // leaving a ToolResult without its preceding ToolUse (HTTP 400 from providers).
+            let preceding_idx = len.saturating_sub(keep_tail + 1);
+            if preceding_idx >= history_start {
+                let preceding = &messages[preceding_idx];
+                let is_tool_use = preceding.role == Role::Assistant
+                    && preceding
+                        .parts
+                        .iter()
+                        .any(|p| matches!(p, MessagePart::ToolUse { .. }));
+                if is_tool_use {
+                    keep_tail += 1;
+                }
+            }
             break;
         }
     }
@@ -2256,6 +2304,53 @@ mod tests {
         let msgs = vec![sys(), tool_result_msg()];
         // len=2, len-history_start=1 → while condition `keep_tail < 1` is false from the start
         assert_eq!(memory_first_keep_tail(&msgs, 1), 2);
+    }
+
+    #[test]
+    fn keep_tail_capped_at_max_scan_does_not_split_tool_pair() {
+        // Build a history: system + (tool_use, tool_result) × 30 pairs + assistant reply.
+        // Total: 1 + 60 + 1 = 62 messages. The cap fires at MAX_KEEP_TAIL_SCAN = 50.
+        // At that point, keep_tail includes 49 ToolResult messages. The preceding message
+        // (index len - 51) is a ToolUse — the fix must extend keep_tail to 51 so the pair
+        // is not split.
+        let mut msgs = vec![sys()];
+        for _ in 0..30 {
+            msgs.push(tool_use_msg());
+            msgs.push(tool_result_msg());
+        }
+        msgs.push(assistant("done"));
+
+        let tail = memory_first_keep_tail(&msgs, 1);
+
+        // The result must not exceed MAX_KEEP_TAIL_SCAN + 1 (cap + one extra for ToolUse).
+        assert!(
+            tail <= MAX_KEEP_TAIL_SCAN + 1,
+            "keep_tail {tail} exceeds cap + 1"
+        );
+
+        // Verify the first retained message is not a ToolResult without a preceding ToolUse.
+        let len = msgs.len();
+        let first_retained_idx = len - tail;
+        // If the first retained message is a ToolResult, the message just before it must be
+        // a ToolUse (or there is no message before it, which is impossible here).
+        let first_retained = &msgs[first_retained_idx];
+        let is_tool_result = first_retained.role == Role::User
+            && first_retained
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolResult { .. }));
+        if is_tool_result && first_retained_idx > 0 {
+            let preceding = &msgs[first_retained_idx - 1];
+            let has_tool_use = preceding.role == Role::Assistant
+                && preceding
+                    .parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::ToolUse { .. }));
+            assert!(
+                has_tool_use,
+                "ToolResult at index {first_retained_idx} has no preceding ToolUse — pair was split"
+            );
+        }
     }
 
     // ── BudgetHint tests (#2267) ─────────────────────────────────────────────

@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- **Budget-first context assembly** (`#2817`): `prepare_context` now skips zero-budget context
+  sources entirely instead of spawning fetchers that immediately return nothing. Sources guarded:
+  summaries, cross-session, semantic recall + document RAG (gated together on `semantic_recall`),
+  code context, graph facts, persona facts, trajectory hints, and tree memory. Corrections fetch
+  remains unconditional (safety-critical). Added `BudgetAllocation::active_sources()` helper for
+  observability tracing. `memory_first_keep_tail` scan is capped at 50 messages to prevent O(N)
+  backward scans on very long sessions; the cap only fires at a non-ToolResult boundary so
+  tool-call/result pairs are never split.
+
+- **Turn-local embedding reuse** (`#2819`): added `TurnEmbedCache` (per-`chat()` call, keyed by
+  `String`, 2-4 entries) to avoid redundant embed calls within a single turn. The query embedding
+  computed for the quality gate is now cached and reused if the same text is requested again.
+  `spawn_asi_update` accepts an optional pre-computed embedding so the quality-gate response
+  embedding is passed directly instead of being re-embedded by the ASI background task. Added
+  session-level `embed_call_count` / `embed_cache_hits` counters (exposed via
+  `RouterProvider::embed_cache_metrics()`).
+
 ### Fixed
 
 - **MCP handshake timeout not enforced** (`#2815`): `connect()`, `connect_url()`, and `connect_url_with_headers()` now wrap `handler.serve(transport)` with `tokio::time::timeout(timeout, ...)`, returning `McpError::Timeout` on expiry. `list_tools()` applies the same guard to `list_all_tools()`. Previously, a stalled MCP server during the initialize handshake or tool listing would block `connect_all()` indefinitely, causing TUI startup to hang at "Connecting tools..." forever. Only `call_tool` had a timeout; the fix brings the other paths to parity.
