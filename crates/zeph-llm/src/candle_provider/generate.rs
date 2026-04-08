@@ -31,6 +31,7 @@ impl Default for GenerationConfig {
     }
 }
 
+#[derive(Debug)]
 pub struct GenerationOutput {
     pub text: String,
     pub tokens_generated: usize,
