@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP handshake timeout not enforced** (`#2815`): `connect()`, `connect_url()`, and `connect_url_with_headers()` now wrap `handler.serve(transport)` with `tokio::time::timeout(timeout, ...)`, returning `McpError::Timeout` on expiry. `list_tools()` applies the same guard to `list_all_tools()`. Previously, a stalled MCP server during the initialize handshake or tool listing would block `connect_all()` indefinitely, causing TUI startup to hang at "Connecting tools..." forever. Only `call_tool` had a timeout; the fix brings the other paths to parity.
+
 ## [0.18.6] - 2026-04-08
 
 ### Removed

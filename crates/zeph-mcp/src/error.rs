@@ -222,4 +222,32 @@ mod tests {
         };
         assert_eq!(err.to_string(), "tool call timed out after 30s: slow/query");
     }
+
+    #[test]
+    fn handshake_timeout_has_initialize_tool_name() {
+        let err = McpError::Timeout {
+            server_id: "my-server".into(),
+            tool_name: "initialize".into(),
+            timeout_secs: 10,
+        };
+        assert_eq!(
+            err.to_string(),
+            "tool call timed out after 10s: my-server/initialize"
+        );
+        assert_eq!(err.code(), Some(McpErrorCode::Transient));
+    }
+
+    #[test]
+    fn list_tools_timeout_has_tools_list_tool_name() {
+        let err = McpError::Timeout {
+            server_id: "my-server".into(),
+            tool_name: "tools/list".into(),
+            timeout_secs: 30,
+        };
+        assert_eq!(
+            err.to_string(),
+            "tool call timed out after 30s: my-server/tools/list"
+        );
+        assert_eq!(err.code(), Some(McpErrorCode::Transient));
+    }
 }

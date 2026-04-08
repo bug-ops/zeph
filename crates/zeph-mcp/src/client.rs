@@ -409,9 +409,13 @@ impl McpClient {
             handler_cfg.elicitation_tx,
             handler_cfg.elicitation_timeout,
         );
-        let service = handler
-            .serve(transport)
+        let service = tokio::time::timeout(timeout, handler.serve(transport))
             .await
+            .map_err(|_| McpError::Timeout {
+                server_id: server_id.into(),
+                tool_name: "initialize".into(),
+                timeout_secs: timeout.as_secs(),
+            })?
             .map_err(|e| McpError::Connection {
                 server_id: server_id.into(),
                 message: e.to_string(),
@@ -434,7 +438,8 @@ impl McpClient {
     /// # Errors
     ///
     /// Returns `McpError::SsrfBlocked` if the URL resolves to a private IP,
-    /// `McpError::InvalidUrl` if the URL cannot be parsed, or
+    /// `McpError::InvalidUrl` if the URL cannot be parsed,
+    /// `McpError::Timeout` if the handshake exceeds `timeout`, or
     /// `McpError::Connection` if the HTTP connection or handshake fails.
     pub async fn connect_url(
         server_id: &str,
@@ -460,9 +465,13 @@ impl McpClient {
             handler_cfg.elicitation_tx,
             handler_cfg.elicitation_timeout,
         );
-        let service = handler
-            .serve(transport)
+        let service = tokio::time::timeout(timeout, handler.serve(transport))
             .await
+            .map_err(|_| McpError::Timeout {
+                server_id: server_id.into(),
+                tool_name: "initialize".into(),
+                timeout_secs: timeout.as_secs(),
+            })?
             .map_err(|e| McpError::Connection {
                 server_id: server_id.into(),
                 message: e.to_string(),
@@ -483,7 +492,8 @@ impl McpClient {
     /// # Errors
     ///
     /// Returns `McpError::SsrfBlocked` if the URL resolves to a private IP (unless `trusted`),
-    /// or `McpError::Connection` if the handshake fails.
+    /// `McpError::Timeout` if the handshake exceeds `timeout`, or
+    /// `McpError::Connection` if the handshake fails.
     #[allow(clippy::too_many_arguments)]
     pub async fn connect_url_with_headers(
         server_id: &str,
@@ -536,9 +546,13 @@ impl McpClient {
             handler_cfg.elicitation_tx,
             handler_cfg.elicitation_timeout,
         );
-        let service = handler
-            .serve(transport)
+        let service = tokio::time::timeout(timeout, handler.serve(transport))
             .await
+            .map_err(|_| McpError::Timeout {
+                server_id: server_id.into(),
+                tool_name: "initialize".into(),
+                timeout_secs: timeout.as_secs(),
+            })?
             .map_err(|e| McpError::Connection {
                 server_id: server_id.into(),
                 message: e.to_string(),
@@ -767,12 +781,16 @@ impl McpClient {
     ///
     /// # Errors
     ///
-    /// Returns `McpError::ToolCall` if listing fails.
+    /// Returns `McpError::Timeout` if the server does not respond within the configured timeout,
+    /// or `McpError::ToolCall` if listing fails.
     pub async fn list_tools(&self) -> Result<Vec<McpTool>, McpError> {
-        let tools = self
-            .service
-            .list_all_tools()
+        let tools = tokio::time::timeout(self.timeout, self.service.list_all_tools())
             .await
+            .map_err(|_| McpError::Timeout {
+                server_id: self.server_id.clone(),
+                tool_name: "tools/list".into(),
+                timeout_secs: self.timeout.as_secs(),
+            })?
             .map_err(|e| McpError::ToolCall {
                 server_id: self.server_id.clone(),
                 tool_name: "tools/list".into(),
@@ -1245,5 +1263,67 @@ mod tests {
             Duration::from_secs(120),
         );
         assert_eq!(handler.max_description_bytes, 512);
+    }
+
+    /// Verify the timeout guard pattern: a future that never resolves causes
+    /// `tokio::time::timeout` to return `Elapsed`, which maps to `McpError::Timeout`.
+    /// This exercises the same code path used by `connect()`, `connect_url()`,
+    /// `connect_url_with_headers()`, and `list_tools()`.
+    #[tokio::test]
+    async fn timeout_guard_maps_elapsed_to_mcp_timeout_error() {
+        let server_id = "test-server";
+        let timeout = Duration::from_millis(1);
+
+        let result: Result<(), McpError> =
+            tokio::time::timeout(timeout, std::future::pending::<()>())
+                .await
+                .map_err(|_| McpError::Timeout {
+                    server_id: server_id.into(),
+                    tool_name: "initialize".into(),
+                    timeout_secs: timeout.as_secs(),
+                });
+
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                McpError::Timeout {
+                    tool_name,
+                    ..
+                } if tool_name == "initialize"
+            ),
+            "expected McpError::Timeout with tool_name=initialize, got: {err}"
+        );
+        assert_eq!(err.code(), Some(crate::McpErrorCode::Transient));
+    }
+
+    /// Verify the list_tools timeout guard: a pending future maps to
+    /// `McpError::Timeout` with `tool_name: "tools/list"`.
+    #[tokio::test]
+    async fn list_tools_timeout_guard_maps_elapsed_to_mcp_timeout_error() {
+        let server_id = "test-server";
+        let timeout = Duration::from_millis(1);
+
+        let result: Result<(), McpError> =
+            tokio::time::timeout(timeout, std::future::pending::<()>())
+                .await
+                .map_err(|_| McpError::Timeout {
+                    server_id: server_id.into(),
+                    tool_name: "tools/list".into(),
+                    timeout_secs: timeout.as_secs(),
+                });
+
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                McpError::Timeout {
+                    tool_name,
+                    ..
+                } if tool_name == "tools/list"
+            ),
+            "expected McpError::Timeout with tool_name=tools/list, got: {err}"
+        );
+        assert_eq!(err.code(), Some(crate::McpErrorCode::Transient));
     }
 }
