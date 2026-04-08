@@ -122,6 +122,33 @@ impl ToolOrchestrator {
         self.utility_scorer = UtilityScorer::new(config);
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn apply_config(
+        &mut self,
+        max_iterations: usize,
+        max_tool_retries: usize,
+        max_retry_duration_secs: u64,
+        retry_base_ms: u64,
+        retry_max_ms: u64,
+        parameter_reformat_provider: String,
+        tool_repeat_threshold: usize,
+        max_tool_calls_per_session: Option<u32>,
+        tool_summarization: bool,
+        overflow_config: OverflowConfig,
+    ) {
+        self.max_iterations = max_iterations;
+        self.max_tool_retries = max_tool_retries.min(5);
+        self.max_retry_duration_secs = max_retry_duration_secs;
+        self.retry_base_ms = retry_base_ms;
+        self.retry_max_ms = retry_max_ms;
+        self.parameter_reformat_provider = parameter_reformat_provider;
+        self.repeat_threshold = tool_repeat_threshold;
+        self.recent_tool_calls = VecDeque::with_capacity(2 * tool_repeat_threshold.max(1));
+        self.max_tool_calls_per_session = max_tool_calls_per_session;
+        self.summarize_tool_output_enabled = tool_summarization;
+        self.overflow_config = overflow_config;
+    }
+
     /// Check whether the per-session quota allows another tool call.
     /// Returns `Some(max)` when quota is exhausted, `None` when allowed.
     #[must_use]

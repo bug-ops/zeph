@@ -175,8 +175,8 @@ fn compaction_tier_hard_above_threshold() {
     let executor = MockToolExecutor::no_tools();
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(100, 0.20, 0.75, 4, 0)
-        .with_soft_compaction_threshold(0.50);
+        .with_context_budget(100, 0.20, 0.75, 4, 0);
+    agent.context_manager.soft_compaction_threshold = 0.50;
 
     for i in 0..20 {
         agent.msg.messages.push(Message {
@@ -1426,8 +1426,8 @@ async fn test_prepare_context_scrubs_secrets_when_redact_enabled() {
     let executor = MockToolExecutor::no_tools();
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(4096, 0.20, 0.80, 4, 0)
-        .with_redact_credentials(true);
+        .with_context_budget(4096, 0.20, 0.80, 4, 0);
+    agent.runtime.redact_credentials = true;
 
     // Push a user message containing a secret and a path
     agent.msg.messages.push(Message {
@@ -1472,8 +1472,8 @@ async fn test_prepare_context_preserves_system_prompt_paths() {
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_context_budget(4096, 0.20, 0.80, 4, 0)
-        .with_redact_credentials(true)
         .with_working_dir("/Users/dev/project");
+    agent.runtime.redact_credentials = true;
 
     agent.msg.messages.push(Message {
         role: Role::User,
@@ -1531,8 +1531,8 @@ async fn test_prepare_context_no_scrub_when_redact_disabled() {
     let executor = MockToolExecutor::no_tools();
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(4096, 0.20, 0.80, 4, 0)
-        .with_redact_credentials(false);
+        .with_context_budget(4096, 0.20, 0.80, 4, 0);
+    agent.runtime.redact_credentials = false;
 
     let original = "key sk-abc123xyz at /Users/dev/file.rs".to_string();
     agent.msg.messages.push(Message {
@@ -1586,8 +1586,8 @@ fn compaction_tier_hard_triggers_when_cached_tokens_exceed_hard_threshold() {
 
     // budget 1000, hard=0.75, soft=0.50 → hard fires above 750
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(1000, 0.20, 0.75, 4, 0)
-        .with_soft_compaction_threshold(0.50);
+        .with_context_budget(1000, 0.20, 0.75, 4, 0);
+    agent.context_manager.soft_compaction_threshold = 0.50;
     agent.providers.cached_prompt_tokens = 900;
 
     assert_eq!(
@@ -1606,8 +1606,8 @@ fn compaction_tier_none_does_not_trigger_below_soft_threshold() {
 
     // budget 1000, hard=0.75, soft=0.50 → nothing fires below 500
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(1000, 0.20, 0.75, 4, 0)
-        .with_soft_compaction_threshold(0.50);
+        .with_context_budget(1000, 0.20, 0.75, 4, 0);
+    agent.context_manager.soft_compaction_threshold = 0.50;
     agent.providers.cached_prompt_tokens = 100;
 
     assert_eq!(
@@ -3457,8 +3457,8 @@ fn tier0_does_not_set_compacted_this_turn() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(100_000, 0.20, 0.80, 4, 0)
-        .with_soft_compaction_threshold(0.70);
+        .with_context_budget(100_000, 0.20, 0.80, 4, 0);
+    agent.context_manager.soft_compaction_threshold = 0.70;
 
     make_tool_pair(&mut agent, "a");
     make_tool_pair(&mut agent, "b");
@@ -3486,8 +3486,8 @@ fn tier0_count_trigger_fires_without_budget_pressure() {
     let executor = MockToolExecutor::no_tools();
     // Large budget: soft threshold 70% = 70_000 tokens — far above cached_prompt_tokens
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(100_000, 0.20, 0.80, 4, 0)
-        .with_soft_compaction_threshold(0.70);
+        .with_context_budget(100_000, 0.20, 0.80, 4, 0);
+    agent.context_manager.soft_compaction_threshold = 0.70;
 
     // tool_call_cutoff defaults to 6; add exactly that many deferred summaries
     for label in ["a", "b", "c", "d", "e", "f"] {
@@ -3662,8 +3662,8 @@ async fn cooldown_guard_decrements_and_skips_compaction() {
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_context_budget(100, 0.20, 0.75, 2, 0)
-        .with_compaction_cooldown(2)
         .with_metrics(tx);
+    agent.context_manager.compaction_cooldown_turns = 2;
 
     // Manually set cooling state as if compaction just fired and turn advanced.
     agent.context_manager.compaction = CompactionState::Cooling { turns_remaining: 2 };
@@ -3700,8 +3700,8 @@ async fn cooldown_guard_fires_after_expiry_and_resets_counter() {
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_context_budget(100, 0.20, 0.75, 2, 0)
-        .with_compaction_cooldown(2)
         .with_metrics(tx);
+    agent.context_manager.compaction_cooldown_turns = 2;
 
     // Ready state means cooldown has already expired.
     assert_eq!(agent.context_manager.compaction, CompactionState::Ready);
@@ -3812,8 +3812,8 @@ async fn exhaustion_guard_takes_precedence_over_cooldown() {
     let executor = MockToolExecutor::no_tools();
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(100, 0.20, 0.75, 2, 0)
-        .with_compaction_cooldown(2);
+        .with_context_budget(100, 0.20, 0.75, 2, 0);
+    agent.context_manager.compaction_cooldown_turns = 2;
 
     // Exhausted state (the Cooling state would normally guard against exhaustion, but
     // we test the ordering guarantee that exhaustion check happens before cooldown decrement).
@@ -3893,8 +3893,8 @@ fn builder_with_compaction_cooldown_sets_field() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
 
-    let agent =
-        Agent::new(provider, channel, registry, None, 5, executor).with_compaction_cooldown(5);
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    agent.context_manager.compaction_cooldown_turns = 5;
 
     assert_eq!(agent.context_manager.compaction_cooldown_turns, 5);
 }
@@ -3936,8 +3936,8 @@ async fn compaction_turns_after_hard_tracks_segments() {
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_context_budget(1000, 0.20, 0.75, 4, 0)
-        .with_compaction_cooldown(0)
         .with_metrics(tx);
+    agent.context_manager.compaction_cooldown_turns = 0;
 
     // Simulate first hard compaction by driving cached tokens above threshold.
     agent.providers.cached_prompt_tokens = 900;
@@ -4003,8 +4003,8 @@ fn mid_iteration_skips_when_compacted_this_turn() {
     let executor = MockToolExecutor::no_tools();
     // budget=100_000, soft=0.60 → soft_threshold=60_000
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(100_000, 0.20, 0.90, 4, 0)
-        .with_soft_compaction_threshold(0.60);
+        .with_context_budget(100_000, 0.20, 0.90, 4, 0);
+    agent.context_manager.soft_compaction_threshold = 0.60;
 
     make_tool_pair_with_output(&mut agent, "a");
     agent.msg.messages[2].metadata.deferred_summary = Some("sum_a".into());
@@ -4035,8 +4035,8 @@ fn mid_iteration_skips_when_tier_is_none() {
     let executor = MockToolExecutor::no_tools();
     // budget=100_000, soft=0.60 → soft_threshold=60_000
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(100_000, 0.20, 0.90, 4, 0)
-        .with_soft_compaction_threshold(0.60);
+        .with_context_budget(100_000, 0.20, 0.90, 4, 0);
+    agent.context_manager.soft_compaction_threshold = 0.60;
 
     make_tool_pair_with_output(&mut agent, "a");
     agent.msg.messages[2].metadata.deferred_summary = Some("sum_a".into());
@@ -4062,8 +4062,8 @@ fn mid_iteration_applies_deferred_summaries_at_soft_tier() {
     let executor = MockToolExecutor::no_tools();
     // budget=100_000, soft=0.60 → soft_threshold=60_000; hard=0.90
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(100_000, 0.20, 0.90, 4, 0)
-        .with_soft_compaction_threshold(0.60);
+        .with_context_budget(100_000, 0.20, 0.90, 4, 0);
+    agent.context_manager.soft_compaction_threshold = 0.60;
 
     make_tool_pair_with_output(&mut agent, "a");
     agent.msg.messages[2].metadata.deferred_summary = Some("sum_a".into());
@@ -4091,8 +4091,8 @@ fn mid_iteration_does_not_set_compacted_this_turn() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(100_000, 0.20, 0.90, 4, 0)
-        .with_soft_compaction_threshold(0.60);
+        .with_context_budget(100_000, 0.20, 0.90, 4, 0);
+    agent.context_manager.soft_compaction_threshold = 0.60;
 
     make_tool_pair_with_output(&mut agent, "a");
     agent.providers.cached_prompt_tokens = 75_000;
@@ -4113,8 +4113,8 @@ fn mid_iteration_fires_at_hard_tier() {
     let executor = MockToolExecutor::no_tools();
     // budget=100_000, soft=0.60 → 60_000; hard=0.90 → 90_000
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-        .with_context_budget(100_000, 0.20, 0.90, 4, 0)
-        .with_soft_compaction_threshold(0.60);
+        .with_context_budget(100_000, 0.20, 0.90, 4, 0);
+    agent.context_manager.soft_compaction_threshold = 0.60;
 
     make_tool_pair_with_output(&mut agent, "a");
     agent.msg.messages[2].metadata.deferred_summary = Some("sum_a".into());

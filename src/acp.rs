@@ -703,10 +703,8 @@ async fn spawn_acp_agent(
             &mcp_config,
         )
         .with_mcp_shared_tools(mcp_shared_tools)
-        .with_focus_config(d.focus_config.clone())
-        .with_sidequest_config(d.sidequest_config.clone())
-        .with_trajectory_config(d.trajectory_config.clone())
-        .with_category_config(d.category_config.clone())
+        .with_focus_and_sidequest_config(d.focus_config.clone(), d.sidequest_config.clone())
+        .with_trajectory_and_category_config(d.trajectory_config.clone(), d.category_config.clone())
         .with_embedding_provider(d.embedding_provider.clone())
         .maybe_init_tool_schema_filter(&d.tool_filter_config, &provider),
     )

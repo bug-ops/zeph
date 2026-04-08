@@ -157,6 +157,30 @@ impl ContextManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn apply_budget_config(
+        &mut self,
+        budget_tokens: usize,
+        reserve_ratio: f32,
+        hard_compaction_threshold: f32,
+        compaction_preserve_tail: usize,
+        prune_protect_tokens: usize,
+        soft_compaction_threshold: f32,
+        compaction_cooldown_turns: u8,
+    ) {
+        if budget_tokens == 0 {
+            tracing::warn!("context budget is 0 — agent will have no token tracking");
+        }
+        if budget_tokens > 0 {
+            self.budget = Some(ContextBudget::new(budget_tokens, reserve_ratio));
+        }
+        self.hard_compaction_threshold = hard_compaction_threshold;
+        self.compaction_preserve_tail = compaction_preserve_tail;
+        self.prune_protect_tokens = prune_protect_tokens;
+        self.soft_compaction_threshold = soft_compaction_threshold;
+        self.compaction_cooldown_turns = compaction_cooldown_turns;
+    }
+
     /// Reset compaction state for a new conversation.
     ///
     /// Clears cooldown, exhaustion, and turn counters so the new conversation starts

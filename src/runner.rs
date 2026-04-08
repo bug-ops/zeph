@@ -1321,9 +1321,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         || provider.name().to_owned(),
         zeph_core::config::ProviderEntry::effective_name,
     ))
-    .with_disambiguation_threshold(config.skills.disambiguation_threshold)
-    .with_two_stage_matching(config.skills.two_stage_matching)
-    .with_confusability_threshold(config.skills.confusability_threshold)
+    .with_skill_matching_config(
+        config.skills.disambiguation_threshold,
+        config.skills.two_stage_matching,
+        config.skills.confusability_threshold,
+    )
     .with_skill_reload(skill_paths.clone(), reload_rx)
     .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
     .with_trust_config(config.skills.trust.clone())
@@ -1359,16 +1361,17 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.skills.rl_persist_interval,
         config.skills.rl_warmup_updates,
     )
-    .with_compression_guidelines_config(config.memory.compression_guidelines.clone())
-    .with_digest_config(config.memory.digest.clone())
-    .with_context_strategy(
+    .with_memory_formatting_config(
+        config.memory.compression_guidelines.clone(),
+        config.memory.digest.clone(),
         config.memory.context_strategy,
         config.memory.crossover_turn_threshold,
     )
-    .with_focus_config(config.agent.focus.clone())
-    .with_sidequest_config(config.memory.sidequest.clone())
-    .with_trajectory_config(config.memory.trajectory.clone())
-    .with_category_config(config.memory.category.clone())
+    .with_focus_and_sidequest_config(config.agent.focus.clone(), config.memory.sidequest.clone())
+    .with_trajectory_and_category_config(
+        config.memory.trajectory.clone(),
+        config.memory.category.clone(),
+    )
     .with_embedding_provider(embedding_provider)
     .with_tree_consolidation_loop(
         app.build_tree_consolidation_provider()

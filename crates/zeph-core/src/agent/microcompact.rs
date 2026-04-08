@@ -216,15 +216,16 @@ mod tests {
     use zeph_config::MicrocompactConfig;
 
     fn make_agent_with_microcompact(cfg: MicrocompactConfig) -> Agent<MockChannel> {
-        Agent::new(
+        let mut agent = Agent::new(
             mock_provider(vec![]),
             MockChannel::new(vec![]),
             create_test_registry(),
             None,
             5,
             MockToolExecutor::no_tools(),
-        )
-        .with_microcompact_config(cfg)
+        );
+        agent.memory_state.microcompact_config = cfg;
+        agent
     }
 
     #[test]

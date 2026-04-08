@@ -260,9 +260,9 @@ pub mod agent_tests {
         let executor = MockToolExecutor::no_tools();
         let tmp = tempfile::tempdir().unwrap();
 
-        let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_model_name("test-model")
-            .with_working_dir(tmp.path().to_path_buf());
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.runtime.model_name = "test-model".to_string();
+        let agent = agent.with_working_dir(tmp.path().to_path_buf());
 
         assert_eq!(
             agent.session.env_context.working_dir,
@@ -278,8 +278,8 @@ pub mod agent_tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_embedding_model("test-embed-model".to_string());
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.skill_state.embedding_model = "test-embed-model".to_string();
 
         assert_eq!(agent.skill_state.embedding_model, "test-embed-model");
     }
@@ -954,9 +954,9 @@ pub mod agent_tests {
         let executor = MockToolExecutor::no_tools();
         let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
 
-        let _agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_model_name("test-model")
-            .with_metrics(tx);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.runtime.model_name = "test-model".to_string();
+        let _agent = agent.with_metrics(tx);
 
         let snapshot = rx.borrow().clone();
         assert_eq!(snapshot.provider_name, "mock");
@@ -1112,8 +1112,8 @@ pub mod agent_tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_tool_summarization(true);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.tool_orchestrator.summarize_tool_output_enabled = true;
 
         let short = "short output";
         let result = agent.maybe_summarize_tool_output(short).await;
@@ -1143,14 +1143,19 @@ pub mod agent_tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_tool_summarization(false)
-            .with_overflow_config(zeph_tools::OverflowConfig {
-                threshold: 100,
-                retention_days: 7,
-                max_overflow_bytes: 0,
-            })
-            .with_memory(Arc::new(memory), cid, 100, 5, 1000);
+        let agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            Arc::new(memory),
+            cid,
+            100,
+            5,
+            1000,
+        );
+        let mut agent = agent;
+        agent.tool_orchestrator.overflow_config = zeph_tools::OverflowConfig {
+            threshold: 100,
+            retention_days: 7,
+            max_overflow_bytes: 0,
+        };
 
         let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
         let result = agent.maybe_summarize_tool_output(&long).await;
@@ -1180,13 +1185,12 @@ pub mod agent_tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_tool_summarization(false)
-            .with_overflow_config(zeph_tools::OverflowConfig {
-                threshold: 1000,
-                retention_days: 7,
-                max_overflow_bytes: 0,
-            });
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.tool_orchestrator.overflow_config = zeph_tools::OverflowConfig {
+            threshold: 1000,
+            retention_days: 7,
+            max_overflow_bytes: 0,
+        };
 
         // Must exceed overflow threshold (1000) so that truncate_tool_output_at produces
         // the "truncated" marker. MAX_TOOL_OUTPUT_CHARS is no longer used in this path.
@@ -1202,13 +1206,13 @@ pub mod agent_tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_tool_summarization(true)
-            .with_overflow_config(zeph_tools::OverflowConfig {
-                threshold: 1000,
-                retention_days: 7,
-                max_overflow_bytes: 0,
-            });
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.tool_orchestrator.summarize_tool_output_enabled = true;
+        agent.tool_orchestrator.overflow_config = zeph_tools::OverflowConfig {
+            threshold: 1000,
+            retention_days: 7,
+            max_overflow_bytes: 0,
+        };
 
         let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
         let result = agent.maybe_summarize_tool_output(&long).await;
@@ -1224,13 +1228,13 @@ pub mod agent_tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_tool_summarization(true)
-            .with_overflow_config(zeph_tools::OverflowConfig {
-                threshold: 1000,
-                retention_days: 7,
-                max_overflow_bytes: 0,
-            });
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.tool_orchestrator.summarize_tool_output_enabled = true;
+        agent.tool_orchestrator.overflow_config = zeph_tools::OverflowConfig {
+            threshold: 1000,
+            retention_days: 7,
+            max_overflow_bytes: 0,
+        };
 
         let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
         let result = agent.maybe_summarize_tool_output(&long).await;
@@ -1246,13 +1250,12 @@ pub mod agent_tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_tool_summarization(false)
-            .with_overflow_config(zeph_tools::OverflowConfig {
-                threshold: 100,
-                retention_days: 7,
-                max_overflow_bytes: 0,
-            });
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.tool_orchestrator.overflow_config = zeph_tools::OverflowConfig {
+            threshold: 100,
+            retention_days: 7,
+            max_overflow_bytes: 0,
+        };
         // No memory backend set.
 
         let long = "x".repeat(200);
@@ -1261,27 +1264,6 @@ pub mod agent_tests {
             result.contains("could not be saved — no memory backend or conversation available"),
             "S3 fallback message must appear when no memory backend, got: {result}"
         );
-    }
-
-    #[test]
-    fn with_tool_summarization_sets_flag() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-
-        let agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_tool_summarization(true);
-        assert!(agent.tool_orchestrator.summarize_tool_output_enabled);
-
-        let provider2 = mock_provider(vec![]);
-        let channel2 = MockChannel::new(vec![]);
-        let registry2 = create_test_registry();
-        let executor2 = MockToolExecutor::no_tools();
-
-        let agent2 = Agent::new(provider2, channel2, registry2, None, 5, executor2)
-            .with_tool_summarization(false);
-        assert!(!agent2.tool_orchestrator.summarize_tool_output_enabled);
     }
 
     #[test]

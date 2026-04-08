@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Refactored
 
+- **Consolidate `AgentBuilder` methods: 30% reduction** (`#2804`): added `Default`/`new()` constructors to all sub-structs (`McpState`, `IndexState`, `DebugState`, `SecurityState`, `SkillState`, `ToolState`, `SessionState`, `LifecycleState`, `ProviderState`, `MetricsState`, `ExperimentState`, `FeedbackState`, `RuntimeConfig`, etc.), simplified `new_with_registry_arc()` from ~260 to ~50 lines, and removed 40 of 132 `pub fn with_*` builder methods (30.3%). Groups of related single-field setters were consolidated into batch methods: `with_skill_matching_config` (disambiguation/two-stage/confusability), `with_memory_formatting_config` (guidelines/digest/context-strategy), `with_trajectory_and_category_config`, `with_focus_and_sidequest_config`. Unused methods `with_skill_prompt_mode`, `with_result_cache_config`, `with_tool_schema_filter`, `with_classifier_metrics`, `with_server_compaction` removed. All call sites in `src/` and `crates/zeph-core/src/` updated. No behavioral changes.
+
 - **Extract security pipeline methods into `SecurityState` impl block** (`#2802`): moved PII scrubbing, guardrail pre-screening, and NER circuit breaker management from Agent wrappers into `impl SecurityState` in `agent/state/security.rs`. New `PiiScrubResult` value type carries metric descriptors; Agent wrappers apply side effects from the result struct.
 
 - **Extract skill management methods into `SkillState` impl block** (`#2803`): moved `rebuild_prompt()`, `rebuild_bm25()`, and `fingerprint()` from Agent into `impl SkillState` in `agent/state/skill.rs`. Agent methods delegate to these helpers. Methods requiring channel/memory/provider access remain on Agent.

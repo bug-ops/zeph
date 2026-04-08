@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -114,6 +113,13 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Override the embedding model name used for skill matching.
+    #[must_use]
+    pub fn with_embedding_model(mut self, model: String) -> Self {
+        self.skill_state.embedding_model = model;
+        self
+    }
+
     /// Set the dedicated embedding provider (resolved once at bootstrap, never changed by
     /// `/provider switch`). When not called, defaults to the primary provider clone set in
     /// `Agent::new`.
@@ -198,57 +204,6 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
-    pub fn with_max_tool_iterations(mut self, max: usize) -> Self {
-        self.tool_orchestrator.max_iterations = max;
-        self
-    }
-
-    /// Set the maximum number of retry attempts for transient tool errors (0 = disabled, max 5).
-    #[must_use]
-    pub fn with_max_tool_retries(mut self, max: usize) -> Self {
-        self.tool_orchestrator.max_tool_retries = max.min(5);
-        self
-    }
-
-    /// Set the maximum wall-clock budget (seconds) for retries per tool call (0 = unlimited).
-    #[must_use]
-    pub fn with_max_retry_duration_secs(mut self, secs: u64) -> Self {
-        self.tool_orchestrator.max_retry_duration_secs = secs;
-        self
-    }
-
-    /// Set the maximum tool calls allowed per session (`None` = unlimited).
-    #[must_use]
-    pub fn with_max_tool_calls_per_session(mut self, max: Option<u32>) -> Self {
-        self.tool_orchestrator.max_tool_calls_per_session = max;
-        self
-    }
-
-    /// Set the provider name for LLM-based parameter reformatting (empty = disabled).
-    #[must_use]
-    pub fn with_parameter_reformat_provider(mut self, provider: impl Into<String>) -> Self {
-        self.tool_orchestrator.parameter_reformat_provider = provider.into();
-        self
-    }
-
-    /// Set the exponential backoff parameters for tool retries.
-    #[must_use]
-    pub fn with_retry_backoff(mut self, base_ms: u64, max_ms: u64) -> Self {
-        self.tool_orchestrator.retry_base_ms = base_ms;
-        self.tool_orchestrator.retry_max_ms = max_ms;
-        self
-    }
-
-    /// Set the repeat-detection threshold (0 = disabled).
-    /// Window size is `2 * threshold`.
-    #[must_use]
-    pub fn with_tool_repeat_threshold(mut self, threshold: usize) -> Self {
-        self.tool_orchestrator.repeat_threshold = threshold;
-        self.tool_orchestrator.recent_tool_calls = VecDeque::with_capacity(2 * threshold.max(1));
-        self
-    }
-
-    #[must_use]
     pub fn with_memory(
         mut self,
         memory: Arc<SemanticMemory>,
@@ -269,33 +224,17 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure skill matching parameters (disambiguation, two-stage, confusability).
     #[must_use]
-    pub fn with_embedding_model(mut self, model: String) -> Self {
-        self.skill_state.embedding_model = model;
-        self
-    }
-
-    #[must_use]
-    pub fn with_disambiguation_threshold(mut self, threshold: f32) -> Self {
-        self.skill_state.disambiguation_threshold = threshold;
-        self
-    }
-
-    #[must_use]
-    pub fn with_two_stage_matching(mut self, enabled: bool) -> Self {
-        self.skill_state.two_stage_matching = enabled;
-        self
-    }
-
-    #[must_use]
-    pub fn with_confusability_threshold(mut self, threshold: f32) -> Self {
-        self.skill_state.confusability_threshold = threshold.clamp(0.0, 1.0);
-        self
-    }
-
-    #[must_use]
-    pub fn with_skill_prompt_mode(mut self, mode: crate::config::SkillPromptMode) -> Self {
-        self.skill_state.prompt_mode = mode;
+    pub fn with_skill_matching_config(
+        mut self,
+        disambiguation_threshold: f32,
+        two_stage_matching: bool,
+        confusability_threshold: f32,
+    ) -> Self {
+        self.skill_state.disambiguation_threshold = disambiguation_threshold;
+        self.skill_state.two_stage_matching = two_stage_matching;
+        self.skill_state.confusability_threshold = confusability_threshold.clamp(0.0, 1.0);
         self
     }
 
@@ -305,71 +244,31 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure memory formatting: compression guidelines, digest, and context strategy.
     #[must_use]
-    pub fn with_compression_guidelines_config(
+    pub fn with_memory_formatting_config(
         mut self,
-        config: zeph_memory::CompressionGuidelinesConfig,
-    ) -> Self {
-        self.memory_state.compression_guidelines_config = config;
-        self
-    }
-
-    #[must_use]
-    pub fn with_digest_config(mut self, config: crate::config::DigestConfig) -> Self {
-        self.memory_state.digest_config = config;
-        self
-    }
-
-    #[must_use]
-    pub fn with_context_strategy(
-        mut self,
-        strategy: crate::config::ContextStrategy,
+        compression_guidelines: zeph_memory::CompressionGuidelinesConfig,
+        digest: crate::config::DigestConfig,
+        context_strategy: crate::config::ContextStrategy,
         crossover_turn_threshold: u32,
     ) -> Self {
-        self.memory_state.context_strategy = strategy;
+        self.memory_state.compression_guidelines_config = compression_guidelines;
+        self.memory_state.digest_config = digest;
+        self.memory_state.context_strategy = context_strategy;
         self.memory_state.crossover_turn_threshold = crossover_turn_threshold;
         self
     }
 
+    /// Configure trajectory and category memory settings together.
     #[must_use]
-    pub fn with_persona_config(mut self, config: crate::config::PersonaConfig) -> Self {
-        self.memory_state.persona_config = config;
-        self
-    }
-
-    #[must_use]
-    pub fn with_trajectory_config(mut self, config: crate::config::TrajectoryConfig) -> Self {
-        self.memory_state.trajectory_config = config;
-        self
-    }
-
-    #[must_use]
-    pub fn with_category_config(mut self, config: crate::config::CategoryConfig) -> Self {
-        self.memory_state.category_config = config;
-        self
-    }
-
-    #[must_use]
-    pub fn with_tree_config(mut self, config: crate::config::TreeConfig) -> Self {
-        self.memory_state.tree_config = config;
-        self
-    }
-
-    #[must_use]
-    pub fn with_microcompact_config(mut self, config: crate::config::MicrocompactConfig) -> Self {
-        self.memory_state.microcompact_config = config;
-        self
-    }
-
-    #[must_use]
-    pub fn with_autodream_config(mut self, config: crate::config::AutoDreamConfig) -> Self {
-        self.memory_state.autodream_config = config;
-        self
-    }
-
-    #[must_use]
-    pub fn with_magic_docs_config(mut self, config: crate::config::MagicDocsConfig) -> Self {
-        self.memory_state.magic_docs_config = config;
+    pub fn with_trajectory_and_category_config(
+        mut self,
+        trajectory: crate::config::TrajectoryConfig,
+        category: crate::config::CategoryConfig,
+    ) -> Self {
+        self.memory_state.trajectory_config = trajectory;
+        self.memory_state.category_config = category;
         self
     }
 
@@ -494,15 +393,6 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    #[must_use]
-    pub fn with_available_secrets(
-        mut self,
-        secrets: impl IntoIterator<Item = (String, crate::vault::Secret)>,
-    ) -> Self {
-        self.skill_state.available_custom_secrets = secrets.into_iter().collect();
-        self
-    }
-
     /// # Panics
     ///
     #[must_use]
@@ -617,15 +507,6 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_verify_provider(mut self, provider: AnyProvider) -> Self {
         self.orchestration.verify_provider = Some(provider);
-        self
-    }
-
-    /// Enable server-side compaction mode (Claude compact-2026-01-12 beta).
-    ///
-    /// When active, client-side reactive and proactive compaction are skipped.
-    #[must_use]
-    pub fn with_server_compaction(mut self, enabled: bool) -> Self {
-        self.providers.server_compaction_active = enabled;
         self
     }
 
@@ -783,32 +664,8 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
-    pub fn with_redact_credentials(mut self, enabled: bool) -> Self {
-        self.runtime.redact_credentials = enabled;
-        self
-    }
-
-    #[must_use]
-    pub fn with_budget_hint_enabled(mut self, enabled: bool) -> Self {
-        self.runtime.budget_hint_enabled = enabled;
-        self
-    }
-
-    #[must_use]
     pub fn with_channel_skills(mut self, config: zeph_config::ChannelSkillsConfig) -> Self {
         self.runtime.channel_skills = config;
-        self
-    }
-
-    #[must_use]
-    pub fn with_tool_summarization(mut self, enabled: bool) -> Self {
-        self.tool_orchestrator.summarize_tool_output_enabled = enabled;
-        self
-    }
-
-    #[must_use]
-    pub fn with_overflow_config(mut self, config: zeph_tools::OverflowConfig) -> Self {
-        self.tool_orchestrator.overflow_config = config;
         self
     }
 
@@ -818,12 +675,6 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_tafc_config(mut self, config: zeph_tools::TafcConfig) -> Self {
         self.tool_orchestrator.tafc = config.validated();
-        self
-    }
-
-    #[must_use]
-    pub fn with_result_cache_config(mut self, config: &zeph_tools::ResultCacheConfig) -> Self {
-        self.tool_orchestrator.set_cache_config(config);
         self
     }
 
@@ -998,29 +849,6 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Attach a [`ClassifierMetrics`] instance to record injection, PII, and feedback latencies.
-    ///
-    /// The same `Arc` is shared with `ContentSanitizer` (injection + PII) and `LlmClassifier`
-    /// (feedback) so all three tasks write into the same ring buffers. Call this before
-    /// `with_injection_classifier`, `with_pii_detector`, and `with_llm_classifier`.
-    #[cfg(feature = "classifiers")]
-    #[must_use]
-    pub fn with_classifier_metrics(
-        mut self,
-        metrics: std::sync::Arc<zeph_llm::ClassifierMetrics>,
-    ) -> Self {
-        // Wire into sanitizer for injection + PII recording.
-        let old = std::mem::replace(
-            &mut self.security.sanitizer,
-            zeph_sanitizer::ContentSanitizer::new(
-                &zeph_sanitizer::ContentIsolationConfig::default(),
-            ),
-        );
-        self.security.sanitizer = old.with_classifier_metrics(std::sync::Arc::clone(&metrics));
-        // Store Arc for snapshot push and LlmClassifier wiring.
-        self.metrics.classifier_metrics = Some(metrics);
-        self
-    }
     #[must_use]
     pub fn with_guardrail(mut self, filter: zeph_sanitizer::guardrail::GuardrailFilter) -> Self {
         use zeph_sanitizer::guardrail::GuardrailAction;
@@ -1060,12 +888,6 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
-    pub fn with_permission_policy(mut self, policy: zeph_tools::PermissionPolicy) -> Self {
-        self.runtime.permission_policy = policy;
-        self
-    }
-
-    #[must_use]
     pub fn with_context_budget(
         mut self,
         budget_tokens: usize,
@@ -1087,50 +909,26 @@ impl<C: Channel> Agent<C> {
     }
 
     #[must_use]
-    pub fn with_soft_compaction_threshold(mut self, threshold: f32) -> Self {
-        self.context_manager.soft_compaction_threshold = threshold;
-        self
-    }
-
-    /// Sets the number of turns to skip compaction after a successful compaction.
-    ///
-    /// Prevents the compaction loop from re-triggering immediately when the
-    /// summary itself is large. A value of `0` disables the cooldown.
-    #[must_use]
-    pub fn with_compaction_cooldown(mut self, cooldown_turns: u8) -> Self {
-        self.context_manager.compaction_cooldown_turns = cooldown_turns;
-        self
-    }
-
-    #[must_use]
     pub fn with_compression(mut self, compression: CompressionConfig) -> Self {
         self.context_manager.compression = compression;
         self
     }
 
-    /// Configure Focus-based active context compression (#1850).
+    /// Configure `Focus` and `SideQuest` LLM-driven context management (#1850, #1885).
     #[must_use]
-    pub fn with_focus_config(mut self, config: crate::config::FocusConfig) -> Self {
-        self.focus = super::focus::FocusState::new(config);
-        self
-    }
-
-    /// Configure `SideQuest` LLM-driven tool output eviction (#1885).
-    #[must_use]
-    pub fn with_sidequest_config(mut self, config: crate::config::SidequestConfig) -> Self {
-        self.sidequest = super::sidequest::SidequestState::new(config);
+    pub fn with_focus_and_sidequest_config(
+        mut self,
+        focus: crate::config::FocusConfig,
+        sidequest: crate::config::SidequestConfig,
+    ) -> Self {
+        self.focus = super::focus::FocusState::new(focus);
+        self.sidequest = super::sidequest::SidequestState::new(sidequest);
         self
     }
 
     #[must_use]
     pub fn with_routing(mut self, routing: StoreRoutingConfig) -> Self {
         self.context_manager.routing = routing;
-        self
-    }
-
-    #[must_use]
-    pub fn with_model_name(mut self, name: impl Into<String>) -> Self {
-        self.runtime.model_name = name.into();
         self
     }
 
@@ -1381,13 +1179,6 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Set the dynamic tool schema filter (pre-computed tool embeddings).
-    #[must_use]
-    pub fn with_tool_schema_filter(mut self, filter: zeph_tools::ToolSchemaFilter) -> Self {
-        self.tool_state.tool_schema_filter = Some(filter);
-        self
-    }
-
     /// Set dependency config parameters (boost values) used per-turn.
     #[must_use]
     pub fn with_dependency_config(mut self, config: zeph_tools::DependencyConfig) -> Self {
@@ -1535,49 +1326,51 @@ impl<C: Channel> Agent<C> {
             secrets,
         } = cfg;
 
+        self.tool_orchestrator.apply_config(
+            max_tool_iterations,
+            max_tool_retries,
+            max_retry_duration_secs,
+            retry_base_ms,
+            retry_max_ms,
+            parameter_reformat_provider,
+            tool_repeat_threshold,
+            max_tool_calls_per_session,
+            tool_summarization,
+            overflow_config,
+        );
+        self.runtime.permission_policy = permission_policy;
+        self.runtime.model_name = model_name;
+        self.skill_state.embedding_model = embed_model;
+        self.context_manager.apply_budget_config(
+            budget_tokens,
+            CONTEXT_BUDGET_RESERVE_RATIO,
+            hard_compaction_threshold,
+            compaction_preserve_tail,
+            prune_protect_tokens,
+            soft_compaction_threshold,
+            compaction_cooldown_turns,
+        );
         self = self
-            .with_max_tool_iterations(max_tool_iterations)
-            .with_max_tool_calls_per_session(max_tool_calls_per_session)
-            .with_max_tool_retries(max_tool_retries)
-            .with_max_retry_duration_secs(max_retry_duration_secs)
-            .with_retry_backoff(retry_base_ms, retry_max_ms)
-            .with_parameter_reformat_provider(parameter_reformat_provider)
-            .with_tool_repeat_threshold(tool_repeat_threshold)
-            .with_model_name(model_name)
-            .with_embedding_model(embed_model)
-            .with_context_budget(
-                budget_tokens,
-                CONTEXT_BUDGET_RESERVE_RATIO,
-                hard_compaction_threshold,
-                compaction_preserve_tail,
-                prune_protect_tokens,
-            )
-            .with_soft_compaction_threshold(soft_compaction_threshold)
-            .with_compaction_cooldown(compaction_cooldown_turns)
             .with_security(security, timeouts)
-            .with_redact_credentials(redact_credentials)
-            .with_tool_summarization(tool_summarization)
-            .with_overflow_config(overflow_config)
-            .with_permission_policy(permission_policy)
-            .with_learning(learning)
-            .with_tool_call_cutoff(tool_call_cutoff)
-            .with_available_secrets(
-                secrets
-                    .iter()
-                    .map(|(k, v)| (k.clone(), crate::vault::Secret::new(v.expose().to_owned()))),
-            )
-            .with_server_compaction(server_compaction)
-            .with_document_config(document_config)
-            .with_graph_config(graph_config)
-            .with_persona_config(persona_config)
-            .with_trajectory_config(trajectory_config)
-            .with_category_config(category_config)
-            .with_tree_config(tree_config)
-            .with_microcompact_config(microcompact_config)
-            .with_autodream_config(autodream_config)
-            .with_magic_docs_config(magic_docs_config)
-            .with_orchestration_config(orchestration_config)
-            .with_budget_hint_enabled(budget_hint_enabled);
+            .with_learning(learning);
+        self.runtime.redact_credentials = redact_credentials;
+        self.memory_state.tool_call_cutoff = tool_call_cutoff;
+        self.skill_state.available_custom_secrets = secrets
+            .iter()
+            .map(|(k, v)| (k.clone(), crate::vault::Secret::new(v.expose().to_owned())))
+            .collect();
+        self.providers.server_compaction_active = server_compaction;
+        self.memory_state.document_config = document_config;
+        self.memory_state.apply_graph_config(graph_config);
+        self.memory_state.persona_config = persona_config;
+        self.memory_state.trajectory_config = trajectory_config;
+        self.memory_state.category_config = category_config;
+        self.memory_state.tree_config = tree_config;
+        self.memory_state.microcompact_config = microcompact_config;
+        self.memory_state.autodream_config = autodream_config;
+        self.memory_state.magic_docs_config = magic_docs_config;
+        self.orchestration.orchestration_config = orchestration_config;
+        self.runtime.budget_hint_enabled = budget_hint_enabled;
 
         self.debug_state.reasoning_model_warning = anomaly_config.reasoning_model_warning;
         if anomaly_config.enabled {
@@ -1591,7 +1384,8 @@ impl<C: Channel> Agent<C> {
         self.runtime.semantic_cache_enabled = semantic_cache_enabled;
         self.runtime.semantic_cache_threshold = semantic_cache_threshold;
         self.runtime.semantic_cache_max_candidates = semantic_cache_max_candidates;
-        self = self.with_result_cache_config(&result_cache_config);
+        self.tool_orchestrator
+            .set_cache_config(&result_cache_config);
 
         // When MagicDocs is enabled, file-read tools must bypass the utility gate so that
         // MagicDocs detection can inspect real file content (not a [skipped] sentinel).
@@ -1841,38 +1635,27 @@ mod tests {
     }
 
     #[test]
-    fn with_focus_config_propagates_to_focus_state() {
-        let cfg = crate::config::FocusConfig {
+    fn with_focus_and_sidequest_config_propagates() {
+        let focus = crate::config::FocusConfig {
             enabled: true,
             compression_interval: 7,
             ..Default::default()
         };
-        let agent = make_agent().with_focus_config(cfg.clone());
-        assert!(
-            agent.focus.config.enabled,
-            "with_focus_config must set enabled"
-        );
-        assert_eq!(
-            agent.focus.config.compression_interval, 7,
-            "with_focus_config must propagate compression_interval"
-        );
-    }
-
-    #[test]
-    fn with_sidequest_config_propagates_to_sidequest_state() {
-        let cfg = crate::config::SidequestConfig {
+        let sidequest = crate::config::SidequestConfig {
             enabled: true,
             interval_turns: 3,
             ..Default::default()
         };
-        let agent = make_agent().with_sidequest_config(cfg.clone());
-        assert!(
-            agent.sidequest.config.enabled,
-            "with_sidequest_config must set enabled"
+        let agent = make_agent().with_focus_and_sidequest_config(focus, sidequest);
+        assert!(agent.focus.config.enabled, "must set focus.enabled");
+        assert_eq!(
+            agent.focus.config.compression_interval, 7,
+            "must propagate compression_interval"
         );
+        assert!(agent.sidequest.config.enabled, "must set sidequest.enabled");
         assert_eq!(
             agent.sidequest.config.interval_turns, 3,
-            "with_sidequest_config must propagate interval_turns"
+            "must propagate interval_turns"
         );
     }
 
@@ -1894,38 +1677,34 @@ mod tests {
     }
 
     #[test]
-    fn with_two_stage_matching_sets_flag() {
-        let agent = make_agent().with_two_stage_matching(true);
+    fn with_skill_matching_config_sets_fields() {
+        let agent = make_agent().with_skill_matching_config(0.7, true, 0.85);
         assert!(
             agent.skill_state.two_stage_matching,
-            "with_two_stage_matching(true) must enable two_stage_matching"
+            "with_skill_matching_config must set two_stage_matching"
         );
-
-        let agent = make_agent().with_two_stage_matching(false);
         assert!(
-            !agent.skill_state.two_stage_matching,
-            "with_two_stage_matching(false) must disable two_stage_matching"
+            (agent.skill_state.disambiguation_threshold - 0.7).abs() < f32::EPSILON,
+            "with_skill_matching_config must set disambiguation_threshold"
+        );
+        assert!(
+            (agent.skill_state.confusability_threshold - 0.85).abs() < f32::EPSILON,
+            "with_skill_matching_config must set confusability_threshold"
         );
     }
 
     #[test]
-    fn with_confusability_threshold_sets_and_clamps() {
-        let agent = make_agent().with_confusability_threshold(0.85);
-        assert!(
-            (agent.skill_state.confusability_threshold - 0.85).abs() < f32::EPSILON,
-            "with_confusability_threshold must store the provided value"
-        );
-
-        let agent = make_agent().with_confusability_threshold(1.5);
+    fn with_skill_matching_config_clamps_confusability() {
+        let agent = make_agent().with_skill_matching_config(0.5, false, 1.5);
         assert!(
             (agent.skill_state.confusability_threshold - 1.0).abs() < f32::EPSILON,
-            "with_confusability_threshold must clamp values above 1.0"
+            "with_skill_matching_config must clamp confusability above 1.0"
         );
 
-        let agent = make_agent().with_confusability_threshold(-0.1);
+        let agent = make_agent().with_skill_matching_config(0.5, false, -0.1);
         assert!(
             agent.skill_state.confusability_threshold.abs() < f32::EPSILON,
-            "with_confusability_threshold must clamp values below 0.0"
+            "with_skill_matching_config must clamp confusability below 0.0"
         );
     }
 }

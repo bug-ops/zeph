@@ -395,6 +395,7 @@ pub(crate) struct MetricsState {
 }
 
 /// Groups task orchestration and subagent state.
+#[derive(Default)]
 pub(crate) struct OrchestrationState {
     /// On `OrchestrationState` (not `ProviderState`) because this provider is used exclusively
     /// by `LlmPlanner` during orchestration, not shared across subsystems.
@@ -426,6 +427,7 @@ pub(crate) struct OrchestrationState {
 }
 
 /// Groups instruction hot-reload state.
+#[derive(Default)]
 pub(crate) struct InstructionState {
     pub(crate) blocks: Vec<InstructionBlock>,
     pub(crate) reload_rx: Option<mpsc::Receiver<InstructionEvent>>,
@@ -458,6 +460,7 @@ pub(crate) struct SubgoalExtractionResult {
 }
 
 /// Groups context-compression feature state (gated behind `context-compression` feature flag).
+#[derive(Default)]
 pub(crate) struct CompressionState {
     /// Cached task goal for TaskAware/MIG pruning. Set by `maybe_compact()`,
     /// invalidated when the last user message hash changes.
@@ -479,6 +482,7 @@ pub(crate) struct CompressionState {
 }
 
 /// Groups runtime tool filtering, dependency tracking, and iteration bookkeeping.
+#[derive(Default)]
 pub(crate) struct ToolState {
     /// Dynamic tool schema filter: pre-computed tool embeddings for per-turn filtering (#2020).
     pub(crate) tool_schema_filter: Option<zeph_tools::ToolSchemaFilter>,
@@ -695,6 +699,272 @@ impl DebugState {
             raw
         };
         d.dump_response(id, &text);
+    }
+}
+
+impl Default for MemoryState {
+    fn default() -> Self {
+        Self {
+            memory: None,
+            conversation_id: None,
+            history_limit: 50,
+            recall_limit: 5,
+            summarization_threshold: 50,
+            cross_session_score_threshold: 0.35,
+            autosave_assistant: false,
+            autosave_min_length: 20,
+            tool_call_cutoff: 6,
+            unsummarized_count: 0,
+            document_config: crate::config::DocumentConfig::default(),
+            graph_config: crate::config::GraphConfig::default(),
+            compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig::default(),
+            shutdown_summary: true,
+            shutdown_summary_min_messages: 4,
+            shutdown_summary_max_messages: 20,
+            shutdown_summary_timeout_secs: 10,
+            structured_summaries: false,
+            last_recall_confidence: None,
+            digest_config: crate::config::DigestConfig::default(),
+            cached_session_digest: None,
+            context_strategy: crate::config::ContextStrategy::default(),
+            crossover_turn_threshold: 20,
+            rpe_router: None,
+            goal_text: None,
+            persona_config: crate::config::PersonaConfig::default(),
+            trajectory_config: crate::config::TrajectoryConfig::default(),
+            category_config: crate::config::CategoryConfig::default(),
+            tree_config: crate::config::TreeConfig::default(),
+            tree_consolidation_handle: None,
+            microcompact_config: crate::config::MicrocompactConfig::default(),
+            autodream_config: crate::config::AutoDreamConfig::default(),
+            magic_docs_config: crate::config::MagicDocsConfig::default(),
+            autodream: super::autodream::AutoDreamState::new(),
+            magic_docs: super::magic_docs::MagicDocsState::new(),
+        }
+    }
+}
+
+impl MemoryState {
+    pub(crate) fn apply_graph_config(&mut self, config: crate::config::GraphConfig) {
+        if config.enabled {
+            tracing::warn!(
+                "graph-memory is enabled: extracted entities are stored without PII redaction. \
+                 Do not use with sensitive personal data until redaction is implemented."
+            );
+        }
+        if config.rpe.enabled {
+            self.rpe_router = Some(std::sync::Mutex::new(zeph_memory::RpeRouter::new(
+                config.rpe.threshold,
+                config.rpe.max_skip_turns,
+            )));
+        } else {
+            self.rpe_router = None;
+        }
+        self.graph_config = config;
+    }
+}
+
+impl Default for McpState {
+    fn default() -> Self {
+        Self {
+            tools: Vec::new(),
+            registry: None,
+            manager: None,
+            allowed_commands: Vec::new(),
+            max_dynamic: 10,
+            elicitation_rx: None,
+            shared_tools: None,
+            tool_rx: None,
+            server_outcomes: Vec::new(),
+            pruning_cache: zeph_mcp::PruningCache::new(),
+            pruning_provider: None,
+            pruning_enabled: false,
+            pruning_params: zeph_mcp::PruningParams::default(),
+            semantic_index: None,
+            discovery_strategy: zeph_mcp::ToolDiscoveryStrategy::default(),
+            discovery_params: zeph_mcp::DiscoveryParams::default(),
+            discovery_provider: None,
+            elicitation_warn_sensitive_fields: true,
+        }
+    }
+}
+
+impl Default for IndexState {
+    fn default() -> Self {
+        Self {
+            retriever: None,
+            repo_map_tokens: 0,
+            cached_repo_map: None,
+            repo_map_ttl: std::time::Duration::from_secs(300),
+        }
+    }
+}
+
+impl Default for DebugState {
+    fn default() -> Self {
+        Self {
+            debug_dumper: None,
+            dump_format: crate::debug_dump::DumpFormat::default(),
+            trace_collector: None,
+            iteration_counter: 0,
+            anomaly_detector: None,
+            reasoning_model_warning: true,
+            logging_config: crate::config::LoggingConfig::default(),
+            dump_dir: None,
+            trace_service_name: String::new(),
+            trace_redact: true,
+            current_iteration_span_id: None,
+        }
+    }
+}
+
+impl Default for FeedbackState {
+    fn default() -> Self {
+        Self {
+            detector: super::feedback_detector::FeedbackDetector::new(0.6),
+            judge: None,
+            llm_classifier: None,
+        }
+    }
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            security: SecurityConfig::default(),
+            timeouts: TimeoutConfig::default(),
+            model_name: String::new(),
+            active_provider_name: String::new(),
+            permission_policy: zeph_tools::PermissionPolicy::default(),
+            redact_credentials: true,
+            rate_limiter: super::rate_limiter::ToolRateLimiter::new(
+                super::rate_limiter::RateLimitConfig::default(),
+            ),
+            semantic_cache_enabled: false,
+            semantic_cache_threshold: 0.95,
+            semantic_cache_max_candidates: 10,
+            dependency_config: zeph_tools::DependencyConfig::default(),
+            adversarial_policy_info: None,
+            spawn_depth: 0,
+            budget_hint_enabled: true,
+            channel_skills: zeph_config::ChannelSkillsConfig::default(),
+            layers: Vec::new(),
+        }
+    }
+}
+
+impl SessionState {
+    pub(crate) fn new() -> Self {
+        Self {
+            env_context: EnvironmentContext::gather(""),
+            last_assistant_at: None,
+            response_cache: None,
+            parent_tool_use_id: None,
+            status_tx: None,
+            lsp_hooks: None,
+            policy_config: None,
+            hooks_config: HooksConfigSnapshot::default(),
+        }
+    }
+}
+
+impl SkillState {
+    pub(crate) fn new(
+        registry: Arc<RwLock<SkillRegistry>>,
+        matcher: Option<SkillMatcherBackend>,
+        max_active_skills: usize,
+        last_skills_prompt: String,
+    ) -> Self {
+        Self {
+            registry,
+            skill_paths: Vec::new(),
+            managed_dir: None,
+            trust_config: crate::config::TrustConfig::default(),
+            matcher,
+            max_active_skills,
+            disambiguation_threshold: 0.20,
+            min_injection_score: 0.20,
+            embedding_model: String::new(),
+            skill_reload_rx: None,
+            active_skill_names: Vec::new(),
+            last_skills_prompt,
+            prompt_mode: crate::config::SkillPromptMode::Auto,
+            available_custom_secrets: HashMap::new(),
+            cosine_weight: 0.7,
+            hybrid_search: false,
+            bm25_index: None,
+            two_stage_matching: false,
+            confusability_threshold: 0.0,
+            rl_head: None,
+            rl_weight: 0.3,
+            rl_warmup_updates: 50,
+            generation_output_dir: None,
+            generation_provider_name: String::new(),
+        }
+    }
+}
+
+impl LifecycleState {
+    pub(crate) fn new() -> Self {
+        let (_tx, rx) = watch::channel(false);
+        Self {
+            shutdown: rx,
+            start_time: Instant::now(),
+            cancel_signal: Arc::new(tokio::sync::Notify::new()),
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            cancel_bridge_handle: None,
+            config_path: None,
+            config_reload_rx: None,
+            warmup_ready: None,
+            update_notify_rx: None,
+            custom_task_rx: None,
+            last_known_cwd: std::env::current_dir().unwrap_or_default(),
+            file_changed_rx: None,
+            file_watcher: None,
+        }
+    }
+}
+
+impl ProviderState {
+    pub(crate) fn new(initial_prompt_tokens: u64) -> Self {
+        Self {
+            summary_provider: None,
+            provider_override: None,
+            judge_provider: None,
+            probe_provider: None,
+            compress_provider: None,
+            cached_prompt_tokens: initial_prompt_tokens,
+            server_compaction_active: false,
+            stt: None,
+            provider_pool: Vec::new(),
+            provider_config_snapshot: None,
+        }
+    }
+}
+
+impl MetricsState {
+    pub(crate) fn new(token_counter: Arc<zeph_memory::TokenCounter>) -> Self {
+        Self {
+            metrics_tx: None,
+            cost_tracker: None,
+            token_counter,
+            extended_context: false,
+            classifier_metrics: None,
+        }
+    }
+}
+
+impl ExperimentState {
+    pub(crate) fn new() -> Self {
+        let (notify_tx, notify_rx) = tokio::sync::mpsc::channel::<String>(4);
+        Self {
+            config: crate::config::ExperimentConfig::default(),
+            cancel: None,
+            baseline: zeph_experiments::ConfigSnapshot::default(),
+            eval_provider: None,
+            notify_rx: Some(notify_rx),
+            notify_tx,
+        }
     }
 }
 

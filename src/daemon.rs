@@ -385,9 +385,11 @@ pub(crate) async fn run_daemon(
             tool_executor,
         )
         .apply_session_config(session_config)
-        .with_disambiguation_threshold(config.skills.disambiguation_threshold)
-        .with_two_stage_matching(config.skills.two_stage_matching)
-        .with_confusability_threshold(config.skills.confusability_threshold)
+        .with_skill_matching_config(
+            config.skills.disambiguation_threshold,
+            config.skills.two_stage_matching,
+            config.skills.confusability_threshold,
+        )
         .with_skill_reload(skill_paths, reload_rx)
         .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
         .with_memory(
@@ -409,10 +411,14 @@ pub(crate) async fn run_daemon(
             config.skills.rl_persist_interval,
             config.skills.rl_warmup_updates,
         )
-        .with_focus_config(config.agent.focus.clone())
-        .with_sidequest_config(config.memory.sidequest.clone())
-        .with_trajectory_config(config.memory.trajectory.clone())
-        .with_category_config(config.memory.category.clone())
+        .with_focus_and_sidequest_config(
+            config.agent.focus.clone(),
+            config.memory.sidequest.clone(),
+        )
+        .with_trajectory_and_category_config(
+            config.memory.trajectory.clone(),
+            config.memory.category.clone(),
+        )
         .with_embedding_provider(embedding_provider)
         .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider),
     )

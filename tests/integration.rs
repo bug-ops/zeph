@@ -2098,7 +2098,7 @@ async fn agent_disambiguation_reorders_skill_selection() {
         MockToolExecutor,
     )
     // Threshold of 1.0 guarantees disambiguation fires: any score delta < 1.0.
-    .with_disambiguation_threshold(1.0)
+    .with_skill_matching_config(1.0, false, 0.0)
     .with_metrics(tx);
 
     agent.run().await.unwrap();

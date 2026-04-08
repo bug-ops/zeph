@@ -1208,8 +1208,9 @@ mod tests {
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
-            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
-            .with_autosave_config(false, 20);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
+        agent.memory_state.autosave_assistant = false;
+        agent.memory_state.autosave_min_length = 20;
 
         agent
             .persist_message(Role::Assistant, "short assistant reply", &[], false)
@@ -1244,8 +1245,9 @@ mod tests {
         // autosave_assistant=true but min_length=1000 — short content falls back to save_only
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
-            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
-            .with_autosave_config(true, 1000);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
+        agent.memory_state.autosave_assistant = true;
+        agent.memory_state.autosave_min_length = 1000;
 
         agent
             .persist_message(Role::Assistant, "too short", &[], false)
@@ -1280,8 +1282,9 @@ mod tests {
         let min_length = 10usize;
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
-            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
-            .with_autosave_config(true, min_length);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
+        agent.memory_state.autosave_assistant = true;
+        agent.memory_state.autosave_min_length = min_length;
 
         // Exact boundary: len == min_length → embed path.
         let content_at_boundary = "A".repeat(min_length);
@@ -1309,8 +1312,9 @@ mod tests {
         let min_length = 10usize;
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
-            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
-            .with_autosave_config(true, min_length);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
+        agent.memory_state.autosave_assistant = true;
+        agent.memory_state.autosave_min_length = min_length;
 
         // One below boundary: len == min_length - 1 → save_only path, no embedding.
         let content_below_boundary = "A".repeat(min_length - 1);
@@ -1844,8 +1848,9 @@ mod tests {
         // autosave_assistant=false — but User role always takes embedding path
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
-            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
-            .with_autosave_config(false, 20);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
+        agent.memory_state.autosave_assistant = false;
+        agent.memory_state.autosave_min_length = 20;
 
         let long_user_msg = "A".repeat(100);
         agent
@@ -3499,8 +3504,9 @@ mod tests {
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
-            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
-            .with_autosave_config(true, 0);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
+        agent.memory_state.autosave_assistant = true;
+        agent.memory_state.autosave_min_length = 0;
 
         let parts = vec![MessagePart::ToolResult {
             tool_use_id: "tu1".into(),
@@ -3539,8 +3545,9 @@ mod tests {
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
-            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
-            .with_autosave_config(true, 0);
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
+        agent.memory_state.autosave_assistant = true;
+        agent.memory_state.autosave_min_length = 0;
 
         let parts = vec![MessagePart::ToolResult {
             tool_use_id: "tu2".into(),
@@ -3579,9 +3586,15 @@ mod tests {
         let cid = memory.sqlite().create_conversation().await.unwrap();
         let memory_arc = std::sync::Arc::new(memory);
 
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
-            .with_memory(memory_arc.clone(), cid, 50, 5, 100)
-            .with_autosave_config(true, 0);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            memory_arc.clone(),
+            cid,
+            50,
+            5,
+            100,
+        );
+        agent.memory_state.autosave_assistant = true;
+        agent.memory_state.autosave_min_length = 0;
 
         let content = "total 42\ndrwxr-xr-x  5 user group";
         let parts = vec![MessagePart::ToolResult {

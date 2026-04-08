@@ -44,13 +44,12 @@ pub(crate) mod tool_orchestrator;
 mod trust_commands;
 mod utils;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use std::time::Instant;
 
-use tokio::sync::{Notify, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
@@ -64,10 +63,8 @@ use zeph_tools::executor::{ErasedToolExecutor, ToolExecutor};
 
 use crate::channel::Channel;
 use crate::config::Config;
-use crate::config::{SecurityConfig, SkillPromptMode, TimeoutConfig};
-use crate::context::{ContextBudget, EnvironmentContext, build_system_prompt};
+use crate::context::{ContextBudget, build_system_prompt};
 use zeph_common::text::estimate_tokens;
-use zeph_sanitizer::ContentSanitizer;
 
 use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
 use state::CompressionState;
@@ -202,12 +199,7 @@ impl<C: Channel> Agent<C> {
         tracing::trace!(prompt = %system_prompt, "full system prompt");
 
         let initial_prompt_tokens = estimate_tokens(&system_prompt) as u64;
-        let (_tx, rx) = watch::channel(false);
         let token_counter = Arc::new(TokenCounter::new());
-        // Always create the receiver side of the experiment notification channel so the
-        // select! branch in the agent loop compiles unconditionally. The sender is only
-        // stored when the experiments feature is enabled (it is only used in experiment_cmd.rs).
-        let (exp_notify_tx, exp_notify_rx) = tokio::sync::mpsc::channel::<String>(4);
         Self {
             provider,
             embedding_provider,
@@ -226,256 +218,28 @@ impl<C: Channel> Agent<C> {
                 deferred_db_hide_ids: Vec::new(),
                 deferred_db_summaries: Vec::new(),
             },
-            memory_state: MemoryState {
-                memory: None,
-                conversation_id: None,
-                history_limit: 50,
-                recall_limit: 5,
-                summarization_threshold: 50,
-                cross_session_score_threshold: 0.35,
-                autosave_assistant: false,
-                autosave_min_length: 20,
-                tool_call_cutoff: 6,
-                unsummarized_count: 0,
-                document_config: crate::config::DocumentConfig::default(),
-                graph_config: crate::config::GraphConfig::default(),
-                compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig::default(),
-                shutdown_summary: true,
-                shutdown_summary_min_messages: 4,
-                shutdown_summary_max_messages: 20,
-                shutdown_summary_timeout_secs: 10,
-                structured_summaries: false,
-                last_recall_confidence: None,
-                digest_config: crate::config::DigestConfig::default(),
-                cached_session_digest: None,
-                context_strategy: crate::config::ContextStrategy::default(),
-                crossover_turn_threshold: 20,
-                rpe_router: None,
-                goal_text: None,
-                persona_config: crate::config::PersonaConfig::default(),
-                trajectory_config: crate::config::TrajectoryConfig::default(),
-                category_config: crate::config::CategoryConfig::default(),
-                tree_config: crate::config::TreeConfig::default(),
-                tree_consolidation_handle: None,
-                microcompact_config: crate::config::MicrocompactConfig::default(),
-                autodream_config: crate::config::AutoDreamConfig::default(),
-                magic_docs_config: crate::config::MagicDocsConfig::default(),
-                autodream: autodream::AutoDreamState::new(),
-                magic_docs: magic_docs::MagicDocsState::new(),
-            },
-            skill_state: SkillState {
-                registry,
-                skill_paths: Vec::new(),
-                managed_dir: None,
-                trust_config: crate::config::TrustConfig::default(),
-                matcher,
-                max_active_skills,
-                disambiguation_threshold: 0.20,
-                min_injection_score: 0.20,
-                embedding_model: String::new(),
-                skill_reload_rx: None,
-                active_skill_names: Vec::new(),
-                last_skills_prompt: skills_prompt,
-                prompt_mode: SkillPromptMode::Auto,
-                available_custom_secrets: HashMap::new(),
-                cosine_weight: 0.7,
-                hybrid_search: false,
-                bm25_index: None,
-                two_stage_matching: false,
-                confusability_threshold: 0.0,
-                rl_head: None,
-                rl_weight: 0.3,
-                rl_warmup_updates: 50,
-                generation_output_dir: None,
-                generation_provider_name: String::new(),
-            },
+            memory_state: MemoryState::default(),
+            skill_state: SkillState::new(registry, matcher, max_active_skills, skills_prompt),
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
             learning_engine: learning_engine::LearningEngine::new(),
-            feedback: FeedbackState {
-                detector: feedback_detector::FeedbackDetector::new(0.6),
-                judge: None,
-                llm_classifier: None,
-            },
-            debug_state: DebugState {
-                debug_dumper: None,
-                dump_format: crate::debug_dump::DumpFormat::default(),
-                trace_collector: None,
-                iteration_counter: 0,
-                anomaly_detector: None,
-                reasoning_model_warning: true,
-                logging_config: crate::config::LoggingConfig::default(),
-                dump_dir: None,
-                trace_service_name: String::new(),
-                trace_redact: true,
-                current_iteration_span_id: None,
-            },
-            runtime: RuntimeConfig {
-                security: SecurityConfig::default(),
-                timeouts: TimeoutConfig::default(),
-                model_name: String::new(),
-                active_provider_name: String::new(),
-                permission_policy: zeph_tools::PermissionPolicy::default(),
-                redact_credentials: true,
-                rate_limiter: rate_limiter::ToolRateLimiter::new(
-                    rate_limiter::RateLimitConfig::default(),
-                ),
-                semantic_cache_enabled: false,
-                semantic_cache_threshold: 0.95,
-                semantic_cache_max_candidates: 10,
-                dependency_config: zeph_tools::DependencyConfig::default(),
-                adversarial_policy_info: None,
-                spawn_depth: 0,
-                budget_hint_enabled: true,
-                channel_skills: zeph_config::ChannelSkillsConfig::default(),
-                layers: Vec::new(),
-            },
-            mcp: McpState {
-                tools: Vec::new(),
-                registry: None,
-                manager: None,
-                allowed_commands: Vec::new(),
-                max_dynamic: 10,
-                elicitation_rx: None,
-                shared_tools: None,
-                tool_rx: None,
-                server_outcomes: Vec::new(),
-                pruning_cache: zeph_mcp::PruningCache::new(),
-                pruning_provider: None,
-                pruning_enabled: false,
-                pruning_params: zeph_mcp::PruningParams::default(),
-                semantic_index: None,
-                discovery_strategy: zeph_mcp::ToolDiscoveryStrategy::default(),
-                discovery_params: zeph_mcp::DiscoveryParams::default(),
-                discovery_provider: None,
-                elicitation_warn_sensitive_fields: true,
-            },
-            index: IndexState {
-                retriever: None,
-                repo_map_tokens: 0,
-                cached_repo_map: None,
-                repo_map_ttl: std::time::Duration::from_secs(300),
-            },
-            session: SessionState {
-                env_context: EnvironmentContext::gather(""),
-                last_assistant_at: None,
-                response_cache: None,
-                parent_tool_use_id: None,
-                status_tx: None,
-                lsp_hooks: None,
-                policy_config: None,
-                hooks_config: state::HooksConfigSnapshot::default(),
-            },
-            instructions: InstructionState {
-                blocks: Vec::new(),
-                reload_rx: None,
-                reload_state: None,
-            },
-            security: SecurityState {
-                sanitizer: ContentSanitizer::new(&zeph_sanitizer::ContentIsolationConfig::default()),
-                quarantine_summarizer: None,
-                is_acp_session: false,
-                exfiltration_guard: zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
-                    zeph_sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
-                ),
-                flagged_urls: std::collections::HashSet::new(),
-                user_provided_urls: Arc::new(RwLock::new(std::collections::HashSet::new())),
-                pii_filter: zeph_sanitizer::pii::PiiFilter::new(
-                    zeph_sanitizer::pii::PiiFilterConfig::default(),
-                ),
-                #[cfg(feature = "classifiers")]
-                pii_ner_backend: None,
-                #[cfg(feature = "classifiers")]
-                pii_ner_timeout_ms: 5000,
-                #[cfg(feature = "classifiers")]
-                pii_ner_max_chars: 8192,
-                #[cfg(feature = "classifiers")]
-                pii_ner_circuit_breaker_threshold: 2,
-                #[cfg(feature = "classifiers")]
-                pii_ner_consecutive_timeouts: 0,
-                #[cfg(feature = "classifiers")]
-                pii_ner_tripped: false,
-                memory_validator: zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
-                    zeph_sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
-                ),
-                guardrail: None,
-                response_verifier: zeph_sanitizer::response_verifier::ResponseVerifier::new(
-                    zeph_config::ResponseVerificationConfig::default(),
-                ),
-                causal_analyzer: None,
-            },
-            experiments: ExperimentState {
-                config: crate::config::ExperimentConfig::default(),
-                cancel: None,
-                baseline: zeph_experiments::ConfigSnapshot::default(),
-                eval_provider: None,
-                notify_rx: Some(exp_notify_rx),
-                notify_tx: exp_notify_tx,
-            },
-            compression: CompressionState {
-                current_task_goal: None,
-                task_goal_user_msg_hash: None,
-                pending_task_goal: None,
-                pending_sidequest_result: None,
-                subgoal_registry: crate::agent::compaction_strategy::SubgoalRegistry::default(),
-                pending_subgoal: None,
-                subgoal_user_msg_hash: None,
-            },
-            lifecycle: LifecycleState {
-                shutdown: rx,
-                start_time: Instant::now(),
-                cancel_signal: Arc::new(Notify::new()),
-                cancel_token: CancellationToken::new(),
-                cancel_bridge_handle: None,
-                config_path: None,
-                config_reload_rx: None,
-                warmup_ready: None,
-                update_notify_rx: None,
-                custom_task_rx: None,
-                last_known_cwd: std::env::current_dir().unwrap_or_default(),
-                file_changed_rx: None,
-                file_watcher: None,
-            },
-            providers: ProviderState {
-                summary_provider: None,
-                provider_override: None,
-                judge_provider: None,
-                probe_provider: None,
-                compress_provider: None,
-                cached_prompt_tokens: initial_prompt_tokens,
-                server_compaction_active: false,
-                stt: None,
-                provider_pool: Vec::new(),
-                provider_config_snapshot: None,
-            },
-            metrics: MetricsState {
-                metrics_tx: None,
-                cost_tracker: None,
-                token_counter,
-                extended_context: false,
-                classifier_metrics: None,
-            },
-            orchestration: OrchestrationState {
-                planner_provider: None,
-                verify_provider: None,
-                pending_graph: None,
-                plan_cancel_token: None,
-                subagent_manager: None,
-                subagent_config: crate::config::SubAgentConfig::default(),
-                orchestration_config: crate::config::OrchestrationConfig::default(),
-                plan_cache: None,
-                pending_goal_embedding: None,
-            },
+            feedback: FeedbackState::default(),
+            debug_state: DebugState::default(),
+            runtime: RuntimeConfig::default(),
+            mcp: McpState::default(),
+            index: IndexState::default(),
+            session: SessionState::new(),
+            instructions: InstructionState::default(),
+            security: SecurityState::default(),
+            experiments: ExperimentState::new(),
+            compression: CompressionState::default(),
+            lifecycle: LifecycleState::new(),
+            providers: ProviderState::new(initial_prompt_tokens),
+            metrics: MetricsState::new(token_counter),
+            orchestration: OrchestrationState::default(),
             focus: focus::FocusState::default(),
             sidequest: sidequest::SidequestState::default(),
-            tool_state: ToolState {
-                tool_schema_filter: None,
-                cached_filtered_tool_ids: None,
-                dependency_graph: None,
-                dependency_always_on: HashSet::new(),
-                completed_tool_ids: HashSet::new(),
-                current_tool_iteration: 0,
-            },
+            tool_state: ToolState::default(),
         }
     }
 

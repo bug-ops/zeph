@@ -6,7 +6,51 @@
 //! These methods contain only security-state logic (no cross-cutting agent dependencies).
 //! The Agent wrappers in `tool_execution/mod.rs` apply metrics and channel side-effects.
 
+use std::sync::Arc;
+
+use parking_lot::RwLock;
+
 use super::SecurityState;
+
+impl Default for SecurityState {
+    fn default() -> Self {
+        Self {
+            sanitizer: zeph_sanitizer::ContentSanitizer::new(
+                &zeph_sanitizer::ContentIsolationConfig::default(),
+            ),
+            quarantine_summarizer: None,
+            is_acp_session: false,
+            exfiltration_guard: zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
+                zeph_sanitizer::exfiltration::ExfiltrationGuardConfig::default(),
+            ),
+            flagged_urls: std::collections::HashSet::new(),
+            user_provided_urls: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            pii_filter: zeph_sanitizer::pii::PiiFilter::new(
+                zeph_sanitizer::pii::PiiFilterConfig::default(),
+            ),
+            #[cfg(feature = "classifiers")]
+            pii_ner_backend: None,
+            #[cfg(feature = "classifiers")]
+            pii_ner_timeout_ms: 5000,
+            #[cfg(feature = "classifiers")]
+            pii_ner_max_chars: 8192,
+            #[cfg(feature = "classifiers")]
+            pii_ner_circuit_breaker_threshold: 2,
+            #[cfg(feature = "classifiers")]
+            pii_ner_consecutive_timeouts: 0,
+            #[cfg(feature = "classifiers")]
+            pii_ner_tripped: false,
+            memory_validator: zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
+                zeph_sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
+            ),
+            guardrail: None,
+            response_verifier: zeph_sanitizer::response_verifier::ResponseVerifier::new(
+                zeph_config::ResponseVerificationConfig::default(),
+            ),
+            causal_analyzer: None,
+        }
+    }
+}
 
 /// Result returned by [`SecurityState::scrub_pii`], carrying the scrubbed text and
 /// side-effect descriptors that the Agent wrapper must apply to metrics.
