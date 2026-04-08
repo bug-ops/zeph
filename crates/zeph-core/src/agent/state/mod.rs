@@ -147,14 +147,14 @@ pub(crate) struct McpState {
     /// Shared with `McpToolExecutor` so native `tool_use` sees the current tool list.
     ///
     /// Two methods write to this `RwLock` — ordering matters:
-    /// - `sync_mcp_executor_tools()`: writes the **full** `self.mcp.tools` set.
-    /// - `apply_pruned_mcp_tools()`: writes the **pruned** subset (used after pruning).
+    /// - `sync_executor_tools()`: writes the **full** `self.tools` set.
+    /// - `apply_pruned_tools()`: writes the **pruned** subset (used after pruning).
     ///
-    /// Within a turn, `sync_mcp_executor_tools` must always run **before**
-    /// `apply_pruned_mcp_tools`.  The normal call order guarantees this: tool-list
-    /// change events call `sync_mcp_executor_tools` (inside `check_tool_refresh`,
+    /// Within a turn, `sync_executor_tools` must always run **before**
+    /// `apply_pruned_tools`.  The normal call order guarantees this: tool-list
+    /// change events call `sync_executor_tools` (inside `check_tool_refresh`,
     /// `handle_mcp_add`, `handle_mcp_remove`), and pruning runs later inside
-    /// `rebuild_system_prompt`.  See also: `apply_pruned_mcp_tools`.
+    /// `rebuild_system_prompt`.  See also: `apply_pruned_tools`.
     pub(crate) shared_tools: Option<Arc<RwLock<Vec<zeph_mcp::McpTool>>>>,
     /// Receives full flattened tool list after any `tools/list_changed` notification.
     pub(crate) tool_rx: Option<tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>>,
@@ -526,6 +526,161 @@ pub(crate) struct MessageState {
     pub(crate) message_queue: VecDeque<QueuedMessage>,
     /// Image parts staged by `/image` commands, attached to the next user message.
     pub(crate) pending_image_parts: Vec<zeph_llm::provider::MessagePart>,
+}
+
+impl McpState {
+    /// Write the **full** `self.tools` set to the shared executor `RwLock`.
+    ///
+    /// This is the first of two writers to `shared_tools`. Within a turn this method must run
+    /// **before** `apply_pruned_tools`, which writes the pruned subset. The normal call order
+    /// guarantees this: tool-list change events call this method, and pruning runs later inside
+    /// `rebuild_system_prompt`. See also: `apply_pruned_tools`.
+    pub(crate) fn sync_executor_tools(&self) {
+        if let Some(ref shared) = self.shared_tools {
+            shared.write().clone_from(&self.tools);
+        }
+    }
+
+    /// Write the **pruned** tool subset to the shared executor `RwLock`.
+    ///
+    /// Must only be called **after** `sync_executor_tools` has established the full tool set for
+    /// the current turn. `self.tools` (the full set) is intentionally **not** modified.
+    ///
+    /// This method must **NOT** call `sync_executor_tools` internally — doing so would overwrite
+    /// the pruned subset with the full set. See also: `sync_executor_tools`.
+    pub(crate) fn apply_pruned_tools(&self, pruned: Vec<zeph_mcp::McpTool>) {
+        debug_assert!(
+            pruned.iter().all(|p| self
+                .tools
+                .iter()
+                .any(|t| t.server_id == p.server_id && t.name == p.name)),
+            "pruned set must be a subset of self.tools"
+        );
+        if let Some(ref shared) = self.shared_tools {
+            *shared.write() = pruned;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tool_count(&self) -> usize {
+        self.tools.len()
+    }
+}
+
+impl IndexState {
+    pub(crate) async fn fetch_code_rag(
+        &self,
+        query: &str,
+        token_budget: usize,
+    ) -> Result<Option<String>, crate::agent::error::AgentError> {
+        let Some(retriever) = &self.retriever else {
+            return Ok(None);
+        };
+        if token_budget == 0 {
+            return Ok(None);
+        }
+
+        let result = retriever
+            .retrieve(query, token_budget)
+            .await
+            .map_err(|e| crate::agent::error::AgentError::Other(format!("{e:#}")))?;
+        let context_text = zeph_index::retriever::format_as_context(&result);
+
+        if context_text.is_empty() {
+            Ok(None)
+        } else {
+            tracing::debug!(
+                strategy = ?result.strategy,
+                chunks = result.chunks.len(),
+                tokens = result.total_tokens,
+                "code context fetched"
+            );
+            Ok(Some(context_text))
+        }
+    }
+}
+
+impl DebugState {
+    pub(crate) fn start_iteration_span(&mut self, iteration_index: usize, text: &str) {
+        if let Some(ref mut tc) = self.trace_collector {
+            tc.begin_iteration(iteration_index, text);
+            self.current_iteration_span_id = tc.current_iteration_span_id(iteration_index);
+        }
+    }
+
+    pub(crate) fn end_iteration_span(
+        &mut self,
+        iteration_index: usize,
+        status: crate::debug_dump::trace::SpanStatus,
+    ) {
+        if let Some(ref mut tc) = self.trace_collector {
+            tc.end_iteration(iteration_index, status);
+        }
+        self.current_iteration_span_id = None;
+    }
+
+    pub(crate) fn switch_format(&mut self, new_format: crate::debug_dump::DumpFormat) {
+        let was_trace = self.dump_format == crate::debug_dump::DumpFormat::Trace;
+        let now_trace = new_format == crate::debug_dump::DumpFormat::Trace;
+
+        if now_trace
+            && !was_trace
+            && let Some(ref dump_dir) = self.dump_dir.clone()
+        {
+            let service_name = self.trace_service_name.clone();
+            let redact = self.trace_redact;
+            match crate::debug_dump::trace::TracingCollector::new(
+                dump_dir.as_path(),
+                &service_name,
+                redact,
+                None,
+            ) {
+                Ok(collector) => {
+                    self.trace_collector = Some(collector);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to create TracingCollector on format switch");
+                }
+            }
+        }
+        if was_trace
+            && !now_trace
+            && let Some(mut tc) = self.trace_collector.take()
+        {
+            tc.finish();
+        }
+
+        self.dump_format = new_format;
+    }
+
+    pub(crate) fn write_chat_debug_dump(
+        &self,
+        dump_id: Option<u32>,
+        result: &zeph_llm::provider::ChatResponse,
+        pii_filter: &zeph_sanitizer::pii::PiiFilter,
+    ) {
+        let Some((d, id)) = self.debug_dumper.as_ref().zip(dump_id) else {
+            return;
+        };
+        let raw = match result {
+            zeph_llm::provider::ChatResponse::Text(t) => t.clone(),
+            zeph_llm::provider::ChatResponse::ToolUse {
+                text, tool_calls, ..
+            } => {
+                let calls = serde_json::to_string_pretty(tool_calls).unwrap_or_default();
+                format!(
+                    "{}\n\n---TOOL_CALLS---\n{calls}",
+                    text.as_deref().unwrap_or("")
+                )
+            }
+        };
+        let text = if pii_filter.is_enabled() {
+            pii_filter.scrub(&raw).into_owned()
+        } else {
+            raw
+        };
+        d.dump_response(id, &text);
+    }
 }
 
 #[cfg(test)]

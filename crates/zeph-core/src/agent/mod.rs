@@ -1083,39 +1083,7 @@ impl<C: Channel> Agent<C> {
                 return;
             }
         };
-        let was_trace = self.debug_state.dump_format == crate::debug_dump::DumpFormat::Trace;
-        let now_trace = new_format == crate::debug_dump::DumpFormat::Trace;
-
-        // CR-04: when switching TO trace, create a fresh TracingCollector.
-        if now_trace
-            && !was_trace
-            && let Some(ref dump_dir) = self.debug_state.dump_dir.clone()
-        {
-            let service_name = self.debug_state.trace_service_name.clone();
-            let redact = self.debug_state.trace_redact;
-            match crate::debug_dump::trace::TracingCollector::new(
-                dump_dir.as_path(),
-                &service_name,
-                redact,
-                None,
-            ) {
-                Ok(collector) => {
-                    self.debug_state.trace_collector = Some(collector);
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to create TracingCollector on format switch");
-                }
-            }
-        }
-        // CR-04: when switching AWAY from trace, flush and drop the collector.
-        if was_trace
-            && !now_trace
-            && let Some(mut tc) = self.debug_state.trace_collector.take()
-        {
-            tc.finish();
-        }
-
-        self.debug_state.dump_format = new_format;
+        self.debug_state.switch_format(new_format);
         let _ = self
             .channel
             .send(&format!("Debug dump format set to: {arg}"))
@@ -1220,29 +1188,23 @@ impl<C: Channel> Agent<C> {
         // Record iteration start in trace collector (C-02: owned guard, no borrow held).
         let iteration_index = self.debug_state.iteration_counter;
         self.debug_state.iteration_counter += 1;
-        if let Some(ref mut tc) = self.debug_state.trace_collector {
-            tc.begin_iteration(iteration_index, text.trim());
-            // CR-01: store the span ID so LLM/tool execution can attach child spans.
-            self.debug_state.current_iteration_span_id =
-                tc.current_iteration_span_id(iteration_index);
-        }
+        self.debug_state
+            .start_iteration_span(iteration_index, text.trim());
 
         let result = self
             .process_user_message_inner(text, image_parts, iteration_index)
             .await;
 
         // Close iteration span regardless of outcome (partial trace preserved on error).
-        if let Some(ref mut tc) = self.debug_state.trace_collector {
-            let status = if result.is_ok() {
-                crate::debug_dump::trace::SpanStatus::Ok
-            } else {
-                crate::debug_dump::trace::SpanStatus::Error {
-                    message: "iteration failed".to_owned(),
-                }
-            };
-            tc.end_iteration(iteration_index, status);
-        }
-        self.debug_state.current_iteration_span_id = None;
+        let span_status = if result.is_ok() {
+            crate::debug_dump::trace::SpanStatus::Ok
+        } else {
+            crate::debug_dump::trace::SpanStatus::Error {
+                message: "iteration failed".to_owned(),
+            }
+        };
+        self.debug_state
+            .end_iteration_span(iteration_index, span_status);
 
         result
     }

@@ -450,7 +450,8 @@ impl<C: Channel> Agent<C> {
             );
         }
 
-        self.write_chat_debug_dump(dump_id, &result);
+        self.debug_state
+            .write_chat_debug_dump(dump_id, &result, &self.security.pii_filter);
 
         // RuntimeLayer after_chat hooks (MVP: empty vec = zero iterations).
         if !self.runtime_layers.is_empty() {
@@ -470,30 +471,6 @@ impl<C: Channel> Agent<C> {
         }
 
         Ok(Some(result))
-    }
-
-    fn write_chat_debug_dump(&self, dump_id: Option<u32>, result: &ChatResponse) {
-        let Some((d, id)) = self.debug_state.debug_dumper.as_ref().zip(dump_id) else {
-            return;
-        };
-        let raw = match result {
-            ChatResponse::Text(t) => t.clone(),
-            ChatResponse::ToolUse {
-                text, tool_calls, ..
-            } => {
-                let calls = serde_json::to_string_pretty(tool_calls).unwrap_or_default();
-                format!(
-                    "{}\n\n---TOOL_CALLS---\n{calls}",
-                    text.as_deref().unwrap_or("")
-                )
-            }
-        };
-        let text = if self.security.pii_filter.is_enabled() {
-            self.security.pii_filter.scrub(&raw).into_owned()
-        } else {
-            raw
-        };
-        d.dump_response(id, &text);
     }
 
     async fn record_chat_metrics_and_compact(

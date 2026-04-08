@@ -1,45 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{Agent, Channel};
-
-impl<C: Channel> Agent<C> {
-    pub(super) async fn fetch_code_rag(
-        index: &super::IndexState,
-        query: &str,
-        token_budget: usize,
-    ) -> Result<Option<String>, super::error::AgentError> {
-        let Some(retriever) = &index.retriever else {
-            return Ok(None);
-        };
-        if token_budget == 0 {
-            return Ok(None);
-        }
-
-        let result = retriever
-            .retrieve(query, token_budget)
-            .await
-            .map_err(|e| super::error::AgentError::Other(format!("{e:#}")))?;
-        let context_text = zeph_index::retriever::format_as_context(&result);
-
-        if context_text.is_empty() {
-            Ok(None)
-        } else {
-            tracing::debug!(
-                strategy = ?result.strategy,
-                chunks = result.chunks.len(),
-                tokens = result.total_tokens,
-                "code context fetched"
-            );
-            Ok(Some(context_text))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    #[allow(clippy::wildcard_imports)]
-    use super::*;
+    use super::super::Agent;
     #[allow(clippy::wildcard_imports)]
     use crate::agent::agent_tests::*;
 
@@ -83,7 +47,7 @@ mod tests {
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
         assert!(agent.index.retriever.is_none());
 
-        let result = Agent::<MockChannel>::fetch_code_rag(&agent.index, "some query", 200).await;
+        let result = agent.index.fetch_code_rag("some query", 200).await;
         assert!(result.is_ok());
         assert!(
             result.unwrap().is_none(),

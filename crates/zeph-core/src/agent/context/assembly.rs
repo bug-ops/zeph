@@ -1053,7 +1053,8 @@ impl<C: Channel> Agent<C> {
                     .map(ContextSlot::Corrections)
             }));
             fetchers.push(Box::pin(async {
-                Self::fetch_code_rag(index, &query, alloc.code_context)
+                index
+                    .fetch_code_rag(&query, alloc.code_context)
                     .await
                     .map(ContextSlot::CodeContext)
             }));
@@ -1781,7 +1782,7 @@ impl<C: Channel> Agent<C> {
                     let params = self.mcp.discovery_params.clone();
                     if self.mcp.tools.len() < params.min_tools_to_filter {
                         // Below threshold — skip filtering.
-                        self.sync_mcp_executor_tools();
+                        self.mcp.sync_executor_tools();
                     } else if let Some(ref index) = self.mcp.semantic_index {
                         // Resolve embedding provider for query.
                         let embed_provider = self
@@ -1803,7 +1804,7 @@ impl<C: Channel> Agent<C> {
                                     selected = selected.len(),
                                     "semantic tool discovery applied"
                                 );
-                                self.apply_pruned_mcp_tools(selected);
+                                self.mcp.apply_pruned_tools(selected);
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -1811,7 +1812,7 @@ impl<C: Channel> Agent<C> {
                                     "semantic tool discovery: query embed failed, falling back to all tools: {e:#}"
                                 );
                                 if !params.strict {
-                                    self.sync_mcp_executor_tools();
+                                    self.mcp.sync_executor_tools();
                                 }
                                 // strict=true: do not sync — executor retains whatever tools it had
                                 // (either previously synced or empty). The turn will proceed without
@@ -1826,7 +1827,7 @@ impl<C: Channel> Agent<C> {
                             "semantic tool discovery: index not available, falling back to all tools"
                         );
                         if !params.strict {
-                            self.sync_mcp_executor_tools();
+                            self.mcp.sync_executor_tools();
                         }
                     }
                 }
@@ -1849,21 +1850,21 @@ impl<C: Channel> Agent<C> {
                         .await
                         {
                             Ok(pruned) => {
-                                self.apply_pruned_mcp_tools(pruned);
+                                self.mcp.apply_pruned_tools(pruned);
                             }
                             Err(e) => {
                                 tracing::warn!("MCP pruning failed, using all tools: {e:#}");
-                                self.sync_mcp_executor_tools();
+                                self.mcp.sync_executor_tools();
                             }
                         }
                     } else {
                         // pruning_enabled=false: pass all tools through.
-                        self.sync_mcp_executor_tools();
+                        self.mcp.sync_executor_tools();
                     }
                 }
                 zeph_mcp::ToolDiscoveryStrategy::None => {
                     // Pass all tools through without filtering.
-                    self.sync_mcp_executor_tools();
+                    self.mcp.sync_executor_tools();
                 }
             }
         }
