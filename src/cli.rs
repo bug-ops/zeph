@@ -270,6 +270,12 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: DbCommand,
     },
+    /// Run agent benchmarks against standardized datasets
+    #[cfg(feature = "bench")]
+    Bench {
+        #[command(subcommand)]
+        command: zeph_bench::BenchCommand,
+    },
 }
 
 /// Database subcommands.

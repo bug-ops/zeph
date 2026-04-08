@@ -27,6 +27,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`zeph-bench` crate scaffold with `BenchmarkChannel`** (`#2828`): new optional crate `crates/zeph-bench/` gated on the `bench` feature flag (not included in `full`). `BenchmarkChannel` implements the `Channel` trait for headless benchmark execution: `recv()` drains an injected prompt queue, `send()`/`send_chunk()`/`flush_chunks()` accumulate LLM responses into a capture buffer, `send_usage()` records token stats, `confirm()` auto-approves, `elicit()` returns `Declined`, `send_tool_output()` is a no-op (tool outputs excluded from benchmark metrics). `DatasetRegistry` lists the 5 supported datasets: LongMemEval, LOCOMO, FRAMES, tau-bench, GAIA.
+
+- **`zeph bench` CLI subcommand** (`#2829`): top-level `bench` subcommand added to the `zeph` binary, gated on `#[cfg(feature = "bench")]`. Subcommands: `list` (print all datasets with cache status), `download --dataset <name>` (fetch and cache a dataset), `run --dataset <name> --output <path> [--scenario <id>] [--provider <name>] [--baseline] [--resume] [--no-deterministic]` (execute a benchmark), `show --results <path>` (pretty-print a results JSON file). Unknown dataset names and missing cache exit with code 1 and a diagnostic message.
+
+- **Deterministic mode for benchmark runs** (`#2831`): bench runner applies `GenerationOverrides { temperature: Some(0.0), seed: Some(0) }` to the active LLM provider before constructing the agent, ensuring reproducible results across runs. Disabled with `--no-deterministic`.
+
 - **Supervised bounded background task management** (`#2816`, `#2821`): introduced `BackgroundSupervisor` in `zeph-core` with per-class concurrency limits (Enrichment=4, Telemetry=8) and drop-on-overflow policy. Background tasks use an `InflightGuard` drop-guard to free concurrency slots immediately on completion. Metrics (`bg_inflight`, `bg_dropped`, `bg_completed`) added to `AgentMetrics`. `persist_message()` refactored into two phases: foreground commit (SQLite/Qdrant write, essential metrics) and background enrichment (summarization, graph extraction, persona extraction, trajectory extraction). Two fire-and-forget `tokio::spawn` sites in `corrections.rs` migrated to the supervisor. Foreground turns no longer await enrichment work; tail latency from post-persist processing is eliminated.
 
 - **Bounded Candle inference worker** (`#2818`): replaced `Arc<Mutex<ModelWeights>>` with a

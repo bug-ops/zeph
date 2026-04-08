@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 pub(crate) mod agents;
+#[cfg(feature = "bench")]
+pub(crate) mod bench;
 pub(crate) mod classifiers;
 pub(crate) mod db;
 pub(crate) mod ingest;

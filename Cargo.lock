@@ -9517,6 +9517,7 @@ dependencies = [
  "url",
  "zeph-a2a",
  "zeph-acp",
+ "zeph-bench",
  "zeph-channels",
  "zeph-core",
  "zeph-db",
@@ -9602,6 +9603,20 @@ dependencies = [
  "zeph-mcp",
  "zeph-memory",
  "zeph-tools",
+]
+
+[[package]]
+name = "zeph-bench"
+version = "0.18.6"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "zeph-config",
+ "zeph-core",
+ "zeph-llm",
 ]
 
 [[package]]

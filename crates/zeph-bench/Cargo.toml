@@ -1,0 +1,26 @@
+[package]
+name = "zeph-bench"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Benchmark harness for evaluating Zeph agent performance on standardized datasets"
+publish = true
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+zeph-config.workspace = true
+zeph-core.workspace = true
+zeph-llm.workspace = true
+
+[lints]
+workspace = true
