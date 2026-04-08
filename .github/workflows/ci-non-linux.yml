@@ -49,14 +49,15 @@ jobs:
           retention-days: 1
 
   test:
-    name: Test (${{ matrix.os }})
+    name: "Test (${{ matrix.os }}, shard ${{ matrix.partition }})"
     needs: [build-tests]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
+        partition: ["1/5", "2/5", "3/5", "4/5", "5/5"]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -66,5 +67,11 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: nextest-archive-${{ matrix.os }}
-      - name: Run tests
-        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap .
+      - name: "Run tests (shard ${{ matrix.partition }})"
+        run: |
+          cargo nextest run \
+            --config-file .github/nextest.toml \
+            --archive-file nextest-archive.tar.zst \
+            --workspace-remap . \
+            --profile ci-partition \
+            --partition hash:${{ matrix.partition }}
