@@ -82,14 +82,7 @@
 
 # Crate Reference
 
-- [zeph-config](reference/crate-config.md)
-- [zeph-vault](reference/crate-vault.md)
-- [zeph-experiments](reference/crate-experiments.md)
-- [zeph-sanitizer](reference/crate-sanitizer.md)
-- [zeph-subagent](reference/crate-subagent.md)
-- [zeph-orchestration](reference/crate-orchestration.md)
-- [zeph-db](reference/crate-db.md)
-- [zeph-common](reference/crate-common.md)
+- [API Reference on docs.rs](reference/crates.md)
 
 # Reference
 
