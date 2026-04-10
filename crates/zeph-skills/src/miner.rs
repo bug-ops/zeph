@@ -41,22 +41,32 @@ the repository's primary use case as an agent skill. \
 
 /// A GitHub repository candidate for skill extraction.
 pub struct RepoCandidate {
+    /// Full repository name in `owner/repo` format.
     pub full_name: String,
+    /// Repository description from GitHub metadata.
     pub description: String,
+    /// Raw README content (truncated to [`MAX_README_BYTES`]).
     pub readme_content: String,
+    /// GitHub star count at search time.
     pub stars: u32,
 }
 
-/// A successfully mined skill.
+/// A skill candidate that was successfully mined from a GitHub repository.
 pub struct MinedSkill {
+    /// Full repository name (`owner/repo`) that this skill was mined from.
     pub repo: String,
+    /// Generated SKILL.md candidate before approval and disk write.
     pub skill: GeneratedSkill,
-    /// Cosine similarity to the nearest existing skill (0.0 if no existing skills).
+    /// Cosine similarity to the nearest existing skill embedding.
+    ///
+    /// `0.0` when there are no existing skills to compare against.
+    /// Higher values indicate a potential duplicate and should prompt user confirmation.
     pub nearest_similarity: f32,
 }
 
-/// Configuration for a single mining run.
+/// Configuration for a single GitHub skill mining run.
 pub struct MiningConfig {
+    /// GitHub search queries to run (e.g. `["cli tool rust"]`).
     pub queries: Vec<String>,
     pub max_repos_per_query: usize,
     pub dedup_threshold: f32,

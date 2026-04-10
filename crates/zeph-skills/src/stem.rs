@@ -1,14 +1,51 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! STEM: automatic detection of recurring tool-use patterns and conversion to SKILL.md candidates.
+//! STEM (Skill Template Evolution from Mining) — automatic detection of recurring tool-use
+//! patterns and conversion to SKILL.md candidates.
+//!
+//! The STEM pipeline runs periodically (configured via `[skills.stem]`):
+//!
+//! 1. **Detect** — query `skill_usage_log` for tool sequences that exceed
+//!    `min_occurrences` and `min_success_rate` thresholds.
+//! 2. **Generate** — call the LLM with [`PATTERN_TO_SKILL_PROMPT_TEMPLATE`] to produce
+//!    a SKILL.md body describing the pattern.
+//! 3. **Validate** — parse the generated content via [`crate::loader::load_skill_meta_from_str`]
+//!    and check for injection patterns via [`crate::scanner::scan_skill_body`].
+//! 4. **Queue** — write the candidate to `skill_candidates` for operator review.
+//!
+//! # Canonical form
+//!
+//! Tool sequences are stored in their canonical JSON array form (no spaces) to ensure
+//! consistent hashing. Use [`normalize_tool_sequence`] and [`sequence_hash`] to produce
+//! the canonical representation before DB lookups.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use zeph_skills::stem::{normalize_tool_sequence, sequence_hash, should_generate_skill, ToolPattern};
+//!
+//! let seq = normalize_tool_sequence(&["shell", "web_scrape"]);
+//! assert_eq!(seq, r#"["shell","web_scrape"]"#);
+//!
+//! let hash = sequence_hash(&seq);
+//! assert_eq!(hash.len(), 16);
+//!
+//! let pattern = ToolPattern {
+//!     tool_sequence: seq,
+//!     sequence_hash: hash,
+//!     occurrence_count: 5,
+//!     success_count: 5,
+//! };
+//! assert!(should_generate_skill(&pattern, 3, 0.8));
+//! ```
 
 /// A recurring tool-use pattern detected from `skill_usage_log`.
 #[derive(Debug, Clone)]
 pub struct ToolPattern {
     /// Normalized JSON array of tool names (e.g. `["shell","web_scrape"]`).
     pub tool_sequence: String,
-    /// Blake3 hex hash of `tool_sequence` (16 chars).
+    /// Blake3 hex hash of `tool_sequence` (16 chars) — stable DB key.
     pub sequence_hash: String,
     /// Total times this sequence was recorded in the detection window.
     pub occurrence_count: u32,

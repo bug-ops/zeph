@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Type-erased provider enum wrapping all concrete backends.
+//!
+//! [`AnyProvider`] lets callers hold and clone any backend without generics or
+//! `Box<dyn LlmProvider>`. The macro [`delegate_provider!`] generates the
+//! match-over-variants boilerplate for every [`LlmProvider`] method delegation.
+
 #[cfg(feature = "candle")]
 use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
@@ -37,6 +43,14 @@ macro_rules! delegate_provider {
     };
 }
 
+/// Type-erased enum over all supported LLM backends.
+///
+/// All variants implement [`LlmProvider`] — `AnyProvider` delegates every trait method
+/// to its inner variant via the `delegate_provider!` macro. This avoids heap allocation
+/// (`Box<dyn LlmProvider>`) while retaining the ability to hold multiple provider types
+/// in a `Vec` or struct field.
+///
+/// The `Candle` variant is only available when the `candle` feature is enabled.
 #[derive(Debug, Clone)]
 pub enum AnyProvider {
     Ollama(OllamaProvider),

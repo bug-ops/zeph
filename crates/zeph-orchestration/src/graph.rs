@@ -11,9 +11,23 @@ use zeph_memory::store::graph_store::{GraphSummary, RawGraphStore};
 
 use super::error::OrchestrationError;
 
-/// Index of a task within a `TaskGraph.tasks` Vec.
+/// Index of a task within a [`TaskGraph::tasks`] `Vec`.
+///
+/// `TaskId` is a dense, zero-based `u32` index. The invariant
+/// `tasks[i].id == TaskId(i as u32)` holds throughout the lifetime of a graph.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::TaskId;
+///
+/// let id = TaskId(3);
+/// assert_eq!(id.index(), 3);
+/// assert_eq!(id.as_u32(), 3);
+/// assert_eq!(id.to_string(), "3");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TaskId(pub(crate) u32);
+pub struct TaskId(pub u32);
 
 impl TaskId {
     /// Returns the index for Vec access.
@@ -35,7 +49,23 @@ impl fmt::Display for TaskId {
     }
 }
 
-/// Unique identifier for a `TaskGraph`.
+/// Unique identifier for a [`TaskGraph`].
+///
+/// Backed by a UUID v4. Implements `FromStr` / `Display` for serialization and
+/// CLI lookup.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::GraphId;
+///
+/// let id = GraphId::new();
+/// let s = id.to_string();
+/// assert_eq!(s.len(), 36); // UUID string representation
+///
+/// let parsed: GraphId = s.parse().expect("valid UUID");
+/// assert_eq!(id, parsed);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GraphId(Uuid);
 
@@ -70,15 +100,44 @@ impl FromStr for GraphId {
 }
 
 /// Lifecycle status of a single task node.
+///
+/// State machine:
+///
+/// ```text
+/// Pending → Ready → Running → Completed  (success)
+///                           → Failed     (error; then failure strategy applies)
+///                           → Skipped    (upstream failed with Skip strategy)
+///                           → Canceled   (graph aborted while task was running)
+/// ```
+///
+/// Only `Completed`, `Failed`, `Skipped`, and `Canceled` are terminal — see
+/// [`TaskStatus::is_terminal`].
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::TaskStatus;
+///
+/// assert!(TaskStatus::Completed.is_terminal());
+/// assert!(!TaskStatus::Running.is_terminal());
+/// assert_eq!(TaskStatus::Pending.to_string(), "pending");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
+    /// Waiting for dependencies to complete.
     Pending,
+    /// All dependencies completed; ready to be scheduled.
     Ready,
+    /// A sub-agent is actively executing this task.
     Running,
+    /// Sub-agent completed successfully.
     Completed,
+    /// Sub-agent returned an error.
     Failed,
+    /// Task was skipped because an upstream task failed with [`FailureStrategy::Skip`].
     Skipped,
+    /// Task was running when the graph was aborted ([`FailureStrategy::Abort`]).
     Canceled,
 }
 
@@ -107,15 +166,30 @@ impl fmt::Display for TaskStatus {
     }
 }
 
-/// Lifecycle status of a `TaskGraph`.
+/// Lifecycle status of a [`TaskGraph`].
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::GraphStatus;
+///
+/// assert_eq!(GraphStatus::Running.to_string(), "running");
+/// assert_eq!(GraphStatus::Failed.to_string(), "failed");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GraphStatus {
+    /// Graph has been created but the scheduler has not started yet.
     Created,
+    /// Scheduler is actively dispatching tasks.
     Running,
+    /// All tasks reached a terminal state successfully.
     Completed,
+    /// At least one task failed and the `Abort` strategy halted the graph.
     Failed,
+    /// The graph was canceled by an external caller.
     Canceled,
+    /// Graph is paused; waiting for user input (triggered by [`FailureStrategy::Ask`]).
     Paused,
 }
 
@@ -133,17 +207,31 @@ impl fmt::Display for GraphStatus {
 }
 
 /// What to do when a task fails.
+///
+/// Set at the graph level via [`TaskGraph::default_failure_strategy`] and
+/// optionally overridden per task via [`TaskNode::failure_strategy`].
+///
+/// # Examples
+///
+/// ```rust
+/// use std::str::FromStr;
+/// use zeph_orchestration::FailureStrategy;
+///
+/// assert_eq!(FailureStrategy::default(), FailureStrategy::Abort);
+/// assert_eq!("skip".parse::<FailureStrategy>().unwrap(), FailureStrategy::Skip);
+/// assert_eq!(FailureStrategy::Retry.to_string(), "retry");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureStrategy {
-    /// Abort the entire graph.
+    /// Abort the entire graph and cancel all running tasks.
     #[default]
     Abort,
-    /// Retry the task up to `max_retries` times.
+    /// Retry the task up to [`TaskNode::max_retries`] times, then abort.
     Retry,
-    /// Skip the task and its dependents.
+    /// Skip the failed task and transitively skip all its dependents.
     Skip,
-    /// Pause the graph and ask the user.
+    /// Pause the graph ([`GraphStatus::Paused`]) and wait for user intervention.
     Ask,
 }
 
@@ -175,16 +263,42 @@ impl FromStr for FailureStrategy {
 }
 
 /// Output produced by a completed task.
+///
+/// Stored in [`TaskNode::result`] after the sub-agent finishes. Used by
+/// [`Aggregator`] to build the final synthesised response.
+///
+/// [`Aggregator`]: crate::aggregator::Aggregator
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskResult {
+    /// Raw text output returned by the sub-agent.
     pub output: String,
+    /// File-system paths to any artifacts produced (e.g. build outputs, reports).
     pub artifacts: Vec<PathBuf>,
+    /// Wall-clock execution time in milliseconds.
     pub duration_ms: u64,
+    /// Handle ID of the sub-agent instance that produced this result.
     pub agent_id: Option<String>,
+    /// Name of the agent definition used to spawn the sub-agent.
     pub agent_def: Option<String>,
 }
 
-/// Execution mode annotation from the LLM planner.
+/// Execution mode annotation emitted by the LLM planner for each task.
+///
+/// Controls how the [`DagScheduler`] dispatches a task relative to its siblings.
+/// The annotation is set by the planner and stored in [`TaskNode::execution_mode`].
+/// Absent or `null` in stored JSON deserialises to the default `Parallel`.
+///
+/// [`DagScheduler`]: crate::scheduler::DagScheduler
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::ExecutionMode;
+///
+/// assert_eq!(ExecutionMode::default(), ExecutionMode::Parallel);
+/// let mode: ExecutionMode = serde_json::from_str("\"sequential\"").unwrap();
+/// assert_eq!(mode, ExecutionMode::Sequential);
+/// ```
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -199,23 +313,48 @@ pub enum ExecutionMode {
 }
 
 /// A single node in the task DAG.
+///
+/// Constructed by [`Planner`] and stored inside a [`TaskGraph`].  The
+/// scheduler drives each node through its [`TaskStatus`] lifecycle.
+///
+/// [`Planner`]: crate::planner::Planner
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::{TaskNode, TaskStatus, ExecutionMode};
+///
+/// let node = TaskNode::new(0, "fetch data", "Download the dataset from source.");
+/// assert_eq!(node.status, TaskStatus::Pending);
+/// assert!(node.depends_on.is_empty());
+/// assert_eq!(node.execution_mode, ExecutionMode::Parallel);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskNode {
+    /// Dense zero-based index. Invariant: `tasks[i].id == TaskId(i)`.
     pub id: TaskId,
+    /// Short, human-readable task title.
     pub title: String,
+    /// Full task description passed verbatim to the assigned sub-agent as its prompt.
     pub description: String,
+    /// Preferred agent name suggested by the planner; `None` lets the router decide.
     pub agent_hint: Option<String>,
+    /// Current lifecycle status.
     pub status: TaskStatus,
     /// Indices of tasks this node depends on.
     pub depends_on: Vec<TaskId>,
+    /// Result populated by the scheduler after the sub-agent finishes.
     pub result: Option<TaskResult>,
+    /// Agent name actually assigned by the router at dispatch time.
     pub assigned_agent: Option<String>,
+    /// Number of times this task has been retried so far.
     pub retry_count: u32,
-    /// Per-task override; `None` means use graph default.
+    /// Per-task failure strategy override; `None` means use [`TaskGraph::default_failure_strategy`].
     pub failure_strategy: Option<FailureStrategy>,
+    /// Maximum retry attempts for this task; `None` means use [`TaskGraph::default_max_retries`].
     pub max_retries: Option<u32>,
     /// LLM planner annotation. Old SQLite-stored JSON without this field
-    /// deserializes to the default (`Parallel`).
+    /// deserialises to the default (`Parallel`).
     #[serde(default)]
     pub execution_mode: ExecutionMode,
 }
@@ -242,15 +381,41 @@ impl TaskNode {
 }
 
 /// A directed acyclic graph of tasks to be executed by the orchestrator.
+///
+/// Created by the [`Planner`] and driven to completion by the [`DagScheduler`].
+/// The `tasks` vec is the authoritative store; all indices (`TaskId`) reference
+/// positions within it.
+///
+/// [`Planner`]: crate::planner::Planner
+/// [`DagScheduler`]: crate::scheduler::DagScheduler
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::{TaskGraph, TaskNode, GraphStatus, FailureStrategy};
+///
+/// let mut graph = TaskGraph::new("build and deploy service");
+/// assert_eq!(graph.status, GraphStatus::Created);
+/// assert_eq!(graph.default_failure_strategy, FailureStrategy::Abort);
+/// assert_eq!(graph.default_max_retries, 3);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskGraph {
+    /// Unique graph identifier (UUID v4).
     pub id: GraphId,
+    /// High-level user goal that was decomposed into this graph.
     pub goal: String,
+    /// All task nodes. Index `i` must satisfy `tasks[i].id == TaskId(i)`.
     pub tasks: Vec<TaskNode>,
+    /// Current lifecycle status of the graph as a whole.
     pub status: GraphStatus,
+    /// Graph-wide failure strategy applied when a task has no per-task override.
     pub default_failure_strategy: FailureStrategy,
+    /// Graph-wide maximum retry count applied when a task has no per-task override.
     pub default_max_retries: u32,
+    /// ISO-8601 UTC timestamp of graph creation.
     pub created_at: String,
+    /// ISO-8601 UTC timestamp set when the graph reaches a terminal status.
     pub finished_at: Option<String>,
 }
 

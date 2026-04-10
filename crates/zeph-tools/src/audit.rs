@@ -1,10 +1,36 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Structured JSONL audit logging for tool invocations.
+//!
+//! Every tool execution produces an [`AuditEntry`] that is serialized as a newline-delimited
+//! JSON record and written to the configured destination (stdout or a file).
+//!
+//! # Configuration
+//!
+//! Audit logging is controlled by [`AuditConfig`]. When
+//! `destination` is `"stdout"`, entries are emitted via `tracing::info!(target: "audit", ...)`.
+//! Any other value is treated as a file path opened in append mode.
+//!
+//! # Security note
+//!
+//! Audit entries intentionally omit the raw cosine distance from anomaly detection
+//! (`embedding_anomalous` is a boolean flag) to prevent threshold reverse-engineering.
+
 use std::path::Path;
 
 use crate::config::AuditConfig;
 
+/// Async writer that appends [`AuditEntry`] records to a structured JSONL log.
+///
+/// Create via [`AuditLogger::from_config`] and share behind an `Arc`. Each executor
+/// that should emit audit records accepts the logger via a builder method
+/// (e.g. [`ShellExecutor::with_audit`](crate::ShellExecutor::with_audit)).
+///
+/// # Thread safety
+///
+/// File writes are serialized through an internal `tokio::sync::Mutex<File>`.
+/// Multiple concurrent log calls are safe but may block briefly on the mutex.
 #[derive(Debug)]
 pub struct AuditLogger {
     destination: AuditDestination,
@@ -16,13 +42,29 @@ enum AuditDestination {
     File(tokio::sync::Mutex<tokio::fs::File>),
 }
 
+/// A single tool invocation record written to the audit log.
+///
+/// Serialized as a flat JSON object (newline-terminated). Optional fields are omitted
+/// when `None` or `false` to keep entries compact.
+///
+/// # Example JSON output
+///
+/// ```json
+/// {"timestamp":"1712345678","tool":"shell","command":"ls -la","result":{"type":"success"},
+///  "duration_ms":12,"exit_code":0,"claim_source":"shell"}
+/// ```
 #[derive(serde::Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct AuditEntry {
+    /// Unix timestamp (seconds) when the tool invocation started.
     pub timestamp: String,
+    /// Tool identifier (e.g. `"shell"`, `"web_scrape"`, `"fetch"`).
     pub tool: String,
+    /// Human-readable command or URL being invoked.
     pub command: String,
+    /// Outcome of the invocation.
     pub result: AuditResult,
+    /// Wall-clock duration from invocation start to completion, in milliseconds.
     pub duration_ms: u64,
     /// Fine-grained error category label from the taxonomy. `None` for successful executions.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -71,19 +113,49 @@ pub struct AuditEntry {
     pub policy_match: Option<String>,
 }
 
+/// Outcome of a tool invocation, serialized as a tagged JSON object.
+///
+/// The `type` field selects the variant; additional fields are present only for the
+/// relevant variants.
+///
+/// # Serialization
+///
+/// ```json
+/// {"type":"success"}
+/// {"type":"blocked","reason":"sudo"}
+/// {"type":"error","message":"exec failed"}
+/// {"type":"timeout"}
+/// {"type":"rollback","restored":3,"deleted":1}
+/// ```
 #[derive(serde::Serialize)]
 #[serde(tag = "type")]
 pub enum AuditResult {
+    /// The tool executed successfully.
     #[serde(rename = "success")]
     Success,
+    /// The tool invocation was blocked by policy before execution.
     #[serde(rename = "blocked")]
-    Blocked { reason: String },
+    Blocked {
+        /// The matched blocklist pattern or policy rule that triggered the block.
+        reason: String,
+    },
+    /// The tool attempted execution but failed with an error.
     #[serde(rename = "error")]
-    Error { message: String },
+    Error {
+        /// Human-readable error description.
+        message: String,
+    },
+    /// The tool exceeded its configured timeout.
     #[serde(rename = "timeout")]
     Timeout,
+    /// A transactional rollback was performed after a failed execution.
     #[serde(rename = "rollback")]
-    Rollback { restored: usize, deleted: usize },
+    Rollback {
+        /// Number of files restored to their pre-execution snapshot.
+        restored: usize,
+        /// Number of newly-created files that were deleted during rollback.
+        deleted: usize,
+    },
 }
 
 impl AuditLogger {
@@ -107,6 +179,10 @@ impl AuditLogger {
         Ok(Self { destination })
     }
 
+    /// Serialize `entry` to JSON and append it to the configured destination.
+    ///
+    /// Serialization errors are logged via `tracing::error!` and silently swallowed so
+    /// that audit failures never interrupt tool execution.
     pub async fn log(&self, entry: &AuditEntry) {
         let json = match serde_json::to_string(entry) {
             Ok(j) => j,
@@ -169,6 +245,10 @@ pub fn log_tool_risk_summary(tool_ids: &[&str]) {
     }
 }
 
+/// Returns the current Unix timestamp as a decimal string.
+///
+/// Used to populate [`AuditEntry::timestamp`]. Returns `"0"` if the system clock
+/// is before the Unix epoch (which should never happen in practice).
 #[must_use]
 pub fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};

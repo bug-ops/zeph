@@ -1,13 +1,36 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Composite executor that chains two [`ToolExecutor`] implementations.
+
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::registry::ToolDef;
 
-/// Chains two `ToolExecutor` implementations with first-match-wins dispatch.
+/// Chains two [`ToolExecutor`] implementations with first-match-wins dispatch.
 ///
-/// Tries `first`, falls through to `second` if it returns `Ok(None)`.
-/// Errors from `first` propagate immediately without trying `second`.
+/// For each method, `first` is tried first. If it returns `Ok(None)` (i.e. it does not
+/// handle the input), `second` is tried. If `first` returns an `Err`, the error propagates
+/// immediately without consulting `second`.
+///
+/// Use this to compose a chain of specialized executors at startup instead of a dynamic
+/// `Vec<Box<dyn ...>>`. Nest multiple `CompositeExecutor`s to handle more than two backends.
+///
+/// Tool definitions from both executors are merged, with `first` taking precedence when
+/// both define a tool with the same ID.
+///
+/// # Example
+///
+/// ```rust
+/// use zeph_tools::{
+///     CompositeExecutor, ShellExecutor, WebScrapeExecutor,
+///     config::{ShellConfig, ScrapeConfig},
+/// };
+///
+/// let shell = ShellExecutor::new(&ShellConfig::default());
+/// let scrape = WebScrapeExecutor::new(&ScrapeConfig::default());
+/// let executor = CompositeExecutor::new(shell, scrape);
+/// // executor handles both bash blocks and scrape/fetch tool calls.
+/// ```
 #[derive(Debug)]
 pub struct CompositeExecutor<A: ToolExecutor, B: ToolExecutor> {
     first: A,
@@ -15,6 +38,7 @@ pub struct CompositeExecutor<A: ToolExecutor, B: ToolExecutor> {
 }
 
 impl<A: ToolExecutor, B: ToolExecutor> CompositeExecutor<A, B> {
+    /// Create a new `CompositeExecutor` wrapping `first` and `second`.
     #[must_use]
     pub fn new(first: A, second: B) -> Self {
         Self { first, second }

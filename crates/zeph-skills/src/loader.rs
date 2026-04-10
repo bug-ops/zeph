@@ -1,19 +1,78 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! SKILL.md frontmatter parser and file-system loader.
+//!
+//! Each skill lives in its own directory:
+//!
+//! ```text
+//! skills/
+//!   my-skill/
+//!     SKILL.md          ← required; frontmatter + Markdown body
+//!     scripts/          ← optional helper scripts
+//!     references/       ← optional reference documents
+//!     assets/           ← optional static assets
+//!     .bundled          ← marker written by the bundled provisioner
+//! ```
+//!
+//! # SKILL.md Format
+//!
+//! ```text
+//! ---
+//! name: my-skill
+//! description: What this skill does and when to invoke it.
+//! category: web
+//! license: MIT
+//! allowed-tools: bash web_scrape
+//! x-requires-secrets: MY_API_KEY
+//! x-source-url: https://github.com/example/my-skill
+//! ---
+//!
+//! # My Skill
+//!
+//! Markdown body with usage examples.
+//! ```
+//!
+//! # Frontmatter Fields
+//!
+//! | Field | Required | Description |
+//! |-------|----------|-------------|
+//! | `name` | yes | Skill identifier: lowercase letters, digits, hyphens (1–64 chars) |
+//! | `description` | yes | One-to-two sentence capability description (max 1024 chars) |
+//! | `category` | no | Optional grouping key for two-stage matching |
+//! | `license` | no | SPDX license identifier |
+//! | `allowed-tools` | no | Space-separated list of tools the skill may invoke |
+//! | `x-requires-secrets` | no | Comma-separated vault key names needed at runtime |
+//! | `x-source-url` | no | Upstream URL used during install |
+//! | `x-git-hash` | no | Git commit hash captured at install time |
+//! | `metadata` | no | Arbitrary key-value block for custom attributes |
+
 use std::path::{Path, PathBuf};
 
 use crate::error::SkillError;
 
+/// Parsed frontmatter metadata for a single skill.
+///
+/// Loaded lazily by [`crate::registry::SkillRegistry`] — the body string is **not**
+/// stored here. Use [`crate::registry::SkillRegistry::get_skill`] to retrieve the full
+/// [`Skill`] struct including the Markdown body.
 #[derive(Clone, Debug)]
 pub struct SkillMeta {
+    /// Unique skill identifier (`name` frontmatter field).
     pub name: String,
+    /// Short capability description used for embedding-based matching.
     pub description: String,
+    /// Optional agent version or runtime compatibility constraint.
     pub compatibility: Option<String>,
+    /// SPDX license identifier.
     pub license: Option<String>,
+    /// Arbitrary key-value pairs from the `metadata:` block.
     pub metadata: Vec<(String, String)>,
+    /// Tool names declared in `allowed-tools`.
     pub allowed_tools: Vec<String>,
+    /// Vault key names required at runtime (`x-requires-secrets`).
     pub requires_secrets: Vec<String>,
+    /// Directory containing this skill's `SKILL.md` and resource subdirectories.
     pub skill_dir: PathBuf,
     /// Upstream URL where this skill was obtained (from `x-source-url` frontmatter field).
     pub source_url: Option<String>,
@@ -23,18 +82,41 @@ pub struct SkillMeta {
     pub category: Option<String>,
 }
 
+/// A fully loaded skill: metadata plus the raw Markdown body.
+///
+/// Obtain via [`crate::registry::SkillRegistry::get_skill`] or
+/// [`crate::registry::SkillRegistry::into_skills`].
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_skills::registry::SkillRegistry;
+///
+/// let registry = SkillRegistry::load(&["/path/to/skills"]);
+/// # fn try_main() -> Result<(), zeph_skills::SkillError> {
+/// # let registry = zeph_skills::registry::SkillRegistry::load(&["/tmp"]);
+/// let skill = registry.get_skill("my-skill")?;
+/// println!("name: {}", skill.name());
+/// println!("body: {}", skill.body);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Debug)]
 pub struct Skill {
+    /// Parsed frontmatter metadata.
     pub meta: SkillMeta,
+    /// Raw Markdown body (everything after the closing `---` delimiter).
     pub body: String,
 }
 
 impl Skill {
+    /// Returns the skill's unique name.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.meta.name
     }
 
+    /// Returns the skill's capability description.
     #[must_use]
     pub fn description(&self) -> &str {
         &self.meta.description

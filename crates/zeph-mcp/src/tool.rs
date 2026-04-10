@@ -3,7 +3,14 @@
 
 use serde::{Deserialize, Serialize};
 
-/// How sensitive the data this tool accesses or produces is.
+/// Sensitivity level of the data a tool accesses or produces.
+///
+/// Used by the data-flow policy ([`crate::policy::check_data_flow`]) to enforce
+/// that high-sensitivity tools can only be registered on [`McpTrustLevel::Trusted`]
+/// servers.  The ordering `None < Low < Medium < High` allows `max()` comparisons
+/// when computing the worst-case sensitivity of a tool set.
+///
+/// [`McpTrustLevel::Trusted`]: crate::manager::McpTrustLevel::Trusted
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DataSensitivity {
@@ -14,7 +21,11 @@ pub enum DataSensitivity {
     High,
 }
 
-/// Coarse capability classification for tools.
+/// Coarse capability class for an MCP tool.
+///
+/// Assigned by operator config or inferred via [`infer_security_meta`].  Stored
+/// inside [`ToolSecurityMeta::capabilities`] and used by the data-flow policy to
+/// decide whether a tool may run on a given server trust level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityClass {
@@ -56,6 +67,36 @@ pub struct ToolSecurityMeta {
     pub flagged_parameters: Vec<FlaggedParameter>,
 }
 
+/// A single MCP tool exposed by a connected server.
+///
+/// `McpTool` is the canonical tool representation used throughout `zeph-mcp`.
+/// It is created during server connection from `rmcp` tool list responses, enriched
+/// with [`ToolSecurityMeta`] (from operator config or [`infer_security_meta`]), and
+/// stored in [`crate::manager::McpManager`]'s per-server tool maps.
+///
+/// # Qualified vs sanitized names
+///
+/// - [`qualified_name`](McpTool::qualified_name) — `"server_id:name"` — used for logging,
+///   Qdrant keys, and quarantine routing (the `':'` character signals external MCP content).
+/// - [`sanitized_id`](McpTool::sanitized_id) — `[a-zA-Z0-9_-]{1,128}` — used as the tool
+///   identifier in LLM API calls, where colons are not allowed.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_mcp::tool::{McpTool, ToolSecurityMeta};
+///
+/// let tool = McpTool {
+///     server_id: "github".to_owned(),
+///     name: "create_issue".to_owned(),
+///     description: "Create a new GitHub issue".to_owned(),
+///     input_schema: serde_json::json!({"type": "object"}),
+///     security_meta: ToolSecurityMeta::default(),
+/// };
+///
+/// assert_eq!(tool.qualified_name(), "github:create_issue");
+/// assert_eq!(tool.sanitized_id(), "github_create_issue");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpTool {
     pub server_id: String,
@@ -145,7 +186,11 @@ pub fn infer_security_meta(tool_name: &str) -> ToolSecurityMeta {
     }
 }
 
-/// Describes a `sanitized_id` collision between two registered tools.
+/// Details of a `sanitized_id` collision between two registered tools.
+///
+/// Returned by [`detect_collisions`]. When two tools share the same [`McpTool::sanitized_id`],
+/// the first-registered tool wins dispatch and the second becomes unreachable.
+/// Callers should log or surface these at connect time.
 ///
 /// Even when trust levels differ, the executor dispatches on `sanitized_id`, so a collision
 /// means one tool silently shadows the other regardless of trust.
@@ -206,6 +251,26 @@ pub fn detect_collisions<S: std::hash::BuildHasher>(
 }
 
 impl McpTool {
+    /// Return the fully-qualified tool name in `"server_id:name"` format.
+    ///
+    /// This format is used for Qdrant keys, logging, and quarantine routing.
+    /// The presence of `':'` in the name is the signal used by `zeph-core`'s
+    /// `sanitize_tool_output()` to classify output as external (MCP) content.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_mcp::tool::{McpTool, ToolSecurityMeta};
+    ///
+    /// let tool = McpTool {
+    ///     server_id: "fs".to_owned(),
+    ///     name: "read_file".to_owned(),
+    ///     description: "Read a file".to_owned(),
+    ///     input_schema: serde_json::json!({}),
+    ///     security_meta: ToolSecurityMeta::default(),
+    /// };
+    /// assert_eq!(tool.qualified_name(), "fs:read_file");
+    /// ```
     #[must_use]
     pub fn qualified_name(&self) -> String {
         format!("{}:{}", self.server_id, self.name)

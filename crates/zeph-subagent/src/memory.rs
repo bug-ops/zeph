@@ -1,6 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Persistent per-agent memory backed by `MEMORY.md` files on the local filesystem.
+//!
+//! Each sub-agent with a [`MemoryScope`] gets an isolated directory on first spawn.
+//! The first 200 lines of `MEMORY.md` are injected into the system prompt so the agent
+//! can recall information across sessions.
+//!
+//! Security guarantees:
+//! - Directory paths are validated against [`AGENT_NAME_RE`][super::def::AGENT_NAME_RE]
+//!   to prevent path traversal.
+//! - `MEMORY.md` is canonicalized and boundary-checked before reading (symlink escape guard).
+//! - Files larger than 256 KiB or containing null bytes are rejected.
+//! - `<agent-memory>` tags in file content are escaped to prevent prompt injection.
+
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -27,10 +40,29 @@ const MEMORY_INJECT_LINES: usize = 200;
 /// Agent name is validated against the same regex enforced in `parse_with_path`.
 /// This prevents path traversal via crafted names (e.g., `../../../etc`).
 ///
+/// | Scope | Directory |
+/// |-------|-----------|
+/// | `User` | `~/.zeph/agent-memory/<name>/` |
+/// | `Project` | `.zeph/agent-memory/<name>/` (relative to CWD) |
+/// | `Local` | `.zeph/agent-memory-local/<name>/` (relative to CWD) |
+///
 /// # Errors
 ///
 /// Returns [`SubAgentError::Invalid`] if the agent name fails validation.
 /// Returns [`SubAgentError::Memory`] if the home directory is unavailable (`User` scope).
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_subagent::memory::resolve_memory_dir;
+/// use zeph_config::MemoryScope;
+///
+/// // Path traversal names are rejected.
+/// assert!(resolve_memory_dir(MemoryScope::Project, "../etc").is_err());
+/// // Valid names produce a usable path (relative to the current working directory).
+/// let path = resolve_memory_dir(MemoryScope::Project, "my-agent").unwrap();
+/// assert!(path.ends_with(".zeph/agent-memory/my-agent"));
+/// ```
 pub fn resolve_memory_dir(scope: MemoryScope, agent_name: &str) -> Result<PathBuf, SubAgentError> {
     if !AGENT_NAME_RE.is_match(agent_name) {
         return Err(SubAgentError::Invalid(format!(

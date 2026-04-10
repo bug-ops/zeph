@@ -1,26 +1,56 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Markdown-to-Telegram conversion and UTF-8-safe message chunking.
+//!
+//! Telegram's `MarkdownV2` format differs from CommonMark in several ways:
+//! bold uses a single `*`, italic uses `_`, and all 19 special characters
+//! must be escaped with `\` in regular text.  This module handles both the
+//! format conversion and the 4096-byte message-length limit.
+//!
+//! # Public API
+//!
+//! * [`markdown_to_telegram`] — convert CommonMark to Telegram `MarkdownV2`.
+//! * [`utf8_chunks`] — split long strings at UTF-8 / newline boundaries.
+
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 const SPECIAL_CHARS: &[char] = &[
     '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!', '\\',
 ];
 
-/// Converts standard Markdown to Telegram `MarkdownV2` format.
+/// Convert standard Markdown to Telegram `MarkdownV2` format.
 ///
-/// Uses `pulldown-cmark` to parse the input into AST events, then walks
+/// Uses `pulldown-cmark` to parse the input into an event stream, then walks
 /// those events to produce properly escaped Telegram `MarkdownV2` output.
 ///
-/// Formatting conversions:
-/// - `**bold**` → `*bold*` (Telegram uses single asterisk)
-/// - `*italic*` → `_italic_` (Telegram uses underscore)
-/// - `# Header` → `*Header*` (headers become bold text)
-/// - Code blocks and inline code preserve content with minimal escaping
+/// # Formatting conversions
 ///
-/// Escaping rules:
-/// - Regular text: escape all 19 special characters
-/// - Code blocks and inline code: escape only `\` and `` ` ``
+/// | Markdown | Telegram MarkdownV2 | Note |
+/// |----------|---------------------|------|
+/// | `**bold**` | `*bold*` | single asterisk |
+/// | `*italic*` | `_italic_` | underscore |
+/// | `# Heading` | `*Heading*` | headings become bold |
+/// | `` `code` `` | `` `code` `` | preserved verbatim |
+/// | `~~strike~~` | `~strike~` | single tilde |
+/// | `[text](url)` | `[text](url)` | links preserved |
+/// | `- item` | `• item` | bullet list |
+/// | `> quote` | `> quote` | blockquote |
+///
+/// # Escaping rules
+///
+/// * Regular text: all 19 Telegram special characters are escaped with `\`.
+/// * Code blocks and inline code: only `\` and `` ` `` are escaped.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_channels::markdown::markdown_to_telegram;
+///
+/// assert_eq!(markdown_to_telegram("**bold**"), "*bold*");
+/// assert_eq!(markdown_to_telegram("*italic*"), "_italic_");
+/// assert_eq!(markdown_to_telegram(""), "");
+/// ```
 #[must_use]
 pub fn markdown_to_telegram(input: &str) -> String {
     let options = Options::ENABLE_STRIKETHROUGH;
@@ -32,10 +62,38 @@ pub fn markdown_to_telegram(input: &str) -> String {
     renderer.finish()
 }
 
-/// Splits text into chunks respecting UTF-8 character boundaries.
+/// Split `text` into chunks that each fit within `max_bytes`.
 ///
-/// Prefers splitting at newline boundaries when possible for better readability.
-/// Each chunk is guaranteed to be valid UTF-8 and at most `max_bytes` in length.
+/// All chunks are valid UTF-8 slices of the original string.  The function
+/// prefers to split on newline boundaries within the last 256 bytes of the
+/// window so that Telegram messages break at natural paragraph boundaries
+/// rather than mid-sentence.
+///
+/// When no text exceeds `max_bytes` the original string is returned as a
+/// single-element slice without any allocation.
+///
+/// # Panics
+///
+/// Does not panic; the loop terminates because every iteration either emits a
+/// non-empty chunk or exits.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_channels::markdown::utf8_chunks;
+///
+/// let text = "Hello, world!";
+/// let chunks = utf8_chunks(text, 100);
+/// assert_eq!(chunks, vec!["Hello, world!"]);
+///
+/// // Chunks are joined back to the original string.
+/// let long = "a".repeat(200);
+/// let pieces = utf8_chunks(&long, 50);
+/// assert_eq!(pieces.concat(), long);
+/// for piece in &pieces {
+///     assert!(piece.len() <= 50);
+/// }
+/// ```
 #[must_use]
 pub fn utf8_chunks(text: &str, max_bytes: usize) -> Vec<&str> {
     if text.len() <= max_bytes {

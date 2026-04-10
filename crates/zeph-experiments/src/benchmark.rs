@@ -14,7 +14,10 @@ const MAX_BENCHMARK_SIZE: u64 = 10 * 1024 * 1024;
 
 /// A set of benchmark cases loaded from a TOML file.
 ///
-/// # TOML format
+/// Each [`BenchmarkCase`] defines one prompt/response pair to evaluate. The set is
+/// validated to be non-empty before evaluation begins.
+///
+/// # TOML Format
 ///
 /// ```toml
 /// [[cases]]
@@ -26,23 +29,54 @@ const MAX_BENCHMARK_SIZE: u64 = 10 * 1024 * 1024;
 /// prompt = "Explain async/await in Rust."
 /// context = "You are a Rust expert."
 /// ```
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::path::Path;
+/// use zeph_experiments::BenchmarkSet;
+///
+/// let set = BenchmarkSet::from_file(Path::new("bench/qa.toml"))
+///     .expect("benchmark file must exist and be valid TOML");
+/// set.validate().expect("benchmark must have at least one case");
+/// println!("{} cases loaded", set.cases.len());
+/// ```
 #[derive(Debug, Clone, Deserialize)]
 pub struct BenchmarkSet {
+    /// The benchmark cases to evaluate. Must be non-empty (enforced by [`Self::validate`]).
     pub cases: Vec<BenchmarkCase>,
 }
 
 /// A single benchmark case.
+///
+/// The `prompt` is sent to the subject model. If `context` is present it is injected
+/// as a system message before the user turn. If `reference` is present the judge model
+/// uses it to calibrate its score.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_experiments::BenchmarkCase;
+///
+/// let case = BenchmarkCase {
+///     prompt: "Name the first element.".into(),
+///     context: Some("You are a chemistry expert.".into()),
+///     reference: Some("Hydrogen".into()),
+///     tags: Some(vec!["chemistry".into()]),
+/// };
+/// assert!(case.reference.as_deref() == Some("Hydrogen"));
+/// ```
 #[derive(Debug, Clone, Deserialize)]
 pub struct BenchmarkCase {
     /// The prompt sent to the subject model.
     pub prompt: String,
-    /// Optional system context for the subject model.
+    /// Optional system context injected before the user turn.
     #[serde(default)]
     pub context: Option<String>,
     /// Optional reference answer for the judge to calibrate scoring.
     #[serde(default)]
     pub reference: Option<String>,
-    /// Optional tags for filtering or reporting.
+    /// Optional tags for filtering or grouping results.
     #[serde(default)]
     pub tags: Option<Vec<String>>,
 }

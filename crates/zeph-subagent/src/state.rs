@@ -2,12 +2,31 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 /// Lifecycle state of a sub-agent task.
+///
+/// States flow in one direction: `Submitted → Working → {Completed | Failed | Canceled}`.
+/// A handle whose state is `Canceled` may briefly lag the background task's own state
+/// because [`SubAgentManager::cancel`][crate::SubAgentManager] updates the handle
+/// synchronously while the task observes the cancellation token asynchronously.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_subagent::SubAgentState;
+///
+/// let state = SubAgentState::Working;
+/// assert_ne!(state, SubAgentState::Completed);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SubAgentState {
+    /// The agent has been enqueued but the tokio task has not started yet.
     Submitted,
+    /// The agent loop is actively executing LLM turns and tool calls.
     Working,
+    /// The agent loop finished successfully.
     Completed,
+    /// The agent loop returned an error or the task panicked.
     Failed,
+    /// The agent was cancelled via [`SubAgentManager::cancel`][crate::SubAgentManager].
     Canceled,
 }
 

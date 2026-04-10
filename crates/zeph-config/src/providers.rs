@@ -15,16 +15,49 @@ use zeph_llm::{GeminiThinkingLevel, ThinkingConfig};
 pub struct ProviderName(String);
 
 impl ProviderName {
+    /// Create a new `ProviderName` from any string-like value.
+    ///
+    /// An empty string is a sentinel meaning "use the primary provider" and is the
+    /// default value. Check [`is_empty`](Self::is_empty) before using in routing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::providers::ProviderName;
+    ///
+    /// let name = ProviderName::new("fast");
+    /// assert_eq!(name.as_str(), "fast");
+    /// ```
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self(name.into())
     }
 
+    /// Return `true` when this is the empty sentinel (use primary provider).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::providers::ProviderName;
+    ///
+    /// assert!(ProviderName::default().is_empty());
+    /// assert!(!ProviderName::new("fast").is_empty());
+    /// ```
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    /// Return the inner string slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::providers::ProviderName;
+    ///
+    /// let name = ProviderName::new("quality");
+    /// assert_eq!(name.as_str(), "quality");
+    /// ```
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -143,49 +176,82 @@ fn default_reputation_min_observations() -> u64 {
     5
 }
 
+/// Returns the default STT provider name (empty string — auto-detect).
 #[must_use]
 pub fn default_stt_provider() -> String {
     String::new()
 }
 
+/// Returns the default STT transcription language hint (`"auto"`).
 #[must_use]
 pub fn default_stt_language() -> String {
     "auto".into()
 }
 
+/// Returns the default embedding model name used by `[llm] embedding_model`.
 #[must_use]
 pub fn get_default_embedding_model() -> String {
     default_embedding_model()
 }
 
+/// Returns the default response cache TTL in seconds.
 #[must_use]
 pub fn get_default_response_cache_ttl_secs() -> u64 {
     default_response_cache_ttl_secs()
 }
 
+/// Returns the default EMA alpha for the router latency estimator.
 #[must_use]
 pub fn get_default_router_ema_alpha() -> f64 {
     default_router_ema_alpha()
 }
 
+/// Returns the default router reorder interval (turns between provider re-ranking).
 #[must_use]
 pub fn get_default_router_reorder_interval() -> u64 {
     default_router_reorder_interval()
 }
 
 /// LLM provider backend selector.
+///
+/// Used in `[[llm.providers]]` entries as the `type` field.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [[llm.providers]]
+/// type = "openai"
+/// model = "gpt-4o"
+/// name = "quality"
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
+    /// Local Ollama server (default base URL: `http://localhost:11434`).
     Ollama,
+    /// Anthropic Claude API.
     Claude,
+    /// OpenAI API.
     OpenAi,
+    /// Google Gemini API.
     Gemini,
+    /// Local Candle inference (CPU/GPU, no external server required).
     Candle,
+    /// OpenAI-compatible third-party API (e.g. Groq, Together AI, LM Studio).
     Compatible,
 }
 
 impl ProviderKind {
+    /// Return the lowercase string identifier for this provider kind.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::ProviderKind;
+    ///
+    /// assert_eq!(ProviderKind::Claude.as_str(), "claude");
+    /// assert_eq!(ProviderKind::OpenAi.as_str(), "openai");
+    /// ```
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -205,6 +271,29 @@ impl std::fmt::Display for ProviderKind {
     }
 }
 
+/// LLM configuration, nested under `[llm]` in TOML.
+///
+/// Declares the provider pool and controls routing, embedding, caching, and STT.
+/// All providers are declared in `[[llm.providers]]`; subsystems reference them by
+/// the `name` field using a `*_provider` config key.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [[llm.providers]]
+/// name = "fast"
+/// type = "openai"
+/// model = "gpt-4o-mini"
+///
+/// [[llm.providers]]
+/// name = "quality"
+/// type = "claude"
+/// model = "claude-opus-4-5"
+///
+/// [llm]
+/// routing = "none"
+/// embedding_model = "qwen3-embedding"
+/// ```
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LlmConfig {
     /// Provider pool. First entry is default unless one is marked `default = true`.
@@ -381,6 +470,18 @@ impl LlmConfig {
     }
 }
 
+/// Speech-to-text configuration, nested under `[llm.stt]` in TOML.
+///
+/// When set, Zeph uses the referenced provider for voice transcription.
+/// The provider must have an `stt_model` field set in its `[[llm.providers]]` entry.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [llm.stt]
+/// provider = "fast"
+/// language = "en"
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SttConfig {
     /// Provider name from `[[llm.providers]]`. Empty string means auto-detect first provider
@@ -781,27 +882,51 @@ fn default_inference_timeout_secs() -> u64 {
     120
 }
 
+/// Sampling / generation parameters for Candle local inference.
+///
+/// Used inside `[llm.candle.generation]` or a `[[llm.providers]]` Candle entry.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GenerationParams {
+    /// Sampling temperature. Higher values produce more creative outputs. Default: `0.7`.
     #[serde(default = "default_temperature")]
     pub temperature: f64,
+    /// Nucleus sampling threshold. When set, tokens with cumulative probability above
+    /// this value are excluded. Default: `None` (disabled).
     #[serde(default)]
     pub top_p: Option<f64>,
+    /// Top-k sampling. When set, only the top-k most probable tokens are considered.
+    /// Default: `None` (disabled).
     #[serde(default)]
     pub top_k: Option<usize>,
+    /// Maximum number of tokens to generate per response. Capped at [`MAX_TOKENS_CAP`].
+    /// Default: `2048`.
     #[serde(default = "default_max_tokens")]
     pub max_tokens: usize,
+    /// Random seed for reproducible outputs. Default: `42`.
     #[serde(default = "default_seed")]
     pub seed: u64,
+    /// Repetition penalty applied during sampling. Default: `1.1`.
     #[serde(default = "default_repeat_penalty")]
     pub repeat_penalty: f32,
+    /// Number of last tokens to consider for the repetition penalty window. Default: `64`.
     #[serde(default = "default_repeat_last_n")]
     pub repeat_last_n: usize,
 }
 
+/// Hard upper bound on `GenerationParams::max_tokens` to prevent unbounded generation.
 pub const MAX_TOKENS_CAP: usize = 32768;
 
 impl GenerationParams {
+    /// Returns `max_tokens` clamped to [`MAX_TOKENS_CAP`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::GenerationParams;
+    ///
+    /// let params = GenerationParams::default();
+    /// assert!(params.capped_max_tokens() <= 32768);
+    /// ```
     #[must_use]
     pub fn capped_max_tokens(&self) -> usize {
         self.max_tokens.min(MAX_TOKENS_CAP)

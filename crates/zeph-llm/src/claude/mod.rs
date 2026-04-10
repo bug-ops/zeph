@@ -2,6 +2,41 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Claude (Anthropic) LLM provider implementation.
+//!
+//! [`ClaudeProvider`] wraps the Anthropic Messages API and supports:
+//! - Standard chat and streaming via Server-Sent Events
+//! - Native tool use (function calling)
+//! - Vision (image input in messages)
+//! - Extended and adaptive thinking (`claude-sonnet-4-6`, `claude-opus-4-6`)
+//! - Prompt caching (`cache_control` blocks) for cost reduction
+//! - Server-side context compaction (compact-2026-01-12 beta)
+//! - Extended context window (context-1m-2025-08-07 beta)
+//!
+//! # Configuration
+//!
+//! ```toml
+//! [[llm.providers]]
+//! name = "claude"
+//! type = "claude"
+//! model = "claude-sonnet-4-6"
+//! max_tokens = 8192
+//! api_key_vault = "ZEPH_CLAUDE_API_KEY"
+//! ```
+//!
+//! # Extended Thinking
+//!
+//! Enable via [`ClaudeProvider::with_thinking`]:
+//!
+//! ```rust,no_run
+//! use zeph_llm::claude::ClaudeProvider;
+//! use zeph_llm::{ThinkingConfig, ThinkingEffort};
+//!
+//! # fn build() -> Result<ClaudeProvider, zeph_llm::LlmError> {
+//! let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 16_000)
+//!     .with_thinking(ThinkingConfig::Extended { budget_tokens: 10_000 })?;
+//! # Ok(provider)
+//! # }
+//! ```
 
 mod cache;
 mod request;
@@ -45,6 +80,15 @@ const MAX_RETRIES: u32 = 3;
 
 use self::types::MIN_MAX_TOKENS_WITH_THINKING;
 
+/// [`LlmProvider`] backend for the Anthropic Claude API.
+///
+/// Construct with [`ClaudeProvider::new`] and then chain optional builder methods:
+/// - [`with_thinking`](Self::with_thinking) — extended or adaptive thinking
+/// - [`with_server_compaction`](Self::with_server_compaction) — server-side context compaction
+/// - [`with_extended_context`](Self::with_extended_context) — 1M-token context window
+/// - [`with_cache_user_messages`](Self::with_cache_user_messages) — prompt caching
+/// - [`with_status_tx`](Self::with_status_tx) — real-time status events for the UI
+/// - [`with_generation_overrides`](Self::with_generation_overrides) — temperature / top-p
 pub struct ClaudeProvider {
     client: reqwest::Client,
     api_key: String,
@@ -122,6 +166,10 @@ impl Clone for ClaudeProvider {
 impl ClaudeProvider {
     const MAX_CACHE_CONTROL_BLOCKS: usize = 4;
 
+    /// Create a new provider.
+    ///
+    /// Warns at runtime when `model` starts with `"claude-3"` because those identifiers
+    /// refer to retired models that may cause API errors.
     #[must_use]
     pub fn new(api_key: String, model: String, max_tokens: u32) -> Self {
         if model.starts_with("claude-3") {
@@ -149,24 +197,31 @@ impl ClaudeProvider {
         }
     }
 
+    /// Override generation parameters (temperature, top-p) for this provider.
     #[must_use]
     pub fn with_generation_overrides(mut self, overrides: GenerationOverrides) -> Self {
         self.generation_overrides = Some(overrides);
         self
     }
 
+    /// Replace the underlying HTTP client. Mainly used in tests to inject a mock transport.
     #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;
         self
     }
 
+    /// Attach a status event sender so the UI receives retry and fallback notifications.
     #[must_use]
     pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
         self.status_tx = Some(tx);
         self
     }
 
+    /// Control whether `cache_control` breakpoints are added to user messages.
+    ///
+    /// Enabled by default. Disabling saves a small amount of CPU at the cost of losing
+    /// prompt cache hits on repeated system prompts.
     #[must_use]
     pub fn with_cache_user_messages(mut self, enabled: bool) -> Self {
         self.cache_user_messages = enabled;

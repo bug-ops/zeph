@@ -1,7 +1,23 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `Qdrant` collection + `SQLite` metadata for code chunks.
+//! Qdrant collection + SQLite metadata for code chunks.
+//!
+//! [`CodeStore`] is a **dual-write store**: every chunk is simultaneously stored as
+//! a vector point in Qdrant (for similarity search) and as a metadata row in SQLite
+//! (for exact-hash deduplication and file-path bookkeeping).
+//!
+//! ## Why dual-write?
+//!
+//! Qdrant does not expose a cheap "does this hash exist?" query, so SQLite acts as a
+//! fast lookup table. Before embedding a file the indexer fetches all known hashes for
+//! that file from SQLite in a single `IN (…)` query; only chunks whose hash is absent
+//! are sent to the LLM for embedding.
+//!
+//! ## Collection name
+//!
+//! The Qdrant collection is always named `"zeph_code_chunks"`. The SQLite table is
+//! `chunk_metadata`, created by the `zeph-db` migration layer at startup.
 
 #[allow(unused_imports)]
 use zeph_db::sql;
@@ -11,7 +27,19 @@ use crate::error::Result;
 
 const CODE_COLLECTION: &str = "zeph_code_chunks";
 
-/// `Qdrant` + `SQLite` dual-write store for code chunks.
+/// Qdrant + SQLite dual-write store for code chunks.
+///
+/// `CodeStore` is the persistence layer for the indexing pipeline. It is cheaply
+/// cloneable (all fields are reference-counted) and can safely be shared across async
+/// tasks.
+///
+/// # Lifecycle
+///
+/// 1. Call [`CodeStore::with_ops`] to construct.
+/// 2. Call [`CodeStore::ensure_collection`] once at startup to create the Qdrant
+///    collection if it does not yet exist.
+/// 3. Use [`CodeStore::upsert_chunks_batch`] during indexing and [`CodeStore::search`]
+///    during retrieval.
 #[derive(Clone)]
 pub struct CodeStore {
     ops: QdrantOps,
@@ -19,33 +47,74 @@ pub struct CodeStore {
     pool: zeph_db::DbPool,
 }
 
-/// Parameters for inserting a code chunk.
+/// Borrowed parameters for inserting a single code chunk.
+///
+/// All string fields are borrowed to avoid cloning the source data during batch
+/// construction. The struct is consumed by [`CodeStore::upsert_chunk`] and
+/// [`CodeStore::upsert_chunks_batch`].
 pub struct ChunkInsert<'a> {
+    /// Relative path from the project root (e.g. `"src/lib.rs"`).
     pub file_path: &'a str,
+    /// Language identifier (e.g. `"rust"`). See [`crate::languages::Lang::id`].
     pub language: &'a str,
+    /// Tree-sitter node kind (e.g. `"function_item"`).
     pub node_type: &'a str,
+    /// Optional symbol name extracted by the chunker.
     pub entity_name: Option<&'a str>,
+    /// 1-based inclusive start line.
     pub line_start: usize,
+    /// 1-based inclusive end line.
     pub line_end: usize,
+    /// Raw source text of the chunk.
     pub code: &'a str,
+    /// `">"` separated scope nesting path.
     pub scope_chain: &'a str,
+    /// Blake3 hex digest of `code`.
     pub content_hash: &'a str,
 }
 
-/// A search result from `Qdrant` with decoded payload.
+/// A single search result returned by [`CodeStore::search`].
+///
+/// Decoded from the Qdrant vector point payload by [`SearchHit::from_payload`].
+/// Points whose payload is missing required fields are silently dropped.
 #[derive(Debug)]
 pub struct SearchHit {
+    /// Raw source text of the matching chunk.
     pub code: String,
+    /// Relative file path from the project root.
     pub file_path: String,
+    /// 1-based inclusive `(start_line, end_line)` within the file.
     pub line_range: (usize, usize),
+    /// Cosine similarity score returned by Qdrant (higher is more similar).
     pub score: f32,
+    /// Tree-sitter node kind of the primary AST node.
     pub node_type: String,
+    /// Symbol name, if available.
     pub entity_name: Option<String>,
+    /// `">"` separated scope chain.
     pub scope_chain: String,
 }
 
 impl CodeStore {
-    /// Create a `CodeStore` from a pre-built `QdrantOps` instance.
+    /// Create a `CodeStore` from a pre-built [`QdrantOps`] instance and a SQLite pool.
+    ///
+    /// The Qdrant collection is not created here — call [`CodeStore::ensure_collection`]
+    /// before performing any upserts.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use zeph_index::store::CodeStore;
+    /// use zeph_memory::QdrantOps;
+    /// # async fn example() -> zeph_index::Result<()> {
+    /// # let pool: zeph_db::DbPool = panic!("placeholder");
+    ///
+    /// let ops = QdrantOps::new("http://localhost:6334").unwrap();
+    /// let store = CodeStore::with_ops(ops, pool);
+    /// store.ensure_collection(1536).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     #[must_use]
     pub fn with_ops(ops: QdrantOps, pool: zeph_db::DbPool) -> Self {
         Self {

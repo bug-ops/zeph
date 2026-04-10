@@ -46,6 +46,15 @@ pub struct HooksConfig {
 }
 
 impl HooksConfig {
+    /// Returns `true` when no hooks are configured (all sections are empty or absent).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::hooks::HooksConfig;
+    ///
+    /// assert!(HooksConfig::default().is_empty());
+    /// ```
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.cwd_changed.is_empty() && self.file_changed.is_none()

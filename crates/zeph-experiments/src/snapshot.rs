@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Config snapshot for a single experiment arm.
+//!
+//! [`ConfigSnapshot`] captures all eight tunable parameters as a flat struct.
+//! It is used as the "current best config" inside [`ExperimentEngine`] and as the
+//! bridge to [`GenerationOverrides`] when the engine patches the subject provider
+//! for a candidate evaluation.
+//!
+//! [`ExperimentEngine`]: crate::ExperimentEngine
 
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
@@ -13,16 +20,46 @@ use super::types::{ParameterKind, Variation, VariationValue};
 ///
 /// `ConfigSnapshot` is the bridge between Zeph's runtime `Config` and the
 /// variation engine. Each experiment arm is defined by a snapshot derived from
-/// the baseline config with exactly one parameter changed.
+/// the baseline config with exactly one parameter changed via [`Self::apply`].
+///
+/// The snapshot is also used to extract [`GenerationOverrides`] that are passed
+/// to the subject provider for a candidate evaluation.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_experiments::{ConfigSnapshot, ParameterKind, Variation, VariationValue};
+///
+/// let baseline = ConfigSnapshot::default();
+/// let variation = Variation {
+///     parameter: ParameterKind::Temperature,
+///     value: VariationValue::from(0.9_f64),
+/// };
+/// let candidate = baseline.apply(&variation);
+/// assert!((candidate.temperature - 0.9).abs() < f64::EPSILON);
+/// assert!((candidate.top_p - baseline.top_p).abs() < f64::EPSILON); // unchanged
+///
+/// // Round-trip through diff
+/// let recovered = baseline.diff(&candidate).unwrap();
+/// assert_eq!(recovered.parameter, ParameterKind::Temperature);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigSnapshot {
+    /// LLM sampling temperature.
     pub temperature: f64,
+    /// Top-p (nucleus) sampling probability.
     pub top_p: f64,
+    /// Top-k sampling cutoff (stored as `f64` to match the search space representation).
     pub top_k: f64,
+    /// Frequency penalty applied to already-seen tokens.
     pub frequency_penalty: f64,
+    /// Presence penalty applied to already-seen topics.
     pub presence_penalty: f64,
+    /// Number of memory chunks to retrieve per query.
     pub retrieval_top_k: f64,
+    /// Minimum cosine similarity for cross-session memory recall.
     pub similarity_threshold: f64,
+    /// Half-life in days for temporal memory decay.
     pub temporal_decay: f64,
 }
 
@@ -129,7 +166,19 @@ impl ConfigSnapshot {
         result
     }
 
-    /// Get the value of a parameter by kind.
+    /// Get the current value of a parameter by kind.
+    ///
+    /// Unknown kinds (from `#[non_exhaustive]` additions) return `0.0`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::{ConfigSnapshot, ParameterKind};
+    ///
+    /// let s = ConfigSnapshot::default();
+    /// assert!((s.get(ParameterKind::Temperature) - 0.7).abs() < f64::EPSILON);
+    /// assert!((s.get(ParameterKind::TopK) - 40.0).abs() < f64::EPSILON);
+    /// ```
     #[must_use]
     pub fn get(&self, kind: ParameterKind) -> f64 {
         #[allow(unreachable_patterns)]
@@ -147,6 +196,18 @@ impl ConfigSnapshot {
     }
 
     /// Set the value of a parameter by kind.
+    ///
+    /// Unknown kinds (from `#[non_exhaustive]` additions) are silently ignored.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::{ConfigSnapshot, ParameterKind};
+    ///
+    /// let mut s = ConfigSnapshot::default();
+    /// s.set(ParameterKind::Temperature, 1.2);
+    /// assert!((s.temperature - 1.2).abs() < f64::EPSILON);
+    /// ```
     pub fn set(&mut self, kind: ParameterKind, value: f64) {
         #[allow(unreachable_patterns)]
         match kind {

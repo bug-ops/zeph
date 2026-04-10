@@ -1,17 +1,50 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Self-learning skill evolution types and prompt templates.
+//! Self-learning skill evolution: failure classification, outcome tracking, and prompt templates.
+//!
+//! The evolution pipeline consists of three stages:
+//!
+//! 1. **Classify** — convert a raw tool error into a [`FailureKind`] so the system can
+//!    distinguish transient infrastructure failures from systematic skill quality issues.
+//! 2. **Record** — store [`SkillOutcome`] events in `skill_usage_log` for Bayesian ranking.
+//! 3. **Improve** — if the success rate drops below a threshold, generate an updated skill
+//!    body via LLM using [`IMPROVEMENT_PROMPT_TEMPLATE`].
+//!
+//! Step corrections ([`StepCorrection`]) allow fine-grained recovery: when a specific tool
+//! failure pattern is detected, a hint is injected into the next agent turn.
 
 /// Structured failure classification for tool execution errors.
+///
+/// Used to decide whether a failure is attributable to the skill (systematic) or to
+/// external infrastructure (transient). Only systematic failures trigger skill improvement.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_skills::evolution::FailureKind;
+///
+/// let kind = FailureKind::from_error("process timed out");
+/// assert_eq!(kind, FailureKind::Timeout);
+///
+/// let kind2 = FailureKind::from_error("permission denied");
+/// assert_eq!(kind2, FailureKind::PermissionDenied);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
+    /// Process exited with a non-zero status code.
     ExitNonzero,
+    /// Operation exceeded its time budget.
     Timeout,
+    /// OS or policy rejected the operation due to insufficient permissions.
     PermissionDenied,
+    /// The skill chose an inappropriate tool or approach for the task.
     WrongApproach,
+    /// The operation partially succeeded but did not complete.
     Partial,
+    /// The LLM emitted syntactically invalid tool parameters.
     SyntaxError,
+    /// Failure cause could not be classified.
     Unknown,
 }
 
@@ -65,6 +98,9 @@ impl From<zeph_tools::error_taxonomy::ToolErrorCategory> for FailureKind {
 }
 
 /// Pattern that matches a tool failure for step-correction lookup.
+///
+/// All three fields participate in matching: an empty string means "match any".
+/// A failure event must match all non-empty fields to be eligible for correction.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FailurePattern {
     /// Which `FailureKind` this pattern matches (empty string = match any).
@@ -77,25 +113,35 @@ pub struct FailurePattern {
 
 /// A step-level correction hint: when a tool failure matches `trigger`,
 /// inject `hint` into the next turn's context.
+///
+/// Corrections are stored per skill in the `skill_step_corrections` DB table
+/// and evaluated after each tool failure.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StepCorrection {
+    /// Failure pattern that must match for this correction to be applied.
     pub trigger: FailurePattern,
+    /// Text to inject into the agent's next turn as a contextual hint.
     pub hint: String,
 }
 
-/// Outcome classification for skill-attributed events.
+/// Outcome classification for a skill-attributed agent turn.
+///
+/// Stored in `skill_usage_log` for Bayesian success-rate estimation used in
+/// [`crate::trust_score`] re-ranking.
 #[derive(Debug, Clone)]
 pub enum SkillOutcome {
+    /// The skill completed its task successfully.
     Success,
+    /// A tool invoked by the skill exited with an error.
     ToolFailure {
         skill_name: String,
         error_context: String,
         tool_output: String,
         kind: FailureKind,
     },
-    EmptyResponse {
-        skill_name: String,
-    },
+    /// The LLM produced an empty response when a skill was active.
+    EmptyResponse { skill_name: String },
+    /// The user explicitly rejected the skill's output.
     UserRejection {
         skill_name: String,
         feedback: String,
@@ -126,17 +172,28 @@ impl SkillOutcome {
     }
 }
 
-/// Aggregated metrics for a skill version.
+/// Aggregated success/failure metrics for a single skill version.
+///
+/// Loaded from `skill_metrics` via `zeph-core` at improvement-decision time.
 #[derive(Debug, Clone)]
 pub struct SkillMetrics {
+    /// Skill name (matches the `name` frontmatter field).
     pub skill_name: String,
+    /// Schema version of the stored skill body.
     pub version: i64,
+    /// Total number of invocations recorded.
     pub total: i64,
+    /// Number of `Success` outcomes.
     pub successes: i64,
+    /// Number of non-success outcomes.
     pub failures: i64,
 }
 
 impl SkillMetrics {
+    /// Observed success rate in `[0.0, 1.0]`. Returns `0.0` when `total` is zero.
+    ///
+    /// Prefer [`crate::trust_score::posterior_weight`] for ranking decisions — it applies
+    /// a Wilson-score confidence penalty that is more conservative for small sample sizes.
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
     pub fn success_rate(&self) -> f64 {

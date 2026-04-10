@@ -1,6 +1,42 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Ollama local model backend.
+//!
+//! [`OllamaProvider`] connects to a running Ollama server and exposes it as an
+//! [`LlmProvider`]. Both chat completion and embedding generation are supported.
+//! An optional separate vision model can be configured for image-bearing messages.
+//!
+//! # Configuration
+//!
+//! ```toml
+//! [[llm.providers]]
+//! name = "local"
+//! type = "ollama"
+//! base_url = "http://localhost:11434"
+//! model = "llama3.2"
+//! embedding_model = "nomic-embed-text"
+//! ```
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! use zeph_llm::ollama::OllamaProvider;
+//! use zeph_llm::provider::{LlmProvider, Message, Role};
+//!
+//! # async fn run() -> Result<(), zeph_llm::LlmError> {
+//! let provider = OllamaProvider::new(
+//!     "http://localhost:11434",
+//!     "llama3.2".into(),
+//!     "nomic-embed-text".into(),
+//! );
+//! let messages = vec![Message::from_legacy(Role::User, "Hello!")];
+//! let response = provider.chat(&messages).await?;
+//! println!("{response}");
+//! # Ok(())
+//! # }
+//! ```
+
 use ollama_rs::Ollama;
 
 use crate::error::LlmError;
@@ -19,11 +55,22 @@ use crate::provider::{
 };
 use crate::usage::UsageTracker;
 
+/// Metadata returned by `/api/show` for the configured chat model.
 #[derive(Debug)]
 pub struct ModelInfo {
+    /// Context window size in tokens, if reported by the server.
     pub context_length: Option<usize>,
 }
 
+/// [`LlmProvider`] backend backed by a local Ollama server.
+///
+/// Construct with [`OllamaProvider::new`] and optionally chain builder methods:
+/// - [`with_vision_model`](Self::with_vision_model) — a separate model for image-bearing turns
+/// - [`with_generation_overrides`](Self::with_generation_overrides) — temperature, top-p, top-k
+/// - [`set_context_window`](Self::set_context_window) — pre-set the context window size
+///
+/// Call [`fetch_model_info`](Self::fetch_model_info) after construction to auto-populate
+/// the context window from the server.
 #[derive(Debug, Clone)]
 pub struct OllamaProvider {
     client: Ollama,
@@ -58,6 +105,11 @@ fn apply_generation_overrides(
 }
 
 impl OllamaProvider {
+    /// Create a new provider targeting the given Ollama server URL.
+    ///
+    /// `base_url` may include a port (e.g. `"http://localhost:11434"`).
+    /// `embedding_model` is used for [`LlmProvider::embed`] calls; it may be the same
+    /// as `model` if the chat model also supports embeddings.
     #[must_use]
     pub fn new(base_url: &str, model: String, embedding_model: String) -> Self {
         let (host, port) = parse_host_port(base_url);
@@ -72,12 +124,20 @@ impl OllamaProvider {
         }
     }
 
+    /// Override generation parameters (temperature, top-p, top-k) for this provider.
+    ///
+    /// Note: `frequency_penalty` and `presence_penalty` are not supported by Ollama
+    /// and will be silently ignored.
     #[must_use]
     pub fn with_generation_overrides(mut self, overrides: GenerationOverrides) -> Self {
         self.generation_overrides = Some(overrides);
         self
     }
 
+    /// Configure a separate Ollama model to use when the input contains images.
+    ///
+    /// When vision input is detected, the provider sends the request to this model
+    /// instead of the default chat model.
     #[must_use]
     pub fn with_vision_model(mut self, model: String) -> Self {
         self.vision_model = Some(model);

@@ -4,17 +4,45 @@
 use std::fmt;
 
 /// Data for rendering file diffs in the TUI.
+///
+/// Produced by [`ShellExecutor`](crate::ShellExecutor) and [`FileExecutor`](crate::FileExecutor)
+/// when a tool call modifies a tracked file. The TUI uses this to display a side-by-side diff.
 #[derive(Debug, Clone)]
 pub struct DiffData {
+    /// Relative or absolute path to the file that was modified.
     pub file_path: String,
+    /// File content before the tool executed.
     pub old_content: String,
+    /// File content after the tool executed.
     pub new_content: String,
 }
 
 /// Structured tool invocation from LLM.
+///
+/// Produced by the agent loop when the LLM emits a structured tool call (as opposed to
+/// a legacy fenced code block). Dispatched to [`ToolExecutor::execute_tool_call`].
+///
+/// # Example
+///
+/// ```rust
+/// use zeph_tools::ToolCall;
+///
+/// let call = ToolCall {
+///     tool_id: "bash".to_owned(),
+///     params: {
+///         let mut m = serde_json::Map::new();
+///         m.insert("command".to_owned(), serde_json::Value::String("echo hello".to_owned()));
+///         m
+///     },
+///     caller_id: Some("user-42".to_owned()),
+/// };
+/// assert_eq!(call.tool_id, "bash");
+/// ```
 #[derive(Debug, Clone)]
 pub struct ToolCall {
+    /// The tool identifier, matching a value from [`ToolExecutor::tool_definitions`].
     pub tool_id: String,
+    /// JSON parameters for the tool call, deserialized into the tool's parameter struct.
     pub params: serde_json::Map<String, serde_json::Value>,
     /// Opaque caller identifier propagated from the channel (user ID, session ID, etc.).
     /// `None` for system-initiated calls (scheduler, self-learning, internal).
@@ -22,18 +50,31 @@ pub struct ToolCall {
 }
 
 /// Cumulative filter statistics for a single tool execution.
+///
+/// Populated by [`ShellExecutor`](crate::ShellExecutor) when output filters are configured.
+/// Displayed in the TUI to show how much output was compacted before being sent to the LLM.
 #[derive(Debug, Clone, Default)]
 pub struct FilterStats {
+    /// Raw character count before filtering.
     pub raw_chars: usize,
+    /// Character count after filtering.
     pub filtered_chars: usize,
+    /// Raw line count before filtering.
     pub raw_lines: usize,
+    /// Line count after filtering.
     pub filtered_lines: usize,
+    /// Worst-case confidence across all applied filters.
     pub confidence: Option<crate::FilterConfidence>,
+    /// The shell command that produced this output, for display purposes.
     pub command: Option<String>,
+    /// Zero-based line indices that were kept after filtering.
     pub kept_lines: Vec<usize>,
 }
 
 impl FilterStats {
+    /// Returns the percentage of characters removed by filtering.
+    ///
+    /// Returns `0.0` when there was no raw output to filter.
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
     pub fn savings_pct(&self) -> f64 {
@@ -43,11 +84,33 @@ impl FilterStats {
         (1.0 - self.filtered_chars as f64 / self.raw_chars as f64) * 100.0
     }
 
+    /// Estimates the number of LLM tokens saved by filtering.
+    ///
+    /// Uses the 4-chars-per-token approximation. Suitable for logging and metrics,
+    /// not for billing or exact budget calculations.
     #[must_use]
     pub fn estimated_tokens_saved(&self) -> usize {
         self.raw_chars.saturating_sub(self.filtered_chars) / 4
     }
 
+    /// Formats a one-line filter summary for log messages and TUI status.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use zeph_tools::FilterStats;
+    ///
+    /// let stats = FilterStats {
+    ///     raw_chars: 1000,
+    ///     filtered_chars: 400,
+    ///     raw_lines: 50,
+    ///     filtered_lines: 20,
+    ///     command: Some("cargo build".to_owned()),
+    ///     ..Default::default()
+    /// };
+    /// let summary = stats.format_inline("shell");
+    /// assert!(summary.contains("60.0% filtered"));
+    /// ```
     #[must_use]
     pub fn format_inline(&self, tool_name: &str) -> String {
         let cmd_label = self
@@ -98,12 +161,40 @@ pub enum ClaimSource {
 }
 
 /// Structured result from tool execution.
+///
+/// Returned by every [`ToolExecutor`] implementation on success. The agent loop uses
+/// [`ToolOutput::summary`] as the tool result text injected into the LLM context.
+///
+/// # Example
+///
+/// ```rust
+/// use zeph_tools::{ToolOutput, executor::ClaimSource};
+///
+/// let output = ToolOutput {
+///     tool_name: "shell".to_owned(),
+///     summary: "hello\n".to_owned(),
+///     blocks_executed: 1,
+///     filter_stats: None,
+///     diff: None,
+///     streamed: false,
+///     terminal_id: None,
+///     locations: None,
+///     raw_response: None,
+///     claim_source: Some(ClaimSource::Shell),
+/// };
+/// assert_eq!(output.to_string(), "hello\n");
+/// ```
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
+    /// Name of the tool that produced this output (e.g. `"shell"`, `"web-scrape"`).
     pub tool_name: String,
+    /// Human-readable result text injected into the LLM context.
     pub summary: String,
+    /// Number of code blocks processed in this invocation.
     pub blocks_executed: u32,
+    /// Output filter statistics when filtering was applied, `None` otherwise.
     pub filter_stats: Option<FilterStats>,
+    /// File diff data for TUI display when the tool modified a tracked file.
     pub diff: Option<DiffData>,
     /// Whether this tool already streamed its output via `ToolEvent` channel.
     pub streamed: bool,
@@ -124,15 +215,44 @@ impl fmt::Display for ToolOutput {
     }
 }
 
+/// Maximum characters of tool output injected into the LLM context without truncation.
+///
+/// Output that exceeds this limit is split into a head and tail via [`truncate_tool_output`]
+/// to keep both the beginning and end of large command outputs.
 pub const MAX_TOOL_OUTPUT_CHARS: usize = 30_000;
 
-/// Truncate tool output that exceeds `MAX_TOOL_OUTPUT_CHARS` using head+tail split.
+/// Truncate tool output that exceeds [`MAX_TOOL_OUTPUT_CHARS`] using a head+tail split.
+///
+/// Equivalent to `truncate_tool_output_at(output, MAX_TOOL_OUTPUT_CHARS)`.
+///
+/// # Example
+///
+/// ```rust
+/// use zeph_tools::executor::truncate_tool_output;
+///
+/// let short = "hello world";
+/// assert_eq!(truncate_tool_output(short), short);
+/// ```
 #[must_use]
 pub fn truncate_tool_output(output: &str) -> String {
     truncate_tool_output_at(output, MAX_TOOL_OUTPUT_CHARS)
 }
 
-/// Truncate tool output that exceeds `max_chars` using head+tail split.
+/// Truncate tool output that exceeds `max_chars` using a head+tail split.
+///
+/// Preserves the first and last `max_chars / 2` characters and inserts a truncation
+/// marker in the middle. Both boundaries are snapped to valid UTF-8 character boundaries.
+///
+/// # Example
+///
+/// ```rust
+/// use zeph_tools::executor::truncate_tool_output_at;
+///
+/// let long = "a".repeat(200);
+/// let truncated = truncate_tool_output_at(&long, 100);
+/// assert!(truncated.contains("truncated"));
+/// assert!(truncated.len() < long.len());
+/// ```
 #[must_use]
 pub fn truncate_tool_output_at(output: &str, max_chars: usize) -> String {
     if output.len() <= max_chars {
@@ -152,33 +272,45 @@ pub fn truncate_tool_output_at(output: &str, max_chars: usize) -> String {
 }
 
 /// Event emitted during tool execution for real-time UI updates.
+///
+/// Sent over the [`ToolEventTx`] channel to the TUI or channel adapter.
+/// Each event variant corresponds to a phase in the tool execution lifecycle.
 #[derive(Debug, Clone)]
 pub enum ToolEvent {
-    Started {
-        tool_name: String,
-        command: String,
-    },
+    /// The tool has started. Displayed in the TUI as a spinner with the command text.
+    Started { tool_name: String, command: String },
+    /// A chunk of streaming output was produced (e.g. from a long-running command).
     OutputChunk {
         tool_name: String,
         command: String,
         chunk: String,
     },
+    /// The tool finished. Contains the full output and optional filter/diff data.
     Completed {
         tool_name: String,
         command: String,
+        /// Full output text (possibly filtered and truncated).
         output: String,
+        /// `true` when the tool exited successfully, `false` on error.
         success: bool,
         filter_stats: Option<FilterStats>,
         diff: Option<DiffData>,
     },
+    /// A transactional rollback was performed, restoring or deleting files.
     Rollback {
         tool_name: String,
         command: String,
+        /// Number of files restored to their pre-execution content.
         restored_count: usize,
+        /// Number of files that did not exist before execution and were deleted.
         deleted_count: usize,
     },
 }
 
+/// Sender half of the unbounded channel used to stream [`ToolEvent`]s to the UI.
+///
+/// Obtained from [`tokio::sync::mpsc::unbounded_channel`] and injected into executors
+/// via builder methods (e.g. [`ShellExecutor::with_tool_event_tx`](crate::ShellExecutor)).
 pub type ToolEventTx = tokio::sync::mpsc::UnboundedSender<ToolEvent>;
 
 /// Classifies a tool error as transient (retryable) or permanent (abort immediately).
@@ -297,18 +429,91 @@ pub fn deserialize_params<T: serde::de::DeserializeOwned>(
     })
 }
 
-/// Async trait for tool execution backends (shell, future MCP, A2A).
+/// Async trait for tool execution backends.
 ///
-/// Accepts the full LLM response and returns an optional output.
-/// Returns `None` when no tool invocation is detected in the response.
+/// Implementations include [`ShellExecutor`](crate::ShellExecutor),
+/// [`WebScrapeExecutor`](crate::WebScrapeExecutor), [`CompositeExecutor`](crate::CompositeExecutor),
+/// and [`FileExecutor`](crate::FileExecutor).
+///
+/// # Contract
+///
+/// - [`execute`](ToolExecutor::execute) and [`execute_tool_call`](ToolExecutor::execute_tool_call)
+///   return `Ok(None)` when the executor does not handle the given input — callers must not
+///   treat `None` as an error.
+/// - All methods must be `Send + Sync` and free of blocking I/O.
+/// - Implementations must enforce their own security controls (blocklists, sandboxes, SSRF
+///   protection) before executing any side-effectful operation.
+/// - [`execute_confirmed`](ToolExecutor::execute_confirmed) and
+///   [`execute_tool_call_confirmed`](ToolExecutor::execute_tool_call_confirmed) bypass
+///   confirmation gates only — all other security controls remain active.
+///
+/// # Two Invocation Paths
+///
+/// **Legacy fenced blocks**: The agent loop passes the raw LLM response string to [`execute`](ToolExecutor::execute).
+/// The executor parses ` ```bash ` or ` ```scrape ` blocks and executes each one.
+///
+/// **Structured tool calls**: The agent loop constructs a [`ToolCall`] from the LLM's
+/// JSON tool-use response and dispatches it via [`execute_tool_call`](ToolExecutor::execute_tool_call).
+/// This is the preferred path for new code.
+///
+/// # Example
+///
+/// ```rust
+/// use zeph_tools::{ToolExecutor, ToolCall, ToolOutput, ToolError, executor::ClaimSource};
+///
+/// #[derive(Debug)]
+/// struct EchoExecutor;
+///
+/// impl ToolExecutor for EchoExecutor {
+///     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+///         Ok(None) // not a fenced-block executor
+///     }
+///
+///     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+///         if call.tool_id != "echo" {
+///             return Ok(None);
+///         }
+///         let text = call.params.get("text")
+///             .and_then(|v| v.as_str())
+///             .unwrap_or("")
+///             .to_owned();
+///         Ok(Some(ToolOutput {
+///             tool_name: "echo".to_owned(),
+///             summary: text,
+///             blocks_executed: 1,
+///             filter_stats: None,
+///             diff: None,
+///             streamed: false,
+///             terminal_id: None,
+///             locations: None,
+///             raw_response: None,
+///             claim_source: None,
+///         }))
+///     }
+/// }
+/// ```
 pub trait ToolExecutor: Send + Sync {
+    /// Parse `response` for fenced tool blocks and execute them.
+    ///
+    /// Returns `Ok(None)` when no tool blocks are found in `response`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolError`] when a block is found but execution fails (blocked command,
+    /// sandbox violation, network error, timeout, etc.).
     fn execute(
         &self,
         response: &str,
     ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send;
 
     /// Execute bypassing confirmation checks (called after user approves).
-    /// Default: delegates to `execute`.
+    ///
+    /// Security controls other than the confirmation gate remain active. Default
+    /// implementation delegates to [`execute`](ToolExecutor::execute).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolError`] on execution failure.
     fn execute_confirmed(
         &self,
         response: &str,
@@ -316,12 +521,19 @@ pub trait ToolExecutor: Send + Sync {
         self.execute(response)
     }
 
-    /// Return tool definitions this executor can handle.
+    /// Return the tool definitions this executor can handle.
+    ///
+    /// Used to populate the LLM's tool schema at context-assembly time.
+    /// Returns an empty `Vec` by default (for executors that only handle fenced blocks).
     fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
         vec![]
     }
 
-    /// Execute a structured tool call. Returns `None` if `tool_id` is not handled.
+    /// Execute a structured tool call. Returns `Ok(None)` if `call.tool_id` is not handled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolError`] when the tool ID is handled but execution fails.
     fn execute_tool_call(
         &self,
         _call: &ToolCall,
@@ -332,7 +544,11 @@ pub trait ToolExecutor: Send + Sync {
     /// Execute a structured tool call bypassing confirmation checks.
     ///
     /// Called after the user has explicitly approved the tool invocation.
-    /// Default implementation delegates to `execute_tool_call`.
+    /// Default implementation delegates to [`execute_tool_call`](ToolExecutor::execute_tool_call).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolError`] on execution failure.
     fn execute_tool_call_confirmed(
         &self,
         call: &ToolCall,
@@ -341,9 +557,14 @@ pub trait ToolExecutor: Send + Sync {
     }
 
     /// Inject environment variables for the currently active skill. No-op by default.
+    ///
+    /// Called by the agent loop before each turn when the active skill specifies env vars.
+    /// Implementations that ignore this (e.g. `WebScrapeExecutor`) may leave the default.
     fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
 
     /// Set the effective trust level for the currently active skill. No-op by default.
+    ///
+    /// Trust level affects which operations are permitted (e.g. network access, file writes).
     fn set_effective_trust(&self, _level: crate::SkillTrustLevel) {}
 
     /// Whether the executor can safely retry this tool call on a transient error.
@@ -358,8 +579,12 @@ pub trait ToolExecutor: Send + Sync {
 
 /// Object-safe erased version of [`ToolExecutor`] using boxed futures.
 ///
-/// Implemented automatically for all `T: ToolExecutor + 'static`.
-/// Use `Box<dyn ErasedToolExecutor>` when dynamic dispatch is required.
+/// Because [`ToolExecutor`] uses `impl Future` return types, it is not object-safe and
+/// cannot be used as `dyn ToolExecutor`. This trait provides the same interface with
+/// `Pin<Box<dyn Future>>` returns, enabling dynamic dispatch.
+///
+/// Implemented automatically for all `T: ToolExecutor + 'static` via the blanket impl below.
+/// Use [`DynExecutor`] or `Box<dyn ErasedToolExecutor>` when runtime polymorphism is needed.
 pub trait ErasedToolExecutor: Send + Sync {
     fn execute_erased<'a>(
         &'a self,

@@ -75,12 +75,29 @@ fn default_llm_request_timeout() -> u64 {
     600
 }
 
+/// Skill trust policy configuration, nested under `[skills.trust]` in TOML.
+///
+/// Controls how trust levels are assigned to skills at load time based on their
+/// origin (local filesystem vs network) and integrity (hash verification result).
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [skills.trust]
+/// default_level = "quarantined"
+/// local_level = "trusted"
+/// scan_on_load = true
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TrustConfig {
+    /// Trust level assigned to skills from unknown or remote origins. Default: `quarantined`.
     #[serde(default = "default_trust_default_level")]
     pub default_level: SkillTrustLevel,
+    /// Trust level assigned to skills found on the local filesystem. Default: `trusted`.
     #[serde(default = "default_trust_local_level")]
     pub local_level: SkillTrustLevel,
+    /// Trust level assigned when a skill's content hash does not match the stored hash.
+    /// Default: `quarantined`.
     #[serde(default = "default_trust_hash_mismatch_level")]
     pub hash_mismatch_level: SkillTrustLevel,
     /// Scan skill body content for injection patterns at load time.
@@ -109,10 +126,30 @@ impl Default for TrustConfig {
     }
 }
 
+/// Agent security configuration, nested under `[security]` in TOML.
+///
+/// Aggregates all security-related subsystems: content isolation, exfiltration guards,
+/// memory write validation, PII filtering, rate limiting, prompt injection screening,
+/// and response verification.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [security]
+/// redact_secrets = true
+/// autonomy_level = "moderate"
+///
+/// [security.rate_limit]
+/// enabled = true
+/// shell_calls_per_minute = 20
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SecurityConfig {
+    /// Automatically redact detected secrets from tool outputs before they reach the LLM.
+    /// Default: `true`.
     #[serde(default = "default_true")]
     pub redact_secrets: bool,
+    /// Autonomy level controlling which tool actions require explicit user confirmation.
     #[serde(default)]
     pub autonomy_level: AutonomyLevel,
     #[serde(default)]
@@ -160,16 +197,36 @@ impl Default for SecurityConfig {
     }
 }
 
+/// Timeout configuration for external operations, nested under `[timeouts]` in TOML.
+///
+/// All timeouts are in seconds. Exceeding a timeout returns an error to the agent
+/// loop rather than blocking indefinitely.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [timeouts]
+/// llm_seconds = 60
+/// embedding_seconds = 15
+/// max_parallel_tools = 4
+/// ```
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct TimeoutConfig {
+    /// Timeout for streaming LLM first-token responses, in seconds. Default: `120`.
     #[serde(default = "default_llm_timeout")]
     pub llm_seconds: u64,
+    /// Total wall-clock timeout for a complete LLM request (all tokens), in seconds.
+    /// Default: `600`.
     #[serde(default = "default_llm_request_timeout")]
     pub llm_request_timeout_secs: u64,
+    /// Timeout for embedding API calls, in seconds. Default: `30`.
     #[serde(default = "default_embedding_timeout")]
     pub embedding_seconds: u64,
+    /// Timeout for A2A agent-to-agent calls, in seconds. Default: `30`.
     #[serde(default = "default_a2a_timeout")]
     pub a2a_seconds: u64,
+    /// Maximum number of tool calls that may execute concurrently in a single turn.
+    /// Default: `8`.
     #[serde(default = "default_max_parallel_tools")]
     pub max_parallel_tools: usize,
 }

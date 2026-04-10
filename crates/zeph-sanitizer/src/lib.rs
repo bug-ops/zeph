@@ -8,6 +8,56 @@
 //! The sanitizer truncates, strips control characters, detects injection patterns,
 //! and wraps content in spotlighting delimiters that signal to the LLM that the
 //! enclosed text is data to analyze, not instructions to follow.
+//!
+//! # Architecture
+//!
+//! The crate exposes a layered defense-in-depth pipeline:
+//!
+//! | Layer | Type | Description |
+//! |-------|------|-------------|
+//! | 1 | [`ContentSanitizer`] | Regex-based injection detection + spotlighting |
+//! | 2 | [`pii::PiiFilter`] | Regex PII scrubber (email, phone, SSN, credit card) |
+//! | 3 | [`guardrail::GuardrailFilter`] | LLM-based pre-screener at the input boundary |
+//! | 4 | [`quarantine::QuarantinedSummarizer`] | Isolated LLM fact extractor |
+//! | 5 | [`response_verifier::ResponseVerifier`] | Post-LLM response scanner |
+//! | 6 | [`exfiltration::ExfiltrationGuard`] | Outbound channel guards (markdown images, tool URLs) |
+//! | 7 | [`memory_validation::MemoryWriteValidator`] | Structural write guards for the memory store |
+//! | 8 | [`causal_ipi::TurnCausalAnalyzer`] | Behavioral deviation detection at tool-return boundaries |
+//!
+//! # Quick Start
+//!
+//! ```rust
+//! use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
+//! use zeph_config::ContentIsolationConfig;
+//!
+//! let config = ContentIsolationConfig::default();
+//! let sanitizer = ContentSanitizer::new(&config);
+//!
+//! let source = ContentSource::new(ContentSourceKind::WebScrape);
+//! let result = sanitizer.sanitize("Hello world", source);
+//!
+//! // result.body contains the spotlighted content ready for LLM context
+//! assert!(!result.body.is_empty());
+//! assert!(result.injection_flags.is_empty());
+//! assert!(!result.was_truncated);
+//! ```
+//!
+//! # Security Model
+//!
+//! Content is classified into trust tiers via [`ContentTrustLevel`]:
+//!
+//! - [`ContentTrustLevel::Trusted`] — passes through unchanged (system prompt, user input).
+//! - [`ContentTrustLevel::LocalUntrusted`] — tool results from local executors. Wrapped in
+//!   `<tool-output>` with a NOTE header.
+//! - [`ContentTrustLevel::ExternalUntrusted`] — web scrapes, MCP, A2A, memory retrieval.
+//!   Wrapped in `<external-data>` with an IMPORTANT warning and strongest injection scrutiny.
+//!
+//! # Feature Flags
+//!
+//! - **`classifiers`** (optional): enables ML-backed injection detection via
+//!   [`ContentSanitizer::classify_injection`] and NER-based PII detection via
+//!   [`ContentSanitizer::detect_pii`]. Requires an attached classifier backend.
+//!   See [`ContentSanitizer::with_classifier`] and [`ContentSanitizer::with_pii_detector`].
 
 pub mod causal_ipi;
 pub mod exfiltration;
@@ -68,6 +118,22 @@ static INJECTION_PATTERNS: LazyLock<Vec<CompiledPattern>> = LazyLock::new(|| {
 /// Constructed once at `Agent` startup from [`ContentIsolationConfig`] and held as a
 /// field on the agent. All calls to `sanitize()` are synchronous.
 /// `classify_injection()` is a separate async method for ML-backed detection (feature `classifiers`).
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
+/// use zeph_config::ContentIsolationConfig;
+///
+/// let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+/// assert!(sanitizer.is_enabled());
+///
+/// let source = ContentSource::new(ContentSourceKind::ToolResult);
+/// let result = sanitizer.sanitize("ls -la output here", source);
+/// // The body is wrapped in a <tool-output> spotlighting delimiter.
+/// assert!(result.body.contains("<tool-output"));
+/// assert!(!result.was_truncated);
+/// ```
 #[derive(Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ContentSanitizer {
@@ -105,6 +171,20 @@ pub struct ContentSanitizer {
 
 impl ContentSanitizer {
     /// Build a sanitizer from the given configuration.
+    ///
+    /// Eagerly compiles the injection-detection regex patterns so the first call
+    /// to [`sanitize`](Self::sanitize) incurs no compilation cost.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::ContentSanitizer;
+    /// use zeph_config::ContentIsolationConfig;
+    ///
+    /// let cfg = ContentIsolationConfig { enabled: false, ..Default::default() };
+    /// let sanitizer = ContentSanitizer::new(&cfg);
+    /// assert!(!sanitizer.is_enabled());
+    /// ```
     #[must_use]
     pub fn new(config: &ContentIsolationConfig) -> Self {
         // Ensure patterns are compiled at startup so the first call is fast.
@@ -309,7 +389,19 @@ impl ContentSanitizer {
         }
     }
 
-    /// Returns `true` when the sanitizer is active (i.e. `enabled = true` in config).
+    /// Returns `true` when the sanitizer is active (`enabled = true` in config).
+    ///
+    /// When `false`, [`sanitize`](Self::sanitize) is a no-op that passes content through unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::ContentSanitizer;
+    /// use zeph_config::ContentIsolationConfig;
+    ///
+    /// let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+    /// assert!(sanitizer.is_enabled());
+    /// ```
     #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.enabled
@@ -331,16 +423,41 @@ impl ContentSanitizer {
         self.classifier.is_some()
     }
 
-    /// Run the four-step sanitization pipeline on `content`.
+    /// Run the sanitization pipeline on `content`.
     ///
     /// Steps:
     /// 1. Truncate to `max_content_size` bytes on a UTF-8 char boundary.
     /// 2. Strip null bytes and non-printable ASCII control characters.
     /// 3. Detect injection patterns (flag only, do not remove).
-    /// 4. Wrap in spotlighting delimiters (unless `Trusted` or spotlight disabled).
+    /// 4. Escape delimiter tag names that would break spotlight wrappers.
+    /// 5. Wrap in spotlighting delimiters (unless `Trusted` or spotlight disabled).
     ///
     /// When `enabled = false`, this is a no-op: content is returned as-is wrapped in
     /// a [`SanitizedContent`] with no flags.
+    ///
+    /// When `source.trust_level` is [`ContentTrustLevel::Trusted`], the pipeline is also
+    /// skipped — trusted content passes through unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
+    /// use zeph_config::ContentIsolationConfig;
+    ///
+    /// let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+    ///
+    /// // External content gets the strongest warning header.
+    /// let source = ContentSource::new(ContentSourceKind::WebScrape);
+    /// let result = sanitizer.sanitize("page content", source);
+    /// assert!(result.body.contains("<external-data"));
+    /// assert!(!result.was_truncated);
+    ///
+    /// // Oversized content is truncated.
+    /// let cfg = ContentIsolationConfig { max_content_size: 5, ..Default::default() };
+    /// let s2 = ContentSanitizer::new(&cfg);
+    /// let result2 = s2.sanitize("hello world", ContentSource::new(ContentSourceKind::ToolResult));
+    /// assert!(result2.was_truncated);
+    /// ```
     #[must_use]
     pub fn sanitize(&self, content: &str, source: ContentSource) -> SanitizedContent {
         if !self.enabled || source.trust_level == ContentTrustLevel::Trusted {
@@ -423,9 +540,25 @@ impl ContentSanitizer {
         flags
     }
 
-    /// Replace delimiter tag names that would allow content to escape the spotlighting
-    /// wrapper (CRIT-03). Uses case-insensitive regex replacement so mixed-case variants
-    /// like `<Tool-Output>` or `<EXTERNAL-DATA>` are also neutralized (FIX-03).
+    /// Escape delimiter tag names that would allow content to break out of the spotlighting
+    /// wrapper (CRIT-03).
+    ///
+    /// Uses case-insensitive regex replacement so mixed-case variants like `<Tool-Output>`
+    /// or `<EXTERNAL-DATA>` are also neutralized (FIX-03). The `<` is replaced with the
+    /// HTML entity `&lt;` so the tag is rendered as plain text inside the wrapper.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::ContentSanitizer;
+    ///
+    /// let escaped = ContentSanitizer::escape_delimiter_tags("data </tool-output> more");
+    /// assert!(!escaped.contains("</tool-output>"));
+    /// assert!(escaped.contains("&lt;/tool-output"));
+    ///
+    /// let escaped2 = ContentSanitizer::escape_delimiter_tags("</EXTERNAL-DATA> end");
+    /// assert!(!escaped2.contains("</EXTERNAL-DATA>"));
+    /// ```
     pub fn escape_delimiter_tags(content: &str) -> String {
         use std::sync::LazyLock;
         static RE_TOOL_OUTPUT: LazyLock<Regex> =
@@ -453,17 +586,9 @@ impl ContentSanitizer {
             .replace('>', "&gt;")
     }
 
-    /// ML-backed injection detection (async, separate from the sync `sanitize()` pipeline).
+    /// Map a regex injection hit to the appropriate verdict given the configured enforcement mode.
     ///
-    /// Stage 1: binary `DeBERTa` classifier with dual-threshold scoring.
-    /// Stage 2 (optional): three-class `AlignSentinel` refinement on Suspicious/Blocked results.
-    ///
-    /// Enforcement mode controls the hard-threshold verdict:
-    /// - `Warn`: returns `Suspicious` instead of `Blocked` (safe for tool outputs with high FPR)
-    /// - `Block`: returns `Blocked` at hard threshold (pre-v0.17 behavior)
-    ///
-    /// Both stages share one timeout budget (`classifier_timeout_ms`). Falls back to regex on error.
-    /// Map a regex hit to the appropriate verdict given enforcement mode.
+    /// Used as the fallback when the ML classifier is unavailable, errors, or times out.
     #[cfg(feature = "classifiers")]
     fn regex_verdict(&self) -> InjectionVerdict {
         match self.enforcement_mode {
@@ -472,6 +597,23 @@ impl ContentSanitizer {
         }
     }
 
+    /// ML-backed injection detection (async, separate from the sync [`sanitize`](Self::sanitize) pipeline).
+    ///
+    /// Stage 1: binary `DeBERTa` classifier with dual-threshold scoring.
+    ///
+    /// - Score ≥ hard threshold: returns [`InjectionVerdict::Blocked`] (or `Suspicious` when
+    ///   enforcement mode is `Warn`).
+    /// - Score ≥ soft threshold: returns [`InjectionVerdict::Suspicious`].
+    /// - Score below soft threshold: returns [`InjectionVerdict::Clean`].
+    ///
+    /// Stage 2 (optional): three-class `AlignSentinel` refinement on `Suspicious`/`Blocked`
+    /// results. An `aligned-instruction` or `no-instruction` result downgrades the verdict to
+    /// `Clean`, reducing false positives from legitimate instruction-style tool output.
+    ///
+    /// Both stages share one timeout budget (`classifier_timeout_ms`). On timeout or
+    /// classifier error, falls back to the regex path from [`ContentSanitizer::sanitize`].
+    ///
+    /// When no classifier backend is attached, also falls back to regex detection.
     #[cfg(feature = "classifiers")]
     #[allow(clippy::too_many_lines)]
     pub async fn classify_injection(&self, text: &str) -> InjectionVerdict {
@@ -588,6 +730,27 @@ impl ContentSanitizer {
         binary_verdict
     }
 
+    /// Wrap `content` in a spotlighting delimiter appropriate for its trust level.
+    ///
+    /// - [`ContentTrustLevel::Trusted`]: returns content unchanged.
+    /// - [`ContentTrustLevel::LocalUntrusted`]: wraps in `<tool-output …>` with a NOTE header.
+    /// - [`ContentTrustLevel::ExternalUntrusted`]: wraps in `<external-data …>` with an IMPORTANT
+    ///   warning. When `flags` is non-empty, appends a per-pattern injection warning.
+    ///
+    /// Attribute values (source kind, identifier) are XML-escaped to prevent attribute injection.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
+    ///
+    /// let source = ContentSource::new(ContentSourceKind::ToolResult)
+    ///     .with_identifier("shell");
+    /// let body = ContentSanitizer::apply_spotlight("output text", &source, &[]);
+    /// assert!(body.contains("<tool-output"));
+    /// assert!(body.contains("output text"));
+    /// assert!(body.contains("</tool-output>"));
+    /// ```
     #[must_use]
     pub fn apply_spotlight(
         content: &str,

@@ -8,18 +8,60 @@ use serde::{Deserialize, Serialize};
 use super::types::ParameterKind;
 
 /// A continuous or discrete range for a single tunable parameter.
+///
+/// When `step` is `Some`, the parameter is treated as discrete: values are
+/// quantized to the nearest grid point anchored at `min`. When `step` is `None`
+/// the parameter is treated as continuous and generators fall back to an internal
+/// default step count (typically 20 divisions).
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_experiments::{ParameterRange, ParameterKind};
+///
+/// let range = ParameterRange {
+///     kind: ParameterKind::Temperature,
+///     min: 0.0,
+///     max: 1.0,
+///     step: Some(0.1),
+///     default: 0.7,
+/// };
+///
+/// assert!(range.is_valid());
+/// assert_eq!(range.step_count(), Some(11));
+/// assert!((range.clamp(2.0) - 1.0).abs() < f64::EPSILON);
+/// assert!((range.quantize(0.73) - 0.7).abs() < 1e-10);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParameterRange {
+    /// The parameter this range applies to.
     pub kind: ParameterKind,
+    /// Minimum value (inclusive).
     pub min: f64,
+    /// Maximum value (inclusive).
     pub max: f64,
-    /// Discrete step size. `None` means continuous (deduplication is effectively disabled).
+    /// Discrete step size. `None` means continuous (generators use a default step count).
     pub step: Option<f64>,
+    /// Default (baseline) value, typically read from the current agent config.
     pub default: f64,
 }
 
 impl ParameterRange {
-    /// Number of discrete steps in this range, or `None` if step is not set or is non-positive.
+    /// Number of discrete grid points in this range, or `None` if `step` is not set or ≤ 0.
+    ///
+    /// The count is `floor((max - min) / step) + 1`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::{ParameterRange, ParameterKind};
+    ///
+    /// let r = ParameterRange { kind: ParameterKind::Temperature, min: 0.0, max: 1.0, step: Some(0.5), default: 0.5 };
+    /// assert_eq!(r.step_count(), Some(3)); // 0.0, 0.5, 1.0
+    ///
+    /// let r_continuous = ParameterRange { step: None, ..r };
+    /// assert_eq!(r_continuous.step_count(), None);
+    /// ```
     #[must_use]
     pub fn step_count(&self) -> Option<usize> {
         let step = self.step?;
@@ -31,12 +73,32 @@ impl ParameterRange {
     }
 
     /// Clamp `value` to `[min, max]`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::{ParameterRange, ParameterKind};
+    ///
+    /// let r = ParameterRange { kind: ParameterKind::TopP, min: 0.1, max: 1.0, step: Some(0.1), default: 0.9 };
+    /// assert!((r.clamp(2.0) - 1.0).abs() < f64::EPSILON);
+    /// assert!((r.clamp(-1.0) - 0.1).abs() < f64::EPSILON);
+    /// ```
     #[must_use]
     pub fn clamp(&self, value: f64) -> f64 {
         value.clamp(self.min, self.max)
     }
 
-    /// Return `true` if `value` is within `[min, max]`.
+    /// Return `true` if `value` lies within `[min, max]` (inclusive).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::{ParameterRange, ParameterKind};
+    ///
+    /// let r = ParameterRange { kind: ParameterKind::Temperature, min: 0.0, max: 1.0, step: Some(0.1), default: 0.7 };
+    /// assert!(r.contains(0.5));
+    /// assert!(!r.contains(1.1));
+    /// ```
     #[must_use]
     pub fn contains(&self, value: f64) -> bool {
         (self.min..=self.max).contains(&value)
@@ -57,9 +119,22 @@ impl ParameterRange {
         value
     }
 
-    /// Validate that this range is internally consistent.
+    /// Return `true` if this range is internally consistent.
     ///
-    /// Returns `false` if `min > max`, any value is non-finite, or `step` is non-positive.
+    /// Returns `false` if `min > max`, any bound or `default` is non-finite,
+    /// or `step` is present but non-positive or non-finite.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::{ParameterRange, ParameterKind};
+    ///
+    /// let valid = ParameterRange { kind: ParameterKind::Temperature, min: 0.0, max: 1.0, step: Some(0.1), default: 0.7 };
+    /// assert!(valid.is_valid());
+    ///
+    /// let inverted = ParameterRange { min: 1.0, max: 0.0, ..valid };
+    /// assert!(!inverted.is_valid());
+    /// ```
     #[must_use]
     pub fn is_valid(&self) -> bool {
         self.min.is_finite()
@@ -71,9 +146,28 @@ impl ParameterRange {
 }
 
 /// The set of parameter ranges that define the experiment search space.
+///
+/// The default search space covers five parameters: `temperature`, `top_p`, `top_k`,
+/// `frequency_penalty`, and `presence_penalty`. Custom spaces can be constructed
+/// by providing any subset of [`ParameterRange`] values.
+///
+/// When deserialized from config with `[serde(default)]`, missing fields are filled
+/// from [`Default::default`].
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_experiments::{SearchSpace, ParameterKind};
+///
+/// let space = SearchSpace::default();
+/// assert!(space.is_valid());
+/// assert!(space.grid_size() > 0);
+/// assert!(space.range_for(ParameterKind::Temperature).is_some());
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SearchSpace {
+    /// The parameter ranges in this search space.
     pub parameters: Vec<ParameterRange>,
 }
 
@@ -122,23 +216,59 @@ impl Default for SearchSpace {
 }
 
 impl SearchSpace {
-    /// Find the range for a given `ParameterKind`, if present.
+    /// Find the range for a given [`ParameterKind`], if present.
+    ///
+    /// Returns `None` if the search space does not include the requested kind.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::{SearchSpace, ParameterKind};
+    ///
+    /// let space = SearchSpace::default();
+    /// let temp = space.range_for(ParameterKind::Temperature).unwrap();
+    /// assert!((temp.default - 0.7).abs() < f64::EPSILON);
+    ///
+    /// // RetrievalTopK is not in the default space
+    /// assert!(space.range_for(ParameterKind::RetrievalTopK).is_none());
+    /// ```
     #[must_use]
     pub fn range_for(&self, kind: ParameterKind) -> Option<&ParameterRange> {
         self.parameters.iter().find(|r| r.kind == kind)
     }
 
-    /// Validate all parameter ranges in this search space.
+    /// Return `true` if all parameter ranges in this space are internally consistent.
     ///
-    /// Returns `false` if any range has `min > max`, non-finite values, or non-positive step.
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::SearchSpace;
+    ///
+    /// assert!(SearchSpace::default().is_valid());
+    /// assert!(SearchSpace { parameters: vec![] }.is_valid()); // empty is valid
+    /// ```
     #[must_use]
     pub fn is_valid(&self) -> bool {
         self.parameters.iter().all(ParameterRange::is_valid)
     }
 
-    /// Total number of grid points across all parameters that have a step.
+    /// Total number of discrete grid points across all parameters that have a step.
     ///
-    /// This is the number of distinct variations a `GridStep` strategy will generate.
+    /// This equals the number of distinct variations a [`GridStep`] generator will
+    /// produce before returning `None`. Parameters without a `step` are not counted.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::SearchSpace;
+    ///
+    /// let size = SearchSpace::default().grid_size();
+    /// assert!(size > 0);
+    ///
+    /// assert_eq!(SearchSpace { parameters: vec![] }.grid_size(), 0);
+    /// ```
+    ///
+    /// [`GridStep`]: crate::GridStep
     #[must_use]
     pub fn grid_size(&self) -> usize {
         self.parameters

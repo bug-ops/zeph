@@ -1,6 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Zero-trust TTL-bounded permission grants for sub-agents.
+//!
+//! [`PermissionGrants`] tracks active grants (vault secrets or runtime tool access)
+//! for a running sub-agent. All grants are time-limited; expired grants are swept
+//! lazily by [`PermissionGrants::is_active`] and eagerly by
+//! [`PermissionGrants::sweep_expired`].
+//!
+//! Grants are revoked on drop and on agent completion/cancellation. Secret key names
+//! are never logged above DEBUG level; the `Display` impl for [`GrantKind::Secret`]
+//! always prints `"Secret(<redacted>)"`.
+
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -8,6 +19,21 @@ use serde::{Deserialize, Serialize};
 /// Metadata sent by a sub-agent when it needs a secret from the vault.
 ///
 /// Carried in an `InputRequired` A2A status update as structured metadata.
+/// The parent agent surfaces this to the user as an approval prompt; the user can
+/// then call [`SubAgentManager::approve_secret`][crate::SubAgentManager] or
+/// [`SubAgentManager::deny_secret`][crate::SubAgentManager].
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_subagent::grants::SecretRequest;
+///
+/// let req = SecretRequest {
+///     secret_key: "OPENAI_API_KEY".to_owned(),
+///     reason: Some("needed for embeddings".to_owned()),
+/// };
+/// assert_eq!(req.secret_key, "OPENAI_API_KEY");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretRequest {
     /// The vault key name the sub-agent is requesting.
@@ -21,6 +47,21 @@ pub struct SecretRequest {
 /// `GrantKind` is intentionally NOT serializable — grant metadata should never
 /// leave the in-memory security boundary. Key names are logged only at DEBUG
 /// level to avoid leaking grant enumeration to centralized log systems.
+///
+/// The [`Display`][std::fmt::Display] implementation always redacts `Secret` payloads,
+/// printing `Secret(<redacted>)` instead of the actual key name.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_subagent::grants::GrantKind;
+///
+/// let secret = GrantKind::Secret("my-key".to_owned());
+/// assert!(!secret.to_string().contains("my-key"), "key must be redacted");
+///
+/// let tool = GrantKind::Tool("shell".to_owned());
+/// assert_eq!(tool.to_string(), "Tool(shell)");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GrantKind {
     /// A vault secret key granted for in-memory access.
@@ -38,6 +79,10 @@ impl std::fmt::Display for GrantKind {
     }
 }
 
+/// A single permission grant with a TTL.
+///
+/// Created via [`PermissionGrants::add`] and swept automatically by
+/// [`PermissionGrants::sweep_expired`].
 #[derive(Debug)]
 pub struct Grant {
     pub(crate) kind: GrantKind,
@@ -46,6 +91,17 @@ pub struct Grant {
 }
 
 impl Grant {
+    /// Create a new grant for `kind` that expires after `ttl`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::time::Duration;
+    /// use zeph_subagent::grants::{Grant, GrantKind};
+    ///
+    /// let grant = Grant::new(GrantKind::Tool("shell".to_owned()), Duration::from_secs(60));
+    /// assert!(!grant.is_expired());
+    /// ```
     #[must_use]
     pub fn new(kind: GrantKind, ttl: Duration) -> Self {
         Self {
@@ -55,6 +111,18 @@ impl Grant {
         }
     }
 
+    /// Returns `true` if the grant's TTL has elapsed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::time::Duration;
+    /// use zeph_subagent::grants::{Grant, GrantKind};
+    ///
+    /// let grant = Grant::new(GrantKind::Tool("web".to_owned()), Duration::from_secs(300));
+    /// // A brand-new grant is not yet expired.
+    /// assert!(!grant.is_expired());
+    /// ```
     #[must_use]
     pub fn is_expired(&self) -> bool {
         self.granted_at.elapsed() >= self.ttl
@@ -86,7 +154,22 @@ impl Drop for PermissionGrants {
 }
 
 impl PermissionGrants {
-    /// Add a new grant.
+    /// Add a new grant with the given `kind` and `ttl`.
+    ///
+    /// The grant is immediately tracked. Expired grants are not swept here;
+    /// call [`sweep_expired`][Self::sweep_expired] or [`is_active`][Self::is_active]
+    /// to remove stale entries.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::time::Duration;
+    /// use zeph_subagent::grants::{GrantKind, PermissionGrants};
+    ///
+    /// let mut grants = PermissionGrants::default();
+    /// grants.add(GrantKind::Tool("shell".to_owned()), Duration::from_secs(60));
+    /// assert!(grants.is_active(&GrantKind::Tool("shell".to_owned())));
+    /// ```
     pub fn add(&mut self, kind: GrantKind, ttl: Duration) {
         // Log tool grants at DEBUG; for secrets log only the redacted display form.
         tracing::debug!(kind = %kind, ?ttl, "permission grant added");

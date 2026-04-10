@@ -1,6 +1,25 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! IDE-proxied shell executor via ACP `terminal/*` methods.
+//!
+//! When the IDE advertises `terminal` capability, the agent routes `bash` tool
+//! calls through the IDE's integrated terminal instead of spawning a local process.
+//! This keeps the terminal visible in the IDE UI and allows live output streaming.
+//!
+//! # Security
+//!
+//! All terminal commands require an [`AcpPermissionGate`] to request IDE confirmation.
+//! Stdin writes are rate-limited and capped at 64 KiB (REQ-P23-1). Commands that
+//! resolve to shell interpreters (`bash`, `sh`, `zsh`, etc.) trigger an explicit
+//! warning in the permission prompt.
+//!
+//! # Terminal lifecycle
+//!
+//! ACP requires the terminal to remain alive until after the `tool_call_update`
+//! notification containing `ToolCallContent::Terminal(terminal_id)` is emitted.
+//! Call [`AcpShellExecutor::release_terminal`] only after that notification is sent.
+
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -118,7 +137,11 @@ pub struct AcpShellExecutor {
 }
 
 impl AcpShellExecutor {
-    /// Create the executor and the `LocalSet`-side handler future.
+    /// Create the executor and its `LocalSet`-side handler future.
+    ///
+    /// Spawn the returned future inside the same `LocalSet` that owns `conn`.
+    /// The handler drives terminal create/execute/release requests forwarded
+    /// from the `bash` and `bash_stdin` tools.
     pub fn new<C>(
         conn: Rc<C>,
         session_id: acp::SessionId,

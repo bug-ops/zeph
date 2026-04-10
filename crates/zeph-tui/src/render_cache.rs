@@ -5,27 +5,89 @@ use ratatui::text::Line;
 
 use crate::widgets::chat::MdLink;
 
+/// Cache key for a single rendered chat message.
+///
+/// Two keys compare equal only when the content, terminal width, and all
+/// display flags are identical. Any mismatch causes a cache miss and
+/// re-render.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::render_cache::RenderCacheKey;
+///
+/// let k1 = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, compact_tools: false, show_labels: false };
+/// let k2 = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, compact_tools: false, show_labels: false };
+/// assert_eq!(k1, k2);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderCacheKey {
+    /// FNV/xxHash of the message content string.
     pub content_hash: u64,
+    /// Terminal column width at the time of rendering.
     pub terminal_width: u16,
+    /// Whether the tool-output section is expanded.
     pub tool_expanded: bool,
+    /// Whether tool blocks use compact single-line display.
     pub compact_tools: bool,
+    /// Whether source-label badges are shown on assistant messages.
     pub show_labels: bool,
 }
 
+/// A single cached render result for a chat message.
+///
+/// Stores the pre-rendered [`ratatui::text::Line`] vector and extracted
+/// markdown link metadata. Both are reused verbatim on cache hits.
 pub struct RenderCacheEntry {
+    /// The key this entry was computed for.
     pub key: RenderCacheKey,
+    /// Pre-rendered lines ready for the chat widget.
     pub lines: Vec<Line<'static>>,
+    /// Markdown hyperlink spans extracted during rendering.
     pub md_links: Vec<MdLink>,
 }
 
+/// Per-message render cache keyed by message index.
+///
+/// The cache stores one optional entry per chat message, addressed by the
+/// message's position in [`crate::App`]'s message buffer. On each frame the
+/// chat widget calls [`get`](Self::get) with the current [`RenderCacheKey`];
+/// on a hit it reuses the cached lines, skipping expensive markdown parsing
+/// and word-wrapping.
+///
+/// When messages are evicted from the front of the buffer, call
+/// [`shift`](Self::shift) to keep indices aligned.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::render_cache::{RenderCache, RenderCacheKey};
+///
+/// let mut cache = RenderCache::default();
+/// let key = RenderCacheKey { content_hash: 42, terminal_width: 80, tool_expanded: false, compact_tools: false, show_labels: false };
+/// cache.put(0, key, vec![], vec![]);
+/// assert!(cache.get(0, &key).is_some());
+/// ```
 #[derive(Default)]
 pub struct RenderCache {
     entries: Vec<Option<RenderCacheEntry>>,
 }
 
 impl RenderCache {
+    /// Look up cached lines for message at `idx` with the given `key`.
+    ///
+    /// Returns `Some((lines, md_links))` on a cache hit, `None` on a miss or
+    /// key mismatch.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::render_cache::{RenderCache, RenderCacheKey};
+    ///
+    /// let mut cache = RenderCache::default();
+    /// let key = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, compact_tools: false, show_labels: false };
+    /// assert!(cache.get(0, &key).is_none()); // cold cache
+    /// ```
     pub fn get(&self, idx: usize, key: &RenderCacheKey) -> Option<(&[Line<'static>], &[MdLink])> {
         self.entries
             .get(idx)
@@ -34,6 +96,21 @@ impl RenderCache {
             .map(|e| (e.lines.as_slice(), e.md_links.as_slice()))
     }
 
+    /// Store a rendered entry for message at `idx`.
+    ///
+    /// Grows the internal storage as needed. An existing entry at `idx` is
+    /// unconditionally replaced.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::render_cache::{RenderCache, RenderCacheKey};
+    ///
+    /// let mut cache = RenderCache::default();
+    /// let key = RenderCacheKey { content_hash: 7, terminal_width: 100, tool_expanded: true, compact_tools: false, show_labels: false };
+    /// cache.put(0, key, vec![], vec![]);
+    /// assert!(cache.get(0, &key).is_some());
+    /// ```
     pub fn put(
         &mut self,
         idx: usize,
@@ -51,16 +128,65 @@ impl RenderCache {
         });
     }
 
+    /// Invalidate the entry at `idx`, forcing a re-render on the next frame.
+    ///
+    /// A no-op if `idx` is out of range.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::render_cache::{RenderCache, RenderCacheKey};
+    ///
+    /// let mut cache = RenderCache::default();
+    /// let key = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, compact_tools: false, show_labels: false };
+    /// cache.put(0, key, vec![], vec![]);
+    /// cache.invalidate(0);
+    /// assert!(cache.get(0, &key).is_none());
+    /// ```
     pub fn invalidate(&mut self, idx: usize) {
         if let Some(entry) = self.entries.get_mut(idx) {
             *entry = None;
         }
     }
 
+    /// Remove all cached entries.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::render_cache::{RenderCache, RenderCacheKey};
+    ///
+    /// let mut cache = RenderCache::default();
+    /// let key = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, compact_tools: false, show_labels: false };
+    /// cache.put(0, key, vec![], vec![]);
+    /// cache.clear();
+    /// assert!(cache.get(0, &key).is_none());
+    /// ```
     pub fn clear(&mut self) {
         self.entries = Vec::new();
     }
 
+    /// Shift all entries left by `count` positions.
+    ///
+    /// Called when `count` messages are evicted from the front of the message
+    /// buffer, so that cache index `N` continues to map to message index `N`.
+    /// If `count` >= the current number of entries, the cache is emptied.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::render_cache::{RenderCache, RenderCacheKey};
+    ///
+    /// let mut cache = RenderCache::default();
+    /// for i in 0..3u64 {
+    ///     let key = RenderCacheKey { content_hash: i, terminal_width: 80, tool_expanded: false, compact_tools: false, show_labels: false };
+    ///     cache.put(i as usize, key, vec![], vec![]);
+    /// }
+    /// cache.shift(1);
+    /// // Old index 1 is now at index 0.
+    /// let key1 = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, compact_tools: false, show_labels: false };
+    /// assert!(cache.get(0, &key1).is_some());
+    /// ```
     pub fn shift(&mut self, count: usize) {
         if count >= self.entries.len() {
             self.entries = Vec::new();
@@ -70,6 +196,20 @@ impl RenderCache {
     }
 }
 
+/// Compute a fast, non-cryptographic hash of a string for cache keying.
+///
+/// The underlying algorithm is [`zeph_common::hash::fast_hash`] (xxHash or
+/// similar). The result is stable within a process but should not be persisted.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::render_cache::content_hash;
+///
+/// let h = content_hash("hello");
+/// assert_eq!(h, content_hash("hello")); // deterministic
+/// assert_ne!(h, content_hash("world")); // distinct inputs → distinct hashes
+/// ```
 #[must_use]
 pub fn content_hash(s: &str) -> u64 {
     zeph_common::hash::fast_hash(s)

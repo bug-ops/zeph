@@ -7,24 +7,58 @@ use zeph_db::sql;
 
 use crate::error::SchedulerError;
 
-/// Full details for a scheduled task, used for display purposes.
+/// Full details for a scheduled task, returned by [`JobStore::list_jobs_full`].
+///
+/// Intended for display in the TUI or CLI task list. All string fields are UTF-8
+/// and come directly from the `scheduled_jobs` SQLite table.
 pub struct ScheduledTaskInfo {
+    /// Unique task name (primary key in the `scheduled_jobs` table).
     pub name: String,
+    /// Serialised [`crate::TaskKind`] string (e.g. `"health_check"`).
     pub kind: String,
+    /// Execution mode: `"periodic"` or `"oneshot"`.
     pub task_mode: String,
-    /// Cron expression for periodic tasks, empty for oneshot tasks.
+    /// Cron expression for periodic tasks, empty string for one-shot tasks.
     pub cron_expr: String,
-    /// Next scheduled run time as an ISO 8601 string, or empty if unknown.
+    /// Next scheduled run time as an ISO 8601 / RFC 3339 string, or empty if unknown.
     pub next_run: String,
-    /// Stored task prompt (empty for config-driven tasks).
+    /// Stored task prompt for custom tasks; empty for config-driven built-in tasks.
     pub task_data: String,
 }
 
+/// Persistent storage layer for scheduled jobs.
+///
+/// All job definitions and run history are stored in an SQLite database managed by
+/// `zeph-db` migrations. The `scheduled_jobs` table schema is defined in migration
+/// `051_scheduler_jobs.sql`.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_scheduler::JobStore;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Open from a file path.
+/// let store = JobStore::open("sqlite:scheduler.db").await?;
+/// store.init().await?;
+///
+/// // Query job list.
+/// let jobs = store.list_jobs().await?;
+/// for (name, kind, mode, next_run) in &jobs {
+///     println!("{name}: {kind} ({mode}) → {next_run}");
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub struct JobStore {
     pool: DbPool,
 }
 
 impl JobStore {
+    /// Create a `JobStore` from an existing [`zeph_db::DbPool`].
+    ///
+    /// You must call [`JobStore::init`] before any other operation to ensure the
+    /// schema migrations have been applied.
     #[must_use]
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
@@ -288,6 +322,9 @@ impl JobStore {
             .collect())
     }
 
+    /// Returns a reference to the underlying connection pool.
+    ///
+    /// Primarily used in tests that need to execute raw SQL against the same database.
     #[must_use]
     pub fn pool(&self) -> &DbPool {
         &self.pool

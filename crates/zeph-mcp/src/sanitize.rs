@@ -207,34 +207,46 @@ fn sanitize_server_id(id: &str) -> String {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Severity of a detected cross-tool reference.
+/// Severity of a detected cross-tool name reference in a tool description.
+///
+/// Used in [`CrossToolReference::severity`] to distinguish a plain cross-reference
+/// (suspicious, but may be legitimate) from one that accompanies an injection pattern
+/// (high-confidence attack surface indicator).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrossRefSeverity {
-    /// Cross-reference only — no injection pattern on the same tool.
+    /// Cross-reference only — no injection pattern on the same source tool.
     Info,
-    /// Cross-reference AND an injection pattern on the same tool (double-penalty).
+    /// Cross-reference AND an injection pattern on the same source tool (double-penalty signal).
     High,
 }
 
 /// A reference from one tool's description to another tool's name.
+///
+/// Detected by [`sanitize_tools`] as a potential cross-tool prompt injection vector —
+/// a malicious server can instruct the LLM to invoke a different tool by embedding its
+/// name in a description field.
 #[derive(Debug, Clone)]
 pub struct CrossToolReference {
     /// Tool whose description contains the reference.
     pub source_tool: String,
-    /// Tool name being referenced.
+    /// Tool name that appears in the source tool's description.
     pub target_tool: String,
+    /// Severity of the cross-reference detection.
     pub severity: CrossRefSeverity,
 }
 
-/// Result of sanitizing a batch of tools.
+/// Aggregate statistics from a [`sanitize_tools`] pass over a batch of tool definitions.
+///
+/// Returned to the caller for logging, trust score updates, and forensic audit.
+/// A non-zero `injection_count` should reduce the server's trust score.
 pub struct SanitizeResult {
-    /// Number of fields where injection patterns were detected and replaced.
+    /// Number of individual fields (description, schema strings) replaced with `"[sanitized]"`.
     pub injection_count: usize,
-    /// Tool names that had at least one injected field.
+    /// Names of tools that had at least one injected field.
     pub flagged_tools: Vec<String>,
-    /// `(tool_name, pattern_name)` pairs for forensic audit.
+    /// `(tool_name, pattern_name)` pairs for forensic audit and logging.
     pub flagged_patterns: Vec<(String, String)>,
-    /// Cross-tool name references found in tool descriptions.
+    /// Cross-tool name references found across all tool descriptions.
     pub cross_references: Vec<CrossToolReference>,
 }
 

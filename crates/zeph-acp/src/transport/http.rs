@@ -1,6 +1,29 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! HTTP + SSE transport handlers for the ACP server.
+//!
+//! Requires feature `acp-http`. All public items in this module are re-exported
+//! from the crate root when the feature is active.
+//!
+//! # Session lifecycle
+//!
+//! ```text
+//! POST /acp  (no Acp-Session-Id)
+//!   → create_connection()  → new AgentSideConnection thread
+//!   → returns Acp-Session-Id + SSE stream
+//!
+//! POST /acp  (Acp-Session-Id: <id>)
+//!   → route to existing ConnectionHandle
+//!   → subscribe to broadcast channel → SSE stream
+//!
+//! GET /acp   (Acp-Session-Id: <id>)
+//!   → reconnect to SSE stream (e.g. after network drop)
+//!
+//! GET /acp/ws
+//!   → WebSocket upgrade → duplex framing over single connection
+//! ```
+
 #[cfg(feature = "acp-http")]
 use std::sync::Arc;
 #[cfg(feature = "acp-http")]
@@ -67,14 +90,19 @@ impl ConnectionHandle {
     }
 }
 
-/// Serializable session metadata for the REST session list endpoint.
+/// Serializable session metadata returned by `GET /sessions`.
 #[cfg(feature = "acp-http")]
 #[derive(Serialize)]
 pub struct SessionSummary {
+    /// ACP session UUID.
     pub id: String,
+    /// Auto-generated session title, if available.
     pub title: Option<String>,
+    /// ISO 8601 timestamp of session creation.
     pub created_at: String,
+    /// ISO 8601 timestamp of the last session update.
     pub updated_at: String,
+    /// Total number of persisted events in this session.
     pub message_count: i64,
 }
 
@@ -91,36 +119,66 @@ impl From<AcpSessionInfo> for SessionSummary {
     }
 }
 
-/// Serializable event for the REST session messages endpoint.
+/// A single persisted ACP event returned by `GET /sessions/{id}/messages`.
 #[cfg(feature = "acp-http")]
 #[derive(Serialize)]
 pub struct SessionEventDto {
+    /// Event type tag (e.g. `"user_message"`, `"agent_message"`, `"tool_call"`).
     pub event_type: String,
+    /// JSON-encoded event payload.
     pub payload: String,
+    /// ISO 8601 timestamp of when the event was persisted.
     pub created_at: String,
 }
 
-/// Serializable liveness payload for the public `/health` endpoint.
+/// Liveness payload returned by `GET /health`.
 #[cfg(feature = "acp-http")]
 #[derive(Serialize)]
 pub struct HealthStatus {
+    /// `"ok"` when the server is ready, `"starting"` otherwise.
     pub status: &'static str,
+    /// Semver version of the running agent.
     pub version: String,
+    /// Seconds elapsed since the server started.
     pub uptime_secs: u64,
 }
 
-/// Shared state for the HTTP+SSE transport, held in axum `State`.
+/// Shared axum `State` for the HTTP+SSE and WebSocket transport.
+///
+/// Holds all mutable server state behind `Arc` so it can be cheaply cloned
+/// into each request handler. Use [`AcpHttpState::new`] to construct, then
+/// optionally attach a SQLite store with [`AcpHttpState::with_store`].
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// # use std::sync::Arc;
+/// # use parking_lot::RwLock;
+/// # use zeph_acp::{AgentSpawner, AcpServerConfig};
+/// # #[cfg(feature = "acp-http")]
+/// # {
+/// use zeph_acp::AcpHttpState;
+///
+/// let spawner: AgentSpawner = Arc::new(|ch, ctx, sess| Box::pin(async move { drop((ch, ctx, sess)); }));
+/// let config = AcpServerConfig { agent_name: "zeph".to_owned(), ..AcpServerConfig::default() };
+/// let state = AcpHttpState::new(spawner, config);
+/// state.mark_ready();
+/// # }
+/// ```
 #[cfg(feature = "acp-http")]
 #[derive(Clone)]
 pub struct AcpHttpState {
     pub(crate) connections: Arc<DashMap<String, Arc<ConnectionHandle>>>,
+    /// Agent spawner used when creating new HTTP/WebSocket connections.
     pub spawner: SendAgentSpawner,
+    /// Server configuration shared across all connections.
     pub server_config: Arc<AcpServerConfig>,
     /// Atomic counter for active WebSocket sessions.
+    ///
     /// Used to atomically reserve a slot before the upgrade handshake, eliminating TOCTOU
     /// between the capacity check and the actual `DashMap` insertion.
     pub(crate) active_ws: Arc<AtomicUsize>,
-    /// Optional `SQLite` store for session history REST endpoints.
+    /// Optional SQLite store for the session history REST endpoints.
     pub store: Option<Arc<SqliteStore>>,
     pub(crate) started_at: Instant,
     pub(crate) ready: Arc<AtomicBool>,
@@ -128,6 +186,13 @@ pub struct AcpHttpState {
 
 #[cfg(feature = "acp-http")]
 impl AcpHttpState {
+    /// Create a new HTTP state with the given spawner and server configuration.
+    ///
+    /// The server starts in a "not ready" state. Call [`mark_ready`] after all
+    /// initialization (e.g. vault unlock, MCP connect) is complete so that
+    /// `GET /health` returns `200 OK`.
+    ///
+    /// [`mark_ready`]: AcpHttpState::mark_ready
     pub fn new(spawner: SendAgentSpawner, server_config: AcpServerConfig) -> Self {
         Self {
             connections: Arc::new(DashMap::new()),
@@ -140,18 +205,26 @@ impl AcpHttpState {
         }
     }
 
+    /// Attach a SQLite store for the session history REST endpoints.
+    ///
+    /// Required for `GET /sessions` and `GET /sessions/{id}/messages` to function.
     #[must_use]
     pub fn with_store(mut self, store: SqliteStore) -> Self {
         self.store = Some(Arc::new(store));
         self
     }
 
+    /// Set the initial readiness state (builder-style).
     #[must_use]
     pub fn with_ready(self, ready: bool) -> Self {
         self.ready.store(ready, Ordering::Release);
         self
     }
 
+    /// Mark the server as ready to serve ACP requests.
+    ///
+    /// After this call, `GET /health` returns `200 OK` and all `/acp` endpoints
+    /// accept new connections.
     pub fn mark_ready(&self) {
         self.ready.store(true, Ordering::Release);
     }

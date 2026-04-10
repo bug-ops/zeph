@@ -1,6 +1,25 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Shell executor that parses and runs bash blocks from LLM responses.
+//!
+//! [`ShellExecutor`] is the primary tool backend for Zeph. It handles both legacy
+//! fenced bash blocks and structured `bash` tool calls. Security controls enforced
+//! before every command:
+//!
+//! - **Blocklist** — commands matching any entry in `blocked_commands` (or the built-in
+//!   [`DEFAULT_BLOCKED_COMMANDS`]) are rejected with [`ToolError::Blocked`].
+//! - **Subshell metacharacters** — `$(`, `` ` ``, `<(`, and `>(` are always blocked
+//!   because nested evaluation cannot be safely analysed statically.
+//! - **Path sandbox** — the working directory and any file arguments must reside under
+//!   the configured `allowed_paths`.
+//! - **Confirmation gate** — commands matching `confirm_patterns` are held for user
+//!   approval before execution (bypassed by `execute_confirmed`).
+//! - **Environment blocklist** — variables in `env_blocklist` are stripped from the
+//!   subprocess environment before launch.
+//! - **Transactional rollback** — when enabled, file snapshots are taken before execution
+//!   and restored on failure or on non-zero exit codes in `auto_rollback_exit_codes`.
+
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -32,11 +51,19 @@ const DEFAULT_BLOCKED: &[&str] = &[
 
 /// The default list of blocked command patterns used by [`ShellExecutor`].
 ///
+/// Includes highly destructive commands (`rm -rf /`, `mkfs`, `dd if=`), privilege
+/// escalation (`sudo`), and network egress tools (`curl`, `wget`, `nc`, `netcat`).
+/// Network commands can be re-enabled via [`ShellConfig::allow_network`].
+///
 /// Exposed so other executors (e.g. `AcpShellExecutor`) can reuse the same
 /// blocklist without duplicating it.
 pub const DEFAULT_BLOCKED_COMMANDS: &[&str] = DEFAULT_BLOCKED;
 
 /// Shell interpreters that may execute arbitrary code via `-c` or positional args.
+///
+/// When [`check_blocklist`] receives a command whose binary matches one of these
+/// names, the `-c <script>` argument is extracted and checked against the blocklist
+/// instead of the binary name.
 pub const SHELL_INTERPRETERS: &[&str] =
     &["bash", "sh", "zsh", "fish", "dash", "ksh", "csh", "tcsh"];
 
@@ -97,6 +124,27 @@ pub(crate) struct BashParams {
 }
 
 /// Bash block extraction and execution via `tokio::process::Command`.
+///
+/// Parses ` ```bash ` fenced blocks from LLM responses (legacy path) and handles
+/// structured `bash` tool calls (modern path). Use [`ShellExecutor::new`] with a
+/// [`ShellConfig`] and chain optional builder methods to attach audit logging,
+/// event streaming, permission policies, and cancellation.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use zeph_tools::{ShellExecutor, ToolExecutor, config::ShellConfig};
+///
+/// # async fn example() {
+/// let executor = ShellExecutor::new(&ShellConfig::default());
+///
+/// // Execute a fenced bash block.
+/// let response = "```bash\npwd\n```";
+/// if let Ok(Some(output)) = executor.execute(response).await {
+///     println!("{}", output.summary);
+/// }
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct ShellExecutor {
     timeout: Duration,
@@ -119,6 +167,11 @@ pub struct ShellExecutor {
 }
 
 impl ShellExecutor {
+    /// Create a new `ShellExecutor` from configuration.
+    ///
+    /// Merges the built-in [`DEFAULT_BLOCKED_COMMANDS`] with any additional blocked
+    /// commands from `config`, then subtracts any explicitly allowed commands.
+    /// No subprocess is spawned at construction time.
     #[must_use]
     pub fn new(config: &ShellConfig) -> Self {
         let allowed: Vec<String> = config
@@ -178,30 +231,43 @@ impl ShellExecutor {
         *self.skill_env.write() = env;
     }
 
+    /// Attach an audit logger. Each shell invocation will emit an [`AuditEntry`].
     #[must_use]
     pub fn with_audit(mut self, logger: Arc<AuditLogger>) -> Self {
         self.audit_logger = Some(logger);
         self
     }
 
+    /// Attach a tool-event sender for streaming output to the TUI or channel adapter.
+    ///
+    /// When set, [`ToolEvent::Started`], [`ToolEvent::OutputChunk`], and
+    /// [`ToolEvent::Completed`] events are sent on `tx` during execution.
     #[must_use]
     pub fn with_tool_event_tx(mut self, tx: ToolEventTx) -> Self {
         self.tool_event_tx = Some(tx);
         self
     }
 
+    /// Attach a permission policy for confirmation-gate enforcement.
+    ///
+    /// Commands matching the policy's rules may require user approval before
+    /// execution proceeds.
     #[must_use]
     pub fn with_permissions(mut self, policy: PermissionPolicy) -> Self {
         self.permission_policy = Some(policy);
         self
     }
 
+    /// Attach a cancellation token. When the token is cancelled, the running subprocess
+    /// is killed and the executor returns [`ToolError::Cancelled`].
     #[must_use]
     pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
         self.cancel_token = Some(token);
         self
     }
 
+    /// Attach an output filter registry. Filters are applied to stdout+stderr before
+    /// the summary is stored in [`ToolOutput`] and sent to the LLM.
     #[must_use]
     pub fn with_output_filters(mut self, registry: OutputFilterRegistry) -> Self {
         self.output_filter_registry = Some(registry);
@@ -1098,11 +1164,18 @@ async fn kill_process_tree(child: &mut tokio::process::Child) {
 }
 
 /// Structured output from a shell command execution.
+///
+/// Produced by the internal `execute_bash` function and included in the final
+/// [`ToolOutput`] and [`AuditEntry`] for the invocation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ShellOutputEnvelope {
+    /// Captured standard output, possibly truncated.
     pub stdout: String,
+    /// Captured standard error, possibly truncated.
     pub stderr: String,
+    /// Process exit code. `0` indicates success by convention.
     pub exit_code: i32,
+    /// `true` when the combined output exceeded the configured max and was truncated.
     pub truncated: bool,
 }
 

@@ -95,7 +95,10 @@ pub struct McpPolicy {
     pub rate_limit: Option<RateLimit>,
 }
 
-/// Policy violation reason.
+/// Reason a policy check blocked a tool call.
+///
+/// Returned by [`PolicyEnforcer::check`]. The outer [`McpError`](crate::error::McpError)
+/// wraps this as `McpError::PolicyViolation`.
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyViolation {
     #[error("tool '{tool_name}' is denied on server '{server_id}'")]

@@ -1,89 +1,164 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Wire-format types for the A2A protocol.
+//!
+//! All types in this module are serialized using `camelCase` JSON field names to comply with
+//! the A2A specification. They are re-exported from the crate root via `pub use types::*`.
+
 use serde::{Deserialize, Serialize};
 
+/// Lifecycle state of an A2A task.
+///
+/// The state machine progresses roughly as:
+/// `Submitted` → `Working` → `Completed` (success) or `Failed` (error).
+/// `InputRequired` pauses processing until the caller sends more data.
+/// Terminal states (`Completed`, `Failed`, `Canceled`, `Rejected`) cannot be resumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskState {
+    /// Task has been received and queued but processing has not started.
     #[serde(rename = "submitted")]
     Submitted,
+    /// The agent is actively processing the task.
     #[serde(rename = "working")]
     Working,
+    /// Processing is paused; the agent needs more input from the caller.
     #[serde(rename = "input-required")]
     InputRequired,
+    /// Task finished successfully. Terminal state.
     #[serde(rename = "completed")]
     Completed,
+    /// Task encountered an unrecoverable error. Terminal state.
     #[serde(rename = "failed")]
     Failed,
+    /// Task was canceled by the caller. Terminal state.
     #[serde(rename = "canceled")]
     Canceled,
+    /// Task was rejected by the agent (e.g., policy violation). Terminal state.
     #[serde(rename = "rejected")]
     Rejected,
+    /// The agent requires authentication before proceeding.
     #[serde(rename = "auth-required")]
     AuthRequired,
+    /// State could not be determined (e.g., deserialization of a future protocol version).
     #[serde(rename = "unknown")]
     Unknown,
 }
 
+/// A unit of work dispatched to or created by an A2A agent.
+///
+/// Tasks are the central concept in the A2A protocol. A caller creates a task by sending
+/// a [`Message`] via `message/send`. The agent processes it and returns the completed
+/// [`Task`] with [`artifacts`](Task::artifacts) and final [`status`](Task::status).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
+    /// Unique task identifier, assigned by the server on creation.
     pub id: String,
+    /// Optional session/conversation context shared across multiple tasks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
+    /// Current lifecycle state plus timestamp.
     pub status: TaskStatus,
+    /// Output artifacts produced by the agent for this task.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<Artifact>,
+    /// Conversation history for this task (may be limited by `historyLength` on retrieval).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<Message>,
+    /// Arbitrary key-value metadata for extension without schema changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
 
+/// Current lifecycle state of a task, including when the state was last updated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskStatus {
+    /// The task's current lifecycle state.
     pub state: TaskState,
+    /// RFC 3339 timestamp of the last state transition.
     pub timestamp: String,
+    /// Optional agent message accompanying the state transition (e.g., an error description).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<Message>,
 }
 
+/// Participant role in a conversation message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// Message originated from the human user or calling system.
     User,
+    /// Message originated from the AI agent.
     Agent,
 }
 
+/// A single message in the A2A conversation, consisting of one or more [`Part`]s.
+///
+/// Messages carry content between the caller and the agent. Use [`Message::user_text`]
+/// to construct a simple single-part text message from the user side.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_a2a::{Message, Part, Role};
+///
+/// let msg = Message::user_text("Summarize this document.");
+/// assert_eq!(msg.role, Role::User);
+/// assert_eq!(msg.text_content(), Some("Summarize this document."));
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
+    /// Who sent this message.
     pub role: Role,
+    /// Content parts; at least one is expected for meaningful messages.
     pub parts: Vec<Part>,
+    /// Optional stable identifier for this specific message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
+    /// Task this message belongs to (set by the server on responses).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// Conversation context shared with other tasks in the same session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
+    /// Arbitrary extension metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
 
+/// A typed content part within a [`Message`] or [`Artifact`].
+///
+/// The A2A spec uses a tagged union (`"kind"` discriminant) so that clients and agents
+/// can safely ignore part types they do not understand. Use [`Part::text`] to construct
+/// the most common variant without boilerplate.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_a2a::{Part};
+///
+/// let text_part = Part::text("Hello!");
+/// assert!(matches!(text_part, Part::Text { .. }));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Part {
+    /// Plain or markdown text content.
     Text {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
     },
+    /// Binary or URI-referenced file attachment.
     File {
         file: FileContent,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
     },
+    /// Arbitrary structured JSON data (e.g., tool call results, structured output).
     Data {
         data: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,93 +166,167 @@ pub enum Part {
     },
 }
 
+/// File attachment within a [`Part::File`], specified either as inline base64 bytes or a URI.
+///
+/// Exactly one of `file_with_bytes` or `file_with_uri` should be set. If both are present,
+/// the server's behavior is unspecified by the protocol — prefer one field per message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileContent {
+    /// Human-readable filename (e.g., `"report.pdf"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// MIME type of the file (e.g., `"application/pdf"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_type: Option<String>,
+    /// Standard base64-encoded file content for inline transfer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_with_bytes: Option<String>,
+    /// URL referencing the file for out-of-band retrieval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_with_uri: Option<String>,
 }
 
+/// A named output produced by an agent during task processing.
+///
+/// Artifacts are the primary mechanism for agents to return results. They can contain
+/// text, files, or structured data, and are accumulated on the [`Task`] as the agent runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Artifact {
+    /// Unique artifact identifier within the task.
     pub artifact_id: String,
+    /// Optional human-readable label for the artifact (e.g., `"generated_report"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Content parts composing the artifact.
     pub parts: Vec<Part>,
+    /// Arbitrary extension metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
 
+/// Capability advertisement document served at `/.well-known/agent.json`.
+///
+/// [`AgentCard`] describes an agent's identity, endpoint, skills, and protocol capabilities.
+/// It is the primary discovery mechanism — callers fetch the card before sending messages.
+///
+/// Prefer constructing cards via [`AgentCardBuilder`](crate::AgentCardBuilder) to get correct
+/// defaults (including the current [`A2A_PROTOCOL_VERSION`](crate::A2A_PROTOCOL_VERSION)).
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_a2a::AgentCardBuilder;
+///
+/// let card = AgentCardBuilder::new("my-agent", "http://localhost:8080", "0.1.0")
+///     .description("An AI assistant")
+///     .streaming(true)
+///     .build();
+///
+/// assert_eq!(card.name, "my-agent");
+/// assert!(card.capabilities.streaming);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCard {
+    /// Human-readable agent name.
     pub name: String,
+    /// Short description of the agent's purpose.
     pub description: String,
+    /// Base URL of the A2A endpoint (without path suffix).
     pub url: String,
+    /// Agent software version string (semver recommended).
     pub version: String,
+    /// A2A protocol version the agent implements (see [`A2A_PROTOCOL_VERSION`](crate::A2A_PROTOCOL_VERSION)).
     pub protocol_version: String,
+    /// Optional organization that built or operates the agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<AgentProvider>,
+    /// Flags indicating which A2A capabilities the agent supports.
     pub capabilities: AgentCapabilities,
+    /// MIME types or mode identifiers the agent accepts as input (e.g., `"text/plain"`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub default_input_modes: Vec<String>,
+    /// MIME types or mode identifiers the agent can produce as output.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub default_output_modes: Vec<String>,
+    /// Discrete skills the agent exposes, each with its own examples and mode overrides.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<AgentSkill>,
 }
 
+/// Organization that built or operates an agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProvider {
+    /// Name of the organization (e.g., `"Acme Corp"`).
     pub organization: String,
+    /// Optional URL for the organization's public homepage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
+/// Boolean flags advertising which A2A protocol extensions an agent supports.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCapabilities {
+    /// Agent supports `message/stream` for real-time SSE output.
     #[serde(default)]
     pub streaming: bool,
+    /// Agent supports server-initiated push notifications.
     #[serde(default)]
     pub push_notifications: bool,
+    /// Agent includes full state-transition history in task responses.
     #[serde(default)]
     pub state_transition_history: bool,
 }
 
+/// A discrete skill or capability advertised by an agent in its [`AgentCard`].
+///
+/// Skills allow callers to discover what a specific agent is good at before sending a task,
+/// enabling smarter agent routing and delegation decisions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSkill {
+    /// Machine-readable skill identifier (e.g., `"code-review"`).
     pub id: String,
+    /// Human-readable skill name.
     pub name: String,
+    /// Explanation of what this skill does and when to use it.
     pub description: String,
+    /// Searchable labels for capability-based routing (e.g., `["rust", "security"]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Example prompts or queries that invoke this skill well.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub examples: Vec<String>,
+    /// Input mode overrides for this skill (falls back to card-level defaults).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_modes: Vec<String>,
+    /// Output mode overrides for this skill (falls back to card-level defaults).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_modes: Vec<String>,
 }
 
+/// SSE event emitted by the server when a task's [`TaskStatus`] changes.
+///
+/// Delivered over the `POST /a2a/stream` SSE channel. The `is_final` flag signals
+/// that the stream will not emit further events after this one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskStatusUpdateEvent {
+    /// Always `"status-update"` — used by clients to distinguish event types.
     #[serde(default = "kind_status_update")]
     pub kind: String,
+    /// The task whose status changed.
     pub task_id: String,
+    /// Conversation context for the task, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
+    /// New status value including state and timestamp.
     pub status: TaskStatus,
+    /// If `true`, this is the last event in the stream.
     #[serde(rename = "final", default)]
     pub is_final: bool,
 }
@@ -186,15 +335,24 @@ fn kind_status_update() -> String {
     "status-update".into()
 }
 
+/// SSE event emitted by the server when a new [`Artifact`] is produced or updated.
+///
+/// Delivered over the `POST /a2a/stream` SSE channel alongside [`TaskStatusUpdateEvent`]s.
+/// The `is_final` flag on the artifact event indicates that the artifact is complete.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskArtifactUpdateEvent {
+    /// Always `"artifact-update"` — used by clients to distinguish event types.
     #[serde(default = "kind_artifact_update")]
     pub kind: String,
+    /// The task that produced this artifact.
     pub task_id: String,
+    /// Conversation context for the task, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
+    /// The artifact content (may be a partial chunk if `is_final` is `false`).
     pub artifact: Artifact,
+    /// If `true`, the artifact is fully produced and no further chunks will follow.
     #[serde(rename = "final", default)]
     pub is_final: bool,
 }
@@ -204,6 +362,16 @@ fn kind_artifact_update() -> String {
 }
 
 impl Part {
+    /// Construct a plain-text [`Part`] with no metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::Part;
+    ///
+    /// let p = Part::text("Hello, world!");
+    /// assert!(matches!(p, Part::Text { ref text, .. } if text == "Hello, world!"));
+    /// ```
     #[must_use]
     pub fn text(s: impl Into<String>) -> Self {
         Self::Text {
@@ -214,6 +382,19 @@ impl Part {
 }
 
 impl Message {
+    /// Construct a single-part user text message.
+    ///
+    /// This is the most common way to build an outgoing message when calling a peer agent.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::{Message, Role};
+    ///
+    /// let msg = Message::user_text("Please summarize this.");
+    /// assert_eq!(msg.role, Role::User);
+    /// assert_eq!(msg.text_content(), Some("Please summarize this."));
+    /// ```
     #[must_use]
     pub fn user_text(s: impl Into<String>) -> Self {
         Self {
@@ -226,6 +407,18 @@ impl Message {
         }
     }
 
+    /// Return the text of the first [`Part::Text`] in this message, if any.
+    ///
+    /// For messages that may contain multiple text parts, prefer [`all_text_content`](Self::all_text_content).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::Message;
+    ///
+    /// let msg = Message::user_text("hello");
+    /// assert_eq!(msg.text_content(), Some("hello"));
+    /// ```
     #[must_use]
     pub fn text_content(&self) -> Option<&str> {
         self.parts.iter().find_map(|p| match p {

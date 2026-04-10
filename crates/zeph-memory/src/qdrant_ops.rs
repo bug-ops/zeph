@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Low-level Qdrant operations shared across crates.
+//!
+//! [`QdrantOps`] is the single point of contact with the `qdrant-client` crate.
+//! All higher-level stores ([`crate::embedding_store::EmbeddingStore`],
+//! [`crate::embedding_registry::EmbeddingRegistry`]) route through this type.
 
 use std::collections::HashMap;
 

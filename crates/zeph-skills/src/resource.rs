@@ -1,12 +1,33 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Skill-local resource file discovery and safe loading.
+//!
+//! Skills may ship auxiliary files in three well-known subdirectories:
+//!
+//! | Subdirectory | Contents |
+//! |---|---|
+//! | `scripts/` | Shell scripts or helper programs |
+//! | `references/` | Reference documents injected into skill context |
+//! | `assets/` | Static files (images, data) |
+//!
+//! [`load_skill_resource`] enforces path canonicalization before loading, preventing
+//! symlink-based path traversal attacks where a skill might try to read files outside
+//! its own directory.
+
 use std::path::{Path, PathBuf};
 
+/// Discovered resource files for a skill, organized by subdirectory.
+///
+/// All paths are absolute and sorted lexicographically within each category.
+/// Entries are only included when the corresponding subdirectory exists.
 #[derive(Clone, Debug, Default)]
 pub struct SkillResources {
+    /// Absolute paths of files in the `scripts/` subdirectory.
     pub scripts: Vec<PathBuf>,
+    /// Absolute paths of files in the `references/` subdirectory.
     pub references: Vec<PathBuf>,
+    /// Absolute paths of files in the `assets/` subdirectory.
     pub assets: Vec<PathBuf>,
 }
 

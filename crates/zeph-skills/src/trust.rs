@@ -1,7 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Skill trust levels and source tracking.
+//! Skill trust levels and provenance tracking.
+//!
+//! Each installed skill has an associated [`SkillTrust`] record stored in the trust database
+//! by `zeph-core`. The record pairs a [`SkillTrustLevel`] (which gates tool access) with a
+//! [`SkillSource`] (where the skill came from) and a blake3 content hash (for integrity
+//! verification).
+//!
+//! # Trust Levels (re-exported from `zeph-tools`)
+//!
+//! | Level | Tool access | When to use |
+//! |-------|-------------|-------------|
+//! | `Trusted` | Unrestricted | Bundled skills vetted by the maintainer |
+//! | `Verified` | Unrestricted | User-approved skills from known sources |
+//! | `Quarantined` | Read-only subset | Skills installed but not yet reviewed |
+//! | `Blocked` | No tools | Skills flagged for removal |
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -9,16 +23,27 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 pub use zeph_tools::SkillTrustLevel;
 
-/// Where a skill was loaded from.
+/// Provenance record for an installed skill.
+///
+/// Serialized with an inline `"kind"` tag for compact JSON storage.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_skills::trust::SkillSource;
+///
+/// let src = SkillSource::Hub { url: "https://github.com/example/skill".into() };
+/// assert_eq!(src.to_string(), "hub(https://github.com/example/skill)");
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum SkillSource {
-    /// Built-in skill shipped with the binary.
+    /// Built-in skill shipped with the binary (bundled).
     #[default]
     Local,
-    /// Downloaded from a skill hub.
+    /// Downloaded from a remote URL via `skill install <url>`.
     Hub { url: String },
-    /// Imported from a local file path.
+    /// Copied from a local directory via `skill install --path <dir>`.
     File { path: PathBuf },
 }
 
@@ -32,12 +57,16 @@ impl fmt::Display for SkillSource {
     }
 }
 
-/// Trust metadata attached to a loaded skill.
+/// Trust metadata attached to a loaded skill, stored in the trust database.
 #[derive(Debug, Clone)]
 pub struct SkillTrust {
+    /// Skill name (matches the `name` frontmatter field).
     pub skill_name: String,
+    /// Access level governing which tools the skill may invoke.
     pub trust_level: SkillTrustLevel,
+    /// Provenance of the skill.
     pub source: SkillSource,
+    /// blake3 hex hash of `SKILL.md` at install time, for integrity verification.
     pub blake3_hash: String,
 }
 

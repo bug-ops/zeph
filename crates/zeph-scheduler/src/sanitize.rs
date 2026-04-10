@@ -1,10 +1,30 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-/// Sanitize a user-supplied task prompt before injecting it into the agent loop.
+/// Sanitise a user-supplied task prompt before injecting it into the agent loop.
 ///
-/// Truncates to 512 Unicode code points and strips control characters
-/// (code points below U+0020, except `\n` and `\t`).
+/// Applies two transformations in order:
+///
+/// 1. **Truncation** — caps the output at 512 Unicode code points. Truncation is
+///    code-point–safe and will not produce invalid UTF-8.
+/// 2. **Control-character stripping** — removes characters with code points below
+///    `U+0020`, except `\n` (U+000A) and `\t` (U+0009) which are preserved.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_scheduler::sanitize_task_prompt;
+///
+/// // Control characters are stripped.
+/// assert_eq!(sanitize_task_prompt("hello\x01world"), "helloworld");
+///
+/// // Newlines and tabs are preserved.
+/// assert_eq!(sanitize_task_prompt("line1\nline2"), "line1\nline2");
+///
+/// // Long strings are truncated to 512 code points.
+/// let long = "x".repeat(600);
+/// assert_eq!(sanitize_task_prompt(&long).chars().count(), 512);
+/// ```
 #[must_use]
 pub fn sanitize_task_prompt(s: &str) -> String {
     s.chars()

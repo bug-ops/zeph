@@ -63,6 +63,9 @@ pub(crate) fn short_type_name<T: ?Sized>() -> &'static str {
 }
 
 /// A chunk from an LLM streaming response.
+///
+/// Consumers should match all variants: future providers may emit non-`Content` chunks
+/// that callers must not silently drop (e.g. thinking blocks that must be echoed back).
 #[derive(Debug, Clone)]
 pub enum StreamChunk {
     /// Regular response text.
@@ -77,31 +80,69 @@ pub enum StreamChunk {
 }
 
 /// Boxed stream of typed chunks from an LLM provider.
+///
+/// Obtain via [`LlmProvider::chat_stream`]. Drive the stream with
+/// `futures::StreamExt::next` or `tokio_stream::StreamExt::next`.
 pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>;
 
 /// Minimal tool definition for LLM providers.
 ///
 /// Decoupled from `zeph-tools::ToolDef` to avoid cross-crate dependency.
+/// Providers translate this into their native tool/function format before sending to the API.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::ToolDefinition;
+///
+/// let tool = ToolDefinition {
+///     name: "get_weather".into(),
+///     description: "Return current weather for a city.".into(),
+///     parameters: serde_json::json!({
+///         "type": "object",
+///         "properties": {
+///             "city": { "type": "string" }
+///         },
+///         "required": ["city"]
+///     }),
+/// };
+/// assert_eq!(tool.name, "get_weather");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
+    /// Tool name — must match the name used in the response `ToolUseRequest`.
     pub name: String,
+    /// Human-readable description guiding the model on when to call this tool.
     pub description: String,
     /// JSON Schema object describing parameters.
     pub parameters: serde_json::Value,
 }
 
 /// Structured tool invocation request from the model.
+///
+/// Returned by [`LlmProvider::chat_with_tools`] when the model decides to call one or
+/// more tools. The caller is responsible for executing the tool and returning results
+/// via a [`MessagePart::ToolResult`] in the next turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolUseRequest {
+    /// Opaque call identifier assigned by the model; must be echoed in `ToolResult.tool_use_id`.
     pub id: String,
+    /// Name of the tool to invoke, matching a [`ToolDefinition::name`].
     pub name: String,
+    /// JSON arguments the model wants to pass to the tool.
     pub input: serde_json::Value,
 }
 
-/// Thinking block returned by Claude when thinking is enabled.
+/// Thinking block returned by Claude when extended or adaptive thinking is enabled.
+///
+/// Both variants must be echoed verbatim in the next turn's `assistant` message so
+/// the API can correctly attribute reasoning across turns. Never modify or discard
+/// these blocks between turns.
 #[derive(Debug, Clone)]
 pub enum ThinkingBlock {
+    /// Visible reasoning token with its cryptographic signature.
     Thinking { thinking: String, signature: String },
+    /// Redacted reasoning block (API-side privacy redaction). Preserved as opaque data.
     Redacted { data: String },
 }
 
@@ -109,7 +150,13 @@ pub enum ThinkingBlock {
 /// token limit. Consumers can detect this substring to signal `MaxTokens` stop reason.
 pub const MAX_TOKENS_TRUNCATION_MARKER: &str = "max_tokens limit reached";
 
-/// Response from `chat_with_tools()`.
+/// Response from [`LlmProvider::chat_with_tools`].
+///
+/// When the model returns `ToolUse`, the caller must:
+/// 1. Execute each tool in `tool_calls`.
+/// 2. Append an `assistant` message with the original `tool_calls` and any `thinking_blocks`.
+/// 3. Append a `user` message containing [`MessagePart::ToolResult`] entries.
+/// 4. Call `chat_with_tools` again to continue the conversation.
 #[derive(Debug, Clone)]
 pub enum ChatResponse {
     /// Model produced text output only.
@@ -125,13 +172,20 @@ pub enum ChatResponse {
     },
 }
 
-/// Boxed future returning an embedding vector.
+/// Boxed future returning an embedding vector, returned by [`EmbedFn`].
 pub type EmbedFuture = Pin<Box<dyn Future<Output = Result<Vec<f32>, LlmError>> + Send>>;
 
-/// Closure type for embedding text into a vector.
+/// A Send + Sync closure that embeds a text slice into a vector.
+///
+/// Obtain a provider-backed `EmbedFn` via [`crate::any::AnyProvider::embed_fn`].
+/// The closure captures an `Arc`-wrapped provider clone, so it is cheap to clone.
 pub type EmbedFn = Box<dyn Fn(&str) -> EmbedFuture + Send + Sync>;
 
-/// Sender for emitting status events (retries, fallbacks) to the UI.
+/// Sender for emitting human-readable status events (retries, fallbacks) to the UI layer.
+///
+/// When set on a provider, the provider sends short strings such as
+/// `"Retrying after rate limit…"` or `"Falling back to secondary provider"`.
+/// The TUI consumes these to show real-time activity spinners.
 pub type StatusTx = tokio::sync::mpsc::UnboundedSender<String>;
 
 /// Best-effort fallback for debug dump request payloads when a provider does not expose
@@ -155,15 +209,30 @@ pub fn default_debug_request_json(
 ///
 /// Applied by the experiment engine to clone-and-patch a provider before evaluation,
 /// so each variation is scored with its specific generation parameters.
+///
+/// Only `Some` fields are applied; `None` fields leave the provider's configured
+/// defaults unchanged. Not all providers support all fields — unsupported fields
+/// are silently ignored by each backend.
 #[derive(Debug, Clone, Default)]
 pub struct GenerationOverrides {
+    /// Sampling temperature in `[0.0, 2.0]`. Lower = more deterministic.
     pub temperature: Option<f64>,
+    /// Nucleus sampling probability in `[0.0, 1.0]`.
     pub top_p: Option<f64>,
+    /// Top-K sampling cutoff (number of top tokens to consider).
     pub top_k: Option<usize>,
+    /// Penalty for tokens that have already appeared (OpenAI-compatible providers).
     pub frequency_penalty: Option<f64>,
+    /// Penalty for topics the model has already covered (OpenAI-compatible providers).
     pub presence_penalty: Option<f64>,
 }
 
+/// Message role in a conversation.
+///
+/// Determines how each message is presented to the model:
+/// - `System` — global instructions prepended before the conversation
+/// - `User` — human turn input
+/// - `Assistant` — previous model output (used for multi-turn context)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -172,56 +241,62 @@ pub enum Role {
     Assistant,
 }
 
+/// A typed content part within a [`Message`].
+///
+/// Messages may contain zero or more parts that represent heterogeneous content:
+/// plain text, tool invocations, memory recall fragments, images, and internal
+/// protocol blocks (thinking, compaction). Most providers flatten these into a single
+/// string before sending; Claude encodes them as structured content blocks.
+///
+/// # Ordering invariants
+///
+/// - `ToolUse` parts must precede their corresponding `ToolResult` parts.
+/// - `ThinkingBlock` / `RedactedThinkingBlock` parts must be preserved verbatim in
+///   multi-turn requests so the API can correctly attribute reasoning.
+/// - `Compaction` parts must be preserved verbatim; the API uses them to prune
+///   prior history on subsequent turns (Claude compact-2026-01-12 beta).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MessagePart {
-    Text {
-        text: String,
-    },
+    /// Plain assistant or user text.
+    Text { text: String },
+    /// Output from a tool execution, optionally compacted.
     ToolOutput {
         tool_name: String,
         body: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         compacted_at: Option<i64>,
     },
-    Recall {
-        text: String,
-    },
-    CodeContext {
-        text: String,
-    },
-    Summary {
-        text: String,
-    },
-    CrossSession {
-        text: String,
-    },
+    /// Memory recall fragment injected by the agent's semantic memory layer.
+    Recall { text: String },
+    /// Repository or file code context injected by the code indexing layer.
+    CodeContext { text: String },
+    /// Compaction summary replacing pruned conversation history.
+    Summary { text: String },
+    /// Cross-session memory fragment carried over from a previous conversation.
+    CrossSession { text: String },
+    /// Model-initiated tool invocation. Pairs with a subsequent [`MessagePart::ToolResult`].
     ToolUse {
         id: String,
         name: String,
         input: serde_json::Value,
     },
+    /// Tool execution result returned to the model after a [`MessagePart::ToolUse`].
     ToolResult {
         tool_use_id: String,
         content: String,
         #[serde(default)]
         is_error: bool,
     },
+    /// Inline image payload (vision input).
     Image(Box<ImageData>),
     /// Claude thinking block — must be preserved verbatim in multi-turn requests.
-    ThinkingBlock {
-        thinking: String,
-        signature: String,
-    },
+    ThinkingBlock { thinking: String, signature: String },
     /// Claude redacted thinking block — preserved as-is in multi-turn requests.
-    RedactedThinkingBlock {
-        data: String,
-    },
+    RedactedThinkingBlock { data: String },
     /// Claude server-side compaction block — must be preserved verbatim in multi-turn requests
     /// so the API can correctly prune prior history on the next turn.
-    Compaction {
-        summary: String,
-    },
+    Compaction { summary: String },
 }
 
 impl MessagePart {
@@ -251,6 +326,10 @@ impl MessagePart {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// Raw image payload for vision-capable providers.
+///
+/// The `data` field is serialized as a Base64 string. `mime_type` must be a valid
+/// image MIME type supported by the target provider (e.g. `"image/png"`, `"image/jpeg"`).
 pub struct ImageData {
     #[serde(with = "serde_bytes_base64")]
     pub data: Vec<u8>,
@@ -278,10 +357,20 @@ mod serde_bytes_base64 {
 }
 
 /// Per-message visibility flags controlling agent context and user display.
+///
+/// The `agent_visible` and `user_visible` flags are independent: a message can be
+/// visible to the agent (included in the LLM context) but hidden from the user (UI),
+/// or shown to the user but stripped from the LLM context.
+///
+/// Constructors [`agent_only`](Self::agent_only), [`user_only`](Self::user_only),
+/// and [`focus_pinned`](Self::focus_pinned) cover the most common flag combinations.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MessageMetadata {
+    /// Include this message in the LLM request context.
     pub agent_visible: bool,
+    /// Show this message in the user-facing conversation log.
     pub user_visible: bool,
+    /// Unix timestamp (seconds) when this message was compacted, if applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compacted_at: Option<i64>,
     /// Pre-computed tool pair summary, applied lazily when context pressure rises.
@@ -360,9 +449,36 @@ impl MessageMetadata {
     }
 }
 
+/// A single message in a conversation.
+///
+/// Each message has a [`Role`], a flat `content` string (used when sending to providers
+/// that do not support structured parts), and an optional list of [`MessagePart`]s for
+/// providers that accept heterogeneous content blocks (e.g. Claude).
+///
+/// The `content` field is kept in sync with `parts` via [`Message::rebuild_content`].
+/// When building messages from structured parts, always use [`Message::from_parts`] —
+/// it populates both `parts` and `content`.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{Message, MessagePart, Role};
+///
+/// // Simple text-only message
+/// let msg = Message::from_legacy(Role::User, "What is Rust?");
+/// assert_eq!(msg.to_llm_content(), "What is Rust?");
+///
+/// // Structured message with parts
+/// let parts = vec![
+///     MessagePart::Text { text: "Explain this code.".into() },
+/// ];
+/// let msg = Message::from_parts(Role::User, parts);
+/// assert!(!msg.parts.is_empty());
+/// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
+    /// Flat text representation of this message, derived from `parts` when structured.
     pub content: String,
     #[serde(default)]
     pub parts: Vec<MessagePart>,
@@ -382,6 +498,10 @@ impl Default for Message {
 }
 
 impl Message {
+    /// Create a simple text-only message without structured parts.
+    ///
+    /// Use this constructor for system prompts, plain user turns, and assistant
+    /// messages produced by providers that return a raw string.
     #[must_use]
     pub fn from_legacy(role: Role, content: impl Into<String>) -> Self {
         Self {
@@ -392,6 +512,10 @@ impl Message {
         }
     }
 
+    /// Create a message from structured parts, deriving the flat `content` automatically.
+    ///
+    /// Prefer this constructor when the message contains tool invocations, images,
+    /// or other non-text content that providers need to render as separate content blocks.
     #[must_use]
     pub fn from_parts(role: Role, parts: Vec<MessagePart>) -> Self {
         let content = Self::flatten_parts(&parts);
@@ -403,6 +527,8 @@ impl Message {
         }
     }
 
+    /// Return the flat text content of this message, suitable for providers that do
+    /// not support structured content blocks.
     #[must_use]
     pub fn to_llm_content(&self) -> &str {
         &self.content
@@ -463,6 +589,59 @@ impl Message {
     }
 }
 
+/// Core abstraction for all LLM inference backends.
+///
+/// Every backend — Ollama, Claude, OpenAI, Gemini, Candle — implements this trait.
+/// The [`crate::any::AnyProvider`] enum erases the concrete type so callers can
+/// hold any backend behind a single type, and [`crate::router::RouterProvider`]
+/// implements this trait to multiplex across multiple backends.
+///
+/// # Required methods
+///
+/// Implementors must provide: [`chat`](Self::chat), [`chat_stream`](Self::chat_stream),
+/// [`supports_streaming`](Self::supports_streaming), [`embed`](Self::embed),
+/// [`supports_embeddings`](Self::supports_embeddings), and [`name`](Self::name).
+///
+/// # Optional methods
+///
+/// All other methods have default implementations that are safe to accept:
+/// - [`context_window`](Self::context_window) — returns `None`
+/// - [`embed_batch`](Self::embed_batch) — sequential fallback via [`embed`](Self::embed)
+/// - [`chat_with_tools`](Self::chat_with_tools) — falls back to [`chat`](Self::chat)
+/// - [`chat_typed`](Self::chat_typed) — schema-prompt injection + retry
+/// - [`supports_vision`](Self::supports_vision) — returns `false`
+/// - [`supports_tool_use`](Self::supports_tool_use) — returns `true`
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_llm::provider::{LlmProvider, Message, Role, ChatStream};
+/// use zeph_llm::LlmError;
+///
+/// struct EchoProvider;
+///
+/// impl LlmProvider for EchoProvider {
+///     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
+///         Ok(messages.last().map(|m| m.content.clone()).unwrap_or_default())
+///     }
+///
+///     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
+///         use zeph_llm::provider::StreamChunk;
+///         let text = self.chat(messages).await?;
+///         Ok(Box::pin(tokio_stream::once(Ok(StreamChunk::Content(text)))))
+///     }
+///
+///     fn supports_streaming(&self) -> bool { true }
+///
+///     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+///         Err(LlmError::EmbedUnsupported { provider: "echo".into() })
+///     }
+///
+///     fn supports_embeddings(&self) -> bool { false }
+///
+///     fn name(&self) -> &str { "echo" }
+/// }
+/// ```
 pub trait LlmProvider: Send + Sync {
     /// Report the model's context window size in tokens.
     ///

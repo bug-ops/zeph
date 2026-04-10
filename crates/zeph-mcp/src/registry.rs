@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Qdrant-backed semantic tool registry for MCP tool discovery.
+//!
+//! [`McpToolRegistry`] syncs MCP tool descriptions to Qdrant as embedding vectors,
+//! enabling semantic search ("find tools relevant to this task") across all connected
+//! servers. Tool embeddings are delta-synced: only changed tools are upserted.
+//!
+//! This is the persistent/Qdrant path. For a lighter in-memory alternative, see
+//! [`crate::semantic_index::SemanticToolIndex`].
+
 pub use zeph_memory::SyncStats;
 use zeph_memory::{Embeddable, EmbeddingRegistry, QdrantOps};
 
@@ -69,6 +78,28 @@ fn compute_hash(tool: &McpTool) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
+/// Qdrant-backed registry for MCP tool embeddings.
+///
+/// Stores a semantic embedding for each MCP tool in a dedicated Qdrant collection
+/// (`zeph_mcp_tools`). Embeddings are keyed by `qualified_name` (`"server_id:name"`)
+/// and content-hashed so unchanged tools are never re-embedded.
+///
+/// # Usage pattern
+///
+/// ```no_run
+/// use zeph_mcp::registry::McpToolRegistry;
+/// use zeph_memory::QdrantOps;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let ops = QdrantOps::new("http://localhost:6334")?;
+/// let mut registry = McpToolRegistry::with_ops(ops);
+/// // Sync tools after connect_all():
+/// // registry.sync(&tools, "nomic-embed-text", embed_fn).await?;
+/// // Search for relevant tools:
+/// // let hits = registry.search("read a file", 5, embed_fn).await;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct McpToolRegistry {
     registry: EmbeddingRegistry,
@@ -127,7 +158,14 @@ impl McpToolRegistry {
         Ok(stats)
     }
 
-    /// Search for relevant MCP tools using Qdrant vector search.
+    /// Search for MCP tools relevant to a natural-language query using Qdrant vector search.
+    ///
+    /// Returns up to `limit` tools sorted by embedding similarity to `query`.
+    /// On embedding failure or Qdrant error the method logs at `WARN` and returns an
+    /// empty `Vec` — the caller should fall back to the full tool list.
+    ///
+    /// Note: returned tools have an empty `input_schema` because Qdrant payloads only
+    /// store the description fields needed for prompt construction.
     pub async fn search<F>(&self, query: &str, limit: usize, embed_fn: F) -> Vec<McpTool>
     where
         F: Fn(&str) -> EmbedFuture,

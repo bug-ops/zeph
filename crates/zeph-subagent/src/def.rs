@@ -1,6 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Sub-agent definition parsing and loading.
+//!
+//! A [`SubAgentDef`] is parsed from a Markdown file with YAML (or deprecated TOML)
+//! frontmatter. [`SubAgentDef::parse`] handles a content string directly;
+//! [`SubAgentDef::load`] reads from disk with optional symlink-boundary enforcement;
+//! [`SubAgentDef::load_all`] scans multiple priority-ordered directories.
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -19,7 +26,25 @@ pub use zeph_config::{MemoryScope, ModelSpec, PermissionMode, SkillFilter, ToolP
 pub(super) static AGENT_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$").unwrap());
 
-/// Returns true if the given name passes the agent name validation regex.
+/// Returns `true` if `name` is a valid sub-agent identifier.
+///
+/// Valid names match `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`:
+/// - ASCII only (rejects unicode homoglyphs and full-width characters)
+/// - Must start with an alphanumeric character
+/// - Maximum 64 characters
+/// - Hyphens and underscores are allowed after the first character
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_subagent::is_valid_agent_name;
+///
+/// assert!(is_valid_agent_name("my-agent"));
+/// assert!(is_valid_agent_name("helper1"));
+/// assert!(!is_valid_agent_name("../etc")); // path traversal
+/// assert!(!is_valid_agent_name(""));       // empty
+/// assert!(!is_valid_agent_name("аgent"));  // cyrillic homoglyph
+/// ```
 pub fn is_valid_agent_name(name: &str) -> bool {
     AGENT_NAME_RE.is_match(name)
 }
@@ -37,11 +62,47 @@ const MAX_ENTRIES_PER_DIR: usize = 100;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
+/// Parsed and validated sub-agent definition loaded from a `.md` file.
+///
+/// A `SubAgentDef` is the runtime representation of a sub-agent's configuration.
+/// Definitions are loaded from Markdown files with YAML (or deprecated TOML) frontmatter
+/// and a system prompt body.
+///
+/// # File format
+///
+/// ```text
+/// ---
+/// name: code-reviewer
+/// description: Reviews pull requests for correctness and style
+/// model: claude-sonnet-4
+/// tools:
+///   allow:
+///     - shell
+///     - Read
+/// permissions:
+///   max_turns: 15
+///   timeout_secs: 300
+/// skills:
+///   include:
+///     - "git-*"
+/// ---
+///
+/// You are an expert code reviewer. Focus on correctness, style, and security.
+/// ```
+///
+/// # Errors
+///
+/// [`SubAgentDef::parse`] returns [`SubAgentError::Parse`] if the frontmatter is malformed
+/// and [`SubAgentError::Invalid`] if semantic constraints are violated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentDef {
+    /// Unique identifier for this agent (ASCII alphanumeric + hyphen/underscore, max 64 chars).
     pub name: String,
+    /// Human-readable description shown in `/agent list` output.
     pub description: String,
+    /// Override the default LLM model for this agent. `None` inherits the parent's provider.
     pub model: Option<ModelSpec>,
+    /// Base tool access policy derived from `tools.allow` or `tools.deny` in frontmatter.
     pub tools: ToolPolicy,
     /// Additional denylist applied after the base `tools` policy.
     ///
@@ -57,8 +118,11 @@ pub struct SubAgentDef {
     /// as a valid frontmatter file. This is intentional for the current MVP but must
     /// be addressed before v1.0.0 (see GitHub issue filed under IMP-CRIT-04).
     pub disallowed_tools: Vec<String>,
+    /// Runtime permission settings: secrets, turn limits, background mode, timeouts.
     pub permissions: SubAgentPermissions,
+    /// Glob patterns controlling which skills are visible to this agent.
     pub skills: SkillFilter,
+    /// The markdown body of the definition file, used as the agent's system prompt.
     pub system_prompt: String,
     /// Per-agent hooks (`PreToolUse` / `PostToolUse`) from frontmatter.
     ///
@@ -82,13 +146,23 @@ pub struct SubAgentDef {
     pub file_path: Option<PathBuf>,
 }
 
+/// Runtime permission settings for a sub-agent.
+///
+/// All fields have defaults that apply when the `permissions` section is absent from
+/// the frontmatter: 20 turns, 600 s timeout, foreground execution, default permission mode.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentPermissions {
+    /// Vault secret keys this agent is allowed to request at runtime.
     pub secrets: Vec<String>,
+    /// Maximum number of LLM turns before the agent is force-stopped.
     pub max_turns: u32,
+    /// When `true`, the agent runs independently of the parent cancellation token.
     pub background: bool,
+    /// Hard wall-clock timeout in seconds for the entire agent session.
     pub timeout_secs: u64,
+    /// Time-to-live in seconds for permission grants issued to this agent.
     pub ttl_secs: u64,
+    /// Controls tool access philosophy (`Default`, `Plan`, `BypassPermissions`).
     pub permission_mode: PermissionMode,
 }
 

@@ -5,6 +5,26 @@
 //!
 //! Applied to tool outputs before they enter LLM context and before debug dumps are written.
 //! Configured under `[security.pii_filter]` in the agent config file.
+//!
+//! # Core types
+//!
+//! - [`PiiFilter`] — stateless scrubber; construct from [`PiiFilterConfig`].
+//! - [`PiiSpan`] — byte-offset span of a detected PII entity.
+//! - [`build_char_to_byte_map`] — helper to convert NER character offsets to byte offsets.
+//! - [`merge_spans`] — merge overlapping spans before redaction.
+//! - [`redact_spans`] — redact a sorted, non-overlapping span list in one pass.
+//!
+//! # Quick Start
+//!
+//! ```rust
+//! use zeph_sanitizer::pii::PiiFilter;
+//! use zeph_config::PiiFilterConfig;
+//!
+//! let filter = PiiFilter::new(PiiFilterConfig { enabled: true, ..Default::default() });
+//! let scrubbed = filter.scrub("contact user@example.com for details");
+//! assert!(scrubbed.contains("[PII:email]"));
+//! assert!(!scrubbed.contains("user@example.com"));
+//! ```
 
 use std::borrow::Cow;
 use std::sync::LazyLock;
@@ -164,7 +184,18 @@ pub struct PiiFilter {
 impl PiiFilter {
     /// Construct a new filter from the given configuration.
     ///
-    /// Custom pattern compilation errors are logged as warnings; invalid patterns are skipped.
+    /// Custom pattern compilation errors are logged as warnings; invalid patterns are
+    /// skipped so the filter continues with the remaining valid patterns.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::pii::PiiFilter;
+    /// use zeph_config::PiiFilterConfig;
+    ///
+    /// let filter = PiiFilter::new(PiiFilterConfig { enabled: true, ..Default::default() });
+    /// assert!(filter.is_enabled());
+    /// ```
     #[must_use]
     pub fn new(config: PiiFilterConfig) -> Self {
         let mut builtin = Vec::new();

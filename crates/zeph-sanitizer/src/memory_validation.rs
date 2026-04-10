@@ -7,6 +7,14 @@
 //! Configured under `[security.memory_validation]` in the agent config file.
 //! Enabled by default — guards against oversized writes, injection markers, and PII
 //! leaking into entity names.
+//!
+//! [`MemoryWriteValidator`] covers two distinct write paths:
+//!
+//! 1. **`memory_save` tool** — validates raw text before SQLite + Qdrant write.
+//!    Checks size limit and forbidden content patterns.
+//! 2. **Graph extraction** — validates [`ExtractionResult`](zeph_memory::graph::extractor::ExtractionResult)
+//!    after `GraphExtractor::extract()` returns. Checks entity count, edge count,
+//!    entity name length, fact text length, and PII in entity names.
 
 use std::sync::LazyLock;
 
@@ -35,29 +43,41 @@ static ENTITY_SSN_RE: LazyLock<Regex> =
 // ---------------------------------------------------------------------------
 
 /// Validation failure reported by [`MemoryWriteValidator`].
+///
+/// Returned by [`validate_memory_save`](MemoryWriteValidator::validate_memory_save) and
+/// [`validate_graph_extraction`](MemoryWriteValidator::validate_graph_extraction). Callers
+/// should log the error and skip the write rather than panicking.
 #[derive(Debug, Error)]
 pub enum MemoryValidationError {
+    /// The content exceeds the configured `max_content_bytes` limit.
     #[error("content too large: {size} bytes exceeds max {max}")]
     ContentTooLarge { size: usize, max: usize },
 
+    /// An extracted entity name is shorter than `min_entity_name_bytes`.
     #[error("entity name too short: '{name}' is below min {min} bytes")]
     EntityNameTooShort { name: String, min: usize },
 
+    /// An extracted entity name exceeds `max_entity_name_bytes`.
     #[error("entity name too long: '{name}' exceeds max {max} bytes")]
     EntityNameTooLong { name: String, max: usize },
 
+    /// An extracted edge fact exceeds `max_fact_bytes`.
     #[error("fact text too long: exceeds max {max} bytes")]
     FactTooLong { max: usize },
 
+    /// The extraction produced more entities than `max_entities_per_extraction`.
     #[error("too many entities: {count} exceeds max {max}")]
     TooManyEntities { count: usize, max: usize },
 
+    /// The extraction produced more edges than `max_edges_per_extraction`.
     #[error("too many edges: {count} exceeds max {max}")]
     TooManyEdges { count: usize, max: usize },
 
+    /// The content matched one of the configured `forbidden_content_patterns`.
     #[error("forbidden pattern detected: {pattern}")]
     ForbiddenPattern { pattern: String },
 
+    /// An entity name contains a PII pattern (email or SSN).
     #[error("PII detected in entity name: '{entity}'")]
     SuspiciousPiiInEntityName { entity: String },
 }
@@ -70,6 +90,23 @@ pub enum MemoryValidationError {
 ///
 /// Construct once from [`MemoryWriteValidationConfig`] and store on the agent.
 /// Cheap to clone.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_sanitizer::memory_validation::MemoryWriteValidator;
+/// use zeph_config::MemoryWriteValidationConfig;
+///
+/// let validator = MemoryWriteValidator::new(MemoryWriteValidationConfig::default());
+/// assert!(validator.is_enabled());
+///
+/// // Small content passes.
+/// assert!(validator.validate_memory_save("hello world").is_ok());
+///
+/// // Content exceeding the limit is rejected.
+/// let huge = "x".repeat(10_000);
+/// assert!(validator.validate_memory_save(&huge).is_err());
+/// ```
 #[derive(Debug, Clone)]
 pub struct MemoryWriteValidator {
     config: MemoryWriteValidationConfig,
@@ -77,6 +114,16 @@ pub struct MemoryWriteValidator {
 
 impl MemoryWriteValidator {
     /// Create a validator from the given configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::memory_validation::MemoryWriteValidator;
+    /// use zeph_config::MemoryWriteValidationConfig;
+    ///
+    /// let validator = MemoryWriteValidator::new(MemoryWriteValidationConfig::default());
+    /// assert!(validator.is_enabled());
+    /// ```
     #[must_use]
     pub fn new(config: MemoryWriteValidationConfig) -> Self {
         Self { config }
@@ -179,6 +226,9 @@ impl MemoryWriteValidator {
     }
 
     /// Returns `true` when validation is enabled.
+    ///
+    /// When `false`, both [`validate_memory_save`](Self::validate_memory_save) and
+    /// [`validate_graph_extraction`](Self::validate_graph_extraction) always return `Ok(())`.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.config.enabled

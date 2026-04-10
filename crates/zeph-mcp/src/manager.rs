@@ -95,7 +95,21 @@ pub enum McpTransport {
     },
 }
 
-/// Server connection parameters consumed by `McpManager`.
+/// Connection parameters for a single MCP server consumed by [`McpManager`].
+///
+/// Deserialized from the `[[mcp.servers]]` TOML config table or constructed
+/// programmatically for tests. All fields except `id` and `transport` have
+/// reasonable defaults via `#[serde(default)]`.
+///
+/// # Trust semantics
+///
+/// The combination of `trust_level`, `tool_allowlist`, and `expected_tools` controls
+/// which tools are exposed to the agent:
+///
+/// - `Trusted` — all tools are exposed; SSRF and data-flow checks are relaxed.
+/// - `Untrusted` + no allowlist — all tools exposed with a warning.
+/// - `Untrusted` + allowlist — only listed tools are exposed.
+/// - `Sandboxed` + allowlist — only listed tools; empty allowlist = no tools.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerEntry {
     pub id: String,
@@ -151,16 +165,42 @@ struct ConnectState<'a> {
     outcomes: &'a mut Vec<ServerConnectOutcome>,
 }
 
-/// Per-server connection outcome from `connect_all()`.
+/// Outcome of a single server connection attempt from [`McpManager::connect_all`].
+///
+/// One `ServerConnectOutcome` is returned per configured server. Inspect `connected`
+/// to distinguish success from failure; `error` is empty when `connected` is `true`.
 #[derive(Debug, Clone)]
 pub struct ServerConnectOutcome {
+    /// Server ID from [`ServerEntry::id`].
     pub id: String,
+    /// `true` if the connection and tool list retrieval succeeded.
     pub connected: bool,
+    /// Number of tools registered after sanitization and trust filtering.
     pub tool_count: usize,
-    /// Human-readable failure reason. Empty when connected.
+    /// Human-readable failure reason. Empty when `connected` is `true`.
     pub error: String,
 }
 
+/// Multi-server MCP lifecycle manager.
+///
+/// `McpManager` owns connections to all configured MCP servers. It drives the full
+/// security pipeline (command allowlist, SSRF, attestation, sanitization, data-flow
+/// policy, trust scoring, embedding anomaly detection) and exposes a single
+/// `call_tool()` entry point for tool execution.
+///
+/// # Lifecycle
+///
+/// 1. Construct with [`McpManager::new`] (or [`McpManager::with_elicitation_capacity`]).
+/// 2. Chain builder methods (`with_prober`, `with_trust_store`, `with_lock_tool_list`, …).
+/// 3. Call [`McpManager::connect_all`] to establish connections; receives initial tool list.
+/// 4. Call [`McpManager::spawn_refresh_task`] to start the background refresh handler.
+/// 5. Use [`McpManager::call_tool`] to invoke tools during agent turns.
+/// 6. Call [`McpManager::shutdown_all_shared`] on exit.
+///
+/// # Sharing across tasks
+///
+/// `McpManager` is cheaply cloneable via `Arc` wrapping of its internal maps, making it
+/// safe to share across async tasks. Most methods take `&self`.
 pub struct McpManager {
     configs: Vec<ServerEntry>,
     allowed_commands: Vec<String>,
@@ -234,6 +274,24 @@ impl std::fmt::Debug for McpManager {
 }
 
 impl McpManager {
+    /// Create a new `McpManager` with default settings.
+    ///
+    /// Uses an elicitation channel capacity of 16. Call builder methods such as
+    /// [`with_prober`](Self::with_prober), [`with_lock_tool_list`](Self::with_lock_tool_list),
+    /// and [`with_trust_store`](Self::with_trust_store) before [`connect_all`](Self::connect_all).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_mcp::{McpManager, McpTransport, ServerEntry};
+    /// use zeph_mcp::policy::PolicyEnforcer;
+    ///
+    /// let manager = McpManager::new(
+    ///     vec![],
+    ///     vec!["npx".to_owned()],
+    ///     PolicyEnforcer::new(vec![]),
+    /// );
+    /// ```
     #[must_use]
     pub fn new(
         configs: Vec<ServerEntry>,
@@ -558,13 +616,22 @@ impl McpManager {
         self.configs.len()
     }
 
-    /// Connect to all configured servers, return aggregated tool list and per-server outcomes.
+    /// Connect to all non-OAuth configured servers concurrently.
     ///
-    /// OAuth servers are skipped — call `connect_oauth_deferred()` after the
-    /// UI channel is ready so the auth URL is visible and startup is not blocked.
+    /// Returns `(all_tools, outcomes)` where `all_tools` is the flattened set of tools
+    /// from all successfully connected servers, and `outcomes` contains one
+    /// [`ServerConnectOutcome`] per configured server.
+    ///
+    /// **OAuth servers are skipped** — call [`connect_oauth_deferred`](Self::connect_oauth_deferred)
+    /// after the UI channel is ready so the authorization URL is visible and startup is not blocked.
+    ///
+    /// Each connection goes through the full security pipeline:
+    /// command validation → SSRF check → handshake → probe → attestation → sanitization →
+    /// data-flow policy.
     ///
     /// # Panics
     ///
+    /// Does not panic under normal conditions.
     #[allow(clippy::too_many_lines)]
     pub async fn connect_all(&self) -> (Vec<McpTool>, Vec<ServerConnectOutcome>) {
         let allowed = self.allowed_commands.clone();

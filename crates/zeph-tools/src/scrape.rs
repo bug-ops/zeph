@@ -1,6 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Web scraping executor with SSRF protection and domain policy enforcement.
+//!
+//! Exposes two tools to the LLM:
+//!
+//! - **`web_scrape`** — fetches a URL and extracts elements matching a CSS selector.
+//! - **`fetch`** — fetches a URL and returns the raw response body as UTF-8 text.
+//!
+//! Both tools enforce:
+//!
+//! - HTTPS-only URLs (HTTP and other schemes are rejected).
+//! - DNS resolution followed by a private-IP check to prevent SSRF.
+//! - Optional domain allowlist and denylist from [`ScrapeConfig`].
+//! - Configurable timeout and maximum response body size.
+//! - Redirect following is disabled to prevent open-redirect SSRF bypasses.
+
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -61,8 +76,41 @@ impl ExtractMode {
 
 /// Extracts data from web pages via CSS selectors.
 ///
-/// Detects ` ```scrape ` blocks in LLM responses containing JSON instructions,
-/// fetches the URL, and parses HTML with `scrape-core`.
+/// Handles two invocation paths:
+///
+/// 1. **Legacy fenced blocks** — detects ` ```scrape ` blocks in the LLM response, each
+///    containing a JSON scrape instruction object. Dispatched via [`ToolExecutor::execute`].
+/// 2. **Structured tool calls** — dispatched via [`ToolExecutor::execute_tool_call`] for
+///    tool IDs `"web_scrape"` and `"fetch"`.
+///
+/// # Security
+///
+/// - Only HTTPS URLs are accepted. HTTP and other schemes return [`ToolError::InvalidParams`].
+/// - DNS is resolved synchronously and each resolved address is checked against
+///   [`is_private_ip`]. Private addresses are rejected to prevent SSRF.
+/// - HTTP redirects are disabled (`Policy::none()`) to prevent open-redirect bypasses.
+/// - Domain allowlists and denylists from config are enforced before DNS resolution.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use zeph_tools::{WebScrapeExecutor, ToolExecutor, ToolCall, config::ScrapeConfig};
+///
+/// # async fn example() {
+/// let executor = WebScrapeExecutor::new(&ScrapeConfig::default());
+///
+/// let call = ToolCall {
+///     tool_id: "fetch".to_owned(),
+///     params: {
+///         let mut m = serde_json::Map::new();
+///         m.insert("url".to_owned(), serde_json::json!("https://example.com"));
+///         m
+///     },
+///     caller_id: None,
+/// };
+/// let _ = executor.execute_tool_call(&call).await;
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct WebScrapeExecutor {
     timeout: Duration,
@@ -73,6 +121,9 @@ pub struct WebScrapeExecutor {
 }
 
 impl WebScrapeExecutor {
+    /// Create a new `WebScrapeExecutor` from configuration.
+    ///
+    /// No network connections are made at construction time.
     #[must_use]
     pub fn new(config: &ScrapeConfig) -> Self {
         Self {
@@ -84,6 +135,7 @@ impl WebScrapeExecutor {
         }
     }
 
+    /// Attach an audit logger. Each tool invocation will emit an [`AuditEntry`].
     #[must_use]
     pub fn with_audit(mut self, logger: Arc<AuditLogger>) -> Self {
         self.audit_logger = Some(logger);

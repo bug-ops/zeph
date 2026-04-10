@@ -14,6 +14,39 @@ use crate::task::TaskHandler;
 const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/bug-ops/zeph/releases/latest";
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
+/// [`TaskHandler`](crate::TaskHandler) that polls the GitHub releases API for a newer Zeph version.
+///
+/// On each execution, `UpdateCheckHandler` fetches the latest release from
+/// `https://api.github.com/repos/bug-ops/zeph/releases/latest`, compares the
+/// `tag_name` field against `current_version` using semantic versioning, and sends a
+/// human-readable notification message on `notify_tx` when a newer release is found.
+///
+/// Network and parse errors are logged as warnings; `execute` always returns `Ok(())`
+/// so a transient failure does not stop the scheduler.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use tokio::sync::mpsc;
+/// use zeph_scheduler::UpdateCheckHandler;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let (tx, mut rx) = mpsc::channel(1);
+/// let handler = UpdateCheckHandler::new(env!("CARGO_PKG_VERSION"), tx);
+///
+/// use zeph_scheduler::TaskHandler;
+/// handler
+///     .execute(&serde_json::Value::Null)
+///     .await
+///     .expect("update check should not fail");
+///
+/// // A notification is sent only when a newer version exists on GitHub.
+/// if let Ok(msg) = rx.try_recv() {
+///     println!("{msg}");
+/// }
+/// # }
+/// ```
 pub struct UpdateCheckHandler {
     current_version: &'static str,
     notify_tx: mpsc::Sender<String>,
@@ -51,7 +84,10 @@ impl UpdateCheckHandler {
         }
     }
 
-    /// Override the releases API URL. Intended for tests only.
+    /// Override the GitHub releases API URL.
+    ///
+    /// Intended for tests only: point the handler at a local mock server so the
+    /// test does not make real network requests.
     #[must_use]
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = url.into();

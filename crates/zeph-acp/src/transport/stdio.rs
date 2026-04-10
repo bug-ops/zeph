@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! stdio transport for the ACP server.
+//!
+//! The stdio transport is the default connection method used by IDE extensions.
+//! The IDE spawns the agent binary and communicates over the process's stdin/stdout
+//! pipes using newline-delimited JSON-RPC 2.0 frames (the ACP wire format).
+//!
+//! A dedicated OS thread runs a current-thread tokio runtime + `LocalSet` for the
+//! ACP control plane (required because `AgentSideConnection` is `!Send`).
+
 use std::cell::RefCell;
 use std::rc::Rc;
 

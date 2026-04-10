@@ -1,7 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-/// Commands that can be sent from TUI to Agent loop.
+/// Commands dispatched from the TUI command palette to the agent loop.
+///
+/// Each variant corresponds to a slash-command or keybinding action that the
+/// TUI can trigger. The agent loop receives these via an `mpsc` channel and
+/// produces a [`crate::event::AgentEvent::CommandResult`] response.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::TuiCommand;
+///
+/// let cmd = TuiCommand::SkillList;
+/// assert_eq!(cmd, TuiCommand::SkillList);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TuiCommand {
     // Existing view commands
@@ -85,16 +98,48 @@ pub enum TuiCommand {
     MemoryTreeStats,
 }
 
-/// Metadata for command palette display and fuzzy matching.
+/// Metadata for a single entry in the command palette.
+///
+/// Used for both display (label, category, shortcut hint) and fuzzy-matching
+/// (id + label are scored by [`filter_commands`]).
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::command::{command_registry, CommandEntry};
+///
+/// let registry = command_registry();
+/// let quit = registry.iter().find(|e| e.id == "app:quit").unwrap();
+/// assert_eq!(quit.shortcut, Some("q"));
+/// ```
 pub struct CommandEntry {
+    /// Stable identifier used in fuzzy search and slash-command routing (e.g. `"skill:list"`).
     pub id: &'static str,
+    /// Human-readable label shown in the command palette list.
     pub label: &'static str,
+    /// Logical group for categorised display (e.g. `"memory"`, `"agent"`).
     pub category: &'static str,
+    /// Optional keyboard shortcut hint (e.g. `"q"`, `"?"`).
     pub shortcut: Option<&'static str>,
+    /// The [`TuiCommand`] dispatched when this entry is selected.
     pub command: TuiCommand,
 }
 
-/// Static registry of all available commands.
+/// Returns the static registry of core TUI commands.
+///
+/// This includes navigation, session management, view toggles, and app-level
+/// actions. Extended commands (agent, plan, graph, experiment, infra) are in
+/// [`extra_command_registry`] and daemon commands in [`daemon_command_registry`].
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::command::command_registry;
+///
+/// let registry = command_registry();
+/// assert!(!registry.is_empty());
+/// assert!(registry.iter().any(|e| e.id == "app:quit"));
+/// ```
 #[must_use]
 pub fn command_registry() -> &'static [CommandEntry] {
     static COMMANDS: &[CommandEntry] = &[
@@ -186,7 +231,18 @@ pub fn command_registry() -> &'static [CommandEntry] {
     COMMANDS
 }
 
-/// Daemon / remote-mode commands.
+/// Returns the static registry of daemon / remote-connection commands.
+///
+/// These commands manage connectivity to a background Zeph daemon process.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::command::daemon_command_registry;
+///
+/// let registry = daemon_command_registry();
+/// assert!(registry.iter().any(|e| e.id == "daemon:connect"));
+/// ```
 #[must_use]
 pub fn daemon_command_registry() -> &'static [CommandEntry] {
     static DAEMON_COMMANDS: &[CommandEntry] = &[
@@ -215,7 +271,20 @@ pub fn daemon_command_registry() -> &'static [CommandEntry] {
     DAEMON_COMMANDS
 }
 
-/// Extended command registry: filter/ingest/gateway entries.
+/// Returns the extended command registry (infrastructure, agent, plan, graph, experiment).
+///
+/// Lazily initialised on first call and then shared for the process lifetime.
+/// Prefer [`filter_commands`] when you need a merged, fuzzy-filtered view.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::command::extra_command_registry;
+///
+/// let registry = extra_command_registry();
+/// assert!(registry.iter().any(|e| e.id == "graph:stats"));
+/// assert!(registry.iter().any(|e| e.id == "experiment:start"));
+/// ```
 #[must_use]
 pub fn extra_command_registry() -> &'static [CommandEntry] {
     static EXTRA: std::sync::OnceLock<Vec<CommandEntry>> = std::sync::OnceLock::new();
@@ -517,8 +586,12 @@ fn build_extra_commands() -> Vec<CommandEntry> {
     cmds
 }
 
-/// Fuzzy score: count of matched characters in order, with penalty for gaps.
-/// Returns `None` if not all query chars are found in target.
+/// Compute a fuzzy match score between `query` and `target`.
+///
+/// Matches characters of `query` in order within `target`, penalising gaps
+/// between consecutive matches. Higher scores indicate better matches.
+///
+/// Returns `None` if `target` does not contain all characters of `query`.
 fn fuzzy_score(query: &str, target: &str) -> Option<isize> {
     if query.is_empty() {
         return Some(0);
@@ -548,7 +621,30 @@ fn fuzzy_score(query: &str, target: &str) -> Option<isize> {
     }
 }
 
-/// Filters and sorts commands by fuzzy score on id or label.
+/// Filter and rank all registered commands by fuzzy match against `query`.
+///
+/// Merges the core, daemon, and extra registries, scores each entry against
+/// both its `id` and `label`, and returns the results sorted by descending
+/// score. An empty query returns all commands in registration order.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::command::filter_commands;
+///
+/// // Exact prefix match
+/// let results = filter_commands("skill");
+/// assert!(!results.is_empty());
+/// assert_eq!(results[0].id, "skill:list");
+///
+/// // Empty query returns everything
+/// let all = filter_commands("");
+/// assert!(all.len() > 10);
+///
+/// // No match returns empty
+/// let none = filter_commands("xyzzy");
+/// assert!(none.is_empty());
+/// ```
 #[must_use]
 pub fn filter_commands(query: &str) -> Vec<&'static CommandEntry> {
     let mut all: Vec<&'static CommandEntry> = command_registry().iter().collect();

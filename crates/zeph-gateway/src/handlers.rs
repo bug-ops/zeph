@@ -8,14 +8,31 @@ use axum::response::IntoResponse;
 
 use super::server::AppState;
 
+/// JSON body expected on `POST /webhook`.
+///
+/// All three fields are required.  Individual field limits are enforced by
+/// [`WebhookPayload::validate`] before the message is forwarded to the agent.
 #[derive(serde::Deserialize)]
 pub(crate) struct WebhookPayload {
+    /// Logical channel name (e.g. `"discord"`, `"slack"`). Maximum 256 bytes.
     pub channel: String,
+    /// Display name or identifier of the message sender. Maximum 256 bytes.
     pub sender: String,
+    /// Raw message content. Maximum 65 536 bytes.
     pub body: String,
 }
 
 impl WebhookPayload {
+    /// Validate field lengths before forwarding to the agent.
+    ///
+    /// Returns `Ok(())` when all fields are within their limits, or `Err` with a
+    /// human-readable description of the first violation.
+    ///
+    /// | Field | Limit |
+    /// |---|---|
+    /// | `sender` | 256 bytes |
+    /// | `channel` | 256 bytes |
+    /// | `body` | 65 536 bytes |
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
         if self.sender.len() > 256 {
             return Err("sender exceeds 256 bytes");
@@ -30,17 +47,35 @@ impl WebhookPayload {
     }
 }
 
+/// JSON body returned by a successful `POST /webhook` call.
 #[derive(serde::Serialize)]
 struct WebhookResponse {
+    /// Always `"accepted"` on success.
     status: &'static str,
 }
 
+/// JSON body returned by `GET /health`.
 #[derive(serde::Serialize)]
 struct HealthResponse {
+    /// Always `"ok"`.
     status: &'static str,
+    /// Seconds elapsed since the server started.
     uptime_secs: u64,
 }
 
+/// Handler for `POST /webhook`.
+///
+/// Validates the payload, sanitises `sender` and `channel` by stripping control
+/// characters, then forwards the message as `"[sender@channel] body"` on the
+/// internal webhook channel.
+///
+/// # Responses
+///
+/// | Status | Condition |
+/// |---|---|
+/// | 200 | Message accepted and queued |
+/// | 422 | Payload failed field-length validation |
+/// | 503 | Internal channel is closed (agent shut down) |
 pub(crate) async fn webhook_handler(
     State(state): State<AppState>,
     Json(payload): Json<WebhookPayload>,
@@ -57,6 +92,17 @@ pub(crate) async fn webhook_handler(
     }
 }
 
+/// Handler for `GET /health`.
+///
+/// Returns a JSON object with a static `"ok"` status and the server uptime in
+/// seconds.  This endpoint bypasses authentication and rate limiting so that
+/// load balancers can poll it freely.
+///
+/// # Response body
+///
+/// ```json
+/// { "status": "ok", "uptime_secs": 42 }
+/// ```
 pub(crate) async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     Json(HealthResponse {
         status: "ok",

@@ -24,13 +24,32 @@ struct FramesRecord {
 
 /// Loads FRAMES benchmark scenarios from a JSONL file.
 ///
-/// Schema (google/frames-benchmark on HuggingFace):
+/// **Source**: [`google/frames-benchmark`](https://huggingface.co/datasets/google/frames-benchmark)
+/// on HuggingFace.
+///
+/// **Schema**: one JSON object per line:
 /// ```json
 /// {"Prompt": "...", "Answer": "...", "reasoning_types": [...], "wiki_links": [...]}
 /// ```
 ///
-/// Each line becomes one [`Scenario`] with id `"frames_{line_number}"`.
-/// `reasoning_types` is stored in `metadata`.
+/// Each non-empty line becomes one [`Scenario`]:
+/// - `id` — `"frames_{line_number}"` (zero-based, counting from the first line of the file).
+/// - `prompt` — value of `"Prompt"`.
+/// - `expected` — value of `"Answer"`.
+/// - `metadata` — value of `"reasoning_types"` (array of strings, or `null`).
+///
+/// Empty lines are skipped. Unknown fields (e.g. `"wiki_links"`) are ignored.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use zeph_bench::loaders::FramesLoader;
+/// use zeph_bench::scenario::DatasetLoader;
+///
+/// let scenarios = FramesLoader.load(Path::new("/data/frames.jsonl")).unwrap();
+/// println!("loaded {} scenarios", scenarios.len());
+/// ```
 #[derive(Debug)]
 pub struct FramesLoader;
 
@@ -70,7 +89,33 @@ impl DatasetLoader for FramesLoader {
     }
 }
 
-/// Evaluates FRAMES responses using exact match.
+/// Evaluates FRAMES responses using case-insensitive exact match.
+///
+/// Normalization (applied to both prediction and reference before comparison):
+/// 1. Keep only alphanumeric characters and whitespace.
+/// 2. Convert to lowercase.
+/// 3. Collapse runs of whitespace.
+///
+/// Score is `1.0` when the normalized strings match, `0.0` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::{Scenario, loaders::FramesEvaluator};
+/// use zeph_bench::scenario::Evaluator;
+///
+/// let scenario = Scenario {
+///     id: "frames_0".into(),
+///     prompt: "Capital of France?".into(),
+///     expected: "Paris".into(),
+///     metadata: serde_json::Value::Null,
+/// };
+///
+/// // Case-insensitive and punctuation-stripped.
+/// assert!(FramesEvaluator.evaluate(&scenario, "paris").passed);
+/// assert!(FramesEvaluator.evaluate(&scenario, "Paris!").passed);
+/// assert!(!FramesEvaluator.evaluate(&scenario, "London").passed);
+/// ```
 #[derive(Debug)]
 pub struct FramesEvaluator;
 

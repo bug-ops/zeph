@@ -1,6 +1,26 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Telegram channel adapter built on [teloxide](https://docs.rs/teloxide).
+//!
+//! This module exposes [`TelegramChannel`], which implements [`Channel`] by
+//! wrapping a teloxide [`Dispatcher`] running in a background tokio task.
+//!
+//! # Key design decisions
+//!
+//! * **Access control** — messages from users not in `allowed_users` are
+//!   dropped at the dispatcher level, before they reach the agent.
+//! * **Streaming via edit-on-interval** — chunks are accumulated and the bot
+//!   edits a single Telegram message at most once every 3 seconds, staying
+//!   within Telegram's rate limits while still providing progressive output.
+//! * **4096-byte chunking** — messages that exceed Telegram's limit are
+//!   split at UTF-8 / newline boundaries via [`utf8_chunks`].
+//! * **Elicitation** — MCP server input requests are forwarded to the user
+//!   as sequential Telegram messages with per-field 120-second timeouts.
+//!
+//! [`Channel`]: zeph_core::channel::Channel
+//! [`utf8_chunks`]: crate::markdown::utf8_chunks
+
 use std::time::{Duration, Instant};
 
 use crate::markdown::markdown_to_telegram;
@@ -15,7 +35,52 @@ use zeph_core::channel::{
 const MAX_MESSAGE_LEN: usize = 4096;
 const MAX_IMAGE_BYTES: u32 = 20 * 1024 * 1024;
 
-/// Telegram channel adapter using teloxide.
+/// Telegram channel adapter using [teloxide](https://docs.rs/teloxide).
+///
+/// `TelegramChannel` bridges the Zeph agent loop with the Telegram Bot API.
+/// It runs a teloxide [`Dispatcher`] in a background task that feeds incoming
+/// messages into an internal [`mpsc`] channel; the agent calls [`recv`] to
+/// receive them one at a time.
+///
+/// # Streaming output
+///
+/// LLM responses are streamed to Telegram via an edit-on-interval strategy:
+/// chunks are accumulated in memory and the bot edits a single message every
+/// three seconds.  This avoids hitting Telegram's rate limits while still
+/// providing a progressive output experience.  [`flush_chunks`] performs one
+/// final edit with the complete response text.
+///
+/// # Access control
+///
+/// The bot only accepts messages from usernames listed in `allowed_users`.
+/// Messages from any other user are silently dropped.  Passing an empty
+/// `allowed_users` list is treated as a configuration error and [`start`]
+/// will return `Err`.
+///
+/// # Built-in commands
+///
+/// | Command | Behaviour |
+/// |---------|-----------|
+/// | `/start` | Sends a welcome message; not forwarded to the agent. |
+/// | `/reset` | Forwarded to the agent as a regular message. |
+/// | `/skills` | Forwarded to the agent as a regular message. |
+/// | `/agent` | Forwarded to the agent as a regular message. |
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_channels::telegram::TelegramChannel;
+///
+/// let token = std::env::var("TELEGRAM_BOT_TOKEN").unwrap();
+/// let allowed = vec!["my_username".to_string()];
+/// let channel = TelegramChannel::new(token, allowed)
+///     .start()
+///     .expect("failed to start telegram bot");
+/// ```
+///
+/// [`recv`]: TelegramChannel::recv
+/// [`flush_chunks`]: TelegramChannel::flush_chunks
+/// [`start`]: TelegramChannel::start
 #[derive(Debug)]
 pub struct TelegramChannel {
     bot: Bot,
@@ -35,6 +100,18 @@ struct IncomingMessage {
 }
 
 impl TelegramChannel {
+    /// Create a new `TelegramChannel`.
+    ///
+    /// The channel is **not** active yet — no teloxide dispatcher is running
+    /// and no updates will be received until [`start`] is called.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` — Telegram bot token obtained from [@BotFather](https://t.me/BotFather).
+    /// * `allowed_users` — Telegram usernames (without `@`) that are permitted
+    ///   to interact with the bot.  Must not be empty when [`start`] is called.
+    ///
+    /// [`start`]: TelegramChannel::start
     #[must_use]
     pub fn new(token: String, allowed_users: Vec<String>) -> Self {
         let bot = Bot::new(token);
@@ -350,10 +427,18 @@ async fn download_file(bot: &Bot, file_id: String, capacity: u32) -> Result<Vec<
 }
 
 impl Channel for TelegramChannel {
+    /// Returns `false` — Telegram is a persistent remote channel with no
+    /// meaningful concept of "session exit".
     fn supports_exit(&self) -> bool {
         false
     }
 
+    /// Non-blocking receive: returns a buffered message if one is available.
+    ///
+    /// Updates `chat_id` when a message is returned so subsequent [`send`]
+    /// calls know the destination.
+    ///
+    /// [`send`]: TelegramChannel::send
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         self.rx.try_recv().ok().map(|incoming| {
             self.chat_id = Some(incoming.chat_id);
@@ -364,6 +449,22 @@ impl Channel for TelegramChannel {
         })
     }
 
+    /// Await the next user message from Telegram.
+    ///
+    /// The method loops internally to handle built-in commands:
+    /// * `/start` — sends the welcome message and loops.
+    /// * `/reset` and `/skills` — returned to the caller as regular messages.
+    /// * Any other command or plain text — returned immediately.
+    ///
+    /// Resets the streaming state (`accumulated`, `last_edit`, `message_id`)
+    /// so each user turn starts with a clean response buffer.
+    ///
+    /// Returns `Ok(None)` when the internal channel is closed (i.e. the
+    /// dispatcher task has exited).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if sending the welcome reply for `/start` fails.
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         loop {
             let Some(incoming) = self.rx.recv().await else {
@@ -407,6 +508,17 @@ impl Channel for TelegramChannel {
         }
     }
 
+    /// Send a complete message to the active Telegram chat.
+    ///
+    /// The text is converted to `MarkdownV2` via [`markdown_to_telegram`]
+    /// before sending.  Messages longer than 4096 bytes are split into
+    /// multiple messages at UTF-8 / newline boundaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ChannelError::Other)` if no active chat has been
+    /// established yet (i.e. `recv` has never returned a message) or if the
+    /// Telegram API call fails.
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         let Some(chat_id) = self.chat_id else {
             return Err(ChannelError::Other("no active chat".into()));
@@ -439,6 +551,20 @@ impl Channel for TelegramChannel {
         Ok(())
     }
 
+    /// Append a streaming chunk to the response buffer.
+    ///
+    /// The chunk is accumulated in memory.  A Telegram edit is issued only
+    /// when at least 3 seconds have elapsed since the last edit, which keeps
+    /// the bot within Telegram's rate limits.
+    ///
+    /// Call [`flush_chunks`] after the stream ends to perform the final edit
+    /// with the complete response text.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the periodic Telegram edit fails.
+    ///
+    /// [`flush_chunks`]: TelegramChannel::flush_chunks
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.accumulated.push_str(chunk);
         tracing::debug!(
@@ -455,6 +581,16 @@ impl Channel for TelegramChannel {
         Ok(())
     }
 
+    /// Finalise the streamed response with one last Telegram edit.
+    ///
+    /// Performs a final edit when a message has already been created
+    /// (i.e. `message_id` is `Some`), then clears the accumulation
+    /// buffer and resets streaming state so the channel is ready for the next
+    /// agent turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the final Telegram edit fails.
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         tracing::debug!(
             "flushing chunks (message_id: {:?}, accumulated: {} bytes)",
@@ -475,6 +611,14 @@ impl Channel for TelegramChannel {
         Ok(())
     }
 
+    /// Send a `typing…` chat action to Telegram.
+    ///
+    /// Silently succeeds (returns `Ok(())`) when no active chat exists yet so
+    /// that the agent loop can call this unconditionally without checking state.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the Telegram API call fails.
     async fn send_typing(&mut self) -> Result<(), ChannelError> {
         let Some(chat_id) = self.chat_id else {
             return Ok(());
@@ -486,6 +630,20 @@ impl Channel for TelegramChannel {
         Ok(())
     }
 
+    /// Send a yes/no confirmation prompt to Telegram and await the reply.
+    ///
+    /// Sends `prompt` followed by instructions to reply `yes`.  Waits up to
+    /// [`CONFIRM_TIMEOUT`] (30 s) for a response.  Returns `true` only when
+    /// the user replies with the string `yes` (case-insensitive).
+    ///
+    /// Returns `Ok(false)` on timeout or channel close, never `Err` for those
+    /// conditions.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if sending the prompt message fails.
+    ///
+    /// [`CONFIRM_TIMEOUT`]: crate::CONFIRM_TIMEOUT
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         self.send(&format!(
             "{prompt}\nReply 'yes' to confirm (timeout: {}s).",
@@ -505,6 +663,26 @@ impl Channel for TelegramChannel {
         }
     }
 
+    /// Collect structured input from the user on behalf of an MCP server.
+    ///
+    /// Sends an introductory message identifying the requesting MCP server,
+    /// then prompts for each field sequentially via individual Telegram
+    /// messages.  Each field has [`ELICITATION_TIMEOUT`] (120 s) to respond.
+    ///
+    /// The user can reply `/cancel` at any field prompt to abort the flow,
+    /// which returns [`ElicitationResponse::Cancelled`].  Invalid values for a
+    /// field return [`ElicitationResponse::Declined`] immediately.
+    ///
+    /// Enum fields use 1-based numeric selection to stay within Telegram's
+    /// 64-byte callback-data limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if sending any of the prompt messages fails.
+    ///
+    /// [`ELICITATION_TIMEOUT`]: crate::ELICITATION_TIMEOUT
+    /// [`ElicitationResponse::Cancelled`]: zeph_core::channel::ElicitationResponse::Cancelled
+    /// [`ElicitationResponse::Declined`]: zeph_core::channel::ElicitationResponse::Declined
     async fn elicit(
         &mut self,
         request: ElicitationRequest,
@@ -562,7 +740,11 @@ impl Channel for TelegramChannel {
     }
 }
 
-/// Strip Markdown special characters to prevent injection in Telegram messages.
+/// Strip Markdown special characters to prevent format injection in Telegram messages.
+///
+/// Removes `*`, `_`, `[`, `]`, `` ` ``, and ANSI escape sequences (`\x1b`).
+/// Used for untrusted strings coming from MCP server metadata (server names,
+/// field descriptions) that are embedded in bot messages.
 fn sanitize_markdown(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(c, '*' | '_' | '[' | ']' | '`' | '\x1b'))
@@ -580,6 +762,14 @@ fn sanitize_field_key(s: &str) -> String {
         .collect()
 }
 
+/// Build a Telegram-formatted prompt string for a single elicitation field.
+///
+/// The prompt is tailored to the field type:
+/// * `Boolean` — asks for `yes` or `no`.
+/// * `Enum` — lists options with 1-based numeric indices to avoid Telegram's
+///   64-byte callback-data limit.
+/// * `Integer` / `Number` — asks for a numeric value.
+/// * `String` — asks for free-form text.
 fn build_telegram_field_prompt(field: &ElicitationField) -> String {
     let req = if field.required { " (required)" } else { "" };
     match &field.field_type {
@@ -608,6 +798,13 @@ fn build_telegram_field_prompt(field: &ElicitationField) -> String {
     }
 }
 
+/// Coerce a raw Telegram reply to the JSON type required by an elicitation field.
+///
+/// Returns `None` when the input cannot be converted to the declared type.
+///
+/// Enum fields accept either a 1-based numeric index (as displayed by
+/// [`build_telegram_field_prompt`]) or an exact case-insensitive match of the
+/// option string.
 fn coerce_telegram_field(text: &str, kind: &ElicitationFieldType) -> Option<serde_json::Value> {
     match kind {
         ElicitationFieldType::String => Some(serde_json::Value::String(text.to_owned())),

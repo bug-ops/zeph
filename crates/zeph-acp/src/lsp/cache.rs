@@ -11,9 +11,22 @@ use std::collections::{HashMap, VecDeque};
 
 use super::types::LspDiagnostic;
 
-/// Bounded per-session cache for pushed LSP diagnostics.
+/// Bounded per-session LRU cache for diagnostics pushed via `lsp/publishDiagnostics`.
 ///
-/// Holds diagnostics for at most `max_files` files with LRU eviction.
+/// Holds diagnostics for at most `max_files` files. When a new URI is inserted at
+/// capacity, the least-recently-used file is evicted.
+///
+/// URI keys are compared as-is; normalization (case, symlinks) is the IDE's responsibility.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_acp::DiagnosticsCache;
+///
+/// let mut cache = DiagnosticsCache::new(10);
+/// assert!(cache.is_empty());
+/// assert!(cache.peek("file:///src/main.rs").is_none());
+/// ```
 pub struct DiagnosticsCache {
     entries: HashMap<String, Vec<LspDiagnostic>>,
     order: VecDeque<String>,
@@ -21,7 +34,16 @@ pub struct DiagnosticsCache {
 }
 
 impl DiagnosticsCache {
-    /// Create a new cache with the given file limit.
+    /// Create a new cache with the given file limit (minimum 1).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_acp::DiagnosticsCache;
+    ///
+    /// let cache = DiagnosticsCache::new(50);
+    /// assert!(cache.is_empty());
+    /// ```
     #[must_use]
     pub fn new(max_files: usize) -> Self {
         Self {

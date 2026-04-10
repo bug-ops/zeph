@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! SQLite-backed knowledge graph store.
+//!
+//! [`GraphStore`] manages the `graph_entities`, `graph_edges`, `graph_entity_aliases`,
+//! `graph_communities`, and `graph_episodes` tables. It is the persistence layer for
+//! the MAGMA / GAAMA graph subsystem.
+
 use std::collections::HashMap;
 #[allow(unused_imports)]
 use zeph_db::sql;
@@ -14,16 +20,26 @@ use crate::types::MessageId;
 
 use super::types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType};
 
+/// SQLite-backed persistence layer for the knowledge graph.
+///
+/// All graph mutations go through this type: entity upserts, edge creation,
+/// alias recording, community assignment, and episode management.
+///
+/// Obtain an instance via [`GraphStore::new`] after running the `zeph-db` migrations.
 pub struct GraphStore {
     pool: DbPool,
 }
 
 impl GraphStore {
+    /// Create a new `GraphStore` wrapping `pool`.
+    ///
+    /// The pool must come from a database with the `zeph-db` migrations applied.
     #[must_use]
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
+    /// Access the underlying database pool.
     #[must_use]
     pub fn pool(&self) -> &DbPool {
         &self.pool

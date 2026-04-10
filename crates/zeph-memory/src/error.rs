@@ -1,6 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+/// Top-level error type for all `zeph-memory` operations.
+///
+/// Wraps database, vector-store, LLM, and serialization errors into a single type
+/// consumed by callers in `zeph-core`.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_memory::MemoryError;
+///
+/// fn demo(e: MemoryError) -> String {
+///     e.to_string()
+/// }
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
     #[error("database error: {0}")]

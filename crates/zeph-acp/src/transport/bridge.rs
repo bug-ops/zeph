@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Bridge between the HTTP/WebSocket transports and the ACP agent.
+//!
+//! Because `AgentSideConnection` is `!Send`, each HTTP/WebSocket connection needs
+//! its own OS thread running a current-thread tokio runtime. [`spawn_acp_connection`]
+//! performs that setup and returns the I/O channel ends back to the caller.
+
 #[cfg(feature = "acp-http")]
 use tokio::io::DuplexStream;
 #[cfg(feature = "acp-http")]

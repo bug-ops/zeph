@@ -25,6 +25,17 @@ use super::graph::{TaskGraph, TaskId, TaskNode};
 const MAX_GAP_DESCRIPTION_LEN: usize = 500;
 
 /// Severity of a detected gap in task output.
+///
+/// [`PlanVerifier::replan`] only generates new tasks for `Critical` and `Important`
+/// gaps. `Minor` gaps are logged as warnings and deferred.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::GapSeverity;
+///
+/// assert_eq!(GapSeverity::Critical.to_string(), "critical");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GapSeverity {
@@ -47,22 +58,42 @@ impl std::fmt::Display for GapSeverity {
 }
 
 /// A single identified gap in a completed task's output.
+///
+/// Emitted by the LLM inside a [`VerificationResult`] when the task output does
+/// not fully satisfy the task description.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Gap {
-    /// What was expected but missing or incomplete.
+    /// What was expected but missing or incomplete in the task output.
     pub description: String,
-    /// Severity classification.
+    /// Severity classification used by [`PlanVerifier::replan`] to filter actionable gaps.
     pub severity: GapSeverity,
 }
 
-/// Structured result from `PlanVerifier::verify()`.
+/// Structured result from [`PlanVerifier::verify`].
+///
+/// On any LLM failure, `complete = true` and `gaps = []` is returned (fail-open policy).
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::{VerificationResult, GapSeverity};
+///
+/// // A complete result has no gaps and some LLM-reported confidence.
+/// let result = VerificationResult {
+///     complete: true,
+///     gaps: vec![],
+///     confidence: 0.95,
+/// };
+/// assert!(result.complete);
+/// assert!(result.gaps.is_empty());
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct VerificationResult {
-    /// Whether the task output satisfies the task description.
+    /// Whether the task output fully satisfies the task description.
     pub complete: bool,
-    /// Structured gaps detected (empty if complete).
+    /// Structured gaps detected; empty when `complete = true`.
     pub gaps: Vec<Gap>,
-    /// Confidence score from the LLM (0.0 to 1.0).
+    /// LLM-reported confidence score (0.0–1.0). `0.0` on fail-open results.
     pub confidence: f64,
 }
 

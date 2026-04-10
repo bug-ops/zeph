@@ -47,17 +47,59 @@ struct SymbolDef {
     visibility: Visibility,
 }
 
-/// In-process MCP server exposing AST-based code navigation tools.
+/// In-process MCP server exposing AST-based code navigation tools as a [`ToolExecutor`].
+///
+/// Implements the four tools listed below. Because it implements `ToolExecutor` it can
+/// be composed into the tool executor pipeline alongside external MCP servers without
+/// requiring JSON-RPC transport overhead.
+///
+/// ## Exposed tools
+///
+/// | Tool ID | Description |
+/// |---------|-------------|
+/// | `symbol_definition` | Look up a symbol by name; returns file path, line, kind, visibility |
+/// | `find_text_references` | Textual search for a symbol name across all indexed files |
+/// | `call_graph` | BFS subgraph of AST containment relationships (impl → methods) |
+/// | `module_summary` | List all top-level symbols in a given relative file path |
+///
+/// ## Limitations
+///
+/// * Symbol resolution is heuristic (tree-sitter, no type inference).
+/// * `find_text_references` is a textual search — may produce false positives.
+/// * The symbol index is built at construction time. Call [`IndexMcpServer::refresh`]
+///   when the watcher notifies you of file changes.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_index::mcp_server::IndexMcpServer;
+/// use zeph_tools::executor::ToolExecutor;
+///
+/// let server = IndexMcpServer::new("/path/to/project");
+/// let tools = server.tool_definitions();
+/// assert_eq!(tools.len(), 4);
+/// ```
 pub struct IndexMcpServer {
     project_root: PathBuf,
     index: Arc<RwLock<SymbolIndex>>,
 }
 
 impl IndexMcpServer {
-    /// Create a new `IndexMcpServer` and build the initial symbol index.
+    /// Create a new `IndexMcpServer` and build the initial in-memory symbol index.
     ///
-    /// Index building is synchronous and happens inline. For large repos this may
-    /// take a few hundred milliseconds — call from a background task if needed.
+    /// Index building is **synchronous** and happens on the calling thread. For large
+    /// repositories this may take a few hundred milliseconds — call from a
+    /// `tokio::task::spawn_blocking` context or a startup background task if latency
+    /// is a concern.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use zeph_index::mcp_server::IndexMcpServer;
+    ///
+    /// // Empty directory — index is built instantly.
+    /// let server = IndexMcpServer::new("/path/to/project");
+    /// ```
     #[must_use]
     pub fn new(project_root: impl Into<PathBuf>) -> Self {
         let root = project_root.into();

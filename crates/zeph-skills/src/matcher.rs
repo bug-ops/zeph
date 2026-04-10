@@ -1,6 +1,47 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Async embedding-based skill matcher with optional two-stage category filtering.
+//!
+//! [`SkillMatcher`] pre-computes embeddings for all skill descriptions at construction
+//! time, then ranks candidates by cosine similarity for each user query.
+//!
+//! # Two-Stage Matching
+//!
+//! When skills are organised into categories (`category` frontmatter field) and at least two
+//! categories each contain two or more skills, the matcher builds a [`CategoryMatcher`] that
+//! first narrows the candidate pool to the two closest categories before performing fine-grained
+//! per-skill scoring. This keeps matching sub-linear as the skill library grows.
+//!
+//! Stage 1 (optional) — select top-2 categories by centroid cosine similarity.
+//! Stage 2 — score all candidates in the selected categories + uncategorized skills.
+//!
+//! # Confusability Analysis
+//!
+//! [`SkillMatcher::confusability_report`] performs an O(n²) pairwise similarity scan and
+//! reports skill pairs whose cosine similarity exceeds a configurable threshold. Use this
+//! during CI or after adding skills to detect ambiguous overlaps.
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! use zeph_skills::matcher::{SkillMatcher, ScoredMatch};
+//! use zeph_skills::loader::SkillMeta;
+//!
+//! async fn example(skills: &[&SkillMeta]) {
+//!     let embed_fn = |_text: &str| -> zeph_skills::matcher::EmbedFuture {
+//!         Box::pin(async { Ok(vec![0.0f32; 768]) })
+//!     };
+//!
+//!     if let Some(matcher) = SkillMatcher::new(skills, embed_fn).await {
+//!         let matches = matcher.match_skills(skills.len(), "search the web", 3, true, embed_fn).await;
+//!         for m in &matches {
+//!             println!("skill index {} score {:.3}", m.index, m.score);
+//!         }
+//!     }
+//! }
+//! ```
+
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
@@ -14,16 +55,28 @@ use futures::stream::{self, StreamExt};
 
 pub use zeph_llm::provider::EmbedFuture;
 
+/// A skill candidate with its position in the original skill slice and cosine similarity score.
+///
+/// `index` refers to the position in the `&[&SkillMeta]` slice passed to [`SkillMatcher::new`].
 #[derive(Debug, Clone)]
 pub struct ScoredMatch {
+    /// Index into the skill slice originally passed to [`SkillMatcher::new`].
     pub index: usize,
+    /// Cosine similarity score in the range `[-1.0, 1.0]`.
     pub score: f32,
 }
 
+/// LLM-produced structured classification of a user query into a skill name with confidence.
+///
+/// Used when the agent routes via a classification prompt rather than pure embedding similarity.
+/// Deserialized from the LLM's JSON response.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct IntentClassification {
+    /// Name of the matched skill (from the `name` frontmatter field).
     pub skill_name: String,
+    /// Confidence level in `[0.0, 1.0]` as reported by the LLM.
     pub confidence: f32,
+    /// Optional extracted parameters (slot-filling), keyed by parameter name.
     #[serde(default)]
     pub params: HashMap<String, String>,
 }
@@ -31,8 +84,11 @@ pub struct IntentClassification {
 /// A pair of skills with similar embeddings.
 #[derive(Debug, Clone)]
 pub struct ConfusabilityPair {
+    /// Name of the first skill in the pair.
     pub skill_a: String,
+    /// Name of the second skill in the pair.
     pub skill_b: String,
+    /// Cosine similarity between the two skill description embeddings.
     pub similarity: f32,
 }
 
@@ -41,6 +97,7 @@ pub struct ConfusabilityPair {
 pub struct ConfusabilityReport {
     /// Pairs sorted descending by similarity.
     pub pairs: Vec<ConfusabilityPair>,
+    /// The threshold used to filter pairs.
     pub threshold: f32,
     /// Skills excluded from the report because their embedding failed.
     pub excluded_skills: Vec<String>,

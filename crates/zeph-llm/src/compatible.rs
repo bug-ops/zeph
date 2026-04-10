@@ -1,6 +1,25 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! OpenAI-compatible provider adapter.
+//!
+//! [`CompatibleProvider`] wraps [`crate::openai::OpenAiProvider`] and adds a named
+//! provider label for logging. Use it for any endpoint that exposes the OpenAI Chat
+//! Completions and Embeddings API (Together AI, Fireworks, Anyscale, local vLLM, etc.).
+//!
+//! # Configuration
+//!
+//! ```toml
+//! [[llm.providers]]
+//! name = "together"
+//! type = "compatible"
+//! provider_name = "together-ai"
+//! base_url = "https://api.together.xyz/v1"
+//! model = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+//! max_tokens = 4096
+//! api_key_vault = "ZEPH_TOGETHER_API_KEY"
+//! ```
+
 use std::fmt;
 
 use crate::error::LlmError;
@@ -9,8 +28,13 @@ use crate::provider::{
     ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx, ToolDefinition,
 };
 
+/// [`LlmProvider`] adapter for OpenAI-compatible REST endpoints.
+///
+/// Delegates all operations to an inner [`OpenAiProvider`] while exposing a
+/// configurable `provider_name` for logging and routing identification.
 pub struct CompatibleProvider {
     inner: OpenAiProvider,
+    /// Human-readable name used in logs and [`LlmProvider::name`].
     provider_name: String,
 }
 

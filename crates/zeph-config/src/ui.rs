@@ -72,8 +72,18 @@ fn default_lsp_call_timeout_secs() -> u64 {
     5
 }
 
+/// TUI (terminal user interface) configuration, nested under `[tui]` in TOML.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [tui]
+/// show_source_labels = true
+/// ```
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 pub struct TuiConfig {
+    /// Show memory source labels (episodic / semantic / graph) in the message view.
+    /// Default: `false`.
     #[serde(default)]
     pub show_source_labels: bool,
 }
@@ -91,20 +101,41 @@ pub enum AcpTransport {
     Both,
 }
 
+/// ACP (Agent Communication Protocol) server configuration, nested under `[acp]` in TOML.
+///
+/// When `enabled = true`, Zeph exposes an ACP endpoint that IDE integrations (e.g. Zed, VS Code)
+/// can connect to for conversational coding assistance. Supports stdio and HTTP transports.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [acp]
+/// enabled = true
+/// transport = "stdio"
+/// agent_name = "zeph"
+/// max_sessions = 4
+/// ```
 #[derive(Clone, Deserialize, Serialize)]
 pub struct AcpConfig {
+    /// Enable the ACP server. Default: `false`.
     #[serde(default)]
     pub enabled: bool,
+    /// Agent name advertised in the ACP `initialize` response. Default: `"zeph"`.
     #[serde(default = "default_acp_agent_name")]
     pub agent_name: String,
+    /// Agent version advertised in the ACP `initialize` response. Default: crate version.
     #[serde(default = "default_acp_agent_version")]
     pub agent_version: String,
+    /// Maximum number of concurrent ACP sessions. Default: `4`.
     #[serde(default = "default_acp_max_sessions")]
     pub max_sessions: usize,
+    /// Seconds of inactivity before an idle session is closed. Default: `1800`.
     #[serde(default = "default_acp_session_idle_timeout_secs")]
     pub session_idle_timeout_secs: u64,
+    /// Broadcast channel capacity for streaming events. Default: `256`.
     #[serde(default = "default_acp_broadcast_capacity")]
     pub broadcast_capacity: usize,
+    /// Path to the ACP permission TOML file controlling per-session tool access.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_file: Option<std::path::PathBuf>,
     /// List of `{provider}:{model}` identifiers advertised to the IDE for model switching.

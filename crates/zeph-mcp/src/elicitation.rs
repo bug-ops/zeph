@@ -1,11 +1,26 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! MCP elicitation event type.
+//!
+//! MCP servers can request structured user input via the `elicitation/create` method.
+//! When a server sends an elicitation request, `ToolListChangedHandler::create_elicitation()`
+//! packages it as an [`ElicitationEvent`] and forwards it to the agent loop via a bounded
+//! mpsc channel.  The agent loop displays the request to the user (via CLI, TUI, or Telegram)
+//! and sends the response back through the oneshot contained in the event.
+
 use tokio::sync::oneshot;
 
 use rmcp::model::{CreateElicitationRequestParams, CreateElicitationResult};
 
-/// Event sent from `ToolListChangedHandler::create_elicitation()` to the agent loop.
+/// Event forwarded from an MCP server's elicitation request to the agent loop.
+///
+/// The `ToolListChangedHandler` creates this event inside `create_elicitation()` and
+/// sends it over a bounded `mpsc` channel.  The agent loop MUST process this event
+/// while concurrently awaiting a tool call result — it routes the request to the active
+/// output channel (CLI/TUI/Telegram) and sends the user's response back via `response_tx`.
+///
+/// Dropping `response_tx` without sending causes the handler to auto-decline the request.
 ///
 /// The handler awaits the `response_tx` oneshot. The agent loop must process this event
 /// while concurrently awaiting a tool call result — it routes the request to the active

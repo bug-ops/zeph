@@ -1,10 +1,37 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Formats available MCP tools as an XML prompt block for the LLM system prompt.
+
 use std::fmt::Write;
 
 use crate::tool::McpTool;
 
+/// Format a slice of MCP tools as an XML `<available_tools>` block for the system prompt.
+///
+/// Returns an empty string when `tools` is empty. Each tool is rendered with its
+/// server ID, name, description, input schema, and a fenced `mcp` invocation example
+/// so the LLM knows how to call it.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_mcp::tool::{McpTool, ToolSecurityMeta};
+/// use zeph_mcp::prompt::format_mcp_tools_prompt;
+///
+/// let tools = vec![McpTool {
+///     server_id: "github".to_owned(),
+///     name: "create_issue".to_owned(),
+///     description: "Create a GitHub issue".to_owned(),
+///     input_schema: serde_json::json!({"type": "object"}),
+///     security_meta: ToolSecurityMeta::default(),
+/// }];
+///
+/// let prompt = format_mcp_tools_prompt(&tools);
+/// assert!(prompt.starts_with("<available_tools>"));
+/// assert!(prompt.contains("server=\"github\""));
+/// assert!(prompt.contains("```mcp"));
+/// ```
 #[must_use]
 pub fn format_mcp_tools_prompt(tools: &[McpTool]) -> String {
     if tools.is_empty() {

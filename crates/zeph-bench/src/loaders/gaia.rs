@@ -26,28 +26,79 @@ struct GaiaRecord {
     annotator_metadata: Option<serde_json::Value>,
 }
 
-/// Loads GAIA benchmark scenarios from a JSONL file.
+/// Loads GAIA benchmark scenarios from a JSONL file with an optional level filter.
 ///
-/// Schema (gaia-benchmark/GAIA on HuggingFace):
+/// **Source**: [`gaia-benchmark/GAIA`](https://huggingface.co/datasets/gaia-benchmark/GAIA)
+/// on HuggingFace.
+///
+/// **Schema**: one JSON object per line:
 /// ```json
-/// {"task_id": "...", "Question": "...", "Level": 1, "Final answer": "...", "Annotator Metadata": {...}}
+/// {
+///   "task_id": "...",
+///   "Question": "...",
+///   "Level": 1,
+///   "Final answer": "...",
+///   "Annotator Metadata": { ... }
+/// }
 /// ```
 ///
-/// When `level` is `Some(n)`, only scenarios of that level are loaded.
+/// Scenarios are mapped as:
+/// - `id` — `task_id`.
+/// - `prompt` — `Question`.
+/// - `expected` — `Final answer`.
+/// - `metadata` — `{"level": N, "annotator_metadata": {...}}`.
+///
+/// When [`level`][GaiaLoader::level] is `Some(n)`, only lines whose `Level` field
+/// equals `n` are returned.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use zeph_bench::loaders::GaiaLoader;
+/// use zeph_bench::scenario::DatasetLoader;
+///
+/// // Load all levels.
+/// let all = GaiaLoader::all_levels().load(Path::new("/data/gaia.jsonl")).unwrap();
+///
+/// // Load only level-1 tasks.
+/// let easy = GaiaLoader::with_level(1).load(Path::new("/data/gaia.jsonl")).unwrap();
+/// assert!(easy.len() <= all.len());
+/// ```
 #[derive(Debug)]
 pub struct GaiaLoader {
-    /// Optional level filter. When `Some`, only scenarios with a matching `Level` are loaded.
+    /// Optional level filter. When `Some(n)`, only scenarios where `Level == n` are loaded.
     pub level: Option<u8>,
 }
 
 impl GaiaLoader {
-    /// Create a loader that returns all levels.
+    /// Create a loader that loads scenarios from all difficulty levels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_bench::loaders::GaiaLoader;
+    ///
+    /// let loader = GaiaLoader::all_levels();
+    /// assert!(loader.level.is_none());
+    /// ```
     #[must_use]
     pub fn all_levels() -> Self {
         Self { level: None }
     }
 
-    /// Create a loader that filters to a specific difficulty level.
+    /// Create a loader that only loads scenarios whose `Level` field equals `level`.
+    ///
+    /// GAIA levels run from 1 (easy) to 3 (hard).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_bench::loaders::GaiaLoader;
+    ///
+    /// let loader = GaiaLoader::with_level(2);
+    /// assert_eq!(loader.level, Some(2));
+    /// ```
     #[must_use]
     pub fn with_level(level: u8) -> Self {
         Self { level: Some(level) }
@@ -100,6 +151,33 @@ impl DatasetLoader for GaiaLoader {
 }
 
 /// Evaluates GAIA responses using GAIA-normalized exact match.
+///
+/// Normalization (applied to both prediction and reference):
+/// 1. Keep only alphanumeric characters and whitespace.
+/// 2. Convert to lowercase.
+/// 3. Remove the articles `a`, `an`, and `the`.
+/// 4. Collapse whitespace.
+///
+/// This matches the official GAIA leaderboard evaluation script.
+/// Score is `1.0` on match, `0.0` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::{Scenario, loaders::GaiaEvaluator};
+/// use zeph_bench::scenario::Evaluator;
+///
+/// let scenario = Scenario {
+///     id: "t1".into(),
+///     prompt: "Capital of Japan?".into(),
+///     expected: "Tokyo".into(),
+///     metadata: serde_json::json!({"level": 1}),
+/// };
+///
+/// // Article "The" is stripped before comparison.
+/// assert!(GaiaEvaluator.evaluate(&scenario, "The Tokyo").passed);
+/// assert!(!GaiaEvaluator.evaluate(&scenario, "Osaka").passed);
+/// ```
 #[derive(Debug)]
 pub struct GaiaEvaluator;
 

@@ -1,12 +1,31 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Typed parsers for `/agent` and `/agents` slash commands.
+//!
+//! [`AgentCommand`] handles runtime operations on running agents (spawn, cancel, etc.)
+//! and `@agent_name` mention syntax.
+//!
+//! [`AgentsCommand`] handles definition CRUD operations (`/agents list`, `/agents create`, …).
+
 use super::error::SubAgentError;
 
 /// Typed representation of a parsed `/agents` command for definition CRUD operations.
 ///
 /// Separate from [`AgentCommand`] (runtime operations like spawn/cancel) to avoid
 /// namespace collision between running-agent management and definition management.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_subagent::AgentsCommand;
+///
+/// let cmd = AgentsCommand::parse("/agents list").unwrap();
+/// assert_eq!(cmd, AgentsCommand::List);
+///
+/// let cmd = AgentsCommand::parse("/agents show reviewer").unwrap();
+/// assert_eq!(cmd, AgentsCommand::Show { name: "reviewer".to_owned() });
+/// ```
 #[derive(Debug, PartialEq)]
 pub enum AgentsCommand {
     /// List all discovered sub-agent definitions.
@@ -93,37 +112,46 @@ impl AgentsCommand {
 }
 
 /// Typed representation of a parsed `/agent` CLI command or `@agent` mention.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_subagent::AgentCommand;
+///
+/// let cmd = AgentCommand::parse("/agent spawn helper fix the bug", &[]).unwrap();
+/// assert_eq!(cmd, AgentCommand::Spawn {
+///     name: "helper".to_owned(),
+///     prompt: "fix the bug".to_owned(),
+/// });
+///
+/// // @mention syntax routes to known agents.
+/// let known = vec!["reviewer".to_owned()];
+/// let cmd = AgentCommand::parse("@reviewer check the PR", &known).unwrap();
+/// assert_eq!(cmd, AgentCommand::Mention {
+///     agent: "reviewer".to_owned(),
+///     prompt: "check the PR".to_owned(),
+/// });
+/// ```
 #[derive(Debug, PartialEq)]
 pub enum AgentCommand {
+    /// List all running sub-agent tasks.
     List,
-    Spawn {
-        name: String,
-        prompt: String,
-    },
-    Background {
-        name: String,
-        prompt: String,
-    },
+    /// Spawn a foreground sub-agent and block until it completes.
+    Spawn { name: String, prompt: String },
+    /// Spawn a background sub-agent that runs independently.
+    Background { name: String, prompt: String },
+    /// Show a brief status summary of all running agents.
     Status,
-    Cancel {
-        id: String,
-    },
-    Approve {
-        id: String,
-    },
-    Deny {
-        id: String,
-    },
+    /// Cancel a running agent by task ID.
+    Cancel { id: String },
+    /// Approve a pending vault secret request for a running agent.
+    Approve { id: String },
+    /// Deny a pending vault secret request for a running agent.
+    Deny { id: String },
     /// Foreground spawn triggered by `@agent_name <prompt>` mention syntax.
-    Mention {
-        agent: String,
-        prompt: String,
-    },
+    Mention { agent: String, prompt: String },
     /// Resume a previously completed sub-agent session by ID prefix.
-    Resume {
-        id: String,
-        prompt: String,
-    },
+    Resume { id: String, prompt: String },
 }
 
 impl AgentCommand {
@@ -264,6 +292,22 @@ impl AgentCommand {
     /// # Errors
     ///
     /// Returns [`SubAgentError::InvalidCommand`] on any parse failure.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_subagent::AgentCommand;
+    ///
+    /// let known = vec!["helper".to_owned()];
+    /// let cmd = AgentCommand::parse_mention("@helper fix this", &known).unwrap();
+    /// assert_eq!(cmd, AgentCommand::Mention {
+    ///     agent: "helper".to_owned(),
+    ///     prompt: "fix this".to_owned(),
+    /// });
+    ///
+    /// // Unknown agents are rejected so callers can fall back to file-reference handling.
+    /// assert!(AgentCommand::parse_mention("@unknown do work", &known).is_err());
+    /// ```
     pub fn parse_mention(input: &str, known_agents: &[String]) -> Result<Self, SubAgentError> {
         let rest = input
             .strip_prefix('@')

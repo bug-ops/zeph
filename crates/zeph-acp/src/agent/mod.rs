@@ -1,6 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! ACP agent implementation — session management and IDE capability proxying.
+//!
+//! [`ZephAcpAgent`] implements the `agent-client-protocol` `Agent` trait, managing
+//! multiple concurrent sessions. Each session creates an isolated agent loop via the
+//! [`AgentSpawner`] factory, runs it on a [`LoopbackChannel`], and shuttles messages
+//! between the loop and the IDE over the ACP connection.
+//!
+//! IDE capabilities (filesystem, terminal, LSP) are detected during `initialize()` and
+//! surfaced to the agent loop through [`AcpContext`].
+
 use std::cell::RefCell;
 use std::path::{Component, PathBuf};
 use std::pin::Pin;
@@ -31,17 +41,39 @@ use crate::terminal::AcpShellExecutor;
 use crate::transport::{ConnSlot, SharedAvailableModels};
 
 /// Factory that creates a provider by `{provider}:{model}` key.
+///
+/// Called when the IDE sends `set_session_config_option` with a new model selection.
+/// Returns `None` when the requested key is not recognized.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::sync::Arc;
+/// use zeph_acp::agent::ProviderFactory;
+///
+/// let factory: ProviderFactory = Arc::new(|key| {
+///     // key format: "openai:gpt-4o" or "ollama:llama3"
+///     let _key = key;
+///     None // return Some(provider) for known keys
+/// });
+/// ```
 pub type ProviderFactory = Arc<dyn Fn(&str) -> Option<AnyProvider> + Send + Sync>;
 
 /// Per-session context passed to the agent spawner.
 ///
-/// `conversation_id` is `Some` when a `SQLite`-backed [`ConversationId`] was
-/// successfully created or retrieved for this session.  `None` means the store
+/// Provides the session identity and persistence handles needed to bootstrap
+/// an agent loop for an individual ACP session.
+///
+/// `conversation_id` is `Some` when a SQLite-backed [`ConversationId`] was
+/// successfully created or retrieved for this session. `None` means the store
 /// was unavailable at session creation time; the agent operates without
 /// persistent history in that case.
 pub struct SessionContext {
+    /// ACP-assigned session identifier.
     pub session_id: acp::SessionId,
+    /// SQLite conversation ID for persisting message history, if available.
     pub conversation_id: Option<ConversationId>,
+    /// Working directory reported by the IDE for this session.
     pub working_dir: PathBuf,
 }
 
@@ -222,31 +254,64 @@ async fn resolve_resource_link(
 
 /// IDE-proxied capabilities passed to the agent loop per session.
 ///
-/// Each field is `None` when the IDE did not advertise the corresponding capability.
+/// Each field is `None` when the IDE did not advertise the corresponding capability
+/// during the ACP `initialize()` handshake. The agent loop should degrade gracefully
+/// when optional capabilities are absent.
 pub struct AcpContext {
+    /// IDE-proxied filesystem executor (`fs.readTextFile` / `fs.writeTextFile`).
+    ///
+    /// `None` when the IDE did not advertise filesystem capability.
     pub file_executor: Option<AcpFileExecutor>,
+    /// IDE-proxied shell executor (`terminal.create` / `terminal.execute`).
+    ///
+    /// `None` when the IDE did not advertise terminal capability.
     pub shell_executor: Option<AcpShellExecutor>,
+    /// Permission gate for tool-call approval requests sent to the IDE.
+    ///
+    /// `None` when the IDE did not advertise permission capability.
     pub permission_gate: Option<AcpPermissionGate>,
-    /// Shared cancellation signal: notify to interrupt the running agent operation.
+    /// Shared cancellation signal.
+    ///
+    /// Notify this to interrupt the currently running agent operation (e.g. on user cancel).
     pub cancel_signal: std::sync::Arc<tokio::sync::Notify>,
     /// Shared slot for runtime model switching via `set_session_config_option`.
+    ///
     /// When `Some`, the agent should swap its provider before the next turn.
     pub provider_override: Arc<RwLock<Option<AnyProvider>>>,
     /// Tool call ID of the parent agent's tool call that spawned this subagent session.
+    ///
     /// `None` for top-level (non-subagent) sessions.
     pub parent_tool_use_id: Option<String>,
     /// LSP provider when the IDE advertised `meta["lsp"]` capability.
+    ///
+    /// `None` when the IDE does not support LSP extension methods.
     pub lsp_provider: Option<crate::lsp::AcpLspProvider>,
     /// Shared diagnostics cache — written by the LSP notification handler in `ZephAcpAgent`
     /// and read by the agent loop context builder to inject diagnostics into the system prompt.
     pub diagnostics_cache: Arc<RwLock<DiagnosticsCache>>,
 }
 
-/// Factory: receives a [`LoopbackChannel`], optional [`AcpContext`], and [`SessionContext`],
-/// then runs the agent loop.
+/// Factory that receives a [`LoopbackChannel`], optional [`AcpContext`], and [`SessionContext`],
+/// then drives the agent loop to completion.
 ///
-/// Each call creates an independent agent with its own conversation history,
-/// enabling true multi-session isolation.
+/// Each invocation creates an independent agent with its own conversation history,
+/// enabling true multi-session isolation. The future must be `'static` so it can be
+/// handed to `tokio::task::spawn_local` inside the ACP `LocalSet`.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::sync::Arc;
+/// use zeph_acp::{AgentSpawner, AcpContext, SessionContext};
+/// use zeph_core::channel::LoopbackChannel;
+///
+/// let spawner: AgentSpawner = Arc::new(|channel, ctx, session| {
+///     Box::pin(async move {
+///         // drive your agent loop here
+///         drop((channel, ctx, session));
+///     })
+/// });
+/// ```
 pub type AgentSpawner = Arc<
     dyn Fn(
             LoopbackChannel,
@@ -258,9 +323,11 @@ pub type AgentSpawner = Arc<
         + 'static,
 >;
 
-/// Thread-safe variant of `AgentSpawner` required by the HTTP transport.
+/// Thread-safe variant of [`AgentSpawner`] required by the HTTP transport.
 ///
-/// Used with `AcpHttpState` to satisfy `axum::State` requirements (`Send + Sync`).
+/// Used with [`AcpHttpState`](crate::transport::http::AcpHttpState) to satisfy
+/// `axum::State` requirements (`Send + Sync`). In practice this is the same type
+/// alias — the distinction exists to make the intent clear at call sites.
 #[cfg(feature = "acp-http")]
 pub type SendAgentSpawner = AgentSpawner;
 

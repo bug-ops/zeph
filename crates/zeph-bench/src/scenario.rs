@@ -5,47 +5,132 @@ use std::path::Path;
 
 use crate::error::BenchError;
 
-/// A single benchmark scenario loaded from any dataset.
+/// A single benchmark scenario loaded from a dataset file.
+///
+/// Each scenario represents one question/task that will be presented to the agent.
+/// The `id` field is used to correlate agent responses with ground-truth answers and
+/// to skip already-completed scenarios during a `--resume` run.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::Scenario;
+///
+/// let scenario = Scenario {
+///     id: "gaia_t42".into(),
+///     prompt: "What is the boiling point of water in Celsius?".into(),
+///     expected: "100".into(),
+///     metadata: serde_json::json!({"level": 1}),
+/// };
+/// assert_eq!(scenario.id, "gaia_t42");
+/// ```
 #[derive(Debug, Clone)]
 pub struct Scenario {
+    /// Unique identifier within the dataset (e.g. `"frames_0"`, `"s1_2"`).
     pub id: String,
-    /// The question or task fed to the agent.
+    /// The question or task text fed verbatim to the agent.
     pub prompt: String,
-    /// The gold answer for evaluation.
+    /// The gold-standard answer used for scoring.
     pub expected: String,
-    /// Dataset-specific extras (level, `reasoning_types`, etc.).
+    /// Dataset-specific extras such as difficulty level or `reasoning_types`.
+    ///
+    /// Set to [`serde_json::Value::Null`] when the dataset has no extra metadata.
     pub metadata: serde_json::Value,
 }
 
 /// Result of evaluating one agent response against the expected answer.
+///
+/// Produced by [`Evaluator::evaluate`]. The `score` is always in `0.0..=1.0`:
+/// - `1.0` — perfect match (exact or token-level depending on the evaluator).
+/// - `0.0` — no match.
+/// - Intermediate values — partial token overlap (LOCOMO token-F1 evaluator).
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::EvalResult;
+///
+/// let result = EvalResult {
+///     scenario_id: "s1".into(),
+///     score: 0.75,
+///     passed: true,
+///     details: "token_f1=0.7500".into(),
+/// };
+/// assert!(result.passed);
+/// ```
 #[derive(Debug, Clone)]
 pub struct EvalResult {
+    /// ID of the scenario that produced this result.
     pub scenario_id: String,
-    /// Score in the range 0.0–1.0.
+    /// Numeric score in `0.0..=1.0`.
     pub score: f64,
-    /// True when `score >= threshold`.
+    /// `true` when `score >= threshold` (threshold is evaluator-specific).
     pub passed: bool,
+    /// Human-readable details such as `"token_f1=0.7500"` or `"exact_match=true"`.
     pub details: String,
 }
 
-/// Loads scenarios from a dataset file.
+/// Loads scenarios from a dataset file on disk.
+///
+/// Implement this trait to add support for a new dataset format. The harness
+/// calls [`DatasetLoader::load`] once per run to materialise the full scenario
+/// list before iterating.
+///
+/// Built-in implementations:
+/// - [`crate::loaders::LocomoLoader`] — JSON array of sessions
+/// - [`crate::loaders::FramesLoader`] — JSONL, one record per line
+/// - [`crate::loaders::GaiaLoader`] — JSONL with optional level filter
 pub trait DatasetLoader {
+    /// Short identifier matching the dataset name in [`crate::DatasetRegistry`].
     fn name(&self) -> &'static str;
 
+    /// Load all matching scenarios from `path`.
+    ///
     /// # Errors
     ///
-    /// Returns [`BenchError`] when the file cannot be read or parsed.
+    /// Returns [`BenchError::Io`] when the file cannot be opened or read, and
+    /// [`BenchError::InvalidFormat`] when the file content cannot be parsed.
     fn load(&self, path: &Path) -> Result<Vec<Scenario>, BenchError>;
 }
 
-/// Scores an agent response against a scenario.
+/// Scores one agent response against a [`Scenario`].
+///
+/// Each dataset loader ships a paired evaluator:
+/// - [`crate::loaders::LocomoEvaluator`] — token F1 with threshold 0.5
+/// - [`crate::loaders::FramesEvaluator`] — exact match (case-insensitive, punctuation stripped)
+/// - [`crate::loaders::GaiaEvaluator`] — GAIA-normalized exact match (articles stripped)
 pub trait Evaluator {
+    /// Compute and return an [`EvalResult`] for the given `agent_response`.
     fn evaluate(&self, scenario: &Scenario, agent_response: &str) -> EvalResult;
 }
 
 /// Token F1 score: overlap of whitespace-split tokens between prediction and reference.
 ///
-/// Returns a value in `0.0..=1.0`. Returns `0.0` when either string is empty.
+/// Splits both strings on whitespace, computes precision and recall over the
+/// token-type intersection, then returns the harmonic mean (F1).
+/// Returns `0.0` when either string is empty.
+///
+/// This metric is tolerant of minor wording differences and is used by the
+/// LOCOMO evaluator.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::token_f1;
+///
+/// // Perfect match.
+/// assert!((token_f1("hello world", "hello world") - 1.0).abs() < f64::EPSILON);
+///
+/// // No overlap.
+/// assert!(token_f1("foo bar", "baz qux") < f64::EPSILON);
+///
+/// // Partial overlap gives a value between 0 and 1.
+/// let f1 = token_f1("the cat sat", "the cat ran");
+/// assert!(f1 > 0.0 && f1 < 1.0);
+///
+/// // Empty strings return 0.
+/// assert!(token_f1("", "hello") < f64::EPSILON);
+/// ```
 #[must_use]
 pub fn token_f1(prediction: &str, reference: &str) -> f64 {
     let pred_tokens: std::collections::HashSet<&str> = prediction.split_whitespace().collect();
@@ -70,6 +155,23 @@ pub fn token_f1(prediction: &str, reference: &str) -> f64 {
 }
 
 /// Exact match after lowercasing and stripping punctuation/whitespace.
+///
+/// Both strings are normalized by:
+/// 1. Keeping only alphanumeric characters and whitespace.
+/// 2. Converting to lowercase.
+/// 3. Collapsing runs of whitespace to a single space.
+///
+/// Used by the FRAMES evaluator.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::exact_match;
+///
+/// assert!(exact_match("Hello, World!", "hello world"));
+/// assert!(exact_match("answer: YES.", "answer yes"));
+/// assert!(!exact_match("foo", "bar"));
+/// ```
 #[must_use]
 pub fn exact_match(prediction: &str, reference: &str) -> bool {
     normalize_basic(prediction) == normalize_basic(reference)
@@ -77,6 +179,27 @@ pub fn exact_match(prediction: &str, reference: &str) -> bool {
 
 /// GAIA-normalized exact match: lowercase, strip articles, strip punctuation, collapse
 /// whitespace, then compare.
+///
+/// Normalization steps (in order):
+/// 1. Keep only alphanumeric characters and whitespace.
+/// 2. Convert to lowercase.
+/// 3. Remove the articles `a`, `an`, and `the`.
+/// 4. Collapse whitespace and compare.
+///
+/// This matches the official GAIA leaderboard scoring script.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::gaia_normalized_exact_match;
+///
+/// // Articles are stripped from both sides.
+/// assert!(gaia_normalized_exact_match("The Tokyo", "Tokyo"));
+/// assert!(gaia_normalized_exact_match("a cat sat on an apple", "cat sat on apple"));
+///
+/// // Different answers do not match.
+/// assert!(!gaia_normalized_exact_match("1944", "1945"));
+/// ```
 #[must_use]
 pub fn gaia_normalized_exact_match(prediction: &str, reference: &str) -> bool {
     normalize_gaia(prediction) == normalize_gaia(reference)

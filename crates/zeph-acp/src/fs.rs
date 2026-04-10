@@ -1,6 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! IDE-proxied filesystem executor via ACP `fs/*` methods.
+//!
+//! When the IDE advertises `fs.readTextFile` and/or `fs.writeTextFile` during
+//! the ACP `initialize()` handshake, the agent can delegate file I/O to the IDE
+//! rather than performing it directly. This allows the IDE to apply its own
+//! access controls, open unsaved buffers, and show diff previews.
+//!
+//! # Security
+//!
+//! Write operations enforce a 10 MiB content limit and binary file detection
+//! (null byte check) before forwarding to the IDE. An optional
+//! [`AcpPermissionGate`] can request explicit user confirmation for writes.
+
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;

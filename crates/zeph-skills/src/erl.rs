@@ -1,17 +1,50 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! ERL: experiential reflective learning — heuristic extraction and injection at skill match time.
+//! ERL (Experiential Reflective Learning) — heuristic extraction and injection at skill match time.
+//!
+//! After a task completes, the agent calls the LLM with [`REFLECTION_EXTRACT_PROMPT_TEMPLATE`]
+//! to extract up to three actionable heuristics from the task history. These are stored in
+//! `skill_heuristics` (via `zeph-core`) and injected into matching skill prompts as a
+//! `## Learned Heuristics` block.
+//!
+//! # Deduplication
+//!
+//! Before storing a newly extracted heuristic, [`text_similarity`] compares it against all
+//! existing heuristics for the same skill using Jaccard word-set similarity. Heuristics that
+//! exceed the deduplication threshold (configurable, default 0.8) are discarded.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use zeph_skills::erl::{build_reflection_extract_prompt, format_heuristics_section};
+//!
+//! let prompt = build_reflection_extract_prompt(
+//!     "Searched GitHub for Rust crates",
+//!     "web_scrape, shell",
+//!     "success",
+//! );
+//! assert!(prompt.contains("Searched GitHub"));
+//!
+//! let section = format_heuristics_section(&["prefer crates.io over GitHub".into()]);
+//! assert!(section.starts_with("## Learned Heuristics"));
+//! ```
 
 /// LLM response struct for heuristic extraction.
+///
+/// Deserialized from the LLM's JSON response to [`REFLECTION_EXTRACT_PROMPT_TEMPLATE`].
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReflectionResult {
+    /// Extracted heuristics (at most 3 are requested in the prompt).
     pub heuristics: Vec<HeuristicEntry>,
 }
 
+/// A single extracted heuristic with an optional skill name association.
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct HeuristicEntry {
+    /// Concise actionable heuristic text.
     pub text: String,
+    /// Skill the heuristic most applies to, or `None` for a general heuristic.
     pub skill_name: Option<String>,
 }
 

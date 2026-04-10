@@ -1,6 +1,25 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! High-level semantic memory orchestrator.
+//!
+//! [`SemanticMemory`] is the primary entry point used by `zeph-core`.  It wires
+//! together [`crate::store::SqliteStore`] (relational persistence) and
+//! [`crate::embedding_store::EmbeddingStore`] (Qdrant vector index) into a single
+//! object with `remember` / `recall` / `summarize` operations.
+//!
+//! # Construction
+//!
+//! Use [`SemanticMemory::new`] for the default 0.7/0.3 vector/keyword weights, or
+//! [`SemanticMemory::with_qdrant_ops`] inside `AppBuilder` to share a single gRPC
+//! channel across all subsystems.
+//!
+//! # Hybrid recall
+//!
+//! Recall uses reciprocal-rank fusion of BM25 (SQLite FTS5) and cosine-similarity
+//! (Qdrant) results, with optional temporal decay, MMR diversity reranking, and
+//! per-tier score boosts.
+
 mod algorithms;
 mod corrections;
 mod cross_session;
@@ -59,6 +78,10 @@ pub use tree_consolidation::{
 };
 pub use write_buffer::{BufferedWrite, WriteBuffer};
 
+/// High-level semantic memory orchestrator combining SQLite and Qdrant.
+///
+/// Instantiate via [`SemanticMemory::new`] or the `AppBuilder` integration.
+/// All fields are `pub(crate)` — callers interact through the inherent method API.
 pub struct SemanticMemory {
     pub(crate) sqlite: SqliteStore,
     pub(crate) qdrant: Option<Arc<EmbeddingStore>>,

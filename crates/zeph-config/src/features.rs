@@ -154,8 +154,23 @@ pub enum SkillPromptMode {
     Auto,
 }
 
+/// Skill discovery and matching configuration, nested under `[skills]` in TOML.
+///
+/// Controls where skills are loaded from, how they are ranked during retrieval,
+/// the RL re-ranking head, NL skill generation, and automated skill mining.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [skills]
+/// paths = ["~/.config/zeph/skills"]
+/// max_active_skills = 5
+/// disambiguation_threshold = 0.20
+/// hybrid_search = true
+/// ```
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SkillsConfig {
+    /// Directories to scan for `*.skill.md` / `SKILL.md` files.
     #[serde(default = "default_skill_paths")]
     pub paths: Vec<String>,
     #[serde(default = "default_max_active_skills")]
@@ -255,11 +270,28 @@ pub struct SkillMiningConfig {
     pub rate_limit_rpm: u32,
 }
 
+/// Code indexing and repo-map configuration, nested under `[index]` in TOML.
+///
+/// When `enabled = true`, the agent indexes source files into Qdrant for semantic
+/// code search. The repo map is injected into the system prompt or served via
+/// `IndexMcpServer` tool calls when `mcp_enabled = true`.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [index]
+/// enabled = true
+/// watch = false
+/// max_chunks = 12
+/// score_threshold = 0.25
+/// ```
 #[derive(Debug, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct IndexConfig {
+    /// Enable code indexing. Default: `false`.
     #[serde(default)]
     pub enabled: bool,
+    /// Enable semantic code search tool. Default: `true` (no-op when `enabled = false`).
     #[serde(default = "default_index_search_enabled")]
     pub search_enabled: bool,
     #[serde(default = "default_index_watch")]
@@ -334,8 +366,19 @@ impl Default for IndexConfig {
     }
 }
 
+/// Vault backend configuration, nested under `[vault]` in TOML.
+///
+/// Selects how API keys and secrets are resolved at startup.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [vault]
+/// backend = "age"
+/// ```
 #[derive(Debug, Deserialize, Serialize)]
 pub struct VaultConfig {
+    /// Vault backend identifier (`"age"`, `"env"`, or `"keyring"`). Default: `"env"`.
     #[serde(default = "default_vault_backend")]
     pub backend: String,
 }
@@ -348,10 +391,25 @@ impl Default for VaultConfig {
     }
 }
 
+/// Cost tracking and budget configuration, nested under `[cost]` in TOML.
+///
+/// When `enabled = true`, token costs are accumulated per session and displayed in
+/// the TUI. When `max_daily_cents > 0`, the agent refuses new turns once the daily
+/// budget is exhausted.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [cost]
+/// enabled = true
+/// max_daily_cents = 500  # $5.00 per day
+/// ```
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CostConfig {
+    /// Track and display token costs. Default: `true`.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Daily spending cap in US cents (`0` = unlimited). Default: `0`.
     #[serde(default = "default_max_daily_cents")]
     pub max_daily_cents: u32,
 }
@@ -365,10 +423,23 @@ impl Default for CostConfig {
     }
 }
 
+/// OpenTelemetry observability configuration, nested under `[observability]` in TOML.
+///
+/// When `exporter` is non-empty, trace spans are exported via OTLP to the given endpoint.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [observability]
+/// exporter = "otlp"
+/// endpoint = "http://localhost:4317"
+/// ```
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ObservabilityConfig {
+    /// OTLP exporter type. Empty string disables exporting. Default: `""`.
     #[serde(default)]
     pub exporter: String,
+    /// OTLP collector endpoint URL. Default: `"http://localhost:4317"`.
     #[serde(default = "default_otlp_endpoint")]
     pub endpoint: String,
 }
@@ -382,18 +453,41 @@ impl Default for ObservabilityConfig {
     }
 }
 
+/// HTTP webhook gateway configuration, nested under `[gateway]` in TOML.
+///
+/// When `enabled = true`, an HTTP server accepts webhook payloads and injects them
+/// as user messages into the agent. Requires the `gateway` feature flag.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [gateway]
+/// enabled = true
+/// bind = "127.0.0.1"
+/// port = 8090
+/// auth_token = "secret"
+/// rate_limit = 60
+/// max_body_size = 1048576
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GatewayConfig {
+    /// Enable the HTTP gateway. Default: `false`.
     #[serde(default)]
     pub enabled: bool,
+    /// IP address to bind the gateway to. Default: `"127.0.0.1"`.
     #[serde(default = "default_gateway_bind")]
     pub bind: String,
+    /// Port to listen on. Default: `8090`.
     #[serde(default = "default_gateway_port")]
     pub port: u16,
+    /// Bearer token for request authentication. When set, all requests must include
+    /// `Authorization: Bearer <token>`. Default: `None` (no auth).
     #[serde(default)]
     pub auth_token: Option<String>,
+    /// Maximum requests per minute. Must be `> 0`. Default: `120`.
     #[serde(default = "default_gateway_rate_limit")]
     pub rate_limit: u32,
+    /// Maximum request body size in bytes. Must be `<= 10 MiB`. Default: `1048576` (1 MiB).
     #[serde(default = "default_gateway_max_body")]
     pub max_body_size: usize,
 }
@@ -411,14 +505,31 @@ impl Default for GatewayConfig {
     }
 }
 
+/// Daemon / process supervisor configuration, nested under `[daemon]` in TOML.
+///
+/// When `enabled = true`, Zeph runs as a background process with automatic restart
+/// and health monitoring.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [daemon]
+/// enabled = true
+/// pid_file = "~/.zeph/zeph.pid"
+/// health_interval_secs = 30
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DaemonConfig {
+    /// Run Zeph as a background daemon. Default: `false`.
     #[serde(default)]
     pub enabled: bool,
+    /// Path to the PID file written at daemon startup. Default: `"~/.zeph/zeph.pid"`.
     #[serde(default = "default_pid_file")]
     pub pid_file: String,
+    /// Interval in seconds between health checks. Default: `30`.
     #[serde(default = "default_health_interval")]
     pub health_interval_secs: u64,
+    /// Maximum backoff in seconds between restart attempts. Default: `60`.
     #[serde(default = "default_max_restart_backoff")]
     pub max_restart_backoff_secs: u64,
 }
@@ -434,14 +545,37 @@ impl Default for DaemonConfig {
     }
 }
 
+/// Cron-based task scheduler configuration, nested under `[scheduler]` in TOML.
+///
+/// When `enabled = true`, the scheduler runs periodic tasks on a cron schedule.
+/// Requires the `scheduler` feature flag.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [scheduler]
+/// enabled = true
+/// tick_interval_secs = 60
+/// max_tasks = 20
+///
+/// [[scheduler.tasks]]
+/// name = "daily-summary"
+/// cron = "0 9 * * *"
+/// kind = "prompt"
+/// prompt = "Summarize what was accomplished today."
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SchedulerConfig {
+    /// Enable the task scheduler. Default: `false`.
     #[serde(default)]
     pub enabled: bool,
+    /// How often the scheduler checks for due tasks, in seconds. Default: `60`.
     #[serde(default = "default_scheduler_tick_interval")]
     pub tick_interval_secs: u64,
+    /// Maximum number of scheduled tasks allowed. Default: `100`.
     #[serde(default = "default_scheduler_max_tasks")]
     pub max_tasks: usize,
+    /// List of scheduled task definitions.
     #[serde(default)]
     pub tasks: Vec<ScheduledTaskConfig>,
 }
@@ -471,14 +605,22 @@ pub enum ScheduledTaskKind {
     Custom(String),
 }
 
+/// A single scheduled task entry, nested under `[[scheduler.tasks]]` in TOML.
+///
+/// Either `cron` (recurring) or `run_at` (one-shot ISO 8601 datetime) must be set.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScheduledTaskConfig {
+    /// Unique task name used in logs and the scheduler database.
     pub name: String,
+    /// Cron expression for recurring tasks (e.g. `"0 9 * * *"` for daily at 09:00).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cron: Option<String>,
+    /// One-shot ISO 8601 datetime for one-time tasks. Ignored when `cron` is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_at: Option<String>,
+    /// Determines which built-in handler executes this task.
     pub kind: ScheduledTaskKind,
+    /// Arbitrary JSON configuration forwarded to the task handler.
     #[serde(default)]
     pub config: serde_json::Value,
 }
@@ -580,6 +722,18 @@ impl Default for TraceConfig {
     }
 }
 
+/// Debug dump configuration, nested under `[debug]` in TOML.
+///
+/// When `enabled = true`, LLM request/response payloads are written to disk for inspection.
+/// Each session creates a subdirectory under `output_dir` named by session ID.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [debug]
+/// enabled = true
+/// format = "raw"
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DebugConfig {

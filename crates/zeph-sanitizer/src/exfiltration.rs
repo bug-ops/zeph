@@ -4,9 +4,23 @@
 //! Exfiltration guards: prevent LLM-generated content from leaking data via
 //! outbound channels (markdown images, tool URL injection, poisoned memory writes).
 //!
+//! The [`ExfiltrationGuard`] is stateless and covers three attack vectors:
+//!
+//! 1. **Markdown image exfiltration** — an adversary plants `![t](https://evil.com/track.gif)`
+//!    in content. When the LLM echoes it, the rendered image loads silently, leaking session data.
+//!    [`ExfiltrationGuard::scan_output`] strips these and replaces them with `[image removed: …]`.
+//!
+//! 2. **URL injection via tool calls** — a flagged URL from untrusted tool output appears in a
+//!    subsequent tool call argument. [`ExfiltrationGuard::validate_tool_call`] cross-references
+//!    URLs against the per-turn flagged URL set. Flag-only approach (does not block execution).
+//!
+//! 3. **Poisoned memory writes** — content flagged with injection patterns is intercepted before
+//!    Qdrant embedding. [`ExfiltrationGuard::should_guard_memory_write`] signals the caller to
+//!    skip the embedding step, preventing poisoned content from polluting semantic search.
+//!
 //! # Phase 5 TODO
 //! - HTML img tag detection (`<img src="https://...">`) — requires HTML parser
-//! - Unicode zero-width joiner bypass (`!\u200B[alt](url)`) — requires Unicode-aware matching
+//! - Unicode zero-width joiner bypass (`!\u{200B}[alt](url)`) — requires Unicode-aware matching
 //! - Both are low-priority: the LLM context wrapper already limits what arrives here
 
 use std::collections::HashSet;
@@ -48,7 +62,22 @@ static URL_EXTRACT_RE: LazyLock<Regex> =
 // Event types
 // ---------------------------------------------------------------------------
 
-/// Describes an exfiltration event detected by the guard.
+/// An exfiltration event detected by [`ExfiltrationGuard`].
+///
+/// Events are advisory: they are logged, counted, and returned to the caller for
+/// further action. The guard itself never panics or blocks the agent loop.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_sanitizer::exfiltration::{ExfiltrationGuard, ExfiltrationEvent};
+/// use zeph_config::ExfiltrationGuardConfig;
+///
+/// let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig::default());
+/// let (cleaned, events) = guard.scan_output("![t](https://evil.com/pixel.gif)");
+/// assert_eq!(events.len(), 1);
+/// assert!(matches!(&events[0], ExfiltrationEvent::MarkdownImageBlocked { url } if url.contains("evil.com")));
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExfiltrationEvent {
     /// A markdown image with an external URL was stripped from LLM output.
@@ -63,9 +92,32 @@ pub enum ExfiltrationEvent {
 // Guard
 // ---------------------------------------------------------------------------
 
-/// Stateless exfiltration guard. All three scanners are independently toggled via config.
+/// Stateless exfiltration guard covering three outbound leak vectors.
 ///
 /// Construct once from [`ExfiltrationGuardConfig`] and store on the agent. Cheap to clone.
+/// All three scanners ([`scan_output`](Self::scan_output),
+/// [`validate_tool_call`](Self::validate_tool_call),
+/// [`should_guard_memory_write`](Self::should_guard_memory_write)) are independently
+/// toggled via the config flags `block_markdown_images`, `validate_tool_urls`, and
+/// `guard_memory_writes`.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_sanitizer::exfiltration::ExfiltrationGuard;
+/// use zeph_config::ExfiltrationGuardConfig;
+///
+/// let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig::default());
+///
+/// // Strips external tracking pixels from LLM output.
+/// let (cleaned, events) = guard.scan_output("text ![track](https://evil.com/p.gif) end");
+/// assert!(events.len() == 1);
+/// assert!(!cleaned.contains("![track]"));
+///
+/// // Memory write is guarded when injection flags are present.
+/// let event = guard.should_guard_memory_write(true);
+/// assert!(event.is_some());
+/// ```
 #[derive(Debug, Clone)]
 pub struct ExfiltrationGuard {
     config: ExfiltrationGuardConfig,
@@ -73,6 +125,15 @@ pub struct ExfiltrationGuard {
 
 impl ExfiltrationGuard {
     /// Create a new guard from the given configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::exfiltration::ExfiltrationGuard;
+    /// use zeph_config::ExfiltrationGuardConfig;
+    ///
+    /// let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig::default());
+    /// ```
     #[must_use]
     pub fn new(config: ExfiltrationGuardConfig) -> Self {
         Self { config }
@@ -279,11 +340,23 @@ impl ExfiltrationGuard {
     }
 }
 
-/// Extract http/https URLs from content for use in subsequent `validate_tool_call` checks.
+/// Extract all `http`/`https` URLs from `content` into a `HashSet` for later URL validation.
 ///
-/// Call this after sanitizing tool output with `ContentSanitizer` when injection flags are
-/// detected. Pass the returned set into `flagged_urls` on the agent. Clear `flagged_urls`
-/// at the start of each `process_response` call (per-turn clearing strategy, see S3).
+/// Call this after sanitizing untrusted tool output with [`ContentSanitizer`] when injection
+/// flags are present. Pass the returned set into the agent's `flagged_urls` field. Pass that
+/// set to [`ExfiltrationGuard::validate_tool_call`] on each subsequent tool call. Clear
+/// `flagged_urls` at the start of each `process_response` call (per-turn clearing strategy).
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_sanitizer::exfiltration::extract_flagged_urls;
+///
+/// let urls = extract_flagged_urls("visit https://evil.com/x and https://other.com/y");
+/// assert!(urls.contains("https://evil.com/x"));
+/// assert!(urls.contains("https://other.com/y"));
+/// assert_eq!(urls.len(), 2);
+/// ```
 #[must_use]
 pub fn extract_flagged_urls(content: &str) -> HashSet<String> {
     URL_EXTRACT_RE

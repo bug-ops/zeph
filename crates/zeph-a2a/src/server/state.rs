@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Shared server state: task storage, processor interface, and event types.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -8,22 +10,81 @@ use tokio::sync::RwLock;
 
 use crate::types::{AgentCard, Artifact, Message, Task, TaskState, TaskStatus};
 
+/// Shared state injected into every axum handler via `State<AppState>`.
+///
+/// `AppState` is `Clone` so axum can inject it per-request without locking.
+/// All mutable state (tasks) is behind an `Arc<RwLock<_>>` inside [`TaskManager`].
 #[derive(Clone)]
 pub struct AppState {
+    /// This server's capability card, served at `/.well-known/agent.json`.
     pub card: AgentCard,
+    /// In-memory task store shared across all handlers.
     pub task_manager: TaskManager,
+    /// The application-level logic that handles incoming task messages.
     pub processor: Arc<dyn TaskProcessor>,
 }
 
-/// Event emitted by a streaming `TaskProcessor` toward the handler.
+/// An event emitted by a [`TaskProcessor`] to drive the handler's response.
+///
+/// The handler accumulates [`ArtifactChunk`](ProcessorEvent::ArtifactChunk) events into a
+/// final artifact. [`StatusUpdate`](ProcessorEvent::StatusUpdate) events update the task's
+/// state in [`TaskManager`] and, for streaming calls, are forwarded as SSE events.
 #[derive(Debug, Clone)]
 pub enum ProcessorEvent {
+    /// A task lifecycle state transition. Set `is_final = true` on the terminal state.
     StatusUpdate { state: TaskState, is_final: bool },
+    /// A chunk of text output. Set `is_final = true` when the artifact is complete.
     ArtifactChunk { text: String, is_final: bool },
 }
 
-/// Trait for processing A2A task messages through the agent pipeline.
+/// Contract for processing A2A task messages through the agent pipeline.
+///
+/// Implementors receive a task ID, the incoming [`Message`], and a channel for emitting
+/// [`ProcessorEvent`]s. They must return a boxed future to remain object-safe (no native
+/// async trait across dyn dispatch).
+///
+/// # Contract
+///
+/// - The processor SHOULD emit at least one [`ProcessorEvent::StatusUpdate`] with a
+///   terminal [`TaskState`] (e.g., `Completed` or `Failed`) before returning.
+/// - The processor SHOULD close `event_tx` by dropping it before returning so the handler
+///   can detect completion.
+/// - Errors returned by the future cause the task to transition to [`TaskState::Failed`].
+///
+/// # Examples
+///
+/// ```rust
+/// use std::pin::Pin;
+/// use zeph_a2a::server::{TaskProcessor, ProcessorEvent};
+/// use zeph_a2a::{A2aError, Message, TaskState};
+///
+/// struct EchoProcessor;
+///
+/// impl TaskProcessor for EchoProcessor {
+///     fn process(
+///         &self,
+///         _task_id: String,
+///         message: Message,
+///         event_tx: tokio::sync::mpsc::Sender<ProcessorEvent>,
+///     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), A2aError>> + Send>> {
+///         Box::pin(async move {
+///             let text = message.text_content().unwrap_or("").to_owned();
+///             let _ = event_tx.send(ProcessorEvent::ArtifactChunk {
+///                 text: format!("echo: {text}"),
+///                 is_final: true,
+///             }).await;
+///             let _ = event_tx.send(ProcessorEvent::StatusUpdate {
+///                 state: TaskState::Completed,
+///                 is_final: true,
+///             }).await;
+///             Ok(())
+///         })
+///     }
+/// }
+/// ```
+#[cfg_attr(docsrs, doc(cfg(feature = "server")))]
 pub trait TaskProcessor: Send + Sync {
+    /// Process the incoming `message` for `task_id`, emitting events via `event_tx`.
     fn process(
         &self,
         task_id: String,
@@ -34,12 +95,20 @@ pub trait TaskProcessor: Send + Sync {
     >;
 }
 
+/// Async, thread-safe in-memory store for A2A tasks.
+///
+/// All mutating methods take `&self` because the internal `HashMap` is behind an
+/// `Arc<RwLock<_>>`. `TaskManager` is `Clone`: cloned instances share the same task store.
+///
+/// History trimming is done lazily on reads via `history_length` — the full history is
+/// always stored, but responses return at most `N` most-recent messages when requested.
 #[derive(Clone)]
 pub struct TaskManager {
     tasks: Arc<RwLock<HashMap<String, Task>>>,
 }
 
 impl TaskManager {
+    /// Create a new, empty `TaskManager`.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -47,6 +116,10 @@ impl TaskManager {
         }
     }
 
+    /// Create a new task from the initial user message and store it.
+    ///
+    /// The task starts in [`TaskState::Submitted`] with a UUID assigned as its ID.
+    /// The `message` is prepended to the task's `history`.
     pub async fn create_task(&self, message: Message) -> Task {
         let id = uuid::Uuid::new_v4().to_string();
         let task = Task {
@@ -65,6 +138,11 @@ impl TaskManager {
         task
     }
 
+    /// Retrieve a task by ID, optionally truncating its history.
+    ///
+    /// If `history_length` is `Some(n)`, at most the `n` most recent messages are returned.
+    /// The full history remains stored — truncation only affects the returned clone.
+    /// Returns `None` if the task does not exist.
     pub async fn get_task(&self, id: &str, history_length: Option<u32>) -> Option<Task> {
         let tasks = self.tasks.read().await;
         tasks.get(id).map(|t| {
@@ -82,6 +160,10 @@ impl TaskManager {
         })
     }
 
+    /// Transition the task's status to `state`, optionally attaching a status message.
+    ///
+    /// Returns the updated task, or `None` if the task does not exist.
+    /// The `timestamp` field is set to the current UTC time.
     pub async fn update_status(
         &self,
         id: &str,
@@ -98,6 +180,9 @@ impl TaskManager {
         Some(task.clone())
     }
 
+    /// Append an artifact to the task's artifact list.
+    ///
+    /// Returns the updated task, or `None` if the task does not exist.
     pub async fn add_artifact(&self, id: &str, artifact: Artifact) -> Option<Task> {
         let mut tasks = self.tasks.write().await;
         let task = tasks.get_mut(id)?;
@@ -105,6 +190,9 @@ impl TaskManager {
         Some(task.clone())
     }
 
+    /// Append a message to the task's conversation history.
+    ///
+    /// Returns `Some(())` on success, or `None` if the task does not exist.
     pub async fn append_history(&self, id: &str, message: Message) -> Option<()> {
         let mut tasks = self.tasks.write().await;
         let task = tasks.get_mut(id)?;
@@ -145,9 +233,13 @@ impl Default for TaskManager {
     }
 }
 
+/// Error returned by [`TaskManager::cancel_task`] when cancellation cannot proceed.
 #[derive(Debug)]
 pub enum CancelError {
+    /// No task with the given ID exists in the store.
     NotFound,
+    /// The task is already in a terminal state ([`TaskState::Completed`],
+    /// [`TaskState::Failed`], [`TaskState::Canceled`], or [`TaskState::Rejected`]).
     NotCancelable(TaskState),
 }
 

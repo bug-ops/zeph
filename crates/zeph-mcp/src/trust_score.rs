@@ -11,12 +11,26 @@ use zeph_db::DbPool;
 use crate::manager::McpTrustLevel;
 
 /// Persistent per-server trust score with asymmetric time decay.
+///
+/// The score lives in `[0.0, 1.0]` and starts at `INITIAL_SCORE` (0.5 = neutral).
+/// Successful tool calls boost it by `SUCCESS_BOOST`; failures reduce it by
+/// `FAILURE_PENALTY`; injection detections reduce it by `INJECTION_PENALTY`.
+/// Only scores **above** `INITIAL_SCORE` decay over time — low-scoring servers must
+/// earn trust back through successful calls, not by waiting.
+///
+/// Use [`recommended_trust_level`](Self::recommended_trust_level) to map the
+/// current score to a [`McpTrustLevel`] for runtime gating decisions.
+///
+/// Scores are persisted via [`TrustScoreStore`] so they survive agent restarts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerTrustScore {
+    /// Unique server identifier (matches [`ServerEntry::id`](crate::manager::ServerEntry)).
     pub server_id: String,
-    /// Cumulative score in `[0.0, 1.0]`. 0.5 = neutral (initial value).
+    /// Cumulative trust score in `[0.0, 1.0]`. `0.5` = neutral (initial value).
     pub score: f64,
+    /// Number of successful tool calls recorded.
     pub success_count: u64,
+    /// Number of failed or injection-detected calls recorded.
     pub failure_count: u64,
     /// Unix timestamp of the last update.
     pub updated_at_secs: u64,
@@ -30,6 +44,7 @@ impl ServerTrustScore {
     pub const FAILURE_PENALTY: f64 = 0.10;
     pub const INJECTION_PENALTY: f64 = 0.25;
 
+    /// Create a new `ServerTrustScore` at the neutral initial score (0.5).
     #[must_use]
     pub fn new(server_id: impl Into<String>) -> Self {
         Self {
@@ -58,18 +73,23 @@ impl ServerTrustScore {
         self.updated_at_secs = unix_now();
     }
 
+    /// Increase the score by `SUCCESS_BOOST` (capped at 1.0) and increment `success_count`.
     pub fn record_success(&mut self) {
         self.score = (self.score + Self::SUCCESS_BOOST).min(1.0);
         self.success_count += 1;
         self.updated_at_secs = unix_now();
     }
 
+    /// Decrease the score by `FAILURE_PENALTY` (floored at 0.0) and increment `failure_count`.
     pub fn record_failure(&mut self) {
         self.score = (self.score - Self::FAILURE_PENALTY).max(0.0);
         self.failure_count += 1;
         self.updated_at_secs = unix_now();
     }
 
+    /// Decrease the score by `INJECTION_PENALTY` (floored at 0.0) and increment `failure_count`.
+    ///
+    /// Applied when the prober or embedding guard detects an injection pattern in server output.
     pub fn record_injection(&mut self) {
         self.score = (self.score - Self::INJECTION_PENALTY).max(0.0);
         self.failure_count += 1;

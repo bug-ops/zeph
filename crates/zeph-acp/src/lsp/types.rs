@@ -19,10 +19,12 @@ pub struct LspPosition {
     pub character: u32,
 }
 
-/// A range defined by two positions in a document.
+/// A contiguous range in a document defined by two 1-based positions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LspRange {
+    /// Inclusive start of the range.
     pub start: LspPosition,
+    /// Exclusive end of the range.
     pub end: LspPosition,
 }
 
@@ -163,50 +165,67 @@ impl TryFrom<u8> for LspSymbolKind {
     }
 }
 
-/// Hierarchical document symbol (returned by `lsp/documentSymbols`).
+/// Hierarchical document symbol returned by `lsp/documentSymbols`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspDocumentSymbol {
+    /// Symbol name (e.g. function or struct name).
     pub name: String,
+    /// Symbol kind classification.
     pub kind: LspSymbolKind,
+    /// Range of the full symbol definition.
     pub range: LspRange,
+    /// Range of the symbol's name token (used for highlights).
     pub selection_range: LspRange,
+    /// Nested children (e.g. methods inside a struct).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<LspDocumentSymbol>,
 }
 
-/// Flat symbol information (returned by `lsp/workspaceSymbol`).
+/// Flat symbol information returned by `lsp/workspaceSymbol`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspSymbolInformation {
+    /// Symbol name.
     pub name: String,
+    /// Symbol kind classification.
     pub kind: LspSymbolKind,
+    /// File and range where the symbol is defined.
     pub location: LspLocation,
 }
 
-/// A text edit applied to a document.
+/// A single text replacement in a document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspTextEdit {
+    /// Range to replace (may be empty for pure insertions).
     pub range: LspRange,
+    /// Replacement text.
     pub new_text: String,
 }
 
-/// A workspace-wide edit (uri → list of edits).
+/// A workspace-wide set of text edits (file URI → list of edits).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspWorkspaceEdit {
-    /// Map of file URI to list of text edits.
+    /// Map of file URI to list of text edits to apply.
     pub changes: HashMap<String, Vec<LspTextEdit>>,
 }
 
-/// A code action (quick fix or refactor).
+/// A code action (quick fix or refactor) returned by `lsp/codeActions`.
+///
+/// Actions without a workspace edit are filtered out on the agent side so that
+/// only directly apply-able actions are exposed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspCodeAction {
+    /// Human-readable title shown in the IDE UI.
     pub title: String,
+    /// Action kind (e.g. `"quickfix"`, `"refactor.extract"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// When `true`, this is the preferred action for its associated diagnostic.
     #[serde(default)]
     pub is_preferred: bool,
+    /// Diagnostics this action addresses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<LspDiagnostic>,
-    /// Only code actions with an edit are returned. `None` values are filtered out agent-side.
+    /// Workspace edit to apply. `None` values are filtered out on the agent side.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edit: Option<LspWorkspaceEdit>,
 }
@@ -216,6 +235,7 @@ pub struct LspCodeAction {
 pub struct LspHoverResult {
     /// Markdown-formatted hover content (type signature, documentation).
     pub contents: String,
+    /// Optional range that the hover applies to (used by IDEs to highlight the hovered token).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub range: Option<LspRange>,
 }

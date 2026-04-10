@@ -11,6 +11,25 @@ use zeph_tools::registry::{InvocationHint, ToolDef};
 use crate::manager::McpManager;
 use crate::tool::McpTool;
 
+/// [`ToolExecutor`] implementation that dispatches tool calls to MCP servers.
+///
+/// `McpToolExecutor` bridges the `zeph-tools` dispatch layer and `McpManager`. It
+/// maintains a local snapshot of the registered MCP tools (updated via
+/// [`set_tools`](McpToolExecutor::set_tools)) and resolves tool calls by matching
+/// the sanitized tool ID against the snapshot before forwarding to the manager.
+///
+/// # Security invariant
+///
+/// [`execute_tool_call`](McpToolExecutor::execute_tool_call) sets
+/// `ToolOutput::tool_name` to [`McpTool::qualified_name`] (i.e. `"server_id:name"`).
+/// The `':'` in the name is the signal used by `zeph-core`'s `sanitize_tool_output()`
+/// to route responses through the quarantine pipeline. Do not change this.
+///
+/// # Fenced-block execution
+///
+/// [`execute`](McpToolExecutor::execute) parses ```` ```mcp ```` fenced blocks
+/// from LLM output and validates each `server:tool` pair against the registered list
+/// before dispatching, preventing prompt injection from routing calls to unknown servers.
 #[derive(Debug, Clone)]
 pub struct McpToolExecutor {
     manager: Arc<McpManager>,
@@ -18,11 +37,20 @@ pub struct McpToolExecutor {
 }
 
 impl McpToolExecutor {
+    /// Create a new executor from a shared `McpManager` and a shared tool list.
+    ///
+    /// The `tools` `RwLock` is updated via [`set_tools`](Self::set_tools) after each
+    /// connect or refresh. Pass the same `Arc<RwLock<Vec<McpTool>>>` to both the executor
+    /// and the code that handles `tools/list_changed` events.
     #[must_use]
     pub fn new(manager: Arc<McpManager>, tools: Arc<RwLock<Vec<McpTool>>>) -> Self {
         Self { manager, tools }
     }
 
+    /// Replace the registered tool snapshot.
+    ///
+    /// Logs a `WARN` for each `sanitized_id` collision: when two tools map to the same
+    /// sanitized ID the second is unreachable via [`execute_tool_call`](Self::execute_tool_call).
     pub fn set_tools(&self, tools: Vec<McpTool>) {
         // Warn on sanitized_id collisions: two tools mapping to the same id means
         // the second will be unreachable via execute_tool_call.

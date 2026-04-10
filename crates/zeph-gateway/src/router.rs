@@ -20,20 +20,48 @@ use tower_http::limit::RequestBodyLimitLayer;
 use super::handlers::{health_handler, webhook_handler};
 use super::server::AppState;
 
+/// Pre-computed authentication configuration for the bearer-token middleware.
+///
+/// The expected token is hashed once at startup so that the per-request
+/// comparison always operates on two 32-byte BLAKE3 digests, keeping the
+/// comparison both O(1) and constant-time.
 #[derive(Clone)]
 struct AuthConfig {
+    /// BLAKE3 hash of the configured bearer token, or `None` when auth is disabled.
     token_hash: Option<blake3::Hash>,
 }
 
+/// Maximum number of IP entries retained in the rate-limit map before a GC pass.
+///
+/// When the map reaches this size and a new, unseen IP arrives, expired entries
+/// (older than [`RATE_WINDOW`]) are evicted before inserting the new one.  This
+/// bounds memory usage to roughly `MAX_RATE_LIMIT_ENTRIES * ~56 bytes`.
 const MAX_RATE_LIMIT_ENTRIES: usize = 10_000;
+
+/// Fixed window duration for the per-IP request counter.
 const RATE_WINDOW: Duration = Duration::from_secs(60);
 
+/// Shared state threaded through the rate-limiting middleware.
 #[derive(Clone)]
 struct RateLimitState {
+    /// Maximum number of requests allowed per IP in one [`RATE_WINDOW`].
+    /// `0` means rate limiting is disabled.
     limit: u32,
+    /// Map from remote IP to `(request_count, window_start)`.
     counters: Arc<Mutex<HashMap<IpAddr, (u32, Instant)>>>,
 }
 
+/// Build the complete axum [`Router`] for the gateway.
+///
+/// Routes:
+/// - `GET /health` — unauthenticated liveness check ([`health_handler`])
+/// - `POST /webhook` — authenticated, rate-limited, body-size-limited ingestion
+///   ([`webhook_handler`])
+///
+/// Middleware stack applied to `/webhook` (outermost → innermost):
+/// 1. [`RequestBodyLimitLayer`] — rejects bodies larger than `max_body_size`
+/// 2. [`auth_middleware`] — constant-time bearer-token check
+/// 3. [`rate_limit_middleware`] — per-IP fixed-window counter
 pub(crate) fn build_router(
     state: AppState,
     auth_token: Option<&str>,
@@ -63,6 +91,16 @@ pub(crate) fn build_router(
         .with_state(state)
 }
 
+/// Axum middleware that enforces bearer-token authentication.
+///
+/// When [`AuthConfig::token_hash`] is `Some`, the request must contain an
+/// `Authorization: Bearer <token>` header whose value, when hashed with BLAKE3,
+/// matches the pre-computed digest.  Comparison uses [`ConstantTimeEq`] on the
+/// two fixed-length 32-byte arrays so that the comparison time is independent
+/// of the token content, preventing timing-oracle attacks.
+///
+/// Requests without a valid token receive `401 Unauthorized`.
+/// When auth is not configured (`token_hash` is `None`) all requests pass through.
 async fn auth_middleware(
     axum::extract::State(cfg): axum::extract::State<AuthConfig>,
     req: Request<Body>,
@@ -90,6 +128,18 @@ async fn auth_middleware(
     next.run(req).await
 }
 
+/// Axum middleware that enforces a per-IP fixed-window rate limit.
+///
+/// Each remote IP is tracked independently.  A counter is incremented on every
+/// request within the current window.  When the counter exceeds
+/// [`RateLimitState::limit`] the request receives `429 Too Many Requests`.
+///
+/// The window resets when [`RATE_WINDOW`] has elapsed since the first request in
+/// the current window.  When [`RateLimitState::limit`] is `0` the middleware
+/// passes all requests through without tracking.
+///
+/// To prevent unbounded memory growth, expired entries are evicted when the
+/// counters map reaches [`MAX_RATE_LIMIT_ENTRIES`] and a new IP is encountered.
 async fn rate_limit_middleware(
     axum::extract::State(state): axum::extract::State<RateLimitState>,
     req: Request<Body>,

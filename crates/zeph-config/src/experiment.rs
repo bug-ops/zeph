@@ -251,11 +251,26 @@ impl Default for OrchestrationConfig {
 }
 
 /// Configuration for the autonomous self-experimentation engine (`[experiments]` TOML section).
+///
+/// When `enabled = true`, Zeph periodically runs A/B experiments on its own skill and
+/// prompt configurations to find improvements automatically.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [experiments]
+/// enabled = false
+/// max_experiments = 20
+/// auto_apply = false
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ExperimentConfig {
+    /// Enable autonomous self-experimentation. Default: `false`.
     pub enabled: bool,
+    /// Model identifier used for evaluating experiment outcomes.
     pub eval_model: Option<String>,
+    /// Path to a benchmark JSONL file for evaluating experiments.
     pub benchmark_file: Option<std::path::PathBuf>,
     #[serde(default = "default_experiment_max_experiments")]
     pub max_experiments: u32,

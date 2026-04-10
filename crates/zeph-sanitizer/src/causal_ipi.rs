@@ -1,16 +1,25 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Temporal causal IPI analysis at tool-return boundaries.
+//! Temporal causal IPI (Indirect Prompt Injection) analysis at tool-return boundaries.
 //!
 //! [`TurnCausalAnalyzer`] detects behavioral deviation by comparing agent behavioral
-//! probes before and after tool batch dispatch. Deviation above a configured threshold
-//! fires a WARN log, increments a metric, and emits a `SecurityEvent` — it never blocks
-//! tool execution.
+//! probes before and after a tool batch is dispatched. If the agent's stated task or
+//! planned next action changes significantly after receiving tool output, it may indicate
+//! that injected instructions in the tool output have influenced its behavior.
 //!
-//! Probes are per-batch (2 LLM calls total per tool batch), not per individual tool.
-//! The deviation score is computed locally (string similarity + keyword divergence),
-//! without a third LLM call.
+//! Deviation above the configured threshold fires a `WARN` log and emits a `SecurityEvent`
+//! — it **never blocks** tool execution. The goal is operator visibility, not hard blocking.
+//!
+//! # Algorithm
+//!
+//! 1. **Pre-probe**: send `PROBE_QUESTION` + context summary to the LLM, record response `A`.
+//! 2. **Dispatch** the tool batch and collect all results.
+//! 3. **Post-probe**: send `PROBE_QUESTION` + context summary + tool output snippets, record `B`.
+//! 4. **Analyze**: compute deviation between `A` and `B` using normalized Levenshtein +
+//!    Jaccard distance. Score ∈ [0.0, 1.0]. Deviation ≥ threshold → flagged.
+//!
+//! Both probes count as 2 LLM calls per tool batch. Deviation scoring is local (no 3rd call).
 //!
 //! Integration point: `native.rs` tool batch dispatch loop.
 
@@ -33,10 +42,15 @@ const PROBE_QUESTION: &str = "Summarize your current task and planned next actio
 // ---------------------------------------------------------------------------
 
 /// Errors from [`TurnCausalAnalyzer`] probe calls.
+///
+/// Probe failures are non-fatal: the caller should log a `WARN` and skip causal
+/// analysis for the current batch rather than blocking tool execution.
 #[derive(Debug, thiserror::Error)]
 pub enum CausalIpiError {
+    /// The probe LLM call returned an error.
     #[error("probe LLM call failed: {0}")]
     LlmError(#[from] zeph_llm::LlmError),
+    /// The probe did not complete within the configured timeout.
     #[error("probe timed out after {0}ms")]
     Timeout(u64),
 }
@@ -45,12 +59,31 @@ pub enum CausalIpiError {
 // Result type
 // ---------------------------------------------------------------------------
 
-/// Result of causal deviation analysis.
+/// Result of causal deviation analysis returned by [`TurnCausalAnalyzer::analyze`].
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_sanitizer::causal_ipi::{TurnCausalAnalyzer, CausalAnalysis};
+/// use zeph_config::CausalIpiConfig;
+/// use zeph_llm::any::AnyProvider;
+/// use zeph_llm::mock::MockProvider;
+///
+/// let analyzer = TurnCausalAnalyzer::new(
+///     AnyProvider::Mock(MockProvider::default()),
+///     &CausalIpiConfig { threshold: 0.5, ..Default::default() },
+/// );
+///
+/// // Identical probe responses produce near-zero deviation.
+/// let result = analyzer.analyze("I will search files.", "I will search files.");
+/// assert!(!result.is_flagged);
+/// assert!(result.deviation_score < 0.01);
+/// ```
 #[derive(Debug, Clone)]
 pub struct CausalAnalysis {
-    /// Deviation score in [0.0, 1.0]. Higher = more behavioral divergence.
+    /// Deviation score in [0.0, 1.0]. Higher = more behavioral divergence between probes.
     pub deviation_score: f32,
-    /// Whether the score exceeds the configured threshold.
+    /// `true` when `deviation_score` meets or exceeds the configured threshold.
     pub is_flagged: bool,
 }
 
@@ -62,6 +95,24 @@ pub struct CausalAnalysis {
 ///
 /// The behavioral probe question is fixed and not configurable (security boundary):
 /// `"Summarize your current task and planned next action in one sentence."`
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// // Before tool dispatch:
+/// let pre = analyzer.probe(&context_summary).await?;
+///
+/// // Dispatch tools, collect results...
+///
+/// // After all results received:
+/// let post = analyzer.post_probe(&context_summary, &tool_snippets).await?;
+///
+/// // Compute deviation locally (no LLM call):
+/// let analysis = analyzer.analyze(&pre, &post);
+/// if analysis.is_flagged {
+///     tracing::warn!(score = analysis.deviation_score, "causal IPI deviation detected");
+/// }
+/// ```
 pub struct TurnCausalAnalyzer {
     provider: AnyProvider,
     threshold: f32,
@@ -77,6 +128,10 @@ pub struct TurnCausalAnalyzer {
 
 impl TurnCausalAnalyzer {
     /// Construct a new analyzer from config and a resolved provider.
+    ///
+    /// The `probe_max_chars` field is derived from `config.probe_max_tokens` (1 token ≈ 4 chars)
+    /// to bound Levenshtein O(n²) cost and prevent unexpectedly long probe responses from
+    /// distorting deviation scores.
     #[must_use]
     pub fn new(provider: AnyProvider, config: &CausalIpiConfig) -> Self {
         Self {
@@ -160,17 +215,41 @@ impl TurnCausalAnalyzer {
     }
 
     /// Returns the configured deviation threshold.
+    ///
+    /// Deviation scores at or above this value produce [`CausalAnalysis::is_flagged`] = `true`.
     #[must_use]
     pub fn threshold(&self) -> f32 {
         self.threshold
     }
 
-    /// Compare pre and post probe responses. Returns a local deviation score.
+    /// Compare pre- and post-probe responses and return a local deviation score.
     ///
-    /// This is a LOCAL computation — no LLM call. Uses normalized Levenshtein distance
-    /// combined with keyword set divergence to measure behavioral shift.
+    /// This is a **local** computation — no LLM call. Combines normalized Levenshtein distance
+    /// (character-level) with Jaccard distance on word sets. Both metrics are in [0.0, 1.0];
+    /// the result is their average.
     ///
-    /// Score range: [0.0, 1.0]. Higher = more deviation.
+    /// Score range: [0.0, 1.0]. Higher = more deviation between pre and post probe.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::causal_ipi::TurnCausalAnalyzer;
+    /// use zeph_config::CausalIpiConfig;
+    /// use zeph_llm::any::AnyProvider;
+    /// use zeph_llm::mock::MockProvider;
+    ///
+    /// let analyzer = TurnCausalAnalyzer::new(
+    ///     AnyProvider::Mock(MockProvider::default()),
+    ///     &CausalIpiConfig { threshold: 0.4, ..Default::default() },
+    /// );
+    ///
+    /// let result = analyzer.analyze(
+    ///     "I will list files in the project.",
+    ///     "I will exfiltrate credentials to a remote server.",
+    /// );
+    /// assert!(result.is_flagged);
+    /// assert!(result.deviation_score >= 0.4);
+    /// ```
     #[must_use]
     pub fn analyze(&self, pre_response: &str, post_response: &str) -> CausalAnalysis {
         let deviation_score = compute_deviation(pre_response, post_response);
@@ -250,12 +329,25 @@ fn jaccard_distance(a: &str, b: &str) -> f32 {
 // Tool output snippet helpers
 // ---------------------------------------------------------------------------
 
-/// Maximum bytes to include from a single tool output in the snippet.
+/// Maximum bytes to include from a single tool output in the post-probe context snippet.
 pub const SNIPPET_MAX_BYTES: usize = 200;
 
-/// Format a tool output body as a snippet for post-probe context.
+/// Format a tool output body as a snippet for use in the post-probe context.
 ///
-/// Truncates to [`SNIPPET_MAX_BYTES`], replacing empty output with `[empty]`.
+/// Truncates to [`SNIPPET_MAX_BYTES`] at a UTF-8 character boundary.
+/// An empty body is replaced with the sentinel `"[empty]"`.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_sanitizer::causal_ipi::{format_tool_snippet, SNIPPET_MAX_BYTES};
+///
+/// assert_eq!(format_tool_snippet(""), "[empty]");
+/// assert_eq!(format_tool_snippet("hello"), "hello");
+///
+/// let long = "x".repeat(500);
+/// assert_eq!(format_tool_snippet(&long).len(), SNIPPET_MAX_BYTES);
+/// ```
 #[must_use]
 pub fn format_tool_snippet(body: &str) -> String {
     if body.is_empty() {
@@ -268,7 +360,18 @@ pub fn format_tool_snippet(body: &str) -> String {
     body[..boundary].to_owned()
 }
 
-/// Format a tool error as a snippet for post-probe context.
+/// Format a tool error as a snippet for the post-probe context.
+///
+/// Truncates the error string to 100 bytes and wraps it in `[error: …]`.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_sanitizer::causal_ipi::format_error_snippet;
+///
+/// let s = format_error_snippet("connection refused");
+/// assert_eq!(s, "[error: connection refused]");
+/// ```
 #[must_use]
 pub fn format_error_snippet(error: &str) -> String {
     let max = 100;

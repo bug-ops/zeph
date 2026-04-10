@@ -2,6 +2,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! AST-based chunking via tree-sitter with greedy sibling merge.
+//!
+//! The main entry point is [`chunk_file`], which:
+//!
+//! 1. Parses the source with the appropriate tree-sitter grammar.
+//! 2. Walks the AST and groups sibling nodes into [`CodeChunk`]s using a greedy
+//!    merge strategy that tries to stay near [`ChunkerConfig::target_size`].
+//! 3. Recursively splits nodes that exceed [`ChunkerConfig::max_size`].
+//! 4. Merges adjacent chunks that are below [`ChunkerConfig::min_size`].
+//! 5. For languages without named entity kinds (TOML, JSON, Markdown) a single
+//!    file-level chunk is emitted.
+//!
+//! Each chunk carries a Blake3 content hash so unchanged chunks are skipped on
+//! incremental re-indexing without any Qdrant round-trips.
 
 use tree_sitter::{Node, Parser};
 use zeph_common::hash::blake3_hex_str as blake3_hex;
@@ -9,29 +22,80 @@ use zeph_common::hash::blake3_hex_str as blake3_hex;
 use crate::error::{IndexError, Result};
 use crate::languages::Lang;
 
-/// One chunk of source code with rich metadata.
+/// One chunk of source code extracted from a file, with rich metadata for retrieval.
+///
+/// A `CodeChunk` represents a contiguous span of source text that was grouped by the
+/// chunker — typically one or more top-level AST nodes (e.g. a single function, a
+/// struct definition, or a small batch of sibling constants).
+///
+/// # Fields
+///
+/// * `code` — the raw source text of this chunk.
+/// * `file_path` — relative path from the project root.
+/// * `language` — detected language.
+/// * `node_type` — tree-sitter node kind of the primary node (e.g. `"function_item"`).
+///   For batches of siblings the format is `"<kind>x<count>"`.
+/// * `entity_name` — extracted symbol name when available (e.g. `"my_function"`).
+/// * `line_range` — 1-based inclusive `(start, end)` line numbers.
+/// * `scope_chain` — `">"` separated nesting path (e.g. `"MyStruct > my_method"`).
+/// * `imports` — up to 5 import declarations from the file, prepended to the embedding
+///   text for better retrieval quality.
+/// * `content_hash` — Blake3 hex digest of `code`, used for incremental deduplication.
 #[derive(Debug, Clone)]
 pub struct CodeChunk {
+    /// Raw source text of this chunk.
     pub code: String,
+    /// Relative path from the project root (e.g. `"src/lib.rs"`).
     pub file_path: String,
+    /// Detected language for this file.
     pub language: Lang,
+    /// Tree-sitter node kind of the primary AST node (e.g. `"function_item"`).
     pub node_type: String,
+    /// Extracted symbol name, if the primary node has a `name` or `type` field.
     pub entity_name: Option<String>,
+    /// 1-based inclusive `(start_line, end_line)` range within the source file.
     pub line_range: (usize, usize),
+    /// `">"` separated scope nesting path (e.g. `"Outer > Inner > method"`).
     pub scope_chain: String,
+    /// Import declarations extracted from the file header (up to 5 lines).
     pub imports: String,
+    /// Blake3 hex digest of `code` for incremental deduplication.
     pub content_hash: String,
 }
 
-/// Chunker configuration.
+/// Configuration for the AST-based chunker.
+///
+/// All size thresholds are measured in **non-whitespace characters** rather than total
+/// bytes to avoid counting indentation.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_index::chunker::ChunkerConfig;
+///
+/// // Use defaults suitable for most code bases.
+/// let config = ChunkerConfig::default();
+/// assert_eq!(config.target_size, 600);
+///
+/// // Tighter chunks for a token-constrained context window.
+/// let config = ChunkerConfig { target_size: 300, max_size: 600, min_size: 50 };
+/// ```
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_field_names)]
 pub struct ChunkerConfig {
     /// Target chunk size in non-whitespace characters (default: 600).
+    ///
+    /// The chunker tries to fill batches up to this limit before starting a new chunk.
     pub target_size: usize,
     /// Maximum chunk size before forced recursive split (default: 1200).
+    ///
+    /// Nodes exceeding this limit are recursively descended into rather than emitted
+    /// as a single oversized chunk.
     pub max_size: usize,
     /// Minimum chunk size — smaller pieces merge with adjacent siblings (default: 100).
+    ///
+    /// After the initial batch pass, chunks below this threshold are merged with their
+    /// right-hand neighbour when the combined size stays within `target_size`.
     pub min_size: usize,
 }
 

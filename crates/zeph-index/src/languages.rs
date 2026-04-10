@@ -2,6 +2,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Language detection and tree-sitter grammar registry.
+//!
+//! The central type is [`Lang`], an enum of every language supported by the
+//! indexing pipeline. Each variant carries its own:
+//!
+//! * tree-sitter grammar ([`Lang::grammar`])
+//! * compiled symbol query ([`Lang::symbol_query`])
+//! * compiled method query ([`Lang::method_query`])
+//! * named entity node kinds used for chunk boundaries ([`Lang::entity_node_kinds`])
+//!
+//! Top-level helpers:
+//!
+//! * [`detect_language`] — map a file extension to a [`Lang`] variant.
+//! * [`is_indexable`] — return `true` when a file has both a supported language
+//!   and an available grammar (used by the directory walker to skip unsupported files).
 
 use std::path::Path;
 use std::sync::LazyLock;
@@ -24,23 +38,61 @@ const PYTHON_METHOD_Q: &str = "
   (function_definition name: (identifier) @name) @def))
 ";
 
-/// Supported language with its tree-sitter grammar.
+/// A programming language or file format supported by the indexing pipeline.
+///
+/// Each variant corresponds to a tree-sitter grammar bundled as a workspace
+/// dependency. The variant is used throughout the pipeline to select the correct
+/// grammar, query, and entity-node kinds.
+///
+/// # Serialization
+///
+/// Serializes to lowercase strings (`"rust"`, `"python"`, …) via `serde`.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_index::languages::{Lang, detect_language};
+/// use std::path::Path;
+///
+/// let lang = detect_language(Path::new("src/main.rs")).unwrap();
+/// assert_eq!(lang, Lang::Rust);
+/// assert_eq!(lang.id(), "rust");
+/// assert!(lang.grammar().is_some());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Lang {
+    /// The Rust programming language (`*.rs`).
     Rust,
+    /// Python 3 (`*.py`, `*.pyi`).
     Python,
+    /// JavaScript including JSX (`*.js`, `*.jsx`, `*.mjs`, `*.cjs`).
     JavaScript,
+    /// TypeScript including TSX (`*.ts`, `*.tsx`, `*.mts`, `*.cts`).
     TypeScript,
+    /// Go (`*.go`).
     Go,
+    /// Bash / shell scripts (`*.sh`, `*.bash`, `*.zsh`).
     Bash,
+    /// TOML configuration files (`*.toml`).
     Toml,
+    /// JSON and JSONC (`*.json`, `*.jsonc`).
     Json,
+    /// Markdown documents (`*.md`, `*.markdown`).
     Markdown,
 }
 
 impl Lang {
-    /// Identifier used in Qdrant payload and config.
+    /// Short lowercase identifier stored in Qdrant payload and config fields.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_index::languages::Lang;
+    ///
+    /// assert_eq!(Lang::Rust.id(), "rust");
+    /// assert_eq!(Lang::TypeScript.id(), "typescript");
+    /// ```
     #[must_use]
     pub fn id(self) -> &'static str {
         match self {
@@ -56,7 +108,19 @@ impl Lang {
         }
     }
 
-    /// Get the tree-sitter grammar for this language.
+    /// Return the tree-sitter grammar for this language, if available.
+    ///
+    /// All current [`Lang`] variants have a grammar; this returns `Option` so
+    /// callers can handle future variants gracefully without a compile-time break.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_index::languages::Lang;
+    ///
+    /// assert!(Lang::Rust.grammar().is_some());
+    /// assert!(Lang::Markdown.grammar().is_some());
+    /// ```
     #[must_use]
     pub fn grammar(self) -> Option<tree_sitter::Language> {
         match self {
@@ -143,8 +207,25 @@ impl Lang {
         }
     }
 
-    /// Top-level AST node kinds that represent named entities.
-    /// Used by the chunker to decide chunk boundaries.
+    /// Return the tree-sitter node kinds that delimit named entities.
+    ///
+    /// The [`crate::chunker`] uses this list to decide chunk boundaries: only
+    /// nodes whose kind appears in this list are considered "interesting" for
+    /// chunk creation. Languages like TOML and JSON return an empty slice, which
+    /// causes the chunker to emit a single file-level chunk instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_index::languages::Lang;
+    ///
+    /// let rust_kinds = Lang::Rust.entity_node_kinds();
+    /// assert!(rust_kinds.contains(&"function_item"));
+    /// assert!(rust_kinds.contains(&"impl_item"));
+    ///
+    /// // Config formats have no named entities — single file chunk.
+    /// assert!(Lang::Toml.entity_node_kinds().is_empty());
+    /// ```
     #[must_use]
     pub fn entity_node_kinds(self) -> &'static [&'static str] {
         match self {
@@ -190,7 +271,21 @@ impl std::fmt::Display for Lang {
     }
 }
 
-/// Detect language from file extension.
+/// Detect the language of a file based on its extension.
+///
+/// Returns `None` for extensions not supported by any tree-sitter grammar in this crate.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use zeph_index::languages::{Lang, detect_language};
+///
+/// assert_eq!(detect_language(Path::new("main.rs")), Some(Lang::Rust));
+/// assert_eq!(detect_language(Path::new("script.py")), Some(Lang::Python));
+/// assert_eq!(detect_language(Path::new("unknown.xyz")), None);
+/// assert_eq!(detect_language(Path::new("no_extension")), None);
+/// ```
 #[must_use]
 pub fn detect_language(path: &Path) -> Option<Lang> {
     let ext = path.extension()?.to_str()?;
@@ -208,7 +303,23 @@ pub fn detect_language(path: &Path) -> Option<Lang> {
     }
 }
 
-/// Check if a file should be indexed (has a supported language with grammar).
+/// Return `true` if `path` has a supported language **and** an available tree-sitter grammar.
+///
+/// Used by the directory walker to quickly filter out files that cannot be indexed.
+/// Returns `false` for unrecognized extensions and for any language whose grammar
+/// fails to load (which should not happen in practice with the bundled grammars).
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use zeph_index::languages::is_indexable;
+///
+/// assert!(is_indexable(Path::new("src/lib.rs")));
+/// assert!(is_indexable(Path::new("config.toml")));
+/// assert!(!is_indexable(Path::new("image.png")));
+/// assert!(!is_indexable(Path::new("Makefile")));
+/// ```
 #[must_use]
 pub fn is_indexable(path: &Path) -> bool {
     detect_language(path).and_then(Lang::grammar).is_some()

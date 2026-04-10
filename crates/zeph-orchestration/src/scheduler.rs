@@ -26,48 +26,112 @@ use zeph_subagent::{SubAgentDef, SubAgentError};
 /// Actions the scheduler requests the caller to perform.
 ///
 /// The scheduler never holds `&mut SubAgentManager` — it produces these
-/// actions for the caller to execute (ADR-026 command pattern).
+/// command values for the caller to execute against its own agent pool (ADR-026
+/// command pattern). Process each action, then call [`DagScheduler::record_spawn`] /
+/// [`DagScheduler::record_spawn_failure`] for spawn outcomes, and
+/// [`DagScheduler::wait_event`] before the next tick.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// loop {
+///     for action in scheduler.tick() {
+///         match action {
+///             SchedulerAction::Spawn { task_id, agent_def_name, prompt } => {
+///                 match manager.spawn_for_task(task_id, &agent_def_name, &prompt) {
+///                     Ok(handle_id) => scheduler.record_spawn(task_id, handle_id, agent_def_name),
+///                     Err(e) => {
+///                         for a in scheduler.record_spawn_failure(task_id, &e) {
+///                             // execute cancel action…
+///                         }
+///                     }
+///                 }
+///             }
+///             SchedulerAction::Cancel { agent_handle_id } => manager.cancel(&agent_handle_id),
+///             SchedulerAction::Done { .. } => break,
+///             _ => {}
+///         }
+///     }
+///     scheduler.wait_event().await;
+/// }
+/// ```
 #[derive(Debug)]
 pub enum SchedulerAction {
-    /// Spawn a sub-agent for a task.
+    /// Spawn a sub-agent for the given task using the named agent definition.
     Spawn {
+        /// Task to be executed.
         task_id: TaskId,
+        /// Name of the agent definition to instantiate.
         agent_def_name: String,
+        /// Full prompt to pass to the sub-agent.
         prompt: String,
     },
-    /// Cancel a running sub-agent (on graph abort/skip).
-    Cancel { agent_handle_id: String },
-    /// Execute a task inline via the main agent (no sub-agents configured).
-    RunInline { task_id: TaskId, prompt: String },
-    /// Graph reached a terminal or paused state.
-    Done { status: GraphStatus },
+    /// Cancel a running sub-agent (issued on graph abort or `Skip` propagation).
+    Cancel {
+        /// Opaque handle ID returned by the sub-agent manager at spawn time.
+        agent_handle_id: String,
+    },
+    /// Execute a task inline via the main agent (emitted when no sub-agents are configured).
+    RunInline {
+        /// Task to execute inline.
+        task_id: TaskId,
+        /// Full prompt for the inline execution.
+        prompt: String,
+    },
+    /// Graph reached a terminal or paused state. The caller should stop looping.
+    Done {
+        /// Final graph status.
+        status: GraphStatus,
+    },
     /// Request verification of a completed task's output (emitted when `verify_completeness=true`).
     ///
-    /// The task stays `Completed` during verification. Downstream tasks are unblocked
-    /// immediately — verification is best-effort and does not gate dispatch.
-    /// The caller runs `PlanVerifier::verify()`, then optionally `PlanVerifier::replan()`,
-    /// then calls `DagScheduler::inject_tasks()` if new tasks were generated.
-    Verify { task_id: TaskId, output: String },
+    /// The task remains `Completed` during verification. Downstream tasks are unblocked
+    /// immediately — verification is best-effort and does not gate dispatch. The caller
+    /// should run [`PlanVerifier::verify`], optionally [`PlanVerifier::replan`], and then
+    /// call [`DagScheduler::inject_tasks`] if new tasks were generated.
+    ///
+    /// [`PlanVerifier::verify`]: crate::verifier::PlanVerifier::verify
+    /// [`PlanVerifier::replan`]: crate::verifier::PlanVerifier::replan
+    Verify {
+        /// Task whose output should be verified.
+        task_id: TaskId,
+        /// The raw output text produced by the task.
+        output: String,
+    },
 }
 
 /// Event sent by a sub-agent loop when it terminates.
+///
+/// Sub-agent tasks send this through the channel cloned from
+/// [`DagScheduler::event_sender`]. The scheduler matches `agent_handle_id`
+/// against its running map to guard against stale events from timed-out agents.
 #[derive(Debug)]
 pub struct TaskEvent {
+    /// Task that finished.
     pub task_id: TaskId,
+    /// Opaque handle ID that was returned by the sub-agent manager at spawn time.
     pub agent_handle_id: String,
+    /// Success or failure outcome.
     pub outcome: TaskOutcome,
 }
 
 /// Outcome of a sub-agent execution.
+///
+/// Returned inside a [`TaskEvent`] and processed by [`DagScheduler::tick`].
 #[derive(Debug)]
 pub enum TaskOutcome {
     /// Agent completed successfully.
     Completed {
+        /// Raw text output.
         output: String,
+        /// File-system artifacts produced (may be empty).
         artifacts: Vec<PathBuf>,
     },
     /// Agent failed.
-    Failed { error: String },
+    Failed {
+        /// Human-readable error description.
+        error: String,
+    },
 }
 
 /// Tracks a running task's spawn time and definition name for timeout detection.
@@ -834,11 +898,6 @@ impl DagScheduler {
         vec![]
     }
 
-    /// Wait for the next event from a running sub-agent.
-    ///
-    /// Buffers the received event for processing in the next `tick` call.
-    /// Returns immediately if no tasks are running. Uses a timeout so that
-    /// periodic timeout checking can occur.
     /// Compute the current deferral backoff with exponential growth capped at 5 seconds.
     ///
     /// Each consecutive spawn failure due to concurrency limits doubles the base backoff.
@@ -852,6 +911,12 @@ impl DagScheduler {
             .min(MAX_BACKOFF)
     }
 
+    /// Wait for the next event from a running sub-agent.
+    ///
+    /// Buffers the received event for processing in the next [`DagScheduler::tick`] call.
+    /// Returns immediately — sleeping for the current deferral backoff — when no tasks
+    /// are running. Uses a deadline derived from the nearest task timeout so that
+    /// periodic timeout checking occurs even when no events arrive.
     pub async fn wait_event(&mut self) {
         if self.running.is_empty() {
             tokio::time::sleep(self.current_deferral_backoff()).await;
@@ -902,8 +967,8 @@ impl DagScheduler {
     ///
     /// Resets `consecutive_spawn_failures` to 0 as a "spawn succeeded = scheduler healthy"
     /// signal. This is intentionally separate from the batch-level backoff in
-    /// [`record_batch_backoff`]: `record_spawn` provides an immediate reset on the first
-    /// success within a batch, while `record_batch_backoff` governs the tick-granular
+    /// [`DagScheduler::record_batch_backoff`]: `record_spawn` provides an immediate reset on the first
+    /// success within a batch, while [`DagScheduler::record_batch_backoff`] governs the tick-granular
     /// failure counter used for exponential wait backoff.
     pub fn record_spawn(
         &mut self,
@@ -926,7 +991,7 @@ impl DagScheduler {
     /// Handle a failed spawn attempt.
     ///
     /// If the error is a transient concurrency-limit rejection, reverts the task from
-    /// Running back to `Ready` so the next [`tick`] can retry the spawn when a slot opens.
+    /// Running back to `Ready` so the next [`DagScheduler::tick`] can retry the spawn when a slot opens.
     /// Otherwise, marks the task as `Failed` and propagates failure.
     /// Returns any cancel actions needed.
     ///

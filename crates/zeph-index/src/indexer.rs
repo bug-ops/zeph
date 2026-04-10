@@ -2,6 +2,24 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Project indexing orchestrator: walk → chunk → embed → store.
+//!
+//! The top-level type is [`CodeIndexer`]. It drives a full project index via
+//! [`CodeIndexer::index_project`] and supports incremental updates via
+//! [`CodeIndexer::reindex_file`] (called by the file watcher).
+//!
+//! ## Concurrency model
+//!
+//! Files are processed in two nested loops:
+//!
+//! 1. **Memory batches** — files are split into groups of
+//!    [`IndexerConfig::memory_batch_size`] to bound peak in-flight state.
+//! 2. **Per-batch concurrency** — within each memory batch, files are processed
+//!    concurrently up to [`IndexerConfig::embed_concurrency`] using
+//!    `futures::stream::buffer_unordered`.
+//!
+//! Chunks that already exist in the store (matched by content hash) are skipped
+//! without any embedding call, making re-runs over an unchanged project O(1) in
+//! LLM API cost.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -18,20 +36,49 @@ use crate::store::{ChunkInsert, CodeStore};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 
-/// Indexer configuration.
+/// Configuration for [`CodeIndexer`].
+///
+/// All fields have reasonable defaults via [`Default`]. Override individual fields
+/// when you need to tune throughput, memory use, or API rate limits.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_index::indexer::IndexerConfig;
+///
+/// let config = IndexerConfig::default();
+/// assert_eq!(config.concurrency, 4);
+/// assert_eq!(config.embed_concurrency, 2);
+///
+/// // High-throughput mode for a fast local embedding server.
+/// let fast = IndexerConfig {
+///     embed_concurrency: 8,
+///     memory_batch_size: 64,
+///     ..IndexerConfig::default()
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct IndexerConfig {
+    /// Chunker configuration controlling chunk size thresholds.
     pub chunker: ChunkerConfig,
-    /// Number of files to process concurrently during `index_project`. Default: 4.
+    /// Number of files to process concurrently within each memory batch. Default: 4.
     pub concurrency: usize,
-    /// Maximum number of new chunks to batch per file into a single Qdrant upsert. Default: 32.
+    /// Maximum number of new chunks to upsert per Qdrant call. Default: 32.
+    ///
+    /// Larger values reduce round-trips but increase per-call memory.
     pub batch_size: usize,
-    /// Number of files to process per memory batch during initial indexing. Default: 32.
+    /// Number of files per outer memory batch during initial indexing. Default: 32.
+    ///
+    /// Lowering this reduces peak heap usage at the cost of more `yield_now` calls.
     pub memory_batch_size: usize,
-    /// Maximum file size in bytes to index. Files larger than this are skipped. Default: 512 KiB.
+    /// Maximum file size in bytes. Files larger than this are silently skipped. Default: 512 KiB.
+    ///
+    /// Large files (e.g. generated code, vendored libraries) rarely provide useful
+    /// retrieval signal and are expensive to embed.
     pub max_file_bytes: usize,
-    /// Maximum parallel `embed_batch` calls during indexing (default: 2 to stay within provider
-    /// TPM limits).
+    /// Maximum parallel `embed_batch` calls per memory batch. Default: 2.
+    ///
+    /// Keep this low when using hosted embedding APIs with strict TPM rate limits.
     pub embed_concurrency: usize,
 }
 
@@ -48,30 +95,82 @@ impl Default for IndexerConfig {
     }
 }
 
-/// Snapshot of indexing progress, sent via watch channel.
+/// Snapshot of indexing progress, sent through a [`tokio::sync::watch`] channel.
+///
+/// The caller passes an `Option<&watch::Sender<IndexProgress>>` to
+/// [`CodeIndexer::index_project`]. Each time a file completes the sender receives an
+/// updated snapshot so the TUI or CLI can display a live progress bar.
+///
+/// # Examples
+///
+/// ```no_run
+/// use tokio::sync::watch;
+/// use zeph_index::indexer::IndexProgress;
+///
+/// let (tx, mut rx) = watch::channel(IndexProgress::default());
+/// tx.send(IndexProgress { files_done: 1, files_total: 10, chunks_created: 5 }).unwrap();
+/// assert_eq!(rx.borrow().files_done, 1);
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct IndexProgress {
-    /// Number of files processed so far.
+    /// Number of files fully processed so far.
     pub files_done: usize,
-    /// Total number of indexable files discovered.
+    /// Total number of indexable files discovered in the project root.
     pub files_total: usize,
-    /// Cumulative chunks created across all files.
+    /// Cumulative number of new chunks created across all processed files.
     pub chunks_created: usize,
 }
 
-/// Summary of an indexing run.
+/// Summary statistics produced at the end of a full [`CodeIndexer::index_project`] run.
+///
+/// Errors are collected rather than short-circuiting so the majority of the project
+/// is indexed even when individual files fail (e.g. due to transient IO errors or
+/// unsupported encodings).
 #[derive(Debug, Default)]
 pub struct IndexReport {
+    /// Total number of files visited by the directory walker.
     pub files_scanned: usize,
+    /// Number of files that produced at least one new chunk.
     pub files_indexed: usize,
+    /// New chunks embedded and upserted into Qdrant.
     pub chunks_created: usize,
+    /// Chunks skipped because an identical content hash already exists in the store.
     pub chunks_skipped: usize,
+    /// Chunks deleted from the store because their file was removed from the project.
     pub chunks_removed: usize,
+    /// Per-file error messages collected during the run.
     pub errors: Vec<String>,
+    /// Wall-clock duration of the entire run in milliseconds.
     pub duration_ms: u64,
 }
 
 /// Orchestrates code indexing over a project tree.
+///
+/// `CodeIndexer` is the primary driver of the indexing pipeline. It walks the file
+/// tree, delegates per-file work to [`FileIndexWorker`], and coordinates the Qdrant +
+/// SQLite writes via [`CodeStore`].
+///
+/// # Cloning and concurrency
+///
+/// `CodeIndexer` is **not** `Clone` — it is typically wrapped in an [`Arc`] and shared
+/// between the initial indexing task and the file watcher.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use zeph_index::indexer::{CodeIndexer, IndexerConfig};
+/// use zeph_index::store::CodeStore;
+/// # async fn example() -> zeph_index::Result<()> {
+/// # let store: CodeStore = panic!("placeholder");
+/// # let provider: Arc<zeph_llm::any::AnyProvider> = panic!("placeholder");
+///
+/// let indexer = CodeIndexer::new(store, provider, IndexerConfig::default());
+/// let report = indexer.index_project(std::path::Path::new("."), None).await?;
+/// println!("indexed {} files in {}ms", report.files_indexed, report.duration_ms);
+/// # Ok(())
+/// # }
+/// ```
 pub struct CodeIndexer {
     store: CodeStore,
     provider: Arc<AnyProvider>,
@@ -79,6 +178,10 @@ pub struct CodeIndexer {
 }
 
 impl CodeIndexer {
+    /// Create a new `CodeIndexer`.
+    ///
+    /// The `store` and `provider` are cloned cheaply (reference-counted) across
+    /// the concurrent file-processing tasks.
     #[must_use]
     pub fn new(store: CodeStore, provider: Arc<AnyProvider>, config: IndexerConfig) -> Self {
         Self {

@@ -1,28 +1,53 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Error types for A2A client, server, and discovery operations.
+
 use crate::jsonrpc::JsonRpcError;
 
+/// All errors that can occur in A2A client and server operations.
+///
+/// The variants map to distinct failure modes so callers can recover appropriately:
+/// - Retry on [`Http`](A2aError::Http) (transient network issues).
+/// - Inspect the code on [`JsonRpc`](A2aError::JsonRpc) — `-32001` is task-not-found,
+///   `-32002` is not-cancelable.
+/// - Abort on [`Security`](A2aError::Security) — endpoint rejected by TLS or SSRF policy.
 #[derive(Debug, thiserror::Error)]
 pub enum A2aError {
+    /// A `reqwest` HTTP transport error (connection refused, timeout, TLS, etc.).
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// JSON serialization or deserialization failure.
     #[error("JSON serialization/deserialization failed: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// The remote agent returned a JSON-RPC error object.
+    ///
+    /// Well-known codes defined by the A2A spec:
+    /// - `-32001`: task not found
+    /// - `-32002`: task not in a cancelable state
     #[error("JSON-RPC error {code}: {message}")]
     JsonRpc { code: i32, message: String },
 
+    /// [`AgentRegistry`] could not retrieve a valid [`AgentCard`](crate::types::AgentCard)
+    /// from the remote agent's well-known URL.
     #[error("agent discovery failed for {url}: {reason}")]
     Discovery { url: String, reason: String },
 
+    /// An error occurred while reading the SSE event stream from a streaming call.
     #[error("SSE stream error: {0}")]
     Stream(String),
 
+    /// An internal server-side error (binding failure, task processing panic, etc.).
     #[error("server error: {0}")]
     Server(String),
 
+    /// A request was rejected by the client's security policy.
+    ///
+    /// Triggered when [`A2aClient`](crate::A2aClient) is configured with
+    /// `require_tls = true` and an `http://` endpoint is used, or when
+    /// `ssrf_protection = true` and DNS resolves to a private/loopback address.
     #[error("security policy violation: {0}")]
     Security(String),
 }

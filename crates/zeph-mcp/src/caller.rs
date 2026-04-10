@@ -11,11 +11,31 @@ use rmcp::model::CallToolResult;
 
 use crate::error::McpError;
 
-/// Minimal async interface over `McpManager` required by `lsp_hooks`.
+/// Minimal async interface over [`McpManager`](crate::manager::McpManager) for tool dispatch.
 ///
-/// Implemented by `McpManager` (real transport) and `MockMcpCaller`
+/// Implemented by `McpManager` (real transport) and [`MockMcpCaller`](crate::mock::MockMcpCaller)
 /// (test stub, enabled via the `mock` feature).
+///
+/// This trait exists to allow callers (`lsp_hooks` and similar integration points) to
+/// accept either the real manager or a test double without a generic parameter bound on
+/// the full `McpManager` type.
+///
+/// # Examples
+///
+/// ```ignore
+/// async fn dispatch(caller: &dyn McpCaller) {
+///     let result = caller
+///         .call_tool("github", "list_issues", serde_json::json!({}))
+///         .await;
+/// }
+/// ```
 pub trait McpCaller: Send + Sync {
+    /// Call a named tool on a specific server with JSON arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpError`] on connection failure, policy violation, timeout,
+    /// or any server-side error.
     fn call_tool(
         &self,
         server_id: &str,
@@ -23,6 +43,7 @@ pub trait McpCaller: Send + Sync {
         args: serde_json::Value,
     ) -> impl Future<Output = Result<CallToolResult, McpError>> + Send;
 
+    /// Return the IDs of all currently connected servers.
     fn list_servers(&self) -> impl Future<Output = Vec<String>> + Send;
 }
 

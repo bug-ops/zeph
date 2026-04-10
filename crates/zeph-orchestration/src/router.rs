@@ -8,10 +8,31 @@ use zeph_subagent::{SubAgentDef, ToolPolicy};
 use super::graph::TaskNode;
 
 /// Selects the best agent definition for a given task.
+///
+/// Used by [`DagScheduler`] to assign an agent to each ready task at dispatch
+/// time.  Implement this trait to provide custom routing logic (e.g.
+/// embedding-based semantic matching, LLM-assisted selection).
+///
+/// [`DagScheduler`]: crate::scheduler::DagScheduler
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::{AgentRouter, RuleBasedRouter, TaskNode};
+/// use zeph_subagent::{SubAgentDef, ToolPolicy};
+///
+/// // The built-in router: hint → tool-match → first-available.
+/// let router = RuleBasedRouter;
+/// // Usage: router.route(&task, &available_agents)
+/// ```
 pub trait AgentRouter: Send + Sync {
     /// Choose an agent for the task.
     ///
     /// Returns the agent definition name, or `None` if no suitable agent was found.
+    /// `None` causes the [`DagScheduler`] to emit a [`SchedulerAction::RunInline`] instead.
+    ///
+    /// [`DagScheduler`]: crate::scheduler::DagScheduler
+    /// [`SchedulerAction::RunInline`]: crate::scheduler::SchedulerAction::RunInline
     fn route(&self, task: &TaskNode, available: &[SubAgentDef]) -> Option<String>;
 }
 

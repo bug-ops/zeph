@@ -6,6 +6,34 @@
 //! Hooks are shell commands executed at specific points in a sub-agent's lifecycle.
 //! Per-agent frontmatter supports `PreToolUse` and `PostToolUse` hooks via the
 //! `hooks` section. `SubagentStart` and `SubagentStop` are config-level events.
+//!
+//! # Security
+//!
+//! All hook commands are run via `sh -c` with a **cleared** environment. Only `PATH`
+//! from the parent process is preserved, and the hook-specific `ZEPH_*` variables are
+//! added explicitly. This prevents accidental secret leakage from the parent environment.
+//!
+//! # Execution order
+//!
+//! Hooks within a matcher are run sequentially. `fail_closed = true` hooks abort on the
+//! first error; `fail_closed = false` (default) log the error and continue.
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! use std::collections::HashMap;
+//! use zeph_subagent::{HookDef, HookType, fire_hooks};
+//!
+//! async fn run() {
+//!     let hooks = vec![HookDef {
+//!         hook_type: HookType::Command,
+//!         command: "true".to_owned(),
+//!         timeout_secs: 5,
+//!         fail_closed: false,
+//!     }];
+//!     fire_hooks(&hooks, &HashMap::new()).await.unwrap();
+//! }
+//! ```
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
@@ -19,14 +47,18 @@ pub use zeph_config::{HookDef, HookMatcher, HookType, SubagentHooks};
 
 // ── Error ─────────────────────────────────────────────────────────────────────
 
+/// Errors that can occur when executing a lifecycle hook command.
 #[derive(Debug, Error)]
 pub enum HookError {
+    /// The shell command exited with a non-zero status code.
     #[error("hook command failed (exit code {code}): {command}")]
     NonZeroExit { command: String, code: i32 },
 
+    /// The shell command did not complete within its configured `timeout_secs`.
     #[error("hook command timed out after {timeout_secs}s: {command}")]
     Timeout { command: String, timeout_secs: u64 },
 
+    /// The shell could not be spawned or an I/O error occurred while waiting.
     #[error("hook I/O error for command '{command}': {source}")]
     Io {
         command: String,
@@ -37,12 +69,24 @@ pub enum HookError {
 
 // ── Matching ──────────────────────────────────────────────────────────────────
 
-/// Return all hook definitions whose matchers match `tool_name`.
+/// Return all hook definitions from `matchers` whose patterns match `tool_name`.
 ///
 /// Matching rules:
-/// - Each `HookMatcher.matcher` is a `|`-separated list of tokens.
-/// - A token matches if `tool_name` contains the token (case-sensitive substring).
+/// - Each [`HookMatcher`]`.matcher` is a `|`-separated list of tokens.
+/// - A token matches if `tool_name` **contains** the token (case-sensitive substring).
 /// - Empty tokens are ignored.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_subagent::{HookDef, HookMatcher, HookType, matching_hooks};
+///
+/// let hook = HookDef { hook_type: HookType::Command, command: "echo hi".to_owned(), timeout_secs: 30, fail_closed: false };
+/// let matchers = vec![HookMatcher { matcher: "Edit|Write".to_owned(), hooks: vec![hook] }];
+///
+/// assert_eq!(matching_hooks(&matchers, "Edit").len(), 1);
+/// assert!(matching_hooks(&matchers, "Shell").is_empty());
+/// ```
 #[must_use]
 pub fn matching_hooks<'a>(matchers: &'a [HookMatcher], tool_name: &str) -> Vec<&'a HookDef> {
     let mut result = Vec::new();

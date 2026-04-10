@@ -1,6 +1,34 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Tool-call permission gate backed by IDE approval and a TOML persistence file.
+//!
+//! Before executing a tool call the agent asks the [`AcpPermissionGate`] whether
+//! the IDE has approved it. The gate consults an in-memory cache first:
+//!
+//! - `AllowAlways` — approved at session start (from TOML or IDE "always allow")
+//! - `RejectAlways` — denied at session start (from TOML or IDE "always deny")
+//! - Cache miss — forwards the request to the IDE via `check_tool_call`
+//!
+//! `AllowAlways` / `RejectAlways` decisions are persisted atomically to a TOML file
+//! so they survive agent restarts.
+//!
+//! # TOML format
+//!
+//! ```toml
+//! [tools]
+//! web_scrape = "allow"
+//! read_file = "deny"
+//!
+//! [tools.bash]
+//! default = "ask"
+//!
+//! [tools.bash.patterns]
+//! git = "allow"
+//! cargo = "allow"
+//! rm = "deny"
+//! ```
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -164,8 +192,13 @@ fn save_persisted(path: &Path, perms: &PersistedPermissions) {
 
 /// Permission gate that routes tool-call permission requests to the IDE via ACP.
 ///
-/// Uses a cache to short-circuit `AllowAlways` / `RejectAlways` decisions without
-/// round-tripping to the IDE on every call.
+/// Uses an in-memory cache to short-circuit `AllowAlways` / `RejectAlways` decisions
+/// without a round-trip to the IDE on every call. Decisions from `AcpPermissionGate::new`
+/// (loaded from the TOML file) seed the cache at startup.
+///
+/// Construct with [`AcpPermissionGate::new`] and spawn the returned future inside the
+/// `LocalSet` that owns the ACP connection. The `Clone` impl gives each capability
+/// (filesystem, shell) its own handle to the same underlying channel.
 #[derive(Clone)]
 pub struct AcpPermissionGate {
     request_tx: mpsc::UnboundedSender<PermissionRequest>,

@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! OAuth 2.1 callback listener used by [`McpTransport::OAuth`] connections.
+//!
+//! [`await_oauth_callback`] binds a TCP listener before the browser-based authorization
+//! flow starts (so the callback port is known when registering the redirect URI), then
+//! waits for the browser to redirect back with `?code=...&state=...` query params.
+
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

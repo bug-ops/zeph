@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! SQLite BLOB vector store — offline fallback implementation.
+//!
+//! Stores dense vectors as raw `f32` BLOBs in a SQLite table and performs cosine
+//! similarity in memory.  Suitable for offline use and CI environments without a
+//! running Qdrant instance.  Not optimised for large collections.
+
 use std::collections::HashMap;
 #[allow(unused_imports)]
 use zeph_db::sql;
@@ -24,6 +30,10 @@ pub struct DbVectorStore {
 pub type SqliteVectorStore = DbVectorStore;
 
 impl DbVectorStore {
+    /// Create a new `DbVectorStore` from an existing connection pool.
+    ///
+    /// The pool must come from a database that has run the `zeph-db` migrations
+    /// (which create the `vector_store` table).
     #[must_use]
     pub fn new(pool: DbPool) -> Self {
         Self { pool }

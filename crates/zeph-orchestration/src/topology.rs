@@ -1,7 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Heuristic topology classification for `TaskGraph` DAGs.
+//! Heuristic topology classification for [`TaskGraph`] DAGs.
+//!
+//! [`TopologyClassifier::analyze`] inspects the DAG structure in a single
+//! O(|V|+|E|) Kahn's toposort pass and returns a [`TopologyAnalysis`] that
+//! drives the [`DagScheduler`]'s dispatch strategy and concurrency limits.
+//!
+//! | Topology | Strategy | When |
+//! |---|---|---|
+//! | `AllParallel` | `FullParallel` | No edges |
+//! | `LinearChain` | `Sequential` | Strict chain |
+//! | `FanOut` / `FanIn` | `FullParallel` (or `TreeOptimized`) | Single root/sink |
+//! | `Hierarchical` | `LevelBarrier` | Tree-like multi-level |
+//! | `Mixed` | `Adaptive` (or `CascadeAware`) | Everything else |
+//!
+//! [`TaskGraph`]: crate::graph::TaskGraph
+//! [`DagScheduler`]: crate::scheduler::DagScheduler
 
 use std::collections::HashMap;
 
@@ -81,6 +96,23 @@ pub struct TopologyAnalysis {
 }
 
 /// Stateless DAG topology classifier.
+///
+/// All methods are `#[must_use]` pure functions. The canonical entry point for
+/// the scheduler is [`TopologyClassifier::analyze`], which combines classification,
+/// strategy mapping, and per-task depth computation in one pass.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::{TaskGraph, TaskNode};
+/// use zeph_orchestration::topology::{TopologyClassifier, Topology};
+///
+/// let mut graph = TaskGraph::new("classify me");
+/// graph.tasks.push(TaskNode::new(0, "a", "desc"));
+/// graph.tasks.push(TaskNode::new(1, "b", "desc"));
+/// // No edges → all parallel
+/// assert_eq!(TopologyClassifier::classify(&graph), Topology::AllParallel);
+/// ```
 pub struct TopologyClassifier;
 
 impl TopologyClassifier {
@@ -89,7 +121,7 @@ impl TopologyClassifier {
     /// Empty graphs return `AllParallel` (no constraints).
     ///
     /// Calls `compute_longest_path_and_depths` once and delegates to
-    /// [`classify_with_depths`]. Use [`classify_with_depths`] directly when
+    /// [`TopologyClassifier::classify_with_depths`]. Use [`TopologyClassifier::classify_with_depths`] directly when
     /// depths have already been computed to avoid redundant work.
     #[must_use]
     pub fn classify(graph: &TaskGraph) -> Topology {

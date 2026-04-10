@@ -1,6 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! JSONL-based transcript persistence for sub-agent conversations.
+//!
+//! Each sub-agent session writes a `<task_id>.jsonl` file of [`TranscriptEntry`] lines
+//! and a companion `<task_id>.meta.json` sidecar with [`TranscriptMeta`].
+//!
+//! Files are created with `0o600` permissions on Unix to prevent other users from
+//! reading conversation history.
+//!
+//! The [`sweep_old_transcripts`] function prunes the oldest `.jsonl` files when a
+//! configurable maximum count is exceeded.
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::path::{Path, PathBuf};
@@ -12,34 +23,60 @@ use super::error::SubAgentError;
 use super::state::SubAgentState;
 
 /// A single entry in a JSONL transcript file.
+///
+/// Each line in `<task_id>.jsonl` deserializes to a `TranscriptEntry`.
+/// Entries are written in append order; `seq` is a monotonically increasing counter
+/// within a single session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptEntry {
+    /// Zero-based sequence number within the session.
     pub seq: u32,
-    /// ISO 8601 timestamp (UTC).
+    /// ISO 8601 UTC timestamp at the time of writing (e.g. `"2026-04-09T12:00:00Z"`).
     pub timestamp: String,
+    /// The LLM message that was appended at this sequence position.
     pub message: Message,
 }
 
 /// Sidecar metadata for a transcript, written as `<agent_id>.meta.json`.
+///
+/// The sidecar is written twice: once at spawn time with `status: Submitted` and
+/// again at collection time with the final terminal state and `finished_at`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptMeta {
+    /// UUID of this sub-agent session.
     pub agent_id: String,
+    /// Runtime agent name (same as `def_name` for non-resumed sessions).
     pub agent_name: String,
+    /// Name of the [`SubAgentDef`][crate::SubAgentDef] that was used.
     pub def_name: String,
+    /// Terminal lifecycle state recorded at collection time.
     pub status: SubAgentState,
+    /// ISO 8601 UTC timestamp when the session was spawned.
     pub started_at: String,
+    /// ISO 8601 UTC timestamp when the session finished, if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     /// ID of the original agent session this was resumed from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resumed_from: Option<String>,
+    /// Number of LLM turns consumed by the session.
     pub turns_used: u32,
 }
 
-/// Appends `TranscriptEntry` lines to a JSONL file.
+/// Appends [`TranscriptEntry`] lines to a JSONL transcript file.
 ///
 /// The file handle is kept open for the writer's lifetime to avoid
 /// race conditions from repeated open/close cycles.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::path::Path;
+/// use zeph_subagent::transcript::TranscriptWriter;
+///
+/// let mut writer = TranscriptWriter::new(Path::new("/tmp/session.jsonl")).unwrap();
+/// // writer.append(seq, &message) to persist each message.
+/// ```
 pub struct TranscriptWriter {
     file: File,
 }
@@ -92,6 +129,11 @@ impl TranscriptWriter {
 }
 
 /// Reads and reconstructs message history from JSONL transcript files.
+///
+/// `TranscriptReader` is a zero-size marker type with only associated functions.
+/// Use [`TranscriptReader::load`] to reconstruct a message history from a `.jsonl` file,
+/// [`TranscriptReader::load_meta`] to read the companion `.meta.json` sidecar, and
+/// [`TranscriptReader::find_by_prefix`] to resolve a short ID prefix to a full UUID.
 pub struct TranscriptReader;
 
 impl TranscriptReader {
@@ -322,7 +364,21 @@ fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
     }
 }
 
-/// Returns the current UTC time as an ISO 8601 string.
+/// Returns the current UTC time as an ISO 8601 string (`"YYYY-MM-DDTHH:MM:SSZ"`).
+///
+/// This is the public companion of the internal `utc_now()` helper, exposed for
+/// use by [`SubAgentManager`][crate::SubAgentManager] when writing transcript sidecars.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_subagent::transcript::utc_now_pub;
+///
+/// let ts = utc_now_pub();
+/// assert_eq!(ts.len(), 20, "expected 20-char ISO 8601 timestamp");
+/// assert!(ts.ends_with('Z'));
+/// assert!(ts.contains('T'));
+/// ```
 #[must_use]
 pub fn utc_now_pub() -> String {
     utc_now()

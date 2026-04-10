@@ -1,10 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Priority-ordered resolution of sub-agent definition directories.
+//!
+//! Sub-agent definitions are discovered from multiple sources in a fixed priority order:
+//! CLI `--agents` paths > project-level `.zeph/agents/` > user-level config dir > extra dirs.
+//! Duplicate directories (by canonical path) are silently deduplicated.
+
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-/// Build the ordered list of agent definition paths with deduplication.
+/// Build the ordered list of agent definition directories with deduplication.
 ///
 /// Priority (highest first):
 /// 1. `cli_agents` — paths from `--agents` CLI flag
@@ -14,11 +20,24 @@ use std::path::PathBuf;
 ///
 /// Directories are deduplicated by canonical path before returning to avoid
 /// redundant scans when the same directory appears in multiple sources.
+/// Non-existent directories are kept in the list and silently skipped by
+/// [`SubAgentDef::load_all`][crate::SubAgentDef].
 ///
 /// # Errors
 ///
 /// Returns `Err` if any path in `cli_agents` does not exist on disk, because
 /// CLI arguments represent explicit user intent and should fail loudly on typos.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::path::PathBuf;
+/// use zeph_subagent::resolve::resolve_agent_paths;
+///
+/// let paths = resolve_agent_paths(&[], None, &[]).unwrap();
+/// // At minimum the project-level directory is always included.
+/// assert!(paths.iter().any(|p| p == &PathBuf::from(".zeph/agents")));
+/// ```
 pub fn resolve_agent_paths(
     cli_agents: &[PathBuf],
     config_user_dir: Option<&PathBuf>,
@@ -82,9 +101,24 @@ fn dedup_by_canonical(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     result
 }
 
-/// Compute the scope label for an agent definition file given the ordered path list.
+/// Compute the human-readable scope label for an agent definition file.
 ///
-/// Returns one of `"cli"`, `"project"`, `"user"`, `"extra"`, or `"unknown"`.
+/// Returns one of:
+/// - `"cli"` — file lives under one of the `--agents` CLI paths
+/// - `"project"` — file lives under `.zeph/agents/`
+/// - `"user"` — file lives under the user-level config dir
+/// - `"extra"` — file lives under an `extra_dirs` entry
+/// - `"unknown"` — no source directory matches
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::path::PathBuf;
+/// use zeph_subagent::resolve::scope_label;
+///
+/// let def = PathBuf::from(".zeph/agents/my-agent.md");
+/// assert_eq!(scope_label(&def, &[], None, &[]), "project");
+/// ```
 #[must_use]
 pub fn scope_label(
     def_path: &std::path::Path,

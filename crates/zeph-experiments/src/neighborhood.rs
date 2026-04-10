@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Neighborhood perturbation strategy for parameter variation.
+//!
+//! [`Neighborhood`] is a local-search strategy that generates variations by
+//! perturbing the current baseline value of a randomly chosen parameter by a
+//! small random amount proportional to the configured `radius`. It is most
+//! effective after a coarse [`GridStep`] sweep has identified a promising region.
+//!
+//! [`GridStep`]: crate::GridStep
 
 use std::collections::HashSet;
 
@@ -25,14 +32,34 @@ const MAX_RETRIES: usize = 1000;
 /// an explicit step in the search space definition.
 const DEFAULT_STEPS: f64 = 20.0;
 
-/// Perturbation strategy around the current baseline.
+/// Perturbation strategy that explores the neighborhood of the current baseline.
 ///
 /// At each call, a parameter is chosen uniformly at random. The new value is
 /// computed as `baseline_value ± U(-radius, radius) * step`, then clamped and
-/// quantized to the nearest grid step. Useful after a grid sweep has narrowed
-/// the search to a promising region.
+/// quantized to the nearest grid step. Useful after a [`GridStep`] sweep has
+/// narrowed the search to a promising region.
 ///
-/// `radius` must be positive (enforced in [`Neighborhood::new`]).
+/// The generator is seeded deterministically via `seed`, making experiments
+/// reproducible. `radius` must be finite and positive (enforced in [`Neighborhood::new`]).
+///
+/// # Examples
+///
+/// ```rust
+/// use std::collections::HashSet;
+/// use zeph_experiments::{ConfigSnapshot, Neighborhood, SearchSpace, VariationGenerator};
+///
+/// let mut generator = Neighborhood::new(SearchSpace::default(), 1.0, 42).unwrap();
+/// let baseline = ConfigSnapshot::default();
+/// let visited = HashSet::new();
+///
+/// // Each call perturbs a random parameter by a small amount.
+/// if let Some(v) = generator.next(&baseline, &visited) {
+///     let val = v.value.as_f64();
+///     assert!(val.is_finite());
+/// }
+/// ```
+///
+/// [`GridStep`]: crate::GridStep
 pub struct Neighborhood {
     search_space: SearchSpace,
     radius: f64,

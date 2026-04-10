@@ -21,20 +21,73 @@ pub fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     .split(vertical[1])[1]
 }
 
+/// Pre-computed layout rectangles for all regions of the TUI dashboard.
+///
+/// Call [`compute`](Self::compute) once per render frame; pass the result to
+/// individual widget renderers so each widget knows its exact screen region
+/// without re-running the layout algorithm.
+///
+/// When the terminal is narrower than 80 columns or `show_side_panels` is
+/// `false`, all side-panel fields are set to [`Rect::default()`] (zero-sized)
+/// and the chat area expands to fill the full width.
+///
+/// # Examples
+///
+/// ```rust
+/// use ratatui::layout::Rect;
+/// use zeph_tui::layout::AppLayout;
+///
+/// let area = Rect::new(0, 0, 120, 40);
+/// let layout = AppLayout::compute(area, true);
+/// assert_eq!(layout.header.height, 1);
+/// assert_eq!(layout.status.height, 1);
+/// assert!(layout.chat.width > layout.side_panel.width);
+/// ```
 pub struct AppLayout {
+    /// Single-row header bar (model name, session info).
     pub header: Rect,
+    /// Main chat / transcript area.
     pub chat: Rect,
+    /// Combined side-panel column (zero when hidden).
     pub side_panel: Rect,
+    /// Skills mini-panel within the side column.
     pub skills: Rect,
+    /// Memory mini-panel within the side column.
     pub memory: Rect,
+    /// MCP resources mini-panel within the side column.
     pub resources: Rect,
+    /// Sub-agents mini-panel within the side column.
     pub subagents: Rect,
+    /// Single-row activity / status-spinner bar.
     pub activity: Rect,
+    /// Multi-row text input box.
     pub input: Rect,
+    /// Single-row bottom status bar (metrics, keybinding hints).
     pub status: Rect,
 }
 
 impl AppLayout {
+    /// Compute the layout for the given terminal area.
+    ///
+    /// # Arguments
+    ///
+    /// * `area` — the full terminal rect (from `Frame::area()`).
+    /// * `show_side_panels` — `false` hides the side panels regardless of width.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use ratatui::layout::Rect;
+    /// use zeph_tui::layout::AppLayout;
+    ///
+    /// // Wide terminal: side panels visible.
+    /// let layout = AppLayout::compute(Rect::new(0, 0, 120, 40), true);
+    /// assert!(layout.side_panel.width > 0);
+    ///
+    /// // Narrow terminal: side panels hidden.
+    /// let layout = AppLayout::compute(Rect::new(0, 0, 60, 24), true);
+    /// assert_eq!(layout.side_panel.width, 0);
+    /// ```
     #[must_use]
     pub fn compute(area: Rect, show_side_panels: bool) -> Self {
         let outer = Layout::default()

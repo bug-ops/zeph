@@ -1,6 +1,24 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Memory routing — classify recall queries and dispatch to the right backend.
+//!
+//! The [`MemoryRouter`] trait is implemented by:
+//!
+//! | Type | Strategy |
+//! |------|----------|
+//! | [`HeuristicRouter`] | Fast regex/keyword pattern matching. No LLM call. |
+//! | [`LlmRouter`] | Uses an LLM classifier for high-accuracy routing. |
+//! | [`HybridRouter`] | Runs [`HeuristicRouter`] first; escalates to [`LlmRouter`] when confidence is low. |
+//! | [`AsyncMemoryRouter`] | Async wrapper over any `MemoryRouter` for use in async contexts. |
+//!
+//! # Routing pipeline
+//!
+//! 1. `HeuristicRouter` classifies the query in < 1 ms using temporal-keyword detection
+//!    and graph-relationship pattern matching.
+//! 2. If confidence >= threshold, the route is used directly.
+//! 3. Otherwise, `HybridRouter` forwards the query to `LlmRouter` for a second opinion.
+
 use chrono::{DateTime, Duration, Utc};
 
 use crate::graph::EdgeType;
@@ -601,6 +619,10 @@ pub struct LlmRouter {
 }
 
 impl LlmRouter {
+    /// Create a new `LlmRouter`.
+    ///
+    /// - `provider` — LLM provider used for classification.
+    /// - `fallback_route` — route used when the LLM call fails.
     #[must_use]
     pub fn new(
         provider: std::sync::Arc<zeph_llm::any::AnyProvider>,
@@ -708,6 +730,16 @@ impl LlmRouter {
     }
 }
 
+/// Parse a route name string into a [`MemoryRoute`], falling back to `fallback` on unknown values.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::router::{parse_route_str, MemoryRoute};
+///
+/// assert_eq!(parse_route_str("semantic", MemoryRoute::Hybrid), MemoryRoute::Semantic);
+/// assert_eq!(parse_route_str("unknown", MemoryRoute::Hybrid), MemoryRoute::Hybrid);
+/// ```
 #[must_use]
 pub fn parse_route_str(s: &str, fallback: MemoryRoute) -> MemoryRoute {
     match s {
@@ -762,6 +794,10 @@ pub struct HybridRouter {
 }
 
 impl HybridRouter {
+    /// Create a new `HybridRouter`.
+    ///
+    /// - `confidence_threshold` — heuristic decisions with confidence below this value
+    ///   are escalated to the LLM classifier.  `0.7` is a good default.
     #[must_use]
     pub fn new(
         provider: std::sync::Arc<zeph_llm::any::AnyProvider>,

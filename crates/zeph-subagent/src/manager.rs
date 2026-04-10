@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Sub-agent lifecycle management: spawn, cancel, collect, and resume.
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,10 +31,21 @@ use super::transcript::{
     TranscriptMeta, TranscriptReader, TranscriptWriter, sweep_old_transcripts,
 };
 
-/// Parent-derived state propagated to a spawned sub-agent.
+/// Parent-derived state propagated to a spawned sub-agent at spawn time.
 ///
 /// All fields default to empty/`None`, preserving existing behavior when callers
 /// pass `SpawnContext::default()`.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_subagent::manager::SpawnContext;
+///
+/// // Minimal context — all fields use their defaults.
+/// let ctx = SpawnContext::default();
+/// assert!(ctx.parent_messages.is_empty());
+/// assert_eq!(ctx.spawn_depth, 0);
+/// ```
 #[derive(Default)]
 pub struct SpawnContext {
     /// Recent parent conversation messages (last N turns).
@@ -109,32 +122,49 @@ fn make_hook_env(task_id: &str, agent_name: &str, tool_name: &str) -> HashMap<St
     env
 }
 
-/// Live status of a running sub-agent.
+/// Live status snapshot of a running sub-agent.
+///
+/// Values are updated by the background agent loop via a [`tokio::sync::watch`] channel.
+/// Callers receive snapshots via [`SubAgentManager::statuses`].
 #[derive(Debug, Clone)]
 pub struct SubAgentStatus {
+    /// Current lifecycle state of the agent task.
     pub state: SubAgentState,
+    /// Last message content from the agent (trimmed for display).
     pub last_message: Option<String>,
+    /// Number of LLM turns consumed so far.
     pub turns_used: u32,
+    /// Monotonic timestamp recorded at spawn time.
     pub started_at: Instant,
 }
 
-/// Handle to a spawned sub-agent task.
+/// Handle to a spawned sub-agent task, owned by [`SubAgentManager`].
 ///
-/// Fields are public to allow test harnesses in downstream crates to construct handles.
-/// audit trail by mutating grants or cancellation state directly.
+/// Fields are public to allow test harnesses in downstream crates to construct handles
+/// without going through the full spawn lifecycle. Production code must not mutate
+/// grants or the cancellation state directly — use the [`SubAgentManager`] API instead.
+///
+/// The `Drop` implementation cancels the task and revokes all grants as a safety net.
 pub struct SubAgentHandle {
+    /// Short display ID (same as `task_id` for non-resumed sessions).
     pub id: String,
+    /// The definition that was used to spawn this agent.
     pub def: SubAgentDef,
-    /// Task ID (UUID). Currently the same as `id`; separated for future use.
+    /// UUID assigned at spawn time (currently identical to `id`; separated for future use).
     pub task_id: String,
+    /// Cached state — may lag the background task by one watch broadcast.
     pub state: SubAgentState,
+    /// Tokio join handle for the background agent loop task.
     pub join_handle: Option<JoinHandle<Result<String, SubAgentError>>>,
+    /// Cancellation token; cancelled on [`SubAgentManager::cancel`] or drop.
     pub cancel: CancellationToken,
+    /// Watch receiver for live status updates from the agent loop.
     pub status_rx: watch::Receiver<SubAgentStatus>,
+    /// Zero-trust TTL-bounded grants for this agent session.
     pub grants: PermissionGrants,
     /// Receives secret requests from the sub-agent loop.
     pub pending_secret_rx: mpsc::Receiver<SecretRequest>,
-    /// Delivers approval outcome to the sub-agent loop: None = denied, Some(_) = approved.
+    /// Delivers approval outcome to the sub-agent loop: `None` = denied, `Some(_)` = approved.
     pub secret_tx: mpsc::Sender<Option<String>>,
     /// ISO 8601 UTC timestamp recorded when the agent was spawned or resumed.
     pub started_at_str: String,
@@ -143,7 +173,7 @@ pub struct SubAgentHandle {
 }
 
 impl SubAgentHandle {
-    /// Construct a minimal `SubAgentHandle` for use in unit tests.
+    /// Construct a minimal [`SubAgentHandle`] for use in unit tests.
     ///
     /// The returned handle has a no-op cancel token, closed channels, and no grants.
     /// It must not be spawned or collected — it is only valid for inspection logic
@@ -206,6 +236,25 @@ impl Drop for SubAgentHandle {
 }
 
 /// Manages sub-agent lifecycle: definitions, spawning, cancellation, and result collection.
+///
+/// `SubAgentManager` is the central coordinator for all sub-agent tasks. It tracks active
+/// [`SubAgentHandle`]s, enforces the global concurrency limit, and stores loaded
+/// [`SubAgentDef`]s.
+///
+/// # Concurrency model
+///
+/// The concurrency limit counts agents whose [`SubAgentState`] is `Submitted` or `Working`.
+/// Reserved slots (via [`reserve_slots`][Self::reserve_slots]) also count against this limit
+/// to allow orchestration schedulers to guarantee capacity before spawning.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_subagent::SubAgentManager;
+///
+/// let manager = SubAgentManager::new(4);
+/// assert_eq!(manager.definitions().len(), 0);
+/// ```
 pub struct SubAgentManager {
     definitions: Vec<SubAgentDef>,
     agents: HashMap<String, SubAgentHandle>,
@@ -520,7 +569,10 @@ impl SubAgentManager {
         &self.definitions
     }
 
-    /// Return mutable access to definitions, for testing and dynamic registration.
+    /// Return mutable access to the loaded definitions list.
+    ///
+    /// Intended for test harnesses and dynamic definition registration. Production code
+    /// should prefer [`load_definitions`][Self::load_definitions].
     pub fn definitions_mut(&mut self) -> &mut Vec<SubAgentDef> {
         &mut self.definitions
     }
@@ -761,7 +813,11 @@ impl SubAgentManager {
         }
     }
 
-    /// Cancel all active sub-agents. Called during main agent shutdown.
+    /// Cancel all active sub-agents gracefully.
+    ///
+    /// Iterates every agent ID and calls [`cancel`][Self::cancel] on each.
+    /// Unlike [`cancel_all`][Self::cancel_all], this method goes through the normal
+    /// cancel path including hook firing. Prefer this during planned shutdown.
     pub fn shutdown_all(&mut self) {
         let ids: Vec<String> = self.agents.keys().cloned().collect();
         for id in ids {
@@ -798,10 +854,10 @@ impl SubAgentManager {
         Ok(())
     }
 
-    /// Cancel all active sub-agents immediately.
+    /// Cancel all active sub-agents immediately, revoking their grants.
     ///
-    /// Used during shutdown or Ctrl+C handling when `DagScheduler` may not be running.
-    /// For coordinated cancellation via the scheduler, use `DagScheduler::cancel_all()`.
+    /// Used during main agent shutdown or Ctrl+C handling when `DagScheduler` may not be
+    /// running. For coordinated scheduler-aware cancellation, prefer `DagScheduler::cancel_all`.
     pub fn cancel_all(&mut self) {
         for (task_id, handle) in &mut self.agents {
             if matches!(
@@ -898,9 +954,11 @@ impl SubAgentManager {
             .map_err(|e| SubAgentError::Channel(e.to_string()))
     }
 
-    /// Try to receive a pending secret request from a sub-agent (non-blocking).
+    /// Try to receive a pending secret request from any sub-agent (non-blocking).
     ///
-    /// Returns `Some((task_id, SecretRequest))` if a request is waiting.
+    /// Polls each active agent's request channel once. Returns `Some((task_id, request))`
+    /// if any agent has a pending request, or `None` if all channels are empty.
+    /// Call this from the main agent loop to surface approval prompts to the user.
     pub fn try_recv_secret_request(&mut self) -> Option<(String, SecretRequest)> {
         for handle in self.agents.values_mut() {
             if let Ok(req) = handle.pending_secret_rx.try_recv() {

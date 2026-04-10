@@ -1,7 +1,67 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Database-backed conversation persistence with Qdrant vector search.
+//! Semantic memory layer for the Zeph agent.
+//!
+//! `zeph-memory` implements a two-backend hybrid memory system:
+//!
+//! - **[`store::DbStore`]** (`SqliteStore`) — relational persistence for messages, summaries,
+//!   persona facts, trajectory entries, and session metadata.
+//! - **[`embedding_store::EmbeddingStore`]** — Qdrant-backed vector index for semantic recall.
+//!   Falls back gracefully to [`db_vector_store::DbVectorStore`] when Qdrant is unavailable.
+//!
+//! The high-level entry point is [`semantic::SemanticMemory`], which combines both backends
+//! and exposes `remember` / `recall` / `summarize` operations consumed by `zeph-core`.
+//!
+//! # Architecture overview
+//!
+//! ```text
+//! SemanticMemory
+//! ├── SqliteStore  ── messages, summaries, corrections, persona, trajectory …
+//! └── EmbeddingStore ── Qdrant (primary) / DbVectorStore (fallback)
+//!         └── QdrantOps  ── thin gRPC wrapper over qdrant-client
+//! ```
+//!
+//! # Memory tiers
+//!
+//! Messages are classified into four tiers (see [`types::MemoryTier`]):
+//!
+//! | Tier | Description |
+//! |------|-------------|
+//! | `Working` | Current context window; never persisted. |
+//! | `Episodic` | Per-session messages stored in SQLite. |
+//! | `Semantic` | Cross-session distilled facts promoted from episodic. |
+//! | `Persona` | Long-lived user attributes (preferences, domain knowledge). |
+//!
+//! # Admission control
+//!
+//! Each `remember()` call is gated by [`admission::AdmissionControl`] (A-MAC, #2317), which
+//! evaluates five factors (future utility, factual confidence, semantic novelty, temporal
+//! recency, content-type prior) and rejects low-value messages before they reach the DB.
+//!
+//! # Memory routing
+//!
+//! [`router::HybridRouter`] classifies each recall query and dispatches to the appropriate
+//! backend: keyword (SQLite FTS5), semantic (Qdrant), graph (BFS traversal), episodic
+//! (timestamp-filtered FTS5), or hybrid (reciprocal-rank fusion of keyword + semantic).
+//!
+//! # Background loops
+//!
+//! Several background tasks maintain memory health:
+//!
+//! - [`eviction::start_eviction_loop`] — Ebbinghaus-curve eviction.
+//! - [`forgetting::start_forgetting_loop`] — SleepGate importance downscaling.
+//! - [`consolidation::start_consolidation_loop`] — cross-session fact merging.
+//! - [`tiers::start_tier_promotion_loop`] — Episodic → Semantic promotion.
+//! - [`semantic::start_tree_consolidation_loop`] — hierarchical note consolidation.
+//!
+//! # Feature flags
+//!
+//! | Feature | Description |
+//! |---------|-------------|
+//! | `sqlite` (default) | Enable SQLite persistence via `zeph-db`. |
+//! | `pdf` | Enable [`document::PdfLoader`] for PDF ingestion. |
+//! | `postgres` | Enable PostgreSQL support via `zeph-db`. |
 
 pub mod admission;
 pub mod admission_rl;

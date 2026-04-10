@@ -1,6 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! ACP discovery manifest endpoints.
+//!
+//! These endpoints are **always public** (not behind `BearerAuthLayer`) so that
+//! IDE extensions and ACP Registry tooling can discover the server without a token.
+//!
+//! | Endpoint | Purpose |
+//! |----------|---------|
+//! | `GET /.well-known/acp.json` | ACP transport discovery manifest |
+//! | `GET /agent.json` | Agent identity manifest for ACP Registry |
+
 use agent_client_protocol as acp;
 use axum::Json;
 use axum::extract::State;

@@ -62,37 +62,69 @@ Generate a complete, valid SKILL.md that precisely matches the user's descriptio
 - Body size: keep under 15000 bytes\n\
 - Output ONLY the raw SKILL.md content, no explanation, no code fences\n";
 
-/// Request to generate a SKILL.md from natural language.
+/// Request to generate a SKILL.md from a natural language description.
+///
+/// Passed to [`SkillGenerator::generate`] to produce a [`GeneratedSkill`] candidate.
 pub struct SkillGenerationRequest {
-    /// Natural language description of the desired skill.
+    /// Natural language description of what the skill should do and when to invoke it.
     pub description: String,
-    /// Optional category hint (e.g. "web", "dev", "data").
+    /// Optional category hint (e.g. `"web"`, `"dev"`, `"data"`).
     pub category: Option<String>,
     /// Optional list of tool names to suggest in `allowed-tools`.
     pub allowed_tools: Vec<String>,
 }
 
-/// Generated SKILL.md before user approval and disk write.
+/// Generated SKILL.md candidate before user approval and disk write.
+///
+/// Returned by [`SkillGenerator::generate`]. Call [`SkillGenerator::approve_and_save`]
+/// after the user reviews the content to persist it to disk.
 pub struct GeneratedSkill {
-    /// Derived skill name (lowercase-hyphen, validated).
+    /// Derived skill name (lowercase-hyphen, validated by the loader).
     pub name: String,
-    /// Full SKILL.md content (frontmatter + body).
+    /// Full SKILL.md content (frontmatter + body) as produced by the LLM.
     pub content: String,
-    /// Parsed metadata for downstream use.
+    /// Parsed and validated frontmatter metadata.
     pub meta: SkillMeta,
-    /// Non-fatal validation warnings (e.g. injection pattern matches).
+    /// Non-fatal validation warnings (e.g. injection pattern matches detected by the scanner).
     pub warnings: Vec<String>,
-    /// True when the scanner detected injection patterns in the generated content.
+    /// `true` when [`crate::scanner::scan_skill_body`] detected at least one injection pattern
+    /// in the generated content. The caller should present a prominent warning to the user.
     pub has_injection_patterns: bool,
 }
 
 /// Orchestrates the NL-to-SKILL.md generation pipeline.
+///
+/// Uses an [`AnyProvider`] to call the LLM, parses and validates the result via
+/// [`crate::loader::load_skill_meta_from_str`], and optionally writes approved skills to disk.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::path::PathBuf;
+/// use zeph_skills::generator::{SkillGenerator, SkillGenerationRequest};
+///
+/// async fn generate(provider: zeph_llm::any::AnyProvider) -> Result<(), zeph_skills::SkillError> {
+///     let skill_gen = SkillGenerator::new(provider, PathBuf::from("/path/to/skills"));
+///     let request = SkillGenerationRequest {
+///         description: "Fetch current weather from wttr.in".into(),
+///         category: Some("web".into()),
+///         allowed_tools: vec!["bash".into()],
+///     };
+///     let skill = skill_gen.generate(request).await?;
+///     println!("generated: {}", skill.name);
+///     if !skill.has_injection_patterns {
+///         skill_gen.approve_and_save(&skill).await?;
+///     }
+///     Ok(())
+/// }
+/// ```
 pub struct SkillGenerator {
     pub(crate) provider: AnyProvider,
     output_dir: PathBuf,
 }
 
 impl SkillGenerator {
+    /// Create a new generator that writes approved skills to `output_dir`.
     #[must_use]
     pub fn new(provider: AnyProvider, output_dir: PathBuf) -> Self {
         Self {

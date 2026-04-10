@@ -1,6 +1,42 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! # zeph-tui
+//!
+//! Ratatui-based TUI dashboard for the Zeph AI agent with real-time metrics,
+//! syntax-highlighted chat, tool-output diffs, command palette, file picker,
+//! and multi-panel layout.
+//!
+//! ## Architecture
+//!
+//! The crate is structured around a central [`App`] state machine that owns all
+//! widget state and reacts to two event streams:
+//!
+//! - [`AppEvent`] — keyboard, resize, and mouse events produced by
+//!   [`EventReader`] running on a dedicated OS thread.
+//! - [`AgentEvent`] — streaming agent output, tool events, and control signals
+//!   forwarded through [`TuiChannel`].
+//!
+//! The main entry point is [`run_tui`], which initialises the terminal,
+//! drives the render loop, and restores the terminal on exit or panic.
+//!
+//! ## Quick start
+//!
+//! ```rust,no_run
+//! use tokio::sync::mpsc;
+//! use zeph_tui::{App, run_tui};
+//! use zeph_tui::event::AppEvent;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), zeph_tui::TuiError> {
+//!     let (user_tx, user_rx) = mpsc::channel(64);
+//!     let (_agent_tx, agent_rx) = mpsc::channel(64);
+//!     let app = App::new(user_tx, agent_rx);
+//!     let (_event_tx, event_rx) = mpsc::channel(64);
+//!     run_tui(app, event_rx).await
+//! }
+//! ```
+
 pub mod app;
 pub mod channel;
 pub mod command;
@@ -29,10 +65,39 @@ pub use metrics::{MetricsCollector, MetricsSnapshot};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
+pub use types::{ChatMessage, InputMode, MessageRole};
 
+/// Run the TUI dashboard until the user quits.
+///
+/// Initialises the terminal in raw/alternate-screen mode, drives the render
+/// loop, and restores the terminal on normal exit, error, **and** panic.
+///
+/// # Arguments
+///
+/// * `app` — fully-constructed [`App`] instance (see [`App::new`]).
+/// * `event_rx` — receiver end of the [`AppEvent`] channel produced by
+///   [`EventReader`].
+///
 /// # Errors
 ///
-/// Returns an error if terminal init/restore or rendering fails.
+/// Returns [`TuiError`] if terminal initialisation, rendering, or restoration
+/// fails.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use tokio::sync::mpsc;
+/// use zeph_tui::{App, run_tui};
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), zeph_tui::TuiError> {
+///     let (user_tx, user_rx) = mpsc::channel(64);
+///     let (_agent_tx, agent_rx) = mpsc::channel(64);
+///     let app = App::new(user_tx, agent_rx);
+///     let (_event_tx, event_rx) = mpsc::channel(64);
+///     run_tui(app, event_rx).await
+/// }
+/// ```
 pub async fn run_tui(mut app: App, mut event_rx: mpsc::Receiver<AppEvent>) -> Result<(), TuiError> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

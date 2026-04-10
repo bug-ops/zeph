@@ -1,6 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! WebSocket transport handler for the ACP server.
+//!
+//! WebSocket provides a single full-duplex connection as an alternative to the
+//! HTTP+SSE split (POST for requests, GET for the event stream). The framing is
+//! identical: newline-delimited JSON-RPC 2.0.
+//!
+//! A 30-second ping keepalive detects stale connections; the handler closes after
+//! 90 seconds without a pong. Each connection is registered in
+//! [`AcpHttpState::connections`](crate::transport::http::AcpHttpState) for lifecycle
+//! tracking and counted against `max_sessions`.
+
 #[cfg(feature = "acp-http")]
 use std::sync::Arc;
 #[cfg(feature = "acp-http")]

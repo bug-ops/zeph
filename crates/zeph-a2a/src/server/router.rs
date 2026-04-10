@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Axum router construction with auth middleware, rate limiting, and body size limits.
+//!
+//! [`build_router_with_full_config`] is the production entry point called by [`A2aServer::serve`].
+//! The test-only [`build_router_with_config`] omits `require_auth` and `max_body_size`
+//! for convenience.
+
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;

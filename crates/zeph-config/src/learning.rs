@@ -141,11 +141,26 @@ pub enum DetectorMode {
     Model,
 }
 
+/// Self-learning and skill evolution configuration, nested under `[skills.learning]` in TOML.
+///
+/// When `enabled = true`, Zeph tracks skill performance and can automatically improve or roll
+/// back skill definitions based on usage outcomes (ARISE, STEM, D2Skill pipelines).
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [skills.learning]
+/// enabled = true
+/// auto_activate = false
+/// min_failures = 3
+/// ```
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LearningConfig {
+    /// Enable self-learning pipelines. Default: `false`.
     #[serde(default)]
     pub enabled: bool,
+    /// Automatically activate improved skill versions without user confirmation. Default: `false`.
     #[serde(default)]
     pub auto_activate: bool,
     #[serde(default = "default_min_failures")]

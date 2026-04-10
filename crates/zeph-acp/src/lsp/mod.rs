@@ -23,7 +23,10 @@ pub use types::{
     LspWorkspaceEdit,
 };
 
-/// LSP extension method names advertised in `InitializeResponse` capability meta.
+/// ACP `ext_method` names advertised in `InitializeResponse` capability meta
+/// when the agent supports IDE-proxied LSP.
+///
+/// The IDE checks this list to know which extension methods to enable on its LSP bridge.
 pub const LSP_METHODS: &[&str] = &[
     "lsp/hover",
     "lsp/definition",
@@ -34,5 +37,8 @@ pub const LSP_METHODS: &[&str] = &[
     "lsp/codeActions",
 ];
 
-/// LSP notification methods the agent handles from the IDE.
+/// ACP notification method names that the agent registers handlers for.
+///
+/// The IDE sends these as unsolicited notifications; the agent updates its
+/// [`DiagnosticsCache`] and refreshes its session context accordingly.
 pub const LSP_NOTIFICATIONS: &[&str] = &["lsp/publishDiagnostics", "lsp/didSave"];

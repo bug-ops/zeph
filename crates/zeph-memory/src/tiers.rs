@@ -34,13 +34,20 @@ const MERGE_VALIDATION_MIN_SIMILARITY: f32 = 0.7;
 
 /// Configuration for the tier promotion sweep, passed from `zeph-config::TierPromotionConfig`.
 ///
-/// Defined locally to avoid a dependency from `zeph-memory` on `zeph-config`.
+/// Defined locally to avoid a direct dependency from `zeph-memory` on `zeph-config`.
 #[derive(Debug, Clone)]
 pub struct TierPromotionConfig {
+    /// Enable or disable the tier promotion loop.
     pub enabled: bool,
+    /// Minimum number of distinct sessions in which a message must appear
+    /// before it becomes a promotion candidate.
     pub promotion_min_sessions: u32,
+    /// Minimum cosine similarity for two messages to be considered duplicates
+    /// eligible for merging into one semantic fact.
     pub similarity_threshold: f32,
+    /// How often to run a promotion sweep, in seconds.
     pub sweep_interval_secs: u64,
+    /// Maximum number of candidates to process per sweep.
     pub sweep_batch_size: usize,
 }
 

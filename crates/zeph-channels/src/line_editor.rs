@@ -1,6 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Minimal terminal line editor used by [`CliChannel`].
+//!
+//! This module provides two reading functions that cover the two stdin modes:
+//!
+//! * [`read_line`] — for interactive TTY sessions.  Uses crossterm raw mode to
+//!   implement cursor movement, history navigation, and `Ctrl-C`/`Ctrl-D`
+//!   handling without relying on any external readline library.
+//! * [`read_line_piped`] — for non-TTY (piped) stdin.  Reads one line at a
+//!   time from a [`BufRead`] source with a 1 MiB safety limit.
+//!
+//! Both functions return [`ReadLineResult`] so the caller can handle EOF,
+//! interruption, and normal input in a single `match`.
+//!
+//! [`CliChannel`]: crate::CliChannel
+//! [`BufRead`]: std::io::BufRead
+
 use std::io::{self, BufRead, Read, Write, stdout};
 
 use crossterm::{
@@ -9,9 +25,16 @@ use crossterm::{
     terminal::{self, ClearType},
 };
 
+/// The outcome of a single readline call.
+///
+/// Both [`read_line`] (TTY) and [`read_line_piped`] (non-TTY) return this type
+/// so the caller can handle all three cases uniformly.
 pub enum ReadLineResult {
+    /// A complete line was read.  The trailing newline is stripped.
     Line(String),
+    /// The user pressed `Ctrl-C` (TTY only).
     Interrupted,
+    /// End-of-file was reached (`Ctrl-D` on empty input, or the pipe closed).
     Eof,
 }
 
@@ -57,6 +80,27 @@ pub fn read_line_piped<R: BufRead>(reader: &mut R) -> io::Result<ReadLineResult>
     Ok(ReadLineResult::Line(buf))
 }
 
+/// Read a single line from the terminal with readline-style editing.
+///
+/// Enables crossterm raw mode for the duration of the call (restored on return
+/// or panic via [`RawModeGuard`]).  Supports:
+///
+/// * Left / Right arrow — character-level cursor movement
+/// * Home / End, `Ctrl-A` / `Ctrl-E` — jump to line start / end
+/// * Backspace / Delete — character deletion
+/// * `Alt-Backspace` — delete the previous word
+/// * `Ctrl-U` — clear the entire line
+/// * Up / Down arrow — history navigation (prefix-aware)
+/// * `Ctrl-C` — return [`ReadLineResult::Interrupted`]
+/// * `Ctrl-D` on an empty line — return [`ReadLineResult::Eof`]
+///
+/// This function is **blocking** and must be called from
+/// [`tokio::task::spawn_blocking`] when used inside an async context.
+///
+/// # Errors
+///
+/// Returns `io::Error` if enabling raw mode, reading an event, or writing to
+/// stdout fails.
 pub fn read_line(prompt: &str, history: &[String]) -> io::Result<ReadLineResult> {
     let _guard = RawModeGuard::enter()?;
 

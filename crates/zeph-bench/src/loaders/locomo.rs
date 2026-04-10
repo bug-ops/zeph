@@ -26,12 +26,34 @@ struct LocomoQa {
 
 /// Loads LOCOMO benchmark scenarios from a JSON file.
 ///
-/// Schema (lmlab/locomo on HuggingFace):
+/// **Source**: [`lmlab/locomo`](https://huggingface.co/datasets/lmlab/locomo) on HuggingFace.
+///
+/// **Schema**: the file is a JSON array of session objects:
 /// ```json
-/// [{"session_id": "...", "qa": [{"question": "...", "answer": "..."}]}]
+/// [
+///   {
+///     "session_id": "abc",
+///     "qa": [
+///       {"question": "...", "answer": "..."}
+///     ]
+///   }
+/// ]
 /// ```
 ///
-/// Each QA pair becomes one [`Scenario`] with id `"{session_id}_{qa_index}"`.
+/// Each QA pair within a session becomes one [`Scenario`] with id
+/// `"{session_id}_{qa_index}"` (zero-based). `metadata` is set to
+/// [`serde_json::Value::Null`] because LOCOMO QA pairs carry no extra fields.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use zeph_bench::loaders::LocomoLoader;
+/// use zeph_bench::scenario::DatasetLoader;
+///
+/// let scenarios = LocomoLoader.load(Path::new("/data/locomo.json")).unwrap();
+/// println!("loaded {} scenarios", scenarios.len());
+/// ```
 #[derive(Debug)]
 pub struct LocomoLoader;
 
@@ -64,7 +86,32 @@ impl DatasetLoader for LocomoLoader {
     }
 }
 
-/// Evaluates LOCOMO responses using token F1 with a threshold of 0.5.
+/// Evaluates LOCOMO responses using token F1 with a pass threshold of 0.5.
+///
+/// A response passes when its token F1 score against the gold answer is ≥ 0.5.
+/// The raw score (in `0.0..=1.0`) is always written to the result regardless of
+/// the pass/fail decision.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::{Scenario, loaders::LocomoEvaluator};
+/// use zeph_bench::scenario::Evaluator;
+///
+/// let scenario = Scenario {
+///     id: "s1_0".into(),
+///     prompt: "What is the capital of France?".into(),
+///     expected: "Paris".into(),
+///     metadata: serde_json::Value::Null,
+/// };
+///
+/// let result = LocomoEvaluator.evaluate(&scenario, "Paris");
+/// assert!((result.score - 1.0).abs() < f64::EPSILON);
+/// assert!(result.passed);
+///
+/// let bad = LocomoEvaluator.evaluate(&scenario, "completely unrelated answer xyz");
+/// assert!(!bad.passed);
+/// ```
 #[derive(Debug)]
 pub struct LocomoEvaluator;
 

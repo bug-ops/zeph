@@ -45,23 +45,45 @@ pub enum MemoryScope {
 
 // ── ToolPolicy ─────────────────────────────────────────────────────────────
 
+/// Tool access policy for a sub-agent.
+///
+/// Controls which tools the sub-agent may call, independent of the global tool denylist.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolPolicy {
+    /// Only the listed tool IDs are accessible.
     AllowList(Vec<String>),
+    /// All tools except those in the list are accessible.
     DenyList(Vec<String>),
+    /// Inherit the full tool set from the parent agent (no additional filtering).
     InheritAll,
 }
 
 // ── SkillFilter ────────────────────────────────────────────────────────────
 
+/// Skill allow/deny filter for sub-agent definitions.
+///
+/// Skills named in `include` are the only ones loaded; `exclude` removes
+/// specific skills from the inherited set. When both are empty the sub-agent
+/// inherits all parent skills.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SkillFilter {
+    /// Explicit skill names to include (empty = inherit all).
     pub include: Vec<String>,
+    /// Skill names to remove from the inherited set.
     pub exclude: Vec<String>,
 }
 
 impl SkillFilter {
+    /// Returns `true` when no filter is applied (all skills are inherited).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::SkillFilter;
+    ///
+    /// assert!(SkillFilter::default().is_empty());
+    /// ```
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.include.is_empty() && self.exclude.is_empty()
@@ -113,6 +135,7 @@ pub struct SubagentHooks {
 }
 
 impl SubagentHooks {
+    /// Returns `true` when no pre- or post-tool-use hooks are configured.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pre_tool_use.is_empty() && self.post_tool_use.is_empty()

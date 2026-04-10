@@ -2,6 +2,27 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Hybrid code retrieval: query classification, semantic search, budget packing.
+//!
+//! # Retrieval strategy
+//!
+//! [`classify_query`] inspects the free-text query for heuristic signals:
+//!
+//! | Signal | Examples | Strategy |
+//! |--------|----------|----------|
+//! | Symbol patterns only | `"fn my_fn"`, `"SkillMatcher::match"`, `"my_snake_func"` | [`RetrievalStrategy::Grep`] |
+//! | Conceptual patterns only | `"how does auth work?"`, `"explain the retry logic"` | [`RetrievalStrategy::Semantic`] |
+//! | Both | `"where is SkillMatcher used?"` | [`RetrievalStrategy::Hybrid`] |
+//!
+//! For `Grep` queries, [`CodeRetriever::retrieve`] returns an empty chunk list and
+//! the agent falls back to its shell grep tool. For `Semantic` and `Hybrid` queries
+//! an embedding round-trip is made and the top-scoring Qdrant results are packed
+//! within a token budget.
+//!
+//! # Token budget
+//!
+//! [`RetrievalConfig::budget_ratio`] controls what fraction of the caller's available
+//! context window is allocated to code chunks. The packing loop stops before adding a
+//! chunk that would exceed the budget, so the retrieved set always fits the window.
 
 use std::fmt::Write;
 use std::sync::Arc;
@@ -12,25 +33,54 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::TokenCounter;
 
-/// Strategy chosen for a particular query.
+/// The retrieval strategy selected by [`classify_query`] for a given query.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_index::retriever::{RetrievalStrategy, classify_query};
+///
+/// assert_eq!(classify_query("how does authentication work?"), RetrievalStrategy::Semantic);
+/// assert_eq!(classify_query("fn my_handler"), RetrievalStrategy::Grep);
+/// assert_eq!(classify_query("where is MyHandler used?"), RetrievalStrategy::Hybrid);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetrievalStrategy {
-    /// Vector similarity search — for conceptual queries.
+    /// Vector similarity search for conceptual or descriptive queries.
+    ///
+    /// The query is embedded and the top-K chunks from Qdrant are returned.
     Semantic,
-    /// Exact symbol lookup — retriever returns empty, agent uses grep.
+    /// Exact symbol lookup — the retriever returns an empty chunk list.
+    ///
+    /// The caller (agent) is expected to use a `grep` or `symbol_definition` tool
+    /// instead of the vector store for precise symbol lookups.
     Grep,
-    /// Both semantic search + hint that grep may also help.
+    /// Both semantic search **and** a hint that grep may also help.
+    ///
+    /// Semantic results are still returned, but the caller can additionally
+    /// perform a textual search for the identified symbol names.
     Hybrid,
 }
 
-/// Retrieval configuration.
+/// Configuration for [`CodeRetriever`].
+///
+/// # Examples
+///
+/// ```
+/// use zeph_index::retriever::RetrievalConfig;
+///
+/// let cfg = RetrievalConfig::default();
+/// assert_eq!(cfg.max_chunks, 12);
+/// assert!(cfg.score_threshold > 0.0);
+/// assert!(cfg.budget_ratio > 0.0 && cfg.budget_ratio < 1.0);
+/// ```
 #[derive(Debug, Clone)]
 pub struct RetrievalConfig {
-    /// Maximum chunks to fetch from `Qdrant` before budget packing.
+    /// Maximum number of chunks to fetch from Qdrant before applying score and budget filters.
     pub max_chunks: usize,
-    /// Minimum cosine similarity to accept.
+    /// Minimum cosine similarity score to accept (chunks below this are dropped).
     pub score_threshold: f32,
-    /// Maximum fraction of available context for code chunks.
+    /// Maximum fraction of `available_tokens` allocated to code chunks (0.0–1.0).
     pub budget_ratio: f32,
 }
 
@@ -44,15 +94,43 @@ impl Default for RetrievalConfig {
     }
 }
 
-/// Result of a retrieval operation.
+/// The result of a single retrieval operation.
+///
+/// Returned by [`CodeRetriever::retrieve`] and [`CodeRetriever::retrieve_filtered`].
+/// Pass to [`format_as_context`] to produce an XML snippet for injection into the
+/// agent message.
 #[derive(Debug)]
 pub struct RetrievedCode {
+    /// Ordered list of matching chunks (highest score first, budget-capped).
     pub chunks: Vec<SearchHit>,
+    /// Estimated total tokens consumed by `chunks` (including a small per-chunk overhead).
     pub total_tokens: usize,
+    /// Strategy that was used to produce this result.
     pub strategy: RetrievalStrategy,
 }
 
-/// Budget-aware code retriever with query classification.
+/// Budget-aware code retriever with automatic query classification.
+///
+/// Wraps a [`CodeStore`] and an LLM provider (for embedding) and exposes a single
+/// high-level [`CodeRetriever::retrieve`] method.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use zeph_index::retriever::{CodeRetriever, RetrievalConfig, format_as_context};
+/// use zeph_index::store::CodeStore;
+/// # async fn example() -> zeph_index::Result<()> {
+/// # let store: CodeStore = panic!("placeholder");
+/// # let provider: Arc<zeph_llm::any::AnyProvider> = panic!("placeholder");
+///
+/// let retriever = CodeRetriever::new(store, provider, RetrievalConfig::default());
+/// let result = retriever.retrieve("explain how authentication works", 8_000).await?;
+/// let xml = format_as_context(&result);
+/// println!("{xml}");
+/// # Ok(())
+/// # }
+/// ```
 pub struct CodeRetriever {
     store: CodeStore,
     provider: Arc<AnyProvider>,
@@ -61,6 +139,10 @@ pub struct CodeRetriever {
 }
 
 impl CodeRetriever {
+    /// Create a new `CodeRetriever`.
+    ///
+    /// `store` must have its Qdrant collection already created (see
+    /// [`CodeStore::ensure_collection`]).
     #[must_use]
     pub fn new(store: CodeStore, provider: Arc<AnyProvider>, config: RetrievalConfig) -> Self {
         Self {
@@ -71,11 +153,19 @@ impl CodeRetriever {
         }
     }
 
-    /// Retrieve relevant code for a user query.
+    /// Retrieve relevant code chunks for a free-text query.
+    ///
+    /// Classifies `query` via [`classify_query`], then:
+    ///
+    /// * For [`RetrievalStrategy::Grep`] queries — returns an empty [`RetrievedCode`]
+    ///   so the agent falls back to its shell `grep` or `symbol_definition` tools.
+    /// * For [`RetrievalStrategy::Semantic`] / [`RetrievalStrategy::Hybrid`] — embeds
+    ///   the query, searches Qdrant, applies the score threshold, and packs results
+    ///   within `available_tokens * budget_ratio`.
     ///
     /// # Errors
     ///
-    /// Returns an error if embedding or `Qdrant` search fails.
+    /// Returns an error if the embedding call or Qdrant search fails.
     pub async fn retrieve(&self, query: &str, available_tokens: usize) -> Result<RetrievedCode> {
         let strategy = classify_query(query);
 
@@ -104,11 +194,22 @@ impl CodeRetriever {
         }
     }
 
-    /// Retrieve with a language filter.
+    /// Retrieve relevant code, restricting results to a single language.
+    ///
+    /// Behaves like [`CodeRetriever::retrieve`] but adds a Qdrant payload filter so
+    /// only chunks whose `language` field matches `language` are returned.
+    ///
+    /// Useful when the user or agent has already established the relevant language
+    /// (e.g. "show me the Python error handling" should not return Rust results).
+    ///
+    /// # Arguments
+    ///
+    /// * `language` — the language identifier as returned by [`crate::languages::Lang::id`]
+    ///   (e.g. `"rust"`, `"python"`).
     ///
     /// # Errors
     ///
-    /// Returns an error if embedding or `Qdrant` search fails.
+    /// Returns an error if embedding or Qdrant search fails.
     pub async fn retrieve_filtered(
         &self,
         query: &str,
@@ -165,7 +266,40 @@ impl CodeRetriever {
     }
 }
 
-/// Format retrieved chunks as XML for injection into messages.
+/// Format retrieved code chunks as an XML `<code_context>` block.
+///
+/// The output is suitable for direct injection into the agent's user or assistant
+/// message. Each chunk is wrapped in a `<chunk>` element with `file`, `lines`,
+/// `name`, and `score` attributes.
+///
+/// Returns an empty string when `result.chunks` is empty so callers can append
+/// without adding unnecessary whitespace.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_index::retriever::{RetrievedCode, RetrievalStrategy, format_as_context};
+/// use zeph_index::store::SearchHit;
+///
+/// let result = RetrievedCode {
+///     chunks: vec![SearchHit {
+///         code: "fn hello() {}".to_string(),
+///         file_path: "src/lib.rs".to_string(),
+///         line_range: (1, 1),
+///         score: 0.9,
+///         node_type: "function_item".to_string(),
+///         entity_name: Some("hello".to_string()),
+///         scope_chain: String::new(),
+///     }],
+///     total_tokens: 10,
+///     strategy: RetrievalStrategy::Semantic,
+/// };
+///
+/// let xml = format_as_context(&result);
+/// assert!(xml.starts_with("<code_context>"));
+/// assert!(xml.contains("file=\"src/lib.rs\""));
+/// assert!(xml.ends_with("</code_context>"));
+/// ```
 #[must_use]
 pub fn format_as_context(result: &RetrievedCode) -> String {
     if result.chunks.is_empty() {
@@ -189,7 +323,28 @@ pub fn format_as_context(result: &RetrievedCode) -> String {
     out
 }
 
-/// Classify user query to pick retrieval strategy.
+/// Classify a free-text query to select the best retrieval strategy.
+///
+/// The heuristic looks for symbol-like patterns (Rust path syntax, `fn`/`struct`/`impl`
+/// keywords, `CamelCase` type names, `snake_case` identifiers) and conceptual signal
+/// words (`"how"`, `"explain"`, `"where"`, …).
+///
+/// | Signals present | Returned strategy |
+/// |-----------------|-------------------|
+/// | Symbol only | [`RetrievalStrategy::Grep`] |
+/// | Conceptual only | [`RetrievalStrategy::Semantic`] |
+/// | Both | [`RetrievalStrategy::Hybrid`] |
+/// | Neither | [`RetrievalStrategy::Semantic`] |
+///
+/// # Examples
+///
+/// ```
+/// use zeph_index::retriever::{RetrievalStrategy, classify_query};
+///
+/// assert_eq!(classify_query("how does retry logic work?"), RetrievalStrategy::Semantic);
+/// assert_eq!(classify_query("fn handle_request"), RetrievalStrategy::Grep);
+/// assert_eq!(classify_query("where is MyRouter defined?"), RetrievalStrategy::Hybrid);
+/// ```
 #[must_use]
 pub fn classify_query(query: &str) -> RetrievalStrategy {
     let has_symbol_pattern = query.contains("::")

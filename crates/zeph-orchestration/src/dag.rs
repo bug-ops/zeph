@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! DAG algorithm primitives: validation, topological sort, ready-task detection,
+//! failure propagation, and retry reset.
+//!
+//! All functions in this module are pure (no I/O) and operate on slices of
+//! [`TaskNode`] or mutable references to a [`TaskGraph`].  The
+//! [`DagScheduler`] delegates DAG bookkeeping to these helpers.
+//!
+//! [`DagScheduler`]: crate::scheduler::DagScheduler
+
 use std::collections::VecDeque;
 
 use super::error::OrchestrationError;

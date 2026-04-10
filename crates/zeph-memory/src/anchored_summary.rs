@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Structured compaction summary with anchored, typed sections.
+//!
+//! Used during hard compaction when `[memory] structured_summaries = true`.
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

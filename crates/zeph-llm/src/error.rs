@@ -1,54 +1,82 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Error type for all LLM provider operations.
+
+/// Errors that can occur in any [`crate::provider::LlmProvider`] operation.
+///
+/// Use the predicate methods ([`is_rate_limited`](Self::is_rate_limited),
+/// [`is_context_length_error`](Self::is_context_length_error),
+/// [`is_invalid_input`](Self::is_invalid_input),
+/// [`is_beta_header_rejected`](Self::is_beta_header_rejected)) to classify errors
+/// before deciding whether to retry, fall back, or propagate.
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
+    /// Underlying HTTP transport error (connection refused, TLS failure, etc.).
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// The API returned a response that could not be decoded as valid JSON.
     #[error("JSON parse failed: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// The provider returned HTTP 429 (too many requests). Callers should back off and retry.
     #[error("rate limited")]
     RateLimited,
 
+    /// The provider is temporarily unavailable (HTTP 5xx or connection error).
     #[error("provider unavailable")]
     Unavailable,
 
+    /// The provider returned a successful HTTP status but no content in the response body.
     #[error("empty response from {provider}")]
     EmptyResponse { provider: String },
 
+    /// A Server-Sent Events frame could not be parsed.
     #[error("SSE parse error: {0}")]
     SseParse(String),
 
+    /// [`crate::provider::LlmProvider::embed`] was called on a provider that does not
+    /// support embedding generation.
     #[error("embedding not supported by {provider}")]
     EmbedUnsupported { provider: String },
 
+    /// Candle model weights or tokenizer could not be loaded from disk or HuggingFace Hub.
     #[error("model loading failed: {0}")]
     ModelLoad(String),
 
+    /// The Candle inference worker returned an error or timed out.
     #[error("inference failed: {0}")]
     Inference(String),
 
+    /// The [`crate::router::RouterProvider`] has no providers configured.
     #[error("no route configured")]
     NoRoute,
 
+    /// All providers in a router have been exhausted without a successful response.
     #[error("no providers available")]
     NoProviders,
 
+    /// A Candle tensor operation failed.
     #[cfg(feature = "candle")]
     #[error("candle error: {0}")]
     Candle(#[from] candle_core::Error),
 
+    /// [`crate::provider::LlmProvider::chat_typed`] could not parse the model's response
+    /// as the requested type, even after a retry.
     #[error("structured output parse failed: {0}")]
     StructuredParse(String),
 
+    /// The speech-to-text backend rejected the audio or returned an error.
     #[error("transcription failed: {0}")]
     TranscriptionFailed(String),
 
+    /// The prompt exceeds the model's maximum context window. Do not retry with the same input
+    /// on another provider — the same input will fail there too. Summarize or truncate first.
     #[error("context length exceeded")]
     ContextLengthExceeded,
 
+    /// The request exceeded the configured per-call timeout.
     #[error("LLM request timed out")]
     Timeout,
 

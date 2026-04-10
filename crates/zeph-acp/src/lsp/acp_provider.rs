@@ -51,9 +51,18 @@ pub struct AcpLspProvider {
 }
 
 impl AcpLspProvider {
-    /// Create a new provider.
+    /// Create a new ACP LSP provider and its `LocalSet`-side handler future.
     ///
-    /// `ide_supports_lsp` should be set from `client_caps.meta["lsp"]`.
+    /// Spawn the returned future inside the same `LocalSet` that owns `conn`; it
+    /// drives the internal request loop that calls `conn.ext_method()`.
+    ///
+    /// # Parameters
+    ///
+    /// - `conn` — ACP client connection (must live on the same `LocalSet`).
+    /// - `ide_supports_lsp` — set from `client_caps.meta["lsp"]` during `initialize()`.
+    /// - `request_timeout_secs` — per-request timeout for `ext_method` calls.
+    /// - `max_references` — truncation limit for `lsp/references` results.
+    /// - `max_workspace_symbols` — truncation limit for `lsp/workspaceSymbol` results.
     pub fn new<C>(
         conn: std::rc::Rc<C>,
         ide_supports_lsp: bool,

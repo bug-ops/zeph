@@ -15,14 +15,50 @@ use crate::widgets::chat::MdLink;
 static URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"https?://[^\s<>\[\]()\x22'`]+").unwrap());
 
+/// A detected hyperlink span in the rendered terminal buffer.
+///
+/// Carries the URL and the exact terminal cell range where the link text
+/// appears. Used by [`write_osc8`] to emit OSC 8 escape sequences so that
+/// supporting terminals display clickable hyperlinks.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::hyperlink::HyperlinkSpan;
+///
+/// let span = HyperlinkSpan {
+///     url: "https://example.com".to_string(),
+///     row: 3,
+///     start_col: 0,
+///     end_col: 19,
+/// };
+/// assert!(span.url.starts_with("https://"));
+/// ```
 #[derive(Debug)]
 pub struct HyperlinkSpan {
+    /// The target URL (http/https only after sanitisation).
     pub url: String,
+    /// Terminal row (0-based from the top of the viewport).
     pub row: u16,
+    /// First terminal column of the link text (inclusive).
     pub start_col: u16,
+    /// One past the last terminal column of the link text (exclusive).
     pub end_col: u16,
 }
 
+/// Find all HTTP/HTTPS URLs in `text` and return their byte ranges and URLs.
+///
+/// The returned ranges are byte-based and valid UTF-8 substrings of `text`.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::hyperlink::detect_urls_in_text;
+///
+/// let hits = detect_urls_in_text("see https://example.com for details");
+/// assert_eq!(hits.len(), 1);
+/// assert_eq!(hits[0].1, "https://example.com");
+/// ```
 pub fn detect_urls_in_text(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
     URL_RE
         .find_iter(text)
@@ -30,6 +66,26 @@ pub fn detect_urls_in_text(text: &str) -> Vec<(std::ops::Range<usize>, String)> 
         .collect()
 }
 
+/// Scan the rendered terminal `buffer` within `area` for bare HTTP/HTTPS URLs.
+///
+/// Returns a [`HyperlinkSpan`] for each URL found, with accurate terminal
+/// column positions.
+///
+/// # Examples
+///
+/// ```rust
+/// use ratatui::buffer::Buffer;
+/// use ratatui::layout::Rect;
+/// use ratatui::style::Style;
+/// use zeph_tui::hyperlink::collect_from_buffer;
+///
+/// let area = Rect::new(0, 0, 40, 1);
+/// let mut buf = Buffer::empty(area);
+/// buf.set_string(0, 0, "visit https://example.com", Style::default());
+/// let spans = collect_from_buffer(&buf, area);
+/// assert_eq!(spans.len(), 1);
+/// assert_eq!(spans[0].url, "https://example.com");
+/// ```
 #[must_use]
 pub fn collect_from_buffer(buffer: &Buffer, area: Rect) -> Vec<HyperlinkSpan> {
     let mut spans = Vec::new();

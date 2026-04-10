@@ -10,11 +10,20 @@
 //! The token is serialized as base64-encoded JSON and transmitted in the
 //! `X-Zeph-IBCT` HTTP request header.
 //!
+//! # Feature flag
+//!
+//! The `ibct` feature flag enables HMAC-SHA256 signing and verification.
+//! The [`Ibct`], [`IbctKey`], and [`IbctError`] types are always present (for
+//! deserialization), but [`Ibct::issue`] and [`Ibct::verify`] return
+//! [`IbctError::FeatureDisabled`] when compiled without the `ibct` feature.
+//!
 //! # Security properties
 //!
 //! - Scope binding: the token is only valid for the specific `task_id` + `endpoint`.
 //! - Expiry: `expires_at` is checked on verification with a configurable grace window.
 //! - Key rotation: multiple keys indexed by `key_id` allow safe key rotation.
+//! - Constant-time comparison: signature verification uses `Mac::verify_slice` to avoid
+//!   timing side-channels.
 //! - Vault integration: signing keys should be stored in the age vault, referenced by
 //!   `ibct_signing_key_vault_ref` in `A2aServerConfig` (MF-3 fix).
 
@@ -34,30 +43,40 @@ use sha2::Sha256;
 #[cfg(feature = "ibct")]
 const CLOCK_SKEW_GRACE_SECS: u64 = 30;
 
-/// IBCT verification / issuance errors.
+/// Errors produced by [`Ibct::issue`] and [`Ibct::verify`].
 #[derive(Debug, Error)]
 pub enum IbctError {
+    /// The HMAC-SHA256 signature does not match the token's fields.
+    /// Indicates tampering or use of a wrong key.
     #[error("IBCT signature invalid")]
     InvalidSignature,
 
+    /// The token's `expires_at` is in the past beyond the clock-skew grace window.
     #[error("IBCT expired (expires_at={expires_at}, now={now})")]
     Expired { expires_at: u64, now: u64 },
 
+    /// The token is bound to a different endpoint than the one being verified.
     #[error("IBCT endpoint mismatch: expected {expected}, got {got}")]
     EndpointMismatch { expected: String, got: String },
 
+    /// The token is bound to a different task ID than the one being verified.
     #[error("IBCT task_id mismatch: expected {expected}, got {got}")]
     TaskMismatch { expected: String, got: String },
 
+    /// The token's `key_id` is not present in the verifier's key set.
+    /// Either the key was rotated out or the token was issued by a different party.
     #[error("IBCT key_id '{key_id}' not found in the configured key set")]
     UnknownKeyId { key_id: String },
 
+    /// This crate was compiled without the `ibct` feature flag.
     #[error("IBCT feature not enabled (compile with feature 'ibct')")]
     FeatureDisabled,
 
+    /// The base64 token string could not be decoded.
     #[error("base64 decode error: {0}")]
     Base64(#[from] base64_compat::DecodeError),
 
+    /// The decoded bytes are not valid JSON for an [`Ibct`] struct.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 }

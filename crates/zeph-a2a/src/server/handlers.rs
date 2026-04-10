@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Axum request handlers for the A2A JSON-RPC and SSE streaming endpoints.
+//!
+//! The public surface of this module is intentionally minimal — handlers are registered
+//! by [`router`](super::router) and are not part of the crate's public API.
+
 use std::convert::Infallible;
 use std::time::Duration;
 

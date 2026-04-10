@@ -4,19 +4,30 @@
 //! Cascade-aware routing for DAG execution (arXiv:2603.17112).
 //!
 //! Tracks failure propagation across DAG regions. When a subtree's failure rate
-//! exceeds the configured threshold, tasks in that subtree are deprioritized in
-//! `DagScheduler::tick()` so that healthy independent branches run first.
+//! exceeds the configured threshold, tasks in that subtree are deprioritised in
+//! [`DagScheduler::tick`] so that healthy independent branches run first.
+//!
+//! A "region" is defined by the "heaviest root" of each task — the root ancestor
+//! that reaches the most downstream tasks. This prevents over-aggressive deprioritisation
+//! on diamond-shaped DAGs.
+//!
+//! [`DagScheduler::tick`]: crate::scheduler::DagScheduler::tick
 
 use std::collections::{HashMap, HashSet};
 
 use super::graph::{TaskGraph, TaskId};
 
 /// Per-region failure health snapshot.
+///
+/// Accumulated by [`CascadeDetector::record_outcome`] and read by
+/// [`CascadeDetector::is_cascading`] and [`CascadeDetector::deprioritized_tasks`].
 #[derive(Debug, Clone)]
 pub struct RegionHealth {
+    /// Total number of task outcomes recorded for this region.
     pub total_tasks: usize,
+    /// Number of failed task outcomes.
     pub failed_tasks: usize,
-    /// `failed_tasks / total_tasks`. NaN when `total_tasks = 0`.
+    /// `failed_tasks / total_tasks`. `0.0` when `total_tasks = 0`.
     pub failure_rate: f32,
 }
 
@@ -41,10 +52,17 @@ impl RegionHealth {
     }
 }
 
-/// Configuration for cascade detection. Extracted from `OrchestrationConfig` at construction.
+/// Configuration for cascade detection.
+///
+/// Extracted from `OrchestrationConfig` at [`DagScheduler`] construction time.
+///
+/// [`DagScheduler`]: crate::scheduler::DagScheduler
 #[derive(Debug, Clone)]
 pub struct CascadeConfig {
-    /// Failure rate threshold above which a region is considered "cascading".
+    /// Failure rate (0.0–1.0) above which a region is considered "cascading".
+    ///
+    /// For example, `0.5` means more than half of the completed tasks in a
+    /// region must have failed before it is deprioritised.
     pub failure_threshold: f32,
 }
 

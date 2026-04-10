@@ -15,49 +15,115 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::BenchError;
 
-/// Status of a benchmark run.
+/// Status of a benchmark run serialized into `results.json`.
+///
+/// The `Running` variant is used in-memory during an active run and should never
+/// appear in a persisted file.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::RunStatus;
+///
+/// assert_ne!(RunStatus::Completed, RunStatus::Interrupted);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
-    /// Run completed normally.
+    /// All scenarios finished successfully.
     Completed,
-    /// Run was interrupted before all scenarios finished.
+    /// The run was cancelled (e.g. SIGINT) before all scenarios finished.
     Interrupted,
-    /// Run is in progress (should not appear in a persisted file).
+    /// The run is currently in progress; should not appear in a persisted file.
     Running,
 }
 
-/// Per-scenario result record.
+/// Per-scenario result record persisted inside [`BenchRun::results`].
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::ScenarioResult;
+///
+/// let r = ScenarioResult {
+///     scenario_id: "gaia_t1".into(),
+///     score: 1.0,
+///     response_excerpt: "1945".into(),
+///     error: None,
+///     elapsed_ms: 820,
+/// };
+/// assert!(r.error.is_none());
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScenarioResult {
-    /// Unique identifier for the scenario.
+    /// Unique identifier for the scenario (matches [`crate::Scenario::id`]).
     pub scenario_id: String,
-    /// Numeric score in \[0.0, 1.0\].
+    /// Numeric score in `[0.0, 1.0]` produced by the evaluator.
     pub score: f64,
     /// First 200 characters of the agent response for quick review.
     pub response_excerpt: String,
-    /// Error message if the scenario failed, otherwise `None`.
+    /// Error message if the scenario could not be completed, otherwise `None`.
     pub error: Option<String>,
     /// Wall-clock time in milliseconds for this scenario.
     pub elapsed_ms: u64,
 }
 
-/// Aggregate statistics over all completed scenarios.
+/// Aggregate statistics computed from all [`ScenarioResult`]s in a [`BenchRun`].
+///
+/// Recomputed after every scenario via [`BenchRun::recompute_aggregate`] and persisted
+/// into `results.json` so partial runs still contain meaningful statistics.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::Aggregate;
+///
+/// let agg = Aggregate {
+///     total: 100,
+///     mean_score: 0.72,
+///     exact_match: 55,
+///     total_elapsed_ms: 240_000,
+/// };
+/// assert_eq!(agg.total, 100);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Aggregate {
-    /// Number of scenarios that completed (included in mean score calculation).
+    /// Number of scenarios included in the statistics.
     pub total: usize,
-    /// Average score across all completed scenarios.
+    /// Arithmetic mean of all per-scenario scores.
     pub mean_score: f64,
-    /// Number of scenarios with score == 1.0.
+    /// Count of scenarios where `score >= 1.0` (exact match).
     pub exact_match: usize,
-    /// Total wall-clock time in milliseconds.
+    /// Sum of [`ScenarioResult::elapsed_ms`] across all scenarios.
     pub total_elapsed_ms: u64,
 }
 
-/// Top-level benchmark run record — written to `results.json`.
+/// Top-level benchmark run record written to `results.json`.
 ///
-/// Schema is a superset of the `LongMemEval` leaderboard submission format (NFR-008).
+/// The schema is a superset of the LongMemEval leaderboard submission format (NFR-008),
+/// making it directly usable for leaderboard submission after a `longmemeval` run.
+///
+/// Create a default instance, then populate [`BenchRun::results`] incrementally and
+/// call [`BenchRun::recompute_aggregate`] before persisting with [`ResultWriter`].
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::{BenchRun, RunStatus, Aggregate};
+///
+/// let run = BenchRun {
+///     dataset: "gaia".into(),
+///     model: "openai/gpt-4o".into(),
+///     run_id: "a1b2c3".into(),
+///     started_at: "2026-04-09T10:00:00Z".into(),
+///     finished_at: String::new(),
+///     status: RunStatus::Running,
+///     results: vec![],
+///     aggregate: Aggregate::default(),
+/// };
+/// assert_eq!(run.dataset, "gaia");
+/// assert!(run.results.is_empty());
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchRun {
     /// Dataset name (e.g. `"longmemeval"`).
@@ -79,7 +145,40 @@ pub struct BenchRun {
 }
 
 impl BenchRun {
-    /// Recompute `aggregate` from the current `results` list.
+    /// Recompute [`BenchRun::aggregate`] from the current [`BenchRun::results`] list.
+    ///
+    /// Call this after appending one or more [`ScenarioResult`]s to keep the
+    /// aggregate statistics in sync before writing to disk.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_bench::{BenchRun, RunStatus, ScenarioResult, Aggregate};
+    ///
+    /// let mut run = BenchRun {
+    ///     dataset: "frames".into(),
+    ///     model: "openai/gpt-4o-mini".into(),
+    ///     run_id: "r1".into(),
+    ///     started_at: "2026-01-01T00:00:00Z".into(),
+    ///     finished_at: String::new(),
+    ///     status: RunStatus::Running,
+    ///     results: vec![
+    ///         ScenarioResult {
+    ///             scenario_id: "frames_0".into(),
+    ///             score: 1.0,
+    ///             response_excerpt: "Paris".into(),
+    ///             error: None,
+    ///             elapsed_ms: 500,
+    ///         },
+    ///     ],
+    ///     aggregate: Aggregate::default(),
+    /// };
+    ///
+    /// run.recompute_aggregate();
+    /// assert_eq!(run.aggregate.total, 1);
+    /// assert!((run.aggregate.mean_score - 1.0).abs() < f64::EPSILON);
+    /// assert_eq!(run.aggregate.exact_match, 1);
+    /// ```
     pub fn recompute_aggregate(&mut self) {
         let total = self.results.len();
         #[allow(clippy::cast_precision_loss)]
@@ -98,7 +197,38 @@ impl BenchRun {
         };
     }
 
-    /// Return the set of scenario IDs already present in `results`.
+    /// Return the set of scenario IDs already present in [`BenchRun::results`].
+    ///
+    /// Used by the `--resume` logic to determine which scenarios can be skipped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_bench::{BenchRun, RunStatus, ScenarioResult, Aggregate};
+    ///
+    /// let run = BenchRun {
+    ///     dataset: "gaia".into(),
+    ///     model: "openai/gpt-4o".into(),
+    ///     run_id: "r2".into(),
+    ///     started_at: "2026-01-01T00:00:00Z".into(),
+    ///     finished_at: String::new(),
+    ///     status: RunStatus::Interrupted,
+    ///     results: vec![
+    ///         ScenarioResult {
+    ///             scenario_id: "t1".into(),
+    ///             score: 1.0,
+    ///             response_excerpt: "1945".into(),
+    ///             error: None,
+    ///             elapsed_ms: 300,
+    ///         },
+    ///     ],
+    ///     aggregate: Aggregate::default(),
+    /// };
+    ///
+    /// let done = run.completed_ids();
+    /// assert!(done.contains("t1"));
+    /// assert!(!done.contains("t2"));
+    /// ```
     #[must_use]
     pub fn completed_ids(&self) -> HashSet<String> {
         self.results.iter().map(|r| r.scenario_id.clone()).collect()
@@ -106,6 +236,18 @@ impl BenchRun {
 }
 
 /// Writes `results.json` and `summary.md` to an output directory.
+///
+/// Files are written atomically by flushing to a `.tmp` sibling file and then
+/// renaming, so a concurrent SIGINT cannot leave a half-written JSON file.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_bench::{ResultWriter, BenchRun, RunStatus, Aggregate};
+///
+/// let writer = ResultWriter::new("/tmp/my-bench-run").unwrap();
+/// println!("results at {}", writer.results_path().display());
+/// ```
 pub struct ResultWriter {
     output_dir: PathBuf,
 }
@@ -126,13 +268,34 @@ impl ResultWriter {
         Ok(Self { output_dir })
     }
 
-    /// Path to `results.json` inside the output directory.
+    /// Absolute path of `results.json` inside the output directory.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::Path;
+    /// use zeph_bench::ResultWriter;
+    ///
+    /// let dir = tempfile::tempdir().unwrap();
+    /// let writer = ResultWriter::new(dir.path()).unwrap();
+    /// assert!(writer.results_path().ends_with("results.json"));
+    /// ```
     #[must_use]
     pub fn results_path(&self) -> PathBuf {
         self.output_dir.join("results.json")
     }
 
-    /// Path to `summary.md` inside the output directory.
+    /// Absolute path of `summary.md` inside the output directory.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_bench::ResultWriter;
+    ///
+    /// let dir = tempfile::tempdir().unwrap();
+    /// let writer = ResultWriter::new(dir.path()).unwrap();
+    /// assert!(writer.summary_path().ends_with("summary.md"));
+    /// ```
     #[must_use]
     pub fn summary_path(&self) -> PathBuf {
         self.output_dir.join("summary.md")

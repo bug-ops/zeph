@@ -1,6 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! CLI channel: stdin input and stdout output for interactive sessions.
+//!
+//! This module provides [`CliChannel`], the default channel used when Zeph
+//! runs in CLI mode.  It handles two stdin modes transparently:
+//!
+//! * **TTY** — uses `line_editor::read_line` for readline-style interaction.
+//! * **Piped** — reads lines from a `BufReader` in a dedicated OS thread.
+//!
+//! Input is always processed in a background task so that [`Channel::recv`] is
+//! cancel-safe: dropping the future inside `tokio::select!` never loses
+//! buffered messages.
+//!
+//! [`Channel::recv`]: zeph_core::channel::Channel::recv
+
 use std::collections::VecDeque;
 use std::io::{BufReader, IsTerminal};
 
@@ -238,9 +252,34 @@ impl std::fmt::Debug for PendingReader {
 
 /// CLI channel that reads from stdin and writes to stdout.
 ///
-/// Input is read in a background task (spawned on first `recv()` call), making
-/// `recv()` cancel-safe: dropping the future (e.g. in a `tokio::select!` branch)
-/// never discards buffered input.
+/// Input is read in a background task (spawned lazily on the first [`Channel::recv`]
+/// call), which makes `recv()` cancel-safe: dropping the future (e.g. inside a
+/// `tokio::select!` branch) never discards buffered input — messages stay in the
+/// internal [`mpsc`] channel and are returned on the next `recv()` call.
+///
+/// The channel automatically detects whether stdin is a TTY:
+/// * **TTY mode** — uses `line_editor::read_line` with crossterm raw-mode for
+///   readline-style editing (cursor movement, history navigation, `Ctrl-C`/`Ctrl-D`).
+/// * **Piped mode** — spawns a dedicated OS thread that reads lines from a
+///   [`BufReader`] and shuttles them through a tokio channel, avoiding repeated
+///   stdin locks.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_channels::CliChannel;
+/// use zeph_core::channel::Channel;
+///
+/// # #[tokio::main]
+/// # async fn example() {
+/// let mut ch = CliChannel::new();
+/// // Send a formatted reply to stdout.
+/// ch.send("Hello from Zeph!").await.unwrap();
+/// # }
+/// ```
+///
+/// [`Channel::recv`]: zeph_core::channel::Channel::recv
+/// [`BufReader`]: std::io::BufReader
 #[derive(Debug)]
 pub struct CliChannel {
     accumulated: String,
@@ -251,6 +290,12 @@ pub struct CliChannel {
 }
 
 impl CliChannel {
+    /// Create a new CLI channel without persistent history.
+    ///
+    /// This is safe to call outside of a Tokio runtime; the background stdin
+    /// reader task is not spawned until the first [`Channel::recv`] call.
+    ///
+    /// [`Channel::recv`]: zeph_core::channel::Channel::recv
     #[must_use]
     pub fn new() -> Self {
         let is_tty = std::io::stdin().is_terminal();
@@ -264,10 +309,26 @@ impl CliChannel {
         }
     }
 
-    /// Create a CLI channel with persistent history.
+    /// Create a CLI channel with persistent input history.
     ///
-    /// `entries` should be pre-loaded by the caller. `persist_fn` is called
-    /// for each new entry to persist it (e.g. via `SqliteStore::save_input_entry`).
+    /// `entries` is a pre-loaded history list (e.g. loaded from SQLite on
+    /// startup).  `persist_fn` is called for each newly submitted entry so the
+    /// caller can persist it (e.g. via `SqliteStore::save_input_entry`).
+    ///
+    /// Duplicate consecutive entries are silently ignored; empty lines are never
+    /// added to the history.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use zeph_channels::CliChannel;
+    ///
+    /// let previous: Vec<String> = vec!["ls -la".into(), "cargo build".into()];
+    /// let ch = CliChannel::with_history(previous, |entry| {
+    ///     // Persist `entry` to your storage layer.
+    ///     eprintln!("saving: {entry}");
+    /// });
+    /// ```
     #[must_use]
     pub fn with_history(entries: Vec<String>, persist_fn: impl Fn(&str) + Send + 'static) -> Self {
         let is_tty = std::io::stdin().is_terminal();
@@ -314,11 +375,34 @@ impl Channel for CliChannel {
         Ok(self.ensure_reader().recv().await)
     }
 
+    /// Write a complete agent reply to stdout.
+    ///
+    /// The message is prefixed with `"Zeph: "` and followed by a newline.
+    /// Use [`send_chunk`] / [`flush_chunks`] for streaming output instead.
+    ///
+    /// # Errors
+    ///
+    /// Always returns `Ok(())` — stdout writes do not produce recoverable
+    /// errors in this adapter.
+    ///
+    /// [`send_chunk`]: CliChannel::send_chunk
+    /// [`flush_chunks`]: CliChannel::flush_chunks
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         println!("Zeph: {text}");
         Ok(())
     }
 
+    /// Write a streaming chunk to stdout and accumulate it internally.
+    ///
+    /// Chunks are printed without a trailing newline so that the response
+    /// streams character-by-character.  Call [`flush_chunks`] when the stream
+    /// is complete to emit the final newline and clear the internal buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the stdout flush fails.
+    ///
+    /// [`flush_chunks`]: CliChannel::flush_chunks
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         use std::io::{Write, stdout};
         print!("{chunk}");
@@ -327,12 +411,30 @@ impl Channel for CliChannel {
         Ok(())
     }
 
+    /// Finalise a streamed response by printing a trailing newline.
+    ///
+    /// Clears the internal accumulation buffer so the channel is ready for the
+    /// next response.
+    ///
+    /// # Errors
+    ///
+    /// Always returns `Ok(())`.
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         println!();
         self.accumulated.clear();
         Ok(())
     }
 
+    /// Prompt the user for a yes/no confirmation on stdin.
+    ///
+    /// In non-interactive (piped) mode the method auto-declines and returns
+    /// `Ok(false)` without blocking.  In TTY mode it reads one line and returns
+    /// `true` only when the user types `y` or `Y`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if spawning the blocking task fails or if the underlying
+    /// readline call returns an I/O error.
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         if !std::io::stdin().is_terminal() {
             tracing::debug!("non-interactive stdin, auto-declining confirmation");
@@ -350,6 +452,25 @@ impl Channel for CliChannel {
         }
     }
 
+    /// Collect structured input from the user on behalf of an MCP server.
+    ///
+    /// Prompts the user for each field in `request.fields` sequentially.  In
+    /// non-interactive (piped) mode the method logs a warning and auto-declines
+    /// without blocking.
+    ///
+    /// Field values are coerced to the declared [`ElicitationFieldType`].  If a
+    /// value cannot be coerced the method returns
+    /// [`ElicitationResponse::Declined`] immediately.  `Ctrl-C` or `Ctrl-D`
+    /// returns [`ElicitationResponse::Cancelled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if spawning the blocking task fails or if the underlying
+    /// readline call returns an I/O error.
+    ///
+    /// [`ElicitationFieldType`]: zeph_core::channel::ElicitationFieldType
+    /// [`ElicitationResponse::Declined`]: zeph_core::channel::ElicitationResponse::Declined
+    /// [`ElicitationResponse::Cancelled`]: zeph_core::channel::ElicitationResponse::Cancelled
     async fn elicit(
         &mut self,
         request: ElicitationRequest,
@@ -402,6 +523,11 @@ impl Channel for CliChannel {
     }
 }
 
+/// Build a human-readable prompt string for a single elicitation field.
+///
+/// The prompt includes the field name, an optional description in parentheses,
+/// and a type hint (e.g. `[true/false]`, `[number]`, or the list of allowed
+/// enum values separated by `/`).
 fn build_field_prompt(field: &ElicitationField) -> String {
     let type_hint = match &field.field_type {
         ElicitationFieldType::Boolean => " [true/false]",

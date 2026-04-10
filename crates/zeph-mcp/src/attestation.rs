@@ -1,6 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Tool attestation and schema drift detection.
+//!
+//! Attestation compares the tools advertised by a server at connect time against an
+//! operator-declared `expected_tools` list.  When unexpected tools appear the agent
+//! warns or filters them based on the server's [`McpTrustLevel`].
+//!
+//! Fingerprints from the previous connection are retained in [`ServerTrustBoundary`]
+//! and compared on reconnect to detect schema drift — a tool description or input
+//! schema that silently changed between sessions.
+
 use std::collections::HashMap;
 
 use crate::manager::McpTrustLevel;
@@ -9,7 +19,10 @@ use crate::tool::McpTool;
 /// Blake3 fingerprint of a tool definition (name + description + `input_schema`).
 pub type ToolFingerprint = String;
 
-/// Result of comparing actual server tools against operator-declared expectations.
+/// Result of comparing a server's actual tool set against the operator-declared `expected_tools`.
+///
+/// Produced by [`attest_tools`] at connect time. Stored in [`ServerTrustBoundary`] and used
+/// to decide whether unexpected tools should be filtered or surfaced as warnings.
 #[derive(Debug, Clone)]
 pub enum AttestationResult {
     /// All actual tools are in the operator-declared expected set.
@@ -26,13 +39,20 @@ pub enum AttestationResult {
     Unconfigured,
 }
 
-/// Per-server trust boundary: isolates policy, effective tool list, and attestation state.
+/// Per-server trust boundary: collects policy state, effective tool list, and attestation result.
+///
+/// Built by `McpManager` after each successful connection and retained for the lifetime
+/// of that connection. `previous_fingerprints` is populated from the previous session
+/// and passed to [`attest_tools`] to enable schema drift detection on reconnect.
 #[derive(Debug)]
 pub struct ServerTrustBoundary {
+    /// Unique identifier for the server (matches [`ServerEntry::id`](crate::manager::ServerEntry)).
     pub server_id: String,
+    /// Configured trust level for this server.
     pub trust_level: McpTrustLevel,
+    /// Attestation outcome from the current connection.
     pub attestation: AttestationResult,
-    /// Tool names visible after attestation filtering.
+    /// Tool names visible to the agent after attestation filtering.
     pub effective_tools: Vec<String>,
     /// Fingerprints from the previous connection, used for drift detection on refresh.
     pub previous_fingerprints: Option<HashMap<String, ToolFingerprint>>,

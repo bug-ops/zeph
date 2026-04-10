@@ -1,6 +1,33 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! OpenAI API backend.
+//!
+//! [`OpenAiProvider`] targets the OpenAI Chat Completions and Embeddings APIs.
+//! It also serves as the foundation for [`crate::compatible::CompatibleProvider`],
+//! which points the same implementation at any OpenAI-compatible endpoint
+//! (Together AI, Fireworks, local vLLM, etc.).
+//!
+//! # Supported capabilities
+//!
+//! - Chat completion (non-streaming and SSE streaming)
+//! - Native tool use (function calling)
+//! - Embeddings (`text-embedding-*` family)
+//! - Reasoning effort for `o*` models (`low` / `medium` / `high`)
+//! - Vision via base64-encoded images in message content
+//!
+//! # Configuration
+//!
+//! ```toml
+//! [[llm.providers]]
+//! name = "openai"
+//! type = "openai"
+//! model = "gpt-4o"
+//! max_tokens = 4096
+//! embedding_model = "text-embedding-3-small"
+//! api_key_vault = "ZEPH_OPENAI_API_KEY"
+//! ```
+
 use std::fmt;
 
 use crate::error::LlmError;
@@ -17,6 +44,14 @@ use crate::usage::UsageTracker;
 
 const MAX_RETRIES: u32 = 3;
 
+/// [`LlmProvider`] backend for the OpenAI API (and compatible endpoints).
+///
+/// For OpenAI-compatible third-party services, prefer [`crate::compatible::CompatibleProvider`]
+/// which wraps this type with a named provider for logging.
+///
+/// Construct with [`OpenAiProvider::new`] and chain optional builder methods:
+/// - [`with_generation_overrides`](Self::with_generation_overrides)
+/// - [`with_status_tx`](Self::with_status_tx)
 pub struct OpenAiProvider {
     client: reqwest::Client,
     api_key: String,
@@ -24,6 +59,7 @@ pub struct OpenAiProvider {
     model: String,
     max_tokens: u32,
     embedding_model: Option<String>,
+    /// Reasoning effort level for `o*` models (`"low"`, `"medium"`, or `"high"`).
     reasoning_effort: Option<String>,
     pub(crate) status_tx: Option<StatusTx>,
     usage: UsageTracker,
@@ -65,6 +101,12 @@ impl Clone for OpenAiProvider {
 }
 
 impl OpenAiProvider {
+    /// Create a new provider.
+    ///
+    /// Trailing slashes are stripped from `base_url` automatically.
+    /// Set `embedding_model` to `None` when the endpoint does not support embeddings.
+    /// Set `reasoning_effort` to `Some("low" | "medium" | "high")` for `o*` reasoning models;
+    /// leave `None` for standard chat models.
     #[must_use]
     pub fn new(
         api_key: String,
@@ -91,18 +133,21 @@ impl OpenAiProvider {
         }
     }
 
+    /// Override generation parameters (temperature, top-p, frequency/presence penalty).
     #[must_use]
     pub fn with_generation_overrides(mut self, overrides: GenerationOverrides) -> Self {
         self.generation_overrides = Some(overrides);
         self
     }
 
+    /// Replace the underlying HTTP client. Mainly used in tests to inject a mock transport.
     #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;
         self
     }
 
+    /// Attach a status event sender so the UI receives retry and fallback notifications.
     #[must_use]
     pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
         self.status_tx = Some(tx);

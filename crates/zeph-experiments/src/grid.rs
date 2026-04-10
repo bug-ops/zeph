@@ -1,7 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Grid sweep strategy for parameter variation.
+//! Systematic grid sweep strategy for parameter variation.
+//!
+//! [`GridStep`] iterates each parameter through its discrete steps in order,
+//! skipping variations that have already been visited. This gives exhaustive
+//! coverage of the search space and is well-suited as a first-pass exploration
+//! before switching to a [`Neighborhood`] or [`Random`] strategy.
+//!
+//! [`Neighborhood`]: crate::Neighborhood
+//! [`Random`]: crate::Random
 
 use std::collections::HashSet;
 
@@ -16,8 +24,41 @@ use super::types::{Variation, VariationValue};
 ///
 /// Parameters are swept one at a time. For each parameter, all grid points from
 /// `min` to `max` (with the configured `step`) are enumerated in order. Already-visited
-/// variations are skipped. When all steps for a parameter are exhausted, the next parameter
-/// is tried. Returns `None` when the full grid has been visited.
+/// variations are skipped. When all steps for a parameter are exhausted, the next
+/// parameter is tried. Returns `None` when the full grid has been visited.
+///
+/// When a parameter has no discrete `step`, [`GridStep`] falls back to
+/// `(max - min) / 20` as the step size.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::collections::HashSet;
+/// use zeph_experiments::{
+///     ConfigSnapshot, GridStep, ParameterKind, ParameterRange, SearchSpace, VariationGenerator,
+/// };
+///
+/// let space = SearchSpace {
+///     parameters: vec![ParameterRange {
+///         kind: ParameterKind::Temperature,
+///         min: 0.0,
+///         max: 1.0,
+///         step: Some(0.5),
+///         default: 0.5,
+///     }],
+/// };
+/// let mut generator = GridStep::new(space);
+/// let baseline = ConfigSnapshot::default();
+/// let mut visited = HashSet::new();
+///
+/// // Produces 0.0, 0.5, 1.0 in order.
+/// let mut count = 0;
+/// while let Some(v) = generator.next(&baseline, &visited) {
+///     visited.insert(v);
+///     count += 1;
+/// }
+/// assert_eq!(count, 3);
+/// ```
 pub struct GridStep {
     search_space: SearchSpace,
     current_param: usize,
@@ -25,7 +66,16 @@ pub struct GridStep {
 }
 
 impl GridStep {
-    /// Create a new `GridStep` generator with the given search space.
+    /// Create a new [`GridStep`] generator starting at the first grid point.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::{GridStep, SearchSpace, VariationGenerator};
+    ///
+    /// let generator = GridStep::new(SearchSpace::default());
+    /// assert_eq!(generator.name(), "grid");
+    /// ```
     #[must_use]
     pub fn new(search_space: SearchSpace) -> Self {
         Self {

@@ -6,6 +6,50 @@
 //! This crate contains configuration struct and enum definitions, the TOML loader,
 //! environment variable overrides, validation, and migration helpers.
 //! Vault secret resolution is handled in `zeph-core` through the `SecretResolver` trait.
+//!
+//! # Loading configuration
+//!
+//! ```no_run
+//! use std::path::Path;
+//! use zeph_config::Config;
+//!
+//! // Load from file (falls back to defaults when the file does not exist)
+//! let config = Config::load(Path::new("/etc/zeph/config.toml"))
+//!     .expect("failed to load config");
+//!
+//! // Validate numeric bounds and cross-references
+//! config.validate().expect("config validation failed");
+//!
+//! println!("Agent name: {}", config.agent.name);
+//! println!("History limit: {}", config.memory.history_limit);
+//! ```
+//!
+//! # Environment variable overrides
+//!
+//! After loading from TOML, `Config::load` automatically applies env-var overrides.
+//! Key variables:
+//!
+//! | Variable | Field overridden |
+//! |---|---|
+//! | `ZEPH_LLM_PROVIDER` | `llm.providers[0].provider_type` |
+//! | `ZEPH_LLM_MODEL` | `llm.providers[0].model` |
+//! | `ZEPH_SQLITE_PATH` | `memory.sqlite_path` |
+//! | `ZEPH_QDRANT_URL` | `memory.qdrant_url` |
+//!
+//! # Config migration
+//!
+//! Use [`migrate::ConfigMigrator`] to upgrade existing TOML configs with newly-added
+//! parameters added as commented-out entries:
+//!
+//! ```no_run
+//! use zeph_config::migrate::ConfigMigrator;
+//!
+//! let user_toml = std::fs::read_to_string("config.toml").unwrap();
+//! let migrator = ConfigMigrator::new();
+//! let result = migrator.migrate(&user_toml).expect("migration failed");
+//! println!("Added {} new parameters", result.added_count);
+//! std::fs::write("config.toml", &result.output).unwrap();
+//! ```
 
 pub mod agent;
 pub mod channels;

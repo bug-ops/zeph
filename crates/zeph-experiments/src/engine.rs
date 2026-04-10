@@ -4,8 +4,20 @@
 //! Experiment engine — core async loop for autonomous parameter tuning.
 //!
 //! [`ExperimentEngine`] orchestrates baseline evaluation, variation generation,
-//! candidate scoring, acceptance decisions, and optional `SQLite` persistence.
+//! candidate scoring, acceptance decisions, and optional SQLite persistence.
 //! Cancellation is supported via [`tokio_util::sync::CancellationToken`].
+//!
+//! # Loop Summary
+//!
+//! 1. Evaluate the baseline configuration once to establish `initial_baseline_score`.
+//! 2. Ask the [`VariationGenerator`] for the next untested variation.
+//! 3. Clone the subject provider with generation overrides from the candidate snapshot.
+//! 4. Evaluate the candidate; accept if `delta >= config.min_improvement`.
+//! 5. On acceptance, update the progressive baseline (greedy hill-climbing).
+//! 6. Optionally persist the result to SQLite.
+//! 7. Repeat until: max experiments, wall-time limit, search exhaustion, or cancellation.
+//!
+//! [`VariationGenerator`]: crate::VariationGenerator
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -25,23 +37,36 @@ use super::types::{ExperimentResult, ExperimentSource, Variation};
 use zeph_config::ExperimentConfig;
 
 /// Final report produced by [`ExperimentEngine::run`].
+///
+/// `total_improvement` can be negative if no variation improved the baseline,
+/// or `NaN` if the baseline evaluation itself returned `NaN` (which causes
+/// an early [`EvalError`] rather than a report).
+///
+/// [`EvalError`]: crate::EvalError
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperimentSessionReport {
-    /// UUID identifying this experiment session.
+    /// UUID generated at [`ExperimentEngine`] construction time.
     pub session_id: String,
-    /// All experiment results recorded in this session (accepted and rejected).
+    /// All variation results recorded in this session (both accepted and rejected).
     pub results: Vec<ExperimentResult>,
-    /// The best-known config snapshot at session end (progressive baseline winner).
+    /// The best-known config snapshot at session end (may equal the initial baseline).
     pub best_config: ConfigSnapshot,
-    /// Baseline mean score captured before the loop started.
+    /// Baseline mean score captured before the variation loop started.
+    ///
+    /// `NaN` when the session was cancelled before the baseline evaluation completed.
     pub baseline_score: f64,
-    /// Final best-known mean score at session end.
+    /// Mean score of the best-found configuration at session end.
+    ///
+    /// `NaN` when the session was cancelled before the baseline evaluation completed.
     pub final_score: f64,
-    /// `final_score - baseline_score` (positive means improvement).
+    /// `final_score - baseline_score` (positive means improvement over baseline).
     pub total_improvement: f64,
-    /// Wall-clock time for the full session in milliseconds.
+    /// Total wall-clock time for the session in milliseconds.
     pub wall_time_ms: u64,
-    /// Whether the session was stopped via [`ExperimentEngine::stop`].
+    /// `true` when the session was stopped via [`ExperimentEngine::stop`] or a
+    /// [`CancellationToken`] before the variation loop completed naturally.
+    ///
+    /// [`CancellationToken`]: tokio_util::sync::CancellationToken
     pub cancelled: bool,
 }
 

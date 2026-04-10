@@ -3,20 +3,59 @@
 
 //! Bayesian posterior weight computation for skill ranking.
 //!
-//! Uses Wilson score interval lower bound as a conservative estimate of
-//! the true success rate, blending with cosine similarity for re-ranking.
+//! Uses the Wilson score interval lower bound as a conservative estimate of the true
+//! success rate, blending with cosine similarity for re-ranking matched skill candidates.
+//!
+//! # Why Wilson Score?
+//!
+//! The posterior mean `α / (α + β)` overestimates quality for skills with few observations.
+//! The Wilson lower bound applies a 95% one-sided confidence penalty that deflates scores
+//! when the evidence is weak, preventing freshly-installed skills from outranking well-tested
+//! ones purely by chance.
+//!
+//! # Integration with [`crate::matcher`]
+//!
+//! After embedding-based ranking, call [`rerank`] to blend cosine similarity with Bayesian
+//! trust weight. `cosine_weight = 0.7` gives a 70% embedding / 30% trust blend.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use zeph_skills::trust_score::{posterior_weight, posterior_mean, PRIOR_WEIGHT};
+//!
+//! // No data: conservative deflation below 0.5
+//! let w = posterior_weight(0, 0);
+//! assert!(w < PRIOR_WEIGHT);
+//!
+//! // High-confidence skill: close to 1.0
+//! let w = posterior_weight(100, 0);
+//! assert!(w > 0.9);
+//! ```
 
 use crate::matcher::ScoredMatch;
 
 /// Neutral prior weight for skills with no outcome data.
-/// Corresponds to Beta(1,1) (uniform prior) posterior mean.
+///
+/// Corresponds to `Beta(1, 1)` (uniform prior) posterior mean = 0.5.
+/// The actual [`posterior_weight`] will be slightly below this due to the Wilson confidence
+/// penalty when the observation count is zero.
 pub const PRIOR_WEIGHT: f64 = 0.5;
 
 /// Conservative Bayesian estimate of the true success rate.
 ///
-/// Uses Wilson score interval lower bound (95% one-sided confidence) based on
-/// Beta(alpha=successes+1, beta=failures+1) with a uniform prior.
+/// Uses the Wilson score interval lower bound (95% one-sided confidence) derived from
+/// `Beta(α = successes + 1, β = failures + 1)` with a uniform prior.
 /// Returns a value in `[0.0, 1.0]`.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_skills::trust_score::posterior_weight;
+///
+/// // Perfect record with 10 observations is still slightly below 1.0 due to the bound.
+/// let w = posterior_weight(10, 0);
+/// assert!(w > 0.7 && w <= 1.0);
+/// ```
 #[must_use]
 pub fn posterior_weight(successes: u32, failures: u32) -> f64 {
     let alpha = f64::from(successes) + 1.0;
@@ -28,10 +67,22 @@ pub fn posterior_weight(successes: u32, failures: u32) -> f64 {
     (mean - 1.645 * std_err).clamp(0.0, 1.0)
 }
 
-/// Raw posterior mean without confidence penalty.
+/// Raw posterior mean without the Wilson confidence penalty.
 ///
-/// Useful for display (e.g., TUI confidence bar) where conservative
-/// deflation is less desirable than an unbiased estimate.
+/// Returns `α / (α + β)` where `α = successes + 1` and `β = failures + 1`.
+/// Suitable for display (e.g., TUI confidence bar) where conservative deflation
+/// is less desirable than an unbiased estimate. Prefer [`posterior_weight`] for
+/// ranking decisions.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_skills::trust_score::posterior_mean;
+///
+/// // 3 successes, 1 failure → mean = (3+1)/(3+1+1+1) = 4/6 ≈ 0.667
+/// let m = posterior_mean(3, 1);
+/// assert!((m - 0.667).abs() < 0.01);
+/// ```
 #[must_use]
 pub fn posterior_mean(successes: u32, failures: u32) -> f64 {
     let alpha = f64::from(successes) + 1.0;
@@ -39,11 +90,34 @@ pub fn posterior_mean(successes: u32, failures: u32) -> f64 {
     alpha / (alpha + beta_val)
 }
 
-/// Re-rank scored matches by blending cosine similarity with Bayesian trust weight.
+/// Re-rank scored matches by blending cosine similarity with Bayesian trust weight in-place.
 ///
-/// `cosine_weight` controls the trade-off (0.0 = trust only, 1.0 = cosine only).
-/// `metrics_fn` receives the match index and returns `(successes, failures)`.
-/// The slice is sorted in-place, highest score first.
+/// The final score for each match is:
+/// ```text
+/// score = cosine_weight * cosine_similarity + (1 - cosine_weight) * posterior_weight
+/// ```
+///
+/// # Parameters
+///
+/// - `scored` — mutable slice of matches to re-rank (modified in-place).
+/// - `cosine_weight` — blend factor in `[0.0, 1.0]`; `0.0` = trust only, `1.0` = cosine only.
+/// - `metrics_fn` — callback that receives a match index and returns `(successes, failures)`.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_skills::trust_score::rerank;
+/// use zeph_skills::matcher::ScoredMatch;
+///
+/// let mut matches = vec![
+///     ScoredMatch { index: 0, score: 0.6 },
+///     ScoredMatch { index: 1, score: 0.9 },
+/// ];
+/// // index 0 has a perfect record; index 1 is new
+/// rerank(&mut matches, 0.5, |idx| if idx == 0 { (50, 0) } else { (0, 0) });
+/// // index 0 should now outrank index 1 when trust dominates
+/// assert_eq!(matches[0].index, 0);
+/// ```
 pub fn rerank(
     scored: &mut [ScoredMatch],
     cosine_weight: f32,

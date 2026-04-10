@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Runtime channel dispatch via [`AnyChannel`].
+//!
+//! The Zeph binary selects a concrete channel at startup (CLI, Telegram, …)
+//! and wraps it in `AnyChannel`.  All subsequent agent-loop code operates on
+//! `AnyChannel` through the `Channel` trait without knowing the transport.
+//!
+//! Method forwarding is implemented via a private `dispatch_channel!` macro
+//! that expands each trait method into a `match` over the active variant.
+
 use zeph_core::channel::{
     Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse, StopHint,
     ToolOutputEvent, ToolStartEvent,
@@ -14,6 +23,31 @@ use crate::slack::SlackChannel;
 use crate::telegram::TelegramChannel;
 
 /// Enum dispatch for runtime channel selection.
+///
+/// `AnyChannel` implements `Channel` by forwarding every method call to the
+/// active variant through a private macro.  The binary picks a variant at
+/// startup; the rest of the codebase never needs to be generic over the
+/// channel type.
+///
+/// # Variants
+///
+/// * `Cli` — reads from stdin and writes to stdout via [`CliChannel`].
+/// * `Telegram` — Telegram Bot API adapter via [`crate::telegram::TelegramChannel`].
+/// * `Discord` *(feature `discord`)* — Discord gateway adapter.
+/// * `Slack` *(feature `slack`)* — Slack Events API adapter.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use zeph_channels::{AnyChannel, CliChannel};
+/// use zeph_core::channel::Channel;
+///
+/// let mut ch = AnyChannel::Cli(CliChannel::new());
+/// // Send a message regardless of the underlying channel.
+/// # tokio_test::block_on(async {
+/// ch.send("Hello!").await.unwrap();
+/// # });
+/// ```
 #[derive(Debug)]
 pub enum AnyChannel {
     Cli(CliChannel),

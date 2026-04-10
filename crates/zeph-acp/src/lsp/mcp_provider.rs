@@ -20,6 +20,10 @@ use super::types::{
 };
 
 /// MCP-backed LSP provider that delegates to the `mcpls` MCP server.
+///
+/// Detected automatically at session startup when [`McpManager`] has a server that
+/// exposes a `get_hover` tool. Used as a fallback when the IDE does not advertise
+/// native LSP support (`meta["lsp"]`).
 pub struct McpLspProvider {
     manager: Arc<McpManager>,
     /// Server ID of the mcpls instance in the manager.
@@ -32,6 +36,8 @@ pub struct McpLspProvider {
 
 impl McpLspProvider {
     /// Create a new provider for the given MCP manager and server ID.
+    ///
+    /// `server_id` must match an active server in `manager` that exposes `mcpls` tools.
     #[must_use]
     pub fn new(
         manager: Arc<McpManager>,

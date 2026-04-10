@@ -11,11 +11,24 @@ use cron::Schedule as CronSchedule;
 
 use crate::error::SchedulerError;
 
-/// Normalize a cron expression to the 6-field format required by the `cron` crate.
+/// Normalise a cron expression to the 6-field format required by the `cron` crate.
 ///
 /// Standard 5-field expressions (`min hour day month weekday`) are prepended with `"0 "` to
 /// default seconds to zero. 6-field expressions are passed through unchanged. Any other field
-/// count is also passed through and will produce an error from the `cron` crate at parse time.
+/// count is also passed through unchanged and will produce an error from the `cron` crate at
+/// parse time.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_scheduler::normalize_cron_expr;
+///
+/// // 5-field: seconds are defaulted to 0.
+/// assert_eq!(normalize_cron_expr("*/5 * * * *").as_ref(), "0 */5 * * * *");
+///
+/// // 6-field: passed through unchanged.
+/// assert_eq!(normalize_cron_expr("0 */5 * * * *").as_ref(), "0 */5 * * * *");
+/// ```
 #[must_use]
 pub fn normalize_cron_expr(expr: &str) -> Cow<'_, str> {
     if expr.split_whitespace().count() == 5 {
@@ -25,17 +38,58 @@ pub fn normalize_cron_expr(expr: &str) -> Cow<'_, str> {
     }
 }
 
+/// Identifies what type of work a scheduled task performs.
+///
+/// Built-in variants map to well-known agent subsystems. [`TaskKind::Custom`]
+/// carries an arbitrary string so callers can define their own task kinds without
+/// modifying this enum.
+///
+/// # Persistence
+///
+/// Each variant serialises to a stable snake_case string via [`TaskKind::as_str`]
+/// and deserialises via [`TaskKind::from_str_kind`]. These strings are stored in
+/// the `kind` column of the `scheduled_jobs` table.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_scheduler::TaskKind;
+///
+/// assert_eq!(TaskKind::HealthCheck.as_str(), "health_check");
+/// assert_eq!(TaskKind::from_str_kind("memory_cleanup"), TaskKind::MemoryCleanup);
+/// assert_eq!(TaskKind::from_str_kind("my_custom"), TaskKind::Custom("my_custom".into()));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskKind {
+    /// Triggers the memory subsystem's cleanup / compaction routine.
     MemoryCleanup,
+    /// Reloads skills from the skill registry.
     SkillRefresh,
+    /// Runs a liveness or readiness probe for the agent.
     HealthCheck,
+    /// Checks the GitHub releases API for a newer Zeph version.
     UpdateCheck,
+    /// Runs an experiment task (used by `zeph-experiments`).
     Experiment,
+    /// An application-defined task kind. The string is the persistence key.
     Custom(String),
 }
 
 impl TaskKind {
+    /// Parse a task kind from its persistence string.
+    ///
+    /// Unknown strings are wrapped in [`TaskKind::Custom`] rather than returning
+    /// an error, so new built-in variants added in future versions do not break
+    /// existing stored jobs loaded with an older build.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_scheduler::TaskKind;
+    ///
+    /// assert_eq!(TaskKind::from_str_kind("health_check"), TaskKind::HealthCheck);
+    /// assert_eq!(TaskKind::from_str_kind("unknown"), TaskKind::Custom("unknown".into()));
+    /// ```
     #[must_use]
     pub fn from_str_kind(s: &str) -> Self {
         match s {
@@ -48,6 +102,16 @@ impl TaskKind {
         }
     }
 
+    /// Return the stable string key used for database persistence.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_scheduler::TaskKind;
+    ///
+    /// assert_eq!(TaskKind::SkillRefresh.as_str(), "skill_refresh");
+    /// assert_eq!(TaskKind::Custom("my_job".into()).as_str(), "my_job");
+    /// ```
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
@@ -62,23 +126,72 @@ impl TaskKind {
 }
 
 /// Execution mode for a scheduled task.
+///
+/// Determines how the scheduler decides when to run a task and what to do after it
+/// completes:
+///
+/// - [`TaskMode::Periodic`] re-computes `next_run` from the cron schedule after
+///   each successful execution and never removes the task from memory.
+/// - [`TaskMode::OneShot`] fires once when `now >= run_at` and then removes the
+///   task from the in-memory task list and marks it `done` in the store.
 pub enum TaskMode {
-    Periodic { schedule: Box<CronSchedule> },
-    OneShot { run_at: DateTime<Utc> },
+    /// Run on a repeating cron schedule.
+    Periodic {
+        /// Parsed cron schedule that drives `next_run` computation.
+        schedule: Box<CronSchedule>,
+    },
+    /// Run once at the specified UTC timestamp.
+    OneShot {
+        /// The earliest UTC time at which the task should execute.
+        run_at: DateTime<Utc>,
+    },
 }
 
-/// Descriptor sent over the mpsc channel to register tasks at runtime.
+/// Descriptor sent over the control channel to register tasks at runtime.
+///
+/// Send a [`SchedulerMessage::Add`] wrapping a boxed `TaskDescriptor` to add a
+/// new task (or replace an existing one with the same name) without stopping the
+/// scheduler loop.
 pub struct TaskDescriptor {
+    /// Unique name for the task. Replaces any existing task with the same name.
     pub name: String,
+    /// Execution mode (periodic or one-shot).
     pub mode: TaskMode,
+    /// The category of work this task performs.
     pub kind: TaskKind,
+    /// Arbitrary JSON configuration forwarded to the [`TaskHandler`] at execution time.
     pub config: serde_json::Value,
 }
 
+/// A task held in memory by the [`crate::Scheduler`].
+///
+/// Use [`ScheduledTask::new`] / [`ScheduledTask::periodic`] for cron-based tasks
+/// and [`ScheduledTask::oneshot`] for tasks that run at a fixed point in time.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_scheduler::{ScheduledTask, TaskKind};
+///
+/// let task = ScheduledTask::new(
+///     "daily-cleanup",
+///     "0 3 * * *",           // every day at 03:00 UTC (5-field cron)
+///     TaskKind::MemoryCleanup,
+///     serde_json::Value::Null,
+/// )
+/// .expect("valid cron expression");
+///
+/// assert_eq!(task.task_mode_str(), "periodic");
+/// assert!(task.cron_schedule().is_some());
+/// ```
 pub struct ScheduledTask {
+    /// Unique task name used as the primary key in the job store.
     pub name: String,
+    /// Execution mode (periodic or one-shot).
     pub mode: TaskMode,
+    /// The category of work this task performs.
     pub kind: TaskKind,
+    /// Arbitrary JSON configuration forwarded to the [`TaskHandler`] at execution time.
     pub config: serde_json::Value,
 }
 
@@ -147,7 +260,9 @@ impl ScheduledTask {
         }
     }
 
-    /// Returns the cron expression string for DB persistence (periodic tasks only).
+    /// Returns the canonical 6-field cron expression string for DB persistence.
+    ///
+    /// Returns an empty string for one-shot tasks, which do not have a cron schedule.
     #[must_use]
     pub fn cron_expr_string(&self) -> String {
         match &self.mode {
@@ -156,7 +271,9 @@ impl ScheduledTask {
         }
     }
 
-    /// Returns `task_mode` string for DB persistence.
+    /// Returns the `task_mode` string used for DB persistence.
+    ///
+    /// Returns `"periodic"` or `"oneshot"`.
     #[must_use]
     pub fn task_mode_str(&self) -> &'static str {
         match &self.mode {
@@ -166,7 +283,43 @@ impl ScheduledTask {
     }
 }
 
+/// Trait for types that can execute a scheduled task.
+///
+/// Implementations receive the per-task JSON configuration stored in
+/// [`ScheduledTask::config`] and return `Ok(())` on success or a
+/// [`SchedulerError`] on failure. Failures are logged as warnings; the scheduler
+/// continues running and will retry on the next due tick.
+///
+/// Because async trait methods in Edition 2024 require returning a pinned boxed
+/// future for object safety, implementations must wrap their async work in
+/// `Box::pin(async move { … })`.
+///
+/// # Example
+///
+/// ```rust
+/// use std::future::Future;
+/// use std::pin::Pin;
+/// use zeph_scheduler::{SchedulerError, TaskHandler};
+///
+/// struct NoopHandler;
+///
+/// impl TaskHandler for NoopHandler {
+///     fn execute(
+///         &self,
+///         _config: &serde_json::Value,
+///     ) -> Pin<Box<dyn Future<Output = Result<(), SchedulerError>> + Send + '_>> {
+///         Box::pin(async move { Ok(()) })
+///     }
+/// }
+/// ```
 pub trait TaskHandler: Send + Sync {
+    /// Execute the task with the provided configuration.
+    ///
+    /// # Errors
+    ///
+    /// Return [`SchedulerError::TaskFailed`] (or any other variant) to indicate
+    /// that the task could not complete successfully. The error is logged but does
+    /// not stop the scheduler.
     fn execute(
         &self,
         config: &serde_json::Value,

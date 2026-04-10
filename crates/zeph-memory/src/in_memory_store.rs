@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Purely in-memory [`VectorStore`] implementation for unit tests.
+//!
+//! All data lives in a `RwLock<HashMap>` and is discarded when the store is dropped.
+//! Cosine similarity is computed with [`zeph_common::math::cosine_similarity`].
+//! Not suitable for production — use [`crate::qdrant_ops::QdrantOps`] instead.
+
 use std::collections::HashMap;
 
 use parking_lot::RwLock;
@@ -19,6 +25,18 @@ struct InMemoryCollection {
     points: HashMap<String, StoredPoint>,
 }
 
+/// In-process vector store backed by a `RwLock<HashMap>`.
+///
+/// Intended for unit tests only.  All data is lost when the store is dropped.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::in_memory_store::InMemoryVectorStore;
+///
+/// let store = InMemoryVectorStore::new();
+/// // Use `store` as a `VectorStore` in tests.
+/// ```
 pub struct InMemoryVectorStore {
     collections: RwLock<HashMap<String, InMemoryCollection>>,
 }

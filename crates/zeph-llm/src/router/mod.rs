@@ -1,7 +1,43 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Provider router: EMA-based, Thompson Sampling, Cascade, and PILOT Bandit strategies.
+//! Multi-provider router with pluggable routing strategies.
+//!
+//! [`RouterProvider`] implements [`LlmProvider`] and forwards every call to one of
+//! its configured backends, chosen according to the active [`RouterStrategy`].
+//!
+//! # Routing strategies
+//!
+//! | Strategy | Module | Description |
+//! |---|---|---|
+//! | [`RouterStrategy::Ema`] | [`ema`] | EMA-weighted latency-aware ordering |
+//! | [`RouterStrategy::Thompson`] | [`thompson`] | Bayesian Beta-distribution sampling |
+//! | [`RouterStrategy::Cascade`] | [`cascade`] | Cheapest-first with quality escalation |
+//! | [`RouterStrategy::Bandit`] | [`bandit`] | Contextual LinUCB (PILOT algorithm) |
+//!
+//! Strategies are selected via builder methods on [`RouterProvider`]:
+//! - [`RouterProvider::with_ema`]
+//! - [`RouterProvider::with_thompson`]
+//! - [`RouterProvider::with_cascade`]
+//! - [`RouterProvider::with_bandit`]
+//!
+//! # Reputation-Aware Provider Selection (RAPS)
+//!
+//! All strategies support an optional Bayesian reputation layer ([`reputation`]) that
+//! penalizes providers which produce semantically invalid tool arguments. Enable with
+//! [`RouterProvider::with_reputation`].
+//!
+//! # Agent Stability Index (ASI)
+//!
+//! An optional session-level coherence tracker ([`asi`]) measures embedding-based
+//! response quality and feeds back into Thompson selection. Enable with
+//! [`RouterProvider::with_asi`].
+//!
+//! # Security
+//!
+//! Thompson and Bandit state files are loaded from user-controlled paths at startup.
+//! Files are validated (finite floats, clamped range) and written with `0o600` permissions
+//! on Unix. Do not store state files in world-writable directories.
 //!
 //! # Security
 //!
@@ -213,6 +249,15 @@ impl Default for CascadeRouterConfig {
     }
 }
 
+/// Multi-provider LLM router implementing [`LlmProvider`].
+///
+/// Construct with [`RouterProvider::new`] and configure a routing strategy via the
+/// builder methods. All configuration is immutable after construction except for
+/// runtime state (EMA statistics, Thompson distribution, bandit weights) which is
+/// stored behind `Arc<Mutex<_>>` and updated on every successful call.
+///
+/// Cloning is cheap: provider list, EMA, Thompson, and bandit state are all
+/// `Arc`-wrapped and shared between the original and all clones.
 #[derive(Debug, Clone)]
 pub struct RouterProvider {
     // Arc<[AnyProvider]> makes self.clone() O(1) for the providers field (atomic refcount

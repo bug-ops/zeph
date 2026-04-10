@@ -14,12 +14,70 @@ use crate::sanitize::sanitize_task_prompt;
 use crate::store::JobStore;
 use crate::task::{ScheduledTask, TaskDescriptor, TaskHandler, TaskKind, TaskMode};
 
-/// Message type for runtime scheduler control.
+/// Messages sent to the [`Scheduler`] over its control channel.
+///
+/// Obtain the sender from [`Scheduler::new`] or [`Scheduler::with_max_tasks`]
+/// and use it to add or cancel tasks while the scheduler loop is running.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use tokio::sync::watch;
+/// use zeph_scheduler::{JobStore, Scheduler, SchedulerMessage, TaskDescriptor, TaskKind, TaskMode};
+/// use chrono::Utc;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let store = JobStore::open("sqlite:scheduler.db").await?;
+/// let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+/// let (_scheduler, msg_tx) = Scheduler::new(store, shutdown_rx);
+///
+/// // Add a one-shot task that runs immediately.
+/// let desc = TaskDescriptor {
+///     name: "generate-report".into(),
+///     mode: TaskMode::OneShot { run_at: Utc::now() },
+///     kind: TaskKind::Custom("report".into()),
+///     config: serde_json::json!({"task": "Generate weekly report"}),
+/// };
+/// msg_tx.send(SchedulerMessage::Add(Box::new(desc))).await?;
+///
+/// // Cancel a previously registered task.
+/// msg_tx.send(SchedulerMessage::Cancel("generate-report".into())).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub enum SchedulerMessage {
+    /// Register a new task (or replace an existing one with the same name).
     Add(Box<TaskDescriptor>),
+    /// Cancel and delete the task with the given name.
     Cancel(String),
 }
 
+/// Cron-based periodic task scheduler.
+///
+/// `Scheduler` owns the in-memory task list and drives execution on a configurable
+/// tick interval. It persists job state to SQLite via [`JobStore`] so task schedules
+/// survive restarts.
+///
+/// # Creation
+///
+/// Use [`Scheduler::new`] (defaults: 100-task cap, 60-second tick) or
+/// [`Scheduler::with_max_tasks`] to set a custom capacity.
+///
+/// # Registration
+///
+/// - **Before start**: call [`Scheduler::add_task`] and [`Scheduler::register_handler`].
+/// - **At runtime**: send [`SchedulerMessage::Add`] / [`SchedulerMessage::Cancel`]
+///   on the `mpsc::Sender` returned by the constructor.
+///
+/// # Lifecycle
+///
+/// ```text
+/// Scheduler::new()  →  add_task / register_handler  →  init()  →  run()
+///                                                                      │
+///                                                            shutdown_rx receives true
+///                                                                      │
+///                                                                    exit
+/// ```
 pub struct Scheduler {
     tasks: Vec<ScheduledTask>,
     store: JobStore,
@@ -32,6 +90,10 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
+    /// Create a scheduler with a default task cap of 100 and a 60-second tick interval.
+    ///
+    /// Returns `(Scheduler, sender)` where `sender` is used to add or cancel tasks at
+    /// runtime via [`SchedulerMessage`].
     #[must_use]
     pub fn new(
         store: JobStore,
@@ -40,6 +102,13 @@ impl Scheduler {
         Self::with_max_tasks(store, shutdown_rx, 100)
     }
 
+    /// Create a scheduler with a custom maximum number of concurrent tasks.
+    ///
+    /// Tasks arriving via the control channel when `max_tasks` is already reached are
+    /// silently dropped and a warning is emitted via `tracing`.
+    ///
+    /// Returns `(Scheduler, sender)` where `sender` is used to add or cancel tasks at
+    /// runtime via [`SchedulerMessage`].
     #[must_use]
     pub fn with_max_tasks(
         store: JobStore,
@@ -66,10 +135,20 @@ impl Scheduler {
         self
     }
 
+    /// Add a task to the scheduler.
+    ///
+    /// This method must be called before [`Scheduler::init`]. To add tasks while the
+    /// scheduler is already running, send a [`SchedulerMessage::Add`] on the control
+    /// channel instead.
     pub fn add_task(&mut self, task: ScheduledTask) {
         self.tasks.push(task);
     }
 
+    /// Register a handler for tasks of the given kind.
+    ///
+    /// When a task is due, the scheduler looks up its [`TaskKind`]'s string key and
+    /// calls the matching handler. Tasks whose kind has no registered handler are
+    /// skipped with a debug-level log.
     pub fn register_handler(&mut self, kind: &TaskKind, handler: Box<dyn TaskHandler>) {
         self.handlers.insert(kind.as_str().to_owned(), handler);
     }
@@ -129,7 +208,13 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Run the scheduler loop with configurable tick interval (minimum 1 second).
+    /// Run the scheduler loop with a configurable tick interval.
+    ///
+    /// The interval is clamped to a minimum of 1 second. Missed ticks (caused by a
+    /// slow `tick()` call) are skipped instead of burst-replayed, preventing runaway
+    /// execution storms on slow hosts.
+    ///
+    /// This method runs until `true` is sent on the shutdown channel.
     pub async fn run_with_interval(&mut self, tick_secs: u64) {
         let secs = tick_secs.max(1);
         let mut interval = tokio::time::interval(Duration::from_secs(secs));
@@ -153,7 +238,10 @@ impl Scheduler {
         }
     }
 
-    /// Run the scheduler loop, checking every 60 seconds for due tasks.
+    /// Run the scheduler loop, checking for due tasks every 60 seconds.
+    ///
+    /// This is a convenience wrapper around [`Scheduler::run_with_interval`] with a
+    /// 60-second tick. It runs until `true` is sent on the shutdown channel.
     pub async fn run(&mut self) {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

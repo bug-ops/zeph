@@ -3,21 +3,66 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+/// Ratatui [`Style`] mappings for tree-sitter syntax-highlight capture groups.
+///
+/// Each field corresponds to a tree-sitter capture name (e.g. `"keyword"`,
+/// `"string"`, `"comment"`). The [`crate::highlight::SyntaxHighlighter`] uses
+/// this struct to map highlight events to terminal styles.
+///
+/// The [`Default`] implementation provides a dark One Dark-inspired palette.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::theme::SyntaxTheme;
+///
+/// let theme = SyntaxTheme::default();
+/// // Keywords are rendered bold.
+/// use ratatui::style::Modifier;
+/// assert!(theme.keyword.add_modifier.contains(Modifier::BOLD));
+/// ```
 pub struct SyntaxTheme {
+    /// Style for language keywords (e.g. `fn`, `let`, `if`).
     pub keyword: Style,
+    /// Style for string literals.
     pub string: Style,
+    /// Style for comments.
     pub comment: Style,
+    /// Style for function names.
     pub function: Style,
+    /// Style for type names and constructors.
     pub r#type: Style,
+    /// Style for numeric literals.
     pub number: Style,
+    /// Style for operators.
     pub operator: Style,
+    /// Style for variable names and parameters.
     pub variable: Style,
+    /// Style for attributes and annotations.
     pub attribute: Style,
+    /// Style for punctuation tokens.
     pub punctuation: Style,
+    /// Style for constants and built-in values.
     pub constant: Style,
+    /// Fallback style for unstyled source text.
     pub default: Style,
 }
 
+/// Visual theme for the TUI dashboard widgets.
+///
+/// Contains [`Style`] values for every distinct UI element — message roles,
+/// input fields, borders, diff gutters, hyperlinks, and status elements.
+/// The [`Default`] implementation provides a dark blue colour scheme.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::theme::Theme;
+///
+/// let theme = Theme::default();
+/// // User and assistant messages use distinct colours.
+/// assert_ne!(theme.user_message, theme.assistant_message);
+/// ```
 pub struct Theme {
     pub user_message: Style,
     pub assistant_message: Style,

@@ -22,30 +22,52 @@ use super::planner::{PlannerResponse, convert_response_pub};
 use zeph_subagent::SubAgentDef;
 
 /// Structural skeleton of a single task, stripped of all runtime state.
+///
+/// Used inside a [`PlanTemplate`]. All fields use owned `String` types so the
+/// template can be serialised independently of the live `TaskGraph`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemplateTask {
+    /// Human-readable task title.
     pub title: String,
+    /// Full task description (agent prompt).
     pub description: String,
+    /// Preferred agent name, if specified by the original planner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_hint: Option<String>,
+    /// Kebab-case `task_id` strings of tasks this task depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    /// Serialised [`FailureStrategy`] name, if overridden per task.
+    ///
+    /// [`FailureStrategy`]: crate::graph::FailureStrategy
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_strategy: Option<String>,
     /// Stable kebab-case `task_id` assigned during template extraction.
     pub task_id: String,
 }
 
-/// Reusable plan skeleton extracted from a successfully completed `TaskGraph`.
+/// Reusable plan skeleton extracted from a successfully completed [`TaskGraph`].
 ///
-/// Contains only the structural information (task titles, descriptions,
-/// dependencies, agent hints) — all runtime state (status, results,
-/// `retry_count`, `assigned_agent`, timestamps) is stripped.
+/// Contains only structural information (task titles, descriptions, dependencies,
+/// agent hints). All runtime state (`status`, `results`, `retry_count`,
+/// `assigned_agent`, timestamps) is stripped.
+///
+/// Stored as JSON in the `plan_cache` SQLite table. Adapted by an LLM call when
+/// a semantically similar goal arrives via [`plan_with_cache`].
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::plan_cache::{PlanTemplate, normalize_goal};
+///
+/// let normalized = normalize_goal("  Build AND Deploy  ");
+/// assert_eq!(normalized, "build and deploy");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanTemplate {
-    /// Normalized goal text used for exact-match fallback.
+    /// Normalised goal text used for exact-match fallback.
     pub goal: String,
-    /// Structural task skeleton.
+    /// Structural task skeleton ordered by dependency (roots first).
     pub tasks: Vec<TemplateTask>,
 }
 
@@ -189,12 +211,18 @@ fn unix_now() -> i64 {
 }
 
 /// Error type for plan cache operations.
+///
+/// All errors are non-fatal in the context of the planning critical path:
+/// callers should log the error and fall back to full LLM decomposition.
 #[derive(Debug, thiserror::Error)]
 pub enum PlanCacheError {
+    /// A SQLite query failed.
     #[error("database error: {0}")]
     Database(#[from] zeph_db::SqlxError),
+    /// JSON serialization or deserialization of a plan template failed.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+    /// Extracting a [`PlanTemplate`] from a completed [`TaskGraph`] failed.
     #[error("plan template extraction failed: {0}")]
     Extraction(String),
 }

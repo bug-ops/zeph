@@ -171,11 +171,25 @@ fn default_oauth_client_name() -> String {
     "Zeph".into()
 }
 
+/// Telegram channel configuration, nested under `[telegram]` in TOML.
+///
+/// When present, Zeph connects to Telegram as a bot using the provided token.
+/// The token must be resolved from the vault at runtime via `ZEPH_TELEGRAM_TOKEN`.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [telegram]
+/// allowed_users = ["myusername"]
+/// ```
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TelegramConfig {
+    /// Bot token. Set to `None` and resolve from vault via `ZEPH_TELEGRAM_TOKEN`.
     pub token: Option<String>,
+    /// Telegram usernames allowed to interact with the bot (empty = allow all).
     #[serde(default)]
     pub allowed_users: Vec<String>,
+    /// Skill allowlist for this channel.
     #[serde(default)]
     pub skills: ChannelSkillsConfig,
 }

@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-/// Typed error code for MCP tool call retry/recovery classification.
+/// Typed error code for MCP tool call retry and recovery classification.
+///
+/// Used by [`McpError::code`] and callers such as the agent retry loop to decide
+/// whether an operation should be retried, backed off, or abandoned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpErrorCode {
@@ -32,6 +35,25 @@ impl McpErrorCode {
     }
 }
 
+/// Crate-wide error type for all MCP operations.
+///
+/// Variants cover connection failures, tool call errors, policy blocks, OAuth flows,
+/// and infrastructure errors (Qdrant, JSON serialization). Use [`McpError::code`] to
+/// obtain a typed [`McpErrorCode`] for retry/recovery decisions.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_mcp::error::{McpError, McpErrorCode};
+///
+/// let err = McpError::Timeout {
+///     server_id: "github".to_owned(),
+///     tool_name: "create_issue".to_owned(),
+///     timeout_secs: 30,
+/// };
+/// assert_eq!(err.code(), Some(McpErrorCode::Transient));
+/// assert!(err.code().unwrap().is_retryable());
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
     #[error("connection failed for server '{server_id}': {message}")]

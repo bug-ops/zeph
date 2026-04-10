@@ -1,6 +1,31 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! SQLite-backed relational store for all persistent agent data.
+//!
+//! [`DbStore`] (aliased as [`SqliteStore`]) wraps a [`zeph_db::DbPool`] and provides
+//! typed sub-store modules for every data domain:
+//!
+//! | Module | Contents |
+//! |--------|----------|
+//! | `messages` | Conversation messages, role strings, metadata |
+//! | `summaries` | Compression summaries per conversation |
+//! | `persona` | Long-lived user attributes ([`PersonaFactRow`]) |
+//! | `trajectory` | Goal trajectory entries ([`TrajectoryEntryRow`]) |
+//! | `memory_tree` | Hierarchical note consolidation tree ([`MemoryTreeRow`]) |
+//! | `session_digest` | Per-session digest records ([`SessionDigest`]) |
+//! | `experiments` | A/B experiment results and session summaries |
+//! | `corrections` | User-issued corrections stored for fine-tuning |
+//! | `graph_store` | Entity/edge adjacency tables for the knowledge graph |
+//! | `overflow` | Context-overflow handling metadata |
+//! | `preferences` | User preference key-value store |
+//! | `skills` | Skill metrics, usage, and version records |
+//! | `trust` | Skill trust scores by source |
+//! | `acp_sessions` | ACP protocol session events |
+//! | `mem_scenes` | Scene segmentation records |
+//! | `compression_guidelines` | LLM compression policy guidelines |
+//! | `admission_training` | A-MAC admission training data |
+
 mod acp_sessions;
 pub mod admission_training;
 pub mod compression_guidelines;
@@ -38,6 +63,21 @@ pub use trust::{SkillTrustRow, SourceKind};
 /// Backward-compatible type alias. Prefer [`DbStore`] in new code.
 pub type SqliteStore = DbStore;
 
+/// Primary relational data store backed by a [`DbPool`].
+///
+/// Opening a `DbStore` runs all pending SQLite migrations automatically.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// # async fn example() -> Result<(), zeph_memory::MemoryError> {
+/// use zeph_memory::store::DbStore;
+///
+/// let store = DbStore::new(":memory:").await?;
+/// let cid = store.create_conversation().await?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct DbStore {
     pool: DbPool,

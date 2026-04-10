@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Result aggregation: collect completed task outputs and synthesize a coherent summary.
+//! Result aggregation: collect completed task outputs and synthesise a coherent summary.
+//!
+//! The [`Aggregator`] trait defines the synthesis contract. [`LlmAggregator`] implements it
+//! using an LLM call with a structured prompt containing all task outputs. On LLM failure the
+//! implementation falls back to raw concatenation so that a graph result is always returned.
 
 use std::fmt::Write as _;
 
@@ -36,7 +40,12 @@ pub trait Aggregator: Send + Sync {
     ) -> Result<(String, Option<(u64, u64)>), OrchestrationError>;
 }
 
-/// LLM-backed [`Aggregator`] that synthesizes task outputs into a coherent response.
+/// LLM-backed [`Aggregator`] that synthesises task outputs into a coherent response.
+///
+/// Divides the total token budget (`config.aggregator_max_tokens × 4 chars/token`) equally
+/// across completed tasks and truncates each output before including it in the prompt.
+/// On LLM failure it falls back to raw concatenation via an internal `build_fallback` path;
+/// the fallback always succeeds if at least one task has a result.
 pub struct LlmAggregator<P: LlmProvider> {
     provider: P,
     /// Total character budget for all task outputs combined. Divided equally among
@@ -46,7 +55,10 @@ pub struct LlmAggregator<P: LlmProvider> {
 }
 
 impl<P: LlmProvider> LlmAggregator<P> {
-    /// Create a new `LlmAggregator` from a provider and config.
+    /// Create a new `LlmAggregator` from a provider and orchestration config.
+    ///
+    /// The character budget is derived from `config.aggregator_max_tokens` using a
+    /// 4 chars-per-token estimate.
     #[must_use]
     pub fn new(provider: P, config: &OrchestrationConfig) -> Self {
         // Estimate 4 chars/token for the total budget.

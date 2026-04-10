@@ -1,6 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Memory snapshot export and import.
+//!
+//! A [`MemorySnapshot`] serializes the full set of conversations, messages, and
+//! summaries from SQLite into a JSON document suitable for backup or migration.
+//!
+//! Import is idempotent: conversations and messages already present in the target
+//! database are skipped and counted in [`ImportStats::skipped`].
+
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use zeph_db::sql;
@@ -11,45 +19,72 @@ use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::ConversationId;
 
+/// Complete serializable snapshot of the SQLite memory store.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MemorySnapshot {
+    /// Schema version for forward-compatibility checks.
     pub version: u32,
+    /// RFC 3339 timestamp when the snapshot was created.
     pub exported_at: String,
+    /// All conversations with their messages and summaries.
     pub conversations: Vec<ConversationSnapshot>,
 }
 
+/// One conversation and all its associated data in a [`MemorySnapshot`].
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConversationSnapshot {
+    /// SQLite row ID of the conversation.
     pub id: i64,
+    /// All messages in this conversation.
     pub messages: Vec<MessageSnapshot>,
+    /// Compression summaries for this conversation.
     pub summaries: Vec<SummarySnapshot>,
 }
 
+/// A single message as stored in a [`MemorySnapshot`].
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MessageSnapshot {
+    /// SQLite row ID.
     pub id: i64,
+    /// Parent conversation ID.
     pub conversation_id: i64,
+    /// Message role (`"user"`, `"assistant"`, `"system"`).
     pub role: String,
+    /// Flattened text content.
     pub content: String,
+    /// JSON-encoded `Vec<MessagePart>` payload.
     pub parts_json: String,
+    /// Unix timestamp (seconds since epoch).
     pub created_at: i64,
 }
 
+/// A compression summary record in a [`MemorySnapshot`].
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SummarySnapshot {
+    /// SQLite row ID.
     pub id: i64,
+    /// Parent conversation ID.
     pub conversation_id: i64,
+    /// Summary text.
     pub content: String,
+    /// Inclusive lower bound of the summarised message range.
     pub first_message_id: Option<i64>,
+    /// Inclusive upper bound of the summarised message range.
     pub last_message_id: Option<i64>,
+    /// Estimated token count of the summary content.
     pub token_estimate: i64,
 }
 
+/// Counters returned by [`import_snapshot`].
 #[derive(Debug, Default)]
 pub struct ImportStats {
+    /// Number of conversations inserted.
     pub conversations_imported: usize,
+    /// Number of messages inserted.
     pub messages_imported: usize,
+    /// Number of summaries inserted.
     pub summaries_imported: usize,
+    /// Number of rows skipped because they already existed.
     pub skipped: usize,
 }
 

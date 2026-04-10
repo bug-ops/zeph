@@ -1,6 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Bearer token authentication middleware for the ACP HTTP transport.
+//!
+//! Token comparison uses `blake3` hashing + `subtle::ConstantTimeEq` to prevent
+//! timing side-channels. Both the provided and expected tokens are hashed to
+//! fixed-length digests before comparison, eliminating the length side-channel
+//! present in direct byte comparison.
+
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode, header};
 use axum::response::IntoResponse;

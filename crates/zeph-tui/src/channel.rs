@@ -10,6 +10,29 @@ use zeph_core::channel::{
 use crate::command::TuiCommand;
 use crate::event::AgentEvent;
 
+/// The [`zeph_core::channel::Channel`] implementation for the TUI.
+///
+/// `TuiChannel` bridges the agent loop and the TUI render loop:
+///
+/// - **User input** arrives from [`App`](crate::App) via `user_input_rx` and
+///   is forwarded to the agent as [`zeph_core::channel::ChannelMessage`].
+/// - **Agent output** (chunks, tool events, status, diffs, confirmations) is
+///   forwarded to the TUI via `agent_event_tx` as [`crate::event::AgentEvent`]
+///   variants.
+/// - An optional `command_rx` receives [`TuiCommand`] control messages without
+///   going through the LLM loop (e.g. slash-commands).
+///
+/// # Examples
+///
+/// ```rust
+/// use tokio::sync::mpsc;
+/// use zeph_tui::TuiChannel;
+/// use zeph_tui::event::AgentEvent;
+///
+/// let (user_tx, user_rx) = mpsc::channel(16);
+/// let (agent_tx, _agent_rx) = mpsc::channel(16);
+/// let channel = TuiChannel::new(user_rx, agent_tx);
+/// ```
 #[derive(Debug)]
 pub struct TuiChannel {
     user_input_rx: mpsc::Receiver<String>,
@@ -19,6 +42,24 @@ pub struct TuiChannel {
 }
 
 impl TuiChannel {
+    /// Create a new `TuiChannel` from the given channel endpoints.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_input_rx` — receives UTF-8 strings typed by the user in the input box.
+    /// * `agent_event_tx` — sends agent lifecycle events to the TUI render loop.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::TuiChannel;
+    /// use zeph_tui::event::AgentEvent;
+    ///
+    /// let (user_tx, user_rx) = mpsc::channel(16);
+    /// let (agent_tx, _agent_rx) = mpsc::channel(16);
+    /// let channel = TuiChannel::new(user_rx, agent_tx);
+    /// ```
     #[must_use]
     pub fn new(
         user_input_rx: mpsc::Receiver<String>,
@@ -32,12 +73,48 @@ impl TuiChannel {
         }
     }
 
+    /// Attach an optional command receiver for slash-command dispatch.
+    ///
+    /// When set, the agent loop can call [`try_recv_command`](Self::try_recv_command)
+    /// to drain pending [`TuiCommand`] values without going through the LLM.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::{TuiChannel, TuiCommand};
+    /// use zeph_tui::event::AgentEvent;
+    ///
+    /// let (user_tx, user_rx) = mpsc::channel(16);
+    /// let (agent_tx, _agent_rx) = mpsc::channel(16);
+    /// let (_cmd_tx, cmd_rx) = mpsc::channel(8);
+    /// let channel = TuiChannel::new(user_rx, agent_tx).with_command_rx(cmd_rx);
+    /// ```
     #[must_use]
     pub fn with_command_rx(mut self, rx: mpsc::Receiver<TuiCommand>) -> Self {
         self.command_rx = Some(rx);
         self
     }
 
+    /// Non-blocking attempt to receive a pending [`TuiCommand`].
+    ///
+    /// Returns `None` if no command receiver was attached or the channel is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::{TuiChannel, TuiCommand};
+    /// use zeph_tui::event::AgentEvent;
+    ///
+    /// let (user_tx, user_rx) = mpsc::channel(16);
+    /// let (agent_tx, _agent_rx) = mpsc::channel(16);
+    /// let (cmd_tx, cmd_rx) = mpsc::channel(8);
+    /// cmd_tx.try_send(TuiCommand::SkillList).unwrap();
+    /// let mut channel = TuiChannel::new(user_rx, agent_tx).with_command_rx(cmd_rx);
+    /// assert_eq!(channel.try_recv_command(), Some(TuiCommand::SkillList));
+    /// assert_eq!(channel.try_recv_command(), None);
+    /// ```
     pub fn try_recv_command(&mut self) -> Option<TuiCommand> {
         self.command_rx.as_mut()?.try_recv().ok()
     }

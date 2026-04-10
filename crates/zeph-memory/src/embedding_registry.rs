@@ -20,19 +20,27 @@ pub type EmbedFuture = Pin<
     Box<dyn Future<Output = Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>>> + Send>,
 >;
 
-/// Trait implemented by domain types that can be stored in an [`EmbeddingRegistry`].
+/// Domain type that can be stored in an [`EmbeddingRegistry`].
+///
+/// Implement this trait for any struct that should be embedded and persisted in Qdrant.
+/// The registry uses [`key`](Self::key) and [`content_hash`](Self::content_hash) to
+/// detect which items need to be re-embedded on each [`EmbeddingRegistry::sync`] call.
 pub trait Embeddable: Send + Sync {
     /// Unique string key used for point-ID generation and delta tracking.
     fn key(&self) -> &str;
 
-    /// blake3 hex hash of all semantically relevant fields.
+    /// BLAKE3 hex hash of all semantically relevant fields.
+    ///
+    /// When this hash changes between syncs the item's embedding is recomputed.
     fn content_hash(&self) -> String;
 
-    /// Text that will be embedded (e.g. description).
+    /// Text that will be passed to the embedding model.
     fn embed_text(&self) -> &str;
 
-    /// Full JSON payload to store in Qdrant. **Must** include a `"key"` field
-    /// equal to [`Self::key()`] so [`EmbeddingRegistry`] can recover it on scroll.
+    /// Full JSON payload to store in Qdrant alongside the vector.
+    ///
+    /// **Must** include a `"key"` field equal to [`Self::key()`] so
+    /// [`EmbeddingRegistry`] can recover items on scroll.
     fn to_payload(&self) -> serde_json::Value;
 }
 

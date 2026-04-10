@@ -20,22 +20,35 @@ use crate::types::{MemSceneId, MessageId};
 use zeph_common::math::cosine_similarity;
 
 /// A `MemScene` groups semantically related semantic-tier messages with a stable entity profile.
+///
+/// Scenes are created and updated by [`start_scene_consolidation_loop`] and can be
+/// listed via [`list_scenes`].
 #[derive(Debug, Clone)]
 pub struct MemScene {
+    /// SQLite row ID of the scene.
     pub id: MemSceneId,
+    /// Short human-readable label for the scene (e.g. `"Rust programming"`).
     pub label: String,
+    /// LLM-generated entity profile summarising the scene's members.
     pub profile: String,
+    /// Number of messages currently assigned to this scene.
     pub member_count: u32,
+    /// Unix timestamp when the scene was first created.
     pub created_at: i64,
+    /// Unix timestamp of the last profile update.
     pub updated_at: i64,
 }
 
-/// Configuration for scene consolidation.
+/// Configuration for the scene consolidation background loop.
 #[derive(Debug, Clone)]
 pub struct SceneConfig {
+    /// Enable or disable the scene consolidation loop.
     pub enabled: bool,
+    /// Minimum cosine similarity for two messages to be assigned to the same scene.
     pub similarity_threshold: f32,
+    /// Maximum number of unassigned messages to process per sweep.
     pub batch_size: usize,
+    /// How often to run a sweep, in seconds.
     pub sweep_interval_secs: u64,
 }
 

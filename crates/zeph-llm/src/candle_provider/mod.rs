@@ -1,6 +1,63 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! HuggingFace Candle local inference backend (feature: `candle`).
+//!
+//! [`CandleProvider`] runs quantized or full-precision language models entirely
+//! in-process via the [candle](https://github.com/huggingface/candle) tensor library.
+//! No network calls are made after the initial model download from HuggingFace Hub.
+//!
+//! # Architecture
+//!
+//! A single OS thread — the **inference worker** — owns the model weights and
+//! runs the generation loop. All async callers dispatch [`InferenceRequest`]s over
+//! a bounded channel (`WORKER_CHANNEL_CAPACITY = 4`) and await a oneshot reply.
+//! This prevents concurrent GPU access and applies natural backpressure.
+//!
+//! # Streaming
+//!
+//! Streaming is simulated: the worker generates all tokens synchronously, then
+//! the response is replayed to the caller in 32-byte chunks via a `mpsc` channel.
+//! True token-by-token streaming would require invasive changes to the worker loop
+//! and is deferred post-v1.0.
+//!
+//! # Configuration
+//!
+//! ```toml
+//! [[llm.providers]]
+//! name = "local-candle"
+//! type = "candle"
+//! repo_id = "microsoft/Phi-3-mini-4k-instruct"
+//! embedding_repo = "sentence-transformers/all-MiniLM-L6-v2"
+//! device = "metal"        # "cpu" | "cuda" | "metal"
+//! ```
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! # #[cfg(feature = "candle")]
+//! # {
+//! use zeph_llm::candle_provider::{CandleProvider, Device};
+//! use zeph_llm::candle_provider::loader::ModelSource;
+//! use zeph_llm::candle_provider::template::ChatTemplate;
+//! use zeph_llm::candle_provider::generate::GenerationConfig;
+//!
+//! let source = ModelSource::HuggingFace {
+//!     repo_id: "microsoft/Phi-3-mini-4k-instruct".into(),
+//!     revision: None,
+//! };
+//! let provider = CandleProvider::new(
+//!     &source,
+//!     ChatTemplate::Phi3,
+//!     GenerationConfig::default(),
+//!     Some("sentence-transformers/all-MiniLM-L6-v2"),
+//!     None, // no HF token needed for public models
+//!     Device::Cpu,
+//! )?;
+//! # Ok::<(), zeph_llm::LlmError>(())
+//! # }
+//! ```
+
 pub mod embed;
 pub mod generate;
 pub mod loader;
@@ -30,6 +87,13 @@ use crate::provider::{ChatStream, LlmProvider, Message, StreamChunk};
 /// + speculative calls edge case without unbounded growth.
 const WORKER_CHANNEL_CAPACITY: usize = 4;
 
+/// [`LlmProvider`] backed by HuggingFace Candle local inference.
+///
+/// Model weights are loaded once at construction time. All inference calls are
+/// dispatched to a dedicated single-threaded worker to prevent concurrent GPU access.
+///
+/// Clone is cheap — both the original and clone share the same underlying worker
+/// (via `Arc<Sender>`). The original instance owns the worker's `JoinHandle`.
 pub struct CandleProvider {
     worker: InferenceWorker,
     tokenizer: std::sync::Arc<Tokenizer>,
@@ -149,6 +213,7 @@ impl CandleProvider {
         })
     }
 
+    /// Return a short string identifying the compute device: `"cpu"`, `"cuda"`, or `"metal"`.
     #[must_use]
     pub fn device_name(&self) -> &'static str {
         match &self.device {

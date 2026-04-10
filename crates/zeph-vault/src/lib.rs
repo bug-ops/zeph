@@ -1,6 +1,62 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Secret storage for Zeph with pluggable backends and age encryption.
+//!
+//! This crate provides:
+//!
+//! - [`VaultProvider`] — an async trait for secret retrieval, implemented by all backends.
+//! - [`AgeVaultProvider`] — primary backend that stores secrets as an age-encrypted JSON file.
+//! - [`EnvVaultProvider`] — development/testing backend that reads secrets from environment
+//!   variables prefixed with `ZEPH_SECRET_`.
+//! - [`ArcAgeVaultProvider`] — thin `Arc<RwLock<AgeVaultProvider>>` wrapper that implements
+//!   [`VaultProvider`] so the age vault can be stored as a trait object while still being
+//!   accessible for mutable operations (e.g. OAuth credential persistence).
+//! - [`MockVaultProvider`] — in-memory backend available under the `mock` feature flag and in
+//!   `#[cfg(test)]` contexts.
+//!
+//! [`Secret`] and [`VaultError`] live in `zeph-common` (layer 0) and are re-exported here so
+//! callers only need to depend on `zeph-vault`.
+//!
+//! # Security model
+//!
+//! - Secrets are stored as a JSON object encrypted with [age](https://age-encryption.org) using
+//!   an x25519 keypair. Only the holder of the private key file can decrypt the vault.
+//! - In-memory secret values are kept in [`zeroize::Zeroizing`] buffers, which overwrite the
+//!   memory on drop.
+//! - The key file is created with Unix permission `0600` (owner-read/write only). On non-Unix
+//!   platforms the file is created without access control restrictions.
+//! - Vault writes are atomic: a temporary file is written first, then renamed, so a crash during
+//!   write never corrupts the existing vault.
+//!
+//! # Vault file layout
+//!
+//! ```text
+//! ~/.config/zeph/
+//! ├── vault-key.txt   # age identity (private key), mode 0600
+//! └── secrets.age     # age-encrypted JSON: {"KEY": "value", ...}
+//! ```
+//!
+//! # Quick start
+//!
+//! ```no_run
+//! use std::path::Path;
+//! use zeph_vault::{AgeVaultProvider, VaultProvider as _};
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let vault = AgeVaultProvider::new(
+//!     Path::new("/etc/zeph/vault-key.txt"),
+//!     Path::new("/etc/zeph/secrets.age"),
+//! )?;
+//!
+//! // Synchronous access via the direct getter
+//! if let Some(key) = vault.get("ZEPH_OPENAI_API_KEY") {
+//!     println!("key length: {}", key.len());
+//! }
+//! # Ok(())
+//! # }
+//! ```
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
@@ -16,6 +72,30 @@ use zeroize::Zeroizing;
 pub use zeph_common::secret::{Secret, VaultError};
 
 /// Pluggable secret retrieval backend.
+///
+/// Implement this trait to integrate a custom secret store (e.g. HashiCorp Vault, AWS Secrets
+/// Manager, 1Password). The crate ships three implementations out of the box:
+/// [`AgeVaultProvider`], [`EnvVaultProvider`], and [`ArcAgeVaultProvider`].
+///
+/// # Implementing
+///
+/// ```
+/// use std::pin::Pin;
+/// use std::future::Future;
+/// use zeph_vault::{VaultProvider, VaultError};
+///
+/// struct ConstantVault(&'static str);
+///
+/// impl VaultProvider for ConstantVault {
+///     fn get_secret(
+///         &self,
+///         key: &str,
+///     ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>> {
+///         let value = if key == "MY_KEY" { Some(self.0.to_owned()) } else { None };
+///         Box::pin(async move { Ok(value) })
+///     }
+/// }
+/// ```
 pub trait VaultProvider: Send + Sync {
     /// Retrieve a secret by key.
     ///
@@ -26,37 +106,115 @@ pub trait VaultProvider: Send + Sync {
         key: &str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>>;
 
-    /// Return all known secret keys. Used for scanning `ZEPH_SECRET_*` prefixes.
+    /// Return all known secret keys.
+    ///
+    /// Used internally for scanning `ZEPH_SECRET_*` prefixes and for the `vault list` CLI
+    /// subcommand. The default implementation returns an empty `Vec`; override it when the
+    /// backend supports key enumeration.
     fn list_keys(&self) -> Vec<String> {
         Vec::new()
     }
 }
 
-/// MVP vault backend that reads secrets from environment variables.
+/// Vault backend that reads secrets from environment variables.
+///
+/// This backend is designed for quick local development and CI environments where injecting
+/// environment variables is convenient. In production, prefer [`AgeVaultProvider`].
+///
+/// [`get_secret`][VaultProvider::get_secret] reads any environment variable by name.
+/// [`list_keys`][VaultProvider::list_keys] returns only variables whose names start with
+/// `ZEPH_SECRET_`, preventing accidental exposure of unrelated process environment.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_vault::{EnvVaultProvider, VaultProvider as _};
+///
+/// # async fn example() {
+/// let vault = EnvVaultProvider;
+/// // Returns None for variables that are not set.
+/// let result = vault.get_secret("ZEPH_TEST_NONEXISTENT_99999").await.unwrap();
+/// assert!(result.is_none());
+/// # }
+/// ```
 pub struct EnvVaultProvider;
 
+/// Errors that can occur during age vault operations.
+///
+/// Each variant wraps the underlying cause so callers can match on failure type without
+/// parsing error strings.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_vault::AgeVaultError;
+///
+/// let err = AgeVaultError::KeyParse("no identity line found".into());
+/// assert!(err.to_string().contains("failed to parse age identity"));
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum AgeVaultError {
+    /// The key file could not be read from disk.
     #[error("failed to read key file: {0}")]
     KeyRead(std::io::Error),
+    /// The key file content could not be parsed as an age identity.
     #[error("failed to parse age identity: {0}")]
     KeyParse(String),
+    /// The vault file could not be read from disk.
     #[error("failed to read vault file: {0}")]
     VaultRead(std::io::Error),
+    /// The age decryption step failed (wrong key, corrupted file, etc.).
     #[error("age decryption failed: {0}")]
     Decrypt(age::DecryptError),
+    /// An I/O error occurred while reading plaintext from the age stream.
     #[error("I/O error during decryption: {0}")]
     Io(std::io::Error),
+    /// The decrypted bytes could not be parsed as JSON.
     #[error("invalid JSON in vault: {0}")]
     Json(serde_json::Error),
+    /// The age encryption step failed.
     #[error("age encryption failed: {0}")]
     Encrypt(String),
+    /// The vault file (or its temporary predecessor) could not be written to disk.
     #[error("failed to write vault file: {0}")]
     VaultWrite(std::io::Error),
+    /// The key file could not be written to disk.
     #[error("failed to write key file: {0}")]
     KeyWrite(std::io::Error),
 }
 
+/// Age-encrypted vault backend.
+///
+/// Secrets are stored as a JSON object (`{"KEY": "value", ...}`) encrypted with an x25519
+/// keypair using the [age](https://age-encryption.org) format. The in-memory secret values
+/// are held in [`zeroize::Zeroizing`] buffers.
+///
+/// # File layout
+///
+/// ```text
+/// <dir>/vault-key.txt   # age identity (private key), Unix mode 0600
+/// <dir>/secrets.age     # age-encrypted JSON object
+/// ```
+///
+/// # Initialising a new vault
+///
+/// Use [`AgeVaultProvider::init_vault`] to generate a fresh keypair and create an empty vault:
+///
+/// ```no_run
+/// use std::path::Path;
+/// use zeph_vault::AgeVaultProvider;
+///
+/// AgeVaultProvider::init_vault(Path::new("/etc/zeph"))?;
+/// // Produces:
+/// //   /etc/zeph/vault-key.txt  (mode 0600)
+/// //   /etc/zeph/secrets.age    (empty encrypted vault)
+/// # Ok::<_, zeph_vault::AgeVaultError>(())
+/// ```
+///
+/// # Atomic writes
+///
+/// [`save`][AgeVaultProvider::save] writes to a `.age.tmp` sibling file first, then renames it
+/// atomically, so a crash during write never leaves the vault in a corrupted state.
 pub struct AgeVaultProvider {
     secrets: BTreeMap<String, Zeroizing<String>>,
     key_path: PathBuf,
@@ -76,21 +234,57 @@ impl fmt::Debug for AgeVaultProvider {
 impl AgeVaultProvider {
     /// Decrypt an age-encrypted JSON secrets file.
     ///
-    /// `key_path` — path to the age identity (private key) file.
-    /// `vault_path` — path to the age-encrypted JSON file.
+    /// This is an alias for [`load`][Self::load] provided for ergonomic construction.
+    ///
+    /// # Arguments
+    ///
+    /// - `key_path` — path to the age identity (private key) file. Lines starting with `#`
+    ///   and blank lines are ignored; the first non-comment line is parsed as the identity.
+    /// - `vault_path` — path to the age-encrypted JSON file.
     ///
     /// # Errors
     ///
     /// Returns [`AgeVaultError`] on key/vault read failure, parse error, or decryption failure.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use zeph_vault::AgeVaultProvider;
+    ///
+    /// let vault = AgeVaultProvider::new(
+    ///     Path::new("/etc/zeph/vault-key.txt"),
+    ///     Path::new("/etc/zeph/secrets.age"),
+    /// )?;
+    /// println!("{} secrets loaded", vault.list_keys().len());
+    /// # Ok::<_, zeph_vault::AgeVaultError>(())
+    /// ```
     pub fn new(key_path: &Path, vault_path: &Path) -> Result<Self, AgeVaultError> {
         Self::load(key_path, vault_path)
     }
 
     /// Load vault from disk, storing paths for subsequent write operations.
     ///
+    /// Reads and decrypts the vault, then retains both paths so that
+    /// [`save`][Self::save] can re-encrypt and persist changes without requiring callers to
+    /// pass paths again.
+    ///
     /// # Errors
     ///
     /// Returns [`AgeVaultError`] on key/vault read failure, parse error, or decryption failure.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use zeph_vault::AgeVaultProvider;
+    ///
+    /// let vault = AgeVaultProvider::load(
+    ///     Path::new("/etc/zeph/vault-key.txt"),
+    ///     Path::new("/etc/zeph/secrets.age"),
+    /// )?;
+    /// # Ok::<_, zeph_vault::AgeVaultError>(())
+    /// ```
     pub fn load(key_path: &Path, vault_path: &Path) -> Result<Self, AgeVaultError> {
         let key_str =
             Zeroizing::new(std::fs::read_to_string(key_path).map_err(AgeVaultError::KeyRead)?);
@@ -106,12 +300,27 @@ impl AgeVaultProvider {
 
     /// Serialize and re-encrypt secrets to vault file using atomic write (temp + rename).
     ///
+    /// Re-reads and re-parses the key file on each call. For CLI one-shot use this is
+    /// acceptable; if used in a long-lived context consider caching the parsed identity.
+    ///
     /// # Errors
     ///
     /// Returns [`AgeVaultError`] on encryption or write failure.
     ///
-    /// Note: re-reads and re-parses the key file on each call. For CLI one-shot use this
-    /// is acceptable; if used in a long-lived context consider caching the parsed identity.
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use zeph_vault::AgeVaultProvider;
+    ///
+    /// let mut vault = AgeVaultProvider::load(
+    ///     Path::new("/etc/zeph/vault-key.txt"),
+    ///     Path::new("/etc/zeph/secrets.age"),
+    /// )?;
+    /// vault.set_secret_mut("MY_TOKEN".into(), "tok_abc123".into());
+    /// vault.save()?;
+    /// # Ok::<_, zeph_vault::AgeVaultError>(())
+    /// ```
     pub fn save(&self) -> Result<(), AgeVaultError> {
         let key_str = Zeroizing::new(
             std::fs::read_to_string(&self.key_path).map_err(AgeVaultError::KeyRead)?,
@@ -122,16 +331,71 @@ impl AgeVaultProvider {
     }
 
     /// Insert or update a secret in the in-memory map.
+    ///
+    /// Call [`save`][Self::save] afterwards to persist the change to disk.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use zeph_vault::AgeVaultProvider;
+    ///
+    /// let mut vault = AgeVaultProvider::load(
+    ///     Path::new("/etc/zeph/vault-key.txt"),
+    ///     Path::new("/etc/zeph/secrets.age"),
+    /// )?;
+    /// vault.set_secret_mut("API_KEY".into(), "sk-...".into());
+    /// vault.save()?;
+    /// # Ok::<_, zeph_vault::AgeVaultError>(())
+    /// ```
     pub fn set_secret_mut(&mut self, key: String, value: String) {
         self.secrets.insert(key, Zeroizing::new(value));
     }
 
-    /// Remove a secret from the in-memory map. Returns `true` if the key existed.
+    /// Remove a secret from the in-memory map.
+    ///
+    /// Returns `true` if the key existed and was removed, `false` if it was not present.
+    /// Call [`save`][Self::save] afterwards to persist the removal to disk.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use zeph_vault::AgeVaultProvider;
+    ///
+    /// let mut vault = AgeVaultProvider::load(
+    ///     Path::new("/etc/zeph/vault-key.txt"),
+    ///     Path::new("/etc/zeph/secrets.age"),
+    /// )?;
+    /// let removed = vault.remove_secret_mut("OLD_KEY");
+    /// if removed {
+    ///     vault.save()?;
+    /// }
+    /// # Ok::<_, zeph_vault::AgeVaultError>(())
+    /// ```
     pub fn remove_secret_mut(&mut self, key: &str) -> bool {
         self.secrets.remove(key).is_some()
     }
 
     /// Return sorted list of secret keys (no values exposed).
+    ///
+    /// Keys are returned in ascending lexicographic order. Secret values are never included.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use zeph_vault::AgeVaultProvider;
+    ///
+    /// let vault = AgeVaultProvider::load(
+    ///     Path::new("/etc/zeph/vault-key.txt"),
+    ///     Path::new("/etc/zeph/secrets.age"),
+    /// )?;
+    /// for key in vault.list_keys() {
+    ///     println!("{key}");
+    /// }
+    /// # Ok::<_, zeph_vault::AgeVaultError>(())
+    /// ```
     #[must_use]
     pub fn list_keys(&self) -> Vec<&str> {
         let mut keys: Vec<&str> = self.secrets.keys().map(String::as_str).collect();
@@ -140,20 +404,59 @@ impl AgeVaultProvider {
     }
 
     /// Look up a secret value by key, returning `None` if not present.
+    ///
+    /// Returns a borrowed `&str` tied to the lifetime of the vault. For async use across await
+    /// points, use [`VaultProvider::get_secret`] instead, which returns an owned `String`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use zeph_vault::AgeVaultProvider;
+    ///
+    /// let vault = AgeVaultProvider::load(
+    ///     Path::new("/etc/zeph/vault-key.txt"),
+    ///     Path::new("/etc/zeph/secrets.age"),
+    /// )?;
+    /// match vault.get("ZEPH_OPENAI_API_KEY") {
+    ///     Some(key) => println!("key length: {}", key.len()),
+    ///     None => println!("key not configured"),
+    /// }
+    /// # Ok::<_, zeph_vault::AgeVaultError>(())
+    /// ```
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&str> {
         self.secrets.get(key).map(|v| v.as_str())
     }
 
-    /// Generate a new x25519 keypair, write key file (mode 0600), and create an empty encrypted vault.
+    /// Generate a new x25519 keypair, write the key file (mode 0600), and create an empty
+    /// encrypted vault.
     ///
-    /// Outputs:
-    /// - `<dir>/vault-key.txt` — age identity (private + public key comment)
-    /// - `<dir>/secrets.age`  — age-encrypted empty JSON object
+    /// Creates `dir` and all missing parent directories before writing files. Existing files
+    /// are not checked — calling this on an already-initialised directory will overwrite both
+    /// the key and the vault, making the old key irrecoverable.
+    ///
+    /// # Output files
+    ///
+    /// | File | Contents | Unix mode |
+    /// |------|----------|-----------|
+    /// | `<dir>/vault-key.txt` | age identity (private + public key comment) | `0600` |
+    /// | `<dir>/secrets.age`   | age-encrypted empty JSON object `{}` | default |
     ///
     /// # Errors
     ///
     /// Returns [`AgeVaultError`] on key/vault write failure or encryption failure.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use zeph_vault::AgeVaultProvider;
+    ///
+    /// AgeVaultProvider::init_vault(Path::new("/etc/zeph"))?;
+    /// // /etc/zeph/vault-key.txt and /etc/zeph/secrets.age are now ready.
+    /// # Ok::<_, zeph_vault::AgeVaultError>(())
+    /// ```
     pub fn init_vault(dir: &Path) -> Result<(), AgeVaultError> {
         use age::secrecy::ExposeSecret as _;
 
@@ -184,7 +487,20 @@ impl AgeVaultProvider {
     }
 }
 
-/// Default vault directory: `$XDG_CONFIG_HOME/zeph`, `$APPDATA/zeph`, or `~/.config/zeph`.
+/// Return the default vault directory for the current platform.
+///
+/// Resolution order:
+/// 1. `$XDG_CONFIG_HOME/zeph` (Linux / BSD)
+/// 2. `$APPDATA/zeph` (Windows)
+/// 3. `$HOME/.config/zeph` (macOS fallback and others)
+///
+/// # Examples
+///
+/// ```
+/// let dir = zeph_vault::default_vault_dir();
+/// // Ends with "zeph" on all platforms.
+/// assert!(dir.ends_with("zeph"));
+/// ```
 #[must_use]
 pub fn default_vault_dir() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
@@ -313,11 +629,33 @@ impl VaultProvider for EnvVaultProvider {
     }
 }
 
-/// `VaultProvider` wrapper around `Arc<RwLock<AgeVaultProvider>>`.
+/// [`VaultProvider`] wrapper around `Arc<RwLock<AgeVaultProvider>>`.
 ///
 /// Allows the age vault `Arc` to be stored as `Box<dyn VaultProvider>` while the
 /// underlying `Arc<RwLock<AgeVaultProvider>>` is separately held for OAuth credential
 /// persistence via `VaultCredentialStore`.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use tokio::sync::RwLock;
+/// use zeph_vault::{AgeVaultProvider, ArcAgeVaultProvider, VaultProvider};
+/// use std::path::Path;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let age = AgeVaultProvider::new(
+///     Path::new("/etc/zeph/vault-key.txt"),
+///     Path::new("/etc/zeph/secrets.age"),
+/// )?;
+/// let shared = Arc::new(RwLock::new(age));
+/// let provider: Box<dyn VaultProvider> = Box::new(ArcAgeVaultProvider(Arc::clone(&shared)));
+///
+/// // Both `provider` and `shared` are usable concurrently.
+/// let value = provider.get_secret("MY_KEY").await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct ArcAgeVaultProvider(pub Arc<tokio::sync::RwLock<AgeVaultProvider>>);
 
 impl VaultProvider for ArcAgeVaultProvider {
@@ -344,7 +682,35 @@ impl VaultProvider for ArcAgeVaultProvider {
     }
 }
 
-/// Test helper with BTreeMap-based secret storage.
+/// In-memory vault backend for tests and mocking.
+///
+/// Available when the `mock` feature is enabled or in `#[cfg(test)]` contexts.
+///
+/// Secrets are stored in a plain `BTreeMap`. An additional `listed_only` list allows tests
+/// to simulate keys that appear in [`list_keys`][VaultProvider::list_keys] but for which
+/// [`get_secret`][VaultProvider::get_secret] returns `None` (e.g. to test missing-key
+/// handling in callers that enumerate keys before fetching).
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_vault::{MockVaultProvider, VaultProvider as _};
+///
+/// # #[tokio::main]
+/// # async fn example() {
+/// let vault = MockVaultProvider::new()
+///     .with_secret("API_KEY", "sk-test-123")
+///     .with_listed_key("GHOST_KEY");
+///
+/// let val = vault.get_secret("API_KEY").await.unwrap();
+/// assert_eq!(val.as_deref(), Some("sk-test-123"));
+///
+/// // GHOST_KEY appears in list_keys() but get_secret returns None
+/// assert!(vault.list_keys().contains(&"GHOST_KEY".to_owned()));
+/// let ghost = vault.get_secret("GHOST_KEY").await.unwrap();
+/// assert!(ghost.is_none());
+/// # }
+/// ```
 #[cfg(any(test, feature = "mock"))]
 #[derive(Default)]
 pub struct MockVaultProvider {
@@ -356,11 +722,36 @@ pub struct MockVaultProvider {
 
 #[cfg(any(test, feature = "mock"))]
 impl MockVaultProvider {
+    /// Create a new empty mock vault.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_vault::{MockVaultProvider, VaultProvider as _};
+    ///
+    /// let vault = MockVaultProvider::new();
+    /// assert!(vault.list_keys().is_empty());
+    /// ```
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Add a secret key-value pair to the mock vault.
+    ///
+    /// Follows the builder pattern so calls can be chained.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_vault::{MockVaultProvider, VaultProvider as _};
+    ///
+    /// let vault = MockVaultProvider::new()
+    ///     .with_secret("A", "alpha")
+    ///     .with_secret("B", "beta");
+    /// assert!(vault.list_keys().contains(&"A".to_owned()));
+    /// assert!(vault.list_keys().contains(&"B".to_owned()));
+    /// ```
     #[must_use]
     pub fn with_secret(mut self, key: &str, value: &str) -> Self {
         self.secrets.insert(key.to_owned(), value.to_owned());
@@ -368,6 +759,19 @@ impl MockVaultProvider {
     }
 
     /// Add a key to `list_keys()` without a corresponding `get_secret()` value.
+    ///
+    /// Useful for testing callers that enumerate keys before fetching values — allows
+    /// simulation of race conditions or partially-visible key sets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_vault::{MockVaultProvider, VaultProvider as _};
+    ///
+    /// let vault = MockVaultProvider::new().with_listed_key("PHANTOM");
+    /// // PHANTOM is enumerable but has no stored value.
+    /// assert!(vault.list_keys().contains(&"PHANTOM".to_owned()));
+    /// ```
     #[must_use]
     pub fn with_listed_key(mut self, key: &str) -> Self {
         self.listed_only.push(key.to_owned());

@@ -9,12 +9,52 @@ use tokio::sync::{mpsc, watch};
 use crate::error::GatewayError;
 use crate::router::build_router;
 
+/// Shared state threaded through every axum handler.
+///
+/// Cloned cheaply for each request because all fields are either `Clone` or
+/// wrapped in `Arc`-backed primitives.
 #[derive(Clone)]
 pub(crate) struct AppState {
+    /// Channel used to forward sanitised webhook messages to the agent.
     pub webhook_tx: mpsc::Sender<String>,
+    /// Monotonic timestamp recorded when the server started, used by `/health`.
     pub started_at: Instant,
 }
 
+/// HTTP gateway server with bearer-auth, rate limiting, and body-size enforcement.
+///
+/// Build the server with [`GatewayServer::new`], apply optional configuration via
+/// the builder methods, then drive it with [`GatewayServer::serve`].
+///
+/// # Defaults
+///
+/// | Setting | Default |
+/// |---|---|
+/// | Bearer auth | disabled (open) |
+/// | Rate limit | 120 requests / 60 s per IP |
+/// | Max body size | 1 MiB (1 048 576 bytes) |
+///
+/// # Example
+///
+/// ```no_run
+/// use tokio::sync::{mpsc, watch};
+/// use zeph_gateway::GatewayServer;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let (tx, _rx) = mpsc::channel::<String>(64);
+///     let (_stx, srx) = watch::channel(false);
+///
+///     GatewayServer::new("127.0.0.1", 9000, tx, srx)
+///         .with_auth(Some("hunter2".into()))
+///         .with_rate_limit(30)
+///         .with_max_body_size(512 * 1024)
+///         .serve()
+///         .await?;
+///
+///     Ok(())
+/// }
+/// ```
 pub struct GatewayServer {
     addr: SocketAddr,
     auth_token: Option<String>,
@@ -25,6 +65,21 @@ pub struct GatewayServer {
 }
 
 impl GatewayServer {
+    /// Create a new gateway server.
+    ///
+    /// `bind` is parsed as an IP address string (e.g. `"127.0.0.1"` or `"0.0.0.0"`).
+    /// If parsing fails, the server falls back to `127.0.0.1:<port>` and emits a warning.
+    ///
+    /// `webhook_tx` receives every valid, sanitised webhook message as a formatted
+    /// `"[sender@channel] body"` string.
+    ///
+    /// `shutdown_rx` is a [`watch::Receiver<bool>`] that signals graceful shutdown
+    /// when its value transitions to `true`.  Sending `true` causes the server to
+    /// stop accepting new connections and drain in-flight requests.
+    ///
+    /// # Panics
+    ///
+    /// Does not panic. Invalid `bind` values fall back to `127.0.0.1` with a log warning.
     #[must_use]
     pub fn new(
         bind: &str,
@@ -51,29 +106,95 @@ impl GatewayServer {
         }
     }
 
+    /// Set the bearer token required on `POST /webhook` requests.
+    ///
+    /// When `token` is `Some`, every request to `/webhook` must carry an
+    /// `Authorization: Bearer <token>` header.  The comparison is performed
+    /// in constant time (BLAKE3 + `subtle::ConstantTimeEq`) to prevent
+    /// timing-oracle attacks.
+    ///
+    /// When `token` is `None`, bearer authentication is disabled and a warning
+    /// is logged at startup.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use tokio::sync::{mpsc, watch};
+    /// use zeph_gateway::GatewayServer;
+    ///
+    /// let (tx, _rx) = mpsc::channel::<String>(1);
+    /// let (_stx, srx) = watch::channel(false);
+    ///
+    /// let server = GatewayServer::new("127.0.0.1", 8080, tx, srx)
+    ///     .with_auth(Some("super-secret".into()));
+    /// ```
     #[must_use]
     pub fn with_auth(mut self, token: Option<String>) -> Self {
         self.auth_token = token;
         self
     }
 
+    /// Set the per-IP rate limit for `POST /webhook`.
+    ///
+    /// `limit` is the maximum number of requests allowed per remote IP in a
+    /// 60-second fixed window.  Setting `limit` to `0` disables rate limiting.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use tokio::sync::{mpsc, watch};
+    /// use zeph_gateway::GatewayServer;
+    ///
+    /// let (tx, _rx) = mpsc::channel::<String>(1);
+    /// let (_stx, srx) = watch::channel(false);
+    ///
+    /// // Allow at most 30 webhook posts per minute per IP.
+    /// let server = GatewayServer::new("127.0.0.1", 8080, tx, srx)
+    ///     .with_rate_limit(30);
+    /// ```
     #[must_use]
     pub fn with_rate_limit(mut self, limit: u32) -> Self {
         self.rate_limit = limit;
         self
     }
 
+    /// Set the maximum allowed request body size in bytes.
+    ///
+    /// Requests whose body exceeds this size are rejected with `413 Content Too Large`
+    /// before any handler is invoked. The default is 1 MiB (1 048 576 bytes).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use tokio::sync::{mpsc, watch};
+    /// use zeph_gateway::GatewayServer;
+    ///
+    /// let (tx, _rx) = mpsc::channel::<String>(1);
+    /// let (_stx, srx) = watch::channel(false);
+    ///
+    /// // Restrict bodies to 64 KiB.
+    /// let server = GatewayServer::new("127.0.0.1", 8080, tx, srx)
+    ///     .with_max_body_size(64 * 1024);
+    /// ```
     #[must_use]
     pub fn with_max_body_size(mut self, size: usize) -> Self {
         self.max_body_size = size;
         self
     }
 
-    /// Start the HTTP gateway server.
+    /// Start the HTTP gateway server and block until shutdown is signalled.
+    ///
+    /// Binds a TCP listener on the configured address, installs middleware
+    /// (body-size limit → auth → rate limiting), and serves requests until
+    /// the [`watch::Receiver`] supplied to [`GatewayServer::new`] transitions
+    /// to `true`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the server fails to bind or encounters a fatal I/O error.
+    /// - [`GatewayError::Bind`] — the listener could not be bound (port in use,
+    ///   permission denied, etc.).
+    /// - [`GatewayError::Server`] — the server encountered a fatal I/O error
+    ///   after binding.
     pub async fn serve(self) -> Result<(), GatewayError> {
         let state = AppState {
             webhook_tx: self.webhook_tx,

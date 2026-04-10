@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! A2A protocol HTTP client with optional TLS enforcement and SSRF protection.
+
 use std::pin::Pin;
 
 use eventsource_stream::Eventsource;
@@ -16,15 +18,58 @@ use crate::jsonrpc::{
 };
 use crate::types::{Task, TaskArtifactUpdateEvent, TaskStatusUpdateEvent};
 
+/// A pinned, heap-allocated stream of [`TaskEvent`]s from a streaming A2A call.
+///
+/// Produced by [`A2aClient::stream_message`]. Each item is either a status update
+/// or an artifact update; errors are surfaced inline as `Err(A2aError)`.
 pub type TaskEventStream = Pin<Box<dyn Stream<Item = Result<TaskEvent, A2aError>> + Send>>;
 
+/// A single event received on a streaming (`message/stream`) A2A connection.
+///
+/// The A2A spec multiplexes two event kinds over the same SSE channel. This enum
+/// uses `#[serde(untagged)]` so that the deserializer inspects the `kind` field
+/// inside the inner struct to determine the variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TaskEvent {
+    /// A task lifecycle transition (e.g., `submitted` → `working` → `completed`).
     StatusUpdate(TaskStatusUpdateEvent),
+    /// A new or updated output artifact from the agent.
     ArtifactUpdate(TaskArtifactUpdateEvent),
 }
 
+/// HTTP client for the A2A protocol.
+///
+/// `A2aClient` wraps a `reqwest::Client` and provides typed methods for the four
+/// A2A JSON-RPC operations: `message/send`, `message/stream`, `tasks/get`, and
+/// `tasks/cancel`. Each call optionally accepts a bearer token for authentication.
+///
+/// # Security
+///
+/// Use [`with_security`](A2aClient::with_security) to harden the client for
+/// production deployments:
+/// - `require_tls = true` rejects any `http://` endpoint before connecting.
+/// - `ssrf_protection = true` resolves the endpoint's hostname via DNS and rejects
+///   addresses in private/loopback ranges (10/8, 172.16/12, 192.168/16, 127/8, etc.).
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_a2a::{A2aClient, SendMessageParams, Message};
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let client = A2aClient::new(reqwest::Client::new())
+///     .with_security(true, true); // require HTTPS, block SSRF
+///
+/// let params = SendMessageParams {
+///     message: Message::user_text("Summarize this page."),
+///     configuration: None,
+/// };
+/// let task = client.send_message("https://agent.example.com/a2a", params, Some("tok")).await?;
+/// println!("Task state: {:?}", task.status.state);
+/// # Ok(())
+/// # }
+/// ```
 pub struct A2aClient {
     client: reqwest::Client,
     require_tls: bool,
@@ -32,6 +77,10 @@ pub struct A2aClient {
 }
 
 impl A2aClient {
+    /// Create a new `A2aClient` with no security restrictions.
+    ///
+    /// Security features are disabled by default for local/dev usage. Enable them
+    /// with [`with_security`](Self::with_security) for production deployments.
     #[must_use]
     pub fn new(client: reqwest::Client) -> Self {
         Self {
@@ -41,6 +90,22 @@ impl A2aClient {
         }
     }
 
+    /// Configure TLS enforcement and SSRF protection for this client.
+    ///
+    /// Both flags default to `false`. This method uses the builder pattern and
+    /// can be chained directly after [`new`](Self::new).
+    ///
+    /// - `require_tls`: reject any endpoint that does not start with `https://`.
+    /// - `ssrf_protection`: resolve the endpoint hostname via DNS and reject private IP ranges.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::A2aClient;
+    ///
+    /// let client = A2aClient::new(reqwest::Client::new())
+    ///     .with_security(true, true);
+    /// ```
     #[must_use]
     pub fn with_security(mut self, require_tls: bool, ssrf_protection: bool) -> Self {
         self.require_tls = require_tls;

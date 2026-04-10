@@ -57,8 +57,62 @@ static LANG_ALIASES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::n
     ])
 });
 
+/// Process-wide singleton [`SyntaxHighlighter`], initialised on first access.
+///
+/// Use this instead of constructing a new highlighter to avoid redundant
+/// tree-sitter grammar compilation on each frame.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::highlight::SYNTAX_HIGHLIGHTER;
+/// use zeph_tui::theme::SyntaxTheme;
+///
+/// let theme = SyntaxTheme::default();
+/// let spans = SYNTAX_HIGHLIGHTER.highlight("rust", "let x = 1;", &theme);
+/// assert!(spans.is_some());
+/// ```
 pub static SYNTAX_HIGHLIGHTER: LazyLock<SyntaxHighlighter> = LazyLock::new(SyntaxHighlighter::new);
 
+/// Tree-sitter-based syntax highlighter for TUI code blocks.
+///
+/// Supports Rust, Python, JavaScript, JSON, TOML, and Bash out of the box.
+/// Language aliases (`"rs"` → `"rust"`, `"sh"` → `"bash"`, etc.) are
+/// resolved transparently.
+///
+/// Construct via the [`SYNTAX_HIGHLIGHTER`] static for process-level sharing,
+/// or call the private `new` method directly in tests.
+///
+/// # Supported languages
+///
+/// | Identifier | Aliases |
+/// |------------|---------|
+/// | `rust`     | `rs`    |
+/// | `python`   | `py`    |
+/// | `javascript` | `js` |
+/// | `bash`     | `sh`, `shell` |
+/// | `json`     | —       |
+/// | `toml`     | —       |
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::highlight::SYNTAX_HIGHLIGHTER;
+/// use zeph_tui::theme::SyntaxTheme;
+///
+/// let theme = SyntaxTheme::default();
+///
+/// // Known language → styled spans
+/// let spans = SYNTAX_HIGHLIGHTER.highlight("rust", "fn main() {}", &theme);
+/// assert!(spans.is_some());
+///
+/// // Alias works the same way
+/// let spans = SYNTAX_HIGHLIGHTER.highlight("rs", "let x = 1;", &theme);
+/// assert!(spans.is_some());
+///
+/// // Unknown language → None
+/// assert!(SYNTAX_HIGHLIGHTER.highlight("brainfuck", "+++", &theme).is_none());
+/// ```
 pub struct SyntaxHighlighter {
     configs: HashMap<&'static str, HighlightConfiguration>,
 }
@@ -136,6 +190,29 @@ impl SyntaxHighlighter {
         Self { configs }
     }
 
+    /// Highlight `code` for the given `lang` using `theme`.
+    ///
+    /// Returns `None` if the language is unsupported or if tree-sitter fails
+    /// to parse the input. The returned spans concatenate to the original
+    /// source text unchanged.
+    ///
+    /// # Arguments
+    ///
+    /// * `lang` — language identifier or alias (case-insensitive).
+    /// * `code` — source code to highlight.
+    /// * `theme` — style mapping for each token class.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::highlight::SYNTAX_HIGHLIGHTER;
+    /// use zeph_tui::theme::SyntaxTheme;
+    ///
+    /// let theme = SyntaxTheme::default();
+    /// let spans = SYNTAX_HIGHLIGHTER.highlight("rust", "let x = 42;", &theme).unwrap();
+    /// let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    /// assert_eq!(text, "let x = 42;");
+    /// ```
     pub fn highlight(
         &self,
         lang: &str,

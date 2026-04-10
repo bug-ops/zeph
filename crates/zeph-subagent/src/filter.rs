@@ -1,6 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Tool and skill filtering for sub-agents.
+//!
+//! [`FilteredToolExecutor`] wraps any [`ErasedToolExecutor`] and enforces a [`ToolPolicy`]
+//! plus an optional extra denylist on every tool invocation.
+//!
+//! [`PlanModeExecutor`] wraps any executor to allow catalog inspection while blocking all
+//! execution — implementing the read-only planning permission mode.
+//!
+//! [`filter_skills`] applies glob-based include/exclude patterns against a skill registry.
+
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -47,7 +57,10 @@ pub struct FilteredToolExecutor {
 }
 
 impl FilteredToolExecutor {
-    /// Create a new filtered executor.
+    /// Create a new filtered executor with the given policy and no additional denylist.
+    ///
+    /// Use [`with_disallowed`][Self::with_disallowed] when the agent definition also
+    /// specifies `tools.except` entries.
     #[must_use]
     pub fn new(inner: Arc<dyn ErasedToolExecutor>, policy: ToolPolicy) -> Self {
         let fenced_tags = collect_fenced_tags(&*inner);
@@ -253,9 +266,27 @@ impl ErasedToolExecutor for PlanModeExecutor {
 /// Include patterns are glob-matched against skill names. If `include` is empty,
 /// all skills pass (unless excluded). Exclude patterns always take precedence.
 ///
+/// Supported glob syntax:
+/// - `*` — wildcard matching any substring (e.g., `"git-*"`)
+/// - Literal strings — exact match only
+/// - `**` is **not** supported and returns [`SubAgentError::Invalid`]
+///
 /// # Errors
 ///
 /// Returns [`SubAgentError::Invalid`] if any glob pattern is syntactically invalid.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_skills::registry::SkillRegistry;
+/// use zeph_subagent::filter_skills;
+/// use zeph_subagent::SkillFilter;
+///
+/// let registry = SkillRegistry::load(&[] as &[&str]);
+/// let filter = SkillFilter { include: vec![], exclude: vec![] };
+/// let skills = filter_skills(&registry, &filter).unwrap();
+/// assert!(skills.is_empty());
+/// ```
 pub fn filter_skills(
     registry: &SkillRegistry,
     filter: &SkillFilter,

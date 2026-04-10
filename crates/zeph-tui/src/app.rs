@@ -28,28 +28,89 @@ const MAX_TUI_MESSAGES: usize = 2000;
 /// Maximum number of input history entries retained in the TUI (#2737).
 const MAX_INPUT_HISTORY: usize = 500;
 
+/// The currently focused side panel in the TUI layout.
+///
+/// Controls which panel receives keyboard focus for scrolling and navigation.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::app::Panel;
+///
+/// let panel = Panel::Chat;
+/// assert_eq!(panel, Panel::Chat);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
+    /// The main chat / transcript area.
     Chat,
+    /// The skills mini-panel (side column).
     Skills,
+    /// The semantic memory mini-panel (side column).
     Memory,
+    /// The MCP resources mini-panel (side column).
     Resources,
+    /// The sub-agents mini-panel (side column).
     SubAgents,
 }
 
 /// Discriminates what the main chat area is currently displaying.
+///
+/// In `Main` mode the user sees their own conversation with the primary agent.
+/// In `SubAgent` mode the area shows the transcript of a spawned sub-agent.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::app::AgentViewTarget;
+///
+/// let target = AgentViewTarget::Main;
+/// assert!(target.is_main());
+///
+/// let sub = AgentViewTarget::SubAgent { id: "sa-1".into(), name: "Planner".into() };
+/// assert_eq!(sub.subagent_id(), Some("sa-1"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentViewTarget {
+    /// Displaying the main agent conversation.
     Main,
-    SubAgent { id: String, name: String },
+    /// Displaying the transcript of the named sub-agent.
+    SubAgent {
+        /// Stable sub-agent identifier (matches [`SubAgentMetrics::id`](crate::metrics::SubAgentMetrics)).
+        id: String,
+        /// Display name shown in the header bar.
+        name: String,
+    },
 }
 
 impl AgentViewTarget {
+    /// Returns `true` when the target is the primary agent conversation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::app::AgentViewTarget;
+    ///
+    /// assert!(AgentViewTarget::Main.is_main());
+    /// let sub = AgentViewTarget::SubAgent { id: "x".into(), name: "y".into() };
+    /// assert!(!sub.is_main());
+    /// ```
     #[must_use]
     pub fn is_main(&self) -> bool {
         matches!(self, Self::Main)
     }
 
+    /// Returns the sub-agent ID if this target points to a sub-agent, otherwise `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::app::AgentViewTarget;
+    ///
+    /// assert_eq!(AgentViewTarget::Main.subagent_id(), None);
+    /// let sub = AgentViewTarget::SubAgent { id: "sa-42".into(), name: "n".into() };
+    /// assert_eq!(sub.subagent_id(), Some("sa-42"));
+    /// ```
     #[must_use]
     pub fn subagent_id(&self) -> Option<&str> {
         if let Self::SubAgent { id, .. } = self {
@@ -59,6 +120,17 @@ impl AgentViewTarget {
         }
     }
 
+    /// Returns the sub-agent display name if this target points to a sub-agent, otherwise `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::app::AgentViewTarget;
+    ///
+    /// assert_eq!(AgentViewTarget::Main.subagent_name(), None);
+    /// let sub = AgentViewTarget::SubAgent { id: "x".into(), name: "Planner".into() };
+    /// assert_eq!(sub.subagent_name(), Some("Planner"));
+    /// ```
     #[must_use]
     pub fn subagent_name(&self) -> Option<&str> {
         if let Self::SubAgent { name, .. } = self {
@@ -69,7 +141,25 @@ impl AgentViewTarget {
     }
 }
 
-/// A single entry from a subagent's JSONL transcript, ready for TUI display.
+/// A single entry from a sub-agent's JSONL transcript, ready for TUI display.
+///
+/// Loaded by the background transcript reader and converted to
+/// [`ChatMessage`] for rendering in the chat widget via
+/// [`to_chat_message`](Self::to_chat_message).
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::app::TuiTranscriptEntry;
+///
+/// let entry = TuiTranscriptEntry {
+///     role: "assistant".to_string(),
+///     content: "I found 3 results.".to_string(),
+///     tool_name: None,
+///     timestamp: None,
+/// };
+/// let msg = entry.to_chat_message();
+/// ```
 #[derive(Debug, Clone)]
 pub struct TuiTranscriptEntry {
     pub role: String,
@@ -79,7 +169,28 @@ pub struct TuiTranscriptEntry {
 }
 
 impl TuiTranscriptEntry {
-    /// Convert to a `ChatMessage` for rendering in the chat widget.
+    /// Convert this transcript entry to a [`ChatMessage`] for chat widget rendering.
+    ///
+    /// The `role` string is mapped to a [`MessageRole`]: `"user"`, `"assistant"`,
+    /// `"tool"`, or `"system"` for all other values. The optional `tool_name`
+    /// and `timestamp` fields are forwarded verbatim.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::app::TuiTranscriptEntry;
+    /// use zeph_tui::MessageRole;
+    ///
+    /// let entry = TuiTranscriptEntry {
+    ///     role: "user".to_string(),
+    ///     content: "hello".to_string(),
+    ///     tool_name: None,
+    ///     timestamp: Some("14:30".to_string()),
+    /// };
+    /// let msg = entry.to_chat_message();
+    /// assert_eq!(msg.role, MessageRole::User);
+    /// assert_eq!(msg.timestamp, "14:30");
+    /// ```
     #[must_use]
     pub fn to_chat_message(&self) -> ChatMessage {
         let role = match self.role.as_str() {
@@ -99,9 +210,14 @@ impl TuiTranscriptEntry {
     }
 }
 
-/// Transcript cache for a single subagent.
+/// Cached transcript data for a single sub-agent session.
+///
+/// Populated by the background transcript loader and invalidated when
+/// `turns_used` in the metrics snapshot advances beyond `turns_at_load`.
 pub struct TranscriptCache {
+    /// The sub-agent ID this cache entry belongs to.
     pub agent_id: String,
+    /// Parsed transcript entries (last `TRANSCRIPT_MAX_ENTRIES` entries).
     pub entries: Vec<TuiTranscriptEntry>,
     /// `turns_used` value at the time of last load, for staleness detection (W2).
     pub turns_at_load: u32,
@@ -109,12 +225,36 @@ pub struct TranscriptCache {
     pub total_in_file: usize,
 }
 
-/// Selection and scroll state for the interactive subagent sidebar.
+/// Selection and scroll state for the interactive sub-agent sidebar.
+///
+/// Wraps a ratatui [`ListState`](ratatui::widgets::ListState) with convenience
+/// helpers that clamp the selection to valid indices.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::app::SubAgentSidebarState;
+///
+/// let mut state = SubAgentSidebarState::new();
+/// state.select_next(3);
+/// assert_eq!(state.selected(), Some(0));
+/// ```
 pub struct SubAgentSidebarState {
+    /// Underlying ratatui list selection state.
     pub list_state: ratatui::widgets::ListState,
 }
 
 impl SubAgentSidebarState {
+    /// Create a new sidebar state with no selection.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::app::SubAgentSidebarState;
+    ///
+    /// let state = SubAgentSidebarState::new();
+    /// assert_eq!(state.selected(), None);
+    /// ```
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -122,6 +262,9 @@ impl SubAgentSidebarState {
         }
     }
 
+    /// Advance the selection to the next item, clamped to `count - 1`.
+    ///
+    /// A no-op when `count` is zero.
     pub fn select_next(&mut self, count: usize) {
         if count == 0 {
             return;
@@ -133,6 +276,9 @@ impl SubAgentSidebarState {
         self.list_state.select(Some(next));
     }
 
+    /// Move the selection to the previous item, clamped to `0`.
+    ///
+    /// A no-op when `count` is zero.
     pub fn select_prev(&mut self, count: usize) {
         if count == 0 {
             return;
@@ -153,6 +299,18 @@ impl SubAgentSidebarState {
         }
     }
 
+    /// Returns the currently selected index, or `None` if nothing is selected.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::app::SubAgentSidebarState;
+    ///
+    /// let mut state = SubAgentSidebarState::new();
+    /// assert_eq!(state.selected(), None);
+    /// state.select_next(5);
+    /// assert_eq!(state.selected(), Some(0));
+    /// ```
     #[must_use]
     pub fn selected(&self) -> Option<usize> {
         self.list_state.selected()
@@ -175,6 +333,29 @@ pub struct ElicitationState {
     pub response_tx: Option<oneshot::Sender<zeph_core::channel::ElicitationResponse>>,
 }
 
+/// Central state machine for the TUI dashboard.
+///
+/// `App` owns all widget state, the render cache, the message history, and
+/// the event channel endpoints. The main loop in [`crate::run_tui`] calls
+/// [`draw`](Self::draw) once per frame and routes events through
+/// [`handle_event`](Self::handle_event) and
+/// [`handle_agent_event`](Self::handle_agent_event).
+///
+/// # Construction
+///
+/// ```rust
+/// use tokio::sync::mpsc;
+/// use zeph_tui::App;
+///
+/// let (user_tx, _user_rx) = mpsc::channel(64);
+/// let (_agent_tx, agent_rx) = mpsc::channel(64);
+/// let app = App::new(user_tx, agent_rx);
+/// ```
+///
+/// Use the builder methods to wire optional components:
+/// - [`with_metrics_rx`](Self::with_metrics_rx) — live metrics watch channel.
+/// - [`with_cancel_signal`](Self::with_cancel_signal) — Ctrl-C cancel notify.
+/// - [`with_command_tx`](Self::with_command_tx) — slash-command dispatch channel.
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     input: String,
@@ -228,6 +409,28 @@ pub struct App {
 }
 
 impl App {
+    /// Create a new `App` with the given I/O channels.
+    ///
+    /// The app starts in insert mode with the splash screen visible and no
+    /// messages in the buffer.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_input_tx` — sender used to forward the user's typed text to the
+    ///   agent loop via [`TuiChannel`](crate::TuiChannel).
+    /// * `agent_event_rx` — receiver for [`AgentEvent`] produced by the agent.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (user_tx, _user_rx) = mpsc::channel(64);
+    /// let (_agent_tx, agent_rx) = mpsc::channel(64);
+    /// let app = App::new(user_tx, agent_rx);
+    /// assert!(app.show_splash());
+    /// ```
     #[must_use]
     pub fn new(
         user_input_tx: mpsc::Sender<String>,
@@ -278,11 +481,18 @@ impl App {
         }
     }
 
+    /// Return `true` while the splash screen should be displayed.
+    ///
+    /// The splash screen is hidden as soon as the first chat message arrives.
     #[must_use]
     pub fn show_splash(&self) -> bool {
         self.show_splash
     }
 
+    /// Return `true` when the side panels column is visible.
+    ///
+    /// Controlled by the `s` keybinding and automatically disabled on narrow
+    /// terminals (< 80 columns).
     #[must_use]
     pub fn show_side_panels(&self) -> bool {
         self.show_side_panels
@@ -294,6 +504,12 @@ impl App {
         self.plan_view_active
     }
 
+    /// Populate the message buffer from a persisted session history.
+    ///
+    /// Each element is a `(role, content)` pair where `role` is one of
+    /// `"user"`, `"assistant"`, or `"tool"`. Tool outputs are detected by a
+    /// sentinel suffix and rendered as [`MessageRole::Tool`] messages.
+    /// The splash screen is hidden after loading if any messages are present.
     pub fn load_history(&mut self, messages: &[(&str, &str)]) {
         const TOOL_SUFFIX: &str = "\n```";
 
@@ -328,12 +544,42 @@ impl App {
         }
     }
 
+    /// Attach a cancel signal that Ctrl-C in the TUI will trigger.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::sync::Arc;
+    /// use tokio::sync::{Notify, mpsc};
+    /// use zeph_tui::App;
+    ///
+    /// let (tx, _rx) = mpsc::channel(1);
+    /// let (_atx, arx) = mpsc::channel(1);
+    /// let notify = Arc::new(Notify::new());
+    /// let _app = App::new(tx, arx).with_cancel_signal(notify);
+    /// ```
     #[must_use]
     pub fn with_cancel_signal(mut self, signal: Arc<Notify>) -> Self {
         self.cancel_signal = Some(signal);
         self
     }
 
+    /// Attach a metrics watch channel for live dashboard updates.
+    ///
+    /// The current snapshot is read immediately; subsequent updates are polled
+    /// by [`poll_metrics`](Self::poll_metrics) each frame.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::{mpsc, watch};
+    /// use zeph_tui::{App, MetricsSnapshot};
+    ///
+    /// let (tx, _rx) = mpsc::channel(1);
+    /// let (_atx, arx) = mpsc::channel(1);
+    /// let (_metrics_tx, metrics_rx) = watch::channel(MetricsSnapshot::default());
+    /// let _app = App::new(tx, arx).with_metrics_rx(metrics_rx);
+    /// ```
     #[must_use]
     pub fn with_metrics_rx(mut self, rx: watch::Receiver<MetricsSnapshot>) -> Self {
         self.metrics = rx.borrow().clone();
@@ -341,6 +587,19 @@ impl App {
         self
     }
 
+    /// Attach the command dispatch sender used for slash-command routing.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::{App, TuiCommand};
+    ///
+    /// let (tx, _rx) = mpsc::channel(1);
+    /// let (_atx, arx) = mpsc::channel(1);
+    /// let (cmd_tx, _cmd_rx) = mpsc::channel(8);
+    /// let _app = App::new(tx, arx).with_command_tx(cmd_tx);
+    /// ```
     #[must_use]
     pub fn with_command_tx(mut self, tx: mpsc::Sender<TuiCommand>) -> Self {
         self.command_tx = Some(tx);
@@ -364,6 +623,10 @@ impl App {
         self.metrics_rx = Some(rx);
     }
 
+    /// Check the metrics watch channel for an updated snapshot and apply it.
+    ///
+    /// Also clamps the sidebar selection and triggers a transcript reload if
+    /// the sub-agent's turn count has advanced. Called once per render frame.
     pub fn poll_metrics(&mut self) {
         if let Some(ref mut rx) = self.metrics_rx
             && rx.has_changed().unwrap_or(false)
@@ -554,26 +817,36 @@ impl App {
         }
     }
 
+    /// Return a slice of all chat messages currently in the buffer.
+    ///
+    /// For the currently-displayed messages (which may be a sub-agent
+    /// transcript) use [`visible_messages`](Self::visible_messages) instead.
     #[must_use]
     pub fn messages(&self) -> &[ChatMessage] {
         &self.messages
     }
 
+    /// Return the current content of the text input field.
     #[must_use]
     pub fn input(&self) -> &str {
         &self.input
     }
 
+    /// Return the current input mode (normal vs. insert).
     #[must_use]
     pub fn input_mode(&self) -> InputMode {
         self.input_mode
     }
 
+    /// Return the cursor byte position within the input string.
     #[must_use]
     pub fn cursor_position(&self) -> usize {
         self.cursor_position
     }
 
+    /// Return the number of lines the chat view is scrolled up from the bottom.
+    ///
+    /// `0` means the view is at the bottom (latest messages visible).
     #[must_use]
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
@@ -586,21 +859,28 @@ impl App {
         }
     }
 
+    /// Return `true` when tool-output blocks are expanded to full height.
     #[must_use]
     pub fn tool_expanded(&self) -> bool {
         self.tool_expanded
     }
 
+    /// Return `true` when tool blocks use compact single-line rendering.
     #[must_use]
     pub fn compact_tools(&self) -> bool {
         self.compact_tools
     }
 
+    /// Return `true` when source-label badges are shown on assistant messages.
     #[must_use]
     pub fn show_source_labels(&self) -> bool {
         self.show_source_labels
     }
 
+    /// Toggle source-label visibility.
+    ///
+    /// Clears the render cache so all messages are re-rendered with the new
+    /// setting on the next frame.
     pub fn set_show_source_labels(&mut self, v: bool) {
         if self.show_source_labels != v {
             self.show_source_labels = v;
@@ -608,34 +888,53 @@ impl App {
         }
     }
 
+    /// Replace the current hyperlink span list with `links`.
+    ///
+    /// Called by the render loop after each frame to store spans detected in
+    /// the terminal buffer so they can be emitted as OSC 8 sequences.
     pub fn set_hyperlinks(&mut self, links: Vec<HyperlinkSpan>) {
         self.hyperlinks = links;
     }
 
+    /// Take ownership of the accumulated hyperlink spans, clearing the list.
+    ///
+    /// Called once per frame; the caller writes OSC 8 sequences to the terminal.
     pub fn take_hyperlinks(&mut self) -> Vec<HyperlinkSpan> {
         std::mem::take(&mut self.hyperlinks)
     }
 
+    /// Return the current activity status label, if any.
+    ///
+    /// Displayed in the activity bar with a spinner when non-`None`
+    /// (e.g. `"Searching memory…"`, `"Executing tool: bash"`).
     #[must_use]
     pub fn status_label(&self) -> Option<&str> {
         self.status_label.as_deref()
     }
 
+    /// Return the number of messages queued or pending for the agent.
+    ///
+    /// Displayed in the input bar to indicate backpressure.
     #[must_use]
     pub fn queued_count(&self) -> usize {
         self.queued_count.max(self.pending_count)
     }
 
+    /// Return `true` when the user is currently editing a queued message.
     #[must_use]
     pub fn editing_queued(&self) -> bool {
         self.editing_queued
     }
 
+    /// Return `true` when the agent is actively processing (streaming or running a tool).
+    ///
+    /// Used by the render loop to decide whether to show the activity spinner.
     #[must_use]
     pub fn is_agent_busy(&self) -> bool {
         self.status_label.is_some() || self.messages.last().is_some_and(|m| m.streaming)
     }
 
+    /// Return `true` when the last message is a streaming tool output.
     #[must_use]
     pub fn has_running_tool(&self) -> bool {
         self.messages
@@ -643,15 +942,24 @@ impl App {
             .is_some_and(|m| m.role == MessageRole::Tool && m.streaming)
     }
 
+    /// Return a reference to the throbber animation state.
+    ///
+    /// Used by the status widget to render the spinner frame.
     #[must_use]
     pub fn throbber_state(&self) -> &throbber_widgets_tui::ThrobberState {
         &self.throbber_state
     }
 
+    /// Return a mutable reference to the throbber animation state.
+    ///
+    /// Called by the tick handler to advance the spinner frame each tick.
     pub fn throbber_state_mut(&mut self) -> &mut throbber_widgets_tui::ThrobberState {
         &mut self.throbber_state
     }
 
+    /// Dispatch a top-level [`AppEvent`] to the appropriate handler.
+    ///
+    /// Called once per event in the main [`crate::run_tui`] loop.
     pub fn handle_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Key(key) => self.handle_key(key),
@@ -674,18 +982,32 @@ impl App {
         }
     }
 
+    /// Await the next [`AgentEvent`] from the agent channel.
+    ///
+    /// Returns `None` when all senders have been dropped (agent exited).
+    /// Called from the `select!` block in [`crate::run_tui`].
     pub fn poll_agent_event(&mut self) -> impl Future<Output = Option<AgentEvent>> + use<'_> {
         self.agent_event_rx.recv()
     }
 
+    /// Non-blocking poll for a pending [`AgentEvent`].
+    ///
+    /// Used to drain the channel after a first event has been received,
+    /// coalescing multiple events into a single render frame.
+    ///
     /// # Errors
     ///
-    /// Returns `TryRecvError::Empty` if no events are pending, or `TryRecvError::Disconnected`
-    /// if the sender has been dropped.
+    /// Returns `TryRecvError::Empty` if no events are pending, or
+    /// `TryRecvError::Disconnected` if the sender has been dropped.
     pub fn try_recv_agent_event(&mut self) -> Result<AgentEvent, mpsc::error::TryRecvError> {
         self.agent_event_rx.try_recv()
     }
 
+    /// Handle an [`AgentEvent`] and update widget state accordingly.
+    ///
+    /// This is the main state-transition function for agent-driven updates:
+    /// appending streaming chunks, recording tool events, displaying confirm
+    /// dialogs, and wiring late-bound channels (cancel signal, metrics).
     #[allow(clippy::too_many_lines)] // large match over all agent event variants
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {

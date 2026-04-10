@@ -656,6 +656,16 @@ pub enum VectorBackend {
 }
 
 impl VectorBackend {
+    /// Return the lowercase identifier string for this backend.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::VectorBackend;
+    ///
+    /// assert_eq!(VectorBackend::Sqlite.as_str(), "sqlite");
+    /// assert_eq!(VectorBackend::Qdrant.as_str(), "qdrant");
+    /// ```
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -665,6 +675,21 @@ impl VectorBackend {
     }
 }
 
+/// Memory subsystem configuration, nested under `[memory]` in TOML.
+///
+/// Controls SQLite and Qdrant storage, semantic recall, context compaction,
+/// multi-tier promotion, and all memory-related background tasks.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory]
+/// sqlite_path = "~/.local/share/zeph/data/zeph.db"
+/// qdrant_url = "http://localhost:6334"
+/// history_limit = 50
+/// summarization_threshold = 50
+/// auto_budget = true
+/// ```
 #[derive(Debug, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MemoryConfig {
@@ -884,6 +909,7 @@ pub enum ContextStrategy {
     Adaptive,
 }
 
+/// Session list and auto-title configuration, nested under `[memory.sessions]` in TOML.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SessionsConfig {
@@ -933,9 +959,25 @@ impl Default for DocumentConfig {
     }
 }
 
+/// Semantic (vector) memory retrieval configuration, nested under `[memory.semantic]` in TOML.
+///
+/// Controls how memories are searched and ranked, including temporal decay, MMR diversity
+/// re-ranking, and hybrid BM25+vector weighting.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.semantic]
+/// enabled = true
+/// recall_limit = 5
+/// vector_weight = 0.7
+/// keyword_weight = 0.3
+/// mmr_lambda = 0.7
+/// ```
 #[derive(Debug, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct SemanticConfig {
+    /// Enable vector-based semantic recall. Default: `true`.
     #[serde(default = "default_semantic_enabled")]
     pub enabled: bool,
     #[serde(default = "default_recall_limit")]

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Core identifier and tier types used throughout `zeph-memory`.
+
 /// Memory tier classification for the AOI four-layer architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -18,6 +20,16 @@ pub enum MemoryTier {
 }
 
 impl MemoryTier {
+    /// Return the canonical lowercase string representation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_memory::MemoryTier;
+    ///
+    /// assert_eq!(MemoryTier::Episodic.as_str(), "episodic");
+    /// assert_eq!(MemoryTier::Semantic.as_str(), "semantic");
+    /// ```
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -49,16 +61,52 @@ impl std::str::FromStr for MemoryTier {
 }
 
 /// Strongly typed wrapper for conversation row IDs.
+///
+/// Wraps the SQLite `conversations.id` integer primary key to prevent accidental
+/// confusion with [`MessageId`] or [`MemSceneId`] values.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::ConversationId;
+///
+/// let id = ConversationId(42);
+/// assert_eq!(id.to_string(), "42");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
 #[sqlx(transparent)]
 pub struct ConversationId(pub i64);
 
 /// Strongly typed wrapper for message row IDs.
+///
+/// Wraps the SQLite `messages.id` integer primary key to prevent confusion
+/// with [`ConversationId`] or [`MemSceneId`] values.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::MessageId;
+///
+/// let id = MessageId(7);
+/// assert_eq!(id.to_string(), "7");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
 #[sqlx(transparent)]
 pub struct MessageId(pub i64);
 
 /// Strongly typed wrapper for `mem_scene` row IDs.
+///
+/// Wraps the SQLite `mem_scenes.id` integer primary key. Used by the scene
+/// consolidation subsystem to identify distinct conversational scenes.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::MemSceneId;
+///
+/// let id = MemSceneId(3);
+/// assert_eq!(id.to_string(), "3");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
 #[sqlx(transparent)]
 pub struct MemSceneId(pub i64);

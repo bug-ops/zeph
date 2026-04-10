@@ -15,41 +15,71 @@ use crate::error::Result;
 use crate::languages::{Lang, detect_language};
 use zeph_memory::TokenCounter;
 
-/// Structured symbol extracted by ts-query.
+/// A top-level (or method-level) symbol extracted from a source file.
+///
+/// Produced by [`extract_symbols`] and used to build [`generate_repo_map`] output
+/// as well as the in-memory symbol index in [`crate::mcp_server`].
 #[derive(Debug, Clone)]
 pub struct SymbolInfo {
+    /// The symbol name as it appears in source (e.g. `"MyStruct"`, `"handle_request"`).
     pub name: String,
+    /// Coarse classification of the symbol's kind.
     pub kind: SymbolKind,
+    /// Visibility modifier derived from the AST node.
     pub visibility: Visibility,
+    /// 0-based row of the symbol's definition in the source file.
     pub line: usize,
-    /// Methods inside impl/class bodies.
+    /// Direct children — method names for `impl` blocks and class bodies.
     pub children: Vec<SymbolInfo>,
 }
 
+/// Coarse classification of an AST-level symbol kind.
+///
+/// Mapped from tree-sitter node kinds via [`SymbolKind::from_node_kind`].
+/// The short string representation (e.g. `"fn"`, `"struct"`) is used in repo map output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
+    /// Function or free function (`fn`, `def`, `function`).
     Function,
+    /// Struct type definition.
     Struct,
+    /// Enum type definition.
     Enum,
+    /// Trait definition.
     Trait,
+    /// `impl` block.
     Impl,
+    /// Type alias (`type Foo = Bar`).
     TypeAlias,
+    /// Constant (`const FOO: u32 = 1`).
     Const,
+    /// Static variable.
     Static,
+    /// Module declaration (`mod foo`).
     Mod,
+    /// Class definition (Python, JavaScript, TypeScript).
     Class,
+    /// Macro definition.
     Macro,
+    /// Interface declaration (TypeScript).
     Interface,
+    /// Method inside an impl block or class body.
     Method,
+    /// Unrecognised node kind — caught by the catch-all arm.
     Other,
 }
 
+/// Visibility of a symbol, derived from its Rust `pub` modifier or Python/JS conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
-    Public,     // pub
-    Crate,      // pub(crate)
-    Restricted, // pub(super), pub(in path)
-    Private,    // no modifier
+    /// `pub` — visible everywhere.
+    Public,
+    /// `pub(crate)` — visible within the crate.
+    Crate,
+    /// `pub(super)` or `pub(in path)` — restricted visibility.
+    Restricted,
+    /// No modifier — private to the current module.
+    Private,
 }
 
 impl Visibility {
@@ -208,8 +238,25 @@ pub fn generate_repo_map(root: &Path, token_budget: usize, tc: &TokenCounter) ->
     Ok(map)
 }
 
-/// Extract top-level symbols using ts-query. Falls back to heuristic extraction
-/// when the query is unavailable.
+/// Extract top-level symbols from a source string using ts-query or a heuristic fallback.
+///
+/// Tries the ts-query path first (via [`crate::languages::Lang::symbol_query`]).
+/// Falls back to a heuristic AST walk for languages that do not have a compiled query
+/// (currently Bash, TOML, JSON, Markdown).
+///
+/// # Examples
+///
+/// ```
+/// use zeph_index::repo_map::{extract_symbols, SymbolKind};
+/// use zeph_index::languages::Lang;
+///
+/// let source = "pub fn hello() {}\npub struct Foo;\n";
+/// let grammar = Lang::Rust.grammar().unwrap();
+/// let symbols = extract_symbols(source, &grammar, Lang::Rust);
+///
+/// let hello = symbols.iter().find(|s| s.name == "hello").unwrap();
+/// assert_eq!(hello.kind, SymbolKind::Function);
+/// ```
 #[must_use]
 pub fn extract_symbols(
     source: &str,

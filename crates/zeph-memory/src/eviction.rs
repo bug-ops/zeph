@@ -24,15 +24,16 @@ use crate::types::MessageId;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-/// An entry passed to `EvictionPolicy::score`.
+/// Metadata for a single memory entry evaluated by [`EvictionPolicy::score`].
 #[derive(Debug, Clone)]
 pub struct EvictionEntry {
+    /// SQLite row ID of the message.
     pub id: MessageId,
-    /// ISO 8601 creation timestamp (TEXT column from `SQLite`).
+    /// ISO 8601 creation timestamp (TEXT column from SQLite, UTC).
     pub created_at: String,
     /// ISO 8601 last-accessed timestamp, or `None` if never accessed after creation.
     pub last_accessed: Option<String>,
-    /// Number of times this message has been retrieved.
+    /// Number of times this message has been retrieved via recall.
     pub access_count: u32,
 }
 

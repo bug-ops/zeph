@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Agent discovery via `/.well-known/agent.json` with TTL-based caching.
+
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -16,6 +18,35 @@ struct CachedCard {
     fetched_at: Instant,
 }
 
+/// In-memory registry of peer agent capability cards with TTL-based cache invalidation.
+///
+/// `AgentRegistry` fetches [`AgentCard`] documents from `{base_url}/.well-known/agent.json`
+/// and caches them for up to `ttl`. It supports three usage patterns:
+///
+/// 1. **Auto-discovery** via [`discover`](Self::discover): always fetches from the network.
+/// 2. **Cache-first** via [`get_or_discover`](Self::get_or_discover): returns the cached card
+///    if it is younger than `ttl`, otherwise re-fetches.
+/// 3. **Manual registration** via [`register`](Self::register): populates the cache directly
+///    without a network call (useful for known peers or test fixtures).
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_a2a::AgentRegistry;
+/// use std::time::Duration;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(300));
+///
+/// // Discover and cache a peer agent.
+/// let card = registry.discover("http://peer.example.com").await?;
+/// println!("Peer agent: {}", card.name);
+///
+/// // Next call returns the cached version (no network request).
+/// let card = registry.get_or_discover("http://peer.example.com").await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct AgentRegistry {
     client: reqwest::Client,
     cache: RwLock<HashMap<String, CachedCard>>,
@@ -23,6 +54,9 @@ pub struct AgentRegistry {
 }
 
 impl AgentRegistry {
+    /// Create a new registry with the given HTTP client and cache TTL.
+    ///
+    /// All discovered or registered cards are evicted from the cache after `ttl` elapses.
     #[must_use]
     pub fn new(client: reqwest::Client, ttl: Duration) -> Self {
         Self {
@@ -32,8 +66,16 @@ impl AgentRegistry {
         }
     }
 
+    /// Fetch the [`AgentCard`] from `{base_url}/.well-known/agent.json` and update the cache.
+    ///
+    /// Always performs a network request regardless of the current cache state. The result
+    /// is stored under `base_url` so subsequent [`get_or_discover`](Self::get_or_discover)
+    /// calls can serve it without re-fetching until the TTL expires.
+    ///
     /// # Errors
-    /// Returns `A2aError::Http` on network failure or `A2aError::Discovery` on non-2xx / parse failure.
+    ///
+    /// Returns [`A2aError`] wrapping an HTTP transport failure, or a [`A2aError`] discovery
+    /// variant on non-2xx HTTP status or JSON parse failure.
     pub async fn discover(&self, base_url: &str) -> Result<AgentCard, A2aError> {
         let url = format!("{}{WELL_KNOWN_PATH}", base_url.trim_end_matches('/'));
         let resp = self.client.get(&url).send().await?;
@@ -62,8 +104,15 @@ impl AgentRegistry {
         Ok(card)
     }
 
+    /// Return a cached [`AgentCard`] if it is still within the TTL, otherwise re-fetch.
+    ///
+    /// This is the preferred call for high-frequency routing decisions — it avoids a
+    /// network round-trip on every call while still refreshing stale cards automatically.
+    ///
     /// # Errors
-    /// Returns `A2aError` if cached card is stale and re-fetch fails.
+    ///
+    /// Returns [`A2aError`] if the cached entry is expired and the re-fetch via
+    /// [`discover`](Self::discover) fails.
     pub async fn get_or_discover(&self, base_url: &str) -> Result<AgentCard, A2aError> {
         {
             let cache = self.cache.read().await;
@@ -76,6 +125,12 @@ impl AgentRegistry {
         self.discover(base_url).await
     }
 
+    /// Manually register an [`AgentCard`] under `base_url`, bypassing the network.
+    ///
+    /// Overwrites any existing entry for the same URL. The card is treated as freshly
+    /// fetched and will not expire until `ttl` has elapsed from the time of this call.
+    ///
+    /// Useful when the card is already known (e.g., loaded from config) or in tests.
     pub async fn register(&self, base_url: String, card: AgentCard) {
         let mut cache = self.cache.write().await;
         cache.insert(
@@ -87,11 +142,19 @@ impl AgentRegistry {
         );
     }
 
+    /// Return all currently cached [`AgentCard`]s, including stale entries.
+    ///
+    /// This does not trigger any eviction or re-fetch. Call [`evict_stale`](Self::evict_stale)
+    /// first if you only want cards that are still within their TTL.
     pub async fn all(&self) -> Vec<AgentCard> {
         let cache = self.cache.read().await;
         cache.values().map(|e| e.card.clone()).collect()
     }
 
+    /// Remove all cache entries whose TTL has expired.
+    ///
+    /// Intended for periodic background cleanup. The A2A server does not call this
+    /// automatically — callers should schedule it as needed (e.g., via a periodic task).
     pub async fn evict_stale(&self) {
         let mut cache = self.cache.write().await;
         cache.retain(|_, entry| entry.fetched_at.elapsed() < self.ttl);

@@ -1,12 +1,30 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Helpers for pinning generation parameters to reproducible values.
+//!
+//! By default every `bench run` forces `temperature=0.0` on the configured LLM
+//! provider so that two runs with identical inputs produce the same output. Pass
+//! `--no-deterministic` on the CLI (or `no_deterministic = true` to
+//! [`apply_deterministic_overrides`]) to opt out.
+
 use zeph_llm::provider::GenerationOverrides;
 
-/// Returns `GenerationOverrides` that pins temperature to 0.0 for reproducible runs.
+/// Build the [`GenerationOverrides`] that pin temperature to `0.0`.
 ///
-/// Apply these overrides to each provider via `provider.with_generation_overrides(overrides())`
-/// before constructing the agent for a benchmark run.
+/// All other sampling parameters (`top_p`, `top_k`, `frequency_penalty`,
+/// `presence_penalty`) are left as `None` so that the provider's own defaults
+/// apply.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::deterministic::deterministic_overrides;
+///
+/// let overrides = deterministic_overrides();
+/// assert_eq!(overrides.temperature, Some(0.0));
+/// assert!(overrides.top_p.is_none());
+/// ```
 #[must_use]
 pub fn deterministic_overrides() -> GenerationOverrides {
     GenerationOverrides {
@@ -18,11 +36,29 @@ pub fn deterministic_overrides() -> GenerationOverrides {
     }
 }
 
-/// Apply deterministic overrides to a provider unless `no_deterministic` is set.
+/// Optionally apply deterministic generation overrides to an [`AnyProvider`].
 ///
-/// When `no_deterministic` is `false` (the default for bench runs), temperature is
-/// forced to 0.0 via `GenerationOverrides`. When `true`, the provider is returned
-/// unchanged.
+/// When `no_deterministic` is `false` (the default for `bench run`), temperature
+/// is forced to `0.0` via [`deterministic_overrides`]. When `true` the provider
+/// is returned unchanged so the caller's configured temperature is used.
+///
+/// This function is called by the bench runner after resolving the provider and
+/// before constructing the agent.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_bench::apply_deterministic_overrides;
+/// use zeph_llm::{any::AnyProvider, mock::MockProvider};
+///
+/// let provider = AnyProvider::Mock(MockProvider::with_responses(vec![]));
+///
+/// // Non-deterministic: provider is returned unchanged.
+/// let result = apply_deterministic_overrides(provider, true);
+/// assert!(matches!(result, AnyProvider::Mock(_)));
+/// ```
+///
+/// [`AnyProvider`]: zeph_llm::any::AnyProvider
 pub fn apply_deterministic_overrides(
     provider: zeph_llm::any::AnyProvider,
     no_deterministic: bool,

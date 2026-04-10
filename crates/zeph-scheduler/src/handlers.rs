@@ -10,12 +10,44 @@ use crate::error::SchedulerError;
 use crate::sanitize::sanitize_task_prompt;
 use crate::task::TaskHandler;
 
-/// Handler that injects a custom task prompt into the agent loop via an mpsc channel.
+/// [`TaskHandler`] that injects a custom prompt into the agent loop.
+///
+/// When a [`TaskKind::Custom`](crate::TaskKind::Custom) task is due, `CustomTaskHandler`
+/// reads the `"task"` field from the task's JSON config, sanitises it with
+/// [`crate::sanitize_task_prompt`], and sends the resulting string on the provided
+/// `mpsc::Sender`. The agent loop receives the prompt and processes it as a new
+/// user message.
+///
+/// Sending is best-effort: if the channel is full or closed, the error is logged at
+/// warn level and `Ok(())` is returned so the scheduler continues running.
+///
+/// # Examples
+///
+/// ```rust
+/// use tokio::sync::mpsc;
+/// use zeph_scheduler::CustomTaskHandler;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let (tx, mut rx) = mpsc::channel(8);
+/// let handler = CustomTaskHandler::new(tx);
+///
+/// use zeph_scheduler::TaskHandler;
+/// handler
+///     .execute(&serde_json::json!({"task": "Generate a daily report"}))
+///     .await
+///     .expect("handler should not fail");
+///
+/// let prompt = rx.recv().await.unwrap();
+/// assert_eq!(prompt, "Generate a daily report");
+/// # }
+/// ```
 pub struct CustomTaskHandler {
     tx: mpsc::Sender<String>,
 }
 
 impl CustomTaskHandler {
+    /// Create a new handler that sends prompts on `tx`.
     #[must_use]
     pub fn new(tx: mpsc::Sender<String>) -> Self {
         Self { tx }

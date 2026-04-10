@@ -1,6 +1,29 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! File-system watcher for incremental re-indexing on save.
+//!
+//! [`IndexWatcher`] wraps `notify-debouncer-mini` and feeds file change events
+//! through an async channel into a background Tokio task that calls
+//! [`crate::indexer::CodeIndexer::reindex_file`].
+//!
+//! ## Debouncing
+//!
+//! Events are debounced with a 1-second window. Rapid successive saves to the same
+//! file (e.g. auto-format on save) produce a single reindex call.
+//!
+//! ## Gitignore filtering
+//!
+//! The watcher loads `.gitignore` from the project root and skips files matched by
+//! it. This prevents spurious reindex calls for build artifacts in `target/` or
+//! temporary files in `.local/`.
+//!
+//! ## TUI integration
+//!
+//! When `status_tx` is supplied, the watcher sends a short `"Re-indexing <file>..."`
+//! message before each reindex and an empty string when it completes, so the TUI
+//! status bar shows live feedback.
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,6 +58,26 @@ fn is_gitignored(gitignore: &Gitignore, root: &Path, path: &Path) -> bool {
         .is_ignore()
 }
 
+/// A running file-system watcher that triggers incremental re-indexing on file saves.
+///
+/// Created by [`IndexWatcher::start`]. Dropping the `IndexWatcher` aborts the
+/// background Tokio task and the underlying `notify` watcher, stopping all
+/// file-system monitoring.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use std::path::Path;
+/// use zeph_index::watcher::IndexWatcher;
+/// # async fn example() -> zeph_index::Result<()> {
+/// # let indexer: Arc<zeph_index::indexer::CodeIndexer> = panic!("placeholder");
+///
+/// // Start watching — the returned handle keeps the watcher alive.
+/// let _watcher = IndexWatcher::start(Path::new("."), indexer, None)?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct IndexWatcher {
     _handle: tokio::task::JoinHandle<()>,
 }

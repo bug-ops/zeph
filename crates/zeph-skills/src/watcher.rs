@@ -1,6 +1,36 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Filesystem hot-reload for skill directories.
+//!
+//! [`SkillWatcher`] wraps the `notify` crate behind a 500 ms debounce window
+//! and forwards coalesced change events over a [`tokio::sync::mpsc`] channel.
+//! Only `SKILL.md` file changes trigger an event; other filesystem activity is
+//! silently ignored.
+//!
+//! The watcher task runs for as long as the [`SkillWatcher`] handle is alive.
+//! Dropping the handle aborts the background task and stops all watches.
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! use tokio::sync::mpsc;
+//! use zeph_skills::watcher::{SkillEvent, SkillWatcher};
+//! use std::path::PathBuf;
+//!
+//! # async fn run() -> Result<(), zeph_skills::SkillError> {
+//! let (tx, mut rx) = mpsc::channel(16);
+//! let _watcher = SkillWatcher::start(&[PathBuf::from("/path/to/skills")], tx)?;
+//!
+//! while let Some(event) = rx.recv().await {
+//!     match event {
+//!         SkillEvent::Changed => println!("skills changed, reloading"),
+//!     }
+//! }
+//! # Ok(())
+//! # }
+//! ```
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -9,11 +39,19 @@ use tokio::sync::mpsc;
 
 use crate::error::SkillError;
 
+/// Events emitted by [`SkillWatcher`] when a `SKILL.md` file is created, modified, or removed.
 #[derive(Clone)]
 pub enum SkillEvent {
+    /// At least one `SKILL.md` file changed within the watched directories.
+    ///
+    /// Multiple rapid filesystem changes are coalesced into a single `Changed` event
+    /// by the 500 ms debounce window.
     Changed,
 }
 
+/// Handle to the background filesystem watcher task.
+///
+/// Dropping this value aborts the watcher task and releases all filesystem watches.
 pub struct SkillWatcher {
     _handle: tokio::task::JoinHandle<()>,
 }

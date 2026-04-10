@@ -99,7 +99,31 @@ pub struct GoalGateConfig {
     pub weight: f32,
 }
 
-/// A-MAC admission controller.
+/// A-MAC adaptive memory admission controller (#2317).
+///
+/// Evaluates five factors (future utility, factual confidence, semantic novelty,
+/// temporal recency, content-type prior) and rejects messages below the configured
+/// composite score threshold before they are persisted.
+///
+/// Optionally extended with a goal-conditioned write gate (#2408) that adds a
+/// sixth factor based on the cosine similarity between the current goal embedding
+/// and the candidate memory.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_memory::{AdmissionControl, AdmissionWeights};
+///
+/// let weights = AdmissionWeights {
+///     future_utility: 0.3,
+///     factual_confidence: 0.2,
+///     semantic_novelty: 0.2,
+///     temporal_recency: 0.1,
+///     content_type_prior: 0.2,
+///     goal_utility: 0.0,
+/// };
+/// let controller = AdmissionControl::new(0.4, 0.1, weights);
+/// ```
 pub struct AdmissionControl {
     threshold: f32,
     fast_path_margin: f32,
@@ -112,6 +136,12 @@ pub struct AdmissionControl {
 }
 
 impl AdmissionControl {
+    /// Create a new admission controller.
+    ///
+    /// - `threshold` — composite score `[0, 1]` below which messages are rejected.
+    /// - `fast_path_margin` — when all non-LLM factors already push the score far above
+    ///   the threshold (by at least this margin), the LLM `future_utility` call is skipped.
+    /// - `weights` — factor weights; normalized automatically so they sum to `1.0`.
     #[must_use]
     pub fn new(threshold: f32, fast_path_margin: f32, weights: AdmissionWeights) -> Self {
         Self {

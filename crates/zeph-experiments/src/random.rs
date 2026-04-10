@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Uniform random sampling strategy for parameter variation.
+//!
+//! [`Random`] selects a parameter uniformly at random on each call, then samples
+//! its value uniformly from `[min, max]`, quantizing to the nearest step. It
+//! provides broad coverage without systematic ordering, which can be useful when
+//! the search space is large and a full [`GridStep`] sweep is too expensive.
+//!
+//! [`GridStep`]: crate::GridStep
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -24,19 +31,51 @@ const MAX_RETRIES: usize = 1000;
 /// At each call, a parameter is chosen uniformly at random, then a value is
 /// sampled uniformly from its `[min, max]` range and quantized to the nearest
 /// step (if configured). The sample is rejected if it was already visited.
-/// Returns `None` after `MAX_RETRIES` consecutive rejections.
+/// Returns `None` after 1000 consecutive rejections (the space is considered
+/// effectively exhausted for this seed).
 ///
-/// `rng` is wrapped in a [`Mutex`] so that `Random` implements [`Sync`], which is
-/// required by [`VariationGenerator`] to allow [`ExperimentEngine`] to be used
-/// with `tokio::spawn`. The mutex is only ever locked from a single thread
-/// (the experiment loop is sequential), so there is no contention.
+/// The internal RNG is wrapped in a [`Mutex`] so that `Random` implements [`Sync`],
+/// which is required by [`VariationGenerator`] to allow [`ExperimentEngine`] to be
+/// used in an async context. The experiment loop is sequential, so the mutex is
+/// never contended.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::collections::HashSet;
+/// use zeph_experiments::{ConfigSnapshot, Random, SearchSpace, VariationGenerator};
+///
+/// let mut generator = Random::new(SearchSpace::default(), 42);
+/// let baseline = ConfigSnapshot::default();
+/// let visited = HashSet::new();
+///
+/// // Two generators with the same seed produce the same first variation.
+/// let mut gen2 = Random::new(SearchSpace::default(), 42);
+/// let v1 = generator.next(&baseline, &visited);
+/// let v2 = gen2.next(&baseline, &visited);
+/// assert_eq!(v1, v2);
+/// ```
+///
+/// [`ExperimentEngine`]: crate::ExperimentEngine
 pub struct Random {
     search_space: SearchSpace,
     rng: Mutex<SmallRng>,
 }
 
 impl Random {
-    /// Create a new `Random` generator with a deterministic seed.
+    /// Create a new [`Random`] generator with a deterministic seed.
+    ///
+    /// Generators with the same `seed` and `search_space` will produce identical
+    /// variation sequences, making experiments reproducible.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::{Random, SearchSpace, VariationGenerator};
+    ///
+    /// let generator = Random::new(SearchSpace::default(), 1234);
+    /// assert_eq!(generator.name(), "random");
+    /// ```
     #[must_use]
     pub fn new(search_space: SearchSpace, seed: u64) -> Self {
         Self {

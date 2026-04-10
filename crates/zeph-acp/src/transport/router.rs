@@ -1,6 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Axum router construction for the ACP HTTP transport.
+//!
+//! The router is the single axum `Router` that wires up all ACP endpoints.
+//! Callers attach it to their axum `Server` and call
+//! [`AcpHttpState::mark_ready`](crate::transport::http::AcpHttpState::mark_ready) after
+//! initialization.
+
 #[cfg(feature = "acp-http")]
 use axum::Router;
 #[cfg(feature = "acp-http")]
@@ -26,20 +33,46 @@ use crate::transport::ws::ws_upgrade_handler;
 #[cfg(feature = "acp-http")]
 const MAX_BODY_BYTES: usize = 1_048_576;
 
-/// Build the axum `Router` for the ACP HTTP+SSE and WebSocket endpoints.
+/// Build the axum [`Router`] for the ACP HTTP+SSE and WebSocket endpoints.
 ///
-/// Routes:
-/// - `POST /acp` — JSON-RPC request body (≤ 1 MiB), SSE response stream
-/// - `GET /acp` — SSE notification reconnect (requires `Acp-Session-Id`)
-/// - `GET /acp/ws` — WebSocket upgrade
-/// - `GET /health` — public readiness probe
-/// - `GET /.well-known/acp.json` — discovery manifest (always public, no auth)
-/// - `GET /agent.json` — agent identity manifest for ACP Registry (always public, no auth)
+/// Attach the returned router to an axum `Server`, then call
+/// [`AcpHttpState::mark_ready`](crate::transport::http::AcpHttpState::mark_ready)
+/// after all initialization is complete.
 ///
-/// Security layers applied:
+/// # Routes
+///
+/// | Method | Path | Description |
+/// |--------|------|-------------|
+/// | `POST` | `/acp` | JSON-RPC request body (≤ 1 MiB), SSE response stream |
+/// | `GET` | `/acp` | SSE notification reconnect (requires `Acp-Session-Id` header) |
+/// | `GET` | `/acp/ws` | WebSocket upgrade |
+/// | `GET` | `/health` | Public readiness probe |
+/// | `GET` | `/.well-known/acp.json` | Discovery manifest (always public, no auth) |
+/// | `GET` | `/agent.json` | Agent identity manifest for ACP Registry (always public) |
+///
+/// # Security layers
+///
 /// - `DefaultBodyLimit::max(1_048_576)` — rejects oversized POST bodies
-/// - `CorsLayer` with empty origin list — denies all cross-origin requests
-/// - `BearerAuthLayer` — applied to /acp routes when `auth_bearer_token` is `Some`
+/// - `CorsLayer` with empty origin list — denies all cross-origin requests by default
+/// - `BearerAuthLayer` — applied to `/acp` routes when `auth_bearer_token` is `Some`
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// # #[cfg(feature = "acp-http")]
+/// # {
+/// use std::sync::Arc;
+/// use zeph_acp::{AgentSpawner, AcpServerConfig, AcpHttpState, acp_router};
+///
+/// let spawner: AgentSpawner = Arc::new(|ch, ctx, sess| Box::pin(async move { drop((ch, ctx, sess)); }));
+/// let config = AcpServerConfig { agent_name: "zeph".to_owned(), ..AcpServerConfig::default() };
+/// let state = AcpHttpState::new(spawner, config);
+/// state.mark_ready();
+///
+/// let router = acp_router(state);
+/// // attach `router` to axum::serve(...)
+/// # }
+/// ```
 #[cfg(feature = "acp-http")]
 pub fn acp_router(state: AcpHttpState) -> Router {
     let acp_routes = Router::new()

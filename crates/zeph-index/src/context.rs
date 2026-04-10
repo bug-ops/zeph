@@ -12,10 +12,40 @@ use crate::chunker::CodeChunk;
 /// Maximum number of import lines included in the embedding text.
 const MAX_IMPORT_LINES: usize = 5;
 
-/// Generate text optimized for embedding (not for display).
+/// Generate text optimized for embedding from a [`CodeChunk`].
 ///
-/// Prepends file path, scope chain, imports, and language tag
-/// to the raw code.
+/// Prepends structured header lines (file path, scope chain, language tag, and
+/// trimmed imports) before the raw code. The extra context dramatically improves
+/// retrieval quality for conceptual queries because the embedding model can
+/// associate the code with its file location and import context.
+///
+/// Import lines are capped at [`MAX_IMPORT_LINES`] to avoid diluting the embedding
+/// with long import blocks.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_index::context::contextualize_for_embedding;
+/// use zeph_index::chunker::CodeChunk;
+/// use zeph_index::languages::Lang;
+///
+/// let chunk = CodeChunk {
+///     code: "fn greet() {}".to_string(),
+///     file_path: "src/lib.rs".to_string(),
+///     language: Lang::Rust,
+///     node_type: "function_item".to_string(),
+///     entity_name: Some("greet".to_string()),
+///     line_range: (1, 1),
+///     scope_chain: String::new(),
+///     imports: "use std::io;".to_string(),
+///     content_hash: "abc".to_string(),
+/// };
+///
+/// let text = contextualize_for_embedding(&chunk);
+/// assert!(text.contains("# src/lib.rs"));
+/// assert!(text.contains("# Language: rust"));
+/// assert!(text.contains("fn greet() {}"));
+/// ```
 #[must_use]
 pub fn contextualize_for_embedding(chunk: &CodeChunk) -> String {
     let mut text = String::with_capacity(chunk.code.len() + 256);

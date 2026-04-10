@@ -206,11 +206,29 @@ impl Default for ToolFilterConfig {
     }
 }
 
+/// Core agent behavior configuration, nested under `[agent]` in TOML.
+///
+/// Controls the agent's name, tool-loop limits, instruction loading, and retry
+/// behavior. All fields have sensible defaults; only `name` is typically changed
+/// by end users.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [agent]
+/// name = "Zeph"
+/// max_tool_iterations = 15
+/// max_tool_retries = 3
+/// ```
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AgentConfig {
+    /// Human-readable agent name surfaced in the TUI and Telegram header. Default: `"Zeph"`.
     pub name: String,
+    /// Maximum number of tool-call iterations per agent turn before the loop is aborted.
+    /// Must be `<= 100`. Default: `10`.
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: usize,
+    /// Check for new Zeph releases at startup. Default: `true`.
     #[serde(default = "default_auto_update_check")]
     pub auto_update_check: bool,
     /// Additional instruction files to always load, regardless of provider.
@@ -247,13 +265,29 @@ fn default_budget_hint_enabled() -> bool {
     true
 }
 
+/// Sub-agent pool configuration, nested under `[agents]` in TOML.
+///
+/// When `enabled = true`, the agent can spawn isolated sub-agent sessions from
+/// SKILL.md-based agent definitions. Sub-agents inherit the parent's provider pool
+/// unless overridden by `model` in their definition frontmatter.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [agents]
+/// enabled = true
+/// max_concurrent = 3
+/// max_spawn_depth = 2
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SubAgentConfig {
+    /// Enable the sub-agent subsystem. Default: `false`.
     pub enabled: bool,
     /// Maximum number of sub-agents that can run concurrently.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
+    /// Additional directories to search for `.agent.md` definition files.
     pub extra_dirs: Vec<PathBuf>,
     /// User-level agents directory.
     #[serde(default)]

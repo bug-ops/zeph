@@ -1,6 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Conversion between ACP `McpServer` descriptors and `zeph-mcp` `ServerEntry` configs.
+//!
+//! IDEs send MCP server configurations inside `new_session`. This module converts
+//! those ACP types into the `ServerEntry` format understood by [`zeph_mcp::McpManager`].
+//!
+//! # Security
+//!
+//! Dangerous environment variables (library injection, PATH hijacking, proxy
+//! interception, shell startup injection, runtime module injection) are stripped
+//! from stdio MCP server configs before they are passed to child processes.
+
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -9,10 +20,33 @@ use zeph_mcp::{McpTransport, McpTrustLevel, ServerEntry};
 
 const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 
-/// Convert ACP `McpServer` list to `zeph-mcp` `ServerEntry` configs.
+/// Convert an ACP `McpServer` list to `zeph-mcp` [`ServerEntry`] configs.
 ///
 /// `Stdio`, `Http`, and `Sse` transports are supported. `Sse` is mapped to
 /// `McpTransport::Http` since rmcp's `StreamableHttpClientTransport` handles both.
+/// Unknown transport variants are skipped with a warning.
+///
+/// All converted entries start with [`McpTrustLevel::Untrusted`] and no tool allowlist
+/// so that the agent sandbox applies to IDE-requested MCP servers.
+///
+/// # Security
+///
+/// Dangerous environment variables are stripped from `Stdio` server configs.
+/// See module-level documentation for the full blocklist.
+///
+/// # Examples
+///
+/// ```
+/// use agent_client_protocol as acp;
+/// use zeph_acp::acp_mcp_servers_to_entries;
+///
+/// let servers = vec![
+///     acp::McpServer::Stdio(acp::McpServerStdio::new("my-server", "/usr/bin/my-mcp")),
+/// ];
+/// let entries = acp_mcp_servers_to_entries(&servers);
+/// assert_eq!(entries.len(), 1);
+/// assert_eq!(entries[0].id, "my-server");
+/// ```
 #[must_use]
 pub fn acp_mcp_servers_to_entries(servers: &[acp::McpServer]) -> Vec<ServerEntry> {
     servers

@@ -1,12 +1,36 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! SQLite-backed response cache with TTL expiry.
+//!
+//! Caches LLM responses keyed by a content hash so identical prompts within
+//! the TTL window are served from the database without an API round-trip.
+
 use zeph_db::DbPool;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
 use crate::error::MemoryError;
 
+/// SQLite-backed cache for LLM responses.
+///
+/// Entries expire after `ttl_secs` seconds.  The `cache_key` is typically a
+/// BLAKE3 hash of the serialized prompt so that structurally identical requests
+/// are deduplicated across sessions.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// # async fn example(pool: zeph_db::DbPool) -> Result<(), zeph_memory::MemoryError> {
+/// use zeph_memory::ResponseCache;
+///
+/// let cache = ResponseCache::new(pool, 3600);
+/// cache.put("key123", "The answer is 42", "gpt-4o-mini").await?;
+/// let hit = cache.get("key123").await?;
+/// assert!(hit.is_some());
+/// # Ok(())
+/// # }
+/// ```
 pub struct ResponseCache {
     pool: DbPool,
     ttl_secs: u64,

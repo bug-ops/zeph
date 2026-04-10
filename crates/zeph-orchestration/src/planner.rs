@@ -14,7 +14,10 @@ use super::graph::{ExecutionMode, FailureStrategy, TaskGraph, TaskId, TaskNode};
 use zeph_config::OrchestrationConfig;
 use zeph_subagent::{SubAgentDef, ToolPolicy};
 
-/// Decomposes a high-level goal into a validated `TaskGraph`.
+/// Decomposes a high-level goal into a validated [`TaskGraph`].
+///
+/// Implementations must be `Send + Sync` to be used inside async task loops.
+/// The standard implementation is [`LlmPlanner`].
 #[allow(async_fn_in_trait)]
 pub trait Planner: Send + Sync {
     /// Generate a task graph from a user goal.
@@ -28,8 +31,24 @@ pub trait Planner: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns `OrchestrationError::PlanningFailed` if the LLM response cannot
-    /// be parsed into a valid graph after retry, or if DAG validation fails.
+    /// Returns [`OrchestrationError::PlanningFailed`] if the LLM response cannot
+    /// be parsed into a valid graph, or if DAG validation fails.
+    /// Returns [`OrchestrationError::CycleDetected`] if the planner produces a cyclic graph.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use zeph_orchestration::{LlmPlanner, Planner};
+    /// use zeph_config::OrchestrationConfig;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let config = OrchestrationConfig::default();
+    /// let planner = LlmPlanner::new(my_provider, &config);
+    /// let (graph, usage) = planner.plan("build and test service", &[]).await?;
+    /// assert!(!graph.tasks.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn plan(
         &self,
         goal: &str,
@@ -37,17 +56,25 @@ pub trait Planner: Send + Sync {
     ) -> Result<(TaskGraph, Option<(u64, u64)>), OrchestrationError>;
 }
 
-/// LLM-backed `Planner` using `chat_typed` for structured JSON output.
+/// LLM-backed [`Planner`] using `chat_typed` for structured JSON output.
+///
+/// Sends a structured prompt to the configured LLM provider and deserialises the
+/// response into a `PlannerResponse`. The response is then validated by
+/// [`dag::validate`] before being returned.
+///
+/// The LLM is asked to produce tasks in kebab-case `task_id` format and to
+/// annotate each task with an `execution_mode` (`"parallel"` or `"sequential"`).
 pub struct LlmPlanner<P: LlmProvider> {
     provider: P,
     max_tasks: u32,
 }
 
 impl<P: LlmProvider> LlmPlanner<P> {
-    /// Create a new `LlmPlanner` from a provider and config.
+    /// Create a new `LlmPlanner` from a provider and orchestration config.
     ///
     /// The caller resolves `config.planner_provider` to a concrete provider and passes
-    /// it here. `LlmPlanner` uses whatever provider it receives.
+    /// it here. `LlmPlanner` uses whatever provider it receives without further
+    /// provider resolution.
     #[must_use]
     pub fn new(provider: P, config: &OrchestrationConfig) -> Self {
         Self {

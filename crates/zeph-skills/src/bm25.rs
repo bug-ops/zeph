@@ -1,13 +1,46 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! In-memory BM25 index over skill descriptions with Reciprocal Rank Fusion.
+//! In-memory BM25 inverted index over skill descriptions with Reciprocal Rank Fusion.
+//!
+//! BM25 (Okapi BM25) is a bag-of-words ranking function that outperforms TF-IDF for
+//! short descriptions by normalizing term frequency against document length.
+//!
+//! This module provides two components:
+//!
+//! 1. **[`Bm25Index`]** — an inverted index built from skill descriptions that can be
+//!    queried for lexical matches.
+//! 2. **[`rrf_fuse`]** — Reciprocal Rank Fusion to combine BM25 and embedding results
+//!    into a single ranked list.
+//!
+//! # Tokenization
+//!
+//! Text is lower-cased and split on all non-alphanumeric characters. Tokens shorter than
+//! 3 characters are discarded to reduce noise from articles, prepositions, and abbreviations.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use zeph_skills::bm25::Bm25Index;
+//!
+//! let index = Bm25Index::build(&[
+//!     "run git commands and manage repositories",
+//!     "manage docker containers and compose files",
+//! ]);
+//!
+//! let results = index.search("git commit", 5);
+//! assert!(!results.is_empty());
+//! assert_eq!(results[0].0, 0); // git doc ranks first
+//! ```
 
 use std::collections::{HashMap, HashSet};
 
 use crate::matcher::ScoredMatch;
 
 /// In-memory BM25 index over skill descriptions.
+///
+/// Built once at skill-load time with `k1 = 1.2` and `b = 0.75` (standard BM25 defaults).
+/// The index is read-only after construction; rebuild via [`Bm25Index::build`] after a reload.
 #[derive(Debug)]
 pub struct Bm25Index {
     inverted: HashMap<String, Vec<(usize, f32)>>,
@@ -19,7 +52,19 @@ pub struct Bm25Index {
 }
 
 impl Bm25Index {
-    /// Build index from skill descriptions.
+    /// Build a BM25 index from a slice of document strings.
+    ///
+    /// Documents are indexed positionally — `descriptions[i]` corresponds to skill index `i`
+    /// in the caller's skill slice, which must remain stable across the index lifetime.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_skills::bm25::Bm25Index;
+    ///
+    /// let index = Bm25Index::build(&["fetch weather data", "run docker containers"]);
+    /// assert!(!index.search("weather", 3).is_empty());
+    /// ```
     #[must_use]
     pub fn build(descriptions: &[&str]) -> Self {
         let k1 = 1.2_f32;
@@ -64,7 +109,23 @@ impl Bm25Index {
         }
     }
 
-    /// Score all documents against the query. Returns (index, score) pairs, sorted descending.
+    /// Score all documents against the query, returning up to `limit` `(index, score)` pairs.
+    ///
+    /// Documents with a score of zero (no query terms match) are excluded. Results are
+    /// sorted by score descending.
+    ///
+    /// Returns an empty `Vec` when the index is empty or the query contains no known terms.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_skills::bm25::Bm25Index;
+    ///
+    /// let index = Bm25Index::build(&["git version control", "docker container orchestration"]);
+    /// let results = index.search("git", 5);
+    /// assert_eq!(results.len(), 1);
+    /// assert_eq!(results[0].0, 0);
+    /// ```
     #[must_use]
     pub fn search(&self, query: &str, limit: usize) -> Vec<(usize, f32)> {
         if self.doc_count == 0 || self.avg_doc_length == 0.0 {

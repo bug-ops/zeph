@@ -1,6 +1,32 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! A2A HTTP server — serves `/.well-known/agent.json`, `POST /a2a`, and `POST /a2a/stream`.
+//!
+//! The server accepts JSON-RPC 2.0 requests on `/a2a` and SSE streaming requests on
+//! `/a2a/stream`. It delegates task processing to a user-supplied [`TaskProcessor`]
+//! implementation and manages task lifecycle via [`TaskManager`].
+//!
+//! # Architecture
+//!
+//! ```text
+//! A2aServer
+//!   └─ axum Router
+//!        ├─ GET  /.well-known/agent.json  →  agent_card_handler
+//!        ├─ POST /a2a                     →  jsonrpc_handler  (+ auth + rate-limit)
+//!        └─ POST /a2a/stream              →  stream_handler   (+ auth + rate-limit)
+//! ```
+//!
+//! Each request goes through:
+//! 1. Body size limit (`max_body_size`, default 1 MiB).
+//! 2. Bearer token authentication (constant-time comparison via blake3).
+//! 3. Per-IP rate limiting with sliding window and eviction.
+//! 4. Handler dispatches to the appropriate operation.
+//!
+//! # Feature flag
+//!
+//! This module is only compiled when the `server` feature is enabled.
+
 mod handlers;
 mod router;
 pub mod state;
@@ -15,6 +41,57 @@ use crate::types::AgentCard;
 use router::build_router_with_full_config;
 pub use state::{AppState, ProcessorEvent, TaskManager, TaskProcessor};
 
+/// An A2A protocol HTTP server.
+///
+/// `A2aServer` wraps an axum router and binds to a TCP port. It serves:
+/// - `GET /.well-known/agent.json` — agent capability card (unauthenticated).
+/// - `POST /a2a` — JSON-RPC 2.0 endpoint for blocking task operations.
+/// - `POST /a2a/stream` — SSE endpoint for real-time streaming task execution.
+///
+/// # Lifecycle
+///
+/// The server runs until a `true` is sent on `shutdown_rx`. Pass a `watch::channel`
+/// so that the owning component (e.g., `zeph-core`) can stop the server cleanly.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_a2a::{A2aServer, TaskProcessor, ProcessorEvent, A2aError, AgentCardBuilder, Message};
+/// use std::sync::Arc;
+/// use tokio::sync::watch;
+/// use std::pin::Pin;
+///
+/// struct MyProcessor;
+///
+/// impl TaskProcessor for MyProcessor {
+///     fn process(
+///         &self,
+///         task_id: String,
+///         message: Message,
+///         event_tx: tokio::sync::mpsc::Sender<ProcessorEvent>,
+///     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), A2aError>> + Send>> {
+///         Box::pin(async move {
+///             let _ = event_tx.send(ProcessorEvent::StatusUpdate {
+///                 state: zeph_a2a::TaskState::Completed,
+///                 is_final: true,
+///             }).await;
+///             Ok(())
+///         })
+///     }
+/// }
+///
+/// # async fn run() -> anyhow::Result<()> {
+/// let card = AgentCardBuilder::new("my-agent", "http://localhost:9090", "0.1.0").build();
+/// let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+///
+/// A2aServer::new(card, Arc::new(MyProcessor), "0.0.0.0", 9090, shutdown_rx)
+///     .with_auth(Some("my-secret-token".into()))
+///     .serve()
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
+#[cfg_attr(docsrs, doc(cfg(feature = "server")))]
 pub struct A2aServer {
     state: AppState,
     addr: SocketAddr,
@@ -26,6 +103,14 @@ pub struct A2aServer {
 }
 
 impl A2aServer {
+    /// Create a new `A2aServer` with default security settings.
+    ///
+    /// - Auth: disabled (all requests accepted).
+    /// - Rate limit: disabled (`0` = unlimited).
+    /// - Max body size: 1 MiB.
+    ///
+    /// If `host` cannot be parsed as a valid address, the server falls back to
+    /// `0.0.0.0:{port}` and emits a `WARN` log.
     #[must_use]
     pub fn new(
         card: AgentCard,
@@ -56,35 +141,60 @@ impl A2aServer {
         }
     }
 
+    /// Set the bearer token used for request authentication.
+    ///
+    /// When `Some(token)` is provided, every request to `/a2a` and `/a2a/stream` must
+    /// include an `Authorization: Bearer <token>` header. The comparison is constant-time
+    /// (blake3 hash of both sides) to prevent timing attacks.
+    ///
+    /// Passing `None` disables bearer auth. A `WARN` log is emitted if no token is set,
+    /// as a reminder that the server is open to unauthenticated requests.
     #[must_use]
     pub fn with_auth(mut self, token: Option<String>) -> Self {
         self.auth_token = token;
         self
     }
 
+    /// When `true`, the server rejects all requests if no auth token is configured.
+    ///
+    /// This is a safety guard: if `require_auth = true` but no token is provided via
+    /// [`with_auth`](Self::with_auth), every request returns `401 Unauthorized`.
     #[must_use]
     pub fn with_require_auth(mut self, require: bool) -> Self {
         self.require_auth = require;
         self
     }
 
+    /// Set the per-IP request rate limit (requests per 60-second sliding window).
+    ///
+    /// `0` disables rate limiting entirely. When the limit is exceeded, the server
+    /// returns `429 Too Many Requests`. The rate limiter tracks up to 10,000 unique IPs;
+    /// beyond that, stale entries are evicted and new IPs may be rejected.
     #[must_use]
     pub fn with_rate_limit(mut self, limit: u32) -> Self {
         self.rate_limit = limit;
         self
     }
 
+    /// Set the maximum allowed request body size in bytes (default: 1 MiB).
+    ///
+    /// Requests exceeding this limit are rejected with `413 Payload Too Large` before
+    /// reaching the handler, protecting against memory exhaustion from large payloads.
     #[must_use]
     pub fn with_max_body_size(mut self, size: usize) -> Self {
         self.max_body_size = size;
         self
     }
 
-    /// Start the HTTP server. Returns when the shutdown signal is received.
+    /// Bind to the configured address and start serving A2A requests.
+    ///
+    /// Runs until a `true` value is received on the `shutdown_rx` channel provided to
+    /// [`new`](Self::new). Shutdown is graceful: in-flight requests are allowed to complete.
     ///
     /// # Errors
     ///
-    /// Returns an error if the server fails to bind or encounters a fatal I/O error.
+    /// Returns [`A2aError::Server`](crate::A2aError::Server) if the TCP listener fails to
+    /// bind or if the axum server encounters a fatal I/O error during operation.
     pub async fn serve(self) -> Result<(), A2aError> {
         if self.auth_token.is_none() {
             tracing::warn!(

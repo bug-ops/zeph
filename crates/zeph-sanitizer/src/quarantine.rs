@@ -3,6 +3,21 @@
 
 //! Quarantine summarizer: routes untrusted content through an isolated LLM that
 //! extracts only verifiable facts before the content enters the main agent context.
+//!
+//! [`QuarantinedSummarizer`] sits between the sanitization pipeline and the main agent
+//! context. For source kinds that are configured for quarantine (e.g. `web_scrape`,
+//! `a2a_message`), the raw content is passed to a restricted-system-prompt LLM that
+//! extracts only factual content without following any embedded instructions.
+//!
+//! The quarantine LLM output is itself checked for injection patterns before being
+//! returned — defense in depth against a compromised or manipulated quarantine model.
+//!
+//! # Workflow
+//!
+//! 1. Sanitize raw content → [`SanitizedContent`].
+//! 2. Check [`QuarantinedSummarizer::should_quarantine`] for the source kind.
+//! 3. If yes, call [`QuarantinedSummarizer::extract_facts`] to get a safe summary.
+//! 4. Insert the summary (not the raw content) into message history.
 
 use std::collections::HashSet;
 
@@ -31,10 +46,13 @@ Do not include any preamble, explanations, or meta-commentary — only the extra
 // Error
 // ---------------------------------------------------------------------------
 
+/// Errors returned by [`QuarantinedSummarizer::extract_facts`].
 #[derive(Debug, thiserror::Error)]
 pub enum QuarantineError {
+    /// The quarantine LLM call failed (network error, provider error, etc.).
     #[error("quarantine LLM call failed: {0}")]
     LlmError(#[from] zeph_llm::LlmError),
+    /// The quarantine LLM returned an empty or whitespace-only response.
     #[error("quarantine response was empty")]
     EmptyResponse,
 }
@@ -45,9 +63,26 @@ pub enum QuarantineError {
 
 /// Routes untrusted content through an isolated LLM to extract only factual content.
 ///
-/// The quarantine LLM receives a restricted system prompt that forbids it from
-/// following instructions in the content. Its output is then re-checked for
-/// injection patterns before entering the main agent context.
+/// The quarantine LLM receives a fixed, non-configurable system prompt that forbids it
+/// from following instructions in the content. The spotlight wrappers from
+/// [`SanitizedContent::body`](crate::SanitizedContent) are stripped before the LLM call
+/// to avoid leaking internal implementation details. The LLM output is then re-checked
+/// for injection patterns before being returned to the caller.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use zeph_sanitizer::quarantine::QuarantinedSummarizer;
+/// use zeph_config::QuarantineConfig;
+///
+/// // provider is an AnyProvider wrapping a capable LLM backend.
+/// let summarizer = QuarantinedSummarizer::new(provider, &QuarantineConfig::default());
+///
+/// if summarizer.should_quarantine(source.kind) {
+///     let (facts, flags) = summarizer.extract_facts(&sanitized, &pipeline).await?;
+///     // Insert `facts` into message history instead of the raw content.
+/// }
+/// ```
 pub struct QuarantinedSummarizer {
     provider: AnyProvider,
     enabled_sources: HashSet<ContentSourceKind>,
@@ -56,8 +91,19 @@ pub struct QuarantinedSummarizer {
 impl QuarantinedSummarizer {
     /// Build a summarizer from the given provider and config.
     ///
-    /// Source strings that do not match any known `ContentSourceKind` are logged
-    /// as warnings and skipped.
+    /// Source strings that do not match any known [`ContentSourceKind`] are logged
+    /// as warnings and skipped — the summarizer continues with the remaining valid sources.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use zeph_sanitizer::quarantine::QuarantinedSummarizer;
+    /// use zeph_config::QuarantineConfig;
+    ///
+    /// let cfg = QuarantineConfig::default();
+    /// let summarizer = QuarantinedSummarizer::new(provider, &cfg);
+    /// assert!(summarizer.should_quarantine(ContentSourceKind::WebScrape));
+    /// ```
     #[must_use]
     pub fn new(provider: AnyProvider, config: &QuarantineConfig) -> Self {
         let mut enabled_sources = HashSet::new();
@@ -77,7 +123,14 @@ impl QuarantinedSummarizer {
         }
     }
 
-    /// Returns `true` when the given source kind should be routed through quarantine.
+    /// Returns `true` when the given source kind is configured to be routed through quarantine.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// assert!(summarizer.should_quarantine(ContentSourceKind::WebScrape));
+    /// assert!(!summarizer.should_quarantine(ContentSourceKind::ToolResult));
+    /// ```
     #[must_use]
     pub fn should_quarantine(&self, source: ContentSourceKind) -> bool {
         self.enabled_sources.contains(&source)

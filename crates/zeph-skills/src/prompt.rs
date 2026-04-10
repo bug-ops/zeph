@@ -1,6 +1,36 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Format matched skills into the `<available_skills>` XML block injected into the system prompt.
+//!
+//! # Output Format
+//!
+//! ```xml
+//! <available_skills>
+//!   <skill name="my-skill" reliability="85%" uses="20">
+//!     <description>What this skill does.</description>
+//!     <instructions>
+//! … Markdown body …
+//!     </instructions>
+//!   </skill>
+//! </available_skills>
+//! ```
+//!
+//! The `reliability` and `uses` attributes are included only after the skill has been
+//! invoked at least [`HEALTH_MIN_USES`] times (default 5), to avoid misleading confidence
+//! metrics from small sample sizes.
+//!
+//! # Trust-Aware Sanitization
+//!
+//! | Trust level | Body treatment |
+//! |---|---|
+//! | `Trusted` | Raw body — no modifications |
+//! | `Verified` / `Quarantined` | [`sanitize_skill_text`] replaces known injection markers |
+//! | `Quarantined` (additionally) | Body wrapped in a quarantine notice |
+//!
+//! The sanitization is **defense-in-depth** — the trust gate in `zeph-tools` is the primary
+//! security boundary.
+
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -137,6 +167,17 @@ pub fn sanitize_skill_text(text: &str) -> String {
 /// Minimum uses threshold before emitting reliability/uses attributes on `<skill>` tag.
 const HEALTH_MIN_USES: u32 = 5;
 
+/// Format a slice of matched skills into the `<available_skills>` XML block.
+///
+/// # Parameters
+///
+/// - `skills` — matched skills to include (already limited to the configured top-K).
+/// - `trust_levels` — map from skill name to resolved [`SkillTrustLevel`]; skills without an
+///   entry are treated as `Trusted` (the safe default for bundled skills).
+/// - `health_map` — map from skill name to `(posterior_score, use_count)`; entries with
+///   fewer than [`HEALTH_MIN_USES`] uses are omitted from the reliability attributes.
+///
+/// Returns an empty string when `skills` is empty.
 #[must_use]
 pub fn format_skills_prompt<S: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     skills: &[Skill],

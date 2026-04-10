@@ -138,7 +138,7 @@ pub(crate) struct Cli {
     pub(crate) lsp_context: bool,
 
     /// Override log file path. Use bare `--log-file` (without a value) to disable file
-    /// logging, overriding any config value. When omitted, uses the value from [logging]
+    /// logging, overriding any config value. When omitted, uses the value from the `logging`
     /// config section (default: .zeph/logs/zeph.log).
     #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]
     pub(crate) log_file: Option<String>,
@@ -296,7 +296,7 @@ pub(crate) enum AgentsCommand {
     },
     /// Create a new sub-agent definition
     Create {
-        /// Agent name (must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,63})
+        /// Agent name (must match `[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}`)
         name: String,
         /// Short description
         #[arg(long, short)]

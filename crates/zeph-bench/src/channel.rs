@@ -1,27 +1,86 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Headless [`zeph_core::channel::Channel`] implementation for benchmark runs.
+//!
+//! [`BenchmarkChannel`] feeds a pre-loaded prompt queue into the agent loop and captures
+//! each response without requiring a terminal, Telegram bot, or any other real I/O channel.
+//!
+//! Tool output events are intentionally suppressed (see the `send_tool_output` override) so
+//! that tool intermediaries do not pollute the captured response list with non-answer text.
+
 use std::collections::VecDeque;
 use std::time::Instant;
 
 use zeph_core::channel::{ChannelError, ChannelMessage, ToolOutputEvent};
 
-/// A single captured agent response for one benchmark prompt.
+/// A single captured agent response corresponding to one benchmark prompt.
+///
+/// Produced by [`BenchmarkChannel`] after the agent calls [`send`][Channel::send] or
+/// [`flush_chunks`][Channel::flush_chunks] for a given prompt.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::channel::CapturedResponse;
+/// use std::time::Duration;
+///
+/// let r = CapturedResponse {
+///     prompt_index: 0,
+///     text: "42".into(),
+///     elapsed: Duration::from_millis(312),
+///     input_tokens: 120,
+///     output_tokens: 3,
+///     context_window: 128_000,
+/// };
+/// assert_eq!(r.text, "42");
+/// ```
 #[derive(Debug, Clone)]
 pub struct CapturedResponse {
+    /// Zero-based index of the prompt this response corresponds to.
     pub prompt_index: usize,
+    /// Full text of the agent response (or concatenated streaming chunks).
     pub text: String,
+    /// Wall-clock time from the first streaming chunk to `flush_chunks`, or
+    /// [`Duration::ZERO`] for non-streaming `send` calls.
     pub elapsed: std::time::Duration,
+    /// Input token count reported by the LLM for this turn.
     pub input_tokens: u64,
+    /// Output token count reported by the LLM for this turn.
     pub output_tokens: u64,
+    /// Context window size reported by the LLM for this turn.
     pub context_window: u64,
 }
 
 /// Headless channel that feeds pre-loaded prompts and captures agent responses.
 ///
 /// Used by the bench runner to drive the agent loop without a real terminal or
-/// network connection. `recv()` drains the prompt queue; `send()` / `flush_chunks()`
-/// accumulate the response into `responses`.
+/// network connection. [`recv`][zeph_core::channel::Channel::recv] drains the prompt
+/// queue; [`send`][zeph_core::channel::Channel::send] and
+/// [`flush_chunks`][zeph_core::channel::Channel::flush_chunks] accumulate responses
+/// into an internal list.
+///
+/// # Usage
+///
+/// ```no_run
+/// use zeph_bench::BenchmarkChannel;
+///
+/// let prompts = vec!["What year did WWII end?".into()];
+/// let channel = BenchmarkChannel::new(prompts);
+/// assert_eq!(channel.total(), 1);
+/// ```
+///
+/// After the agent loop completes, call [`into_responses`] to consume the channel
+/// and retrieve all captured responses:
+///
+/// ```no_run
+/// # use zeph_bench::BenchmarkChannel;
+/// let channel = BenchmarkChannel::new(vec!["question".into()]);
+/// // ... run agent loop ...
+/// let responses = channel.into_responses();
+/// ```
+///
+/// [`into_responses`]: BenchmarkChannel::into_responses
 pub struct BenchmarkChannel {
     prompts: VecDeque<String>,
     responses: Vec<CapturedResponse>,
@@ -37,7 +96,20 @@ pub struct BenchmarkChannel {
 }
 
 impl BenchmarkChannel {
-    /// Create a new channel from a list of prompt strings.
+    /// Create a new channel pre-loaded with `prompts`.
+    ///
+    /// Prompts are fed to the agent one at a time in order via
+    /// [`recv`][zeph_core::channel::Channel::recv]. The channel returns `Ok(None)` once
+    /// all prompts have been drained.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_bench::BenchmarkChannel;
+    ///
+    /// let ch = BenchmarkChannel::new(vec!["hello".into(), "world".into()]);
+    /// assert_eq!(ch.total(), 2);
+    /// ```
     #[must_use]
     pub fn new(prompts: Vec<String>) -> Self {
         let total = prompts.len();
@@ -55,18 +127,48 @@ impl BenchmarkChannel {
     }
 
     /// Total number of prompts this channel was initialised with.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_bench::BenchmarkChannel;
+    ///
+    /// let ch = BenchmarkChannel::new(vec!["a".into(), "b".into(), "c".into()]);
+    /// assert_eq!(ch.total(), 3);
+    /// ```
     #[must_use]
     pub fn total(&self) -> usize {
         self.total
     }
 
-    /// Consume and return all captured responses.
+    /// Consume the channel and return all [`CapturedResponse`]s collected so far.
+    ///
+    /// Call this after the agent loop exits to retrieve every response in prompt order.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use zeph_bench::BenchmarkChannel;
+    ///
+    /// let ch = BenchmarkChannel::new(vec!["question".into()]);
+    /// // ... run agent ...
+    /// let responses = ch.into_responses();
+    /// ```
     #[must_use]
     pub fn into_responses(self) -> Vec<CapturedResponse> {
         self.responses
     }
 
-    /// Borrow the captured responses.
+    /// Borrow the captured responses without consuming the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_bench::BenchmarkChannel;
+    ///
+    /// let ch = BenchmarkChannel::new(vec![]);
+    /// assert!(ch.responses().is_empty());
+    /// ```
     #[must_use]
     pub fn responses(&self) -> &[CapturedResponse] {
         &self.responses

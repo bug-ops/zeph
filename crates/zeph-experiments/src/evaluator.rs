@@ -41,51 +41,121 @@ Respond with JSON only matching the provided schema.";
 /// The `{reference}` placeholder is replaced after XML-escaping the value.
 const JUDGE_REFERENCE_TEMPLATE: &str = "\n\nReference answer for comparison:\n{reference}\n\nUse the reference to calibrate your score.";
 
-/// Structured output returned by the judge LLM.
+/// Structured output returned by the judge LLM for a single benchmark case.
+///
+/// The judge model is instructed to respond with JSON matching this schema.
+/// Non-finite scores are rejected with [`EvalError::JudgeParse`].
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct JudgeOutput {
-    /// Score from 1 to 10.
+    /// Score from 1 to 10 (clamped to `[1.0, 10.0]` before use).
     pub score: f64,
-    /// One-sentence justification.
+    /// One-sentence justification for the score.
     pub reason: String,
 }
 
-/// Score for a single benchmark case.
+/// Score for a single benchmark case produced by the judge model.
+///
+/// Collected into [`EvalReport::per_case`] after all judge calls complete.
+/// Cases that fail (LLM error, budget exceeded, non-finite score) are excluded
+/// and counted in [`EvalReport::error_count`] instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseScore {
+    /// Zero-based index of the benchmark case in the original [`BenchmarkSet`].
     pub case_index: usize,
-    /// Score in range [1.0, 10.0]. Present only if the case was successfully scored.
+    /// Score in `[1.0, 10.0]`. Clamped from the judge's raw output.
     pub score: f64,
+    /// One-sentence justification returned by the judge.
     pub reason: String,
+    /// Wall-clock latency for this judge call in milliseconds.
     pub latency_ms: u64,
-    /// Tokens consumed by the judge call for this case.
+    /// Tokens consumed by the judge call (input + output).
     pub tokens: u64,
 }
 
 /// Aggregate evaluation report returned by [`Evaluator::evaluate`].
+///
+/// `mean_score` is `NaN` when no cases were successfully scored — callers must
+/// check `cases_scored > 0` or `mean_score.is_finite()` before using it as an
+/// acceptance threshold.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_experiments::EvalReport;
+///
+/// // mean_score is NaN when no cases are scored
+/// // This is a documentation-only example; construct via Evaluator::evaluate in practice.
+/// let partial_report_has_nan_mean = f64::NAN;
+/// assert!(partial_report_has_nan_mean.is_nan());
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalReport {
-    /// Mean score across all successfully scored cases (NaN if none succeeded).
+    /// Mean score across all successfully scored cases (`NaN` if `cases_scored == 0`).
     pub mean_score: f64,
-    /// Median latency in milliseconds across scored cases.
+    /// Median (p50) latency in milliseconds across scored cases (`0` if none).
     pub p50_latency_ms: u64,
-    /// 95th-percentile latency in milliseconds across scored cases.
+    /// 95th-percentile latency in milliseconds across scored cases (`0` if none).
     pub p95_latency_ms: u64,
-    /// Total tokens consumed by judge calls.
+    /// Total tokens consumed by all judge calls in this evaluation.
     pub total_tokens: u64,
     /// Number of cases that were successfully scored.
     pub cases_scored: usize,
-    /// Total number of cases in the benchmark set.
+    /// Total number of cases in the benchmark set (including failed ones).
     pub cases_total: usize,
-    /// Whether this report covers fewer than all cases (budget exceeded or errors).
+    /// `true` if any case was excluded due to budget exhaustion or judge errors.
     pub is_partial: bool,
     /// Number of cases that failed (LLM error, parse error, or budget exceeded).
     pub error_count: usize,
-    /// Per-case scores for successfully evaluated cases.
+    /// Per-case scores for successfully evaluated cases, sorted by `case_index`.
     pub per_case: Vec<CaseScore>,
 }
 
 /// Evaluates a subject model against a benchmark dataset using an LLM judge.
+///
+/// `Evaluator` runs each [`BenchmarkCase`] against a *subject* model to obtain a
+/// response, then scores all responses in parallel using a separate *judge* model.
+/// The judge is prompted to return a [`JudgeOutput`] with a score in `[1, 10]`.
+///
+/// # Token Budget
+///
+/// A cumulative token budget is enforced across all judge calls in a single
+/// [`evaluate`] invocation. When the budget is exceeded the report has
+/// `is_partial = true` and the remaining futures are drained (any that already
+/// completed successfully are included in the scores).
+///
+/// # Concurrency
+///
+/// Subject calls are sequential; judge calls are parallelized up to
+/// `parallel_evals` (default: 3) via a tokio semaphore.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// # use std::sync::Arc;
+/// # use zeph_experiments::{BenchmarkCase, BenchmarkSet, Evaluator, EvalError};
+/// # use zeph_llm::any::AnyProvider;
+/// # use zeph_llm::mock::MockProvider;
+/// # async fn example() -> Result<(), EvalError> {
+/// let judge = Arc::new(AnyProvider::Mock(MockProvider::with_responses(vec![
+///     r#"{"score": 8.0, "reason": "mostly correct"}"#.into(),
+/// ])));
+/// let subject = AnyProvider::Mock(MockProvider::with_responses(vec!["42".into()]));
+/// let benchmark = BenchmarkSet {
+///     cases: vec![BenchmarkCase {
+///         prompt: "What is 6×7?".into(),
+///         context: None,
+///         reference: Some("42".into()),
+///         tags: None,
+///     }],
+/// };
+/// let evaluator = Evaluator::new(judge, benchmark, 50_000)?;
+/// let report = evaluator.evaluate(&subject).await?;
+/// assert_eq!(report.cases_scored, 1);
+/// # Ok(())
+/// # }
+/// ```
+///
+/// [`evaluate`]: Self::evaluate
 pub struct Evaluator {
     judge: Arc<AnyProvider>,
     benchmark: BenchmarkSet,
@@ -114,6 +184,28 @@ impl Evaluator {
     }
 
     /// Override the default concurrency limit for judge calls.
+    ///
+    /// The default is 3. A value of 0 is silently promoted to 1 (at least one
+    /// judge call can run at a time).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use std::sync::Arc;
+    /// # use zeph_experiments::{BenchmarkSet, BenchmarkCase, Evaluator, EvalError};
+    /// # use zeph_llm::any::AnyProvider;
+    /// # use zeph_llm::mock::MockProvider;
+    /// # fn example() -> Result<Evaluator, EvalError> {
+    /// let judge = Arc::new(AnyProvider::Mock(MockProvider::with_responses(vec![])));
+    /// let benchmark = BenchmarkSet {
+    ///     cases: vec![BenchmarkCase {
+    ///         prompt: "hi".into(), context: None, reference: None, tags: None,
+    ///     }],
+    /// };
+    /// let evaluator = Evaluator::new(judge, benchmark, 10_000)?.with_parallel_evals(5);
+    /// # Ok(evaluator)
+    /// # }
+    /// ```
     #[must_use]
     pub fn with_parallel_evals(mut self, n: usize) -> Self {
         self.parallel_evals = n.max(1);

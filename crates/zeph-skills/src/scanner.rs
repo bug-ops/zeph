@@ -92,6 +92,23 @@ pub fn check_capability_escalation(
 }
 
 /// Result of scanning a skill body for injection patterns.
+///
+/// Pattern names are collected but not the matched text itself, to avoid retaining
+/// injection payloads in memory or logs.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_skills::scanner::scan_skill_body;
+///
+/// let clean = scan_skill_body("Fetch data from an API.");
+/// assert!(!clean.has_matches());
+///
+/// # // Note: scan_skill_body checks for known injection patterns
+/// let result = scan_skill_body("SELECT * FROM users");
+/// // Pattern detection depends on RAW_INJECTION_PATTERNS configuration
+/// let _ = result;
+/// ```
 #[derive(Debug, Default)]
 pub struct ScanResult {
     /// Number of distinct patterns matched.

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Core graph types for the MAGMA / GAAMA knowledge graph.
+
 use std::fmt;
 use std::str::FromStr;
 
@@ -26,6 +28,15 @@ pub enum EdgeType {
 }
 
 impl EdgeType {
+    /// Return the canonical lowercase string for this edge type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_memory::EdgeType;
+    ///
+    /// assert_eq!(EdgeType::Causal.as_str(), "causal");
+    /// ```
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -57,16 +68,27 @@ impl FromStr for EdgeType {
     }
 }
 
+/// Domain category of a graph entity.
+///
+/// Used by the LLM extractor to classify extracted named entities into coarse types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityType {
+    /// A human or AI agent.
     Person,
+    /// A CLI tool, library, or framework.
     Tool,
+    /// An abstract idea or technical concept.
     Concept,
+    /// A software project or repository.
     Project,
+    /// A programming language.
     Language,
+    /// A file or directory path.
     File,
+    /// A configuration file or settings key.
     Config,
+    /// A company, team, or open-source organization.
     Organization,
 }
 
@@ -110,26 +132,43 @@ impl FromStr for EntityType {
     }
 }
 
+/// A named entity in the knowledge graph.
+///
+/// Entities are the nodes; [`Edge`]s connect them with typed, factual relationships.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entity {
+    /// SQLite row ID.
     pub id: i64,
+    /// Raw extracted name as it appeared in the source text.
     pub name: String,
+    /// Normalized canonical name (lowercase, de-aliased).
     pub canonical_name: String,
+    /// Coarse semantic category.
     pub entity_type: EntityType,
+    /// Optional LLM-generated summary describing the entity.
     pub summary: Option<String>,
+    /// ISO 8601 timestamp when the entity was first extracted.
     pub first_seen_at: String,
+    /// ISO 8601 timestamp when the entity was last seen in a conversation.
     pub last_seen_at: String,
+    /// Qdrant point ID for the entity's embedding, if stored.
     pub qdrant_point_id: Option<String>,
 }
 
+/// An alternative name or spelling for an [`Entity`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntityAlias {
+    /// SQLite row ID.
     pub id: i64,
+    /// The entity this alias resolves to.
     pub entity_id: i64,
+    /// The alternate name string.
     pub alias_name: String,
+    /// ISO 8601 timestamp when the alias was recorded.
     pub created_at: String,
 }
 
+/// A directed, typed relationship between two entities in the knowledge graph.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Edge {
     pub id: i64,
@@ -157,14 +196,24 @@ pub struct Edge {
     pub superseded_by: Option<i64>,
 }
 
+/// A Louvain-detected community (cluster) of related entities.
+///
+/// Communities provide coarse-grained grouping for graph eviction and summarization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Community {
+    /// SQLite row ID.
     pub id: i64,
+    /// Short name for the community (e.g. `"Rust toolchain"`).
     pub name: String,
+    /// LLM-generated summary of what the community's entities share.
     pub summary: String,
+    /// IDs of all entities assigned to this community.
     pub entity_ids: Vec<i64>,
+    /// Content fingerprint used to detect stale communities after membership changes.
     pub fingerprint: Option<String>,
+    /// ISO 8601 timestamp when the community was detected.
     pub created_at: String,
+    /// ISO 8601 timestamp when the community summary was last updated.
     pub updated_at: String,
 }
 
@@ -190,16 +239,27 @@ pub struct ScoredEntity {
     pub community_id: Option<i64>,
 }
 
+/// A recalled fact from the knowledge graph, ready for context injection.
+///
+/// Produced by graph retrieval (BFS, spreading activation) and consumed by
+/// `SemanticMemory::recall` to inject graph knowledge into the LLM context.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphFact {
+    /// Source entity name.
     pub entity_name: String,
+    /// Relation label (e.g. `"uses"`, `"caused"`, `"is_a"`).
     pub relation: String,
+    /// Target entity name.
     pub target_name: String,
+    /// Full fact sentence (e.g. `"Rust uses LLVM for code generation"`).
     pub fact: String,
+    /// BM25/vector similarity score for the seed entity match.
     pub entity_match_score: f32,
+    /// BFS hop distance from the seed entity (0 = direct match).
     pub hop_distance: u32,
+    /// Edge confidence in `[0, 1]`.
     pub confidence: f32,
-    /// `SQLite` datetime string when the edge became valid (e.g. `"2026-03-14 12:00:00"`).
+    /// SQLite datetime string when the edge became valid (e.g. `"2026-03-14 12:00:00"`).
     /// Used for optional temporal recency scoring. `None` when not populated.
     pub valid_from: Option<String>,
     /// MAGMA edge classification for this fact.

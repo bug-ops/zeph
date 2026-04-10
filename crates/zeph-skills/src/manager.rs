@@ -1,6 +1,29 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Skill lifecycle management: install, remove, verify, and list installed skills.
+//!
+//! [`SkillManager`] operates on a single `managed_dir` where user-installed skills live.
+//! It does **not** touch bundled skills (those are managed by [`crate::bundled`]).
+//!
+//! # Install Sources
+//!
+//! | Method | Source |
+//! |--------|--------|
+//! | [`SkillManager::install_from_url`] | Shallow `git clone` from `https://` or `git@` URL |
+//! | [`SkillManager::install_from_path`] | Recursive copy from a local directory |
+//!
+//! Both install paths validate `SKILL.md` frontmatter and compute a blake3 content hash
+//! stored in the trust database by the caller.
+//!
+//! # Security Controls
+//!
+//! - URL schemes are validated before spawning `git clone` (only `https://`, `http://`, `git@`).
+//! - A random temporary directory is used during clone; renamed atomically on success.
+//! - [`crate::loader::validate_path_within`] is called after every filesystem operation to
+//!   prevent symlink-based path traversal (REV-006).
+//! - Skill names are validated to contain no path separators or `..` segments (REV-002).
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -8,33 +31,51 @@ use crate::error::SkillError;
 use crate::loader::{load_skill_meta, validate_path_within};
 use crate::trust::{SkillSource, compute_skill_hash};
 
+/// Manages the lifecycle of user-installed skills in a single managed directory.
 pub struct SkillManager {
     managed_dir: PathBuf,
 }
 
+/// Result of a successful skill installation.
 #[derive(Debug)]
 pub struct InstallResult {
+    /// Installed skill name (from the `name` frontmatter field).
     pub name: String,
+    /// blake3 hex hash of the installed `SKILL.md`.
     pub blake3_hash: String,
+    /// Where the skill was sourced from.
     pub source: SkillSource,
 }
 
+/// Metadata for a skill that is present in the managed directory.
 #[derive(Debug)]
 pub struct InstalledSkill {
+    /// Skill name.
     pub name: String,
+    /// Short capability description.
     pub description: String,
+    /// Absolute path to the skill directory.
     pub skill_dir: PathBuf,
+    /// Vault key names required at runtime.
     pub requires_secrets: Vec<String>,
 }
 
+/// Integrity verification result for an installed skill.
 #[derive(Debug)]
 pub struct VerifyResult {
+    /// Skill name.
     pub name: String,
+    /// blake3 hex hash of the current `SKILL.md` on disk.
     pub current_hash: String,
+    /// `Some(true)` if the hash matches the stored value; `Some(false)` if not; `None` if no
+    /// stored hash is available for comparison.
     pub stored_hash_matches: Option<bool>,
 }
 
 impl SkillManager {
+    /// Create a new manager rooted at `managed_dir`.
+    ///
+    /// The directory is created lazily on first install.
     #[must_use]
     pub fn new(managed_dir: PathBuf) -> Self {
         Self { managed_dir }

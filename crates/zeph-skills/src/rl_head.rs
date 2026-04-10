@@ -25,16 +25,19 @@ use std::sync::{Arc, Mutex};
 const N_FEATURES: usize = 3;
 const DEFAULT_HIDDEN_DIM: usize = 32;
 
-/// Cached activations from a single forward pass, needed for REINFORCE gradient.
+/// Cached activations from a single forward pass, required for the REINFORCE gradient update.
+///
+/// Stored in `RoutingHeadInner::last_forward` after each call to `score()` and consumed by
+/// `update()`. Holding the activations avoids a second forward pass just for the gradient.
 #[derive(Clone)]
 pub struct ForwardCache {
-    /// Full input vector: query_embed ++ skill_embed ++ features
+    /// Full concatenated input: `query_embed ++ skill_embed ++ [cosine, success_rate, log_use]`.
     pub input: Vec<f32>,
-    /// Hidden-layer pre-activations (before ReLU): w1 @ input + b1
+    /// Hidden-layer pre-activations before ReLU: `w1 @ input + b1`.
     pub pre_relu: Vec<f32>,
-    /// Hidden-layer post-activations (after ReLU)
+    /// Hidden-layer post-activations after ReLU: `relu(pre_relu)`.
     pub hidden: Vec<f32>,
-    /// Output score (sigmoid output)
+    /// Final output after sigmoid: score in `[0.0, 1.0]`.
     pub score: f32,
 }
 
@@ -218,7 +221,23 @@ impl RoutingHeadInner {
     }
 }
 
-/// Thread-safe RL routing head, shared via `Arc<Mutex<...>>`.
+/// Thread-safe 2-layer MLP routing head for skill re-ranking, shareable via `Arc`.
+///
+/// Cloning a [`RoutingHead`] produces a second handle to the **same** inner weights
+/// (backed by `Arc<Mutex<RoutingHeadInner>>`). All handles share weight updates.
+///
+/// # Warm-up
+///
+/// Scoring is blended with cosine similarity only after `warmup_updates` REINFORCE updates
+/// have been applied. Before warm-up, [`RoutingHead::rerank`] returns pure-cosine order to
+/// avoid noisy signals from untrained weights degrading match quality.
+///
+/// # Persistence
+///
+/// Weights are serialized to a binary blob via `to_bytes` / `from_bytes` and stored in SQLite
+/// by `zeph-core`. A single-row table is assumed — two instances sharing the same DB will
+/// silently overwrite each other (last writer wins). This is acceptable for single-instance
+/// deployments.
 #[derive(Clone)]
 pub struct RoutingHead {
     inner: Arc<Mutex<RoutingHeadInner>>,
