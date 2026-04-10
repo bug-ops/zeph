@@ -11,7 +11,7 @@
 //! # Transaction safety
 //!
 //! Every `MERGE` operation runs inside a single `SQLite` transaction via
-//! [`DbStore::apply_consolidation_merge`]. Partial state is never written.
+//! `DbStore::apply_consolidation_merge`. Partial state is never written.
 //!
 //! # Clustering
 //!

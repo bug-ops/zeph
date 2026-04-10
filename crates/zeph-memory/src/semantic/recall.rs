@@ -469,7 +469,7 @@ impl SemanticMemory {
 
     /// Recall messages filtered by category.
     ///
-    /// When `category` is `None`, behaves identically to [`recall`].
+    /// When `category` is `None`, behaves identically to [`Self::recall`].
     ///
     /// # Errors
     ///
@@ -1171,7 +1171,7 @@ impl SemanticMemory {
     /// Retrieve graph facts via SYNAPSE spreading activation.
     ///
     /// Delegates to [`crate::graph::retrieval::graph_recall_activated`].
-    /// Used in place of [`recall_graph`] when `spreading_activation.enabled = true`.
+    /// Used in place of [`Self::recall_graph`] when `spreading_activation.enabled = true`.
     ///
     /// # Errors
     ///

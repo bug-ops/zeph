@@ -60,7 +60,7 @@ pub async fn ensure_qdrant_collection(
 /// Typed wrapper over a [`VectorStore`] backend for conversation message embeddings.
 ///
 /// Constructed via [`EmbeddingStore::new`] (Qdrant URL) or
-/// [`EmbeddingStore::with_vector_store`] (custom backend for testing).
+/// [`EmbeddingStore::with_store`] (custom backend for testing).
 pub struct EmbeddingStore {
     ops: Box<dyn VectorStore>,
     collection: String,
@@ -301,7 +301,7 @@ impl EmbeddingStore {
 
     /// Store a vector with an optional category tag in the Qdrant payload.
     ///
-    /// Identical to [`store`] but adds a `category` field to the payload when provided.
+    /// Identical to [`Self::store`] but adds a `category` field to the payload when provided.
     /// Used by category-aware memory (#2428) to enable category-filtered recall.
     ///
     /// Note: when `category` is `None` no `category` field is written to the Qdrant payload.

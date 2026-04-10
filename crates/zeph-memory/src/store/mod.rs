@@ -13,7 +13,7 @@
 //! | `persona` | Long-lived user attributes ([`PersonaFactRow`]) |
 //! | `trajectory` | Goal trajectory entries ([`TrajectoryEntryRow`]) |
 //! | `memory_tree` | Hierarchical note consolidation tree ([`MemoryTreeRow`]) |
-//! | `session_digest` | Per-session digest records ([`SessionDigest`]) |
+//! | `session_digest` | Per-session digest records |
 //! | `experiments` | A/B experiment results and session summaries |
 //! | `corrections` | User-issued corrections stored for fine-tuning |
 //! | `graph_store` | Entity/edge adjacency tables for the knowledge graph |

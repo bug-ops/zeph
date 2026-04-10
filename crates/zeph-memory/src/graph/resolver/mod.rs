@@ -859,7 +859,7 @@ impl<'a> EntityResolver<'a> {
 
     /// Resolve a typed edge: deduplicate or supersede existing edges of the same type.
     ///
-    /// Identical to [`resolve_edge`] but includes `edge_type` in the matching key.
+    /// Identical to [`Self::resolve_edge`] but includes `edge_type` in the matching key.
     /// An active edge with the same `(source, target, relation, edge_type)` and identical
     /// fact returns `None`; same relation+type with different fact is superseded.
     ///

@@ -401,7 +401,7 @@ impl GraphStore {
 
     /// Insert a typed edge between two entities, or update the existing active edge of the same type.
     ///
-    /// Identical semantics to [`insert_edge`] but with an explicit `edge_type` parameter.
+    /// Identical semantics to [`Self::insert_edge`] but with an explicit `edge_type` parameter.
     /// The dedup key is `(source_entity_id, target_entity_id, relation, edge_type, valid_to IS NULL)`.
     ///
     /// # Errors
@@ -1594,7 +1594,7 @@ impl GraphStore {
     /// The depth map records the minimum hop distance from `start_entity_id` to each visited
     /// entity. The start entity itself has depth 0.
     ///
-    /// **`SQLite` bind parameter limit**: see [`bfs`] for notes on frontier size limits.
+    /// **`SQLite` bind parameter limit**: see [`Self::bfs`] for notes on frontier size limits.
     ///
     /// # Errors
     ///
@@ -1609,7 +1609,7 @@ impl GraphStore {
 
     /// BFS traversal considering only edges that were valid at `timestamp`.
     ///
-    /// Equivalent to [`bfs_with_depth`] but replaces the `valid_to IS NULL` filter with
+    /// Equivalent to [`Self::bfs_with_depth`] but replaces the `valid_to IS NULL` filter with
     /// the temporal range predicate `valid_from <= ts AND (valid_to IS NULL OR valid_to > ts)`.
     ///
     /// `timestamp` must be a `SQLite` datetime string: `"YYYY-MM-DD HH:MM:SS"`.
@@ -1629,7 +1629,7 @@ impl GraphStore {
 
     /// BFS traversal scoped to specific MAGMA edge types.
     ///
-    /// When `edge_types` is empty, behaves identically to [`bfs_with_depth`] (traverses all
+    /// When `edge_types` is empty, behaves identically to [`Self::bfs_with_depth`] (traverses all
     /// active edges). When `edge_types` is non-empty, only traverses edges whose `edge_type`
     /// matches one of the provided types.
     ///

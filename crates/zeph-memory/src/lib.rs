@@ -60,7 +60,7 @@
 //! | Feature | Description |
 //! |---------|-------------|
 //! | `sqlite` (default) | Enable SQLite persistence via `zeph-db`. |
-//! | `pdf` | Enable [`document::PdfLoader`] for PDF ingestion. |
+//! | `pdf` | Enable `PdfLoader` for PDF ingestion. |
 //! | `postgres` | Enable PostgreSQL support via `zeph-db`. |
 
 pub mod admission;

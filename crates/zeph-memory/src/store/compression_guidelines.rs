@@ -117,7 +117,7 @@ impl SqliteStore {
 
     /// Load only the version and creation timestamp of the latest active compression guidelines.
     ///
-    /// Same scoping rules as [`load_compression_guidelines`]: conversation-specific rows are
+    /// Same scoping rules as [`Self::load_compression_guidelines`]: conversation-specific rows are
     /// preferred over global ones.  Returns `(0, "")` if no guidelines exist yet.
     ///
     /// Use this in hot paths where the full text is not needed (e.g. metrics sync).
