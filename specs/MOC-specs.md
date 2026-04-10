@@ -134,6 +134,9 @@ status: moc
 ### Profiling & Tracing
 - [[035-profiling/spec|Profiling and Tracing Instrumentation]] — two-tier telemetry backend (Tier 1: local chrome traces, Tier 2: OTLP + Pyroscope), per-span instrumentation via #[instrument] macros, allocation tracking (profiling-alloc), system metrics (sysinfo), InstrumentedChannel wrappers; zero-overhead when disabled; `profiling`, `profiling-alloc`, `profiling-pyroscope` feature flags
 
+### Metrics Export
+- [[036-prometheus-metrics/spec|Prometheus Metrics Export]] — aggregated time-series `/metrics` endpoint (OpenMetrics 1.0.0 format), ~25 gauge/counter metrics from MetricsSnapshot, periodic sync task, feature-gated with gateway; complements TUI gauges and distributed tracing; `prometheus` feature flag
+
 ---
 
 ## Special Topics & Documentation
@@ -185,6 +188,7 @@ status: moc
 | 033 | [[033-subagent-context-propagation/spec\|Subagent Context]] | research | approved |
 | 034 | [[034-zeph-bench/spec\|Benchmark Harness]] | specify | approved |
 | 035 | [[035-profiling/spec\|Profiling & Tracing]] | specify | draft |
+| 036 | [[036-prometheus-metrics/spec\|Prometheus Metrics]] | specify | draft |
 
 ---
 

@@ -77,3 +77,4 @@ Spec IDs (001–034) follow a logical grouping:
 | `032-handoff-skill-system/spec.md` | Skill-based YAML handoff protocol for inter-agent communication, structured skill exchange | `zeph-orchestration` |
 | `033-subagent-context-propagation/spec.md` | Gap analysis and resolution plan for `/agent spawn` context propagation | `zeph-subagent`, `zeph-core` |
 | `034-zeph-bench/spec.md` | Benchmark harness: BenchmarkChannel, dataset loaders, CLI `zeph bench run`, memory isolation, deterministic mode, baseline comparison | `zeph-bench` |
+| `036-prometheus-metrics/spec.md` | Prometheus `/metrics` endpoint, OpenMetrics export, ~25 gauge/counter metrics from MetricsSnapshot, feature-gated with gateway | `zeph-gateway`, binary |
