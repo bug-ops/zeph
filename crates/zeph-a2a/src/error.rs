@@ -30,7 +30,7 @@ pub enum A2aError {
     #[error("JSON-RPC error {code}: {message}")]
     JsonRpc { code: i32, message: String },
 
-    /// [`AgentRegistry`] could not retrieve a valid [`AgentCard`](crate::types::AgentCard)
+    /// `AgentRegistry` could not retrieve a valid [`AgentCard`](crate::types::AgentCard)
     /// from the remote agent's well-known URL.
     #[error("agent discovery failed for {url}: {reason}")]
     Discovery { url: String, reason: String },

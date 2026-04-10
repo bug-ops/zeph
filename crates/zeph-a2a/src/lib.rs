@@ -7,7 +7,7 @@
 //! based specification for communication between AI agents. It provides:
 //!
 //! - **Client** ([`A2aClient`]): sends messages and streams responses to remote A2A agents.
-//! - **Server** ([`A2aServer`], feature `server`): exposes an HTTP endpoint that accepts
+//! - **Server** (`A2aServer`, feature `server`): exposes an HTTP endpoint that accepts
 //!   A2A JSON-RPC requests and streams Server-Sent Events (SSE) for real-time output.
 //! - **Discovery** ([`AgentRegistry`]): fetches and caches agent capability cards from
 //!   `/.well-known/agent.json` with configurable TTL.
@@ -22,7 +22,7 @@
 //! # Architecture
 //!
 //! `zeph-a2a` is an optional feature-gated dependency of the main `zeph` binary. The
-//! [`A2aServer`] is started by `zeph-core` as a background service when `[a2a]` is enabled
+//! `A2aServer` is started by `zeph-core` as a background service when `[a2a]` is enabled
 //! in config. The [`A2aClient`] is used by the agent to delegate tasks to peer agents
 //! discovered through the [`AgentRegistry`].
 //!
@@ -30,7 +30,7 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
-//! | `server` | Enables [`A2aServer`], [`TaskManager`], and [`TaskProcessor`] |
+//! | `server` | Enables `A2aServer`, `TaskManager`, and `TaskProcessor` |
 //! | `ibct`   | Enables [`Ibct`] token issuance and verification (HMAC-SHA256) |
 //!
 //! # Examples

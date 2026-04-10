@@ -7,7 +7,7 @@
 //!
 //! `zeph-llm` is the inference layer of the Zeph agent stack. It defines the
 //! [`LlmProvider`] trait and supplies concrete backends for every supported
-//! inference provider. All providers are composable via [`AnyProvider`] and the
+//! inference provider. All providers are composable via `AnyProvider` and the
 //! [`router`] module, so callers never need to depend on a specific backend.
 //!
 //! # Core Abstraction
@@ -28,7 +28,7 @@
 //! | [`openai`] | `OpenAI` API | always |
 //! | [`gemini`] | `Google` Gemini API | always |
 //! | [`compatible`] | `OpenAI`-compatible endpoints | always |
-//! | [`candle_provider`] | `HuggingFace` Candle local inference | `candle` |
+//! | `candle_provider` | `HuggingFace` Candle local inference | `candle` |
 //!
 //! # Provider Routing
 //!

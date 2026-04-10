@@ -4,7 +4,7 @@
 //! Type-erased provider enum wrapping all concrete backends.
 //!
 //! [`AnyProvider`] lets callers hold and clone any backend without generics or
-//! `Box<dyn LlmProvider>`. The macro [`delegate_provider!`] generates the
+//! `Box<dyn LlmProvider>`. The macro `delegate_provider!` generates the
 //! match-over-variants boilerplate for every [`LlmProvider`] method delegation.
 
 #[cfg(feature = "candle")]

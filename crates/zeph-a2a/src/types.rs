@@ -429,7 +429,7 @@ impl Message {
 
     /// Collect and concatenate all `Part::Text` entries in order.
     ///
-    /// Unlike [`text_content`] which returns only the first text part, this method
+    /// Unlike `text_content` which returns only the first text part, this method
     /// preserves the full message when an agent sends multiple text parts.
     /// Returns an empty string if the message contains no text parts.
     #[must_use]
