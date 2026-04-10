@@ -358,9 +358,9 @@ pub(crate) async fn run_daemon(
 
     let watchers = app.build_watchers();
     let _skill_watcher = watchers.skill_watcher;
-    let reload_rx = watchers.skill_reload_rx;
+    let reload_rx = watchers.skill_reload_rx.into_inner();
     let _config_watcher = watchers.config_watcher;
-    let config_reload_rx = watchers.config_reload_rx;
+    let config_reload_rx = watchers.config_reload_rx.into_inner();
     let skill_paths = app.skill_paths();
     let config_path_owned = app.config_path().to_owned();
     let session_config = zeph_core::AgentSessionConfig::from_config(config, budget_tokens);

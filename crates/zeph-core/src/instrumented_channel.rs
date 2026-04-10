@@ -188,7 +188,7 @@ impl<T> InstrumentedUnboundedSender<T> {
     ///
     /// Use this when the sender is constructed outside the
     /// [`instrumented_unbounded_channel`] constructor (e.g., obtained from
-    /// [`AppBuilder::build_provider`]).
+    /// an external channel factory).
     ///
     /// # Examples
     ///
