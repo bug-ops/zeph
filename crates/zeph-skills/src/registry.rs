@@ -264,7 +264,7 @@ impl SkillRegistry {
     /// its `allowed_tools` exceed the permissions of that trust level via
     /// [`check_capability_escalation`].
     ///
-    /// This method is **separate from [`scan_loaded`]** because escalation checks require
+    /// This method is **separate from `scan_loaded`** because escalation checks require
     /// a trust level per skill, which is not available from the SKILL.md frontmatter alone
     /// — it must be resolved from the trust store at the call site (bootstrap). Keeping the
     /// two concerns separate avoids coupling the registry to the trust store.

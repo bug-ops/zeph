@@ -13,7 +13,7 @@ use crate::error::McpError;
 
 /// Minimal async interface over [`McpManager`](crate::manager::McpManager) for tool dispatch.
 ///
-/// Implemented by `McpManager` (real transport) and [`MockMcpCaller`](crate::mock::MockMcpCaller)
+/// Implemented by `McpManager` (real transport) and `MockMcpCaller`
 /// (test stub, enabled via the `mock` feature).
 ///
 /// This trait exists to allow callers (`lsp_hooks` and similar integration points) to

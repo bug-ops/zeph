@@ -9,7 +9,7 @@
 //!
 //! This is the third layer of Zeph's defense-in-depth pipeline:
 //!
-//! 1. Input sanitization: [`ContentSanitizer`](crate::ContentSanitizer) scans untrusted
+//! 1. Input sanitization: `ContentSanitizer` scans untrusted
 //!    content before context insertion.
 //! 2. Pre-execution verification: `PreExecutionVerifier` audits tool calls before execution.
 //! 3. **Response verification (this module)**: scans LLM output for echoed injection patterns.

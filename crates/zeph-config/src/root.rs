@@ -35,7 +35,7 @@ use crate::ui::{AcpConfig, TuiConfig};
 /// Top-level agent configuration.
 ///
 /// Loaded from a TOML file via [`Config::load`]. Env-var overrides can be applied
-/// via [`crate::env::apply_env_overrides`]. Secret resolution via `VaultProvider`
+/// via `apply_env_overrides`. Secret resolution via `VaultProvider`
 /// is handled in `zeph-core` through the `SecretResolver` trait.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {

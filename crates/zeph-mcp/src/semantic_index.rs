@@ -51,8 +51,8 @@ struct ToolEntry {
 /// # Invariants
 ///
 /// The `embed_fn` used at [`build`](Self::build) time MUST produce vectors of
-/// the same dimension as the query embedding supplied to [`select`](Self::select).
-/// [`select`] checks the dimension on every call and skips mismatched entries.
+/// the same dimension as the query embedding supplied to `select`(`Self::select`).
+/// `select` checks the dimension on every call and skips mismatched entries.
 #[derive(Debug)]
 pub struct SemanticToolIndex {
     entries: Vec<ToolEntry>,
@@ -76,7 +76,7 @@ impl SemanticToolIndex {
     /// Calls `embed_fn` once per tool using the concatenated `"name: description"` text
     /// (name carries strong semantic signal).  Tools whose embedding fails are logged at
     /// `WARN` level and excluded from cosine similarity retrieval, but remain available
-    /// via the `always_include` path in [`select`](Self::select).
+    /// via the `always_include` path in `select`(`Self::select`).
     ///
     /// Embeddings are requested concurrently with a concurrency cap of 8 to avoid
     /// overwhelming the provider while still being significantly faster than sequential

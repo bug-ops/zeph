@@ -1291,7 +1291,7 @@ impl SubAgentManager {
     /// Spawn a sub-agent for an orchestrated task.
     ///
     /// Identical to [`spawn`][Self::spawn] but wraps the `JoinHandle` to send a
-    /// [`crate::orchestration::TaskEvent`] on the provided channel when the agent loop
+    /// `TaskEvent` on the provided channel when the agent loop
     /// terminates. This allows the `DagScheduler` to receive completion notifications
     /// without polling (ADR-027).
     ///

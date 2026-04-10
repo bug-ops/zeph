@@ -135,7 +135,7 @@ impl SkillGenerator {
 
     /// Generate a SKILL.md candidate from a natural language description.
     ///
-    /// Does NOT write to disk. Call [`approve_and_save`] after user confirmation.
+    /// Does NOT write to disk. Call `approve_and_save` after user confirmation.
     ///
     /// # Errors
     ///

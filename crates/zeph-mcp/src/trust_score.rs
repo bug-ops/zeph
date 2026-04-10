@@ -231,7 +231,7 @@ impl TrustScoreStore {
 
     /// Load the current score with decay applied, then write back the decayed-plus-delta value.
     ///
-    /// Unlike [`apply_delta`], this method reads the stored score first, applies time-based
+    /// Unlike `apply_delta`, this method reads the stored score first, applies time-based
     /// decay in-memory, and then upserts the corrected value. This prevents delta application
     /// on a stale (pre-decay) score when a server has not been probed for an extended period.
     ///

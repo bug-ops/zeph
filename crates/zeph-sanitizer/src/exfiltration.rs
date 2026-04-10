@@ -342,7 +342,7 @@ impl ExfiltrationGuard {
 
 /// Extract all `http`/`https` URLs from `content` into a `HashSet` for later URL validation.
 ///
-/// Call this after sanitizing untrusted tool output with [`ContentSanitizer`] when injection
+/// Call this after sanitizing untrusted tool output with `ContentSanitizer` when injection
 /// flags are present. Pass the returned set into the agent's `flagged_urls` field. Pass that
 /// set to [`ExfiltrationGuard::validate_tool_call`] on each subsequent tool call. Clear
 /// `flagged_urls` at the start of each `process_response` call (per-turn clearing strategy).

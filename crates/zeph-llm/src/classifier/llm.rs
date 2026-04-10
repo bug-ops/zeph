@@ -7,7 +7,7 @@
 //! preserving the `kind`, `confidence`, and `reasoning` fields needed by the
 //! skill learning system.
 //!
-//! Does NOT implement [`ClassifierBackend`] — feedback detection is multi-class with
+//! Does NOT implement `ClassifierBackend` — feedback detection is multi-class with
 //! structured metadata that `ClassificationResult` cannot carry.
 
 use std::sync::Arc;

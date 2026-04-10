@@ -4,7 +4,7 @@
 //! Untrusted content isolation: sanitization pipeline and spotlighting.
 //!
 //! All content entering the agent context from external sources must pass through
-//! [`ContentSanitizer::sanitize`] before being pushed into the message history.
+//! `ContentSanitizer::sanitize`] before being pushed into the message history.
 //! The sanitizer truncates, strips control characters, detects injection patterns,
 //! and wraps content in spotlighting delimiters that signal to the LLM that the
 //! enclosed text is data to analyze, not instructions to follow.
@@ -15,7 +15,7 @@
 //!
 //! | Layer | Type | Description |
 //! |-------|------|-------------|
-//! | 1 | [`ContentSanitizer`] | Regex-based injection detection + spotlighting |
+//! | 1 | `ContentSanitizer` | Regex-based injection detection + spotlighting |
 //! | 2 | [`pii::PiiFilter`] | Regex PII scrubber (email, phone, SSN, credit card) |
 //! | 3 | [`guardrail::GuardrailFilter`] | LLM-based pre-screener at the input boundary |
 //! | 4 | [`quarantine::QuarantinedSummarizer`] | Isolated LLM fact extractor |
@@ -55,9 +55,9 @@
 //! # Feature Flags
 //!
 //! - **`classifiers`** (optional): enables ML-backed injection detection via
-//!   [`ContentSanitizer::classify_injection`] and NER-based PII detection via
-//!   [`ContentSanitizer::detect_pii`]. Requires an attached classifier backend.
-//!   See [`ContentSanitizer::with_classifier`] and [`ContentSanitizer::with_pii_detector`].
+//!   `ContentSanitizer::classify_injection`] and NER-based PII detection via
+//!   `ContentSanitizer::detect_pii`]. Requires an attached classifier backend.
+//!   See `ContentSanitizer::with_classifier`] and `ContentSanitizer::with_pii_detector`].
 
 pub mod causal_ipi;
 pub mod exfiltration;
@@ -611,7 +611,7 @@ impl ContentSanitizer {
     /// `Clean`, reducing false positives from legitimate instruction-style tool output.
     ///
     /// Both stages share one timeout budget (`classifier_timeout_ms`). On timeout or
-    /// classifier error, falls back to the regex path from [`ContentSanitizer::sanitize`].
+    /// classifier error, falls back to the regex path from `ContentSanitizer::sanitize`].
     ///
     /// When no classifier backend is attached, also falls back to regex detection.
     #[cfg(feature = "classifiers")]

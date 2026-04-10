@@ -153,7 +153,7 @@ impl ContentSourceKind {
 
 /// Hint about the origin of memory-retrieved content.
 ///
-/// Used to modulate injection detection sensitivity within [`ContentSanitizer::sanitize`].
+/// Used to modulate injection detection sensitivity within `ContentSanitizer::sanitize`].
 /// The hint is set at call-site (compile-time) based on which retrieval path produced the
 /// content — it cannot be influenced by the content itself and thus cannot be spoofed.
 ///
@@ -193,7 +193,7 @@ pub enum MemorySourceHint {
 /// Provenance metadata attached to a piece of untrusted content.
 ///
 /// Created at the call-site (tool executor, MCP adapter, A2A handler, etc.) to describe
-/// where content came from. Passed into [`ContentSanitizer::sanitize`] alongside the raw
+/// where content came from. Passed into `ContentSanitizer::sanitize`] alongside the raw
 /// content so the pipeline can choose the appropriate spotlight wrapper and injection
 /// detection sensitivity.
 ///
@@ -222,7 +222,7 @@ pub struct ContentSource {
     /// Optional identifier: tool name, URL, agent ID, etc. Used in spotlight attributes.
     pub identifier: Option<String>,
     /// Optional hint for memory retrieval sub-sources. When `Some`, modulates injection
-    /// detection sensitivity in [`ContentSanitizer::sanitize`]. Non-memory sources leave
+    /// detection sensitivity in `ContentSanitizer::sanitize`]. Non-memory sources leave
     /// this as `None` — full detection applies.
     pub memory_hint: Option<MemorySourceHint>,
 }
@@ -306,7 +306,7 @@ impl ContentSource {
 
 /// A single detected injection pattern match in sanitized content.
 ///
-/// Produced by the regex injection-detection step inside [`ContentSanitizer::sanitize`].
+/// Produced by the regex injection-detection step inside `ContentSanitizer::sanitize`].
 /// Injection flags are advisory — they are recorded in [`SanitizedContent`] and surfaced
 /// in the spotlight warning header, but the content is never silently removed.
 #[derive(Debug, Clone)]
@@ -326,7 +326,7 @@ pub struct InjectionFlag {
 /// thresholds, so `Suspicious` content is surfaced for operator visibility without
 /// blocking — a mandatory second layer of defense.
 ///
-/// Returned by [`ContentSanitizer::classify_injection`] (feature `classifiers`).
+/// Returned by `ContentSanitizer::classify_injection`] (feature `classifiers`).
 ///
 /// # Examples
 ///
@@ -348,13 +348,13 @@ pub enum InjectionVerdict {
 
 /// Classification result from the three-class `AlignSentinel` model.
 ///
-/// Used in Stage 2 of [`ContentSanitizer::classify_injection`] to refine binary injection
+/// Used in Stage 2 of `ContentSanitizer::classify_injection`] to refine binary injection
 /// verdicts. `AlignedInstruction` and `NoInstruction` results downgrade `Suspicious`/`Blocked`
 /// to `Clean`, reducing false positives from legitimate instruction-style content in tool
 /// outputs (e.g. a script that prints "run as root").
 ///
 /// Only active when a three-class backend is attached via
-/// [`ContentSanitizer::with_three_class_backend`].
+/// `ContentSanitizer::with_three_class_backend`].
 #[cfg(feature = "classifiers")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstructionClass {

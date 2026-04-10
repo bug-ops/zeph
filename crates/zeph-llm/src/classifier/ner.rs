@@ -3,7 +3,7 @@
 
 //! Candle-backed DeBERTa-v2 NER classifier (`CandleNerClassifier`).
 //!
-//! Implements [`ClassifierBackend`] using token-level NER inference with BIO/BIOES span
+//! Implements `ClassifierBackend` using token-level NER inference with BIO/BIOES span
 //! decoding. Designed for piiranha (`iiiorg/piiranha-v1-detect-personal-information`) but
 //! compatible with any DeBERTa-v2 NER model using BIO or BIOES tagging.
 //!
