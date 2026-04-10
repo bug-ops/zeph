@@ -16,8 +16,8 @@ use zeph_core::channel::{ChannelError, ChannelMessage, ToolOutputEvent};
 
 /// A single captured agent response corresponding to one benchmark prompt.
 ///
-/// Produced by [`BenchmarkChannel`] after the agent calls [`send`][Channel::send] or
-/// [`flush_chunks`][Channel::flush_chunks] for a given prompt.
+/// Produced by [`BenchmarkChannel`] after the agent calls [`send`][zeph_core::channel::Channel::send] or
+/// [`flush_chunks`][zeph_core::channel::Channel::flush_chunks] for a given prompt.
 ///
 /// # Examples
 ///
@@ -42,7 +42,7 @@ pub struct CapturedResponse {
     /// Full text of the agent response (or concatenated streaming chunks).
     pub text: String,
     /// Wall-clock time from the first streaming chunk to `flush_chunks`, or
-    /// [`Duration::ZERO`] for non-streaming `send` calls.
+    /// [`std::time::Duration::ZERO`] for non-streaming `send` calls.
     pub elapsed: std::time::Duration,
     /// Input token count reported by the LLM for this turn.
     pub input_tokens: u64,

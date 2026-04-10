@@ -147,7 +147,7 @@ pub struct HealthStatus {
 ///
 /// Holds all mutable server state behind `Arc` so it can be cheaply cloned
 /// into each request handler. Use [`AcpHttpState::new`] to construct, then
-/// optionally attach a SQLite store with [`AcpHttpState::with_store`].
+/// optionally attach a `SQLite` store with [`AcpHttpState::with_store`].
 ///
 /// # Examples
 ///
@@ -178,7 +178,7 @@ pub struct AcpHttpState {
     /// Used to atomically reserve a slot before the upgrade handshake, eliminating TOCTOU
     /// between the capacity check and the actual `DashMap` insertion.
     pub(crate) active_ws: Arc<AtomicUsize>,
-    /// Optional SQLite store for the session history REST endpoints.
+    /// Optional `SQLite` store for the session history REST endpoints.
     pub store: Option<Arc<SqliteStore>>,
     pub(crate) started_at: Instant,
     pub(crate) ready: Arc<AtomicBool>,
@@ -205,7 +205,7 @@ impl AcpHttpState {
         }
     }
 
-    /// Attach a SQLite store for the session history REST endpoints.
+    /// Attach a `SQLite` store for the session history REST endpoints.
     ///
     /// Required for `GET /sessions` and `GET /sessions/{id}/messages` to function.
     #[must_use]

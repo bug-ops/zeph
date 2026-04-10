@@ -54,7 +54,7 @@ pub type ActiveDriver = driver::PostgresDriver;
 
 /// A connection pool for the active database backend.
 ///
-/// Resolves to [`sqlx::SqlitePool`] or [`sqlx::PgPool`] at compile time.
+/// Resolves to `sqlx::SqlitePool` or `sqlx::PgPool` at compile time depending on the active driver.
 pub type DbPool = sqlx::Pool<<ActiveDriver as DatabaseDriver>::Database>;
 
 /// A row from the active database backend.

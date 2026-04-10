@@ -149,7 +149,7 @@ pub enum TaskMode {
 
 /// Descriptor sent over the control channel to register tasks at runtime.
 ///
-/// Send a [`SchedulerMessage::Add`] wrapping a boxed `TaskDescriptor` to add a
+/// Send a `SchedulerMessage::Add` wrapping a boxed `TaskDescriptor` to add a
 /// new task (or replace an existing one with the same name) without stopping the
 /// scheduler loop.
 pub struct TaskDescriptor {

@@ -10,7 +10,7 @@
 //!
 //! | Strategy | Module | Description |
 //! |---|---|---|
-//! | [`RouterStrategy::Ema`] | [`ema`] | EMA-weighted latency-aware ordering |
+//! | [`RouterStrategy::Ema`] | `crate::ema` | EMA-weighted latency-aware ordering |
 //! | [`RouterStrategy::Thompson`] | [`thompson`] | Bayesian Beta-distribution sampling |
 //! | [`RouterStrategy::Cascade`] | [`cascade`] | Cheapest-first with quality escalation |
 //! | [`RouterStrategy::Bandit`] | [`bandit`] | Contextual `LinUCB` (PILOT algorithm) |

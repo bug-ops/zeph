@@ -320,7 +320,7 @@ impl ClaudeProvider {
     ///
     /// # Errors
     ///
-    /// Forwards errors from [`with_thinking`].
+    /// Forwards errors from [`Self::with_thinking`].
     pub fn with_thinking_opt(self, thinking: Option<ThinkingConfig>) -> Result<Self, LlmError> {
         match thinking {
             Some(t) => self.with_thinking(t),

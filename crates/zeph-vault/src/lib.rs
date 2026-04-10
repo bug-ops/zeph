@@ -12,7 +12,7 @@
 //! - [`ArcAgeVaultProvider`] — thin `Arc<RwLock<AgeVaultProvider>>` wrapper that implements
 //!   [`VaultProvider`] so the age vault can be stored as a trait object while still being
 //!   accessible for mutable operations (e.g. OAuth credential persistence).
-//! - [`MockVaultProvider`] — in-memory backend available under the `mock` feature flag and in
+//! - `MockVaultProvider` — in-memory backend available under the `mock` feature flag and in
 //!   `#[cfg(test)]` contexts.
 //!
 //! [`Secret`] and [`VaultError`] live in `zeph-common` (layer 0) and are re-exported here so

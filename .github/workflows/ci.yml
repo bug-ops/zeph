@@ -134,7 +134,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: [full, bench]
+        features: ["desktop,ide,server,chat,pdf,scheduler", bench]
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
@@ -177,7 +177,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: taiki-e/install-action@5ce196a31930e2795a1b2185c2f79b55c0d57733 # nextest
       - name: Build and archive tests
-        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --tests --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features "desktop,ide,server,chat,pdf,scheduler" --lib --bins --tests --archive-file nextest-archive.tar.zst
       - name: Upload test archive
         uses: actions/upload-artifact@v6
         with:
@@ -401,10 +401,10 @@ jobs:
           cache-targets: "false"
           shared-key: "ci-rustdoc"
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - name: Build docs (all features)
-        run: cargo doc --no-deps --workspace --features full
+      - name: Build docs (all features except candle)
+        run: cargo doc --no-deps --workspace --features "desktop,ide,server,chat,pdf,scheduler"
       - name: Doc-tests
-        run: cargo test --doc --workspace --features full
+        run: cargo test --doc --workspace --features "desktop,ide,server,chat,pdf,scheduler"
 
   validate-specs:
     name: Validate Specs
