@@ -148,6 +148,7 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
         let decline = rmcp::model::CreateElicitationResult {
             action: rmcp::model::ElicitationAction::Decline,
             content: None,
+            meta: None,
         };
 
         async move {

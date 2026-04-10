@@ -86,6 +86,7 @@ mod tests {
         let result = CreateElicitationResult {
             action: ElicitationAction::Decline,
             content: None,
+            meta: None,
         };
         event.response_tx.send(result).unwrap();
         let received = response_rx.await.unwrap();

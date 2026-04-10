@@ -466,6 +466,7 @@ impl<C: Channel> Agent<C> {
         let decline = CreateElicitationResult {
             action: ElicitationAction::Decline,
             content: None,
+            meta: None,
         };
 
         let channel_request = match &event.request {
@@ -537,14 +538,17 @@ impl<C: Channel> Agent<C> {
             ElicitationResponse::Accepted(value) => CreateElicitationResult {
                 action: ElicitationAction::Accept,
                 content: Some(value),
+                meta: None,
             },
             ElicitationResponse::Declined => CreateElicitationResult {
                 action: ElicitationAction::Decline,
                 content: None,
+                meta: None,
             },
             ElicitationResponse::Cancelled => CreateElicitationResult {
                 action: ElicitationAction::Cancel,
                 content: None,
+                meta: None,
             },
         };
 
