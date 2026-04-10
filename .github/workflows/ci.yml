@@ -314,7 +314,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@e368e328979b113139d6f9068e03accaed98a518 # 0.34.1
+        uses: aquasecurity/trivy-action@7b7aa264d83dc58691451798b274fc6a38470a2c # v0.24.0
         with:
           image-ref: zeph:local
           format: sarif
