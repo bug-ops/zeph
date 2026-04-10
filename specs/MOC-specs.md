@@ -43,6 +43,7 @@ status: moc
 ### Memory Systems
 - [[004-memory/spec|Memory Pipeline]] — SQLite + Qdrant dual backend, semantic response cache, anchored summarization, compaction probe, importance scoring, A-MAC admission control, MemScene consolidation, cost-sensitive store routing, temporal decay, multi-vector chunking, GAAMA episode nodes, BATS budget hints, Focus compression, SleepGate forgetting pass, persona/trajectory/category-aware memory, TiMem tree, microcompact, autoDream, MagicDocs, embed backfill batching
 - [[012-graph-memory/spec|Entity Graph Memory]] — entity graph, BFS recall, community detection, MAGMA typed edges, SYNAPSE spreading activation; works with [[004-memory/spec|Memory Pipeline]]
+  - [[004-memory/004-6-graph-memory|Graph Memory (memory sub-spec)]] — concise reference within the memory subsystem: data model overview, MAGMA edge types, SYNAPSE config, key invariants
 
 ### Configuration & Loading
 - [[020-config-loading/spec|Config Loading]] — config resolution order, mode-agnostic defaults, environment overrides
@@ -130,6 +131,9 @@ status: moc
 ### Database Abstraction
 - [[031-database-abstraction/spec|PostgreSQL Backend & Database Abstraction]] — zeph-db crate, DatabaseDriver trait, Dialect trait, sql!() macro, PostgreSQL migrations, MemoryConfig::database_url, zeph db migrate CLI, --init backend selection; mutually exclusive sqlite/postgres features
 
+### Profiling & Tracing
+- [[035-profiling/spec|Profiling and Tracing Instrumentation]] — two-tier telemetry backend (Tier 1: local chrome traces, Tier 2: OTLP + Pyroscope), per-span instrumentation via #[instrument] macros, allocation tracking (profiling-alloc), system metrics (sysinfo), InstrumentedChannel wrappers; zero-overhead when disabled; `profiling`, `profiling-alloc`, `profiling-pyroscope` feature flags
+
 ---
 
 ## Special Topics & Documentation
@@ -180,6 +184,7 @@ status: moc
 | 032 | [[032-handoff-skill-system/spec\|Handoff Protocol]] | specify | approved |
 | 033 | [[033-subagent-context-propagation/spec\|Subagent Context]] | research | approved |
 | 034 | [[034-zeph-bench/spec\|Benchmark Harness]] | specify | approved |
+| 035 | [[035-profiling/spec\|Profiling & Tracing]] | specify | draft |
 
 ---
 

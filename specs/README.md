@@ -55,6 +55,7 @@ Spec IDs (001–034) follow a logical grouping:
 | `010-security/spec.md` | Vault, shell sandbox, content isolation, SSRF protection, IPI defense, PII NER circuit breaker, cross-tool injection correlation, AgentRFC protocol audit, MCP→ACP boundary enforcement, credential env-var scrubbing | cross-cutting |
 | `011-tui/spec.md` | ratatui dashboard, spinner rule for background operations, TuiChannel, RenderCache, embed backfill progress | `zeph-tui` |
 | `012-graph-memory/spec.md` | Entity graph, BFS recall, community detection, MAGMA typed edges, SYNAPSE spreading activation | `zeph-memory` |
+| `004-memory/004-6-graph-memory.md` | Graph memory sub-spec (concise reference within 004-memory): MAGMA typed edges, SYNAPSE config, A-MEM link weights, key invariants | `zeph-memory` |
 | `013-acp/spec.md` | ACP transports, session management, permissions, fork/resume, session/close handlers, capability advertisement, /agent.json endpoint | `zeph-acp` |
 | `014-a2a/spec.md` | A2A protocol, agent discovery, JSON-RPC 2.0, IBCT (Invocation-Bound Capability Tokens), HMAC-SHA256 signatures | `zeph-a2a` |
 | `015-self-learning/spec.md` | FeedbackDetector (multi-language), Wilson score, trust model, SAGE RL cross-session reward, ARISE trace improvement, STEM pattern-to-skill migration, ERL experiential learning | `zeph-skills` |

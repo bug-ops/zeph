@@ -15,6 +15,7 @@ related:
   - "[[MOC-specs]]"
   - "[[001-system-invariants/spec#6. Memory Pipeline Contract]]"
   - "[[002-agent-loop/spec]]"
+  - "[[004-6-graph-memory]]"
   - "[[012-graph-memory/spec]]"
   - "[[031-database-abstraction/spec]]"
 ---
@@ -41,6 +42,7 @@ specific areas, refer to the child specs below.
 | [[004-3-admission-control]] | A-MAC & Filtering | Five-factor importance scoring, admission gates, noise filtering |
 | [[004-4-embeddings]] | Embedding Generation | Batch strategies, backfill, concurrent workers, TUI integration |
 | [[004-5-temporal-decay]] | Retention Scoring | Ebbinghaus forgetting curve, access frequency, decay-based eviction |
+| [[004-6-graph-memory]] | Graph Memory | Entity graph, BFS recall, MAGMA typed edges, SYNAPSE spreading activation, A-MEM link weights |
 
 ---
 
@@ -50,7 +52,7 @@ specific areas, refer to the child specs below.
 SemanticMemory (Arc)
 ├── SqliteStore         — conversation history, message metadata
 ├── QdrantStore         — vector embeddings for semantic search
-├── GraphStore          — entity/edge graph (if graph-memory feature)
+├── GraphStore          — entity/edge graph, see [[004-6-graph-memory]]
 └── ResponseCache       — deduplicated LLM response cache
 ```
 
