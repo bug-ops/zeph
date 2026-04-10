@@ -97,7 +97,7 @@ pub type ScrollResult = HashMap<String, HashMap<String, String>>;
 /// Abstraction over a vector database backend.
 ///
 /// Implementations must be `Send + Sync` so they can be wrapped in `Arc` and shared
-/// across async tasks. All methods return boxed futures via [`BoxFuture`] to remain
+/// across async tasks. All methods return boxed futures via `BoxFuture` to remain
 /// object-safe.
 ///
 /// # Implementations

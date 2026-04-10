@@ -147,7 +147,7 @@ pub struct IndexReport {
 /// Orchestrates code indexing over a project tree.
 ///
 /// `CodeIndexer` is the primary driver of the indexing pipeline. It walks the file
-/// tree, delegates per-file work to [`FileIndexWorker`], and coordinates the Qdrant +
+/// tree, delegates per-file work to `FileIndexWorker`, and coordinates the Qdrant +
 /// `SQLite` writes via [`CodeStore`].
 ///
 /// # Cloning and concurrency

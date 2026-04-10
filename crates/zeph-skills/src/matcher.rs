@@ -9,7 +9,7 @@
 //! # Two-Stage Matching
 //!
 //! When skills are organised into categories (`category` frontmatter field) and at least two
-//! categories each contain two or more skills, the matcher builds a [`CategoryMatcher`] that
+//! categories each contain two or more skills, the matcher builds a `CategoryMatcher` that
 //! first narrows the candidate pool to the two closest categories before performing fine-grained
 //! per-skill scoring. This keeps matching sub-linear as the skill library grows.
 //!
@@ -323,7 +323,7 @@ impl SkillMatcher {
     /// Match a user query against stored skill embeddings, returning the top-K scored matches
     /// ranked by cosine similarity.
     ///
-    /// When `two_stage` is true and a [`CategoryMatcher`] is available, uses category-first
+    /// When `two_stage` is true and a `CategoryMatcher` is available, uses category-first
     /// filtering before fine-grained matching. Falls back to flat matching otherwise.
     ///
     /// Returns an empty vec if the query embedding fails.

@@ -17,7 +17,7 @@
 //! ```
 //!
 //! The `reliability` and `uses` attributes are included only after the skill has been
-//! invoked at least [`HEALTH_MIN_USES`] times (default 5), to avoid misleading confidence
+//! invoked at least `HEALTH_MIN_USES` times (default 5), to avoid misleading confidence
 //! metrics from small sample sizes.
 //!
 //! # Trust-Aware Sanitization
@@ -175,7 +175,7 @@ const HEALTH_MIN_USES: u32 = 5;
 /// - `trust_levels` — map from skill name to resolved [`SkillTrustLevel`]; skills without an
 ///   entry are treated as `Trusted` (the safe default for bundled skills).
 /// - `health_map` — map from skill name to `(posterior_score, use_count)`; entries with
-///   fewer than [`HEALTH_MIN_USES`] uses are omitted from the reliability attributes.
+///   fewer than `HEALTH_MIN_USES` uses are omitted from the reliability attributes.
 ///
 /// Returns an empty string when `skills` is empty.
 #[must_use]

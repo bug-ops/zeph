@@ -45,7 +45,7 @@ pub struct RepoCandidate {
     pub full_name: String,
     /// Repository description from GitHub metadata.
     pub description: String,
-    /// Raw README content (truncated to [`MAX_README_BYTES`]).
+    /// Raw README content (truncated to `MAX_README_BYTES`).
     pub readme_content: String,
     /// GitHub star count at search time.
     pub stars: u32,

@@ -35,7 +35,7 @@ pub struct SymbolInfo {
 
 /// Coarse classification of an AST-level symbol kind.
 ///
-/// Mapped from tree-sitter node kinds via [`SymbolKind::from_node_kind`].
+/// Mapped from tree-sitter node kinds via `SymbolKind::from_node_kind`.
 /// The short string representation (e.g. `"fn"`, `"struct"`) is used in repo map output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {

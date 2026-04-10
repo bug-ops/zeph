@@ -19,7 +19,7 @@ const MAX_IMPORT_LINES: usize = 5;
 /// retrieval quality for conceptual queries because the embedding model can
 /// associate the code with its file location and import context.
 ///
-/// Import lines are capped at [`MAX_IMPORT_LINES`] to avoid diluting the embedding
+/// Import lines are capped at `MAX_IMPORT_LINES` to avoid diluting the embedding
 /// with long import blocks.
 ///
 /// # Examples

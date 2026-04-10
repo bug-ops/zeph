@@ -46,7 +46,7 @@ const THINKING_OVERHEAD: usize = 10;
 /// and shared across all instances.
 ///
 /// Falls back to a `chars/4` heuristic when tiktoken init fails or when the input
-/// exceeds [`MAX_INPUT_LEN`] bytes (64 KiB).
+/// exceeds `MAX_INPUT_LEN` bytes (64 KiB).
 ///
 /// # Examples
 ///

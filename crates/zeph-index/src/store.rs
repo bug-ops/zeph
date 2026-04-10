@@ -75,7 +75,7 @@ pub struct ChunkInsert<'a> {
 
 /// A single search result returned by [`CodeStore::search`].
 ///
-/// Decoded from the Qdrant vector point payload by [`SearchHit::from_payload`].
+/// Decoded from the Qdrant vector point payload by `SearchHit::from_payload`.
 /// Points whose payload is missing required fields are silently dropped.
 #[derive(Debug)]
 pub struct SearchHit {
