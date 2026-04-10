@@ -80,7 +80,7 @@ pub use state::{AppState, ProcessorEvent, TaskManager, TaskProcessor};
 ///     }
 /// }
 ///
-/// # async fn run() -> anyhow::Result<()> {
+/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// let card = AgentCardBuilder::new("my-agent", "http://localhost:9090", "0.1.0").build();
 /// let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 ///
