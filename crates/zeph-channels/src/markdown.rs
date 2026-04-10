@@ -10,7 +10,7 @@
 //!
 //! # Public API
 //!
-//! * [`markdown_to_telegram`] — convert CommonMark to Telegram `MarkdownV2`.
+//! * [`markdown_to_telegram`] — convert `CommonMark` to Telegram `MarkdownV2`.
 //! * [`utf8_chunks`] — split long strings at UTF-8 / newline boundaries.
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
