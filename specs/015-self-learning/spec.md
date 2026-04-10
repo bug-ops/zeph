@@ -1,9 +1,35 @@
+---
+aliases:
+  - Self-Learning
+  - Feedback Integration
+  - Wilson Score
+tags:
+  - sdd
+  - spec
+  - learning
+  - feedback
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[005-skills/spec]]"
+  - "[[025-classifiers/spec]]"
+---
+
 # Spec: Self-Learning
+
+> [!info]
+> FeedbackDetector (multi-language), Wilson score confidence intervals,
+> trust model (Untrusted → Provisional → Trusted), SAGE RL cross-session reward.
+
 ## Sources
-### External- **RouteLLM** (ICML 2024) — Thompson Sampling + EMA latency routing for provider selection: https://arxiv.org/abs/2406.18665
+
+### External
+- **RouteLLM** (ICML 2024) — Thompson Sampling + EMA latency routing for provider selection: https://arxiv.org/abs/2406.18665
 - **Llama Guard** (Meta AI, 2023) — binary classifier pattern applied to feedback signal design: https://arxiv.org/abs/2312.06674
 
-### Internal| File | Contents |
+### Internal
+| File | Contents |
 |---|---|
 | `crates/zeph-core/src/agent/feedback_detector.rs` | `FeedbackDetector`, `JudgeDetector`, `CorrectionSignal`, `CorrectionKind` |
 | `crates/zeph-skills/src/trust_score.rs` | `posterior_weight` (Wilson score), `rerank` |
@@ -15,7 +41,9 @@
 `crates/zeph-skills/src/`, `crates/zeph-core/src/agent/feedback_detector.rs` — feedback detection, skill ranking, trust model.
 
 ## Feedback Detection (Two Paths)
+
 ### Fast Path: FeedbackDetector (~1ms, no LLM)
+
 Four regex pattern groups, checked in priority order:
 
 | Kind | Confidence | Pattern |
@@ -29,6 +57,7 @@ Four regex pattern groups, checked in priority order:
 - `CorrectionSignal` = `(confidence: f32, kind: CorrectionKind, feedback_text: String)`
 
 ### Slow Path: JudgeDetector (LLM, rate-limited)
+
 Invoked only when FeedbackDetector returns `None` OR confidence falls in borderline zone `[adaptive_low, adaptive_high)`:
 
 - Rate limiter: max 5 LLM calls / 60s sliding window — checked synchronously before spawning
@@ -37,6 +66,7 @@ Invoked only when FeedbackDetector returns `None` OR confidence falls in borderl
 - Kind normalization: spaces → underscores, lowercase, case-insensitive enum match
 
 ## Wilson Score (Bayesian Skill Ranking)
+
 Formula: **lower bound of 95% one-sided Wilson confidence interval**
 
 ```
@@ -55,6 +85,7 @@ wilson_lower = mean - 1.645 × std_err    ← clamped to [0.0, 1.0]
 **Never change**: α=+1, β=+1, z=1.645 — all skill rankings depend on this formula.
 
 ## Skill Re-ranking
+
 ```
 score_i = cosine_weight × cosine_i + (1 - cosine_weight) × wilson_lower_i
 ```
@@ -64,6 +95,7 @@ score_i = cosine_weight × cosine_i + (1 - cosine_weight) × wilson_lower_i
 - Applied after BM25+embedding hybrid search, before `max_active_skills` cut
 
 ## BM25 + RRF Hybrid Search
+
 When `hybrid_search = true`:
 
 - BM25 score: term frequency in skill description/triggers vs query
@@ -72,6 +104,7 @@ When `hybrid_search = true`:
 - RRF score × Wilson multiplier = final ranking input
 
 ## Trust Model
+
 ```
 TrustLevel: Untrusted → Provisional → Trusted
 ```
@@ -85,12 +118,14 @@ Trust transitions are one-step-at-a-time (cannot jump Untrusted → Trusted):
 Trust level is passed via `set_effective_trust()` to `ToolExecutor` before each turn.
 
 ## Provider EMA Routing
+
 Per-provider EMA (exponential moving average) latency:
 - `ema_new = α × latency + (1 - α) × ema_old`, α = 0.1 (configurable)
 - EMA is **per-provider**, not per-model — models under the same provider share the EMA
 - Used by orchestrator alongside Thompson Sampling for model selection
 
 ## Key Invariants
+
 - Wilson score formula (α+1, β+1, z=1.645) must never change — all rankings depend on it
 - Confidence thresholds per kind are fixed: ExplicitRejection=0.85, SelfCorrection=0.80, Repetition=0.75, AlternativeRequest=0.70
 - Self-correction checked first — prevents "actually" false-positive in AlternativeRequest
@@ -103,15 +138,19 @@ Per-provider EMA (exponential moving average) latency:
 ---
 
 ## Multi-Language FeedbackDetector
+
 Issue #1424. `crates/zeph-core/src/agent/feedback_detector.rs`.
 
 ### Overview
+
 `FeedbackDetector` detects implicit correction signals across 7 languages without LLM calls. All patterns are compiled once into a flat `Vec<(Regex, f32)>` per correction kind — no per-language routing. A single regex scan covers all languages simultaneously.
 
 ### Supported Languages
+
 English, Russian, Spanish, German, French, Chinese (Simplified), Japanese.
 
 ### Dual Anchoring Strategy
+
 Each language uses two pattern tiers:
 
 | Tier | Anchor | Confidence |
@@ -122,6 +161,7 @@ Each language uses two pattern tiers:
 Exception: English unanchored patterns retain base confidence because they are already multi-word, highly specific phrases ("don't do that", "that didn't work") that do not suffer from mid-sentence ambiguity.
 
 ### Pattern Registry (`LangPatterns`)
+
 Compiled once into `LazyLock<LangPatterns>`:
 
 ```
@@ -133,16 +173,19 @@ self_correction: Vec<(Regex, f32)>
 Pattern matching: iterate the full flat list; take the **first** (highest-priority) match. Priority order within each kind is defined by list order, not confidence value.
 
 ### Known Limitations
+
 - **CJK repetition gap**: `token_overlap()` uses whitespace tokenization; Chinese/Japanese text is not segmented by whitespace → CJK repetition detection falls through to JudgeDetector
 - **CJK false-positive risk**: 2+ character patterns used for unanchored CJK to mitigate substring matches inside longer compounds
 - **Unsupported languages** (Korean, Arabic, etc.): regex returns `None` → every message triggers a JudgeDetector call, rate-limited to 5/min
 
 ### Adding a New Language
+
 1. Add anchored and unanchored patterns to `build_rejection_patterns()`, `build_alternative_patterns()`, `build_self_correction_patterns()`
 2. Anchored pattern: base confidence; unanchored pattern: base confidence − 0.10 (except English)
 3. Add test cases to the 137-test suite: positive (correct detection), negative (no false positive), edge cases (punctuation, capitalization)
 
 ### Key Invariants
+
 - All patterns are compiled at program start via `LazyLock` — no runtime compilation
 - English unanchored patterns are NOT reduced by 0.10 — only non-English unanchored patterns apply the reduction
 - Pattern list order determines priority for the same correction kind — anchored patterns before unanchored
@@ -153,15 +196,18 @@ Pattern matching: iterate the full flat list; take the **first** (highest-priori
 ---
 
 ## SAGE: RL Cross-Session Reward
-`crates/zeph-skills/src/evolution.rs` and `crates/zeph-memory/src/semantic/mod.rs`. Implemented in v0.18.0.
+
+`crates/zeph-skills/src/evolution.rs` and `crates/zeph-memory/src/semantic/mod.rs`. Implemented.
 
 ### Overview
+
 SAGE (Self-Adaptive Generalization Engine) extends the skill trust model with
 **cross-session reward aggregation**. A skill is promoted to `Trusted` only after
 accumulating positive feedback across multiple distinct sessions, preventing
 premature promotion from a single enthusiastic session.
 
 ### Cross-Session Rollout
+
 `LearningConfig` gains two fields:
 
 | Field | Type | Default | Notes |
@@ -175,13 +221,13 @@ When `cross_session_rollout = true`:
 - The session count is checked lazily at promotion time — not stored incrementally
 
 ### `distinct_session_count()`
+
 `SqliteMemory::distinct_session_count(skill_name: &str) -> u32`:
 
 Queries `user_corrections` (or the skill feedback table) to count distinct
 `conversation_id` values where the skill received at least one positive feedback signal.
 
-### Migration 047: `git_hash` in `skill_trust`
-Migration 047 adds a `git_hash TEXT` column to the `skill_trust` table:
+###: `git_hash` in `skill_trust` adds a `git_hash TEXT` column to the `skill_trust` table:
 
 ```sql
 ALTER TABLE skill_trust ADD COLUMN git_hash TEXT;
@@ -192,6 +238,7 @@ updated. It is populated by `upsert_skill_trust_with_git_hash()` (see Skill Trus
 Governance below). `NULL` means the provenance hash is unknown (legacy rows).
 
 ### Config
+
 ```toml
 [skills.learning]
 cross_session_rollout = false          # opt-in
@@ -199,6 +246,7 @@ min_sessions_before_promote = 3        # distinct sessions required for Trusted 
 ```
 
 ### Key Invariants
+
 - `cross_session_rollout = false` restores the prior behavior (session-count gate inactive)
 - `min_sessions_before_promote = 0` disables the gate (promote after any positive signal across sessions) — not recommended
 - `distinct_session_count()` counts distinct `conversation_id` values, not turn count
@@ -208,11 +256,12 @@ min_sessions_before_promote = 3        # distinct sessions required for Trusted 
 ---
 
 ## ARISE: Trace-Based Skill Improvement
-> **Status**: Implemented. Closes #2398.
+
 
 After a successful multi-tool turn, `spawn_arise_trace_improvement()` fires a background LLM call that summarizes the tool sequence into an improved SKILL.md body. The new version is saved with `source = 'arise_trace'` at `quarantined` trust level — it never inherits the parent skill's trust.
 
 ### Config
+
 ```toml
 [skills.learning]
 arise_enabled = false
@@ -221,6 +270,7 @@ arise_trace_provider = ""     # provider for improvement LLM call; empty = prima
 ```
 
 ### Key Invariants
+
 - ARISE-derived skills ALWAYS start at `quarantined` — never promote on creation
 - Background LLM call must not block the agent turn
 - `arise_min_tool_calls` prevents triggering on trivial single-tool sequences
@@ -228,14 +278,14 @@ arise_trace_provider = ""     # provider for improvement LLM call; empty = prima
 ---
 
 ## STEM: Pattern-to-Skill Conversion
-> **Status**: Implemented. Closes #2462.
+
 
 `spawn_stem_detection()` logs every tool sequence to `skill_usage_log` after each turn. `find_recurring_patterns()` detects sequences meeting frequency and success-rate thresholds; qualifying patterns trigger a background LLM call to generate a SKILL.md candidate at `quarantined` trust level.
 
-### SQLite
-Migration 057 adds `skill_usage_log` table.
+### SQLite adds `skill_usage_log` table.
 
 ### Config
+
 ```toml
 [skills.learning]
 stem_enabled = false
@@ -245,6 +295,7 @@ stem_retention_days = 30
 ```
 
 ### Key Invariants
+
 - STEM-generated skills always start at `quarantined`
 - `skill_usage_log` entries older than `stem_retention_days` are pruned automatically
 - NEVER promote a STEM skill solely on pattern recurrence — trust governance applies normally
@@ -252,14 +303,14 @@ stem_retention_days = 30
 ---
 
 ## ERL: Experiential Reflective Learning
-> **Status**: Implemented. Closes #2463.
+
 
 `spawn_erl_reflection()` fires a background LLM call after each successful skill+tool turn to extract transferable heuristics. Heuristics are stored in `skill_heuristics` with Jaccard deduplication. At skill matching time, `build_erl_heuristics_prompt()` prepends a `## Learned Heuristics` section to skill context.
 
-### SQLite
-Migration 058 adds `skill_heuristics` table.
+### SQLite adds `skill_heuristics` table.
 
 ### Config
+
 ```toml
 [skills.learning]
 erl_enabled = false
@@ -268,16 +319,17 @@ erl_min_confidence = 0.5
 ```
 
 ### Key Invariants
+
 - Jaccard deduplication prevents semantically identical heuristics from accumulating
 - `erl_max_heuristics_per_skill` caps storage per skill — oldest are evicted when exceeded
 - Heuristics are injected at matching time only — never stored in SKILL.md directly
 
 ---
 
-## v0.18.3: learning.rs Split Into Focused Submodules
-> **Status**: Refactor only. Closes #2633. No behavioral change.
+## learning.rs Split Into Focused Submodules
 
-`crates/zeph-core/src/agent/learning/` was a single monolithic `learning.rs` file. PR #2633 split it into 11 focused submodules with no semantic changes:
+
+`crates/zeph-core/src/agent/learning/` was a single monolithic `learning.rs` file. split it into 11 focused submodules with no semantic changes:
 
 | Module | Responsibility |
 |--------|---------------|
@@ -294,6 +346,7 @@ erl_min_confidence = 0.5
 | `tests.rs` | Inline test suite (1357 lines) |
 
 ### Key Invariants
+
 - All existing behavioral invariants from ARISE, STEM, ERL, D2Skill, and SkillOrchestra sections remain unchanged
 - Module visibility is `pub(super)` for internal helpers — public API surface is unchanged
 - `tests.rs` is `#[cfg(test)]` only — test module does not compile into production binary

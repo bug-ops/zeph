@@ -1,3 +1,23 @@
+---
+aliases:
+  - Provider Registry
+  - Config Simplification
+  - Provider Architecture
+tags:
+  - sdd
+  - spec
+  - config
+  - llm
+created: 2026-03-22
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[003-llm-providers/spec]]"
+  - "[[024-multi-model-design/spec]]"
+  - "[[023-complexity-triage-routing/spec]]"
+  - "[[020-config-loading/spec]]"
+---
+
 # Spec: Provider Registry Architecture (`[[llm.providers]]`)
 
 > **Status**: Implemented
@@ -13,7 +33,7 @@
 
 ### Problem Statement
 
-The pre-v0.17.0 `[llm]` config section required users to define the same provider
+The legacy `[llm]` config section required users to define the same provider
 parameters in up to three places:
 
 1. **Top-level `[llm]`** fields (`base_url`, `model`, `embedding_model`)
@@ -484,7 +504,7 @@ Old-format configs (`[llm.cloud]`, `[llm.openai]`, `[llm.orchestrator]`, `[llm.r
 
 ### 4.2 Removed Fields
 
-See CHANGELOG.md v0.17.0 section for the full list of removed fields.
+See CHANGELOG.md for the full list of removed fields.
 
 ## 5. Key Invariants
 
@@ -544,9 +564,9 @@ See CHANGELOG.md v0.17.0 section for the full list of removed fields.
 - Change vault secret resolution logic
 - Modify non-LLM config sections in this PR
 
-## 9. Implementation Phases
+## 9. Implementation Approach
 
-### Phase 1: New Config Types (non-breaking)
+### New Config Types (non-breaking)
 
 **Goal**: Add `ProviderEntry`, `RoutingStrategy`, and new `LlmConfig` alongside
 old types. No behavior change.
@@ -560,7 +580,7 @@ old types. No behavior change.
 - Old code untouched
 - All tests pass
 
-### Phase 2: Migration Tooling
+### Migration Tooling
 
 **Goal**: `--migrate-config` converts old-format LLM sections to new format. Old-format configs produce a clear startup error.
 
@@ -575,7 +595,7 @@ old types. No behavior change.
 - Migrated configs load and produce identical runtime behavior
 - `--init` wizard generates new-format config
 
-### Phase 3: Bootstrap Unification
+### Bootstrap Unification
 
 **Goal**: Replace parallel `named_*`/`pcfg_*`/`build_sub_provider` functions
 with a single `build_provider_from_entry()`.
@@ -589,7 +609,7 @@ with a single `build_provider_from_entry()`.
 - All tests pass
 - Live session test with orchestrator config (mandatory per LLM serialization gate)
 
-### Phase 4: Env Override Update
+### Env Override Update
 
 **Goal**: Update `ZEPH_LLM_*` env overrides to work with new format.
 
@@ -602,7 +622,7 @@ with a single `build_provider_from_entry()`.
 - `ZEPH_LLM_BASE_URL` sets `providers[0].base_url`
 - All env-override tests pass
 
-### Phase 5: Cleanup
+### Cleanup
 
 **Goal**: Remove old config types and legacy shim.
 
@@ -638,7 +658,6 @@ with a single `build_provider_from_entry()`.
 
 ## PILOT: LinUCB Bandit Routing
 
-> **Status**: Implemented
 > **Issue**: #2230
 
 ### Overview
@@ -715,7 +734,6 @@ State file is written atomically (temp file + rename) to prevent corruption on c
 
 ## BaRP: Cost-Weight Dial
 
-> **Status**: Implemented. Closes #2415.
 
 `cost_weight` penalises UCB arm scores during provider selection in addition to the existing reward-signal penalty. Higher values bias the bandit toward cheaper providers at inference time. Static cost tier heuristics based on provider name and model identifier.
 
@@ -734,7 +752,6 @@ State file is written atomically (temp file + rename) to prevent corruption on c
 
 ## MAR: Memory-Augmented Routing
 
-> **Status**: Implemented. Closes #2443.
 
 When the top-1 semantic recall score for the current query meets or exceeds `memory_confidence_threshold`, the bandit biases toward fast/cheap providers. Signal propagated from `SemanticMemory::recall` through `ContextSlot::SemanticRecall` to `RouterProvider`.
 

@@ -1,4 +1,26 @@
+---
+aliases:
+  - Scheduler
+  - Task Scheduler
+  - Cron Scheduler
+tags:
+  - sdd
+  - spec
+  - scheduler
+  - persistence
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[031-database-abstraction/spec]]"
+  - "[[028-hooks/spec]]"
+---
+
 # Spec: Scheduler
+
+> [!info]
+> Cron-based periodic task scheduler with SQLite persistence,
+> CLI subcommand (zeph schedule list/add/remove/show); zeph-scheduler crate.
 
 ## Sources
 
@@ -83,44 +105,6 @@ Natural language registration:
 - Task fires by injecting into agent `message_queue` — never calls agent methods directly
 - Task persists across restarts (SQLite)
 
-## Scheduler CLI Subcommand
-> **Status**: Implemented. Closes #2701. Feature-gated under `scheduler`.
-
-New `zeph schedule` subcommand with four sub-commands:
-
-| Sub-command | Action |
-|-------------|--------|
-| `zeph schedule list` | Table of all active jobs |
-| `zeph schedule add <cron> <prompt>` | INSERT new job (fails on duplicate name) |
-| `zeph schedule remove <name>` | Delete job by name |
-| `zeph schedule show <name>` | Full details including stored prompt |
-
-`add` auto-generates job names from a blake3 hash of the prompt when `--name` is not given. Returns `SchedulerError::DuplicateJob` (instead of upsert) to prevent accidental overwrites.
-
-Migration `072_scheduler_task_data` adds `task_data TEXT NOT NULL DEFAULT ''` to `scheduled_jobs` in both SQLite and Postgres. `JobStore` gains `insert_job` (INSERT without ON CONFLICT). `ScheduledTaskInfo` includes `task_data`.
-
-### New Error Variant
-```rust
-SchedulerError::DuplicateJob(String)   // returned by insert_job when name already exists
-```
-
-### Key Invariants
-- `insert_job` uses `INSERT` without `ON CONFLICT` — duplicate job name is always an error
-- `SchedulerError::DuplicateJob` must be surfaced to the user with a clear message
-- `task_data` stores the natural-language prompt for jobs created via CLI or the `scheduler` tool
-
----
-
-## Tick Loop MissedTickBehavior
-> **Status**: Implemented. Closes #2737.
-
-Both `Scheduler::run_with_interval` and `Scheduler::run` set `MissedTickBehavior::Skip` on their `tokio::time::Interval`. The default `Burst` mode caused hundreds of back-to-back ticks per second when `tick()` took longer than the interval.
-
-### Key Invariant
-- ALWAYS use `MissedTickBehavior::Skip` on scheduler intervals — `Burst` is a correctness hazard for tick-sensitive scheduling logic
-
----
-
 ## Key Invariants
 
 - `init()` must compute and persist `next_run` for all periodic tasks before first tick
@@ -131,3 +115,36 @@ Both `Scheduler::run_with_interval` and `Scheduler::run` set `MissedTickBehavior
 - On handler failure: task stays queued — never remove on failure
 - `max_tasks` limit only applies to **new** tasks (upsert of existing name is allowed)
 - Task fires via `message_queue` injection — no direct agent method calls
+
+---
+
+## CLI Subcommand
+
+> **Status**: Implemented. Source: `src/commands/schedule.rs`, `src/cli.rs`.
+
+The `zeph schedule` subcommand (requires `scheduler` feature) provides out-of-process management of scheduled jobs. It connects directly to the agent's SQLite database — no agent process required.
+
+### Subcommands
+
+| Subcommand | Description |
+|---|---|
+| `zeph schedule list` | Print all jobs: NAME, KIND, MODE, NEXT RUN, CRON |
+| `zeph schedule add <CRON> <PROMPT> [--name NAME] [--kind KIND]` | Add a periodic job |
+| `zeph schedule remove <NAME>` | Delete a job by name; errors if not found |
+| `zeph schedule show <NAME>` | Print full details for one job |
+
+### `add` semantics
+
+- `cron` must be a valid 5-field or 6-field expression (validated via `normalize_cron_expr` + `cron::Schedule::from_str`)
+- `prompt` is sanitized via `sanitize_task_prompt` (same rules as the LLM tool path)
+- `--name` is optional: defaults to `cli-{blake3_prefix_8}` derived from the sanitized prompt
+- `--kind` defaults to `custom`
+- Adding a name that already exists returns an error: `job '{name}' already exists. Remove it first`
+
+### Key Invariants
+
+- `zeph schedule remove` MUST error (not silently succeed) when the job does not exist
+- Cron expression is validated before insertion — invalid expressions never reach the DB
+- Prompt sanitization via `sanitize_task_prompt` is mandatory on the CLI path, same as the LLM tool path
+- `--name` auto-generation uses BLAKE3 prefix of the sanitized prompt (not the raw input)
+- NEVER bypass `normalize_cron_expr` when inserting via CLI — normalization ensures 6-field canonical form in DB

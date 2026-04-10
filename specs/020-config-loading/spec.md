@@ -1,4 +1,26 @@
+---
+aliases:
+  - Config Loading
+  - Configuration
+tags:
+  - sdd
+  - spec
+  - config
+  - core
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[001-system-invariants/spec#8. Configuration Contract]]"
+  - "[[022-config-simplification/spec]]"
+  - "[[029-feature-flags/spec]]"
+---
+
 # Spec: Config Loading
+
+> [!info]
+> Config resolution order, mode-agnostic defaults, environment overrides;
+> integrates with [[022-config-simplification/spec|Provider Registry]].
 
 ## Sources
 

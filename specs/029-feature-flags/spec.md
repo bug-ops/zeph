@@ -1,3 +1,21 @@
+---
+aliases:
+  - Feature Flags
+  - Cargo Features
+tags:
+  - sdd
+  - spec
+  - build
+  - features
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[constitution]]"
+  - "[[001-system-invariants/spec#9. Feature Flag Contract]]"
+  - "[[020-config-loading/spec]]"
+---
+
 # Spec: Feature Flag System
 
 > Non-negotiable rules governing how Cargo feature flags are declared, named, and used in this workspace.
@@ -15,9 +33,7 @@
 
 ---
 
-## 1. Context
-
-PR #2565 simplified the root feature set from 31 flags to 22 by removing nine flags that were pure behavioral markers with no real optional dependency: `guardrail`, `context-compression`, `compression-guidelines`, `policy-enforcer`, `lsp-context`, `experiments`, `bundled-skills`, `stt`, and `acp-unstable`. Those features are now always compiled in.
+## 1. Context simplified the root feature set from 31 flags to 22 by removing nine flags that were pure behavioral markers with no real optional dependency: `guardrail`, `context-compression`, `compression-guidelines`, `policy-enforcer`, `lsp-context`, `experiments`, `bundled-skills`, `stt`, and `acp-unstable`. Those features are now always compiled in.
 
 This spec captures the resulting design as a binding contract for all future flag decisions.
 

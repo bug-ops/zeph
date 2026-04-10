@@ -1,7 +1,30 @@
-# Subagent Context Propagation: Gap Analysis
+---
+aliases:
+  - Subagent Context
+  - Context Propagation
+  - Gap Analysis Report
+tags:
+  - sdd
+  - research
+  - spec
+  - subagent
+  - context
+created: 2026-04-03
+status: research
+related:
+  - "[[MOC-specs]]"
+  - "[[026-tui-subagent-management/spec]]"
+---
 
-**Date**: 2026-04-03  
-**Status**: Draft  
+# Spec: Subagent Context Propagation
+
+> [!info]
+> Gap analysis of `/agent spawn` context propagation vs Claude Code reference.
+> 12 identified gaps (P1–P4) with phased resolution plan. Documents GAP-07 (cwd) and
+> GAP-08b (loop exits) resolution in #2582, #2585.
+
+**Date**: 2026-04-03 (updated 2026-04-10)  
+**Status**: Research (gap documentation + post-implementation analysis)  
 **Scope**: `/agent spawn` command — context passed to subagents at launch
 
 ---
@@ -230,10 +253,10 @@ the agent context.
 time. If the CWD changes between parent startup and spawn (rare but possible), the
 memory directory resolves to the wrong path.
 
-**Fix applied (PR #2585, v0.18.2+)**: `build_system_prompt_with_memory` now appends
+**Fix applied**: `build_system_prompt_with_memory` now appends
 `"\nWorking directory: {cwd}"` to every subagent system prompt so the LLM explicitly
 knows where the project is. The underlying architecture still uses implicit CWD
-rather than explicit propagation (full fix tracked in Phase 2).
+rather than explicit propagation.
 
 **Impact**: Residual risk is low — CWD is now visible to the model, resolving the
 primary symptom (LLM hedging instead of acting).
@@ -263,7 +286,7 @@ or returns plain text — it is up to `max_turns` to terminate the loop.
 invocations. When the LLM announced intent instead of acting (common on the first turn),
 the subagent completed with only the announcement.
 
-**Fix applied (PR #2585, v0.18.2+)**: On text-only turn 1 with `any_tool_called == false`,
+**Fix applied**: On text-only turn 1 with `any_tool_called == false`,
 the loop pushes a nudge user message ("Please use the available tools to complete the task.
 Do not announce intentions — execute them.") and continues for one more turn. Subsequent
 text-only turns still terminate the loop normally.
@@ -312,26 +335,26 @@ parallel subtasks.
 
 ## 4. Summary Table
 
-| Gap | Priority | Area | Complexity |
-|---|---|---|---|
-| GAP-01: No history passed | P1 | Context propagation | Medium |
-| GAP-02: No parent context injection | P2 | Context propagation | Medium |
-| GAP-03: No model inheritance | P2 | Config | Low |
-| GAP-04: MCP context not propagated | P2 | Infrastructure | High |
-| GAP-05: Cancel not cascading | P2 | Lifecycle | Medium |
-| GAP-06: No recursion depth guard | P3 | Safety | Low |
-| GAP-07: CWD not explicit | P3 | Correctness | Low | ✅ Partially resolved (#2585) |
-| GAP-08: No nested spawn support | P3 | Architecture | High |
+| Gap | Priority | Area | Complexity | Status |
+|---|---|---|---|---|
+| GAP-01: No history passed | P1 | Context propagation | Medium | Open |
+| GAP-02: No parent context injection | P2 | Context propagation | Medium | Open |
+| GAP-03: No model inheritance | P2 | Config | Low | Open |
+| GAP-04: MCP context not propagated | P2 | Infrastructure | High | Open |
+| GAP-05: Cancel not cascading | P2 | Lifecycle | Medium | Open |
+| GAP-06: No recursion depth guard | P3 | Safety | Low | Open |
+| GAP-07: CWD not explicit | P3 | Correctness | Low | ✅ Resolved (#2582) |
+| GAP-08: No nested spawn support | P3 | Architecture | High | Open |
 | GAP-08b: Loop exits on text-only first turn | P2 | Loop control | Low | ✅ Fixed (#2585) |
-| GAP-09: Serde asymmetry | P3 | Known issue | Low |
-| GAP-10: No inter-agent comm | P4 | Team model | High |
-| GAP-11: No prompt cache opt | P4 | Performance | Medium |
+| GAP-09: Serde asymmetry | P3 | Known issue | Low | Documented |
+| GAP-10: No inter-agent comm | P4 | Team model | High | Open |
+| GAP-11: No prompt cache opt | P4 | Performance | Medium | Open |
 
 ---
 
 ## 5. Recommended Implementation Order
 
-### Phase 1 — Context enrichment (unblocks real use cases)
+### Context Enrichment (unblocks real use cases)
 
 1. **GAP-01**: Add `parent_context: Option<Vec<Message>>` parameter to `spawn()`.
    In `handle_agent_command`, pass the last N messages from `self.context.messages`
@@ -346,7 +369,7 @@ parallel subtasks.
    `parent_cancel.child_token()` using `tokio_util`'s child token API.
    Add `parent_cancel: CancellationToken` param to `spawn()`.
 
-### Phase 2 — Infrastructure gaps
+### Infrastructure Gaps
 
 4. **GAP-04**: Add `mcp_manager: Option<Arc<McpManager>>` to `AgentLoopArgs`.
    Expose MCP tool metadata to subagents for resource enumeration.
@@ -354,7 +377,7 @@ parallel subtasks.
 5. **GAP-06**: Add `depth: u32` field to `AgentLoopArgs`. Gate spawn inside
    `SubAgentManager` behind a `max_depth` config value (default 3).
 
-### Phase 3 — Architecture changes (post-MVP)
+### Architecture Changes (Future)
 
 6. **GAP-08**: Extract `SubAgentManager` behind an `Arc<Mutex<>>` or channel-based
    API so subagents can request spawns via message passing to the parent task.
@@ -364,7 +387,7 @@ parallel subtasks.
 
 ---
 
-## 6. Files to Modify for Phase 1
+## 6. Files to Modify
 
 | File | Change |
 |---|---|
@@ -373,3 +396,11 @@ parallel subtasks.
 | `crates/zeph-subagent/src/def.rs` | Add `model` inheritance enum |
 | `crates/zeph-config/src/subagent.rs` | Add `max_depth` config field |
 | `crates/zeph-subagent/src/manager.rs:946` | Use `parent_cancel.child_token()` |
+
+---
+
+## See Also
+
+- [[MOC-specs]] — all specifications
+- [[026-tui-subagent-management/spec]] — TUI subagent management
+- [[001-system-invariants/spec]] — system contracts

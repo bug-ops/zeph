@@ -1,3 +1,20 @@
+---
+aliases:
+  - Handoff Protocol
+  - Skill-Based Handoff
+  - Inter-Agent Communication
+tags:
+  - sdd
+  - spec
+  - protocol
+  - handoff
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[005-skills/spec]]"
+---
+
 # Handoff Protocol Specification
 
 **Status:** Active
@@ -127,4 +144,4 @@ The agent reads all parent handoffs and synthesizes the combined context.
 
 ## Historical Context
 
-PRs #2076 and #2078 introduced typed `HandoffContext` Rust structs with compile-time validation (inspired by MAST research on multi-agent coordination failures). This was reverted in PR #2082 — the skill-based YAML protocol remains the active approach. Future hardening may revisit typed validation with a simpler design.
+PRs #2076 and #2078 introduced typed `HandoffContext` Rust structs with compile-time validation (inspired by MAST research on multi-agent coordination failures). This was reverted in — the skill-based YAML protocol remains the active approach. Future hardening may revisit typed validation with a simpler design.

@@ -1,6 +1,24 @@
+---
+aliases:
+  - Reactive Hooks
+  - File Hooks
+  - Directory Hooks
+tags:
+  - sdd
+  - spec
+  - core
+  - hooks
+  - runtime
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[027-runtime-layer/spec]]"
+  - "[[018-scheduler/spec]]"
+---
+
 # Spec: Reactive Hooks
 
-> **Status**: Implemented
 > **Crate**: `zeph-core`
 
 ## Sources
@@ -19,7 +37,7 @@
 ## Overview
 
 Reactive hooks allow operators to run shell commands (or scripts) in response to
-agent lifecycle events. Two event types are supported in v0.18.2:
+agent lifecycle events. Two event types are supported:
 
 | Event | Trigger |
 |---|---|

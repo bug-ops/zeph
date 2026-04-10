@@ -1,4 +1,28 @@
+---
+aliases:
+  - Tool Execution
+  - ToolExecutor
+  - CompositeExecutor
+tags:
+  - sdd
+  - spec
+  - tools
+  - execution
+  - contract
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[001-system-invariants/spec#5. Tool Execution Contract]]"
+  - "[[016-output-filtering/spec]]"
+  - "[[010-security/spec]]"
+---
+
 # Spec: Tool Execution
+
+> [!info]
+> ToolExecutor trait, CompositeExecutor, TAFC, schema filter, result cache,
+> dependency graph, transactional ShellExecutor, utility-guided dispatch gate.
 
 ## Sources
 
@@ -58,9 +82,8 @@ CompositeExecutor [
 - `TrustLevel`: `Untrusted` / `Provisional` / `Trusted` — affects which commands are auto-approved
 - Working directory is sandboxed to project root (configurable)
 
-## Structured Shell Output Envelope (v0.18.2)
+## Structured Shell Output Envelope
 
-> **Status**: Implemented (v0.18.2).
 
 `ShellExecutor` wraps shell execution results in `ShellOutputEnvelope`:
 
@@ -83,9 +106,8 @@ pub struct ShellOutputEnvelope {
 
 ---
 
-## Per-Path File Read Sandbox (v0.18.2)
+## Per-Path File Read Sandbox
 
-> **Status**: Implemented (v0.18.2).
 
 `FileExecutor` evaluates `[tools.file]` deny/allow lists on every read operation. Evaluation order: deny first, then allow. Paths are canonicalized before matching to prevent symlink traversal attacks.
 
@@ -114,9 +136,8 @@ allow_read = []    # if non-empty, only matching paths are allowed (after deny c
 
 ---
 
-## `extract_paths` Relative Path Detection (v0.18.2)
+## `extract_paths` Relative Path Detection
 
-> **Status**: Implemented (v0.18.2).
 
 `extract_paths()` now detects relative path tokens (e.g., `src/main.rs`, `./foo/bar`) in addition to absolute paths. Detection uses the following heuristics:
 
@@ -170,7 +191,6 @@ Always available (no feature flag):
 
 ## compress_context Native Tool
 
-> **Status**: Implemented (v0.18.0). Feature: `context-compression`.
 
 ### Overview
 
@@ -506,9 +526,8 @@ parameter_reformat_provider = ""  # provider name for parameter reformat path
 
 ---
 
-## Transactional ShellExecutor (v0.18.1)
+## Transactional ShellExecutor
 
-> **Status**: Implemented (v0.18.1). Closes #2414.
 
 Opt-in snapshot+rollback for shell commands. Before executing a write command, `ShellExecutor` captures a file-level snapshot; on configured exit codes the snapshot is restored.
 
@@ -543,9 +562,8 @@ Write commands are detected via `WRITE_INDICATORS` heuristic (keywords like `rm`
 
 ---
 
-## Utility-Guided Tool Dispatch Gate (v0.18.1)
+## Utility-Guided Tool Dispatch Gate
 
-> **Status**: Implemented (v0.18.1). Closes #2424.
 
 `UtilityScorer` assigns a score to each candidate tool call before execution. Calls below the configured threshold are skipped. Disabled by default.
 
@@ -574,9 +592,8 @@ threshold = 0.0   # calls below this score are skipped
 
 ---
 
-## Adversarial Policy Gate (v0.18.1)
+## Adversarial Policy Gate
 
-> **Status**: Implemented (v0.18.1). Feature: `policy-enforcer`. Closes #2447.
 
 LLM-based pre-execution validation of tool calls against plain-language operator policies.
 
@@ -603,15 +620,14 @@ exempt_tools = ["memory_save", "memory_search", "read_overflow", "load_skill", "
 - Response parsing is strict: only `ALLOW` / `DENY` tokens are accepted
 - `fail_open = false` is the secure default — unknown LLM response → deny
 - Audit log records `adversarial_policy_decision` field for every evaluated call
-- `claim_source` is propagated from `AdversarialPolicyGateExecutor` into `AuditEntry` (v0.18.2) — identifies the content origin of each evaluated call; relative path tokens (e.g. `src/main.rs`) are detected by `extract_paths()`
+- `claim_source` is propagated from `AdversarialPolicyGateExecutor` into `AuditEntry` — identifies the content origin of each evaluated call; relative path tokens (e.g. `src/main.rs`) are detected by `extract_paths()`
 - `/status` shows gate state (provider, policy count, `fail_open`) when `enabled = true`
 - NEVER retry `PermanentFailure` or `ToolNotFound` — infinite retry loops are a liveness hazard
 
 ---
 
-## Tool Invocation Phase Taxonomy (v0.18.0)
+## Tool Invocation Phase Taxonomy
 
-> **Status**: Implemented (v0.18.0). Closes #2354.
 
 Tool calls are categorized into phases based on when they occur in the agent's reasoning cycle. Phase is used by the adversarial policy gate and audit system to apply different trust policies to calls made in different contexts.
 
@@ -632,9 +648,8 @@ Tool calls are categorized into phases based on when they occur in the agent's r
 
 ---
 
-## Reasoning Model Hallucination Detection (v0.18.0)
+## Reasoning Model Hallucination Detection
 
-> **Status**: Implemented (v0.18.0). Closes #2354, #2356, #2357.
 
 For reasoning models (e.g., o3, claude-sonnet thinking blocks), a heuristic detects when tool call parameters appear to have been hallucinated (not grounded in context).
 
@@ -659,7 +674,7 @@ compress_provider = ""   # provider for compress_context tool; empty = primary
 
 ---
 
-## Tool Call Quota and OAP Authorization (v0.18.4, PR #2703)
+## Tool Call Quota and OAP Authorization
 
 > **Status**: Implemented. Source: `crates/zeph-tools/src/config.rs`.
 > Full invariants documented in `008-mcp/spec.md` (MCP identity propagation section).

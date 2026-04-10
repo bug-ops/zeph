@@ -1,4 +1,29 @@
+---
+aliases:
+  - LLM Providers
+  - Provider Trait
+  - AnyProvider
+tags:
+  - sdd
+  - spec
+  - llm
+  - providers
+  - contract
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[001-system-invariants/spec#3. LLM Provider Contract]]"
+  - "[[022-config-simplification/spec]]"
+  - "[[023-complexity-triage-routing/spec]]"
+  - "[[024-multi-model-design/spec]]"
+---
+
 # Spec: LLM Providers
+
+> [!info]
+> LlmProvider trait, AnyProvider enum, prompt caching, debug request serialization,
+> multi-provider pooling, chat vs chat_stream vs chat_with_tools codepaths.
 
 ## Sources
 

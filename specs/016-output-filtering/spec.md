@@ -1,4 +1,24 @@
+---
+aliases:
+  - Output Filtering
+  - FilterPipeline
+tags:
+  - sdd
+  - spec
+  - tools
+  - security
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[006-tools/spec]]"
+  - "[[010-security/spec]]"
+---
+
 # Spec: Output Filtering
+
+> [!info]
+> FilterPipeline, CommandMatcher, SecurityPatterns; prevents sensitive data leaks in tool output.
 
 ## Sources
 

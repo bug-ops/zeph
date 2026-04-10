@@ -1,4 +1,26 @@
+---
+aliases:
+  - ML Classifiers
+  - Candle Classifiers
+  - Injection Detection
+tags:
+  - sdd
+  - spec
+  - ml
+  - security
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[010-security/spec]]"
+  - "[[015-self-learning/spec]]"
+---
+
 # Spec: ML Classifiers
+
+> [!info]
+> Candle-backed ML classifiers for injection detection and PII detection;
+> lazy-loaded and cached for the session; provides signals for [[010-security/spec|Security Framework]].
 
 ## Overview
 
@@ -23,7 +45,7 @@ trait ClassifierBackend: Send + Sync {
 }
 ```
 
-## Injection Detection (Phase 1)
+## Injection Detection
 
 `CandleClassifier` uses `deberta-v3-small-prompt-injection-v2`:
 - Token-based chunking: 448-token chunks with 64-token overlap
@@ -31,7 +53,7 @@ trait ClassifierBackend: Send + Sync {
 - Special-token labels stripped from `token_labels` before BIO decode
 - `ContentSanitizer::classify_injection()` — async path, separate from sync `sanitize()`
 
-## PII Detection (Phase 2)
+## PII Detection
 
 `CandlePiiClassifier` uses `iiiorg/piiranha-v1-detect-personal-information` (DeBERTa-v2 NER):
 - BIO span extraction with special-token masking

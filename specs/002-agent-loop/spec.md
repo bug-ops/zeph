@@ -1,4 +1,28 @@
+---
+aliases:
+  - Agent Loop
+  - Turn Lifecycle
+  - Context Pressure
+tags:
+  - sdd
+  - spec
+  - core
+  - agent
+  - contract
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[001-system-invariants/spec]]"
+  - "[[003-llm-providers/spec]]"
+  - "[[004-memory/spec]]"
+---
+
 # Spec: Agent Loop
+
+> [!info]
+> Agent main loop, turn lifecycle, context pressure management, and HiAgent subgoal-aware compaction.
+> See [[001-system-invariants/spec#2. Agent Loop Contract]] for invariants.
 
 ## Sources
 

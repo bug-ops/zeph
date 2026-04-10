@@ -1,6 +1,26 @@
+---
+aliases:
+  - RuntimeLayer
+  - Hooks
+  - Middleware
+tags:
+  - sdd
+  - spec
+  - core
+  - hooks
+  - runtime
+  - contract
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[028-hooks/spec]]"
+  - "[[001-system-invariants/spec#15. RuntimeLayer Contract]]"
+  - "[[026-tui-subagent-management/spec]]"
+---
+
 # Spec: RuntimeLayer Middleware
 
-> **Status**: Implemented; updated v0.18.1
 > **Crate**: `zeph-core`
 
 ## 1. Overview
@@ -125,7 +145,7 @@ bootstrap based on enabled features. Multiple layers can be composed via a
 `CompositeLayer` that delegates to a `Vec<Arc<dyn RuntimeLayer>>`.
 
 ```toml
-# No user-facing config.
+# No user-facing config currently.
 # Future: [agent.layers] enabled = ["audit", "metrics"]
 ```
 

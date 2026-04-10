@@ -1,3 +1,22 @@
+---
+aliases:
+  - Complexity Triage
+  - Complexity Routing
+tags:
+  - sdd
+  - spec
+  - routing
+  - llm
+created: 2026-03-23
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[024-multi-model-design/spec]]"
+  - "[[022-config-simplification/spec]]"
+  - "[[003-llm-providers/spec]]"
+  - "[[009-orchestration/spec]]"
+---
+
 # Spec: Complexity Triage Routing
 
 > **Status**: Approved (post-implementation)
@@ -26,7 +45,7 @@ complex, expert), then delegate to the provider configured for that tier.
 - Feedback loop from triage outcome (Thompson Sampling handles that separately).
 - Per-provider `provider_override` — bypassed intentionally; triage constructs
   providers directly from `[[llm.providers]]` by entry name.
-- Phase 4 fallback cascade on misclassification (field reserved:
+- Fallback cascade on misclassification (field reserved:
   `fallback_strategy`, not yet activated).
 - TUI metrics panel integration for triage counters (tracked separately).
 
@@ -104,7 +123,7 @@ All counters: `AtomicU64`, `Ordering::Relaxed`. Fields:
 | `tiers` | `TierMapping` | all `None` | Per-tier provider name mapping |
 | `max_triage_tokens` | `u32` | `50` | Max output tokens for the classification call |
 | `triage_timeout_secs` | `u64` | `5` | Timeout for the classification call |
-| `fallback_strategy` | `Option<String>` | `None` | Reserved for Phase 4; currently unused |
+| `fallback_strategy` | `Option<String>` | `None` | Reserved for future use; currently unused |
 
 ### `TierMapping` (struct, `zeph-config`)
 
@@ -279,7 +298,7 @@ without pinning.
 
 ### Ask First
 - Adding new `ComplexityTier` variants (affects serialization and all match arms)
-- Adding Phase 4 cascade fallback activation
+- Activating cascade fallback feature
 - Exposing triage metrics in the TUI panel
 
 ### Never

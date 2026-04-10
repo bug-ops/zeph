@@ -1,4 +1,32 @@
+---
+aliases:
+  - System Invariants
+  - Zeph Invariants
+  - System Contracts
+tags:
+  - sdd
+  - spec
+  - architecture
+  - invariants
+  - system-wide
+  - contract
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[constitution]]"
+  - "[[002-agent-loop/spec]]"
+  - "[[003-llm-providers/spec]]"
+  - "[[006-tools/spec]]"
+  - "[[020-config-loading/spec]]"
+---
+
 # Spec: Zeph System Invariants
+
+> [!abstract]
+> Non-negotiable architectural constraints extracted from the codebase.
+> Any change that violates these invariants requires explicit architectural decision,
+> not just a code review. This document is the authoritative reference for coding agents.
 
 ## Sources
 

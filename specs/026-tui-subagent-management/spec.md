@@ -1,6 +1,23 @@
+---
+aliases:
+  - TUI Subagent Management
+  - Subagent Sidebar
+tags:
+  - sdd
+  - spec
+  - tui
+  - agents
+created: 2026-03-29
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[011-tui/spec]]"
+  - "[[033-subagent-context-propagation/spec]]"
+  - "[[027-runtime-layer/spec]]"
+---
+
 # Feature: TUI Subagent Management
 
-> **Status**: Implemented
 > **Author**: rust-architect
 > **Date**: 2026-03-29 (updated 2026-03-29)
 > **Spec**: 026

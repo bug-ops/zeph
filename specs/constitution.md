@@ -1,3 +1,18 @@
+---
+aliases:
+  - Project Principles
+  - Zeph Constitution
+tags:
+  - sdd
+  - constitution
+  - project-wide
+created: 2026-04-08
+status: permanent
+related:
+  - "[[MOC-specs]]"
+  - "[[001-system-invariants/spec]]"
+---
+
 # Project Constitution — Zeph
 
 > Non-negotiable principles governing ALL development in this project.

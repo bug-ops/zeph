@@ -1,4 +1,24 @@
+---
+aliases:
+  - HTTP Gateway
+  - Webhook Gateway
+tags:
+  - sdd
+  - spec
+  - gateway
+  - http
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[007-channels/spec]]"
+---
+
 # Spec: HTTP Gateway
+
+> [!info]
+> Webhook ingestion with bearer token authentication;
+> zeph-gateway crate for incoming event integration.
 
 ## Sources
 

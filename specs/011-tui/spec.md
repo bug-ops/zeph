@@ -1,4 +1,28 @@
+---
+aliases:
+  - TUI Dashboard
+  - TUI Interface
+  - ratatui Dashboard
+tags:
+  - sdd
+  - spec
+  - tui
+  - ui
+  - contract
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[007-channels/spec]]"
+  - "[[026-tui-subagent-management/spec]]"
+  - "[[030-tui-slash-autocomplete/spec]]"
+---
+
 # Spec: TUI Dashboard
+
+> [!info]
+> ratatui-based dashboard, spinner rule for all background operations,
+> visible status indicators, RenderCache for memory efficiency.
 
 ## Sources
 

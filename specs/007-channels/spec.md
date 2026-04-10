@@ -1,4 +1,27 @@
+---
+aliases:
+  - Multi-Channel I/O
+  - Channel System
+  - AnyChannel
+tags:
+  - sdd
+  - spec
+  - channels
+  - io
+  - contract
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[001-system-invariants/spec#1. Channel Contract]]"
+  - "[[011-tui/spec]]"
+---
+
 # Spec: Multi-Channel I/O
+
+> [!info]
+> Channel trait, AnyChannel dispatch, streaming support, feature parity across channels
+> (CLI, Telegram, TUI, Discord, Slack); single I/O boundary for all I/O modes.
 
 ## Sources
 

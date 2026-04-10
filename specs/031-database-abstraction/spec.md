@@ -1,7 +1,26 @@
+---
+aliases:
+  - Database Abstraction
+  - PostgreSQL Backend
+  - zeph-db Crate
+tags:
+  - sdd
+  - spec
+  - database
+  - persistence
+  - postgres
+  - infra
+created: 2026-03-28
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[004-memory/spec]]"
+  - "[[018-scheduler/spec]]"
+  - "[[001-system-invariants/spec#13. Database Backend Contract]]"
+---
+
 # Database Abstraction Layer: Multi-Backend Support (SQLite + PostgreSQL)
 
-> **Status**: Phase 1-3 Implemented; Phase 4+ planned
-> **Date**: 2026-03-28 (updated 2026-03-29)
 > **Scope**: Cross-cutting (zeph-memory, zeph-scheduler, zeph-mcp, zeph-orchestration, zeph-index, zeph-core)
 
 ## 1. Problem Statement
@@ -30,7 +49,7 @@ business logic.
 
 - MySQL/MariaDB support.
 - Multi-database routing (read replicas, sharding).
-- Online migration between backends (export/import tooling is future work).
+- Online migration between backends.
 - Changing the Qdrant integration (vector store remains separate).
 
 ---
@@ -601,9 +620,7 @@ impl FullDriver for crate::driver::PostgresDriver {}
 ```
 
 **Migration path**: The type aliases (`DbStore`, `SqliteStore`) ensure that
-existing consumer code compiles unchanged during Phase 1. In Phase 2, consumer
-crates progressively adopt `Store<D>` generics where multi-backend support is
-needed.
+existing consumer code compiles unchanged. Consumer crates progressively adopt `Store<D>` generics where multi-backend support is needed.
 
 ### 4.4.5 `VectorStore` Generics
 
@@ -850,7 +867,7 @@ locations in `skills.rs` (skill trust score updates) rely on write-exclusion
 semantics to prevent lost updates. On PostgreSQL, the equivalent pattern is
 `SELECT ... FOR UPDATE` inside the transaction to acquire a row-level lock before
 reading and updating the trust score. This is a **required implementation note
-for Phase 2**: every `begin_write()` call site in `skills.rs` must be rewritten to
+required**: every `begin_write()` call site in `skills.rs` must be rewritten to
 use `SELECT skill_name, trust_score FROM skill_trust WHERE skill_name = $1 FOR UPDATE`
 before the subsequent `UPDATE` statement. Without this, concurrent trust score
 updates produce a lost-update race under PostgreSQL's default READ COMMITTED
@@ -1243,7 +1260,7 @@ async fn search_fts(&self, query: &str) -> Result<Vec<Message>, MemoryError> {
 
 ## 10. Implementation Plan
 
-### Phase 1: Foundation (non-breaking)
+### Foundation Stage (non-breaking)
 
 **Goal**: Introduce `zeph-db` crate and migrate `SqliteStore` to use it, with zero
 behavioral changes for existing SQLite users.
@@ -1274,7 +1291,7 @@ behavioral changes for existing SQLite users.
 
 **Estimated scope**: ~1500 LOC changes, mostly mechanical `use` statement updates.
 
-### Phase 2: PostgreSQL Backend
+### PostgreSQL Backend Stage
 
 **Goal**: Add PostgreSQL support behind the `postgres` feature flag.
 
@@ -1301,7 +1318,7 @@ behavioral changes for existing SQLite users.
 
 **Estimated scope**: ~2000 LOC new code, ~500 LOC modifications.
 
-### Phase 3: Config and Tooling
+### Config and Tooling Stage
 
 **Goal**: Complete the user-facing integration.
 
@@ -1339,7 +1356,7 @@ per backend.
 
 **Amendment [2026-03-28]**: For PostgreSQL, the two `BEGIN IMMEDIATE` locations in
 `skills.rs` **must** use `SELECT ... FOR UPDATE` to acquire a row-level lock before
-reading and updating skill trust scores. This is a required Phase 2 implementation
+reading and updating skill trust scores. This is a required implementation
 step, not an audit item. Without `FOR UPDATE`, concurrent trust score updates
 produce a lost-update race under PostgreSQL's default READ COMMITTED isolation
 (agent A and B both read trust_score = 0.8, then A writes 0.85, B overwrites to
@@ -1403,7 +1420,7 @@ must use `$N` placeholders directly.
 **Risk**: Renaming `SqliteStore` and changing pool types breaks downstream code
 in `zeph-core` that references `SqliteStore` directly.
 
-**Mitigation**: Phase 1 provides a type alias `pub type SqliteStore = DbStore` for
+**Mitigation**: A type alias `pub type SqliteStore = DbStore` provides
 backward compatibility. Callers are migrated incrementally. The alias is removed
 after all callers are updated (separate PR).
 
@@ -1511,8 +1528,8 @@ only valid when `database_backend = "sqlite"`.
 
 - **[NEEDS CLARIFICATION: schema convergence for scheduler/mcp]** The scheduler
   and MCP crates use inline `CREATE TABLE IF NOT EXISTS` instead of migrations.
-  Should Phase 1 consolidate these into the `zeph-db` migration pipeline, or
-  leave them as-is and only consolidate in Phase 2?
+  Should these be consolidated into the `zeph-db` migration pipeline, or
+  left as-is for now?
 
 ---
 
@@ -1530,7 +1547,7 @@ All PostgreSQL integration tests are gated with `#[ignore]` and run via:
 cargo nextest run --config-file .github/nextest.toml -p zeph-db --features postgres --ignored
 ```
 
-CI adds a separate job (see Phase 3, step 5) that runs these tests against a service
+CI adds a separate job that runs these tests against a service
 container or Docker-in-Docker.
 
 ### 16.2 Dependencies
@@ -2055,13 +2072,13 @@ Every table gains an `agent_id` column. The column semantics depend on isolation
 - **Isolated tables**: `agent_id TEXT NOT NULL` — every row belongs to exactly one agent.
 - **Shared tables**: `agent_id TEXT` (nullable) — `NULL` means the row is global/shared.
 
-The migration (numbered `050_agent_identity.sql`) is part of Phase 2 of the DB
+The migration (numbered `050_agent_identity.sql`) is part of the DB
 abstraction plan. It runs during the same release that introduces `zeph-db`.
 
 #### 18.4.2 SQLite Migration
 
 ```sql
--- Migration 050: Agent identity for multi-agent deployments.
+-- Agent identity for multi-agent deployments.
 --
 -- For SQLite (single-agent), all existing rows get agent_id = 'default'.
 -- The DEFAULT clause ensures new rows also get 'default' without code changes.
@@ -2146,7 +2163,7 @@ ALTER TABLE graph_edges    ADD COLUMN source_agent_id TEXT DEFAULT NULL;
 #### 18.4.3 PostgreSQL Migration
 
 ```sql
--- Migration 050: Agent identity for multi-agent deployments (PostgreSQL variant).
+-- Agent identity for multi-agent deployments (PostgreSQL variant).
 
 -- Isolated tables
 ALTER TABLE conversations         ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default';
@@ -2696,16 +2713,9 @@ leaking private data across tenants.
 2. **Code review convention**: All new queries must go through `AgentScope`.
    Direct pool access is reserved for `GlobalScope` (admin operations).
 
-3. **Clippy lint (future)**: A custom clippy lint or `#[deny(direct_pool_access)]`
-   attribute macro that flags `.pool()` usage outside whitelisted modules.
-
-4. **Integration test**: Add a test that introspects all SQL query strings in the
+3. **Integration test**: Add a test that introspects all SQL query strings in the
    codebase (via a build script or grep) and asserts that every query touching an
    isolated table contains `agent_id`.
-
-5. **PostgreSQL Row-Level Security (future, optional)**: For high-security deployments,
-   enable RLS policies on isolated tables that enforce `agent_id = current_setting('app.agent_id')`.
-   This is a server-side safety net independent of application logic.
 
 #### 18.9.4 Cross-Agent Operations
 
@@ -2728,16 +2738,16 @@ deployments, generate IDs from a namespace (e.g., `team-${KUBERNETES_POD_NAME}`)
 No runtime enforcement of uniqueness — this is an operational concern, not a
 database constraint.
 
-#### 18.9.6 Migration Ordering with Phase 1/2 Split
+#### 18.9.6 Migration Ordering
 
-**Risk**: Migration 050 depends on tables created by the original 49 migrations.
-If the DB abstraction Phase 1 (moving migrations to `zeph-db`) and Phase 2
+**Risk**: Agent identity migration depends on tables created by the original 49 migrations.
+If the DB abstraction (moving migrations to `zeph-db`) and subsequent
 (PostgreSQL + agent identity) are separate releases, the migration numbering must
 be coordinated.
 
-**Mitigation**: Agent identity migration (050) ships as part of Phase 2, after
+**Mitigation**: Agent identity migration (050) ships after
 all 49 migrations are successfully ported to both backends. The migration number
-is reserved in Phase 1 (an empty `050_reserved_agent_identity.sql` placeholder)
+is reserved initially (an empty `050_reserved_agent_identity.sql` placeholder)
 to prevent number conflicts.
 
 ### 18.10 Key Invariants
@@ -2782,7 +2792,7 @@ critic-review-1.md, perf-review-1.md, security-review-1.md.
 | 2 | 18.3, 18.5 | C2 (critic) | Added shared-to-isolated transition requirements: data migration SQL, startup warning for NULL rows, optional transitional `WHERE (agent_id = ? OR agent_id IS NULL)` query mode. |
 | 3 | 18.4.3 | S5 (critic) | Replaced all `CREATE INDEX CONCURRENTLY` with regular `CREATE INDEX` in migration DDL. Added note that concurrent index creation requires manual out-of-band execution. |
 | 4 | 4.6, 6.1 | F1 (perf) | Added `write_pool_size` to `DbConfig` (default 1, SQLite only) to prevent `SQLITE_BUSY` stalls from competing writers in a unified pool. |
-| 5 | 4.7, 11.2 | F8 (perf) | Mandated `SELECT ... FOR UPDATE` on PostgreSQL for skill trust score updates (the two `BEGIN IMMEDIATE` locations). Changed from audit item to required Phase 2 implementation step. |
+| 5 | 4.7, 11.2 | F8 (perf) | Mandated `SELECT ... FOR UPDATE` on PostgreSQL for skill trust score updates (the two `BEGIN IMMEDIATE` locations). Required implementation step. |
 | 6 | 4.6, 6.1, 6.2 | F-01 (security) | Added `redact_url()` helper requirement, `DbError::Connection` stores redacted URL only, `ZEPH_DATABASE_URL` as canonical vault key, startup warning for inline credentials, `RedactFilter` regex extension. |
 | 7 | 18.5, 12 | S3 (critic), F-02 (security) | `GlobalScope::new()` changed to `pub(crate)`. `AgentScope::pool()` marked `#[doc(hidden)]` + `#[deprecated]`. Added Key Invariant #8. Added `tracing::warn!` on `GlobalScope` construction. |
 
@@ -2828,11 +2838,11 @@ struct with proper Rust generics and traits.
 
 ---
 
-## 20. v0.18.0 Implementation State
+## 20. Implementation State
 
 > **Updated**: 2026-03-29
 
-### Phase 1 — Foundation: Implemented
+### Foundation Stage: Implemented
 
 - `zeph-db` crate created at `crates/zeph-db/`
 - `DatabaseDriver` trait, `Dialect` trait, `SqliteDriver`, `PostgresDriver` implemented
@@ -2842,16 +2852,16 @@ struct with proper Rust generics and traits.
 - `zeph-memory`, `zeph-scheduler`, `zeph-mcp`, `zeph-orchestration` depend on `zeph-db`
 - `SqliteStore` → `DbStore` rename with backward-compatible alias
 
-### Phase 2 — PostgreSQL Backend: Implemented
+### PostgreSQL Backend Stage: Implemented
 
 - 52 PostgreSQL migrations in `crates/zeph-db/migrations/postgres/`
-  (49 base + 3 for agent identity and new v0.18.0 tables)
+  (49 base + 3 for agent identity and related tables)
 - `postgres` feature flag wired through workspace
 - PostgreSQL FTS (`tsvector`/`tsquery`/GIN) implemented in `fts.rs`
 - `begin_write()` uses `SELECT ... FOR UPDATE` on PostgreSQL for skill trust updates
 - Integration tests with testcontainers behind `#[ignore]` flag
 
-### Phase 3 — Config and Tooling: Implemented
+### Config and Tooling Stage: Implemented
 
 - `MemoryConfig::database_url` field added (replaces `sqlite_path`, migration alias provided)
 - `database_backend = "sqlite" | "postgres"` config toggle in `[memory]`
@@ -2864,9 +2874,3 @@ struct with proper Rust generics and traits.
   - `POSTGRES_USER=zeph`
   - `POSTGRES_PASSWORD=zeph`
   - `DATABASE_URL=postgres://zeph:zeph@localhost:5432/zeph_test`
-
-### Phases 4+ — Remaining
-
-- Agent identity (`agent_id` columns, migration 050) — planned
-- `pgvector` integration for PostgreSQL-native vector storage — planned
-- CI PostgreSQL matrix job — planned

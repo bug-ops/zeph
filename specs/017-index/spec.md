@@ -1,4 +1,25 @@
+---
+aliases:
+  - Code Index
+  - Code Indexing
+  - Semantic Retrieval
+tags:
+  - sdd
+  - spec
+  - index
+  - code
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[004-memory/spec]]"
+---
+
 # Spec: Code Index
+
+> [!info]
+> AST-based code indexing, semantic retrieval, repo map generation;
+> enables code-aware context injection in [[004-memory/spec|Memory Pipeline]].
 
 ## Sources
 

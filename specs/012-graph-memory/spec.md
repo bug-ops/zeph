@@ -1,4 +1,25 @@
+---
+aliases:
+  - Graph Memory
+  - Entity Graph
+  - Knowledge Graph
+tags:
+  - sdd
+  - spec
+  - memory
+  - graph
+created: 2026-04-08
+status: approved
+related:
+  - "[[MOC-specs]]"
+  - "[[004-memory/spec]]"
+---
+
 # Spec: Graph Memory
+
+> [!info]
+> Entity graph with BFS recall, community detection, MAGMA typed edges,
+> SYNAPSE spreading activation; works with [[004-memory/spec|Memory Pipeline]].
 
 ## Sources
 
@@ -118,9 +139,7 @@ The background extraction must **not block the agent loop**.
 
 ---
 
-## MAGMA: Multi-Graph Memory with Typed Edges
-
-PR #2077. `crates/zeph-memory/src/graph/types.rs`, `store.rs`, `retrieval.rs`, `extractor.rs`.
+## MAGMA: Multi-Graph Memory with Typed Edges. `crates/zeph-memory/src/graph/types.rs`, `store.rs`, `retrieval.rs`, `extractor.rs`.
 
 ### Overview
 
@@ -167,9 +186,7 @@ Known issue (#2079): LLM sometimes returns `"technology"` as an `EntityType`, wh
 
 ---
 
-## SYNAPSE: Spreading Activation Retrieval
-
-PR #2080. `crates/zeph-memory/src/graph/activation.rs`, `semantic/graph.rs`.
+## SYNAPSE: Spreading Activation Retrieval. `crates/zeph-memory/src/graph/activation.rs`, `semantic/graph.rs`.
 
 ### Overview
 
@@ -178,11 +195,11 @@ SYNAPSE (from arXiv 2601.02744) implements spreading activation over the entity 
 ### Algorithm
 
 ```
-Phase 1: Seed initialization
+Seed initialization:
   - Seeds come from fuzzy entity search on query (same as BFS)
   - Seeds with match_score < activation_threshold are skipped
 
-Phase 2: Iterative propagation (for hop in 0..max_hops):
+Iterative propagation (for hop in 0..max_hops):
   - Active nodes (score >= activation_threshold) propagate to neighbors
   - Spread formula: spread = node_score × decay_lambda × edge.confidence × recency_weight
   - recency_weight = 1 / (1 + age_days × temporal_decay_rate)  [SA-INV-05]
@@ -190,7 +207,7 @@ Phase 2: Iterative propagation (for hop in 0..max_hops):
   - Clamped sum: entry.score = min(1.0, existing + spread_value)  [multi-path convergence]
   - Per-hop pruning: if |activation| > max_activated_nodes → keep top-N by score  [SA-INV-04]
 
-Phase 3: Collect nodes above activation_threshold, sorted descending
+Collect nodes above activation_threshold, sorted descending
 ```
 
 ### Parameters (`SpreadingActivationConfig`)
@@ -282,9 +299,7 @@ seed_community_cap = 3         # max seeds per community
 
 Issue #2163. Per-edge retrieval tracking with temporal decay.
 
-### Schema
-
-Migration 043 adds `retrieval_count` and `last_retrieved_at` to the edges table.
+### Schema adds `retrieval_count` and `last_retrieved_at` to the edges table.
 
 ### Weight Boost
 
