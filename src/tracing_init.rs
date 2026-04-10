@@ -51,7 +51,7 @@ fn resolve_log_path(
 /// - optional file layer controlled by `logging.file` / `logging.level`
 /// - optional Chrome JSON trace layer when `profiling` feature is enabled and
 ///   `telemetry.enabled = true` with `backend = "local"`
-/// - optional [`MetricsBridge`] layer when `profiling` feature is enabled and
+/// - optional `MetricsBridge` layer when `profiling` feature is enabled and
 ///   `metrics_collector` is `Some`
 ///
 /// The CLI override and env vars must already be applied to `logging` before calling.
