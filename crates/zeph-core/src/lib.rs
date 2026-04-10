@@ -4,7 +4,7 @@
 //! Zeph core agent: multi-model inference, semantic memory, skills orchestration, and tool execution.
 //!
 //! This crate provides the [`Agent`] struct — the autonomous AI system at the heart of Zeph.
-//! It integrates LLM providers (Claude, OpenAI, Ollama, Candle), semantic memory (Qdrant),
+//! It integrates LLM providers (Claude, `OpenAI`, Ollama, Candle), semantic memory (Qdrant),
 //! skill registry and matching, tool execution (shell, web, custom), MCP client support, and
 //! security/compliance subsystems into a single composable agent framework.
 //!

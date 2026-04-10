@@ -117,7 +117,7 @@ pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
 /// # Architecture
 ///
 /// - **Message state**: Conversation history with system prompt, message queue, and metadata
-/// - **Memory state**: SQLite + Qdrant vector store for semantic search and compaction
+/// - **Memory state**: `SQLite` + Qdrant vector store for semantic search and compaction
 /// - **Skill state**: Registry, matching engine, and self-learning evolution
 /// - **Context manager**: Token budgeting, context assembly, and summarization
 /// - **Tool orchestrator**: DAG-based multi-tool execution with streaming output
@@ -180,7 +180,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// # Arguments
     ///
-    /// * `provider` — Multi-model LLM provider (Claude, OpenAI, Ollama, Candle)
+    /// * `provider` — Multi-model LLM provider (Claude, `OpenAI`, Ollama, Candle)
     /// * `channel` — I/O abstraction for user interaction (CLI, Telegram, TUI, etc.)
     /// * `registry` — Skill registry; moved into an internal `Arc<RwLock<_>>` for sharing
     /// * `matcher` — Optional semantic skill matcher (e.g., Qdrant, BM25). If `None`,

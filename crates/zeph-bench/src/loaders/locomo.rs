@@ -26,7 +26,7 @@ struct LocomoQa {
 
 /// Loads LOCOMO benchmark scenarios from a JSON file.
 ///
-/// **Source**: [`lmlab/locomo`](https://huggingface.co/datasets/lmlab/locomo) on HuggingFace.
+/// **Source**: [`lmlab/locomo`](https://huggingface.co/datasets/lmlab/locomo) on `HuggingFace`.
 ///
 /// **Schema**: the file is a JSON array of session objects:
 /// ```json

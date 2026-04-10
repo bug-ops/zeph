@@ -3,7 +3,7 @@
 
 //! Markdown-to-Telegram conversion and UTF-8-safe message chunking.
 //!
-//! Telegram's `MarkdownV2` format differs from CommonMark in several ways:
+//! Telegram's `MarkdownV2` format differs from `CommonMark` in several ways:
 //! bold uses a single `*`, italic uses `_`, and all 19 special characters
 //! must be escaped with `\` in regular text.  This module handles both the
 //! format conversion and the 4096-byte message-length limit.
@@ -26,7 +26,7 @@ const SPECIAL_CHARS: &[char] = &[
 ///
 /// # Formatting conversions
 ///
-/// | Markdown | Telegram MarkdownV2 | Note |
+/// | Markdown | Telegram `MarkdownV2` | Note |
 /// |----------|---------------------|------|
 /// | `**bold**` | `*bold*` | single asterisk |
 /// | `*italic*` | `_italic_` | underscore |

@@ -52,7 +52,7 @@ pub struct TemplateTask {
 /// agent hints). All runtime state (`status`, `results`, `retry_count`,
 /// `assigned_agent`, timestamps) is stripped.
 ///
-/// Stored as JSON in the `plan_cache` SQLite table. Adapted by an LLM call when
+/// Stored as JSON in the `plan_cache` `SQLite` table. Adapted by an LLM call when
 /// a semantically similar goal arrives via [`plan_with_cache`].
 ///
 /// # Examples
@@ -216,7 +216,7 @@ fn unix_now() -> i64 {
 /// callers should log the error and fall back to full LLM decomposition.
 #[derive(Debug, thiserror::Error)]
 pub enum PlanCacheError {
-    /// A SQLite query failed.
+    /// A `SQLite` query failed.
     #[error("database error: {0}")]
     Database(#[from] zeph_db::SqlxError),
     /// JSON serialization or deserialization of a plan template failed.

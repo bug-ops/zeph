@@ -71,7 +71,7 @@ pub type ProviderFactory = Arc<dyn Fn(&str) -> Option<AnyProvider> + Send + Sync
 pub struct SessionContext {
     /// ACP-assigned session identifier.
     pub session_id: acp::SessionId,
-    /// SQLite conversation ID for persisting message history, if available.
+    /// `SQLite` conversation ID for persisting message history, if available.
     pub conversation_id: Option<ConversationId>,
     /// Working directory reported by the IDE for this session.
     pub working_dir: PathBuf,

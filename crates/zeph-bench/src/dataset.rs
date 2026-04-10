@@ -47,7 +47,7 @@ pub struct DatasetMeta {
     pub name: &'static str,
     /// One-line human-readable description.
     pub description: &'static str,
-    /// Canonical download URL (HuggingFace, GitHub, etc.).
+    /// Canonical download URL (`HuggingFace`, GitHub, etc.).
     pub url: &'static str,
     /// File format expected by the corresponding [`crate::DatasetLoader`].
     pub format: DatasetFormat,
@@ -63,11 +63,11 @@ pub struct DatasetMeta {
 ///
 /// | Name | Format | Source |
 /// |------|--------|--------|
-/// | `longmemeval` | JSONL | HuggingFace xiaowu0162/longmemeval |
-/// | `locomo` | JSON | HuggingFace lmlab/locomo |
-/// | `frames` | JSONL | HuggingFace google/frames-benchmark |
+/// | `longmemeval` | JSONL | `HuggingFace` xiaowu0162/longmemeval |
+/// | `locomo` | JSON | `HuggingFace` lmlab/locomo |
+/// | `frames` | JSONL | `HuggingFace` google/frames-benchmark |
 /// | `tau-bench` | JSON | GitHub sierra-research/tau-bench |
-/// | `gaia` | JSONL | HuggingFace gaia-benchmark/GAIA |
+/// | `gaia` | JSONL | `HuggingFace` gaia-benchmark/GAIA |
 ///
 /// # Examples
 ///

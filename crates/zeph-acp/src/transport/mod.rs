@@ -119,7 +119,7 @@ pub struct AcpServerConfig {
     pub title_max_chars: usize,
     /// Maximum number of sessions returned by list endpoints (0 = unlimited).
     pub max_history: usize,
-    /// Path to the SQLite database for ACP session persistence.
+    /// Path to the `SQLite` database for ACP session persistence.
     ///
     /// When set, the agent persists session events and loads conversation history
     /// from this database. When `None`, sessions are in-memory only.

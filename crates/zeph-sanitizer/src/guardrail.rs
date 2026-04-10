@@ -541,6 +541,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires tokio_unstable feature for tokio::time::pause and advance"]
     async fn check_timeout_closed_strategy() {
         // Use tokio::time::pause() + advance() to simulate timeout without wall-clock wait.
         tokio::time::pause();
@@ -570,6 +571,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires tokio_unstable feature for tokio::time::pause and advance"]
     async fn check_timeout_open_strategy() {
         tokio::time::pause();
         let config = GuardrailConfig {

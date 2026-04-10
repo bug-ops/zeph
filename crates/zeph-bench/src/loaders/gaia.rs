@@ -29,7 +29,7 @@ struct GaiaRecord {
 /// Loads GAIA benchmark scenarios from a JSONL file with an optional level filter.
 ///
 /// **Source**: [`gaia-benchmark/GAIA`](https://huggingface.co/datasets/gaia-benchmark/GAIA)
-/// on HuggingFace.
+/// on `HuggingFace`.
 ///
 /// **Schema**: one JSON object per line:
 /// ```json

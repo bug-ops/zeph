@@ -25,7 +25,7 @@ struct FramesRecord {
 /// Loads FRAMES benchmark scenarios from a JSONL file.
 ///
 /// **Source**: [`google/frames-benchmark`](https://huggingface.co/datasets/google/frames-benchmark)
-/// on HuggingFace.
+/// on `HuggingFace`.
 ///
 /// **Schema**: one JSON object per line:
 /// ```json

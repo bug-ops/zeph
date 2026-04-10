@@ -100,7 +100,7 @@ pub struct Aggregate {
 
 /// Top-level benchmark run record written to `results.json`.
 ///
-/// The schema is a superset of the LongMemEval leaderboard submission format (NFR-008),
+/// The schema is a superset of the `LongMemEval` leaderboard submission format (NFR-008),
 /// making it directly usable for leaderboard submission after a `longmemeval` run.
 ///
 /// Create a default instance, then populate [`BenchRun::results`] incrementally and

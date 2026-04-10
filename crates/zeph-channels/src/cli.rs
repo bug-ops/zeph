@@ -311,7 +311,7 @@ impl CliChannel {
 
     /// Create a CLI channel with persistent input history.
     ///
-    /// `entries` is a pre-loaded history list (e.g. loaded from SQLite on
+    /// `entries` is a pre-loaded history list (e.g. loaded from `SQLite` on
     /// startup).  `persist_fn` is called for each newly submitted entry so the
     /// caller can persist it (e.g. via `SqliteStore::save_input_entry`).
     ///
