@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Profiling and tracing Phase 1: foundation** (`#2847`, `#2848`, `#2849`, `#2850`, epic `#2846`):
+  added two-tier telemetry backend with zero overhead when disabled. New `[telemetry]` config
+  section with `TelemetryConfig` / `TelemetryBackend` (local chrome JSON or OTLP); config
+  migrated automatically from old `[observability]` fields via `--migrate-config`; `--init` wizard
+  updated. Added `profiling`, `profiling-alloc`, and `profiling-pyroscope` feature flags to
+  workspace; `profiling` propagated to all 7 leaf crates and included in `full`. When
+  `profiling` feature and `telemetry.enabled=true`: `init_tracing()` builds a `tracing-chrome`
+  layer writing `{trace_dir}/{session_id}_{timestamp}.json` (viewable in Perfetto UI) or an OTLP
+  layer. Instrumented 5 agent turn phases (`agent.turn`, `agent.prepare_context`,
+  `agent.process_response`, `agent.tool_loop`, `agent.persist_message`) and `chat()`,
+  `chat_stream()`, `embed()` on all 5 LLM providers with `llm.chat`, `llm.chat_stream`,
+  `llm.embed` spans. All instrumentation uses `#[cfg_attr(feature = "profiling", ...)]` — zero
+  binary overhead without the feature flag.
+
 ### Performance
 
 - **Budget-first context assembly** (`#2817`): `prepare_context` now skips zero-budget context
