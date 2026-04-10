@@ -14,7 +14,7 @@ use crate::task::TaskHandler;
 const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/bug-ops/zeph/releases/latest";
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
-/// [`TaskHandler`](crate::TaskHandler) that polls the GitHub releases API for a newer Zeph version.
+/// [`TaskHandler`] that polls the GitHub releases API for a newer Zeph version.
 ///
 /// On each execution, `UpdateCheckHandler` fetches the latest release from
 /// `https://api.github.com/repos/bug-ops/zeph/releases/latest`, compares the

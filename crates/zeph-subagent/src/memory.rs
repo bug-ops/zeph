@@ -8,7 +8,7 @@
 //! can recall information across sessions.
 //!
 //! Security guarantees:
-//! - Directory paths are validated against [`AGENT_NAME_RE`][super::def::AGENT_NAME_RE]
+//! - Directory paths are validated against [`AGENT_NAME_RE`]
 //!   to prevent path traversal.
 //! - `MEMORY.md` is canonicalized and boundary-checked before reading (symlink escape guard).
 //! - Files larger than 256 KiB or containing null bytes are rejected.

@@ -193,7 +193,7 @@ impl A2aServer {
     ///
     /// # Errors
     ///
-    /// Returns [`A2aError::Server`](crate::A2aError::Server) if the TCP listener fails to
+    /// Returns [`A2aError::Server`] if the TCP listener fails to
     /// bind or if the axum server encounters a fatal I/O error during operation.
     pub async fn serve(self) -> Result<(), A2aError> {
         if self.auth_token.is_none() {

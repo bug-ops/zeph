@@ -12,7 +12,7 @@
 //!
 //! 1. **`memory_save` tool** — validates raw text before `SQLite` + Qdrant write.
 //!    Checks size limit and forbidden content patterns.
-//! 2. **Graph extraction** — validates [`ExtractionResult`](zeph_memory::graph::extractor::ExtractionResult)
+//! 2. **Graph extraction** — validates [`ExtractionResult`]
 //!    after `GraphExtractor::extract()` returns. Checks entity count, edge count,
 //!    entity name length, fact text length, and PII in entity names.
 

@@ -25,7 +25,7 @@ pub struct AnchoredSummary {
     /// Each entry is a path or qualified name.
     pub files_modified: Vec<String>,
     /// Architectural or implementation decisions made, with rationale.
-    /// Format: "Decision: <what> — Reason: <why>".
+    /// Format: "Decision: `<what>` — Reason: `<why>`".
     pub decisions_made: Vec<String>,
     /// Unresolved questions, ambiguities, or blocked items.
     pub open_questions: Vec<String>,
