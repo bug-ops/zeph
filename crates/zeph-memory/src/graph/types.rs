@@ -137,7 +137,7 @@ impl FromStr for EntityType {
 /// Entities are the nodes; [`Edge`]s connect them with typed, factual relationships.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entity {
-    /// SQLite row ID.
+    /// `SQLite` row ID.
     pub id: i64,
     /// Raw extracted name as it appeared in the source text.
     pub name: String,
@@ -158,7 +158,7 @@ pub struct Entity {
 /// An alternative name or spelling for an [`Entity`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntityAlias {
-    /// SQLite row ID.
+    /// `SQLite` row ID.
     pub id: i64,
     /// The entity this alias resolves to.
     pub entity_id: i64,
@@ -201,7 +201,7 @@ pub struct Edge {
 /// Communities provide coarse-grained grouping for graph eviction and summarization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Community {
-    /// SQLite row ID.
+    /// `SQLite` row ID.
     pub id: i64,
     /// Short name for the community (e.g. `"Rust toolchain"`).
     pub name: String,
@@ -259,7 +259,7 @@ pub struct GraphFact {
     pub hop_distance: u32,
     /// Edge confidence in `[0, 1]`.
     pub confidence: f32,
-    /// SQLite datetime string when the edge became valid (e.g. `"2026-03-14 12:00:00"`).
+    /// `SQLite` datetime string when the edge became valid (e.g. `"2026-03-14 12:00:00"`).
     /// Used for optional temporal recency scoring. `None` when not populated.
     pub valid_from: Option<String>,
     /// MAGMA edge classification for this fact.

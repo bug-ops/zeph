@@ -16,7 +16,7 @@
 //!
 //! # Hybrid recall
 //!
-//! Recall uses reciprocal-rank fusion of BM25 (SQLite FTS5) and cosine-similarity
+//! Recall uses reciprocal-rank fusion of BM25 (`SQLite` FTS5) and cosine-similarity
 //! (Qdrant) results, with optional temporal decay, MMR diversity reranking, and
 //! per-tier score boosts.
 
@@ -78,7 +78,7 @@ pub use tree_consolidation::{
 };
 pub use write_buffer::{BufferedWrite, WriteBuffer};
 
-/// High-level semantic memory orchestrator combining SQLite and Qdrant.
+/// High-level semantic memory orchestrator combining `SQLite` and Qdrant.
 ///
 /// Instantiate via [`SemanticMemory::new`] or the `AppBuilder` integration.
 /// All fields are `pub(crate)` — callers interact through the inherent method API.

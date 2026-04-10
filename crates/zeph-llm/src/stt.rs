@@ -4,7 +4,7 @@
 //! Speech-to-text (STT) abstraction and result type.
 //!
 //! The [`SpeechToText`] trait is implemented by any backend that can transcribe
-//! audio bytes into text: OpenAI Whisper API, local Candle Whisper, etc.
+//! audio bytes into text: `OpenAI` Whisper API, local `Candle` Whisper, etc.
 
 use std::future::Future;
 use std::pin::Pin;

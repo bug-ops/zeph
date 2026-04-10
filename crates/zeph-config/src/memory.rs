@@ -677,7 +677,7 @@ impl VectorBackend {
 
 /// Memory subsystem configuration, nested under `[memory]` in TOML.
 ///
-/// Controls SQLite and Qdrant storage, semantic recall, context compaction,
+/// Controls `SQLite` and Qdrant storage, semantic recall, context compaction,
 /// multi-tier promotion, and all memory-related background tasks.
 ///
 /// # Example (TOML)

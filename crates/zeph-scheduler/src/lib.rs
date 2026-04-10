@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Cron-based periodic task scheduler with SQLite persistence.
+//! Cron-based periodic task scheduler with `SQLite` persistence.
 //!
 //! `zeph-scheduler` drives time-based work inside the Zeph agent. It supports two
 //! task execution modes:
@@ -71,9 +71,9 @@
 //! Send `true` on the `watch::Sender<bool>` that was passed to [`Scheduler::new`]
 //! to trigger a graceful shutdown. The scheduler loop exits on the next tick.
 //!
-//! # SQLite Persistence
+//! # `SQLite` Persistence
 //!
-//! All job definitions and run history are stored in an SQLite database managed by
+//! All job definitions and run history are stored in a `SQLite` database managed by
 //! `zeph-db` migrations. Use [`JobStore::open`] to connect or [`JobStore::new`] when
 //! you already hold a [`zeph_db::DbPool`].
 

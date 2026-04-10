@@ -14,7 +14,7 @@
 //!    rather than fixed-size text windows.
 //! 2. **Indexing** — [`indexer`] embeds every chunk via the configured LLM provider
 //!    and writes the vector + rich metadata into a dual store: Qdrant for vector
-//!    similarity and SQLite for exact hash deduplication.
+//!    similarity and `SQLite` for exact hash deduplication.
 //! 3. **Retrieval** — [`retriever`] classifies the incoming query as *semantic*,
 //!    *grep*, or *hybrid*, embeds the query, searches Qdrant, applies a score
 //!    threshold, and packs results within a token budget.
@@ -27,7 +27,7 @@
 //! | [`mcp_server`] | In-process MCP server exposing `symbol_definition`, `find_text_references`, `call_graph`, `module_summary` tools |
 //! | [`watcher`] | File-system watcher that triggers incremental re-indexing on saves |
 //! | [`languages`] | Language detection and tree-sitter grammar registry |
-//! | [`store`] | Qdrant + SQLite dual-write store |
+//! | [`store`] | Qdrant + `SQLite` dual-write store |
 //! | [`error`] | Unified error type [`IndexError`] |
 //!
 //! # Quick start

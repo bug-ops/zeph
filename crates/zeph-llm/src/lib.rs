@@ -23,12 +23,12 @@
 //!
 //! | Module | Backend | Feature flag |
 //! |---|---|---|
-//! | [`ollama`] | Ollama local models | always |
-//! | [`claude`] | Anthropic Claude API | always |
-//! | [`openai`] | OpenAI API | always |
-//! | [`gemini`] | Google Gemini API | always |
-//! | [`compatible`] | OpenAI-compatible endpoints | always |
-//! | [`candle_provider`] | HuggingFace Candle local inference | `candle` |
+//! | [`ollama`] | `Ollama` local models | always |
+//! | [`claude`] | `Anthropic` Claude API | always |
+//! | [`openai`] | `OpenAI` API | always |
+//! | [`gemini`] | `Google` Gemini API | always |
+//! | [`compatible`] | `OpenAI`-compatible endpoints | always |
+//! | [`candle_provider`] | `HuggingFace` Candle local inference | `candle` |
 //!
 //! # Provider Routing
 //!
@@ -38,7 +38,7 @@
 //! - **EMA** — exponential moving average latency-aware ordering (default)
 //! - **Thompson** — Bayesian Beta-distribution sampling
 //! - **Cascade** — cheapest-first with automatic escalation on degenerate output
-//! - **Bandit** — contextual LinUCB with online learning (PILOT)
+//! - **Bandit** — contextual `LinUCB` with online learning (PILOT)
 //!
 //! # Structured Extraction
 //!

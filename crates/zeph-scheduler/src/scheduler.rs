@@ -55,7 +55,7 @@ pub enum SchedulerMessage {
 /// Cron-based periodic task scheduler.
 ///
 /// `Scheduler` owns the in-memory task list and drives execution on a configurable
-/// tick interval. It persists job state to SQLite via [`JobStore`] so task schedules
+/// tick interval. It persists job state to `SQLite` via [`JobStore`] so task schedules
 /// survive restarts.
 ///
 /// # Creation

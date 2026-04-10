@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-/// Legacy project-relative SQLite path (pre-XDG migration).
+/// Legacy project-relative `SQLite` path (pre-XDG migration).
 ///
 /// Used only for detecting and migrating old configs that still reference this path.
 pub const DEFAULT_SQLITE_PATH: &str = ".zeph/data/zeph.db";
@@ -33,7 +33,7 @@ pub(crate) fn default_runtime_data_root() -> PathBuf {
         .join(PLATFORM_APP_DIR_NAME)
 }
 
-/// Returns the platform-appropriate default path for the SQLite database.
+/// Returns the platform-appropriate default path for the `SQLite` database.
 ///
 /// # Examples
 ///
@@ -124,7 +124,7 @@ pub(crate) fn default_debug_output_dir() -> PathBuf {
     default_debug_dir()
 }
 
-/// Returns `true` when `path` is the legacy project-relative SQLite path that must be migrated.
+/// Returns `true` when `path` is the legacy project-relative `SQLite` path that must be migrated.
 #[must_use]
 pub fn is_legacy_default_sqlite_path(path: &str) -> bool {
     path == DEFAULT_SQLITE_PATH

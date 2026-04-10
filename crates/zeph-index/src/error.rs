@@ -31,7 +31,7 @@ pub enum IndexError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// SQLite database error from `sqlx`.
+    /// `SQLite` database error from `sqlx`.
     ///
     /// Raised by metadata reads/writes in [`crate::store::CodeStore`].
     #[error("database error: {0}")]

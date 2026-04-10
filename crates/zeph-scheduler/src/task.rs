@@ -46,7 +46,7 @@ pub fn normalize_cron_expr(expr: &str) -> Cow<'_, str> {
 ///
 /// # Persistence
 ///
-/// Each variant serialises to a stable snake_case string via [`TaskKind::as_str`]
+/// Each variant serialises to a stable `snake_case` string via [`TaskKind::as_str`]
 /// and deserialises via [`TaskKind::from_str_kind`]. These strings are stored in
 /// the `kind` column of the `scheduled_jobs` table.
 ///

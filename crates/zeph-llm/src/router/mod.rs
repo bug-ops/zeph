@@ -13,7 +13,7 @@
 //! | [`RouterStrategy::Ema`] | [`ema`] | EMA-weighted latency-aware ordering |
 //! | [`RouterStrategy::Thompson`] | [`thompson`] | Bayesian Beta-distribution sampling |
 //! | [`RouterStrategy::Cascade`] | [`cascade`] | Cheapest-first with quality escalation |
-//! | [`RouterStrategy::Bandit`] | [`bandit`] | Contextual LinUCB (PILOT algorithm) |
+//! | [`RouterStrategy::Bandit`] | [`bandit`] | Contextual `LinUCB` (PILOT algorithm) |
 //!
 //! Strategies are selected via builder methods on [`RouterProvider`]:
 //! - [`RouterProvider::with_ema`]

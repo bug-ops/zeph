@@ -125,7 +125,7 @@ impl ContentSourceKind {
     /// Returns `None` for unrecognized strings so callers can log a warning and
     /// skip unknown values without breaking deserialization.
     ///
-    /// The comparison is case-sensitive and uses the canonical snake_case form
+    /// The comparison is case-sensitive and uses the canonical `snake_case` form
     /// (e.g. `"web_scrape"`, not `"WebScrape"`).
     ///
     /// # Examples

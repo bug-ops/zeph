@@ -8,7 +8,7 @@
 //!
 //! - [`crate::qdrant_ops::QdrantOps`] / [`crate::embedding_store::EmbeddingStore`] —
 //!   production Qdrant-backed store.
-//! - [`crate::db_vector_store::DbVectorStore`] — SQLite BLOB store for testing and offline use.
+//! - [`crate::db_vector_store::DbVectorStore`] — `SQLite` BLOB store for testing and offline use.
 //! - [`crate::in_memory_store::InMemoryVectorStore`] — purely in-memory store for unit tests.
 
 use std::collections::HashMap;
@@ -47,7 +47,7 @@ pub struct VectorPoint {
 
 /// Filter applied to [`VectorStore::search`] and [`VectorStore::scroll_all`].
 ///
-/// All `must` conditions are ANDed; all `must_not` conditions are ANDed.
+/// All `must` conditions are `ANDed`; all `must_not` conditions are `ANDed`.
 #[derive(Debug, Clone, Default)]
 pub struct VectorFilter {
     /// All of these conditions must match.

@@ -41,11 +41,11 @@ pub enum LlmError {
     #[error("embedding not supported by {provider}")]
     EmbedUnsupported { provider: String },
 
-    /// Candle model weights or tokenizer could not be loaded from disk or HuggingFace Hub.
+    /// `Candle` model weights or tokenizer could not be loaded from disk or `HuggingFace` Hub.
     #[error("model loading failed: {0}")]
     ModelLoad(String),
 
-    /// The Candle inference worker returned an error or timed out.
+    /// The `Candle` inference worker returned an error or timed out.
     #[error("inference failed: {0}")]
     Inference(String),
 

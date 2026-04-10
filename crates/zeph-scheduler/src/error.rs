@@ -12,7 +12,7 @@ pub enum SchedulerError {
     #[error("invalid cron expression: {0}")]
     InvalidCron(String),
 
-    /// A low-level SQLx error occurred during a database operation.
+    /// A low-level `SQLx` error occurred during a database operation.
     #[error("database error: {0}")]
     Database(#[from] zeph_db::SqlxError),
 

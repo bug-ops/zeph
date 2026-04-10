@@ -25,7 +25,7 @@ use zeph_common::math::cosine_similarity;
 /// listed via [`list_scenes`].
 #[derive(Debug, Clone)]
 pub struct MemScene {
-    /// SQLite row ID of the scene.
+    /// `SQLite` row ID of the scene.
     pub id: MemSceneId,
     /// Short human-readable label for the scene (e.g. `"Rust programming"`).
     pub label: String,

@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! OpenAI API backend.
+//! `OpenAI` API backend.
 //!
-//! [`OpenAiProvider`] targets the OpenAI Chat Completions and Embeddings APIs.
+//! [`OpenAiProvider`] targets the `OpenAI` Chat Completions and Embeddings APIs.
 //! It also serves as the foundation for [`crate::compatible::CompatibleProvider`],
-//! which points the same implementation at any OpenAI-compatible endpoint
+//! which points the same implementation at any `OpenAI`-compatible endpoint
 //! (Together AI, Fireworks, local vLLM, etc.).
 //!
 //! # Supported capabilities
@@ -44,9 +44,9 @@ use crate::usage::UsageTracker;
 
 const MAX_RETRIES: u32 = 3;
 
-/// [`LlmProvider`] backend for the OpenAI API (and compatible endpoints).
+/// [`LlmProvider`] backend for the `OpenAI` API (and compatible endpoints).
 ///
-/// For OpenAI-compatible third-party services, prefer [`crate::compatible::CompatibleProvider`]
+/// For `OpenAI`-compatible third-party services, prefer [`crate::compatible::CompatibleProvider`]
 /// which wraps this type with a named provider for logging.
 ///
 /// Construct with [`OpenAiProvider::new`] and chain optional builder methods:

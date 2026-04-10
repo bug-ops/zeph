@@ -4,7 +4,7 @@
 //! Memory snapshot export and import.
 //!
 //! A [`MemorySnapshot`] serializes the full set of conversations, messages, and
-//! summaries from SQLite into a JSON document suitable for backup or migration.
+//! summaries from `SQLite` into a JSON document suitable for backup or migration.
 //!
 //! Import is idempotent: conversations and messages already present in the target
 //! database are skipped and counted in [`ImportStats::skipped`].
@@ -19,7 +19,7 @@ use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::ConversationId;
 
-/// Complete serializable snapshot of the SQLite memory store.
+/// Complete serializable snapshot of the `SQLite` memory store.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MemorySnapshot {
     /// Schema version for forward-compatibility checks.
@@ -33,7 +33,7 @@ pub struct MemorySnapshot {
 /// One conversation and all its associated data in a [`MemorySnapshot`].
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConversationSnapshot {
-    /// SQLite row ID of the conversation.
+    /// `SQLite` row ID of the conversation.
     pub id: i64,
     /// All messages in this conversation.
     pub messages: Vec<MessageSnapshot>,
@@ -44,7 +44,7 @@ pub struct ConversationSnapshot {
 /// A single message as stored in a [`MemorySnapshot`].
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MessageSnapshot {
-    /// SQLite row ID.
+    /// `SQLite` row ID.
     pub id: i64,
     /// Parent conversation ID.
     pub conversation_id: i64,
@@ -61,7 +61,7 @@ pub struct MessageSnapshot {
 /// A compression summary record in a [`MemorySnapshot`].
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SummarySnapshot {
-    /// SQLite row ID.
+    /// `SQLite` row ID.
     pub id: i64,
     /// Parent conversation ID.
     pub conversation_id: i64,

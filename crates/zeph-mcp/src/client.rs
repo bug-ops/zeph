@@ -1297,7 +1297,7 @@ mod tests {
         assert_eq!(err.code(), Some(crate::McpErrorCode::Transient));
     }
 
-    /// Verify the list_tools timeout guard: a pending future maps to
+    /// Verify the `list_tools` timeout guard: a pending future maps to
     /// `McpError::Timeout` with `tool_name: "tools/list"`.
     #[tokio::test]
     async fn list_tools_timeout_guard_maps_elapsed_to_mcp_timeout_error() {

@@ -591,7 +591,7 @@ impl Message {
 
 /// Core abstraction for all LLM inference backends.
 ///
-/// Every backend — Ollama, Claude, OpenAI, Gemini, Candle — implements this trait.
+/// Every backend — `Ollama`, `Claude`, `OpenAI`, `Gemini`, `Candle` — implements this trait.
 /// The [`crate::any::AnyProvider`] enum erases the concrete type so callers can
 /// hold any backend behind a single type, and [`crate::router::RouterProvider`]
 /// implements this trait to multiplex across multiple backends.

@@ -73,8 +73,8 @@ pub use zeph_common::secret::{Secret, VaultError};
 
 /// Pluggable secret retrieval backend.
 ///
-/// Implement this trait to integrate a custom secret store (e.g. HashiCorp Vault, AWS Secrets
-/// Manager, 1Password). The crate ships three implementations out of the box:
+/// Implement this trait to integrate a custom secret store (e.g. `HashiCorp` Vault, `AWS` Secrets
+/// Manager, `1Password`). The crate ships three implementations out of the box:
 /// [`AgeVaultProvider`], [`EnvVaultProvider`], and [`ArcAgeVaultProvider`].
 ///
 /// # Implementing

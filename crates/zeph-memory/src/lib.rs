@@ -29,7 +29,7 @@
 //! | Tier | Description |
 //! |------|-------------|
 //! | `Working` | Current context window; never persisted. |
-//! | `Episodic` | Per-session messages stored in SQLite. |
+//! | `Episodic` | Per-session messages stored in `SQLite`. |
 //! | `Semantic` | Cross-session distilled facts promoted from episodic. |
 //! | `Persona` | Long-lived user attributes (preferences, domain knowledge). |
 //!
@@ -42,7 +42,7 @@
 //! # Memory routing
 //!
 //! [`router::HybridRouter`] classifies each recall query and dispatches to the appropriate
-//! backend: keyword (SQLite FTS5), semantic (Qdrant), graph (BFS traversal), episodic
+//! backend: keyword (`SQLite` FTS5), semantic (Qdrant), graph (BFS traversal), episodic
 //! (timestamp-filtered FTS5), or hybrid (reciprocal-rank fusion of keyword + semantic).
 //!
 //! # Background loops
@@ -50,7 +50,7 @@
 //! Several background tasks maintain memory health:
 //!
 //! - [`eviction::start_eviction_loop`] — Ebbinghaus-curve eviction.
-//! - [`forgetting::start_forgetting_loop`] — SleepGate importance downscaling.
+//! - [`forgetting::start_forgetting_loop`] — `SleepGate` importance downscaling.
 //! - [`consolidation::start_consolidation_loop`] — cross-session fact merging.
 //! - [`tiers::start_tier_promotion_loop`] — Episodic → Semantic promotion.
 //! - [`semantic::start_tree_consolidation_loop`] — hierarchical note consolidation.

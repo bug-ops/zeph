@@ -65,7 +65,7 @@ pub type SqliteStore = DbStore;
 
 /// Primary relational data store backed by a [`DbPool`].
 ///
-/// Opening a `DbStore` runs all pending SQLite migrations automatically.
+/// Opening a `DbStore` runs all pending `SQLite` migrations automatically.
 ///
 /// # Examples
 ///

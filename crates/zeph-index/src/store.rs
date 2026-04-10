@@ -1,22 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Qdrant collection + SQLite metadata for code chunks.
+//! Qdrant collection + `SQLite` metadata for code chunks.
 //!
 //! [`CodeStore`] is a **dual-write store**: every chunk is simultaneously stored as
-//! a vector point in Qdrant (for similarity search) and as a metadata row in SQLite
+//! a vector point in Qdrant (for similarity search) and as a metadata row in `SQLite`
 //! (for exact-hash deduplication and file-path bookkeeping).
 //!
 //! ## Why dual-write?
 //!
-//! Qdrant does not expose a cheap "does this hash exist?" query, so SQLite acts as a
+//! Qdrant does not expose a cheap "does this hash exist?" query, so `SQLite` acts as a
 //! fast lookup table. Before embedding a file the indexer fetches all known hashes for
-//! that file from SQLite in a single `IN (…)` query; only chunks whose hash is absent
+//! that file from `SQLite` in a single `IN (…)` query; only chunks whose hash is absent
 //! are sent to the LLM for embedding.
 //!
 //! ## Collection name
 //!
-//! The Qdrant collection is always named `"zeph_code_chunks"`. The SQLite table is
+//! The Qdrant collection is always named `"zeph_code_chunks"`. The `SQLite` table is
 //! `chunk_metadata`, created by the `zeph-db` migration layer at startup.
 
 #[allow(unused_imports)]
@@ -27,7 +27,7 @@ use crate::error::Result;
 
 const CODE_COLLECTION: &str = "zeph_code_chunks";
 
-/// Qdrant + SQLite dual-write store for code chunks.
+/// Qdrant + `SQLite` dual-write store for code chunks.
 ///
 /// `CodeStore` is the persistence layer for the indexing pipeline. It is cheaply
 /// cloneable (all fields are reference-counted) and can safely be shared across async
@@ -96,7 +96,7 @@ pub struct SearchHit {
 }
 
 impl CodeStore {
-    /// Create a `CodeStore` from a pre-built [`QdrantOps`] instance and a SQLite pool.
+    /// Create a `CodeStore` from a pre-built [`QdrantOps`] instance and a `SQLite` pool.
     ///
     /// The Qdrant collection is not created here — call [`CodeStore::ensure_collection`]
     /// before performing any upserts.

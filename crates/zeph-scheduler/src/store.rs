@@ -10,7 +10,7 @@ use crate::error::SchedulerError;
 /// Full details for a scheduled task, returned by [`JobStore::list_jobs_full`].
 ///
 /// Intended for display in the TUI or CLI task list. All string fields are UTF-8
-/// and come directly from the `scheduled_jobs` SQLite table.
+/// and come directly from the `scheduled_jobs` `SQLite` table.
 pub struct ScheduledTaskInfo {
     /// Unique task name (primary key in the `scheduled_jobs` table).
     pub name: String,
@@ -28,7 +28,7 @@ pub struct ScheduledTaskInfo {
 
 /// Persistent storage layer for scheduled jobs.
 ///
-/// All job definitions and run history are stored in an SQLite database managed by
+/// All job definitions and run history are stored in a `SQLite` database managed by
 /// `zeph-db` migrations. The `scheduled_jobs` table schema is defined in migration
 /// `051_scheduler_jobs.sql`.
 ///

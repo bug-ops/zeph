@@ -62,7 +62,7 @@ impl std::str::FromStr for MemoryTier {
 
 /// Strongly typed wrapper for conversation row IDs.
 ///
-/// Wraps the SQLite `conversations.id` integer primary key to prevent accidental
+/// Wraps the `SQLite` `conversations.id` integer primary key to prevent accidental
 /// confusion with [`MessageId`] or [`MemSceneId`] values.
 ///
 /// # Examples
@@ -79,7 +79,7 @@ pub struct ConversationId(pub i64);
 
 /// Strongly typed wrapper for message row IDs.
 ///
-/// Wraps the SQLite `messages.id` integer primary key to prevent confusion
+/// Wraps the `SQLite` `messages.id` integer primary key to prevent confusion
 /// with [`ConversationId`] or [`MemSceneId`] values.
 ///
 /// # Examples
@@ -96,7 +96,7 @@ pub struct MessageId(pub i64);
 
 /// Strongly typed wrapper for `mem_scene` row IDs.
 ///
-/// Wraps the SQLite `mem_scenes.id` integer primary key. Used by the scene
+/// Wraps the `SQLite` `mem_scenes.id` integer primary key. Used by the scene
 /// consolidation subsystem to identify distinct conversational scenes.
 ///
 /// # Examples

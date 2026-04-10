@@ -39,7 +39,7 @@ const IMAGE_DEFAULT_TOKENS: usize = 1000;
 /// Thinking/redacted block framing
 const THINKING_OVERHEAD: usize = 10;
 
-/// Token counter backed by `tiktoken` cl100k_base BPE encoding.
+/// Token counter backed by `tiktoken` `cl100k_base` BPE encoding.
 ///
 /// Estimates how many tokens a piece of text or a full [`Message`] will consume when
 /// sent to an LLM API.  Uses a process-scoped [`OnceLock`] so BPE data is loaded once

@@ -231,7 +231,7 @@ pub enum ProviderKind {
     Ollama,
     /// Anthropic Claude API.
     Claude,
-    /// OpenAI API.
+    /// `OpenAI` API.
     OpenAi,
     /// Google Gemini API.
     Gemini,

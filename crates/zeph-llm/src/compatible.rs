@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! OpenAI-compatible provider adapter.
+//! `OpenAI`-compatible provider adapter.
 //!
 //! [`CompatibleProvider`] wraps [`crate::openai::OpenAiProvider`] and adds a named
-//! provider label for logging. Use it for any endpoint that exposes the OpenAI Chat
+//! provider label for logging. Use it for any endpoint that exposes the `OpenAI` Chat
 //! Completions and Embeddings API (Together AI, Fireworks, Anyscale, local vLLM, etc.).
 //!
 //! # Configuration

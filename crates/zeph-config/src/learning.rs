@@ -144,7 +144,7 @@ pub enum DetectorMode {
 /// Self-learning and skill evolution configuration, nested under `[skills.learning]` in TOML.
 ///
 /// When `enabled = true`, Zeph tracks skill performance and can automatically improve or roll
-/// back skill definitions based on usage outcomes (ARISE, STEM, D2Skill pipelines).
+/// back skill definitions based on usage outcomes (ARISE, STEM, `D2Skill` pipelines).
 ///
 /// # Example (TOML)
 ///
