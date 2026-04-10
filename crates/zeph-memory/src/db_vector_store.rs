@@ -129,7 +129,13 @@ impl VectorStore for DbVectorStore {
         points: Vec<VectorPoint>,
     ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
         let collection = collection.to_owned();
-        Box::pin(async move {
+        #[cfg(feature = "profiling")]
+        let span = tracing::info_span!(
+            "memory.vector_store",
+            operation = "upsert",
+            collection = %collection
+        );
+        let fut = Box::pin(async move {
             for point in points {
                 let vector_bytes: Vec<u8> =
                     point.vector.iter().flat_map(|f| f.to_le_bytes()).collect();
@@ -148,7 +154,11 @@ impl VectorStore for DbVectorStore {
                 .map_err(|e| VectorStoreError::Upsert(e.to_string()))?;
             }
             Ok(())
-        })
+        });
+        #[cfg(feature = "profiling")]
+        return Box::pin(tracing::Instrument::instrument(fut, span));
+        #[cfg(not(feature = "profiling"))]
+        fut
     }
 
     fn search(
@@ -159,7 +169,13 @@ impl VectorStore for DbVectorStore {
         filter: Option<VectorFilter>,
     ) -> BoxFuture<'_, Result<Vec<ScoredVectorPoint>, VectorStoreError>> {
         let collection = collection.to_owned();
-        Box::pin(async move {
+        #[cfg(feature = "profiling")]
+        let span = tracing::info_span!(
+            "memory.vector_store",
+            operation = "search",
+            collection = %collection
+        );
+        let fut = Box::pin(async move {
             let rows: Vec<(String, Vec<u8>, String)> = zeph_db::query_as(sql!(
                 "SELECT id, vector, payload FROM vector_points WHERE collection = ?"
             ))
@@ -201,7 +217,11 @@ impl VectorStore for DbVectorStore {
             });
             scored.truncate(limit_usize);
             Ok(scored)
-        })
+        });
+        #[cfg(feature = "profiling")]
+        return Box::pin(tracing::Instrument::instrument(fut, span));
+        #[cfg(not(feature = "profiling"))]
+        fut
     }
 
     fn delete_by_ids(
@@ -210,7 +230,13 @@ impl VectorStore for DbVectorStore {
         ids: Vec<String>,
     ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
         let collection = collection.to_owned();
-        Box::pin(async move {
+        #[cfg(feature = "profiling")]
+        let span = tracing::info_span!(
+            "memory.vector_store",
+            operation = "delete",
+            collection = %collection
+        );
+        let fut = Box::pin(async move {
             for id in ids {
                 zeph_db::query(sql!(
                     "DELETE FROM vector_points WHERE collection = ? AND id = ?"
@@ -222,7 +248,11 @@ impl VectorStore for DbVectorStore {
                 .map_err(|e| VectorStoreError::Delete(e.to_string()))?;
             }
             Ok(())
-        })
+        });
+        #[cfg(feature = "profiling")]
+        return Box::pin(tracing::Instrument::instrument(fut, span));
+        #[cfg(not(feature = "profiling"))]
+        fut
     }
 
     fn scroll_all(

@@ -285,6 +285,10 @@ pub async fn link_memory_notes(
 /// # Errors
 ///
 /// Returns an error if the database query fails or LLM extraction fails.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "memory.graph_extract", skip_all, fields(entities = tracing::field::Empty, edges = tracing::field::Empty))
+)]
 #[allow(clippy::too_many_lines)]
 pub async fn extract_and_store(
     content: String,
@@ -438,6 +442,13 @@ pub async fn extract_and_store(
                 tracing::warn!("failed to ensure episode for conversation {conv_id}: {e:#}");
             }
         }
+    }
+
+    #[cfg(feature = "profiling")]
+    {
+        let span = tracing::Span::current();
+        span.record("entities", entities_upserted);
+        span.record("edges", edges_inserted);
     }
 
     Ok(ExtractionResult {

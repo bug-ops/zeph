@@ -129,6 +129,10 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if embedding or Qdrant search fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.cross_session", skip_all, fields(result_count = tracing::field::Empty))
+    )]
     pub async fn search_session_summaries(
         &self,
         query: &str,

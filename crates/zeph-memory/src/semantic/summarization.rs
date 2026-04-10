@@ -89,6 +89,10 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if LLM call or database operation fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.summarize", skip_all, fields(input_msgs = %message_count, output_len = tracing::field::Empty))
+    )]
     pub async fn summarize(
         &self,
         conversation_id: ConversationId,

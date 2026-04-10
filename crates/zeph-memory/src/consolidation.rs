@@ -143,6 +143,10 @@ pub fn start_consolidation_loop(
 ///
 /// Returns an error if a database query fails. LLM errors for individual clusters are
 /// logged and skipped without propagating.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "memory.consolidation_loop", skip_all)
+)]
 #[allow(clippy::too_many_lines)]
 pub async fn run_consolidation_sweep(
     store: &SqliteStore,

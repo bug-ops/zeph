@@ -74,7 +74,10 @@ pub mod daemon;
 pub mod debug_dump;
 pub mod file_watcher;
 pub mod instructions;
+pub mod instrumented_channel;
 pub mod metrics;
+#[cfg(feature = "profiling")]
+pub mod metrics_bridge;
 pub mod pipeline;
 pub mod project;
 pub mod redact;

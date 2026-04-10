@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Profiling and tracing Phase 2: deep instrumentation** (`#2851`, `#2852`, `#2853`, `#2854`,
+  `#2855`, `#2856`, `#2857`, epic `#2846`): added spans to all 5 subsystem crates. Memory:
+  `memory.remember`, `memory.recall`, `memory.summarize`, `memory.graph_extract`,
+  `memory.persona_extract`, `memory.cross_session`, `memory.vector_store`, `memory.admission`,
+  `memory.compaction_probe`, `memory.forgetting`, `memory.consolidation`. Tools:
+  `tool.execute_call`, `tool.shell`, `tool.file`, `tool.web_scrape`, `tool.search_code`.
+  Skills: `skill.registry_load`, `skill.match`, `skill.matcher_sync`, `skill.qdrant_match`,
+  `skill.generate`, `skill.hot_reload`, `skill.bm25_search`. MCP: `mcp.connect`,
+  `mcp.connect_url`, `mcp.list_tools`, `mcp.call_tool`, `mcp.shutdown`, `mcp.tool_refresh`.
+  Channels: `channel.cli.recv`, `channel.cli.send`, `channel.telegram.recv`,
+  `channel.telegram.send`. New `InstrumentedSender<T>` / `InstrumentedReceiver<T>` /
+  `InstrumentedUnboundedSender<T>` wrappers (zero-cost when profiling disabled) applied to
+  `skill_reload_rx` and `config_reload_rx` channel sites. New `MetricsBridge` tracing layer
+  using `on_enter`/`on_exit` accumulation for correct async timing, replacing manual
+  `Instant::now()` bookkeeping for the 4 watched turn-phase spans when profiling is active.
+
 - **Profiling and tracing Phase 1: foundation** (`#2847`, `#2848`, `#2849`, `#2850`, epic `#2846`):
   added two-tier telemetry backend with zero overhead when disabled. New `[telemetry]` config
   section with `TelemetryConfig` / `TelemetryBackend` (local chrome JSON or OTLP); config

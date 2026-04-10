@@ -232,6 +232,10 @@ impl ToolExecutor for WebScrapeExecutor {
         }))
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tool.web_scrape", skip_all)
+    )]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         match call.tool_id.as_str() {
             "web_scrape" => {

@@ -119,6 +119,10 @@ pub struct SceneStats {
 /// # Errors
 ///
 /// Returns an error if the `SQLite` query fails. LLM and embedding errors are logged but skipped.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "memory.consolidate_scenes", skip_all)
+)]
 pub async fn consolidate_scenes(
     store: &SqliteStore,
     provider: &AnyProvider,

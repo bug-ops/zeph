@@ -70,6 +70,10 @@ impl SkillRegistry {
     /// in multiple paths, only the first one is kept.
     ///
     /// Invalid files are logged with `tracing::warn` and skipped.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skill.registry_load", skip_all, fields(count = tracing::field::Empty))
+    )]
     pub fn load(paths: &[impl AsRef<Path>]) -> Self {
         let mut entries = Vec::new();
         let mut seen = HashSet::new();
@@ -107,6 +111,8 @@ impl SkillRegistry {
         }
 
         let fingerprint = Self::compute_fingerprint(&entries);
+        #[cfg(feature = "profiling")]
+        tracing::Span::current().record("count", entries.len());
         Self {
             entries,
             fingerprint,

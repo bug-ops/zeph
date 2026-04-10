@@ -68,6 +68,10 @@ impl QdrantSkillMatcher {
     /// # Errors
     ///
     /// Returns an error if Qdrant communication fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skill.qdrant_sync", skip_all)
+    )]
     pub async fn sync<F>(
         &mut self,
         meta: &[&SkillMeta],
@@ -100,6 +104,10 @@ impl QdrantSkillMatcher {
 
     /// Search for relevant skills using Qdrant native vector search.
     /// Returns scored matches with indices into the provided meta slice.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skill.qdrant_match", skip_all, fields(query_len = %query.len(), result_count = tracing::field::Empty))
+    )]
     pub async fn match_skills<F>(
         &self,
         meta: &[&SkillMeta],

@@ -191,6 +191,10 @@ impl AdmissionControl {
     /// Slow path: calls LLM for `future_utility` when borderline.
     ///
     /// On LLM failure, `future_utility` defaults to `0.5` (neutral).
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.admission", skip_all)
+    )]
     pub async fn evaluate(
         &self,
         content: &str,

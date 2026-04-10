@@ -126,6 +126,10 @@ impl Bm25Index {
     /// assert_eq!(results.len(), 1);
     /// assert_eq!(results[0].0, 0);
     /// ```
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skill.bm25_search", skip_all, fields(query_len = %query.len(), limit = %limit))
+    )]
     #[must_use]
     pub fn search(&self, query: &str, limit: usize) -> Vec<(usize, f32)> {
         if self.doc_count == 0 || self.avg_doc_length == 0.0 {

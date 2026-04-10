@@ -407,6 +407,10 @@ impl ToolExecutor for SearchCodeExecutor {
         Ok(None)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tool.search_code", skip_all)
+    )]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         if call.tool_id != "search_code" {
             return Ok(None);

@@ -632,6 +632,10 @@ impl McpManager {
     /// # Panics
     ///
     /// Does not panic under normal conditions.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.connect_all", skip_all, fields(connected = tracing::field::Empty, failed = tracing::field::Empty))
+    )]
     #[allow(clippy::too_many_lines)]
     pub async fn connect_all(&self) -> (Vec<McpTool>, Vec<ServerConnectOutcome>) {
         let allowed = self.allowed_commands.clone();
@@ -1066,6 +1070,10 @@ impl McpManager {
     ///
     /// Returns `McpError::PolicyViolation` if the enforcer rejects the call,
     /// or `McpError::ServerNotFound` if the server is not connected.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.manager_call_tool", skip_all, fields(server_id = %server_id, tool_name = %tool_name))
+    )]
     pub async fn call_tool(
         &self,
         server_id: &str,
@@ -1290,6 +1298,10 @@ impl McpManager {
     }
 
     /// Graceful shutdown of all connections (takes ownership).
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.shutdown_all", skip_all)
+    )]
     pub async fn shutdown_all(self) {
         self.shutdown_all_shared().await;
     }

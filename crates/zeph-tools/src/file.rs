@@ -202,6 +202,10 @@ impl FileExecutor {
     /// # Errors
     ///
     /// Returns `ToolError` on sandbox violations or I/O failures.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tool.file", skip_all, fields(operation = %tool_id))
+    )]
     pub fn execute_file_tool(
         &self,
         tool_id: &str,
@@ -598,6 +602,10 @@ impl ToolExecutor for FileExecutor {
         Ok(None)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tool.file.execute_call", skip_all, fields(tool_id = %call.tool_id))
+    )]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         self.execute_file_tool(&call.tool_id, &call.params)
     }

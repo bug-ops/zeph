@@ -279,6 +279,10 @@ impl ShellExecutor {
     /// # Errors
     ///
     /// Returns `ToolError` on blocked commands, sandbox violations, or execution failures.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tool.shell", skip_all, fields(exit_code = tracing::field::Empty, duration_ms = tracing::field::Empty))
+    )]
     pub async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
         self.execute_inner(response, true).await
     }

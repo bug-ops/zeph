@@ -1150,6 +1150,10 @@ impl<C: Channel> Agent<C> {
     }
 
     // Returns true if the input was blocked and the caller should return Ok(()) immediately.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "agent.security_prescreen", skip_all)
+    )]
     async fn pre_process_security(&mut self, trimmed: &str) -> Result<bool, error::AgentError> {
         // Guardrail: LLM-based prompt injection pre-screening at the user input boundary.
         if let Some(ref guardrail) = self.security.guardrail {
@@ -1823,6 +1827,10 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skill.hot_reload", skip_all)
+    )]
     async fn reload_skills(&mut self) {
         let new_registry = SkillRegistry::load(&self.skill_state.skill_paths);
         if new_registry.fingerprint() == self.skill_state.fingerprint() {

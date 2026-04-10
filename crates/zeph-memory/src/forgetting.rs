@@ -132,6 +132,10 @@ pub fn start_forgetting_loop(
 /// # Errors
 ///
 /// Returns an error if any database operation fails.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "memory.forgetting", skip_all)
+)]
 pub async fn run_forgetting_sweep(
     store: &SqliteStore,
     config: &ForgettingConfig,

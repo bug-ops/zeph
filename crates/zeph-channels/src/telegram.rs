@@ -465,6 +465,10 @@ impl Channel for TelegramChannel {
     /// # Errors
     ///
     /// Returns `Err` if sending the welcome reply for `/start` fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.telegram.recv", skip_all, fields(msg_len = tracing::field::Empty))
+    )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         loop {
             let Some(incoming) = self.rx.recv().await else {
@@ -519,6 +523,10 @@ impl Channel for TelegramChannel {
     /// Returns `Err(ChannelError::Other)` if no active chat has been
     /// established yet (i.e. `recv` has never returned a message) or if the
     /// Telegram API call fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.telegram.send", skip_all, fields(msg_len = %text.len()))
+    )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         let Some(chat_id) = self.chat_id else {
             return Err(ChannelError::Other("no active chat".into()));

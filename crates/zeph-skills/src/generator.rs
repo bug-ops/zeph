@@ -141,6 +141,10 @@ impl SkillGenerator {
     ///
     /// Returns `SkillError::Invalid` if the LLM output cannot be parsed or fails validation.
     /// Returns `SkillError::Other` on LLM communication failures.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skill.generate", skip_all, fields(input_len = %request.description.len()))
+    )]
     pub async fn generate(
         &self,
         request: SkillGenerationRequest,

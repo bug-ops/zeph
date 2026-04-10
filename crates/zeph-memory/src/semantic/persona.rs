@@ -87,6 +87,10 @@ pub fn contains_self_referential_language(text: &str) -> bool {
 ///
 /// Returns an error only for transport-level LLM failures. Parse failures are logged
 /// and treated as zero facts extracted (graceful degradation).
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "memory.persona_extract", skip_all, fields(fact_count = tracing::field::Empty))
+)]
 pub async fn extract_persona_facts(
     store: &DbStore,
     provider: &AnyProvider,
@@ -173,6 +177,8 @@ pub async fn extract_persona_facts(
     }
 
     tracing::debug!(upserted, "persona extraction complete");
+    #[cfg(feature = "profiling")]
+    tracing::Span::current().record("fact_count", upserted);
     Ok(upserted)
 }
 

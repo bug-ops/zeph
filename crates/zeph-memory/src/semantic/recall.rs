@@ -296,6 +296,10 @@ impl SemanticMemory {
     ///
     /// Returns an error if the `SQLite` save fails. Embedding failures are logged but not
     /// propagated.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.remember", skip_all, fields(content_len = %content.len()))
+    )]
     pub async fn remember(
         &self,
         conversation_id: ConversationId,
@@ -339,6 +343,10 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` save fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.remember", skip_all, fields(content_len = %content.len()))
+    )]
     pub async fn remember_with_parts(
         &self,
         conversation_id: ConversationId,
@@ -387,6 +395,10 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` save fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.remember", skip_all, fields(content_len = %content.len()))
+    )]
     pub async fn remember_tool_output(
         &self,
         conversation_id: ConversationId,
@@ -432,6 +444,10 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` save fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.remember", skip_all, fields(content_len = %content.len()))
+    )]
     pub async fn remember_categorized(
         &self,
         conversation_id: ConversationId,
@@ -638,6 +654,10 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if embedding generation, Qdrant search, or FTS5 query fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.recall", skip_all, fields(query_len = %query.len(), result_count = tracing::field::Empty, top_score = tracing::field::Empty))
+    )]
     pub async fn recall(
         &self,
         query: &str,
@@ -678,8 +698,18 @@ impl SemanticMemory {
             Vec::new()
         };
 
-        self.recall_merge_and_rank(keyword_results, vector_results, limit)
-            .await
+        let results = self
+            .recall_merge_and_rank(keyword_results, vector_results, limit)
+            .await?;
+        #[cfg(feature = "profiling")]
+        {
+            let span = tracing::Span::current();
+            span.record("result_count", results.len());
+            if let Some(top) = results.first() {
+                span.record("top_score", top.score);
+            }
+        }
+        Ok(results)
     }
 
     pub(super) async fn recall_fts5_raw(
@@ -925,6 +955,10 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if any underlying search or database operation fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.recall", skip_all, fields(query_len = %query.len(), result_count = tracing::field::Empty))
+    )]
     pub async fn recall_routed(
         &self,
         query: &str,
@@ -1031,6 +1065,10 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if any underlying search or database operation fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.recall", skip_all, fields(query_len = %query.len(), result_count = tracing::field::Empty))
+    )]
     pub async fn recall_routed_async(
         &self,
         query: &str,
@@ -1130,6 +1168,10 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if the underlying graph query fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.recall_graph", skip_all, fields(result_count = tracing::field::Empty))
+    )]
     pub async fn recall_graph(
         &self,
         query: &str,
@@ -1164,6 +1206,8 @@ impl SemanticMemory {
         .await?;
 
         tracing::debug!(result_count = results.len(), "graph: recall complete");
+        #[cfg(feature = "profiling")]
+        tracing::Span::current().record("result_count", results.len());
 
         Ok(results)
     }
@@ -1176,6 +1220,10 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if the underlying graph query fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.recall_graph", skip_all, fields(result_count = tracing::field::Empty))
+    )]
     pub async fn recall_graph_activated(
         &self,
         query: &str,

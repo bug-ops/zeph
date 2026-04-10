@@ -214,6 +214,10 @@ impl DbStore {
     /// # Errors
     ///
     /// Returns an error if any query inside the transaction fails (the transaction is rolled back).
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.consolidate", skip_all)
+    )]
     pub async fn consolidate_cluster(
         &self,
         level: i64,

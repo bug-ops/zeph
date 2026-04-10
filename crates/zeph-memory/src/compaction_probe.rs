@@ -332,6 +332,10 @@ fn truncate_tool_bodies(messages: &[Message]) -> Vec<Message> {
 /// # Errors
 ///
 /// Returns `MemoryError::Llm` if the LLM call fails.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "memory.compaction_probe", skip_all)
+)]
 pub async fn generate_probe_questions(
     provider: &AnyProvider,
     messages: &[Message],

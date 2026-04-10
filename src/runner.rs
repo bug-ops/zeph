@@ -327,7 +327,22 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let tui_mode = cli.tui;
     #[cfg(not(feature = "tui"))]
     let tui_mode = false;
-    let _tracing_guards = init_tracing(&logging_config, tui_mode, &telemetry_config);
+
+    // Create MetricsCollector before init_tracing so the MetricsBridge layer
+    // can be wired into the subscriber at startup (addresses critic finding S1).
+    #[cfg(feature = "profiling")]
+    let (metrics_collector_arc, metrics_rx_early) = {
+        let (collector, rx) = zeph_core::metrics::MetricsCollector::new();
+        (std::sync::Arc::new(collector), rx)
+    };
+
+    let _tracing_guards = init_tracing(
+        &logging_config,
+        tui_mode,
+        &telemetry_config,
+        #[cfg(feature = "profiling")]
+        Some(std::sync::Arc::clone(&metrics_collector_arc)),
+    );
 
     match cli.command {
         Some(Command::Init { output }) => return crate::init::run(output),
@@ -1228,9 +1243,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let _tool_event_rx = tool_setup.tool_event_rx;
 
     let _skill_watcher = watchers.skill_watcher;
-    let reload_rx = watchers.skill_reload_rx;
+    // Receivers arrive as InstrumentedReceiver<T> from build_watchers().
+    // Agent builder expects mpsc::Receiver<T>, so unwrap the instrumented wrapper.
+    let reload_rx = watchers.skill_reload_rx.into_inner();
     let _config_watcher = watchers.config_watcher;
-    let config_reload_rx = watchers.config_reload_rx;
+    let config_reload_rx = watchers.config_reload_rx.into_inner();
 
     let mcp_embed_provider = {
         let discovery = &config.mcp.tool_discovery;
@@ -1832,6 +1849,15 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
     };
 
+    // When profiling is enabled, reuse the MetricsCollector created before init_tracing
+    // (the MetricsBridge layer holds an Arc to it). Extract sender/receiver from it.
+    #[cfg(feature = "profiling")]
+    let (metrics_tx, metrics_rx) = {
+        let rx = metrics_rx_early;
+        let tx = metrics_collector_arc.sender();
+        (tx, rx)
+    };
+    #[cfg(not(feature = "profiling"))]
     let (metrics_tx, metrics_rx) =
         tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
     {

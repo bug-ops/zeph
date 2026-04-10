@@ -51,6 +51,8 @@ fn resolve_log_path(
 /// - optional file layer controlled by `logging.file` / `logging.level`
 /// - optional Chrome JSON trace layer when `profiling` feature is enabled and
 ///   `telemetry.enabled = true` with `backend = "local"`
+/// - optional [`MetricsBridge`] layer when `profiling` feature is enabled and
+///   `metrics_collector` is `Some`
 ///
 /// The CLI override and env vars must already be applied to `logging` before calling.
 /// The returned [`TracingGuards`] **must** be held for the entire process lifetime;
@@ -65,6 +67,9 @@ pub(crate) fn init_tracing(
     logging: &LoggingConfig,
     tui_mode: bool,
     telemetry: &TelemetryConfig,
+    #[cfg(feature = "profiling")] metrics_collector: Option<
+        std::sync::Arc<zeph_core::metrics::MetricsCollector>,
+    >,
 ) -> TracingGuards {
     // Type alias for a boxed dynamic layer to allow composing heterogeneous layer types.
     type BoxedLayer =
@@ -141,6 +146,14 @@ pub(crate) fn init_tracing(
     // Optional Chrome JSON trace layer (compiled in only with the profiling feature).
     #[cfg(feature = "profiling")]
     let chrome_guard = build_chrome_layer(telemetry, &mut layers);
+
+    // Optional MetricsBridge layer — derives TurnTimings from span durations.
+    #[cfg(feature = "profiling")]
+    if let Some(collector) = metrics_collector {
+        layers.push(Box::new(zeph_core::metrics_bridge::MetricsBridge::new(
+            collector,
+        )));
+    }
 
     // Suppress unused warning when profiling feature is disabled.
     #[cfg(not(feature = "profiling"))]

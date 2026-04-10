@@ -472,6 +472,16 @@ impl MetricsCollector {
     pub fn update(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
         self.tx.send_modify(f);
     }
+
+    /// Returns a clone of the underlying [`watch::Sender`].
+    ///
+    /// Use this to pass the sender to code that requires a raw
+    /// `watch::Sender<MetricsSnapshot>` while the [`MetricsCollector`] is
+    /// also shared (e.g., passed to a `MetricsBridge` layer).
+    #[must_use]
+    pub fn sender(&self) -> watch::Sender<MetricsSnapshot> {
+        self.tx.clone()
+    }
 }
 
 #[cfg(test)]

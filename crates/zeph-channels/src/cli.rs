@@ -371,6 +371,10 @@ impl Channel for CliChannel {
     /// This method is cancel-safe: dropping the future does not discard any
     /// buffered input. The background stdin reader task buffers messages in an
     /// mpsc channel; they remain available on the next `recv()` call.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.cli.recv", skip_all, fields(msg_len = tracing::field::Empty))
+    )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.ensure_reader().recv().await)
     }
@@ -387,6 +391,10 @@ impl Channel for CliChannel {
     ///
     /// [`send_chunk`]: CliChannel::send_chunk
     /// [`flush_chunks`]: CliChannel::flush_chunks
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.cli.send", skip_all, fields(msg_len = %text.len()))
+    )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         println!("Zeph: {text}");
         Ok(())

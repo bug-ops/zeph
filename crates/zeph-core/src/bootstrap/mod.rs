@@ -29,7 +29,7 @@ pub use skills::{
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tokio::sync::{RwLock, mpsc, watch};
+use tokio::sync::{RwLock, watch};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::GraphStore;
@@ -63,9 +63,9 @@ pub struct VaultArgs {
 
 pub struct WatcherBundle {
     pub skill_watcher: Option<SkillWatcher>,
-    pub skill_reload_rx: mpsc::Receiver<SkillEvent>,
+    pub skill_reload_rx: crate::instrumented_channel::InstrumentedReceiver<SkillEvent>,
     pub config_watcher: Option<ConfigWatcher>,
-    pub config_reload_rx: mpsc::Receiver<ConfigEvent>,
+    pub config_reload_rx: crate::instrumented_channel::InstrumentedReceiver<ConfigEvent>,
 }
 
 impl AppBuilder {
@@ -606,9 +606,11 @@ impl AppBuilder {
     }
 
     pub fn build_watchers(&self) -> WatcherBundle {
+        use crate::instrumented_channel::instrumented_channel;
+
         let skill_paths = self.skill_paths();
-        let (reload_tx, skill_reload_rx) = mpsc::channel(4);
-        let skill_watcher = match SkillWatcher::start(&skill_paths, reload_tx) {
+        let (skill_tx, skill_reload_rx) = instrumented_channel(4, "skill_reload_rx");
+        let skill_watcher = match SkillWatcher::start(&skill_paths, skill_tx.into_inner()) {
             Ok(w) => {
                 tracing::info!("skill watcher started");
                 Some(w)
@@ -619,8 +621,8 @@ impl AppBuilder {
             }
         };
 
-        let (config_reload_tx, config_reload_rx) = mpsc::channel(4);
-        let config_watcher = match ConfigWatcher::start(&self.config_path, config_reload_tx) {
+        let (config_tx, config_reload_rx) = instrumented_channel(4, "config_reload_rx");
+        let config_watcher = match ConfigWatcher::start(&self.config_path, config_tx.into_inner()) {
             Ok(w) => {
                 tracing::info!("config watcher started");
                 Some(w)

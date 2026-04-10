@@ -327,6 +327,10 @@ impl SkillMatcher {
     /// filtering before fine-grained matching. Falls back to flat matching otherwise.
     ///
     /// Returns an empty vec if the query embedding fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skill.match", skip_all, fields(query_len = %query.len(), candidates = tracing::field::Empty, top_score = tracing::field::Empty))
+    )]
     pub async fn match_skills<F>(
         &self,
         count: usize,
@@ -460,6 +464,10 @@ impl SkillMatcherBackend {
         }
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skill.match", skip_all, fields(query_len = %query.len(), candidates = tracing::field::Empty, top_score = tracing::field::Empty))
+    )]
     pub async fn match_skills<F>(
         &self,
         meta: &[&SkillMeta],
@@ -521,6 +529,10 @@ impl SkillMatcherBackend {
     /// # Errors
     ///
     /// Returns an error if the Qdrant sync fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skill.matcher_sync", skip_all)
+    )]
     #[allow(clippy::unused_async)]
     pub async fn sync<F>(
         &mut self,
