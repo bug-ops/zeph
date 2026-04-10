@@ -27,7 +27,7 @@ pub struct FileChangedEvent {
 /// Uses `notify-debouncer-mini` to debounce rapid filesystem events.
 /// Paths are resolved once at construction time from the project root.
 ///
-/// Call [`stop`](Self::stop) to shut down the watcher cleanly. The watcher
+/// Call `stop()` on the watcher to shut it down cleanly. The watcher
 /// is also stopped automatically when all senders are dropped.
 pub struct FileChangeWatcher {
     handle: tokio::task::JoinHandle<()>,

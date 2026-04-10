@@ -64,6 +64,10 @@ pub enum ChannelError {
 }
 
 impl ChannelError {
+    /// Create a catch-all error from any displayable error.
+    ///
+    /// Converts the error message to a string and wraps it in the `Other` variant.
+    /// Useful for wrapping provider-specific errors from third-party libraries.
     pub fn other(e: impl std::fmt::Display) -> Self {
         Self::Other(e.to_string())
     }

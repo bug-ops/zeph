@@ -99,7 +99,7 @@ pub const SECURITY_EVENT_CAP: usize = 100;
 
 /// Lightweight snapshot of a single task row for TUI display.
 ///
-/// Cloned from [`TaskGraph`] on each metrics tick; kept minimal on purpose.
+/// Captured from the task graph on each metrics tick; kept minimal on purpose.
 #[derive(Debug, Clone)]
 pub struct TaskSnapshotRow {
     pub id: u32,

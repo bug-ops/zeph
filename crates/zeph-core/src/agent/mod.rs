@@ -107,6 +107,37 @@ pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
     buf
 }
 
+/// Zeph agent: autonomous AI system with multi-model inference, semantic memory, skills,
+/// tool orchestration, and multi-channel I/O.
+///
+/// The agent maintains conversation history, manages LLM provider state, coordinates tool
+/// execution, and orchestrates memory and skill subsystems. It communicates with the outside
+/// world via the [`Channel`] trait, enabling support for CLI, Telegram, TUI, or custom I/O.
+///
+/// # Architecture
+///
+/// - **Message state**: Conversation history with system prompt, message queue, and metadata
+/// - **Memory state**: SQLite + Qdrant vector store for semantic search and compaction
+/// - **Skill state**: Registry, matching engine, and self-learning evolution
+/// - **Context manager**: Token budgeting, context assembly, and summarization
+/// - **Tool orchestrator**: DAG-based multi-tool execution with streaming output
+/// - **MCP client**: Multi-server support for Model Context Protocol
+/// - **Index state**: AST-based code indexing and semantic retrieval
+/// - **Security**: Sanitization, exfiltration detection, adversarial probes
+/// - **Metrics**: Token usage, latency, cost, and anomaly tracking
+///
+/// # Channel Contract
+///
+/// The agent requires a [`Channel`] implementation for user interaction:
+/// - Sends agent responses via `channel.send(message)`
+/// - Receives user input via `channel.recv()` / `channel.recv_internal()`
+/// - Supports structured events: tool invocations, tool output, streaming updates
+///
+/// # Lifecycle
+///
+/// 1. Create with [`Self::new`] or [`Self::new_with_registry_arc`]
+/// 2. Run main loop with [`Self::run`]
+/// 3. Clean up with [`Self::shutdown`] to persist state and close resources
 pub struct Agent<C: Channel> {
     provider: AnyProvider,
     /// Dedicated embedding provider. Resolved once at bootstrap from `[[llm.providers]]`
@@ -145,6 +176,29 @@ pub struct Agent<C: Channel> {
 }
 
 impl<C: Channel> Agent<C> {
+    /// Create a new agent instance with the given LLM provider, I/O channel, and subsystems.
+    ///
+    /// # Arguments
+    ///
+    /// * `provider` — Multi-model LLM provider (Claude, OpenAI, Ollama, Candle)
+    /// * `channel` — I/O abstraction for user interaction (CLI, Telegram, TUI, etc.)
+    /// * `registry` — Skill registry; moved into an internal `Arc<RwLock<_>>` for sharing
+    /// * `matcher` — Optional semantic skill matcher (e.g., Qdrant, BM25). If `None`,
+    ///   skills are matched by exact name only
+    /// * `max_active_skills` — Max concurrent skills in execution (must be > 0)
+    /// * `tool_executor` — Trait object for executing shell, web, and custom tools
+    ///
+    /// # Initialization
+    ///
+    /// The constructor:
+    /// 1. Wraps the skill registry into `Arc<RwLock<_>>` internally
+    /// 2. Builds the system prompt from registered skills
+    /// 3. Initializes all subsystems (memory, context manager, metrics, security)
+    /// 4. Returns a ready-to-run agent
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max_active_skills` is 0.
     #[must_use]
     pub fn new(
         provider: AnyProvider,
@@ -519,6 +573,21 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("").await;
     }
 
+    /// Gracefully shut down the agent and persist state.
+    ///
+    /// Performs the following cleanup:
+    ///
+    /// 1. **Message persistence** — Deferred database writes (hide/summary operations)
+    ///    are flushed to memory or disk
+    /// 2. **Provider state** — LLM router state (e.g., Thompson sampling counters) is saved
+    ///    to the vault
+    /// 3. **Sub-agents** — All active sub-agent tasks are terminated
+    /// 4. **MCP servers** — All connected Model Context Protocol servers are shut down
+    /// 5. **Metrics finalization** — Compaction metrics and session metrics are recorded
+    /// 6. **Memory finalization** — Vector stores and semantic indices are flushed
+    /// 7. **Skill state** — Self-learning engine saves evolved skill definitions
+    ///
+    /// Call this before dropping the agent to ensure no data loss.
     pub async fn shutdown(&mut self) {
         self.channel.send("Shutting down...").await.ok();
 

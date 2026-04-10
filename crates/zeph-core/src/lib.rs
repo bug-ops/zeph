@@ -1,7 +1,66 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Agent loop, configuration loading, and context builder.
+//! Zeph core agent: multi-model inference, semantic memory, skills orchestration, and tool execution.
+//!
+//! This crate provides the [`Agent`] struct — the autonomous AI system at the heart of Zeph.
+//! It integrates LLM providers (Claude, OpenAI, Ollama, Candle), semantic memory (Qdrant),
+//! skill registry and matching, tool execution (shell, web, custom), MCP client support, and
+//! security/compliance subsystems into a single composable agent framework.
+//!
+//! # Usage
+//!
+//! The main entry point is [`Agent::new`] or [`Agent::new_with_registry_arc`]. After creating
+//! an agent, call [`Agent::run`] to execute the main loop.
+//! Always call [`Agent::shutdown`] before dropping to persist state.
+//!
+//! See the `bootstrap` module for config loading and provider setup examples.
+//!
+//! # Key Components
+//!
+//! - [`Agent`] — Main struct that runs the agent loop
+//! - [`Channel`] — Abstraction for user interaction (send/receive messages and events)
+//! - [`channel::ChannelMessage`] — Structured messages flowing to/from the user
+//! - `config` — Configuration schema (LLM providers, memory, skills, etc.)
+//! - `agent::session_config` — Per-session configuration (budget, timeouts, etc.)
+//! - `agent::context` — Context assembly and token budgeting utilities
+//! - [`pipeline`] — Structured execution pipelines for complex workflows
+//! - [`project`] — Project indexing and semantic retrieval
+//! - [`memory_tools`] — Memory search and management utilities
+//! - [`bootstrap`] — Initialization and provider setup
+//!
+//! # Architecture
+//!
+//! The agent operates as a **single-turn finite state machine** that processes each user
+//! message through a series of stages:
+//!
+//! 1. **Input** — Receive user message via channel
+//! 2. **Context assembly** — Build prompt from conversation history, memory, and skills
+//! 3. **LLM inference** — Call the model with multi-tool calling support
+//! 4. **Tool execution** — Run tool calls concurrently with streaming output
+//! 5. **Feedback loop** — Feed tool results back to LLM for synthesis
+//! 6. **Output** — Send agent response via channel
+//! 7. **Persistence** — Save messages and state (async, deferred)
+//!
+//! All async operations (`await` points) are bounded with timeouts to prevent stalls.
+//!
+//! # Channel Contract
+//!
+//! Implementing the [`Channel`] trait allows the agent to integrate with any I/O system:
+//!
+//! - **CLI** — `cargo run -- --config config.toml`
+//! - **Telegram** — Bot interface with streaming updates
+//! - **TUI** — Multi-panel dashboard with real-time metrics
+//! - **HTTP gateway** — Webhook ingestion and agent event streaming
+//! - **Custom** — Implement [`Channel`] for domain-specific systems
+//!
+//! # Feature Flags
+//!
+//! - `candle` — Local inference via Candle (default off, requires CUDA/Metal)
+//! - `classifiers` — ML-based content classification and trust scoring
+//! - `metal` — Candle with Metal acceleration (macOS)
+//! - `cuda` — Candle with CUDA acceleration (Linux/Windows)
+//! - `scheduler` — Cron-based periodic task scheduler
 
 pub mod agent;
 #[allow(clippy::missing_errors_doc, clippy::must_use_candidate)]

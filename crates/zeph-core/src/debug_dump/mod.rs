@@ -80,8 +80,8 @@ impl DebugDumper {
 
     /// Dump the messages about to be sent to the LLM.
     ///
-    /// Returns an ID that must be passed to [`dump_response`] to correlate request and response.
-    /// When `format = Trace`, no file is written (spans are collected by [`trace::TracingCollector`]).
+    /// Returns an ID that must be passed to `dump_response` to correlate request and response.
+    /// When `format = Trace`, no file is written (spans are collected by `trace::TracingCollector`).
     pub fn dump_request(&self, request: &RequestDebugDump<'_>) -> u32 {
         let id = self.next_id();
         // In Trace format, skip legacy numbered files — span data lives in TracingCollector.
@@ -97,7 +97,7 @@ impl DebugDumper {
         id
     }
 
-    /// Dump the LLM response corresponding to a prior [`dump_request`] call.
+    /// Dump the LLM response corresponding to a prior `dump_request` call.
     /// When `format = Trace`, this is a no-op.
     pub fn dump_response(&self, id: u32, response: &str) {
         if self.format == DumpFormat::Trace {

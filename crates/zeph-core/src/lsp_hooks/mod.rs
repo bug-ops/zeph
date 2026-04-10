@@ -12,9 +12,8 @@
 //! LSP notes are injected as `Role::System` messages (consistent with graph
 //! facts, recall, and code context). The tool-pair summarizer targets only
 //! `Role::User` / `Role::Assistant` pairs, so LSP notes are **never**
-//! accidentally summarized. The `[lsp ...]` prefix is checked by
-//! [`super::agent::Agent::remove_lsp_messages`] to clear stale notes before
-//! injecting fresh ones each turn.
+//! accidentally summarized. Stale notes are cleared via internal Agent methods
+//! before injecting fresh ones each turn.
 
 mod diagnostics;
 mod hover;
