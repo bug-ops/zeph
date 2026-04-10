@@ -13,6 +13,7 @@ description = "Multi-channel I/O adapters (CLI, Telegram, Discord, Slack) for Ze
 readme = "README.md"
 
 [features]
+profiling = []
 discord = ["dep:tokio-tungstenite", "dep:futures"]
 slack = ["dep:axum", "dep:hmac", "dep:sha2", "dep:subtle"]
 

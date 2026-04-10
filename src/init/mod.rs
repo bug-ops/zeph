@@ -201,6 +201,8 @@ pub(crate) struct WizardState {
     pub(crate) autodream_min_hours: u32,
     // MagicDocs auto-maintained markdown (#2702)
     pub(crate) magic_docs_enabled: bool,
+    // Profiling and distributed tracing (#2846)
+    pub(crate) telemetry_enabled: bool,
 }
 
 impl Default for WizardState {
@@ -342,6 +344,7 @@ impl Default for WizardState {
             autodream_min_sessions: 5,
             autodream_min_hours: 8,
             magic_docs_enabled: false,
+            telemetry_enabled: false,
         }
     }
 }
@@ -405,6 +408,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_experiments(&mut state)?;
     step_retry(&mut state)?;
     step_policy(&mut state)?;
+    step_telemetry(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -900,6 +904,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.autodream.min_sessions = state.autodream_min_sessions;
     config.memory.autodream.min_hours = state.autodream_min_hours;
     config.magic_docs.enabled = state.magic_docs_enabled;
+    config.telemetry.enabled = state.telemetry_enabled;
 
     config
 }
@@ -1220,6 +1225,20 @@ fn step_retry(state: &mut WizardState) -> anyhow::Result<()> {
     println!();
     Ok(())
 }
+fn step_telemetry(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Profiling & Tracing ==\n");
+    println!("Requires the binary to be compiled with --features profiling.");
+    println!("When disabled (default), all instrumentation is compiled out — zero overhead.\n");
+
+    state.telemetry_enabled = Confirm::new()
+        .with_prompt("Enable profiling/tracing telemetry?")
+        .default(false)
+        .interact()?;
+
+    println!();
+    Ok(())
+}
+
 fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow::Result<()> {
     println!("== Step 10/10: Review & Write ==\n");
 

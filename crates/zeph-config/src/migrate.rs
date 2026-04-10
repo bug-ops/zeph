@@ -39,6 +39,7 @@ static CANONICAL_ORDER: &[&str] = &[
     "agents",
     "experiments",
     "lsp",
+    "telemetry",
 ];
 
 /// Error type for migration failures.
@@ -1793,6 +1794,46 @@ pub fn migrate_magic_docs_config(toml_src: &str) -> Result<MigrationResult, Migr
     })
 }
 
+/// Add a commented-out `[telemetry]` block if the section is absent (#2846).
+///
+/// Existing configs that were written before the `telemetry` section was introduced will have
+/// the block appended as comments so users can discover and enable it without manual hunting.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if `toml_src` is not valid TOML.
+pub fn migrate_telemetry_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    if doc.contains_key("telemetry") || toml_src.contains("# [telemetry]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "\n\
+         # Profiling and distributed tracing (requires --features profiling). All\n\
+         # instrumentation points are zero-overhead when the feature is absent.\n\
+         # [telemetry]\n\
+         # enabled = false\n\
+         # backend = \"local\"        # \"local\" (Chrome JSON), \"otlp\", or \"pyroscope\"\n\
+         # trace_dir = \".local/traces\"\n\
+         # include_args = true\n\
+         # service_name = \"zeph-agent\"\n\
+         # sample_rate = 1.0\n";
+
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        added_count: 1,
+        sections_added: vec!["telemetry".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -2645,6 +2686,39 @@ trust_level = "untrusted"
     fn migrate_agent_budget_hint_already_present_is_noop() {
         let src = "[agent]\nname = \"Zeph\"\nbudget_hint_enabled = true\n";
         let result = migrate_agent_budget_hint(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_telemetry_config_empty_config_appends_comment_block() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_telemetry_config(src).expect("migrate");
+        assert_eq!(result.added_count, 1);
+        assert_eq!(result.sections_added, vec!["telemetry"]);
+        assert!(
+            result.output.contains("# [telemetry]"),
+            "expected commented-out [telemetry] block in output"
+        );
+        assert!(
+            result.output.contains("enabled = false"),
+            "expected enabled = false in telemetry comment block"
+        );
+    }
+
+    #[test]
+    fn migrate_telemetry_config_existing_section_is_noop() {
+        let src = "[agent]\nname = \"Zeph\"\n\n[telemetry]\nenabled = true\n";
+        let result = migrate_telemetry_config(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_telemetry_config_existing_comment_is_noop() {
+        // Idempotency: if the comment block was already added, don't append again.
+        let src = "[agent]\nname = \"Zeph\"\n\n# [telemetry]\n# enabled = false\n";
+        let result = migrate_telemetry_config(src).expect("migrate");
         assert_eq!(result.added_count, 0);
         assert_eq!(result.output, src);
     }

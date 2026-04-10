@@ -9,7 +9,7 @@ use zeph_core::config::migrate::{
     migrate_autodream_config, migrate_compression_predictor_config, migrate_database_url,
     migrate_forgetting_config, migrate_magic_docs_config, migrate_mcp_trust_levels,
     migrate_microcompact_config, migrate_planner_model_to_provider, migrate_shell_transactional,
-    migrate_stt_to_provider,
+    migrate_stt_to_provider, migrate_telemetry_config,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -18,6 +18,7 @@ use zeph_core::config::migrate::{
 ///
 /// Returns an error if the config file cannot be read, the migration fails, or the
 /// in-place write fails.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn handle_migrate_config(
     config_path: &Path,
     in_place: bool,
@@ -78,9 +79,13 @@ pub(crate) fn handle_migrate_config(
     let magic_docs_result = migrate_magic_docs_config(&after_autodream)?;
     let after_magic_docs = magic_docs_result.output;
 
-    // Step 13: add missing default keys as commented-out entries.
+    // Step 13: add commented-out [telemetry] block if absent (#2846).
+    let telemetry_result = migrate_telemetry_config(&after_magic_docs)?;
+    let after_telemetry = telemetry_result.output;
+
+    // Step 14: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_magic_docs)?;
+    let result = migrator.migrate(&after_telemetry)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -128,6 +133,9 @@ pub(crate) fn handle_migrate_config(
         }
         if magic_docs_result.added_count > 0 {
             eprintln!("MagicDocs migration: added commented-out [magic_docs] block.");
+        }
+        if telemetry_result.added_count > 0 {
+            eprintln!("Telemetry migration: added commented-out [telemetry] block.");
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

@@ -427,6 +427,10 @@ impl<C: Channel> Agent<C> {
     /// When `true` and `guard_memory_writes` is enabled, only `SQLite` is written — the message
     /// is saved for conversation continuity but will not pollute semantic search (M2, D2).
     #[allow(clippy::too_many_lines)]
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "agent.persist_message", skip_all)
+    )]
     pub(crate) async fn persist_message(
         &mut self,
         role: Role,

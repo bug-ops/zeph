@@ -39,6 +39,7 @@ zeph-llm.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [features]
+profiling = []
 default = ["sqlite"]
 pdf = ["dep:pdf-extract"]
 sqlite = ["zeph-db/sqlite"]

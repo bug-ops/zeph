@@ -247,6 +247,14 @@ impl LlmProvider for OllamaProvider {
         true
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.chat",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         let has_images = messages
             .iter()
@@ -276,6 +284,14 @@ impl LlmProvider for OllamaProvider {
         Ok(response.message.content)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.chat_stream",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let has_images = messages
             .iter()
@@ -422,6 +438,14 @@ impl LlmProvider for OllamaProvider {
         })
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.embed",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         use crate::embed::truncate_for_embed;
 

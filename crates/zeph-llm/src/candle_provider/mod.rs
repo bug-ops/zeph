@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! HuggingFace Candle local inference backend (feature: `candle`).
+//! `HuggingFace` Candle local inference backend (feature: `candle`).
 //!
 //! [`CandleProvider`] runs quantized or full-precision language models entirely
 //! in-process via the [candle](https://github.com/huggingface/candle) tensor library.
-//! No network calls are made after the initial model download from HuggingFace Hub.
+//! No network calls are made after the initial model download from `HuggingFace` Hub.
 //!
 //! # Architecture
 //!
@@ -87,7 +87,7 @@ use crate::provider::{ChatStream, LlmProvider, Message, StreamChunk};
 /// + speculative calls edge case without unbounded growth.
 const WORKER_CHANNEL_CAPACITY: usize = 4;
 
-/// [`LlmProvider`] backed by HuggingFace Candle local inference.
+/// [`LlmProvider`] backed by `HuggingFace` Candle local inference.
 ///
 /// Model weights are loaded once at construction time. All inference calls are
 /// dispatched to a dedicated single-threaded worker to prevent concurrent GPU access.

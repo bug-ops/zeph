@@ -72,6 +72,7 @@ pub mod root;
 pub mod sanitizer;
 pub mod security;
 pub mod subagent;
+pub mod telemetry;
 pub mod ui;
 
 pub use agent::{
@@ -127,6 +128,7 @@ pub use subagent::{
     HookDef, HookMatcher, HookType, MemoryScope, PermissionMode, SkillFilter, SubagentHooks,
     ToolPolicy,
 };
+pub use telemetry::{TelemetryBackend, TelemetryConfig};
 pub use ui::{AcpConfig, AcpLspConfig, AcpTransport, TuiConfig};
 pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 

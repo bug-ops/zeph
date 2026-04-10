@@ -320,15 +320,14 @@ impl Drop for EarlyTuiGuard {
 pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // Load logging config early (sync, cheap) so every code path gets file logging.
     let config_path = resolve_config_path(cli.config.as_deref());
-    let base_logging = zeph_core::config::Config::load(&config_path)
-        .map(|c| c.logging)
-        .unwrap_or_default();
-    let logging_config = resolve_logging_config(base_logging, cli.log_file.as_deref());
+    let base_config = zeph_core::config::Config::load(&config_path).unwrap_or_default();
+    let logging_config = resolve_logging_config(base_config.logging, cli.log_file.as_deref());
+    let telemetry_config = base_config.telemetry;
     #[cfg(feature = "tui")]
     let tui_mode = cli.tui;
     #[cfg(not(feature = "tui"))]
     let tui_mode = false;
-    let _tracing_guard = init_tracing(&logging_config, tui_mode);
+    let _tracing_guards = init_tracing(&logging_config, tui_mode, &telemetry_config);
 
     match cli.command {
         Some(Command::Init { output }) => return crate::init::run(output),

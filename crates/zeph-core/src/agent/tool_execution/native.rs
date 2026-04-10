@@ -71,6 +71,10 @@ impl<C: Channel> Agent<C> {
         unreachable!("loop covers all attempts")
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "agent.process_response", skip_all)
+    )]
     pub(crate) async fn process_response(&mut self) -> Result<(), super::super::error::AgentError> {
         self.security.flagged_urls.clear();
         self.process_response_native_tools().await
@@ -1072,7 +1076,12 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // parallel tool execution with DAG scheduling, retry, self-reflection, cancellation — inherently sequential control flow
+    #[allow(clippy::too_many_lines)]
+    // parallel tool execution with DAG scheduling, retry, self-reflection, cancellation — inherently sequential control flow
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "agent.tool_loop", skip_all)
+    )]
     pub(super) async fn handle_native_tool_calls(
         &mut self,
         text: Option<&str>,

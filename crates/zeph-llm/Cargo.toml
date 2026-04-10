@@ -13,6 +13,7 @@ description = "LLM provider abstraction with Ollama, Claude, OpenAI, and Candle 
 readme = "README.md"
 
 [features]
+profiling = []
 candle = ["dep:audioadapter-buffers", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:hf-hub", "dep:tokenizers", "dep:symphonia", "dep:rubato"]
 classifiers = ["candle", "dep:hex", "dep:sha2"]
 cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]

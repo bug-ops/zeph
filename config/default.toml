@@ -1059,3 +1059,29 @@ sweep_batch_size = 100
 #
 # [orchestration]
 # planner_provider = "quality" # Keep on quality provider (planning = complex reasoning)
+
+# ── Profiling and distributed tracing ─────────────────────────────────────────
+# Requires the binary to be compiled with --features profiling.
+# All instrumentation points are zero-overhead when the feature is absent.
+# [telemetry]
+# # Enable tracing instrumentation (default: false)
+# enabled = false
+# # Backend: "local" (Chrome JSON), "otlp" (OpenTelemetry), "pyroscope"
+# backend = "local"
+# # Directory for Chrome JSON trace files (backend = "local")
+# trace_dir = ".local/traces"
+# # Include function arguments in span attributes. Keep false (default) in production
+# # to avoid logging user messages, LLM responses, or tool outputs with PII.
+# include_args = false
+# # OTLP gRPC endpoint (backend = "otlp"; falls back to [observability].endpoint)
+# otlp_endpoint = "http://localhost:4317"
+# # Vault key for OTLP auth headers (e.g. ZEPH_OTLP_HEADERS)
+# # otlp_headers_vault_key = ""
+# # Pyroscope server URL (backend = "pyroscope")
+# # pyroscope_endpoint = "http://localhost:4040"
+# # Service name reported in trace metadata
+# service_name = "zeph-agent"
+# # Fraction of traces to sample: 1.0 = all, 0.1 = 10% (otlp backend only)
+# sample_rate = 1.0
+# # Interval between system-metrics snapshots in seconds (Phase 3)
+# system_metrics_interval_secs = 5

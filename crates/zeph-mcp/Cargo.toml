@@ -13,6 +13,7 @@ description = "MCP client with multi-server lifecycle and Qdrant tool registry f
 readme = "README.md"
 
 [features]
+profiling = []
 default = []
 mock = []
 

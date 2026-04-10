@@ -829,10 +829,26 @@ impl LlmProvider for ClaudeProvider {
         }
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.chat",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         self.send_request(messages).await
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.chat_stream",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let response = self.send_stream_request(messages).await?;
         Ok(claude_sse_to_stream(response))
@@ -842,6 +858,14 @@ impl LlmProvider for ClaudeProvider {
         true
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.embed",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
         Err(LlmError::EmbedUnsupported {
             provider: "claude".into(),

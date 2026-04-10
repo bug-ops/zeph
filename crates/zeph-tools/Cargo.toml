@@ -52,6 +52,7 @@ toml.workspace = true
 wiremock.workspace = true
 
 [features]
+profiling = []
 default = []
 
 [lints]

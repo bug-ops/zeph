@@ -30,6 +30,7 @@ pub use zeph_config::{
     MicrocompactConfig, PersonaConfig, TrajectoryConfig, TreeConfig,
 };
 pub use zeph_config::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
+pub use zeph_config::{TelemetryBackend, TelemetryConfig};
 
 pub use zeph_config::{
     ContentIsolationConfig, CustomPiiPattern, ExfiltrationGuardConfig, MemoryWriteValidationConfig,

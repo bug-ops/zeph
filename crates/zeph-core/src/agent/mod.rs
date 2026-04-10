@@ -999,6 +999,10 @@ impl<C: Channel> Agent<C> {
         (text, image_parts)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "agent.turn", skip_all, fields(turn_id))
+    )]
     async fn process_user_message(
         &mut self,
         text: String,
@@ -1007,6 +1011,7 @@ impl<C: Channel> Agent<C> {
         // Record iteration start in trace collector (C-02: owned guard, no borrow held).
         let iteration_index = self.debug_state.iteration_counter;
         self.debug_state.iteration_counter += 1;
+        tracing::Span::current().record("turn_id", iteration_index);
         self.debug_state
             .start_iteration_span(iteration_index, text.trim());
 
@@ -1212,6 +1217,10 @@ impl<C: Channel> Agent<C> {
         Ok(false)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "agent.prepare_context", skip_all)
+    )]
     async fn advance_context_lifecycle(&mut self, text: &str, trimmed: &str) {
         // Reset per-message pruning cache at the start of each turn (#2298).
         self.mcp.pruning_cache.reset();

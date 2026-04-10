@@ -105,10 +105,26 @@ impl LlmProvider for CompatibleProvider {
         None
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.chat",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         self.inner.chat(messages).await
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.chat_stream",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         self.inner.chat_stream(messages).await
     }
@@ -117,6 +133,14 @@ impl LlmProvider for CompatibleProvider {
         self.inner.supports_streaming()
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.embed",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         self.inner.embed(text).await
     }

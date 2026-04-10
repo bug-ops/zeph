@@ -29,6 +29,7 @@ use crate::providers::{
 };
 use crate::security::TrustConfig;
 use crate::security::{SecurityConfig, TimeoutConfig};
+use crate::telemetry::TelemetryConfig;
 use crate::ui::LspConfig;
 use crate::ui::{AcpConfig, TuiConfig};
 
@@ -96,6 +97,9 @@ pub struct Config {
     /// `MagicDocs` auto-maintained markdown (#2702).
     #[serde(default)]
     pub magic_docs: MagicDocsConfig,
+    /// Profiling and distributed tracing configuration.
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
     /// Resolved secrets from vault. Never serialized — populated at runtime.
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
@@ -255,6 +259,7 @@ impl Default for Config {
             lsp: LspConfig::default(),
             hooks: HooksConfig::default(),
             magic_docs: MagicDocsConfig::default(),
+            telemetry: TelemetryConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

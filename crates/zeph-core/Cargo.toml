@@ -13,6 +13,7 @@ description = "Core agent loop, configuration, context builder, metrics, and vau
 readme = "README.md"
 
 [features]
+profiling = []
 default = []
 candle = ["zeph-llm/candle"]
 classifiers = ["zeph-llm/classifiers", "zeph-sanitizer/classifiers"]

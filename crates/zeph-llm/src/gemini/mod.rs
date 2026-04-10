@@ -1204,10 +1204,26 @@ impl LlmProvider for GeminiProvider {
         }
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.chat",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         self.send_request(messages).await
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.chat_stream",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let response = self.send_stream_request(messages).await?;
         Ok(gemini_sse_to_stream(response))
@@ -1225,6 +1241,14 @@ impl LlmProvider for GeminiProvider {
         self.send_tool_request(messages, tools).await
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.embed",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         use crate::embed::truncate_for_embed;
 

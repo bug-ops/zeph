@@ -13,6 +13,7 @@ description = "SKILL.md parser, registry, embedding matcher, and hot-reload for 
 readme = "README.md"
 
 [features]
+profiling = []
 default = []
 miner = ["anyhow", "clap", "dirs", "toml", "tracing-subscriber"]
 

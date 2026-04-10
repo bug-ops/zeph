@@ -102,6 +102,7 @@ tower = "0.5"
 tower-http = { version = "0.6", default-features = false }
 tracing = "0.1"
 tracing-appender = "0.2"
+tracing-chrome = "0.7"
 tracing-opentelemetry = "0.32"
 tracing-subscriber = { version = "0.3", default-features = false }
 tracing-test = "0.2"
@@ -175,7 +176,7 @@ ide     = ["acp", "acp-http"]
 server  = ["gateway", "a2a", "otel"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling"]
 bench   = ["dep:zeph-bench"]
 
 # === Individual feature flags ===
@@ -193,6 +194,20 @@ gateway = ["dep:zeph-gateway"]
 scheduler = ["dep:zeph-scheduler", "dep:blake3", "dep:cron", "dep:schemars", "dep:chrono", "zeph-core/scheduler"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 pdf = ["zeph-memory/pdf"]
+profiling = [
+    "dep:tracing-chrome",
+    "dep:chrono",
+    "dep:uuid",
+    "zeph-core/profiling",
+    "zeph-llm/profiling",
+    "zeph-memory/profiling",
+    "zeph-tools/profiling",
+    "zeph-skills/profiling",
+    "zeph-mcp/profiling",
+    "zeph-channels/profiling",
+]
+profiling-alloc = ["profiling"]
+profiling-pyroscope = ["profiling", "otel"]
 # Database backend selection — mutually exclusive. Default includes sqlite.
 # NOTE: --all-features activates both, triggering compile_error! in zeph-db.
 # Use --features full or --features full,postgres instead.
@@ -204,7 +219,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
-chrono = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true, features = ["clock"] }
 clap = { workspace = true, features = ["derive", "env"] }
 cron = { workspace = true, optional = true }
 dialoguer.workspace = true
@@ -227,9 +242,11 @@ toml.workspace = true
 toml_edit.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
+tracing-chrome = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
+uuid = { workspace = true, optional = true, features = ["v4"] }
 zeph-a2a = { workspace = true, optional = true }
 zeph-acp = { workspace = true, optional = true }
 zeph-channels.workspace = true
