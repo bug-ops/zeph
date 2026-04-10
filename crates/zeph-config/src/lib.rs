@@ -65,6 +65,7 @@ pub mod learning;
 mod loader;
 pub mod logging;
 pub mod memory;
+pub mod metrics;
 pub mod migrate;
 pub mod providers;
 pub mod rate_limit;
@@ -109,6 +110,7 @@ pub use memory::{
     SemanticConfig, SessionsConfig, SidequestConfig, StoreRoutingConfig, StoreRoutingStrategy,
     TierConfig, TrajectoryConfig, TreeConfig, VectorBackend,
 };
+pub use metrics::MetricsConfig;
 pub use providers::{
     BanditConfig, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
     ComplexityRoutingConfig, GenerationParams, LlmConfig, LlmRoutingStrategy, MAX_TOKENS_CAP,

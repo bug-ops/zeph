@@ -23,6 +23,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `skill_reload_rx` and `config_reload_rx` channel sites. New `MetricsBridge` tracing layer
   using `on_enter`/`on_exit` accumulation for correct async timing, replacing manual
   `Instant::now()` bookkeeping for the 4 watched turn-phase spans when profiling is active.
+- **Prometheus metrics export Phase 1** (epic `#2865`, `#2866`): added Prometheus/OpenMetrics
+  compatible `/metrics` endpoint to the HTTP gateway. New `prometheus` feature flag (included in
+  `server` and `full` bundles); `prometheus-client` 0.24 added as workspace dependency. New
+  `crates/zeph-config/src/metrics.rs` with `MetricsConfig` (`enabled`, `path`,
+  `sync_interval_secs`); integrated into root `Config`. New `src/metrics_export.rs` with
+  `PrometheusMetrics` struct owning 25 metric families (counters + gauges with `zeph_` prefix),
+  `sync()` with delta computation and session-restart reset detection, and
+  `spawn_metrics_sync()` background task. Gateway extended with feature-gated
+  `GatewayServer::with_metrics_registry()` builder and `/metrics` handler returning
+  `application/openmetrics-text; version=1.0.0`. Wiring in `runner.rs` creates the registry
+  after the `MetricsSnapshot` watch channel and spawns gateway and sync task in correct order.
+  Config migration adds commented `[metrics]` block; `--init` wizard gains a Prometheus step.
 
 - **Profiling and tracing Phase 1: foundation** (`#2847`, `#2848`, `#2849`, `#2850`, epic `#2846`):
   added two-tier telemetry backend with zero overhead when disabled. New `[telemetry]` config

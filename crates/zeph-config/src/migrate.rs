@@ -24,6 +24,7 @@ static CANONICAL_ORDER: &[&str] = &[
     "a2a",
     "acp",
     "gateway",
+    "metrics",
     "daemon",
     "scheduler",
     "orchestration",

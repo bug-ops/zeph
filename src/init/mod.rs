@@ -203,6 +203,8 @@ pub(crate) struct WizardState {
     pub(crate) magic_docs_enabled: bool,
     // Profiling and distributed tracing (#2846)
     pub(crate) telemetry_enabled: bool,
+    // Prometheus metrics export (#2866)
+    pub(crate) prometheus_enabled: bool,
 }
 
 impl Default for WizardState {
@@ -345,6 +347,7 @@ impl Default for WizardState {
             autodream_min_hours: 8,
             magic_docs_enabled: false,
             telemetry_enabled: false,
+            prometheus_enabled: false,
         }
     }
 }
@@ -409,6 +412,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_retry(&mut state)?;
     step_policy(&mut state)?;
     step_telemetry(&mut state)?;
+    step_prometheus(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -905,6 +909,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.autodream.min_hours = state.autodream_min_hours;
     config.magic_docs.enabled = state.magic_docs_enabled;
     config.telemetry.enabled = state.telemetry_enabled;
+    if state.prometheus_enabled {
+        config.metrics.enabled = true;
+        // Only enable gateway if not already enabled by the deployment bundle.
+        if !config.gateway.enabled {
+            config.gateway.enabled = true;
+        }
+    }
 
     config
 }
@@ -1232,6 +1243,21 @@ fn step_telemetry(state: &mut WizardState) -> anyhow::Result<()> {
 
     state.telemetry_enabled = Confirm::new()
         .with_prompt("Enable profiling/tracing telemetry?")
+        .default(false)
+        .interact()?;
+
+    println!();
+    Ok(())
+}
+
+fn step_prometheus(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Prometheus Metrics Export ==\n");
+    println!("Requires the binary to be compiled with --features prometheus.");
+    println!("Exposes a /metrics endpoint on the HTTP gateway for Prometheus scraping.");
+    println!("Enabling this will also enable [gateway] if it is not already set.\n");
+
+    state.prometheus_enabled = Confirm::new()
+        .with_prompt("Enable Prometheus metrics export?")
         .default(false)
         .interact()?;
 

@@ -62,6 +62,12 @@ pub struct GatewayServer {
     max_body_size: usize,
     webhook_tx: mpsc::Sender<String>,
     shutdown_rx: watch::Receiver<bool>,
+    /// Prometheus metrics registry and endpoint path (feature-gated).
+    #[cfg(feature = "prometheus")]
+    metrics_registry: Option<(
+        std::sync::Arc<prometheus_client::registry::Registry>,
+        String,
+    )>,
 }
 
 impl GatewayServer {
@@ -103,6 +109,8 @@ impl GatewayServer {
             max_body_size: 1_048_576,
             webhook_tx,
             shutdown_rx,
+            #[cfg(feature = "prometheus")]
+            metrics_registry: None,
         }
     }
 
@@ -182,6 +190,43 @@ impl GatewayServer {
         self
     }
 
+    /// Attach a Prometheus metrics registry to the gateway.
+    ///
+    /// When set, the server mounts an additional route at `path` that returns the registry
+    /// contents encoded as `OpenMetrics` 1.0.0 text.  The endpoint is unauthenticated and
+    /// bypasses rate limiting.
+    ///
+    /// Requires the `prometheus` feature.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "prometheus")]
+    /// # {
+    /// use std::sync::Arc;
+    /// use prometheus_client::registry::Registry;
+    /// use tokio::sync::{mpsc, watch};
+    /// use zeph_gateway::GatewayServer;
+    ///
+    /// let (tx, _rx) = mpsc::channel::<String>(1);
+    /// let (_stx, srx) = watch::channel(false);
+    /// let registry = Arc::new(Registry::default());
+    ///
+    /// let server = GatewayServer::new("127.0.0.1", 8080, tx, srx)
+    ///     .with_metrics_registry(registry, "/metrics");
+    /// # }
+    /// ```
+    #[cfg(feature = "prometheus")]
+    #[must_use]
+    pub fn with_metrics_registry(
+        mut self,
+        registry: std::sync::Arc<prometheus_client::registry::Registry>,
+        path: impl Into<String>,
+    ) -> Self {
+        self.metrics_registry = Some((registry, path.into()));
+        self
+    }
+
     /// Start the HTTP gateway server and block until shutdown is signalled.
     ///
     /// Binds a TCP listener on the configured address, installs middleware
@@ -214,6 +259,16 @@ impl GatewayServer {
             self.max_body_size,
         );
 
+        #[cfg(feature = "prometheus")]
+        let router = if let Some((registry, path)) = self.metrics_registry {
+            let metrics_route = axum::Router::new()
+                .route(&path, axum::routing::get(crate::handlers::metrics_handler))
+                .with_state(registry);
+            router.merge(metrics_route)
+        } else {
+            router
+        };
+
         let listener = tokio::net::TcpListener::bind(self.addr)
             .await
             .map_err(|e| GatewayError::Bind(self.addr.to_string(), e))?;
@@ -242,6 +297,65 @@ impl GatewayServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "prometheus")]
+    #[tokio::test]
+    async fn test_metrics_endpoint_returns_openmetrics() {
+        use axum::body::Body;
+        use http_body_util::BodyExt;
+        use prometheus_client::registry::Registry;
+        use tower::ServiceExt;
+
+        let registry = std::sync::Arc::new(Registry::default());
+
+        let (tx, _rx) = mpsc::channel(1);
+        let (_stx, srx) = watch::channel(false);
+        let server = GatewayServer::new("127.0.0.1", 19999, tx, srx)
+            .with_metrics_registry(std::sync::Arc::clone(&registry), "/metrics");
+
+        // Build the router directly without binding a port
+        let state = AppState {
+            webhook_tx: server.webhook_tx,
+            started_at: Instant::now(),
+        };
+        let router = crate::router::build_router(
+            state,
+            server.auth_token.as_deref(),
+            server.rate_limit,
+            server.max_body_size,
+        );
+        let metrics_route = axum::Router::new()
+            .route(
+                "/metrics",
+                axum::routing::get(crate::handlers::metrics_handler),
+            )
+            .with_state(registry);
+        let router = router.merge(metrics_route);
+
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let ct = response
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/openmetrics-text"),
+            "unexpected content-type: {ct}"
+        );
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(body_bytes.to_vec()).unwrap();
+        assert!(body.ends_with("# EOF\n"), "missing EOF marker in:\n{body}");
+    }
 
     #[test]
     fn server_builder_chain() {

@@ -538,7 +538,13 @@ pub(crate) async fn run_daemon(
 
     #[cfg(feature = "gateway")]
     if config.gateway.enabled {
-        spawn_gateway_server(config, shutdown_rx.clone());
+        spawn_gateway_server(
+            config,
+            shutdown_rx.clone(),
+            // Daemon mode has no MetricsSnapshot watch channel — skip Prometheus sync.
+            #[cfg(feature = "prometheus")]
+            None,
+        );
     }
 
     let pid_file = config.daemon.pid_file.clone();

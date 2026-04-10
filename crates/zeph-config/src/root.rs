@@ -23,6 +23,7 @@ use crate::memory::{
     CompressionConfig, DocumentConfig, GraphConfig, MagicDocsConfig, MemoryConfig, SemanticConfig,
     SessionsConfig, SidequestConfig, TierConfig, VectorBackend,
 };
+use crate::metrics::MetricsConfig;
 use crate::providers::{
     LlmConfig, get_default_embedding_model, get_default_response_cache_ttl_secs,
     get_default_router_ema_alpha, get_default_router_reorder_interval,
@@ -100,6 +101,9 @@ pub struct Config {
     /// Profiling and distributed tracing configuration.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    /// Prometheus metrics export configuration.
+    #[serde(default)]
+    pub metrics: MetricsConfig,
     /// Resolved secrets from vault. Never serialized — populated at runtime.
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
@@ -260,6 +264,7 @@ impl Default for Config {
             hooks: HooksConfig::default(),
             magic_docs: MagicDocsConfig::default(),
             telemetry: TelemetryConfig::default(),
+            metrics: MetricsConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

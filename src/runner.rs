@@ -1805,10 +1805,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
     };
 
-    #[cfg(feature = "gateway")]
-    if config.gateway.enabled {
-        crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone());
-    }
+    // Gateway is spawned after the metrics channel is created (lines ~1835 below).
+    // The actual spawn_gateway_server call is deferred to after metrics wiring.
 
     #[allow(unused_variables)]
     let agent = {
@@ -1891,6 +1889,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             m.autosave_enabled = config.memory.autosave_assistant;
         });
     }
+    // Clone metrics_rx for Prometheus sync task before it is consumed by TUI or dropped.
+    #[cfg(feature = "prometheus")]
+    let prometheus_metrics_rx = metrics_rx.clone();
+
     #[cfg(all(feature = "tui", feature = "scheduler"))]
     let metrics_tx_for_sched = metrics_tx.clone();
     let extended_context = config
@@ -1985,6 +1987,52 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         tui_metrics_rx = None;
         drop(metrics_rx);
     };
+
+    // Wire up Prometheus metrics sync and spawn the gateway server.
+    //
+    // S1 fix (critic review): gateway is spawned HERE, after the metrics watch channel exists,
+    // so prometheus_metrics_rx is available. This replaces the earlier placeholder comment.
+    // TODO(#2866 Phase 2): register prometheus_sync_handle with the background task supervisor
+    // instead of storing it as a fire-and-forget binding. For MVP the handle is kept alive by the
+    // binding until the process exits.
+    // `prometheus` feature implies `gateway` (see Cargo.toml feature definition), so no inner
+    // `#[cfg(feature = "gateway")]` guards are needed inside this block.
+    #[cfg(feature = "prometheus")]
+    let _prometheus_sync_handle = {
+        if config.metrics.enabled && config.gateway.enabled {
+            let prom = std::sync::Arc::new(crate::metrics_export::PrometheusMetrics::new());
+            let handle = crate::metrics_export::spawn_metrics_sync(
+                std::sync::Arc::clone(&prom),
+                prometheus_metrics_rx,
+                config.metrics.sync_interval_secs,
+            );
+            crate::gateway_spawn::spawn_gateway_server(
+                config,
+                shutdown_rx.clone(),
+                Some((
+                    std::sync::Arc::clone(&prom.registry),
+                    config.metrics.path.clone(),
+                )),
+            );
+            Some(handle)
+        } else {
+            if config.metrics.enabled && !config.gateway.enabled {
+                tracing::warn!(
+                    "[metrics] enabled=true but [gateway] enabled=false; skipping Prometheus metrics export"
+                );
+            }
+            if config.gateway.enabled {
+                crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone(), None);
+            }
+            None
+        }
+    };
+
+    // When `prometheus` feature is disabled, spawn gateway unconditionally if enabled.
+    #[cfg(all(feature = "gateway", not(feature = "prometheus")))]
+    if config.gateway.enabled {
+        crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone());
+    }
 
     let mut agent = agent;
     #[cfg(feature = "tui")]

@@ -10,6 +10,8 @@ mod daemon;
 mod db_url;
 mod gateway_spawn;
 mod init;
+#[cfg(feature = "prometheus")]
+mod metrics_export;
 mod runner;
 mod scheduler;
 #[cfg(feature = "scheduler")]

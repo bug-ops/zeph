@@ -59,6 +59,7 @@ opentelemetry_sdk = { version = "0.31", default-features = false }
 ordered-float = "5.3"
 pdf-extract = "0.10"
 parking_lot = "0.12"
+prometheus-client = "0.24"
 petgraph = "0.8"
 proptest = "1.11"
 pulldown-cmark = "0.13"
@@ -173,7 +174,7 @@ default = ["scheduler", "sqlite"]
 # === Use-case bundles ===
 desktop = ["tui"]
 ide     = ["acp", "acp-http"]
-server  = ["gateway", "a2a", "otel"]
+server  = ["gateway", "a2a", "otel", "prometheus"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf"]
 full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling"]
@@ -191,6 +192,7 @@ tui = ["dep:zeph-tui"]
 discord = ["zeph-channels/discord"]
 slack = ["zeph-channels/slack"]
 gateway = ["dep:zeph-gateway"]
+prometheus = ["gateway", "dep:prometheus-client", "zeph-gateway/prometheus"]
 scheduler = ["dep:zeph-scheduler", "dep:blake3", "dep:cron", "dep:schemars", "dep:chrono", "zeph-core/scheduler"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 pdf = ["zeph-memory/pdf"]
@@ -229,6 +231,7 @@ opentelemetry = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 parking_lot.workspace = true
+prometheus-client = { workspace = true, optional = true }
 reqwest.workspace = true
 rmcp.workspace = true
 schemars = { workspace = true, optional = true }

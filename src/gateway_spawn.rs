@@ -5,6 +5,10 @@
 pub(crate) fn spawn_gateway_server(
     config: &zeph_core::config::Config,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    #[cfg(feature = "prometheus")] metrics_registry: Option<(
+        std::sync::Arc<prometheus_client::registry::Registry>,
+        String,
+    )>,
 ) {
     use zeph_gateway::GatewayServer;
 
@@ -18,6 +22,13 @@ pub(crate) fn spawn_gateway_server(
     .with_auth(config.gateway.auth_token.clone())
     .with_rate_limit(config.gateway.rate_limit)
     .with_max_body_size(config.gateway.max_body_size);
+
+    #[cfg(feature = "prometheus")]
+    let gw = if let Some((registry, path)) = metrics_registry {
+        gw.with_metrics_registry(registry, path)
+    } else {
+        gw
+    };
 
     tracing::info!(
         "Gateway server spawned on {}:{}",

@@ -633,6 +633,15 @@ rate_limit = 120
 # Maximum request body size in bytes (1MB)
 max_body_size = 1048576
 
+[metrics]
+# Enable Prometheus metrics export on the gateway /metrics endpoint.
+# Requires [gateway] enabled = true and the `prometheus` feature flag.
+enabled = false
+# HTTP path for the metrics endpoint
+path = "/metrics"
+# How often (seconds) to sync MetricsSnapshot to the Prometheus registry (min 1)
+sync_interval_secs = 5
+
 [daemon]
 # Enable daemon supervisor
 enabled = false

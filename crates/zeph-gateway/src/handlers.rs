@@ -110,6 +110,47 @@ pub(crate) async fn health_handler(State(state): State<AppState>) -> impl IntoRe
     })
 }
 
+/// Handler for `GET /metrics` (Prometheus scrape endpoint).
+///
+/// Returns the current registry contents encoded as `OpenMetrics` 1.0.0 text format, suitable for
+/// scraping by Prometheus or any compatible monitoring system.
+///
+/// This handler requires `State<Arc<Registry>>` injected via the nested router in
+/// [`crate::GatewayServer::with_metrics_registry`].
+///
+/// # Responses
+///
+/// | Status | Condition |
+/// |---|---|
+/// | 200 | Registry encoded successfully; `Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8` |
+/// | 500 | Registry encoding failed (logged as error) |
+#[cfg(feature = "prometheus")]
+pub(crate) async fn metrics_handler(
+    axum::extract::State(registry): axum::extract::State<
+        std::sync::Arc<prometheus_client::registry::Registry>,
+    >,
+) -> impl axum::response::IntoResponse {
+    let mut buf = String::new();
+    match prometheus_client::encoding::text::encode(&mut buf, &registry) {
+        Ok(()) => (
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "application/openmetrics-text; version=1.0.0; charset=utf-8",
+            )],
+            buf,
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("failed to encode prometheus metrics: {e}");
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "metrics encoding failed",
+            )
+                .into_response()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -12,9 +12,13 @@ publish.workspace = true
 description = "HTTP gateway for webhook ingestion with bearer auth for Zeph"
 readme = "README.md"
 
+[features]
+prometheus = ["dep:prometheus-client"]
+
 [dependencies]
 axum.workspace = true
 blake3.workspace = true
+prometheus-client = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 subtle.workspace = true
