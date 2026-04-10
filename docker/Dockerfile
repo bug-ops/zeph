@@ -2,11 +2,12 @@ FROM debian:bookworm-slim
 
 ARG TARGETARCH
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl wget git jq file findutils iproute2 procps \
     nodejs npm python3 && \
-    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
     useradd --system --create-home --shell /sbin/nologin zeph
 
 WORKDIR /app
