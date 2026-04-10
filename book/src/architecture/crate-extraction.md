@@ -79,9 +79,9 @@ Each layer only depends on layers below it. This prevents circular dependencies 
 ## Further Reading
 
 - [Crates Overview](crates-overview.md) — full workspace layout and dependency graph
-- [zeph-config reference](../reference/crate-config.md)
-- [zeph-vault reference](../reference/crate-vault.md)
-- [zeph-experiments reference](../reference/crate-experiments.md)
-- [zeph-sanitizer reference](../reference/crate-sanitizer.md)
-- [zeph-subagent reference](../reference/crate-subagent.md)
-- [zeph-orchestration reference](../reference/crate-orchestration.md)
+- [zeph-config reference](https://docs.rs/zeph-config/latest/zeph_config/)
+- [zeph-vault reference](https://docs.rs/zeph-vault/latest/zeph_vault/)
+- [zeph-experiments reference](https://docs.rs/zeph-experiments/latest/zeph_experiments/)
+- [zeph-sanitizer reference](https://docs.rs/zeph-sanitizer/latest/zeph_sanitizer/)
+- [zeph-subagent reference](https://docs.rs/zeph-subagent/latest/zeph_subagent/)
+- [zeph-orchestration reference](https://docs.rs/zeph-orchestration/latest/zeph_orchestration/)
