@@ -23,6 +23,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `skill_reload_rx` and `config_reload_rx` channel sites. New `MetricsBridge` tracing layer
   using `on_enter`/`on_exit` accumulation for correct async timing, replacing manual
   `Instant::now()` bookkeeping for the 4 watched turn-phase spans when profiling is active.
+- **Prometheus metrics export Phase 3: histogram metrics** (epic `#2865`): added `HistogramRecorder`
+  trait to `zeph-core::metrics` for per-event latency recording without coupling core to
+  `prometheus-client`. `PrometheusMetrics` implements the trait with three histograms —
+  `zeph_llm_latency_seconds`, `zeph_turn_duration_seconds`, `zeph_tool_execution_seconds` — using
+  buckets `[0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0]` s. Recording points: LLM call completion in
+  `record_chat_metrics_and_compact`, turn end in `flush_turn_timings`, per-tool completion in
+  `handle_native_tool_calls`. New `Agent::with_histogram_recorder` builder method. Wired in
+  `runner.rs` via a single pre-created `Arc<PrometheusMetrics>` shared between histogram recorder
+  and sync task. Metrics path validated at startup — warns if empty or missing leading `/`.
+
+- **Prometheus metrics export Phase 2: Grafana stack** (epic `#2865`): added ready-to-run local
+  monitoring stack. New `docker/docker-compose.metrics.yml` overlay (Prometheus v3.4.0, Grafana
+  11.6.0); `docker/prometheus/prometheus.yml` with scrape config; Grafana provisioning YAML for
+  datasource and dashboard discovery; `docker/grafana/dashboards/zeph-overview.json` with panels
+  for all 25 Phase 1 metrics plus Phase 3 histogram percentiles (p50/p95/p99) organized in 7 rows.
+  New `book/src/guides/prometheus.md` setup guide. Start with:
+  `docker compose -f docker/docker-compose.metrics.yml up`.
+
 - **Prometheus metrics export Phase 1** (epic `#2865`, `#2866`): added Prometheus/OpenMetrics
   compatible `/metrics` endpoint to the HTTP gateway. New `prometheus` feature flag (included in
   `server` and `full` bundles); `prometheus-client` 0.24 added as workspace dependency. New

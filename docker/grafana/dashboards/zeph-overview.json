@@ -1,0 +1,598 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "11.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "LLM Performance",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 1 },
+      "id": 2,
+      "options": { "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "rate(zeph_llm_tokens_total{direction=\"prompt\"}[5m])",
+          "legendFormat": "prompt tokens/s"
+        },
+        {
+          "expr": "rate(zeph_llm_tokens_total{direction=\"completion\"}[5m])",
+          "legendFormat": "completion tokens/s"
+        },
+        {
+          "expr": "rate(zeph_llm_tokens_total{direction=\"cache_read\"}[5m])",
+          "legendFormat": "cache_read tokens/s"
+        }
+      ],
+      "title": "LLM Token Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 1 },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "rate(zeph_llm_api_calls_total[5m])",
+          "legendFormat": "API calls/s"
+        }
+      ],
+      "title": "LLM API Call Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 1 },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "zeph_llm_latency_ms",
+          "legendFormat": "last call latency (ms)"
+        }
+      ],
+      "title": "LLM Last Call Latency (ms)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 1 },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "zeph_llm_context_tokens",
+          "legendFormat": "context tokens"
+        }
+      ],
+      "title": "LLM Context Tokens",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 10,
+      "title": "LLM Latency Histograms (Phase 3)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
+      "id": 11,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, rate(zeph_llm_latency_seconds_bucket[5m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(zeph_llm_latency_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(zeph_llm_latency_seconds_bucket[5m]))",
+          "legendFormat": "p99"
+        }
+      ],
+      "title": "LLM Latency Percentiles (s)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
+      "id": 12,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, rate(zeph_turn_duration_seconds_bucket[5m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(zeph_turn_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(zeph_turn_duration_seconds_bucket[5m]))",
+          "legendFormat": "p99"
+        }
+      ],
+      "title": "Turn Duration Percentiles (s)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 10 },
+      "id": 13,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, rate(zeph_tool_execution_seconds_bucket[5m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(zeph_tool_execution_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(zeph_tool_execution_seconds_bucket[5m]))",
+          "legendFormat": "p99"
+        }
+      ],
+      "title": "Tool Execution Percentiles (s)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 20,
+      "title": "Agent Turn Phases",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "ms" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
+      "id": 21,
+      "targets": [
+        {
+          "expr": "zeph_turn_phase_duration_ms{phase=\"prepare_context\"}",
+          "legendFormat": "prepare_context"
+        },
+        {
+          "expr": "zeph_turn_phase_duration_ms{phase=\"llm_chat\"}",
+          "legendFormat": "llm_chat"
+        },
+        {
+          "expr": "zeph_turn_phase_duration_ms{phase=\"tool_exec\"}",
+          "legendFormat": "tool_exec"
+        },
+        {
+          "expr": "zeph_turn_phase_duration_ms{phase=\"persist\"}",
+          "legendFormat": "persist"
+        }
+      ],
+      "title": "Last Turn Phase Durations (ms)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "ms" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
+      "id": 22,
+      "targets": [
+        {
+          "expr": "zeph_turn_phase_avg_ms{phase=\"prepare_context\"}",
+          "legendFormat": "prepare_context avg"
+        },
+        {
+          "expr": "zeph_turn_phase_avg_ms{phase=\"llm_chat\"}",
+          "legendFormat": "llm_chat avg"
+        },
+        {
+          "expr": "zeph_turn_phase_avg_ms{phase=\"tool_exec\"}",
+          "legendFormat": "tool_exec avg"
+        }
+      ],
+      "title": "Rolling Avg Phase Durations (ms)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "ms" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
+      "id": 23,
+      "targets": [
+        {
+          "expr": "zeph_turn_phase_max_ms{phase=\"llm_chat\"}",
+          "legendFormat": "llm_chat max"
+        },
+        {
+          "expr": "zeph_turn_phase_max_ms{phase=\"tool_exec\"}",
+          "legendFormat": "tool_exec max"
+        }
+      ],
+      "title": "Max Phase Durations (ms)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "id": 30,
+      "title": "Memory & Context",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 28 },
+      "id": 31,
+      "targets": [
+        { "expr": "zeph_memory_messages", "legendFormat": "messages" }
+      ],
+      "title": "Memory Messages Total",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 28 },
+      "id": 32,
+      "targets": [
+        {
+          "expr": "rate(zeph_memory_embeddings_total[5m])",
+          "legendFormat": "embeddings/s"
+        },
+        {
+          "expr": "rate(zeph_memory_summaries_total[5m])",
+          "legendFormat": "summaries/s"
+        }
+      ],
+      "title": "Memory Operations Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 28 },
+      "id": 33,
+      "targets": [
+        {
+          "expr": "rate(zeph_memory_compactions_total{tier=\"soft\"}[5m])",
+          "legendFormat": "soft compactions/s"
+        },
+        {
+          "expr": "rate(zeph_memory_compactions_total{tier=\"hard\"}[5m])",
+          "legendFormat": "hard compactions/s"
+        }
+      ],
+      "title": "Compaction Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "color": "red", "text": "Unavailable" } }, "type": "value" },
+            { "options": { "1": { "color": "green", "text": "Available" } }, "type": "value" }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 28 },
+      "id": 34,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "expr": "zeph_memory_qdrant_available", "legendFormat": "Qdrant" }
+      ],
+      "title": "Qdrant Available",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 },
+      "id": 40,
+      "title": "Tools & Cache",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "id": 41,
+      "targets": [
+        {
+          "expr": "rate(zeph_tool_cache_total{result=\"hit\"}[5m])",
+          "legendFormat": "cache hits/s"
+        },
+        {
+          "expr": "rate(zeph_tool_cache_total{result=\"miss\"}[5m])",
+          "legendFormat": "cache misses/s"
+        }
+      ],
+      "title": "Tool Cache Hit/Miss Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "id": 42,
+      "targets": [
+        {
+          "expr": "rate(zeph_tool_output_prunes_total[5m])",
+          "legendFormat": "prunes/s"
+        }
+      ],
+      "title": "Tool Output Prune Rate",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 },
+      "id": 50,
+      "title": "Security",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+      "id": 51,
+      "targets": [
+        {
+          "expr": "rate(zeph_security_injection_flags_total[5m])",
+          "legendFormat": "injection flags/s"
+        },
+        {
+          "expr": "rate(zeph_security_exfiltration_blocks_total[5m])",
+          "legendFormat": "exfiltration blocks/s"
+        },
+        {
+          "expr": "rate(zeph_security_rate_limit_trips_total[5m])",
+          "legendFormat": "rate limit trips/s"
+        }
+      ],
+      "title": "Security Event Rates",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
+      "id": 52,
+      "targets": [
+        {
+          "expr": "rate(zeph_security_quarantine_total{result=\"invoked\"}[5m])",
+          "legendFormat": "quarantine invoked/s"
+        },
+        {
+          "expr": "rate(zeph_security_quarantine_total{result=\"failed\"}[5m])",
+          "legendFormat": "quarantine failed/s"
+        }
+      ],
+      "title": "Quarantine Rate",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 },
+      "id": 60,
+      "title": "System",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 55 },
+      "id": 61,
+      "targets": [
+        { "expr": "zeph_uptime_seconds", "legendFormat": "uptime (s)" }
+      ],
+      "title": "Agent Uptime",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 55 },
+      "id": 62,
+      "targets": [
+        { "expr": "zeph_skills", "legendFormat": "skills loaded" }
+      ],
+      "title": "Skills Loaded",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 55 },
+      "id": 63,
+      "targets": [
+        {
+          "expr": "zeph_mcp_servers{status=\"connected\"}",
+          "legendFormat": "connected"
+        },
+        {
+          "expr": "zeph_mcp_servers{status=\"failed\"}",
+          "legendFormat": "failed"
+        }
+      ],
+      "title": "MCP Servers",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 55 },
+      "id": 64,
+      "targets": [
+        {
+          "expr": "zeph_background_tasks{state=\"inflight\"}",
+          "legendFormat": "inflight"
+        },
+        {
+          "expr": "zeph_background_tasks{state=\"completed\"}",
+          "legendFormat": "completed"
+        },
+        {
+          "expr": "zeph_background_tasks{state=\"dropped\"}",
+          "legendFormat": "dropped"
+        }
+      ],
+      "title": "Background Tasks",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 63 },
+      "id": 65,
+      "targets": [
+        {
+          "expr": "rate(zeph_orchestration_plans_total[5m])",
+          "legendFormat": "plans/s"
+        }
+      ],
+      "title": "Orchestration Plan Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 63 },
+      "id": 66,
+      "targets": [
+        {
+          "expr": "rate(zeph_orchestration_tasks_total{status=\"completed\"}[5m])",
+          "legendFormat": "completed/s"
+        },
+        {
+          "expr": "rate(zeph_orchestration_tasks_total{status=\"failed\"}[5m])",
+          "legendFormat": "failed/s"
+        },
+        {
+          "expr": "rate(zeph_orchestration_tasks_total{status=\"skipped\"}[5m])",
+          "legendFormat": "skipped/s"
+        }
+      ],
+      "title": "Orchestration Task Rate",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["zeph", "observability"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Zeph Overview",
+  "uid": "zeph-overview",
+  "version": 1
+}

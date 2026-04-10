@@ -42,6 +42,7 @@
 - [Migrate Config](guides/migrate-config.md)
 - [Deploy with Docker](guides/docker.md)
 - [Daemon Mode](guides/daemon-mode.md)
+- [Prometheus Monitoring](guides/prometheus.md)
 
 # Advanced
 

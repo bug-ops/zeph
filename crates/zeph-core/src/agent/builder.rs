@@ -1109,6 +1109,22 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach a histogram recorder for per-event Prometheus observations.
+    ///
+    /// When set, the agent records individual LLM call, turn, and tool execution
+    /// latencies into the provided recorder. The recorder must be `Send + Sync`
+    /// and is shared across the agent loop via `Arc`.
+    ///
+    /// Pass `None` to disable histogram recording (the default).
+    #[must_use]
+    pub fn with_histogram_recorder(
+        mut self,
+        recorder: Option<std::sync::Arc<dyn crate::metrics::HistogramRecorder>>,
+    ) -> Self {
+        self.metrics.histogram_recorder = recorder;
+        self
+    }
+
     /// Returns a handle that can cancel the current in-flight operation.
     /// The returned `Notify` is stable across messages — callers invoke
     /// `notify_waiters()` to cancel whatever operation is running.

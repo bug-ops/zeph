@@ -1893,6 +1893,28 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "prometheus")]
     let prometheus_metrics_rx = metrics_rx.clone();
 
+    // Pre-create the PrometheusMetrics instance so its Arc can be passed both to the
+    // histogram recorder wiring (before agent construction) and to the sync task (below).
+    // The Arc is None when the feature is disabled or metrics/gateway is not enabled.
+    #[cfg(feature = "prometheus")]
+    let prom_arc: Option<std::sync::Arc<crate::metrics_export::PrometheusMetrics>> =
+        if config.metrics.enabled && config.gateway.enabled {
+            // M4: validate metrics.path before using it.
+            let path = &config.metrics.path;
+            if path.is_empty() || !path.starts_with('/') {
+                tracing::warn!(
+                    path = %path,
+                    "[metrics] metrics.path must be non-empty and start with '/'; \
+                     got '{path}' — using default '/metrics'"
+                );
+            }
+            Some(std::sync::Arc::new(
+                crate::metrics_export::PrometheusMetrics::new(),
+            ))
+        } else {
+            None
+        };
+
     #[cfg(all(feature = "tui", feature = "scheduler"))]
     let metrics_tx_for_sched = metrics_tx.clone();
     let extended_context = config
@@ -1930,6 +1952,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .with_metrics(metrics_tx)
         .with_status_tx(agent_status_tx)
         .with_provider_pool(config.llm.providers.clone(), provider_config_snapshot);
+
+    #[cfg(feature = "prometheus")]
+    let agent = {
+        let recorder: Option<std::sync::Arc<dyn zeph_core::metrics::HistogramRecorder>> =
+            prom_arc.as_ref().map(|p| {
+                std::sync::Arc::clone(p)
+                    as std::sync::Arc<dyn zeph_core::metrics::HistogramRecorder>
+            });
+        agent.with_histogram_recorder(recorder)
+    };
     #[cfg(not(feature = "tui"))]
     drop(metrics_rx);
 
@@ -1999,20 +2031,24 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // `#[cfg(feature = "gateway")]` guards are needed inside this block.
     #[cfg(feature = "prometheus")]
     let _prometheus_sync_handle = {
-        if config.metrics.enabled && config.gateway.enabled {
-            let prom = std::sync::Arc::new(crate::metrics_export::PrometheusMetrics::new());
+        if let Some(prom) = prom_arc {
             let handle = crate::metrics_export::spawn_metrics_sync(
                 std::sync::Arc::clone(&prom),
                 prometheus_metrics_rx,
                 config.metrics.sync_interval_secs,
             );
+            let effective_path = {
+                let p = &config.metrics.path;
+                if p.is_empty() || !p.starts_with('/') {
+                    "/metrics".to_owned()
+                } else {
+                    p.clone()
+                }
+            };
             crate::gateway_spawn::spawn_gateway_server(
                 config,
                 shutdown_rx.clone(),
-                Some((
-                    std::sync::Arc::clone(&prom.registry),
-                    config.metrics.path.clone(),
-                )),
+                Some((std::sync::Arc::clone(&prom.registry), effective_path)),
             );
             Some(handle)
         } else {

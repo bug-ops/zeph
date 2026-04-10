@@ -20,9 +20,18 @@ use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
+use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::Registry;
 use tokio::sync::watch;
 use zeph_core::metrics::MetricsSnapshot;
+
+/// Bucket boundaries for latency histograms, in seconds.
+///
+/// Covers the typical range for LLM calls (1–30 s), tool executions (0.01–60 s),
+/// and full agent turns (1–120 s).  Using a single set keeps the implementation
+/// uniform; callers can adjust bucket resolution in a future iteration once
+/// real-world data is available.
+const LATENCY_BUCKETS: &[f64] = &[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0];
 
 // ---------------------------------------------------------------------------
 // Label structs
@@ -173,6 +182,11 @@ pub struct PrometheusMetrics {
     // --- System metrics ---
     uptime_seconds: Gauge,
     skills_total: Gauge,
+
+    // --- Histogram metrics (Phase 3) ---
+    llm_latency_seconds: Histogram,
+    turn_duration_seconds: Histogram,
+    tool_execution_seconds: Histogram,
 }
 
 impl PrometheusMetrics {
@@ -365,6 +379,27 @@ impl PrometheusMetrics {
             background_tasks.clone(),
         );
 
+        let llm_latency_seconds = Histogram::new(LATENCY_BUCKETS.iter().copied());
+        registry.register(
+            "zeph_llm_latency_seconds",
+            "LLM API call latency distribution in seconds",
+            llm_latency_seconds.clone(),
+        );
+
+        let turn_duration_seconds = Histogram::new(LATENCY_BUCKETS.iter().copied());
+        registry.register(
+            "zeph_turn_duration_seconds",
+            "Full agent turn duration distribution in seconds (context + LLM + tools + persist)",
+            turn_duration_seconds.clone(),
+        );
+
+        let tool_execution_seconds = Histogram::new(LATENCY_BUCKETS.iter().copied());
+        registry.register(
+            "zeph_tool_execution_seconds",
+            "Individual tool execution latency distribution in seconds",
+            tool_execution_seconds.clone(),
+        );
+
         Self {
             registry: Arc::new(registry),
             llm_tokens_total,
@@ -392,6 +427,9 @@ impl PrometheusMetrics {
             background_tasks,
             uptime_seconds,
             skills_total,
+            llm_latency_seconds,
+            turn_duration_seconds,
+            tool_execution_seconds,
         }
     }
 
@@ -670,6 +708,20 @@ impl Default for PrometheusMetrics {
     }
 }
 
+impl zeph_core::metrics::HistogramRecorder for PrometheusMetrics {
+    fn observe_llm_latency(&self, duration: std::time::Duration) {
+        self.llm_latency_seconds.observe(duration.as_secs_f64());
+    }
+
+    fn observe_turn_duration(&self, duration: std::time::Duration) {
+        self.turn_duration_seconds.observe(duration.as_secs_f64());
+    }
+
+    fn observe_tool_execution(&self, duration: std::time::Duration) {
+        self.tool_execution_seconds.observe(duration.as_secs_f64());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Background sync task
 // ---------------------------------------------------------------------------
@@ -699,7 +751,7 @@ impl Default for PrometheusMetrics {
 /// ```
 pub fn spawn_metrics_sync(
     metrics: Arc<PrometheusMetrics>,
-    snapshot_rx: watch::Receiver<MetricsSnapshot>,
+    mut snapshot_rx: watch::Receiver<MetricsSnapshot>,
     interval_secs: u64,
 ) -> tokio::task::JoinHandle<()> {
     let original = interval_secs;
@@ -717,7 +769,7 @@ pub fn spawn_metrics_sync(
         loop {
             interval.tick().await;
 
-            let current = snapshot_rx.borrow().clone();
+            let current = snapshot_rx.borrow_and_update().clone();
             metrics.sync(&current, &prev);
             prev = current;
         }
@@ -862,5 +914,61 @@ mod tests {
             buf.contains("state=\"completed\""),
             "missing bg completed label"
         );
+    }
+
+    #[test]
+    fn test_histogram_observation() {
+        use zeph_core::metrics::HistogramRecorder;
+
+        let pm = PrometheusMetrics::new();
+
+        pm.observe_llm_latency(std::time::Duration::from_secs_f64(2.5));
+        pm.observe_turn_duration(std::time::Duration::from_secs_f64(8.0));
+        pm.observe_tool_execution(std::time::Duration::from_secs_f64(0.3));
+
+        let mut buf = String::new();
+        prometheus_client::encoding::text::encode(&mut buf, &pm.registry).unwrap();
+
+        assert!(
+            buf.contains("zeph_llm_latency_seconds"),
+            "missing llm latency histogram"
+        );
+        assert!(
+            buf.contains("zeph_turn_duration_seconds"),
+            "missing turn duration histogram"
+        );
+        assert!(
+            buf.contains("zeph_tool_execution_seconds"),
+            "missing tool execution histogram"
+        );
+        // Verify at least one bucket and the sum are encoded.
+        assert!(buf.contains("_bucket"), "missing histogram buckets");
+        assert!(buf.contains("_sum"), "missing histogram sum");
+        assert!(buf.contains("_count"), "missing histogram count");
+    }
+
+    #[test]
+    fn test_histogram_buckets_are_valid() {
+        // All bucket boundaries must be positive and strictly increasing.
+        assert!(!LATENCY_BUCKETS.is_empty(), "bucket list must not be empty");
+        let mut prev = f64::NEG_INFINITY;
+        for &b in LATENCY_BUCKETS {
+            assert!(b > 0.0, "bucket boundary {b} must be positive");
+            assert!(b > prev, "bucket boundaries must be strictly increasing");
+            prev = b;
+        }
+    }
+
+    #[test]
+    fn test_histogram_recorder_trait_impl() {
+        use zeph_core::metrics::HistogramRecorder;
+
+        let pm = PrometheusMetrics::new();
+        let recorder: &dyn HistogramRecorder = &pm;
+
+        // These calls must not panic.
+        recorder.observe_llm_latency(std::time::Duration::from_millis(100));
+        recorder.observe_turn_duration(std::time::Duration::from_millis(5000));
+        recorder.observe_tool_execution(std::time::Duration::from_millis(50));
     }
 }

@@ -1,0 +1,71 @@
+# Prometheus + Grafana monitoring overlay for Zeph.
+#
+# Usage (Zeph running on the host via `cargo run`):
+#   docker compose -f docker/docker-compose.metrics.yml up
+#
+# Usage (Zeph running inside Docker alongside this stack):
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.metrics.yml up
+#
+# After starting:
+#   Prometheus: http://localhost:9090
+#   Grafana:    http://localhost:3000  (admin / admin by default)
+#   Metrics:    http://localhost:${ZEPH_METRICS_PORT:-8090}/metrics  (served by Zeph gateway)
+#
+# Networking notes:
+#   - `extra_hosts: host.docker.internal:host-gateway` works on Docker Desktop (macOS/Windows)
+#     and Docker Engine >= 20.10 on Linux.
+#   - On older Linux setups without extra_hosts support, set `network_mode: host` on the
+#     prometheus service, or switch ZEPH_METRICS_HOST to the container name when Zeph runs
+#     inside Docker.
+#
+# Environment variables:
+#   ZEPH_METRICS_HOST      Host:port where Zeph's /metrics endpoint is listening.
+#                          Default: host.docker.internal:8090
+#   GRAFANA_ADMIN_PASSWORD Grafana admin password. Default: admin
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 15s
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      timeout: 5s
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    environment:
+      ZEPH_METRICS_HOST: ${ZEPH_METRICS_HOST:-host.docker.internal:8090}
+
+  grafana:
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 20s
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      timeout: 5s
+    image: grafana/grafana:11.6.0
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  grafana_data: null
+  prometheus_data: null

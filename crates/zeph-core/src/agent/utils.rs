@@ -166,12 +166,22 @@ impl<C: Channel> Agent<C> {
         avg.tool_exec_ms /= n;
         avg.persist_message_ms /= n;
 
+        let total_ms = timings
+            .prepare_context_ms
+            .saturating_add(timings.llm_chat_ms)
+            .saturating_add(timings.tool_exec_ms)
+            .saturating_add(timings.persist_message_ms);
+
         self.update_metrics(|m| {
             m.last_turn_timings = timings;
             m.avg_turn_timings = avg;
             m.max_turn_timings = max;
             m.timing_sample_count = n;
         });
+
+        if let Some(ref recorder) = self.metrics.histogram_recorder {
+            recorder.observe_turn_duration(std::time::Duration::from_millis(total_ms));
+        }
     }
 
     /// Push the current classifier metrics snapshot into `MetricsSnapshot`.

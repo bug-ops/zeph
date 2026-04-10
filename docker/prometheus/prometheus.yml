@@ -1,0 +1,16 @@
+global:
+  evaluation_interval: 15s
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: zeph
+    metrics_path: /metrics
+    scrape_interval: 10s
+    # Default: scrape Zeph running on the host (cargo run / native development).
+    # On macOS/Windows with Docker Desktop and on Linux Docker Engine >= 20.10,
+    # host.docker.internal resolves to the host's loopback address automatically
+    # via extra_hosts in docker-compose.metrics.yml.
+    # To scrape Zeph running inside Docker, replace the target with the Docker
+    # service name, e.g. ["zeph:8090"].
+    static_configs:
+      - targets: ["host.docker.internal:8090"]

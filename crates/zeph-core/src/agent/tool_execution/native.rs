@@ -360,7 +360,8 @@ impl<C: Channel> Agent<C> {
         };
         match result {
             Ok(Ok(resp)) => {
-                let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let elapsed = start.elapsed();
+                let latency = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
                 let completion_heuristic = estimate_tokens(&resp) as u64;
                 let (final_prompt, final_completion) = self
                     .provider
@@ -375,6 +376,9 @@ impl<C: Channel> Agent<C> {
                     m.total_tokens = m.prompt_tokens + m.completion_tokens;
                 });
                 self.record_cost_and_cache(final_prompt, final_completion);
+                if let Some(ref recorder) = self.metrics.histogram_recorder {
+                    recorder.observe_llm_latency(elapsed);
+                }
                 if self.run_response_verification(&resp) {
                     let _ = self
                         .channel
@@ -964,7 +968,8 @@ impl<C: Channel> Agent<C> {
         start: std::time::Instant,
         result: &ChatResponse,
     ) -> Result<(), super::super::error::AgentError> {
-        let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let elapsed = start.elapsed();
+        let latency = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         let prompt_estimate = self.providers.cached_prompt_tokens;
         let completion_heuristic = match result {
             ChatResponse::Text(t) => estimate_tokens(t) as u64,
@@ -996,6 +1001,10 @@ impl<C: Channel> Agent<C> {
             }
         });
         self.record_cost_and_cache(final_prompt, final_completion);
+
+        if let Some(ref recorder) = self.metrics.histogram_recorder {
+            recorder.observe_llm_latency(elapsed);
+        }
 
         if let Some((input_tokens, output_tokens)) = self.provider.last_usage() {
             let context_window =
@@ -2331,6 +2340,10 @@ impl<C: Channel> Agent<C> {
                     )
                 }
             };
+
+            if let Some(ref recorder) = self.metrics.histogram_recorder {
+                recorder.observe_tool_execution(started_at.elapsed());
+            }
 
             // CR-01: emit a tool span for each completed tool call.
             if let Some(ref mut trace_coll) = self.debug_state.trace_collector

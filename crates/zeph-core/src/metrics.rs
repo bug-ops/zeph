@@ -484,6 +484,53 @@ impl MetricsCollector {
     }
 }
 
+// ---------------------------------------------------------------------------
+// HistogramRecorder
+// ---------------------------------------------------------------------------
+
+/// Per-event histogram recording contract for the agent loop.
+///
+/// Implementors record individual latency observations into Prometheus histograms
+/// (or any other backend). The trait is object-safe: the agent stores an
+/// `Option<Arc<dyn HistogramRecorder>>` and calls these methods at each measurement
+/// point. When `None`, recording is a no-op with zero overhead.
+///
+/// # Contract for implementors
+///
+/// - All methods must be non-blocking; they must not call async code or acquire
+///   mutexes that may block.
+/// - Implementations must be `Send + Sync` — the agent loop runs on the tokio
+///   thread pool and the recorder may be called from multiple tasks.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::sync::Arc;
+/// use std::time::Duration;
+/// use zeph_core::metrics::HistogramRecorder;
+///
+/// struct NoOpRecorder;
+///
+/// impl HistogramRecorder for NoOpRecorder {
+///     fn observe_llm_latency(&self, _: Duration) {}
+///     fn observe_turn_duration(&self, _: Duration) {}
+///     fn observe_tool_execution(&self, _: Duration) {}
+/// }
+///
+/// let recorder: Arc<dyn HistogramRecorder> = Arc::new(NoOpRecorder);
+/// recorder.observe_llm_latency(Duration::from_millis(500));
+/// ```
+pub trait HistogramRecorder: Send + Sync {
+    /// Record a single LLM API call latency observation.
+    fn observe_llm_latency(&self, duration: std::time::Duration);
+
+    /// Record a full agent turn duration observation (context prep + LLM + tools + persist).
+    fn observe_turn_duration(&self, duration: std::time::Duration);
+
+    /// Record a single tool execution latency observation.
+    fn observe_tool_execution(&self, duration: std::time::Duration);
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
@@ -885,5 +932,24 @@ mod tests {
         assert_eq!(snapshot.graph_communities_total, 2);
         assert_eq!(snapshot.graph_extraction_count, 7);
         assert_eq!(snapshot.graph_extraction_failures, 1);
+    }
+
+    #[test]
+    fn histogram_recorder_trait_is_object_safe() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        struct NoOpRecorder;
+        impl HistogramRecorder for NoOpRecorder {
+            fn observe_llm_latency(&self, _: Duration) {}
+            fn observe_turn_duration(&self, _: Duration) {}
+            fn observe_tool_execution(&self, _: Duration) {}
+        }
+
+        // Verify the trait can be used as a trait object (object-safe).
+        let recorder: Arc<dyn HistogramRecorder> = Arc::new(NoOpRecorder);
+        recorder.observe_llm_latency(Duration::from_millis(500));
+        recorder.observe_turn_duration(Duration::from_millis(3000));
+        recorder.observe_tool_execution(Duration::from_millis(100));
     }
 }

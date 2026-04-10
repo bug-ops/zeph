@@ -399,6 +399,9 @@ pub(crate) struct MetricsState {
     pub(crate) timing_window: std::collections::VecDeque<crate::metrics::TurnTimings>,
     /// Accumulator for the current turn's timings. Flushed at turn end via `flush_turn_timings`.
     pub(crate) pending_timings: crate::metrics::TurnTimings,
+    /// Optional histogram recorder for per-event Prometheus observations.
+    /// `None` when the `prometheus` feature is disabled or metrics are not enabled.
+    pub(crate) histogram_recorder: Option<std::sync::Arc<dyn crate::metrics::HistogramRecorder>>,
 }
 
 /// Groups task orchestration and subagent state.
@@ -960,6 +963,7 @@ impl MetricsState {
             classifier_metrics: None,
             timing_window: std::collections::VecDeque::new(),
             pending_timings: crate::metrics::TurnTimings::default(),
+            histogram_recorder: None,
         }
     }
 }
