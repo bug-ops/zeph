@@ -45,7 +45,7 @@ pub(crate) mod supervisor;
 pub(crate) mod tool_execution;
 pub(crate) mod tool_orchestrator;
 mod trust_commands;
-pub(crate) mod turn;
+pub mod turn;
 mod utils;
 
 use std::collections::{HashMap, VecDeque};

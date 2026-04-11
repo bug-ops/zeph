@@ -25,7 +25,7 @@ use crate::metrics::TurnTimings;
 /// `TurnId(0)` is the first turn in a conversation. Values are strictly increasing by 1.
 /// The counter resets to 0 when a new conversation starts (e.g., via `/new`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct TurnId(pub(crate) u64);
+pub struct TurnId(pub u64);
 
 impl TurnId {
     /// Return the next turn ID in sequence.
@@ -46,16 +46,17 @@ impl std::fmt::Display for TurnId {
 /// Built from a `ChannelMessage` after attachment resolution and image extraction.
 /// Separates input parsing from input processing and bundles the two values previously
 /// passed as separate arguments to `process_user_message`.
-pub(crate) struct TurnInput {
+pub struct TurnInput {
     /// Plain-text user input. May be empty for image-only messages.
-    pub(crate) text: String,
+    pub text: String,
     /// Decoded image parts extracted from attachments or inline data.
-    pub(crate) image_parts: Vec<MessagePart>,
+    pub image_parts: Vec<MessagePart>,
 }
 
 impl TurnInput {
     /// Create input from text and image parts.
-    pub(crate) fn new(text: String, image_parts: Vec<MessagePart>) -> Self {
+    #[must_use]
+    pub fn new(text: String, image_parts: Vec<MessagePart>) -> Self {
         Self { text, image_parts }
     }
 }
@@ -65,9 +66,9 @@ impl TurnInput {
 /// In Phase 1, only `timings` is populated. Token counts and cost are managed via the existing
 /// `MetricsState` path and are deferred to Phase 2.
 #[derive(Debug, Default, Clone)]
-pub(crate) struct TurnMetrics {
+pub struct TurnMetrics {
     /// Turn timing breakdown populated at each lifecycle phase boundary.
-    pub(crate) timings: TurnTimings,
+    pub timings: TurnTimings,
 }
 
 /// Record of a single tool execution within a turn.
@@ -93,16 +94,16 @@ pub(crate) struct ToolOutputRecord {
 /// by `&mut Turn`, and consumed in `end_turn`. It is never stored on the `Agent` struct.
 ///
 /// **Phase 1 scope**: carries `id`, `input`, `metrics`, and `cancel_token` only.
-pub(crate) struct Turn {
-    /// Monotonically increasing identifier for this turn within the session.
-    pub(crate) id: TurnId,
+pub struct Turn {
+    /// Monotonically increasing identifier for this turn within the conversation.
+    pub id: TurnId,
     /// Resolved user input for this turn.
-    pub(crate) input: TurnInput,
+    pub input: TurnInput,
     /// Per-turn metrics accumulated during the turn lifecycle.
-    pub(crate) metrics: TurnMetrics,
+    pub metrics: TurnMetrics,
     /// Per-turn cancellation token. Cancelled when the user aborts the turn or the agent shuts
     /// down. Created fresh in [`Turn::new`] so each turn has an independent token.
-    pub(crate) cancel_token: CancellationToken,
+    pub cancel_token: CancellationToken,
 }
 
 impl Turn {
@@ -120,7 +121,8 @@ impl Turn {
     /// let turn = Turn::new(TurnId(0), input);
     /// assert_eq!(turn.id, TurnId(0));
     /// ```
-    pub(crate) fn new(id: TurnId, input: TurnInput) -> Self {
+    #[must_use]
+    pub fn new(id: TurnId, input: TurnInput) -> Self {
         Self {
             id,
             input,
@@ -130,17 +132,19 @@ impl Turn {
     }
 
     /// Return the turn ID.
-    pub(crate) fn id(&self) -> TurnId {
+    #[must_use]
+    pub fn id(&self) -> TurnId {
         self.id
     }
 
     /// Return an immutable reference to the turn metrics.
-    pub(crate) fn metrics_snapshot(&self) -> &TurnMetrics {
+    #[must_use]
+    pub fn metrics_snapshot(&self) -> &TurnMetrics {
         &self.metrics
     }
 
     /// Return a mutable reference to the turn metrics.
-    pub(crate) fn metrics_mut(&mut self) -> &mut TurnMetrics {
+    pub fn metrics_mut(&mut self) -> &mut TurnMetrics {
         &mut self.metrics
     }
 }
