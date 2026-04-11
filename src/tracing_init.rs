@@ -279,7 +279,7 @@ fn build_chrome_layer(
 /// Build the OTLP gRPC trace layer and append it to `layers`.
 ///
 /// Returns the `SdkTracerProvider` shutdown handle (stored in [`TracingGuards`]) or `None`
-/// when telemetry is disabled or backend is not [`TelemetryBackend::Otlp`].
+/// when telemetry is disabled or `telemetry.backend` is not `"otlp"`.
 ///
 /// The `set_global` parameter controls whether `opentelemetry::global::set_tracer_provider` is
 /// called. Pass `true` in production (`init_tracing`) and `false` in tests to avoid polluting
