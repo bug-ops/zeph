@@ -32,6 +32,7 @@ use zeph_core::metrics::MetricsSnapshot;
 /// uniform; callers can adjust bucket resolution in a future iteration once
 /// real-world data is available.
 const LATENCY_BUCKETS: &[f64] = &[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0];
+const BG_BUCKETS: &[f64] = &[0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 30.0];
 
 // ---------------------------------------------------------------------------
 // Label structs
@@ -187,6 +188,10 @@ pub struct PrometheusMetrics {
     llm_latency_seconds: Histogram,
     turn_duration_seconds: Histogram,
     tool_execution_seconds: Histogram,
+
+    // --- Background task latency histograms (Phase 2B) ---
+    // Index 0 = enrichment, index 1 = telemetry (matches TaskClass::index()).
+    bg_task_duration_seconds: [Histogram; 2],
 }
 
 impl PrometheusMetrics {
@@ -400,6 +405,20 @@ impl PrometheusMetrics {
             tool_execution_seconds.clone(),
         );
 
+        // Per-class background task latency buckets (finer-grained than LLM buckets).
+        let bg_enrichment = Histogram::new(BG_BUCKETS.iter().copied());
+        registry.register(
+            "zeph_bg_task_duration_seconds_enrichment",
+            "Background enrichment task completion latency distribution in seconds",
+            bg_enrichment.clone(),
+        );
+        let bg_telemetry = Histogram::new(BG_BUCKETS.iter().copied());
+        registry.register(
+            "zeph_bg_task_duration_seconds_telemetry",
+            "Background telemetry task completion latency distribution in seconds",
+            bg_telemetry.clone(),
+        );
+
         Self {
             registry: Arc::new(registry),
             llm_tokens_total,
@@ -430,6 +449,7 @@ impl PrometheusMetrics {
             llm_latency_seconds,
             turn_duration_seconds,
             tool_execution_seconds,
+            bg_task_duration_seconds: [bg_enrichment, bg_telemetry],
         }
     }
 
@@ -719,6 +739,12 @@ impl zeph_core::metrics::HistogramRecorder for PrometheusMetrics {
 
     fn observe_tool_execution(&self, duration: std::time::Duration) {
         self.tool_execution_seconds.observe(duration.as_secs_f64());
+    }
+
+    fn observe_bg_task(&self, class_label: &str, duration: std::time::Duration) {
+        // Index matches TaskClass::index(): 0 = enrichment, 1 = telemetry.
+        let idx = usize::from(class_label == "telemetry");
+        self.bg_task_duration_seconds[idx].observe(duration.as_secs_f64());
     }
 }
 

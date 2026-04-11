@@ -11,9 +11,8 @@
 //!
 //! | Class | Limit | Drop policy | Examples |
 //! |---|---|---|---|
-//! | `Enrichment` | 4 | Drop | summarization, graph/persona/trajectory extraction |
-//! | `Telemetry` | 8 | Drop | audit log writes, graph count sync |
-//! | `ForegroundAdjacent` | 4 | Drop | magic docs update |
+//! | `Enrichment` | configurable (default 4) | Drop | summarization, graph/persona/trajectory extraction |
+//! | `Telemetry` | configurable (default 8) | Drop | audit log writes, graph count sync |
 //!
 //! # Critic-driven design decisions
 //!
@@ -28,8 +27,13 @@
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
-use tokio::task::JoinSet;
+use tokio::task::{AbortHandle, JoinSet};
+use tracing::Instrument as _;
+
+use crate::config::TaskSupervisorConfig;
+use crate::metrics::HistogramRecorder;
 
 /// Identifies the class of a background task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,21 +46,14 @@ pub(crate) enum TaskClass {
 }
 
 impl TaskClass {
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         match self {
             TaskClass::Enrichment => 0,
             TaskClass::Telemetry => 1,
         }
     }
 
-    fn max_concurrency(self) -> usize {
-        match self {
-            TaskClass::Enrichment => 4,
-            TaskClass::Telemetry => 8,
-        }
-    }
-
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             TaskClass::Enrichment => "enrichment",
             TaskClass::Telemetry => "telemetry",
@@ -90,6 +87,8 @@ pub(crate) struct SupervisorMetrics {
     pub(crate) classes: [ClassMetrics; NUM_CLASSES],
     /// Total inflight tasks across all classes at snapshot time.
     pub(crate) inflight: usize,
+    /// Per-class inflight counts at snapshot time.
+    pub(crate) class_inflight: [usize; NUM_CLASSES],
 }
 
 impl SupervisorMetrics {
@@ -111,14 +110,22 @@ pub(crate) struct BackgroundSupervisor {
     class_inflight: [Arc<AtomicUsize>; NUM_CLASSES],
     /// Per-class metrics (spawned / dropped / completed). Updated in `spawn` and `reap`.
     class_metrics: [ClassMetrics; NUM_CLASSES],
+    /// Per-class concurrency limits loaded from config.
+    class_limits: [usize; NUM_CLASSES],
+    /// Per-class `AbortHandle` vecs for selective `abort_class()`. Stale handles are cleaned
+    /// up in `reap()` via `is_finished()`. Vec size is bounded by `class_limit * turns_between_reaps`
+    /// — in practice at most ~12 entries per reap cycle.
+    class_handles: [Vec<AbortHandle>; NUM_CLASSES],
+    /// Optional histogram recorder for bg task latency (injected at construction time).
+    histogram_recorder: Option<Arc<dyn HistogramRecorder>>,
 }
 
 /// Result produced by a supervised background task.
 enum TaskResult {
-    /// Normal completion — carries the originating class for correct metrics accounting.
-    Done(TaskClass),
+    /// Normal completion — carries the originating class and elapsed time since spawn.
+    Done(TaskClass, Duration),
     /// Summarization ran successfully. Foreground should reset `unsummarized_count`.
-    SummarizationDone,
+    SummarizationDone(Duration),
 }
 
 /// RAII guard that decrements a class inflight counter when dropped.
@@ -139,11 +146,18 @@ impl Drop for InflightGuard {
 }
 
 impl BackgroundSupervisor {
-    pub(crate) fn new() -> Self {
+    /// Create a new supervisor with limits and optional histogram recorder from config.
+    pub(crate) fn new(
+        config: &TaskSupervisorConfig,
+        recorder: Option<Arc<dyn HistogramRecorder>>,
+    ) -> Self {
         Self {
             tasks: JoinSet::new(),
             class_inflight: std::array::from_fn(|_| Arc::new(AtomicUsize::new(0))),
             class_metrics: [ClassMetrics::default(); NUM_CLASSES],
+            class_limits: [config.enrichment_limit, config.telemetry_limit],
+            class_handles: std::array::from_fn(|_| Vec::new()),
+            histogram_recorder: recorder,
         }
     }
 
@@ -159,11 +173,11 @@ impl BackgroundSupervisor {
     ) -> bool {
         let idx = class.index();
         let current = self.class_inflight[idx].load(Ordering::Relaxed);
-        if current >= class.max_concurrency() {
+        if current >= self.class_limits[idx] {
             tracing::debug!(
                 class = class.name(),
                 task = name,
-                limit = class.max_concurrency(),
+                limit = self.class_limits[idx],
                 "background task dropped: concurrency limit reached"
             );
             self.class_metrics[idx].dropped += 1;
@@ -173,12 +187,18 @@ impl BackgroundSupervisor {
         self.class_inflight[idx].fetch_add(1, Ordering::Relaxed);
         let guard = InflightGuard(Arc::clone(&self.class_inflight[idx]));
         self.class_metrics[idx].spawned += 1;
+        let spawned_at = Instant::now();
 
-        self.tasks.spawn(async move {
-            let _guard = guard; // dropped when future resolves
-            fut.await;
-            TaskResult::Done(class)
-        });
+        let span = tracing::info_span!("bg_task", class = class.name(), task = name);
+        let handle = self.tasks.spawn(
+            async move {
+                let _guard = guard; // dropped when future resolves
+                fut.await;
+                TaskResult::Done(class, spawned_at.elapsed())
+            }
+            .instrument(span),
+        );
+        self.class_handles[idx].push(handle);
 
         tracing::debug!(class = class.name(), task = name, "background task spawned");
         true
@@ -197,11 +217,11 @@ impl BackgroundSupervisor {
         let class = TaskClass::Enrichment;
         let idx = class.index();
         let current = self.class_inflight[idx].load(Ordering::Relaxed);
-        if current >= class.max_concurrency() {
+        if current >= self.class_limits[idx] {
             tracing::debug!(
                 class = class.name(),
                 task = name,
-                limit = class.max_concurrency(),
+                limit = self.class_limits[idx],
                 "summarization task dropped: concurrency limit reached"
             );
             self.class_metrics[idx].dropped += 1;
@@ -211,16 +231,22 @@ impl BackgroundSupervisor {
         self.class_inflight[idx].fetch_add(1, Ordering::Relaxed);
         let guard = InflightGuard(Arc::clone(&self.class_inflight[idx]));
         self.class_metrics[idx].spawned += 1;
+        let spawned_at = Instant::now();
 
-        self.tasks.spawn(async move {
-            let _guard = guard;
-            let did_summarize = fut.await;
-            if did_summarize {
-                TaskResult::SummarizationDone
-            } else {
-                TaskResult::Done(TaskClass::Enrichment)
+        let span = tracing::info_span!("bg_task", class = class.name(), task = name);
+        let handle = self.tasks.spawn(
+            async move {
+                let _guard = guard;
+                let did_summarize = fut.await;
+                if did_summarize {
+                    TaskResult::SummarizationDone(spawned_at.elapsed())
+                } else {
+                    TaskResult::Done(TaskClass::Enrichment, spawned_at.elapsed())
+                }
             }
-        });
+            .instrument(span),
+        );
+        self.class_handles[idx].push(handle);
 
         tracing::debug!(
             class = class.name(),
@@ -228,6 +254,26 @@ impl BackgroundSupervisor {
             "summarization task spawned"
         );
         true
+    }
+
+    /// Abort all inflight tasks of the given class.
+    ///
+    /// Calls `abort()` on each stored `AbortHandle` for the class. Aborting a completed
+    /// task's handle is a no-op, so no special-casing is needed. The `InflightGuard` drop
+    /// inside the task decrements the inflight counter when the abort is processed.
+    pub(crate) fn abort_class(&mut self, class: TaskClass) {
+        let idx = class.index();
+        let aborted = self.class_handles[idx].len();
+        for handle in self.class_handles[idx].drain(..) {
+            handle.abort();
+        }
+        if aborted > 0 {
+            tracing::debug!(
+                class = class.name(),
+                count = aborted,
+                "aborted background tasks at turn boundary"
+            );
+        }
     }
 
     /// Poll all completed tasks without blocking.
@@ -241,17 +287,33 @@ impl BackgroundSupervisor {
         // Drain any already-completed tasks.
         while let Some(result) = self.tasks.try_join_next() {
             match result {
-                Ok(TaskResult::Done(class)) => {
-                    self.class_metrics[class.index()].completed += 1;
+                Ok(TaskResult::Done(class, elapsed)) => {
+                    let idx = class.index();
+                    self.class_metrics[idx].completed += 1;
+                    if let Some(ref rec) = self.histogram_recorder {
+                        rec.observe_bg_task(class.name(), elapsed);
+                    }
                 }
-                Ok(TaskResult::SummarizationDone) => {
+                Ok(TaskResult::SummarizationDone(elapsed)) => {
                     self.class_metrics[TaskClass::Enrichment.index()].completed += 1;
+                    if let Some(ref rec) = self.histogram_recorder {
+                        rec.observe_bg_task(TaskClass::Enrichment.name(), elapsed);
+                    }
                     signal.did_summarize = true;
+                }
+                Err(ref e) if e.is_cancelled() => {
+                    tracing::debug!(error = %e, "background task cancelled");
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "background task panicked");
                 }
             }
+        }
+
+        // Clean up stale abort handles (tasks that completed on their own).
+        // Vec size is bounded by class_limit * turns_between_reaps — O(n) where n is small.
+        for handles in &mut self.class_handles {
+            handles.retain(|h| !h.is_finished());
         }
 
         signal
@@ -276,9 +338,6 @@ impl BackgroundSupervisor {
             .sum()
     }
 
-    /// Wait for all inflight tasks to complete (test helper only).
-    ///
-    /// Production code uses [`reap`] (non-blocking) or [`abort_all`] (shutdown).
     /// Wait for all inflight tasks to complete and return the aggregated signal (test helper only).
     ///
     /// Production code uses [`reap`] (non-blocking) or [`abort_all`] (shutdown).
@@ -287,12 +346,22 @@ impl BackgroundSupervisor {
         let mut signal = SummarizationSignal::default();
         while let Some(result) = self.tasks.join_next().await {
             match result {
-                Ok(TaskResult::SummarizationDone) => {
+                Ok(TaskResult::SummarizationDone(elapsed)) => {
                     self.class_metrics[TaskClass::Enrichment.index()].completed += 1;
+                    if let Some(ref rec) = self.histogram_recorder {
+                        rec.observe_bg_task(TaskClass::Enrichment.name(), elapsed);
+                    }
                     signal.did_summarize = true;
                 }
-                Ok(TaskResult::Done(class)) => {
-                    self.class_metrics[class.index()].completed += 1;
+                Ok(TaskResult::Done(class, elapsed)) => {
+                    let idx = class.index();
+                    self.class_metrics[idx].completed += 1;
+                    if let Some(ref rec) = self.histogram_recorder {
+                        rec.observe_bg_task(class.name(), elapsed);
+                    }
+                }
+                Err(ref e) if e.is_cancelled() => {
+                    tracing::debug!(error = %e, "background task cancelled in test");
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "background task panicked in test");
@@ -304,9 +373,12 @@ impl BackgroundSupervisor {
 
     /// Snapshot of current metrics.
     pub(crate) fn metrics_snapshot(&self) -> SupervisorMetrics {
+        let class_inflight =
+            std::array::from_fn(|i| self.class_inflight[i].load(Ordering::Relaxed));
         SupervisorMetrics {
             classes: self.class_metrics,
             inflight: self.inflight(),
+            class_inflight,
         }
     }
 }
@@ -316,9 +388,13 @@ mod tests {
     use super::*;
     use tokio::sync::oneshot;
 
+    fn default_supervisor() -> BackgroundSupervisor {
+        BackgroundSupervisor::new(&TaskSupervisorConfig::default(), None)
+    }
+
     #[tokio::test]
     async fn spawn_and_reap_basic() {
-        let mut sv = BackgroundSupervisor::new();
+        let mut sv = default_supervisor();
         let (tx, rx) = oneshot::channel::<()>();
 
         let accepted = sv.spawn(TaskClass::Enrichment, "test-task", async move {
@@ -339,8 +415,8 @@ mod tests {
 
     #[tokio::test]
     async fn drop_on_overflow() {
-        let mut sv = BackgroundSupervisor::new();
-        let limit = TaskClass::Enrichment.max_concurrency();
+        let mut sv = default_supervisor();
+        let limit = sv.class_limits[TaskClass::Enrichment.index()];
 
         // Fill the class up to the limit.
         let mut txs = Vec::new();
@@ -366,7 +442,7 @@ mod tests {
 
     #[tokio::test]
     async fn summarization_signal_propagated() {
-        let mut sv = BackgroundSupervisor::new();
+        let mut sv = default_supervisor();
 
         let accepted = sv.spawn_summarization("test-summarize", async { true });
         assert!(accepted);
@@ -381,7 +457,7 @@ mod tests {
 
     #[tokio::test]
     async fn abort_all_does_not_panic() {
-        let mut sv = BackgroundSupervisor::new();
+        let mut sv = default_supervisor();
         sv.spawn(TaskClass::Telemetry, "long-running", async {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         });
@@ -393,7 +469,7 @@ mod tests {
 
     #[tokio::test]
     async fn inflight_decremented_on_completion_not_reap() {
-        let mut sv = BackgroundSupervisor::new();
+        let mut sv = default_supervisor();
         let (tx, rx) = oneshot::channel::<()>();
 
         sv.spawn(TaskClass::Enrichment, "t", async move {
@@ -410,5 +486,119 @@ mod tests {
 
         sv.reap();
         assert_eq!(sv.inflight(), 0);
+    }
+
+    // 2B: reap produces Done with non-zero duration
+    #[tokio::test]
+    async fn reap_produces_duration() {
+        let mut sv = default_supervisor();
+        sv.spawn(TaskClass::Telemetry, "timed", async {});
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        sv.reap();
+        assert_eq!(sv.class_metrics[TaskClass::Telemetry.index()].completed, 1);
+    }
+
+    // 2C: metrics_snapshot reports per-class inflight
+    #[tokio::test]
+    async fn metrics_snapshot_per_class_inflight() {
+        let mut sv = default_supervisor();
+        let (tx1, rx1) = oneshot::channel::<()>();
+        let (tx2, rx2) = oneshot::channel::<()>();
+        sv.spawn(TaskClass::Enrichment, "e", async move {
+            let _ = rx1.await;
+        });
+        sv.spawn(TaskClass::Telemetry, "t", async move {
+            let _ = rx2.await;
+        });
+
+        let snap = sv.metrics_snapshot();
+        assert_eq!(snap.class_inflight[TaskClass::Enrichment.index()], 1);
+        assert_eq!(snap.class_inflight[TaskClass::Telemetry.index()], 1);
+        assert_eq!(snap.inflight, 2);
+
+        tx1.send(()).ok();
+        tx2.send(()).ok();
+    }
+
+    // 2D: abort_class only cancels targeted class
+    #[tokio::test]
+    async fn abort_class_only_cancels_targeted_class() {
+        let mut sv = default_supervisor();
+        let (_tx_enrich, rx_enrich) = oneshot::channel::<()>();
+        let (_tx_telem, rx_telem) = oneshot::channel::<()>();
+        sv.spawn(TaskClass::Enrichment, "e", async move {
+            let _ = rx_enrich.await;
+        });
+        sv.spawn(TaskClass::Telemetry, "t", async move {
+            let _ = rx_telem.await;
+        });
+
+        assert_eq!(sv.inflight(), 2);
+        sv.abort_class(TaskClass::Enrichment);
+        // Give tasks time to process abort.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        // Enrichment inflight drops; telemetry still up.
+        assert_eq!(
+            sv.class_inflight[TaskClass::Enrichment.index()].load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            sv.class_inflight[TaskClass::Telemetry.index()].load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    // 2B: observe_bg_task is called on reap with the correct class label
+    #[tokio::test]
+    async fn observe_bg_task_called_on_reap() {
+        use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+
+        struct CountingRecorder(Arc<AtomicU32>);
+        impl HistogramRecorder for CountingRecorder {
+            fn observe_llm_latency(&self, _: Duration) {}
+            fn observe_turn_duration(&self, _: Duration) {}
+            fn observe_tool_execution(&self, _: Duration) {}
+            fn observe_bg_task(&self, _label: &str, _dur: Duration) {
+                self.0.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+        }
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let recorder: Arc<dyn HistogramRecorder> = Arc::new(CountingRecorder(Arc::clone(&counter)));
+        let config = TaskSupervisorConfig::default();
+        let mut sv = BackgroundSupervisor::new(&config, Some(recorder));
+
+        sv.spawn(TaskClass::Enrichment, "test", async {});
+        sv.join_all_for_test().await;
+
+        assert_eq!(counter.load(AtomicOrdering::Relaxed), 1);
+    }
+
+    // 2E: custom limits from config are respected
+    #[tokio::test]
+    async fn custom_limits_from_config() {
+        let config = TaskSupervisorConfig {
+            enrichment_limit: 2,
+            telemetry_limit: 3,
+            abort_enrichment_on_turn: false,
+        };
+        let mut sv = BackgroundSupervisor::new(&config, None);
+        let mut txs = Vec::new();
+        for _ in 0..2 {
+            let (tx, rx) = oneshot::channel::<()>();
+            txs.push(tx);
+            assert!(sv.spawn(TaskClass::Enrichment, "e", async move {
+                let _ = rx.await;
+            }));
+        }
+        // Third should be dropped.
+        let dropped = sv.spawn(TaskClass::Enrichment, "overflow", async {});
+        assert!(!dropped);
+        assert_eq!(sv.class_metrics[TaskClass::Enrichment.index()].dropped, 1);
+        for tx in txs {
+            tx.send(()).ok();
+        }
     }
 }

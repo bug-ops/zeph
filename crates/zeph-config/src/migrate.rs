@@ -1834,6 +1834,53 @@ pub fn migrate_telemetry_config(toml_src: &str) -> Result<MigrationResult, Migra
     })
 }
 
+/// Add a commented-out `[agent.supervisor]` block if the sub-table is absent (#2883).
+///
+/// Appended as comments under `[agent]` so users can discover and tune supervisor limits
+/// without manual hunting. Safe to call on configs that already have the section.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if `toml_src` is not valid TOML.
+pub fn migrate_supervisor_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: skip if already present (either as real section or commented-out block).
+    if toml_src.contains("[agent.supervisor]") || toml_src.contains("# [agent.supervisor]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    // Only inject the comment block when an [agent] section is already present so we don't
+    // pollute configs that have no [agent] at all.
+    if !doc.contains_key("agent") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "\n\
+         # Background task supervisor tuning (optional — defaults shown, #2883).\n\
+         # [agent.supervisor]\n\
+         # enrichment_limit = 4\n\
+         # telemetry_limit = 8\n\
+         # abort_enrichment_on_turn = false\n";
+
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        added_count: 1,
+        sections_added: vec!["agent.supervisor".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {

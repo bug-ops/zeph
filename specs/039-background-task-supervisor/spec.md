@@ -121,7 +121,7 @@ BackgroundSupervisor (owned by LifecycleState)
 
 ## 3. Task Priority Classes (Phase 1)
 
-Only two classes are implemented in Phase 1. A proposed `Critical` class is **not needed** — see rationale below.
+Only two classes are implemented in Phase 1.
 
 | Class | Limit | Policy | Examples |
 |-------|-------|--------|----------|
@@ -132,7 +132,7 @@ Only two classes are implemented in Phase 1. A proposed `Critical` class is **no
 
 - **Enrichment**: "Nice-to-have" background work that enriches memory and observability. Can be safely dropped when limit is exceeded. Lossy by design.
 - **Telemetry**: Faster background metrics/state updates. Larger limit because these are cheap operations.
-- **Critical class NOT NEEDED**: Critical work (LLM calls, tool execution, message persistence) runs on the foreground `await` path in `persist_message()` and `execute_tool_calls_batch()`. It is never spawned as background work — concurrency control for critical operations is the responsibility of the foreground loop and timeout guards. Background tasks are explicitly lossy.
+- **No Critical class**: Critical work (LLM calls, tool execution, message persistence) runs on the foreground `await` path in `persist_message()` and `execute_tool_calls_batch()`. It is never spawned as background work — concurrency control for critical operations is the responsibility of the foreground loop and timeout guards. Background tasks are explicitly lossy.
 
 ---
 
@@ -443,7 +443,7 @@ The following systems are **explicitly excluded** from the supervisor's purview:
 
 ### Phase 2 (Planned)
 
-- [ ] Phase 2A (#2884): Route remaining 8 fire-and-forget spawns through supervisor
+- [ ] Phase 2A (#2884): Route remaining fire-and-forget spawns through supervisor
 - [ ] Phase 2B (#2885): Per-class `bg_latency` histogram exported
 - [ ] Phase 2C (#2886): TUI status bar displays background task counts
 - [ ] Phase 2D (#2887): Explicit turn-boundary `abort_class(TaskClass::Enrichment)` call
@@ -454,16 +454,240 @@ The following systems are **explicitly excluded** from the supervisor's purview:
 
 ## 13. Phase 2 Implementation Plan
 
-Roadmap for Phase 2 enhancements coordinated under Epic #2883:
+Roadmap for Phase 2 enhancements coordinated under Epic #2883. **All 6 sub-phases are implemented in a single PR.**
 
-| Issue | Phase | Priority | Title | Description |
-|-------|-------|----------|-------|-------------|
-| #2884 | 2A | P2 | Route remaining agent-path spawns | Move ~8 fire-and-forget `tokio::spawn()` calls in agent/memory/skills paths through the supervisor (audit logs, session digest, goal extraction, compaction, magic docs, embed backfill) |
-| #2885 | 2B | P2 | Add bg_latency per-class histogram | Export task completion time histograms for Enrichment and Telemetry classes to Prometheus |
-| #2886 | 2C | P3 | TUI background task display | Show background task counts in TUI status bar with spinner animation |
-| #2887 | 2D | P2 | Turn-boundary abort for Enrichment | Add explicit `supervisor.abort_class(TaskClass::Enrichment)` call at end of turn to prevent backlog |
-| #2888 | 2E | P3 | Configurable concurrency limits | Move hardcoded limits (4, 8) to config: `[agent.supervisor] enrichment_limit = ... telemetry_limit = ...` |
-| #2889 | 2F | P4 | Span propagation (optional) | Propagate tracing spans from parent context into supervised background tasks for better observability |
+### 13.1 Implementation Order
+
+1. **2E** (config) — add `TaskSupervisorConfig` to `zeph-config`, wire through builder (dependency for 2B, 2D)
+2. **2B** (latency histogram) — extend `TaskResult`, `HistogramRecorder` trait, add `spawned_at` tracking
+3. **2D** (abort_class) — add `class_handles` tracking and `abort_class()` method
+4. **2F** (tracing spans) — small change to `spawn()`/`spawn_summarization()` (no dependencies)
+5. **2A** (route spawns) — replace 2 `tokio::spawn()` calls with supervisor (depends on 2E)
+6. **2C** (TUI status) — extend `MetricsSnapshot`, update TUI (depends on 2B/2D)
+
+### 13.2 Details by Sub-Phase
+
+#### Phase 2A: Route Remaining Fire-and-Forget Spawns (#2884)
+
+**Truly fire-and-forget spawns** (route through supervisor):
+
+| File | Line | Current Code | Class | Task Name |
+|------|------|-------------|-------|-----------|
+| `agent/tool_execution/native.rs` | 1261 | `tokio::spawn(async move { logger.log(&entry).await })` | Telemetry | `"audit-log"` |
+| `agent/tool_execution/sanitize.rs` | 161 | `tokio::spawn(async move { logger.log(&entry).await })` | Telemetry | `"audit-log-sanitize"` |
+
+**Explicitly excluded from supervisor routing:**
+
+| File | Line | Reason |
+|------|------|--------|
+| `context/assembly.rs` | 536 | `spawn_outgoing_digest(&self, ...)` — requires `&mut self` for supervisor.spawn(), cannot change signature at shutdown |
+| `experiment_cmd.rs` | 157 | Infrastructure loop with own `CancellationToken` lifecycle, not turn-scoped |
+| `scheduler_loop.rs` | 87 | Infrastructure loop with own lifecycle, tied to scheduler subsystem |
+
+**Success Criteria for 2A:**
+- Two audit log spawns replaced with `supervisor.spawn(TaskClass::Telemetry, ...)`
+- All three spawns previously listed in scope are now explicitly addressed (two routed, one documented as excluded)
+- Metrics verify the two audit spawns appear in `bg_spawned` counter
+
+#### Phase 2B: Per-Class Latency Histogram (#2885)
+
+Extend `TaskResult` to carry elapsed time since spawn:
+
+```rust
+enum TaskResult {
+    Done(TaskClass, Duration),           // class + elapsed since spawn
+    SummarizationDone(Duration),         // elapsed since spawn
+}
+```
+
+**Data model changes:**
+- Capture `Instant::now()` at spawn time in `spawn()` and `spawn_summarization()`
+- Compute `spawned_at.elapsed()` inside async block before returning `TaskResult`
+
+**Metric recording in `reap()`:**
+- Add method to `HistogramRecorder` trait:
+  ```rust
+  fn observe_bg_task(&self, class_label: &str, duration: Duration);
+  ```
+  where `class_label` is `"enrichment"` or `"telemetry"` (from `TaskClass::name()`)
+
+**Prometheus histogram** (in `src/metrics_export.rs`):
+```
+zeph_bg_task_duration_seconds{class="enrichment|telemetry"}
+buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 30.0]
+```
+
+**Important:** All existing match arms on `TaskResult` in tests and `join_all_for_test()` must be updated to handle the new `Duration` field.
+
+#### Phase 2C: TUI Status Bar (#2886)
+
+Extend `MetricsSnapshot` with per-class inflight counts:
+
+```rust
+pub bg_enrichment_inflight: u64,  // NEW
+pub bg_telemetry_inflight: u64,   // NEW
+```
+
+Update TUI status bar segment when either count > 0:
+```
+bg: 2 enrich, 1 telem
+```
+
+#### Phase 2D: Turn-Boundary Abort (#2887)
+
+New method on `BackgroundSupervisor`:
+
+```rust
+pub(crate) fn abort_class(&mut self, class: TaskClass) {
+    for handle in self.class_handles[class.index()].drain(..) {
+        handle.abort();
+    }
+}
+```
+
+**Data model changes:**
+- Add `class_handles: [Vec<AbortHandle>; NUM_CLASSES]` to supervisor struct
+- Capture `AbortHandle` from `self.tasks.spawn()` and store per-class (tokio ≥ 1.36 required)
+- Clean up stale handles in `reap()` via `handles.retain(|h| !h.is_finished())`
+
+**Config flag** (gated by 2E):
+```toml
+[agent.supervisor]
+abort_enrichment_on_turn = true   # default: false
+```
+
+**Call site** (in `process_user_message_inner`, after `reap()`):
+```rust
+if self.supervisor_config.abort_enrichment_on_turn {
+    self.lifecycle.supervisor.abort_class(TaskClass::Enrichment);
+}
+```
+
+**Important Note:** `AbortHandle::is_finished()` requires tokio ≥ 1.36.0 — verify in `Cargo.toml` before implementation.
+
+#### Phase 2E: Configurable Queue Depths (#2888)
+
+New config struct in `crates/zeph-config/src/agent.rs`:
+
+```rust
+/// Background task supervisor configuration.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [agent.supervisor]
+/// enrichment_limit = 4
+/// telemetry_limit = 8
+/// abort_enrichment_on_turn = false
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TaskSupervisorConfig {
+    #[serde(default = "default_enrichment_limit")]
+    pub enrichment_limit: usize,  // Default: 4
+    
+    #[serde(default = "default_telemetry_limit")]
+    pub telemetry_limit: usize,   // Default: 8
+    
+    #[serde(default)]
+    pub abort_enrichment_on_turn: bool,  // Default: false
+}
+```
+
+Nest in `AgentConfig`:
+```rust
+pub struct AgentConfig {
+    // ... existing fields ...
+    #[serde(default)]
+    pub supervisor: TaskSupervisorConfig,
+}
+```
+
+**BackgroundSupervisor constructor** (passes config):
+```rust
+pub(crate) fn new(
+    config: &TaskSupervisorConfig,
+    recorder: Option<Arc<dyn HistogramRecorder>>,
+) -> Self
+```
+
+**Config migration** (`--migrate-config`): Insert default `[agent.supervisor]` section when missing.
+
+#### Phase 2F: Tracing Span Propagation (#2889)
+
+Wrap spawned future with `instrument()` call:
+
+```rust
+pub(crate) fn spawn(
+    &mut self,
+    class: TaskClass,
+    name: &'static str,
+    fut: impl Future<Output = ()> + Send + 'static,
+) -> bool {
+    // ...
+    let span = tracing::info_span!("bg_task", class = class.name(), task = name);
+    
+    self.tasks.spawn(
+        async move {
+            let _guard = guard;
+            fut.await;
+            TaskResult::Done(class, spawned_at.elapsed())
+        }
+        .instrument(span),
+    );
+    // ...
+}
+```
+
+Requires `use tracing::Instrument;` import.
+
+### 13.3 Integration Points
+
+| Point | Files | Change |
+|-------|-------|--------|
+| Config | `crates/zeph-config/src/agent.rs` | Add `TaskSupervisorConfig` struct, nest in `AgentConfig` |
+| Config defaults | `crates/zeph-core/config/default.toml`, root `config/default.toml` | Add commented `[agent.supervisor]` section |
+| Config migration | `src/config_migration.rs` | Insert default `[agent.supervisor]` if missing |
+| Supervisor struct | `crates/zeph-core/src/agent/supervisor.rs` | Add `class_handles`, `class_limits`, `histogram_recorder`; change `TaskResult` enum |
+| HistogramRecorder | `crates/zeph-core/src/metrics.rs` | Add `observe_bg_task(&str, Duration)` method to trait |
+| Prometheus impl | `src/metrics_export.rs` | Implement new trait method, add `bg_task_duration_seconds` histogram vec |
+| Agent build | `crates/zeph-core/src/agent/builder.rs` | Pass config + recorder to `BackgroundSupervisor::new()` |
+| Agent turn | `crates/zeph-core/src/agent/mod.rs` | Call `abort_class(Enrichment)` after `reap()` if config flag set |
+| Spawn sites | `native.rs:1261`, `sanitize.rs:161` | Replace `tokio::spawn()` with `supervisor.spawn()` |
+| MetricsSnapshot | `crates/zeph-core/src/metrics.rs` | Add `bg_enrichment_inflight`, `bg_telemetry_inflight` fields |
+| TUI status | `crates/zeph-tui/src/widgets/status.rs` | Append background task segment when counts > 0 |
+| Interactive wizard | `--init` handler | Add supervisor config options to wizard |
+
+### 13.4 Test Plan
+
+| Sub-phase | Test |
+|-----------|------|
+| 2A | Verify two audit log spawns appear in supervisor metrics (check `spawned` counter) |
+| 2B | Unit test: spawn task, join, verify `reap()` produces `TaskResult::Done(_, duration)` with non-zero duration |
+| 2C | Unit test: verify `metrics_snapshot().class_inflight` reports correct per-class counts; TUI test is visual (manual) |
+| 2D | Unit test: spawn N enrichment tasks, call `abort_class(Enrichment)`, verify inflight drops to 0 and telemetry unaffected |
+| 2E | Unit test: construct supervisor with custom limits, verify spawn/drop behavior matches config |
+| 2F | Unit test: spawn task with tracing subscriber, verify span fields `class` and `task` are recorded |
+
+### 13.5 Known Constraints
+
+- **tokio ≥ 1.36.0 required** for `AbortHandle::is_finished()` (Phase 2D)
+- **Signature changes:** `BackgroundSupervisor::new()` signature changes; callers in `AgentBuilder::build()` must pass config + recorder
+- **Borrow conflict resolved:** `spawn_outgoing_digest()` at `assembly.rs:536` is explicitly excluded; session digest stays as plain `tokio::spawn()` (one-shot shutdown operation)
+
+---
+
+## 14. Phase 2 Roadmap (by issue)
+
+| Issue | Phase | Title |
+|-------|-------|-------|
+| #2884 | 2A | Route remaining fire-and-forget spawns |
+| #2885 | 2B | Add per-class latency histogram |
+| #2886 | 2C | TUI background task display |
+| #2887 | 2D | Turn-boundary abort for Enrichment |
+| #2888 | 2E | Configurable concurrency limits |
+| #2889 | 2F | Span propagation (optional) |
+
+---
 
 ---
 
@@ -473,5 +697,5 @@ Roadmap for Phase 2 enhancements coordinated under Epic #2883:
 - [[002-agent-loop/spec]] — agent loop structure and turn lifecycle
 - [[036-prometheus-metrics/spec]] — metrics export and schema
 - [[001-system-invariants/spec#5. Concurrency Contract]] — concurrency invariants
-- GitHub PR #2816 — original implementation (Phase 1)
+- GitHub PR #2816 — Phase 1 implementation
 - GitHub Epic #2883 — Phase 2 coordination

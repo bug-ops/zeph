@@ -44,8 +44,10 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
         format!(" | ch:{}", metrics.active_channel)
     };
 
+    let bg_segment = build_bg_segment(metrics);
+
     let main_text = format!(
-        " [{mode}]{model}{channel_segment}{plan_mode_segment}{subagent_view_segment} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment}",
+        " [{mode}]{model}{channel_segment}{plan_mode_segment}{subagent_view_segment} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment}{bg_segment}",
         model = if metrics.model_name.is_empty() {
             String::new()
         } else {
@@ -115,6 +117,16 @@ fn build_filter_segment(metrics: &MetricsSnapshot) -> String {
             " | Filters: {}/{} ({savings:.0}% saved)",
             metrics.filter_filtered_commands, metrics.filter_total_commands,
         )
+    } else {
+        String::new()
+    }
+}
+
+fn build_bg_segment(metrics: &MetricsSnapshot) -> String {
+    let e = metrics.bg_enrichment_inflight;
+    let t = metrics.bg_telemetry_inflight;
+    if e > 0 || t > 0 {
+        format!(" | bg: {e} enrich, {t} telem")
     } else {
         String::new()
     }

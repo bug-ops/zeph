@@ -1975,6 +1975,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             });
         agent.with_histogram_recorder(recorder)
     };
+
+    // Wire supervisor config so concurrency limits and turn-boundary abort are applied (#2883).
+    let agent = agent.with_supervisor_config(&config.agent.supervisor);
+
     #[cfg(not(feature = "tui"))]
     drop(metrics_rx);
 

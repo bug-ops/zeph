@@ -1055,7 +1055,18 @@ impl<C: Channel> Agent<C> {
                 m.bg_inflight = snap.inflight as u64;
                 m.bg_dropped = snap.total_dropped();
                 m.bg_completed = snap.total_completed();
+                m.bg_enrichment_inflight = snap.class_inflight[0] as u64;
+                m.bg_telemetry_inflight = snap.class_inflight[1] as u64;
             });
+        }
+
+        // Intentional ordering: reap() runs before abort_class() so completed tasks are
+        // accounted in the metrics snapshot above. The TUI may show a stale enrichment
+        // inflight count for one cycle when abort fires, but this self-corrects next turn.
+        if self.runtime.supervisor_config.abort_enrichment_on_turn {
+            self.lifecycle
+                .supervisor
+                .abort_class(supervisor::TaskClass::Enrichment);
         }
 
         self.lifecycle.cancel_token = CancellationToken::new();

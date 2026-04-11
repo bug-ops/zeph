@@ -9,7 +9,7 @@ use zeph_core::config::migrate::{
     migrate_autodream_config, migrate_compression_predictor_config, migrate_database_url,
     migrate_forgetting_config, migrate_magic_docs_config, migrate_mcp_trust_levels,
     migrate_microcompact_config, migrate_planner_model_to_provider, migrate_shell_transactional,
-    migrate_stt_to_provider, migrate_telemetry_config,
+    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -83,9 +83,13 @@ pub(crate) fn handle_migrate_config(
     let telemetry_result = migrate_telemetry_config(&after_magic_docs)?;
     let after_telemetry = telemetry_result.output;
 
-    // Step 14: add missing default keys as commented-out entries.
+    // Step 14: add commented-out [agent.supervisor] block if absent (#2883).
+    let supervisor_result = migrate_supervisor_config(&after_telemetry)?;
+    let after_supervisor = supervisor_result.output;
+
+    // Step 15: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_telemetry)?;
+    let result = migrator.migrate(&after_supervisor)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -136,6 +140,9 @@ pub(crate) fn handle_migrate_config(
         }
         if telemetry_result.added_count > 0 {
             eprintln!("Telemetry migration: added commented-out [telemetry] block.");
+        }
+        if supervisor_result.added_count > 0 {
+            eprintln!("Supervisor migration: added commented-out [agent.supervisor] block.");
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

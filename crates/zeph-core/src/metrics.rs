@@ -361,6 +361,10 @@ pub struct MetricsSnapshot {
     pub bg_dropped: u64,
     /// Background supervisor: total tasks completed (all classes).
     pub bg_completed: u64,
+    /// Background supervisor: inflight enrichment tasks.
+    pub bg_enrichment_inflight: u64,
+    /// Background supervisor: inflight telemetry tasks.
+    pub bg_telemetry_inflight: u64,
     /// Whether self-learning (skill evolution) is enabled.
     pub self_learning_enabled: bool,
     /// Whether the semantic response cache is enabled.
@@ -515,6 +519,7 @@ impl MetricsCollector {
 ///     fn observe_llm_latency(&self, _: Duration) {}
 ///     fn observe_turn_duration(&self, _: Duration) {}
 ///     fn observe_tool_execution(&self, _: Duration) {}
+///     fn observe_bg_task(&self, _: &str, _: Duration) {}
 /// }
 ///
 /// let recorder: Arc<dyn HistogramRecorder> = Arc::new(NoOpRecorder);
@@ -529,6 +534,11 @@ pub trait HistogramRecorder: Send + Sync {
 
     /// Record a single tool execution latency observation.
     fn observe_tool_execution(&self, duration: std::time::Duration);
+
+    /// Record a background task completion latency.
+    ///
+    /// `class_label` is `"enrichment"` or `"telemetry"` (from `TaskClass::name()`).
+    fn observe_bg_task(&self, class_label: &str, duration: std::time::Duration);
 }
 
 #[cfg(test)]
@@ -944,6 +954,7 @@ mod tests {
             fn observe_llm_latency(&self, _: Duration) {}
             fn observe_turn_duration(&self, _: Duration) {}
             fn observe_tool_execution(&self, _: Duration) {}
+            fn observe_bg_task(&self, _: &str, _: Duration) {}
         }
 
         // Verify the trait can be used as a trait object (object-safe).

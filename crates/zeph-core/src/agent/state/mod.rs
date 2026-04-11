@@ -240,6 +240,8 @@ pub(crate) struct RuntimeConfig {
     ///
     /// Default: empty vec (zero-cost — loops never iterate).
     pub(crate) layers: Vec<std::sync::Arc<dyn crate::runtime_layer::RuntimeLayer>>,
+    /// Background supervisor config snapshot for turn-boundary abort logic.
+    pub(crate) supervisor_config: crate::config::TaskSupervisorConfig,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.
@@ -859,6 +861,7 @@ impl Default for RuntimeConfig {
             budget_hint_enabled: true,
             channel_skills: zeph_config::ChannelSkillsConfig::default(),
             layers: Vec::new(),
+            supervisor_config: crate::config::TaskSupervisorConfig::default(),
         }
     }
 }
@@ -931,7 +934,10 @@ impl LifecycleState {
             last_known_cwd: std::env::current_dir().unwrap_or_default(),
             file_changed_rx: None,
             file_watcher: None,
-            supervisor: super::supervisor::BackgroundSupervisor::new(),
+            supervisor: super::supervisor::BackgroundSupervisor::new(
+                &crate::config::TaskSupervisorConfig::default(),
+                None,
+            ),
         }
     }
 }

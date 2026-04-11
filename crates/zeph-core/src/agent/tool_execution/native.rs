@@ -1258,7 +1258,11 @@ impl<C: Channel> Agent<C> {
                                     policy_match: None,
                                 };
                                 let logger = std::sync::Arc::clone(logger);
-                                tokio::spawn(async move { logger.log(&entry).await });
+                                self.lifecycle.supervisor.spawn(
+                                    super::super::supervisor::TaskClass::Telemetry,
+                                    "audit-log",
+                                    async move { logger.log(&entry).await },
+                                );
                             }
                             pre_exec_blocked[idx] = true;
                             break;
@@ -3320,6 +3324,8 @@ mod tests {
             fn observe_turn_duration(&self, _: Duration) {}
 
             fn observe_tool_execution(&self, _: Duration) {}
+
+            fn observe_bg_task(&self, _: &str, _: Duration) {}
         }
 
         let recorder = Arc::new(CountingRecorder {

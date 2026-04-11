@@ -259,10 +259,63 @@ pub struct AgentConfig {
     /// available (#2267).
     #[serde(default = "default_budget_hint_enabled")]
     pub budget_hint_enabled: bool,
+    /// Background task supervisor tuning. Controls concurrency limits and turn-boundary abort.
+    #[serde(default)]
+    pub supervisor: TaskSupervisorConfig,
 }
 
 fn default_budget_hint_enabled() -> bool {
     true
+}
+
+fn default_enrichment_limit() -> usize {
+    4
+}
+
+fn default_telemetry_limit() -> usize {
+    8
+}
+
+/// Background task supervisor configuration, nested under `[agent.supervisor]` in TOML.
+///
+/// Controls per-class concurrency limits and turn-boundary behaviour for the
+/// [`BackgroundSupervisor`][zeph_core::agent::supervisor::BackgroundSupervisor].
+/// All fields have sensible defaults that match the Phase 1 hardcoded values; only change
+/// these if you observe excessive background task drops under load.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [agent.supervisor]
+/// enrichment_limit = 4
+/// telemetry_limit = 8
+/// abort_enrichment_on_turn = false
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TaskSupervisorConfig {
+    /// Maximum concurrent enrichment tasks (summarization, graph/persona/trajectory extraction).
+    /// Default: `4`.
+    #[serde(default = "default_enrichment_limit")]
+    pub enrichment_limit: usize,
+    /// Maximum concurrent telemetry tasks (audit log writes, graph count sync).
+    /// Default: `8`.
+    #[serde(default = "default_telemetry_limit")]
+    pub telemetry_limit: usize,
+    /// Abort all inflight enrichment tasks at turn boundary to prevent backlog buildup.
+    /// Default: `false`.
+    #[serde(default)]
+    pub abort_enrichment_on_turn: bool,
+}
+
+impl Default for TaskSupervisorConfig {
+    fn default() -> Self {
+        Self {
+            enrichment_limit: default_enrichment_limit(),
+            telemetry_limit: default_telemetry_limit(),
+            abort_enrichment_on_turn: false,
+        }
+    }
 }
 
 /// Sub-agent pool configuration, nested under `[agents]` in TOML.

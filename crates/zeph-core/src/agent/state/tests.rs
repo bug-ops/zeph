@@ -88,6 +88,7 @@ fn make_runtime_config() -> RuntimeConfig {
         budget_hint_enabled: true,
         channel_skills: zeph_config::ChannelSkillsConfig::default(),
         layers: Vec::new(),
+        supervisor_config: crate::config::TaskSupervisorConfig::default(),
     }
 }
 

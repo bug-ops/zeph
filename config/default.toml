@@ -12,6 +12,12 @@ max_tool_iterations = 10
 # Additional instruction files to always inject into the system prompt
 # instruction_files = ["custom-instructions.md"]
 
+# Background task supervisor tuning (optional — defaults shown)
+# [agent.supervisor]
+# enrichment_limit = 4
+# telemetry_limit = 8
+# abort_enrichment_on_turn = false
+
 [llm]
 # Routing strategy for multi-provider configs: "none" (default), "ema", "thompson", "cascade", "task", "bandit"
 # routing = "none"

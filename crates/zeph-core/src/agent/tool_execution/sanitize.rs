@@ -158,7 +158,11 @@ impl<C: Channel> Agent<C> {
                     policy_match: None,
                 };
                 let logger = std::sync::Arc::clone(logger);
-                tokio::spawn(async move { logger.log(&entry).await });
+                self.lifecycle.supervisor.spawn(
+                    super::super::supervisor::TaskClass::Telemetry,
+                    "audit-log-sanitize",
+                    async move { logger.log(&entry).await },
+                );
             }
             if let Some(ref qs) = self.security.quarantine_summarizer {
                 match qs.extract_facts(&sanitized, &self.security.sanitizer).await {

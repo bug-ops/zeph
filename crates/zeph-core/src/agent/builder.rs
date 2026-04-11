@@ -1125,6 +1125,21 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure the background task supervisor with explicit limits and optional recorder.
+    ///
+    /// Re-initialises the supervisor from `config`. Call this after
+    /// [`with_histogram_recorder`][Self::with_histogram_recorder] so the recorder is
+    /// available for passing to the supervisor.
+    #[must_use]
+    pub fn with_supervisor_config(mut self, config: &crate::config::TaskSupervisorConfig) -> Self {
+        self.lifecycle.supervisor = crate::agent::supervisor::BackgroundSupervisor::new(
+            config,
+            self.metrics.histogram_recorder.clone(),
+        );
+        self.runtime.supervisor_config = config.clone();
+        self
+    }
+
     /// Returns a handle that can cancel the current in-flight operation.
     /// The returned `Notify` is stable across messages — callers invoke
     /// `notify_waiters()` to cancel whatever operation is running.

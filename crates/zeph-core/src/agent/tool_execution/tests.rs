@@ -5032,6 +5032,8 @@ mod histogram_recorder_wiring {
         fn observe_tool_execution(&self, _: Duration) {
             self.tool_count.fetch_add(1, Ordering::Relaxed);
         }
+
+        fn observe_bg_task(&self, _: &str, _: Duration) {}
     }
 
     // T-HR-1: `with_histogram_recorder` builder wires histogram_recorder to Some.

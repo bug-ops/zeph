@@ -141,6 +141,7 @@ impl Default for Config {
                 focus: FocusConfig::default(),
                 tool_filter: crate::agent::ToolFilterConfig::default(),
                 budget_hint_enabled: true,
+                supervisor: crate::agent::TaskSupervisorConfig::default(),
             },
             llm: LlmConfig {
                 providers: Vec::new(),
