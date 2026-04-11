@@ -25,14 +25,14 @@ See `[[constitution]]` for project-wide non-negotiable rules.
 
 ## Numbering Scheme
 
-Spec IDs (001–036) follow a logical grouping:
+Spec IDs (001–041) follow a logical grouping:
 
 - **001–010**: Foundational contracts and core systems (invariants, loop, providers, memory, skills, tools, channels, mcp, orchestration, security)
 - **011–020**: User-facing features and operational integration (TUI, graph memory, protocols, self-learning, filtering, indexing, scheduler, gateway, config loading)
 - **021**: Reserved for future core feature
 - **022–034**: Architectural extensions and specialized features (provider registry, complexity routing, multi-model design, classifiers, TUI enhancements, hooks, database abstraction, handoff, feature flags, subagent context, benchmark harness)
-- **035–036**: Observability and telemetry (profiling/tracing instrumentation, Prometheus metrics export)
-- **037**: Configuration schema (`zeph-config` TOML schema, validation rules, env-var override table, migration)
+- **035–037**: Observability and configuration (profiling/tracing instrumentation, Prometheus metrics export, config schema)
+- **038–041**: Infrastructure and security (vault, background task supervisor, content sanitizer, experiments)
 
 ---
 
@@ -82,3 +82,7 @@ Spec IDs (001–036) follow a logical grouping:
 | `035-profiling/spec.md` | Two-tier telemetry (Tier 1: local chrome traces, Tier 2: OTLP + Pyroscope), per-span `#[instrument]` macros, allocation tracking, InstrumentedChannel wrappers, system metrics; zero-overhead when disabled | cross-cutting |
 | `036-prometheus-metrics/spec.md` | Prometheus `/metrics` endpoint, OpenMetrics export, ~25 gauge/counter metrics from MetricsSnapshot, feature-gated with gateway | `zeph-gateway`, binary |
 | `037-config-schema/spec.md` | Canonical TOML schema reference: all top-level sections, validation rules, env-var override table, `--migrate-config` migration mechanism | `zeph-config` |
+| `038-vault/spec.md` | Vault & Secret Management: VaultProvider trait, age encryption backend, env backend (testing), zeroize-on-drop guarantee, vault config schema, key invariants, multi-recipient vaults | `zeph-vault` |
+| `039-background-task-supervisor/spec.md` | (Proposed) Supervised Background Task Manager: AgentTaskSupervisor, task priority classes, queue depth limits, turn-boundary cleanup, metrics (`bg_inflight`, `bg_dropped`) | `zeph-core` |
+| `040-sanitizer/spec.md` | Content Sanitizer: spotlighting pipeline, regex injection detection, PII scrubber, guardrail filter, quarantined summarizer, response verification, exfiltration guards, memory validation, causal analysis (eight-layer defense-in-depth) | `zeph-sanitizer` |
+| `041-experiments/spec.md` | Experiments & Runtime Feature Gating: `[experiments]` config section, ExperimentConfig, rollout percentage, experiment results reporting, CLI subcommands; distinct from compile-time feature flags | `zeph-experiments` |

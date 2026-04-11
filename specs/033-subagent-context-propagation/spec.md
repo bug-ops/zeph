@@ -1,406 +1,436 @@
 ---
 aliases:
   - Subagent Context
-  - Context Propagation
-  - Gap Analysis Report
+  - Subagent Spawning
+  - Agent Spawning & Delegation
 tags:
   - sdd
-  - research
   - spec
   - subagent
   - context
+  - delegation
 created: 2026-04-03
-status: research
+status: approved
 related:
   - "[[MOC-specs]]"
+  - "[[002-agent-loop/spec]]"
   - "[[026-tui-subagent-management/spec]]"
+  - "[[032-handoff-skill-system/spec]]"
 ---
 
 # Spec: Subagent Context Propagation
 
 > [!info]
-> Gap analysis of `/agent spawn` context propagation vs Claude Code reference.
-> 12 identified gaps (P1–P4) with phased resolution plan. Documents GAP-07 (cwd) and
-> GAP-08b (loop exits) resolution in #2582, #2585.
+> Implementation spec for `/agent spawn` command. Documents how parent context is
+> passed to spawned subagents, the YAML frontmatter format, and which gaps remain open.
+> All core features shipped in PR #2575–#2579 (v0.18.0–v0.20.0).
 
-**Date**: 2026-04-03 (updated 2026-04-10)  
-**Status**: Research (gap documentation + post-implementation analysis)  
-**Scope**: `/agent spawn` command — context passed to subagents at launch
-
----
-
-## 1. Reference: Claude Code Implementation
-
-### Architecture overview
-
-Claude Code spawns subagents through `AgentTool.tsx`. Context is represented by
-`ToolUseContext` — a rich runtime object that is cloned and partially shared on spawn.
-The key entry point is `createSubagentContext()` in `src/utils/forkedAgent.ts`.
-
-### What is passed to the subagent
-
-| Context element | Mechanism |
-|---|---|
-| LLM model | `AgentDefinition.model` field (`'inherit'` copies parent's model) |
-| System prompt | Fresh build from `AgentDefinition.getSystemPrompt()`, or frozen parent bytes on fork path |
-| Conversation history | Empty by default; full parent history on fork path via `forkContextMessages` |
-| Tools | Filtered pool built from `AgentDefinition.tools`; exact parent tools on fork path |
-| MCP clients | Shared from parent — `parentContext.options.mcpClients` passed through |
-| MCP resources | Shared — `parentContext.options.mcpResources` passed through |
-| Agent definitions | Shared — enables nested agent spawns |
-| App state (read) | Wrapped: `getAppState` isolates UI prompts for background agents |
-| App state (write) | Shared for sync agents; no-op for async agents |
-| Abort controller | Child controller linked to parent (cancel propagates) |
-| File state cache | Cloned — each agent gets its own LRU cache |
-| Query depth | Incremented (`depth + 1`) — prevents infinite recursion |
-| Working directory | `worktreePath` propagated explicitly |
-
-### Fork path (implicit spawn)
-
-When `subagent_type` is not specified, Claude Code uses a **fork path** that:
-
-1. Inherits the parent's system prompt as frozen bytes (byte-exact for prompt cache)
-2. Passes the full parent conversation history as a prefix
-3. Uses `useExactTools: true` — inherits parent's exact tool pool
-4. Achieves high prompt cache hit rates via byte-identical API prefixes
-
-### Isolation model
-
-- Background (async) agents: fully isolated from UI mutations, independent abort
-- Sync (foreground) agents: share `setAppState` for live UI updates
-- All agents: isolated file state cache, new abort controller (child-linked), new query tracking
+**Scope**: `/agent spawn <name> <prompt>` command — spawning isolated subagent sessions with parent-derived state propagation  
+**Status**: Approved (shipped v0.18.0+)  
+**Related PRs**: #2575, #2576, #2577, #2578, #2579
 
 ---
 
-## 2. Current Zeph Implementation
+## 1. Overview
 
-### Architecture overview
+Subagents are isolated LLM sessions spawned from a parent agent to delegate or parallelize work.
+The parent passes rich context (conversation history, provider info, cancellation signals) to the subagent
+so it can understand why it was spawned and what the parent has already tried.
 
-Zeph spawns subagents via `SubAgentManager::spawn()` in `crates/zeph-subagent/src/manager.rs`.
-The entry point from the agent loop is `handle_agent_command()` in
-`crates/zeph-core/src/agent/mod.rs:4505`.
+The spawn interface is implemented in `SubAgentManager::spawn()` and configured via `SubAgentConfig`.
 
-### `spawn()` signature
+---
 
-```rust
-pub fn spawn(
-    def_name: &str,
-    task_prompt: &str,
-    provider: AnyProvider,
-    tool_executor: Arc<dyn ErasedToolExecutor>,
-    skills: Option<Vec<String>>,
-    config: &SubAgentConfig,
-) -> Result<String, SubAgentError>
+## 2. SubAgentDef YAML Format
+
+Subagent definitions are Markdown files with YAML frontmatter. Example:
+
+```markdown
+---
+name: code-reviewer
+description: Comprehensive code review with security focus
+model: claude-opus-4
+permissions:
+  max_turns: 15
+  timeout_secs: 300
+  background: false
+skills:
+  include:
+    - "git-*"
+    - "review"
+  exclude:
+    - "deploy"
+tools:
+  allow:
+    - shell
+    - Read
+    - Edit
+  except:
+    - "rm"
+    - "sudo"
+memory: project
+hooks:
+  - type: command
+    when: pre_tool_use
+    if_tool: "shell"
+    command: "pre-tool-hook.sh"
+---
+
+You are an expert code reviewer. Focus on:
+- Security vulnerabilities (injection, XSS, SSRF)
+- Performance issues (N+1 queries, unbounded loops)
+- Style consistency with the project
+- Test coverage gaps
+
+Do not approve code until all issues are addressed.
 ```
 
-### What is actually passed
+### 2.1 Frontmatter Fields
 
-| Context element | Status | Notes |
-|---|---|---|
-| LLM provider | ✅ Passed | Parent's `AnyProvider` cloned |
-| Model override | ✅ Partial | `def.model` from frontmatter; no `'inherit'` option |
-| System prompt | ✅ Passed | Built from `def.system_prompt` + optional memory injection |
-| Task prompt | ✅ Passed | User's `/agent spawn <name> <prompt>` argument |
-| Tool executor | ✅ Passed | Parent's `Arc<dyn ErasedToolExecutor>` |
-| Skills | ✅ Passed | Filtered by `SkillFilter` from `def.skills` |
-| Permission mode | ✅ Passed | From `def.permissions.permission_mode` |
-| Memory scope | ✅ Passed | MEMORY.md injected into system prompt |
-| Hooks | ✅ Passed | `def.hooks` (PreToolUse / PostToolUse) |
-| Conversation history | ❌ **NOT passed** | `initial_messages: vec![]` — always empty |
-| Parent system prompt | ❌ **NOT passed** | Subagent uses its own `def.system_prompt` only |
-| MCP context | ❌ **NOT passed** | Only base `tool_executor` (no MCP layer) |
-| Abort/cancel linkage | ❌ **NOT linked** | Independent `CancellationToken` per agent |
-| Working directory | ⚠️ Implicit | `std::env::current_dir()` in memory — not explicitly propagated |
-| Agent depth tracking | ❌ Missing | No recursion depth counter |
-| Agent definitions | ❌ **NOT passed** | Nested agent spawn not possible from within subagent |
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| `name` | string | ✓ | — | ASCII alphanumeric + hyphen/underscore, max 64 chars. Used in `/agent spawn <name>` |
+| `description` | string | ✓ | — | Shown in `/agent list` output |
+| `model` | string \| "inherit" | ✗ | None | See §2.2. Special value `"inherit"` uses parent's model |
+| `permissions.max_turns` | u32 | ✗ | config default | Max LLM turns before auto-stop |
+| `permissions.timeout_secs` | u32 | ✗ | 600 | Timeout in seconds |
+| `permissions.background` | bool | ✗ | false | If `true`, spawn runs without blocking parent (background task) |
+| `permissions.permission_mode` | enum | ✗ | config default | `default` \| `accept_edits` \| `dont_ask` \| `bypass_permissions` \| `plan` |
+| `skills.include` | [string] | ✗ | [] | Glob patterns of skills to enable; empty = inherit all |
+| `skills.exclude` | [string] | ✗ | [] | Glob patterns to remove from inherited set |
+| `tools.allow` \| `tools.deny` | [string] | ✗ | — | Allowlist or denylist of tool IDs |
+| `tools.except` | [string] | ✗ | [] | Additional denylist (deny wins) |
+| `memory` | enum | ✗ | None | `user` \| `project` \| `local` — persistent memory scope |
+| `hooks` | [hook] | ✗ | [] | Per-agent lifecycle hooks (PreToolUse, PostToolUse) |
 
-### Call site in core (mod.rs:4524)
+### 2.2 Model Field: Inherit Semantics
+
+The `model` field supports three modes:
+
+1. **Absent or `None`**: Use the subagent config's default provider (usually the main provider)
+2. **Named model** (e.g., `"gpt-4o-mini"`): Use that specific model by name
+3. **`"inherit"`**: Copy the parent's current model name at spawn time
+
+Example:
+
+```yaml
+# Use fast/cheap model for simple reviews
+model: gpt-4o-mini
+
+# Use same model as parent for consistency
+model: inherit
+
+# Use strongest model for complex analysis
+model: claude-opus-4
+```
+
+**Implementation**: At spawn time, if `def.model == Some("inherit")`, resolve to `parent_provider_name` from `SpawnContext`.
+If resolution fails (parent name not found), fall back to the main provider's default model.
+
+---
+
+## 3. Context Propagation: SpawnContext
+
+The `SpawnContext` struct carries parent-derived state to the spawned subagent:
+
+```rust
+pub struct SpawnContext {
+    /// Recent parent conversation messages (last N turns).
+    pub parent_messages: Vec<Message>,
+    
+    /// Parent's cancellation token for linked cancellation (foreground spawns).
+    pub parent_cancel: Option<CancellationToken>,
+    
+    /// Parent's active provider name (for model:inherit resolution).
+    pub parent_provider_name: Option<String>,
+    
+    /// Current spawn depth (0 = top-level agent).
+    pub spawn_depth: u32,
+    
+    /// MCP tool names available in the parent's tool executor (for diagnostics).
+    pub mcp_tool_names: Vec<String>,
+}
+```
+
+### 3.1 Message History Propagation
+
+**Configuration**: `[agents] context_window_turns` (default: 10)
+
+When spawning, the last N turns from `parent.context.messages` are extracted and passed as `parent_messages`.
+These are prepended to the subagent's message history before the task prompt.
+
+**Example**: If the parent has 20 turns and `context_window_turns = 5`, only the last 5 turns are included.
+This bounds memory overhead and focus the subagent on recent context.
+
+Set `context_window_turns = 0` to disable history propagation entirely.
+
+### 3.2 Cancellation Linkage (Foreground Spawns)
+
+When `permissions.background = false` (foreground spawn):
+- `parent_cancel` is set to the parent's `CancellationToken`
+- The subagent's cancel token is linked via `parent_cancel.child_token()`
+- If the parent is cancelled (Ctrl+C, session abort), the subagent is cancelled too
+
+When `permissions.background = true`:
+- `parent_cancel` is `None`
+- The subagent gets an independent `CancellationToken`
+- Subagent continues running even if the parent is cancelled
+- Parent polls via `SubAgentManager::statuses()` and `collect()`
+
+### 3.3 Spawn Depth Tracking
+
+Each spawn increments the `spawn_depth` counter.
+
+- **Depth 0**: Top-level agent (CLI, Telegram, TUI)
+- **Depth 1**: First-level subagent spawned by depth-0
+- **Depth 2**: Subagent spawned by a depth-1 subagent
+- ...
+- **Depth N**: Blocked if N > `config.max_spawn_depth` (default: 3)
+
+**Depth guard**: When `spawn_depth >= max_spawn_depth`, `SubAgentManager::spawn()` returns `SubAgentError::TooDeep`.
+
+---
+
+## 4. Context Injection: Prepending Parent Context
+
+**Configuration**: `[agents] context_injection_mode` (default: `LastAssistantTurn`)
+
+The parent's recent context is injected into the subagent's task prompt to answer "why was I spawned?".
+
+### 4.1 Injection Modes
+
+| Mode | Behavior |
+|------|----------|
+| `none` | No context injected; subagent receives only the literal task prompt |
+| `last_assistant_turn` | Prepend the last assistant message from parent history as a preamble |
+| `summary` | LLM-summarized parent context (Phase 2, not yet implemented; falls back to `last_assistant_turn`) |
+
+### 4.2 LastAssistantTurn Mode (Implemented)
+
+When `context_injection_mode = last_assistant_turn`:
+
+1. Extract the last `Role::Assistant` message from `parent_messages`
+2. Prepend it to `task_prompt` as a structured preamble:
+
+```
+Context from parent agent:
+---
+[last assistant message body]
+---
+
+Now, [original task_prompt]
+```
+
+Example:
+
+```
+Context from parent agent:
+---
+I analyzed the PR and found three issues:
+1. SQL injection in user input handling
+2. Missing rate limit on API endpoint
+3. Incorrect error logging
+---
+
+Now, write a detailed security report on these findings.
+```
+
+**Impact**: The subagent understands what the parent has already discovered, avoiding duplicate analysis.
+
+---
+
+## 5. Configuration: SubAgentConfig TOML Section
+
+The `[agents]` section controls subagent behavior:
+
+```toml
+[agents]
+enabled = true
+max_concurrent = 5                       # max simultaneous subagents
+max_spawn_depth = 3                      # depth guard (0 = prevent nesting)
+context_window_turns = 10                # parent turns to pass (0 = none)
+context_injection_mode = "last_assistant_turn"  # or "none" / "summary"
+default_permission_mode = "dont_ask"
+allow_bypass_permissions = false
+transcript_enabled = true
+transcript_max_files = 50
+
+[agents.default_memory_scope]
+# ...
+```
+
+**Key defaults**:
+- `max_concurrent`: 5 — prevent runaway spawns
+- `max_spawn_depth`: 3 — limit nesting levels
+- `context_window_turns`: 10 — recent context window
+- `context_injection_mode`: `last_assistant_turn` — provide parent context
+
+---
+
+## 6. Call Sites and Integration
+
+### 6.1 Spawning from the Agent Loop
+
+In `crates/zeph-core/src/agent/mod.rs`, `handle_agent_command()` calls:
 
 ```rust
 AgentCommand::Spawn { name, prompt } => {
-    let provider = self.provider.clone();
-    let tool_executor = Arc::clone(&self.tool_executor);
-    let skills = self.filtered_skills_for(&name);
-    let mgr = self.orchestration.subagent_manager.as_mut()?;
-    let cfg = self.orchestration.subagent_config.clone();
-    let task_id = match mgr.spawn(&name, &prompt, provider, tool_executor, skills, &cfg) { ... }
+    let ctx = SpawnContext {
+        parent_messages: self.context.messages
+            .iter()
+            .rev()
+            .take(config.agents.context_window_turns)
+            .cloned()
+            .collect(),
+        parent_cancel: Some(self.cancel.clone()),
+        parent_provider_name: Some(self.provider.name().to_owned()),
+        spawn_depth: self.spawn_depth + 1,
+        mcp_tool_names: self.tool_executor.mcp_tools(),  // if available
+    };
+    
+    let task_id = mgr.spawn(&name, &prompt, provider, executor, skills, config, ctx)?;
+    // ...
+}
 ```
 
-Notice: `self.context` (conversation history, session config, etc.) is **not passed**.
+### 6.2 Command Syntax
 
-### AgentLoopArgs construction (manager.rs:946)
-
-```rust
-tokio::spawn(run_agent_loop(AgentLoopArgs {
-    provider,
-    executor,
-    system_prompt,   // from def only
-    task_prompt,     // user's prompt string
-    skills,
-    max_turns,
-    cancel: cancel_clone,   // independent token
-    ...
-    initial_messages: vec![],   // ← always empty
-    model: def.model.clone(),
-}));
+```
+/agent spawn <name> <prompt...>
 ```
 
----
+- `<name>`: Definition name (e.g., `code-reviewer`)
+- `<prompt>`: Task description (e.g., `"Review this PR for security issues"`)
 
-## 3. Gap Analysis
-
-### P1 — Critical
-
-#### GAP-01: No conversation history passed to subagent
-
-**What CC does**: Fork agents receive the full parent conversation history as
-`forkContextMessages`. Non-fork agents receive custom `initialMessages`. Subagents
-always have context about what the parent was doing.
-
-**What Zeph does**: `initial_messages: vec![]` — unconditionally empty. The subagent
-starts with a blank message history regardless of the parent's state.
-
-**Impact**: Subagent cannot reference prior turns, tool outputs, or files the parent
-analyzed. The only context is the raw `task_prompt` string. Complex delegation tasks
-("review what we discussed and write tests") fail silently.
-
-**Affected files**:
-- `crates/zeph-subagent/src/manager.rs:962` — `initial_messages: vec![]`
-- `crates/zeph-core/src/agent/mod.rs:4530-4535` — spawn call site
+The `prompt` is placed after context injection and sent to the subagent's LLM.
 
 ---
 
-### P2 — High
+## 7. Foreground vs Background Spawns
 
-#### GAP-02: No parent context injection (recent messages / last N turns)
+### 7.1 Foreground (Blocking, Linked Cancellation)
 
-**What CC does**: Even without full history, the subagent knows its `querySource`
-(`agent:builtin:fork`) and receives a prompt that encodes the parent's intent structurally.
+When `permissions.background = false`:
 
-**What Zeph does**: Subagent receives only the literal `task_prompt` string. No
-summarized context, no recent turn window, no structured encoding of parent state.
+```yaml
+permissions:
+  background: false  # or omitted (default)
+```
 
-**Impact**: Subagent has no way to understand why it was spawned or what information
-the parent already has. Users must manually copy context into the prompt string.
+- Parent **blocks** until the subagent completes (turns == `max_turns` or timeout)
+- Subagent's cancel token is linked to parent's — cancelling parent cancels subagent
+- Result is returned directly in the turn
+- Used for: sequential delegation ("do X, then I'll continue"), code review, validation
 
----
+### 7.2 Background (Non-Blocking, Independent)
 
-#### GAP-03: No model inheritance
+When `permissions.background = true`:
 
-**What CC does**: `AgentDefinition.model` accepts `'inherit'` — the subagent uses
-the same model as its parent. Also supports named aliases (`claude-opus`, etc.).
+```yaml
+permissions:
+  background: true
+```
 
-**What Zeph does**: `def.model` is `Option<String>` — `None` means use the default
-provider's model (whatever `chat_with_tools` resolves to). No `inherit` semantics.
-No way to say "use the same model the parent is using".
+- Parent **returns immediately** with a task ID
+- Subagent runs independently in a background task
+- No cancellation linkage — subagent continues if parent is cancelled
+- Parent can poll status via `/agents status <task_id>` or `/agents collect`
+- Used for: parallel work (multiple reviews in parallel), long-running analysis, batch processing
 
-**Impact**: Subagents always use the definition's hardcoded model or the global
-default — no dynamic model selection based on parent context.
-
----
-
-#### GAP-04: MCP context not propagated
-
-**What CC does**: `mcpClients` and `mcpResources` from the parent context are passed
-to every subagent automatically. MCP servers spawned for the session are available
-to all agents in the tree.
-
-**What Zeph does**: Only the base `tool_executor: Arc<dyn ErasedToolExecutor>` is
-passed. If MCP tools are registered in the parent's executor, they are available
-(because the Arc is shared). However, MCP server lifecycle (`McpManager`) is not
-passed — subagents cannot dynamically add MCP servers, and MCP resource metadata
-is not propagated.
-
-**Impact**: Subagents that need to enumerate MCP resources or spawn new MCP
-connections cannot do so.
+**Implementation**: The subagent's `JoinHandle` is stored in `SubAgentManager`'s task set;
+parent can poll via `statuses()` and retrieve transcripts via `collect()`.
 
 ---
 
-#### GAP-05: Cancel/abort does not propagate from parent to children
+## 8. Transcript Persistence
 
-**What CC does**: `createChildAbortController(parentContext.abortController)` —
-cancelling the parent cancels all synchronous children. Background agents use their
-own controller but are tracked in `AppState`.
+When `[agents] transcript_enabled = true`, subagent conversations are persisted to JSONL:
 
-**What Zeph does**: Each subagent gets `CancellationToken::new()` — fully independent.
-If the parent is stopped (e.g., Ctrl+C in CLI), running subagents continue until
-their own `max_turns` or `timeout_secs`.
+```
+.zeph/subagent-transcripts/
+├── <task_id>.jsonl        # conversation history
+└── <task_id>.meta.json    # metadata (status, turns, duration)
+```
 
-**Impact**: Resource leak on parent cancellation; subagents outlive their parent.
+Transcripts enable:
+- Session resume on restart
+- Auditing and debugging
+- Training data collection
 
----
-
-### P3 — Medium
-
-#### GAP-06: No agent recursion depth guard
-
-**What CC does**: `queryTracking.depth` is incremented on each spawn. Deep nesting
-can be detected and limited.
-
-**What Zeph does**: No depth tracking at all. An agent that spawns another that
-spawns another will run unchecked until `max_concurrent` is hit.
-
-**Impact**: Potential runaway recursion consuming LLM budget and concurrency slots.
+See `TranscriptWriter` and `TranscriptReader` in `zeph-subagent`.
 
 ---
 
-#### GAP-07: Working directory not explicitly propagated ✅ Partially resolved (#2582)
+## 9. Gap Analysis: Resolved and Open
 
-**What CC does**: `worktreePath` is passed explicitly to `runAgent` and stored in
-the agent context.
-
-**What Zeph does**: Memory scope resolution uses `std::env::current_dir()` at spawn
-time. If the CWD changes between parent startup and spawn (rare but possible), the
-memory directory resolves to the wrong path.
-
-**Fix applied**: `build_system_prompt_with_memory` now appends
-`"\nWorking directory: {cwd}"` to every subagent system prompt so the LLM explicitly
-knows where the project is. The underlying architecture still uses implicit CWD
-rather than explicit propagation.
-
-**Impact**: Residual risk is low — CWD is now visible to the model, resolving the
-primary symptom (LLM hedging instead of acting).
-
----
-
-#### GAP-08: Nested agent spawn not supported from within subagent
-
-**What CC does**: `agentDefinitions` is passed through the context — any subagent
-can spawn further subagents using the same definition registry.
-
-**What Zeph does**: `SubAgentManager` is only accessible via the parent `Agent`
-struct (`self.orchestration.subagent_manager`). Subagents run in `run_agent_loop`
-which has no access to the manager. Nested spawning is architecturally impossible.
-
-**Impact**: Limits multi-level orchestration patterns (planner → executor → validator).
-
----
-
-#### GAP-08b: Agent loop exits immediately on text-only first response ✅ Fixed (#2582)
-
-**What CC does**: The agent loop continues regardless of whether the LLM calls tools
-or returns plain text — it is up to `max_turns` to terminate the loop.
-
-**What Zeph did**: `handle_tool_step` returning `true` (text-only, no tool call) caused
-`run_agent_loop` to `break` immediately, exiting after exactly 1 LLM turn with 0 tool
-invocations. When the LLM announced intent instead of acting (common on the first turn),
-the subagent completed with only the announcement.
-
-**Fix applied**: On text-only turn 1 with `any_tool_called == false`,
-the loop pushes a nudge user message ("Please use the available tools to complete the task.
-Do not announce intentions — execute them.") and continues for one more turn. Subsequent
-text-only turns still terminate the loop normally.
-
-**Impact**: Resolved. Subagents with intent-announcing LLMs now proceed to tool use on
-the retry turn.
-
----
-
-#### GAP-09: Serde asymmetry in SubAgentDef (known — IMP-CRIT-04)
-
-`disallowed_tools` is deserialized from `tools.except` in YAML frontmatter but
-serialized as a flat top-level key. Round-trip serialization is not supported.
-Documented in source as a known issue to address before v1.0.0.
-
----
-
-### P4 — Low
-
-#### GAP-10: No inter-agent communication (team model)
-
-**What CC does**: `InProcessTeammateTask` enables agents to communicate via mailbox
-messages (`SendMessage`). Agents can coordinate, delegate subtasks, and report progress
-to each other.
-
-**What Zeph does**: Parent polls subagent status via `poll_subagent_until_done()`.
-No bidirectional or multi-agent communication. No team model.
-
-**Impact**: Multi-agent collaboration patterns require manual orchestration via the
-parent's LLM turn.
-
----
-
-#### GAP-11: No fork/prompt-cache optimization path
-
-**What CC does**: Fork path reuses the parent's frozen system prompt bytes and full
-conversation history as a prompt cache prefix, achieving high cache hit rates.
-
-**What Zeph does**: Each spawn builds the system prompt fresh.
-`build_system_prompt_with_memory` always constructs a new string.
-
-**Impact**: Higher LLM API cost and latency when spawning many subagents for
-parallel subtasks.
-
----
-
-## 4. Summary Table
-
-| Gap | Priority | Area | Complexity | Status |
+| Gap | Priority | Resolved? | Status | Notes |
 |---|---|---|---|---|
-| GAP-01: No history passed | P1 | Context propagation | Medium | Open |
-| GAP-02: No parent context injection | P2 | Context propagation | Medium | Open |
-| GAP-03: No model inheritance | P2 | Config | Low | Open |
-| GAP-04: MCP context not propagated | P2 | Infrastructure | High | Open |
-| GAP-05: Cancel not cascading | P2 | Lifecycle | Medium | Open |
-| GAP-06: No recursion depth guard | P3 | Safety | Low | Open |
-| GAP-07: CWD not explicit | P3 | Correctness | Low | ✅ Resolved (#2582) |
-| GAP-08: No nested spawn support | P3 | Architecture | High | Open |
-| GAP-08b: Loop exits on text-only first turn | P2 | Loop control | Low | ✅ Fixed (#2585) |
-| GAP-09: Serde asymmetry | P3 | Known issue | Low | Documented |
-| GAP-10: No inter-agent comm | P4 | Team model | High | Open |
-| GAP-11: No prompt cache opt | P4 | Performance | Medium | Open |
+| GAP-01: Conversation history | P1 | ✅ | Shipped #2575 | `parent_messages` in `SpawnContext` |
+| GAP-02: Parent context injection | P2 | ✅ | Shipped #2576 | `context_injection_mode` with `last_assistant_turn` |
+| GAP-03: Model inheritance | P2 | ✅ | Shipped #2577 | `model: "inherit"` in frontmatter |
+| GAP-04: MCP context propagation | P2 | ⚠️ Partial | Shipped #2578 | Tool executor shared; MCP server lifecycle not accessible |
+| GAP-05: Cancellation propagation | P2 | ✅ | Shipped #2579 | `parent_cancel.child_token()` for foreground spawns |
+| GAP-06: Recursion depth guard | P3 | ✅ | Shipped #2575 | `max_spawn_depth` config with depth tracking |
+| GAP-07: CWD propagation | P3 | ✅ | Shipped #2582 | CWD appended to system prompt explicitly |
+| GAP-08: Nested spawn from subagent | P3 | ❌ | Open | Subagent has no access to `SubAgentManager`; requires architecture change |
+| GAP-08b: Early loop exit on text-only | P2 | ✅ | Shipped #2585 | Nudge message on first turn if no tools called |
+| GAP-09: Serde asymmetry | P3 | ❌ | Documented | `disallowed_tools` serde mismatch; tracked as IMP-CRIT-04 |
+| GAP-10: Inter-agent communication | P4 | ❌ | Open | No mailbox/team model; requires design phase |
+| GAP-11: Prompt cache optimization | P4 | ❌ | Open | No fork path reuse; each spawn rebuilds system prompt |
 
 ---
 
-## 5. Recommended Implementation Order
+## 10. Key Invariants
 
-### Context Enrichment (unblocks real use cases)
+### Always
+- Parent context is passed as-is (no filtering or scrubbing)
+- Foreground spawns block the parent until completion
+- Depth guard is enforced before concurrency guard to fail fast
+- Cancellation is propagated from parent to foreground children
+- Background spawns are tracked and can be collected or cancelled independently
+- All spawns include `spawn_depth` and are gated by `max_spawn_depth`
 
-1. **GAP-01**: Add `parent_context: Option<Vec<Message>>` parameter to `spawn()`.
-   In `handle_agent_command`, pass the last N messages from `self.context.messages`
-   (configurable, default 10). Inject as `initial_messages` in `AgentLoopArgs`.
-   The subagent receives them before the system prompt in `run_agent_loop`.
+### Ask First
+- Enabling `background = true` for long-running subagents (risk of orphaned tasks)
+- Setting `max_spawn_depth = 0` to disable nesting entirely
+- Using `context_injection_mode = "none"` (loses parent context awareness)
 
-2. **GAP-03**: Add `model: Option<ModelInheritance>` to `SubAgentDef` where
-   `ModelInheritance` is `enum { Inherit, Named(String) }`. In `spawn()`, resolve
-   `Inherit` to the parent provider's current model name.
-
-3. **GAP-05**: Change `CancellationToken::new()` to
-   `parent_cancel.child_token()` using `tokio_util`'s child token API.
-   Add `parent_cancel: CancellationToken` param to `spawn()`.
-
-### Infrastructure Gaps
-
-4. **GAP-04**: Add `mcp_manager: Option<Arc<McpManager>>` to `AgentLoopArgs`.
-   Expose MCP tool metadata to subagents for resource enumeration.
-
-5. **GAP-06**: Add `depth: u32` field to `AgentLoopArgs`. Gate spawn inside
-   `SubAgentManager` behind a `max_depth` config value (default 3).
-
-### Architecture Changes (Future)
-
-6. **GAP-08**: Extract `SubAgentManager` behind an `Arc<Mutex<>>` or channel-based
-   API so subagents can request spawns via message passing to the parent task.
-
-7. **GAP-02**: Add structured context injection — summarize the last N parent turns
-   and inject as a preamble in the subagent's first user message.
+### Never
+- Spawn subagents with `bypass_permissions = true` unless explicitly configured
+- Pass secrets or sensitive data in the `task_prompt` (use memory scope + MEMORY.md instead)
+- Spawn more than `max_concurrent` subagents (enforced at call site)
+- Link a subagent's cancel token to more than one parent (use `.child_token()` for one-to-one linkage)
 
 ---
 
-## 6. Files to Modify
+## 11. Open Questions & Future Work
 
-| File | Change |
-|---|---|
-| `crates/zeph-subagent/src/manager.rs` | Add `parent_context`, `parent_cancel` to `spawn()` and `AgentLoopArgs` |
-| `crates/zeph-core/src/agent/mod.rs:4530` | Pass `self.context.messages` slice and cancel token to spawn |
-| `crates/zeph-subagent/src/def.rs` | Add `model` inheritance enum |
-| `crates/zeph-config/src/subagent.rs` | Add `max_depth` config field |
-| `crates/zeph-subagent/src/manager.rs:946` | Use `parent_cancel.child_token()` |
+1. **GAP-08 (Nested spawn)**: How should a subagent request spawning another subagent?
+   - Option A: Pass `Arc<SubAgentManager>` in `AgentLoopArgs` (requires mutation handling)
+   - Option B: Subagent sends message to parent via channel (async, requires orchestration)
+   - Option C: Subagent cannot spawn — multi-level delegation goes through parent (simplest)
+   
+2. **GAP-10 (Team model)**: Should subagents be able to send messages to each other (sibling coordination)?
+   - Requires mailbox/queue per subagent
+   - Requires heartbeat or polling mechanism to check for messages
+   - Would enable multi-agent collaboration patterns (reviewer + executor + merger)
+
+3. **GAP-11 (Prompt cache)**: Should fork-path spawns (inherit all parent state) reuse the parent's system prompt bytes?
+   - Would require a "fork spawn" subcommand or frontmatter flag
+   - Higher cache hit rate for parallel subagent spawns
+   - Phase 2 optimization
+
+4. **GAP-09 (Serde asymmetry)**: Should round-trip serialization of `SubAgentDef` work?
+   - Currently `disallowed_tools` deserializes from `tools.except` but serializes as top-level
+   - Fix: migrate on-disk format or add custom serde impl
+   - Pre-v1.0.0 cleanup
 
 ---
 
 ## See Also
 
 - [[MOC-specs]] — all specifications
-- [[026-tui-subagent-management/spec]] — TUI subagent management
+- [[002-agent-loop/spec]] — agent main loop and context assembly
+- [[026-tui-subagent-management/spec]] — TUI subagent sidebar
+- [[032-handoff-skill-system/spec]] — inter-agent handoff protocol
 - [[001-system-invariants/spec]] — system contracts

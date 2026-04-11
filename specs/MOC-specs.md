@@ -50,6 +50,9 @@ status: moc
 - [[022-config-simplification/spec|Provider Registry]] — see LLM Providers section above
 - [[037-config-schema/spec|Config Schema]] — canonical TOML section inventory, validation rules, env-var override table, migration mechanism for `zeph-config` crate
 
+### Background Task Management
+- [[039-background-task-supervisor/spec|Supervised Background Task Manager]] — (proposed) AgentTaskSupervisor with JoinSet, task priority classes (Critical/Enrichment/Telemetry), queue depth limits, turn-boundary cleanup, metrics integration (`bg_inflight`, `bg_dropped`, `bg_completed`); addresses GitHub issue #2816
+
 ---
 
 ## Execution & Tools
@@ -78,9 +81,11 @@ status: moc
 
 ### Security Framework
 - [[010-security/spec|Security & Content Isolation]] — Vault secret management, shell sandbox, content isolation, SSRF protection, IPI defense (DeBERTa soft-signal, AlignSentinel 3-class, TurnCausalAnalyzer), PII NER circuit breaker + allowlist, cross-tool injection correlation, AgentRFC protocol audit, MCP→ACP confused-deputy boundary enforcement, SMCP lifecycle + IBCT tokens, credential env-var scrubbing, MCP tool input schema injection scan
+- [[038-vault/spec|Vault & Secret Management]] — VaultProvider trait, age encryption backend, env backend (testing), zeroize-on-drop guarantee, vault config schema, key invariants, multi-recipient vaults; `zeph-vault` crate
 
-### ML Classifiers
+### ML Classifiers & Content Sanitization
 - [[025-classifiers/spec|Candle-backed ML Classifiers]] — injection detection (CandleClassifier), PII detection (CandlePiiClassifier), LlmClassifier for feedback, unified regex+NER sanitization pipeline; provides signals for [[010-security/spec|Security Framework]]
+- [[040-sanitizer/spec|Content Sanitizer]] — spotlighting pipeline, regex injection detection, PII scrubber, guardrail filter, quarantined summarizer, response verification, exfiltration guards, memory validation, causal analysis; eight-layer defense-in-depth
 
 ---
 
@@ -128,6 +133,7 @@ status: moc
 
 ### Feature Flags & Dependencies
 - [[029-feature-flags/spec|Feature Flags]] — feature flag decision rules, surviving flag inventory (22 flags), bundle definitions (desktop, ide, server, full), always-on capabilities (openai, compatible, orchestrator, router, self-learning, qdrant, vault-age, mcp); `default = []` in Cargo.toml
+- [[041-experiments/spec|Experiments & Runtime Feature Gating]] — runtime A/B testing via `[experiments]` config section, ExperimentConfig, rollout percentage, experiment results reporting, CLI subcommands; distinct from compile-time feature flags
 
 ### Database Abstraction
 - [[031-database-abstraction/spec|PostgreSQL Backend & Database Abstraction]] — zeph-db crate, DatabaseDriver trait, Dialect trait, sql!() macro, PostgreSQL migrations, MemoryConfig::database_url, zeph db migrate CLI, --init backend selection; mutually exclusive sqlite/postgres features
@@ -186,11 +192,15 @@ status: moc
 | 030 | [[030-tui-slash-autocomplete/spec\|TUI Slash Autocomplete]] | specify | approved |
 | 031 | [[031-database-abstraction/spec\|Database Abstraction]] | specify | approved |
 | 032 | [[032-handoff-skill-system/spec\|Handoff Protocol]] | specify | approved |
-| 033 | [[033-subagent-context-propagation/spec\|Subagent Context]] | research | approved |
+| 033 | [[033-subagent-context-propagation/spec\|Subagent Context]] | specify | approved |
 | 034 | [[034-zeph-bench/spec\|Benchmark Harness]] | specify | approved |
 | 035 | [[035-profiling/spec\|Profiling & Tracing]] | specify | approved |
 | 036 | [[036-prometheus-metrics/spec\|Prometheus Metrics]] | specify | approved |
 | 037 | [[037-config-schema/spec\|Config Schema]] | specify | approved |
+| 038 | [[038-vault/spec\|Vault & Secret Management]] | specify | approved |
+| 039 | [[039-background-task-supervisor/spec\|Background Task Supervisor]] | specify | draft |
+| 040 | [[040-sanitizer/spec\|Content Sanitizer]] | specify | approved |
+| 041 | [[041-experiments/spec\|Experiments & Runtime Feature Gating]] | specify | approved |
 
 ---
 

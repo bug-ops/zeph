@@ -93,19 +93,25 @@ default = ["scheduler", "sqlite"]
 
 ### 3.3 Always-On Capabilities (No Flag)
 
-These subsystems compile unconditionally. They were previously behind flags that have been removed:
+These subsystems compile unconditionally. Before v0.18.0, they were behind optional feature flags
+that gated only behavioral code with no distinct optional dependencies — pure compile-time markers.
+As of v0.18.0, they were consolidated into always-on capabilities per the Decision Rule (§2):
 
-| Subsystem | Former flag | Why inlined |
+| Subsystem | Former flag | Status |
 |---|---|---|
-| Content sanitization / guardrail | `guardrail` | Pure marker; deps already unconditional |
-| Context compaction | `context-compression` | Pure marker; ~60 source gates removed |
-| Compression guidelines | `compression-guidelines` | Pure marker; ~20 source gates removed |
-| Policy enforcer | `policy-enforcer` | Pure marker; ~20 source gates removed |
-| LSP context integration | `lsp-context` | Pure marker; ~25 source gates removed |
-| Experiments subsystem | `experiments` | Pure marker; ~35 source gates removed |
-| Bundled SKILL.md files | `bundled-skills` | `include_dir` is always a dep of zeph-skills |
-| Speech-to-text support | `stt` | `reqwest/multipart` is a minor feature, not an opt-in crate |
-| ACP unstable capabilities | `acp-unstable` | zeph-acp enables all unstable features in its own defaults; `acp` alone is sufficient |
+| Content sanitization / guardrail | `guardrail` | Consolidated before v0.18.0 |
+| Context compaction | `context-compression` | Consolidated before v0.18.0 |
+| Compression guidelines | `compression-guidelines` | Consolidated before v0.18.0 |
+| Policy enforcer | `policy-enforcer` | Consolidated before v0.18.0 |
+| LSP context integration | `lsp-context` | Consolidated before v0.18.0 |
+| Experiments subsystem | `experiments` | Consolidated v0.13.0–v0.18.0 |
+| Bundled SKILL.md files | `bundled-skills` | Consolidated before v0.18.0 |
+| Speech-to-text support | `stt` | Consolidated before v0.18.0 |
+| ACP unstable capabilities | `acp-unstable` | Consolidated before v0.18.0 |
+
+**Why**: Each flag gated only behavioral code with no optional crate dependencies — they violated
+the Decision Rule (§2). All these subsystems are active by default and cannot be disabled at build time;
+runtime config (`enabled = true/false` in TOML) controls behavior where applicable.
 
 ---
 
