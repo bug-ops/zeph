@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Prometheus metrics follow-up fixes** (`#2872`, `#2873`, `#2874`): removed dead
+  `ZEPH_METRICS_HOST` environment variable from `docker/docker-compose.metrics.yml` (Prometheus
+  does not support env var substitution in its config file; added a comment in
+  `docker/prometheus/prometheus.yml` pointing to the correct place to change the scrape target).
+  Added missing `120.0` s bucket to `LATENCY_BUCKETS` in `src/metrics_export.rs` so the full
+  `[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0]` range is covered (closes the gap for long
+  agent turns). Added four unit tests for `HistogramRecorder` wiring: `with_histogram_recorder`
+  builder sets recorder to `Some`; `flush_turn_timings` calls `observe_turn_duration`; 
+  `record_chat_metrics_and_compact` calls `observe_llm_latency`; `handle_native_tool_calls` calls
+  `observe_tool_execution` once per tool call.
+
 - **Profiling and tracing Phase 2: deep instrumentation** (`#2851`, `#2852`, `#2853`, `#2854`,
   `#2855`, `#2856`, `#2857`, epic `#2846`): added spans to all 5 subsystem crates. Memory:
   `memory.remember`, `memory.recall`, `memory.summarize`, `memory.graph_extract`,

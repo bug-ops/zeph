@@ -51,14 +51,14 @@ Open Grafana at `http://localhost:3000`. No login is required in the default con
 
 ### Custom Metrics Host
 
-If Zeph listens on a different port, set `ZEPH_METRICS_HOST` before starting the stack.
-You must also update `docker/prometheus/prometheus.yml` (`static_configs.targets`) to match,
-since Prometheus does not expand environment variables in its scrape config:
+If Zeph listens on a different host or port, edit `docker/prometheus/prometheus.yml` and update
+the `static_configs.targets` value. Prometheus does not support environment variable substitution
+in its config file.
 
 ```bash
-# 1. Edit docker/prometheus/prometheus.yml targets to ["192.168.1.10:9000"]
+# 1. Edit docker/prometheus/prometheus.yml: change targets to ["192.168.1.10:9000"]
 # 2. Start the stack:
-ZEPH_METRICS_HOST=192.168.1.10:9000 docker compose -f docker/docker-compose.metrics.yml up
+docker compose -f docker/docker-compose.metrics.yml up
 ```
 
 ### Linux Networking

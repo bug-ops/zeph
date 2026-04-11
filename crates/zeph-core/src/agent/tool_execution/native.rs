@@ -2999,11 +2999,17 @@ fn skipped_output(
 // T-CRIT-02: handle_focus_tool tests — happy path, error paths, checkpoint pinning (S5 fix).
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    use zeph_llm::provider::{ChatResponse, Message, Role};
+
     use crate::agent::Agent;
     use crate::agent::tests::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use zeph_llm::provider::{Message, Role};
+    use crate::metrics::HistogramRecorder;
 
     fn make_agent() -> Agent<MockChannel> {
         let mut agent = Agent::new(
@@ -3296,6 +3302,56 @@ mod tests {
         assert!(
             !zeph_tools::has_explicit_tool_request(&text),
             "explicit_request must be false when content has no tool request"
+        );
+    }
+
+    // T-HR-3: `record_chat_metrics_and_compact` calls `observe_llm_latency` on the recorder.
+    #[tokio::test]
+    async fn record_chat_metrics_calls_observe_llm_latency() {
+        struct CountingRecorder {
+            llm_count: AtomicU64,
+        }
+
+        impl HistogramRecorder for CountingRecorder {
+            fn observe_llm_latency(&self, _: Duration) {
+                self.llm_count.fetch_add(1, Ordering::Relaxed);
+            }
+
+            fn observe_turn_duration(&self, _: Duration) {}
+
+            fn observe_tool_execution(&self, _: Duration) {}
+        }
+
+        let recorder = Arc::new(CountingRecorder {
+            llm_count: AtomicU64::new(0),
+        });
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_histogram_recorder(Some(Arc::clone(&recorder) as Arc<dyn HistogramRecorder>));
+
+        agent
+            .msg
+            .messages
+            .push(Message::from_legacy(Role::System, "system"));
+
+        let start = Instant::now();
+        let response = ChatResponse::Text("hello".to_owned());
+        agent
+            .record_chat_metrics_and_compact(start, &response)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            recorder.llm_count.load(Ordering::Relaxed),
+            1,
+            "record_chat_metrics_and_compact must call observe_llm_latency once"
         );
     }
 }

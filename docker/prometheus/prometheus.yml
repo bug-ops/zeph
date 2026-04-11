@@ -12,5 +12,7 @@ scrape_configs:
     # via extra_hosts in docker-compose.metrics.yml.
     # To scrape Zeph running inside Docker, replace the target with the Docker
     # service name, e.g. ["zeph:8090"].
+    # To change the scrape target, edit the target address below.
+    # Prometheus does not support environment variable substitution in this file.
     static_configs:
       - targets: ["host.docker.internal:8090"]

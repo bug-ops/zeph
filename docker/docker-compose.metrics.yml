@@ -15,12 +15,9 @@
 #   - `extra_hosts: host.docker.internal:host-gateway` works on Docker Desktop (macOS/Windows)
 #     and Docker Engine >= 20.10 on Linux.
 #   - On older Linux setups without extra_hosts support, set `network_mode: host` on the
-#     prometheus service, or switch ZEPH_METRICS_HOST to the container name when Zeph runs
-#     inside Docker.
+#     prometheus service, or change the target in prometheus.yml when Zeph runs inside Docker.
 #
 # Environment variables:
-#   ZEPH_METRICS_HOST      Host:port where Zeph's /metrics endpoint is listening.
-#                          Default: host.docker.internal:8090
 #   GRAFANA_ADMIN_PASSWORD Grafana admin password. Default: admin
 
 services:
@@ -40,8 +37,6 @@ services:
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
-    environment:
-      ZEPH_METRICS_HOST: ${ZEPH_METRICS_HOST:-host.docker.internal:8090}
 
   grafana:
     depends_on:

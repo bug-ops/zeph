@@ -4983,3 +4983,141 @@ mod pii_ner_circuit_breaker {
         );
     }
 }
+
+// ── HistogramRecorder wiring tests (#2874) ────────────────────────────────
+//
+// T-HR-1: `with_histogram_recorder` sets histogram_recorder to Some.
+// T-HR-2: `flush_turn_timings` calls `observe_turn_duration` on the recorder.
+// T-HR-3: `observe_llm_latency` fires via `handle_native_tool_calls` (indirectly
+//          through the internal `record_chat_metrics_and_compact` path).
+// T-HR-4: `observe_tool_execution` fires per tool call via `handle_native_tool_calls`.
+
+#[cfg(test)]
+mod histogram_recorder_wiring {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use super::super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use crate::metrics::HistogramRecorder;
+    use zeph_llm::provider::ToolUseRequest;
+
+    struct CountingRecorder {
+        llm_count: AtomicU64,
+        turn_count: AtomicU64,
+        tool_count: AtomicU64,
+    }
+
+    impl CountingRecorder {
+        fn new() -> Self {
+            Self {
+                llm_count: AtomicU64::new(0),
+                turn_count: AtomicU64::new(0),
+                tool_count: AtomicU64::new(0),
+            }
+        }
+    }
+
+    impl HistogramRecorder for CountingRecorder {
+        fn observe_llm_latency(&self, _: Duration) {
+            self.llm_count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn observe_turn_duration(&self, _: Duration) {
+            self.turn_count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn observe_tool_execution(&self, _: Duration) {
+            self.tool_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    // T-HR-1: `with_histogram_recorder` builder wires histogram_recorder to Some.
+    #[test]
+    fn with_histogram_recorder_sets_some() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let recorder: Arc<dyn HistogramRecorder> = Arc::new(CountingRecorder::new());
+
+        let agent = super::super::super::Agent::new(provider, channel, registry, None, 5, executor)
+            .with_histogram_recorder(Some(Arc::clone(&recorder)));
+
+        assert!(
+            agent.metrics.histogram_recorder.is_some(),
+            "histogram_recorder must be Some after with_histogram_recorder(Some(...))"
+        );
+    }
+
+    // T-HR-2: `flush_turn_timings` calls `observe_turn_duration` exactly once.
+    #[test]
+    fn flush_turn_timings_calls_observe_turn_duration() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let recorder = Arc::new(CountingRecorder::new());
+
+        let mut agent =
+            super::super::super::Agent::new(provider, channel, registry, None, 5, executor)
+                .with_histogram_recorder(Some(Arc::clone(&recorder) as Arc<dyn HistogramRecorder>));
+
+        agent.metrics.pending_timings = crate::metrics::TurnTimings {
+            prepare_context_ms: 10,
+            llm_chat_ms: 200,
+            tool_exec_ms: 50,
+            persist_message_ms: 5,
+        };
+        agent.flush_turn_timings();
+
+        assert_eq!(
+            recorder.turn_count.load(Ordering::Relaxed),
+            1,
+            "flush_turn_timings must call observe_turn_duration once"
+        );
+    }
+
+    // T-HR-4: `observe_tool_execution` fires once per tool call in `handle_native_tool_calls`.
+    #[tokio::test]
+    async fn handle_native_tool_calls_calls_observe_tool_execution() {
+        let executor = super::FixedOutputExecutor {
+            summary: "ok".to_string(),
+            is_err: false,
+        };
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let recorder = Arc::new(CountingRecorder::new());
+
+        let mut agent =
+            super::super::super::Agent::new(provider, channel, registry, None, 5, executor)
+                .with_histogram_recorder(Some(Arc::clone(&recorder) as Arc<dyn HistogramRecorder>));
+
+        let tool_calls = vec![
+            ToolUseRequest {
+                id: "id-hr4a".to_owned(),
+                name: "bash".to_owned(),
+                input: serde_json::json!({"command": "echo a"}),
+            },
+            ToolUseRequest {
+                id: "id-hr4b".to_owned(),
+                name: "bash".to_owned(),
+                input: serde_json::json!({"command": "echo b"}),
+            },
+        ];
+
+        agent
+            .handle_native_tool_calls(None, &tool_calls)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            recorder.tool_count.load(Ordering::Relaxed),
+            2,
+            "observe_tool_execution must fire once per tool call (2 calls → count = 2)"
+        );
+    }
+}

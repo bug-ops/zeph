@@ -31,7 +31,7 @@ use zeph_core::metrics::MetricsSnapshot;
 /// and full agent turns (1–120 s).  Using a single set keeps the implementation
 /// uniform; callers can adjust bucket resolution in a future iteration once
 /// real-world data is available.
-const LATENCY_BUCKETS: &[f64] = &[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0];
+const LATENCY_BUCKETS: &[f64] = &[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0];
 
 // ---------------------------------------------------------------------------
 // Label structs
