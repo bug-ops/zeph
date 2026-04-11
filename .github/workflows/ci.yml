@@ -241,6 +241,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: taiki-e/install-action@5ce196a31930e2795a1b2185c2f79b55c0d57733 # nextest
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Download test archive
         uses: actions/download-artifact@v7
         with:
