@@ -85,6 +85,8 @@ globset = "0.4"
 similar = "3.0"
 sqlx = { version = "0.8", default-features = false }
 subtle = "2.6"
+sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
+pprof = { version = "0.15.0", default-features = false }
 symphonia = { version = "0.5.5", default-features = false }
 teloxide = { version = "0.17", default-features = false }
 tempfile = "3.27"
@@ -105,7 +107,7 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-chrome = "0.7"
 tracing-opentelemetry = "0.32"
-tracing-subscriber = { version = "0.3", default-features = false }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["parking_lot"] }
 tracing-test = "0.2"
 tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
@@ -200,7 +202,9 @@ profiling = [
     "dep:tracing-chrome",
     "dep:chrono",
     "dep:uuid",
+    "dep:sysinfo",
     "zeph-core/profiling",
+    "zeph-core/sysinfo",
     "zeph-llm/profiling",
     "zeph-memory/profiling",
     "zeph-tools/profiling",
@@ -208,8 +212,8 @@ profiling = [
     "zeph-mcp/profiling",
     "zeph-channels/profiling",
 ]
-profiling-alloc = ["profiling"]
-profiling-pyroscope = ["profiling", "otel"]
+profiling-alloc = ["profiling", "zeph-core/profiling-alloc"]
+profiling-pyroscope = ["profiling", "otel", "dep:pprof"]
 # Database backend selection — mutually exclusive. Default includes sqlite.
 # NOTE: --all-features activates both, triggering compile_error! in zeph-db.
 # Use --features full or --features full,postgres instead.
@@ -247,6 +251,8 @@ tracing.workspace = true
 tracing-appender.workspace = true
 tracing-chrome = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
+sysinfo = { workspace = true, optional = true }
+pprof = { workspace = true, optional = true, features = ["prost-codec"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 uuid = { workspace = true, optional = true, features = ["v4"] }

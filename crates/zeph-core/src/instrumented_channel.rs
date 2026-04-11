@@ -337,8 +337,8 @@ mod tests {
         assert_eq!(tx.sent.load(Ordering::Relaxed), 2);
 
         // drain to avoid log noise from dropped channel
-        drop(rx.recv().await);
-        drop(rx.recv().await);
+        let _ = rx.recv().await;
+        let _ = rx.recv().await;
     }
 
     /// Cloning an `InstrumentedSender` resets the clone's counter to 0.
@@ -356,8 +356,8 @@ mod tests {
         // Original counter is unaffected by the clone.
         assert_eq!(tx.sent.load(Ordering::Relaxed), 2);
 
-        drop(rx.recv().await);
-        drop(rx.recv().await);
+        let _ = rx.recv().await;
+        let _ = rx.recv().await;
     }
 
     /// Sending through an unbounded channel increments the `sent` counter.

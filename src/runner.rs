@@ -918,6 +918,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
     let config = app.config();
 
+    #[cfg(feature = "profiling")]
+    let _sysinfo_handle = zeph_core::system_metrics::spawn_system_metrics_task(
+        config.telemetry.system_metrics_interval_secs,
+        shutdown_rx.clone(),
+    );
+
     {
         let sqlite = memory.sqlite().clone();
         let retention_secs = config.tools.overflow.retention_days.saturating_mul(86_400);

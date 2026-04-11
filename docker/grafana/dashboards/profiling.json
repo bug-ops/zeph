@@ -1,0 +1,113 @@
+{
+  "title": "Zeph Agent Profiling",
+  "uid": "zeph-profiling",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Agent Turn Latency (histogram)",
+      "type": "histogram",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{ span.name = \"agent.turn\" } | histogram_over_time(duration)"
+        }
+      ],
+      "options": {
+        "bucketSize": "auto",
+        "fillOpacity": 80,
+        "gradientMode": "none",
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 2,
+      "title": "p99 Latency by Phase",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{ span.name =~ \"agent.prepare_context|llm.chat|agent.tool_loop|agent.persist_message\" } | quantile_over_time(duration, 0.99) by (span.name)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ns",
+          "custom": { "lineWidth": 2 }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Allocation Rate per Subsystem (alloc.bytes)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{ span.name =~ \"agent.prepare_context|llm.chat|agent.tool_loop|agent.persist_message\" } | rate() by (span.name)"
+        }
+      ],
+      "description": "Requires alloc.bytes span attribute (--features profiling-alloc). Traces must be exported via OTLP.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "lineWidth": 2 }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 4,
+      "title": "System Metrics: RSS and CPU%",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{ target = \"system.metrics\" } | avg_over_time(rss_bytes) by (target)"
+        },
+        {
+          "refId": "B",
+          "queryType": "traceql",
+          "query": "{ target = \"system.metrics\" } | avg_over_time(cpu_percent) by (target)"
+        }
+      ],
+      "description": "Populated when --features profiling and system_metrics_interval_secs > 0 in [telemetry].",
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "rss_bytes" },
+            "properties": [{ "id": "unit", "value": "bytes" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "cpu_percent" },
+            "properties": [{ "id": "unit", "value": "percent" }, { "id": "custom.axisPlacement", "value": "right" }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    }
+  ]
+}

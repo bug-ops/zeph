@@ -63,6 +63,8 @@
 //! - `scheduler` — Cron-based periodic task scheduler
 
 pub mod agent;
+#[cfg(feature = "profiling-alloc")]
+pub mod alloc_layer;
 #[allow(clippy::missing_errors_doc, clippy::must_use_candidate)]
 pub mod bootstrap;
 pub mod channel;
@@ -81,6 +83,8 @@ pub mod metrics_bridge;
 pub mod pipeline;
 pub mod project;
 pub mod redact;
+#[cfg(feature = "sysinfo")]
+pub mod system_metrics;
 
 pub mod http;
 pub mod lsp_hooks;

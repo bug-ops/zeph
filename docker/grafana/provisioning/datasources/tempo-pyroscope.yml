@@ -1,0 +1,22 @@
+apiVersion: 1
+datasources:
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    url: http://tempo:3200
+    access: proxy
+    isDefault: false
+    jsonData:
+      tracesToProfiles:
+        datasourceUid: pyroscope
+        profileTypeId: "process_cpu:cpu:nanoseconds:cpu:nanoseconds"
+        customQuery: true
+        query: "select(service_name=\"$${__tags.service.name}\")"
+      serviceMap:
+        datasourceUid: prometheus
+
+  - name: Pyroscope
+    type: grafana-pyroscope-datasource
+    uid: pyroscope
+    url: http://pyroscope:4040
+    access: proxy

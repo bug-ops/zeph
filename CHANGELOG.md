@@ -15,9 +15,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Added missing `120.0` s bucket to `LATENCY_BUCKETS` in `src/metrics_export.rs` so the full
   `[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0]` range is covered (closes the gap for long
   agent turns). Added four unit tests for `HistogramRecorder` wiring: `with_histogram_recorder`
-  builder sets recorder to `Some`; `flush_turn_timings` calls `observe_turn_duration`; 
+  builder sets recorder to `Some`; `flush_turn_timings` calls `observe_turn_duration`;
   `record_chat_metrics_and_compact` calls `observe_llm_latency`; `handle_native_tool_calls` calls
   `observe_tool_execution` once per tool call.
+
+- **Profiling Phase 3+4: system metrics, allocation tracking, Pyroscope, and local observability
+  stack** (`#2858`, `#2859`, `#2860`, `#2861`, epic `#2846`): Phase 3 adds two new profiling
+  components. `CountingAllocator` in `src/main.rs` (all unsafe confined there) records per-thread
+  allocation and deallocation counts/bytes via thread-local `const`-initialised counters. New
+  `alloc_layer::AllocLayer` in `zeph-core` (100% safe Rust) implements `tracing_subscriber::Layer`
+  using span extensions for frame storage — correct under tokio work-stealing, no frame leaks.
+  Active when `--features profiling-alloc`. New `system_metrics::spawn_system_metrics_task()` in
+  `zeph-core` emits RSS, CPU%, thread count (Linux), and fd count (Linux) as
+  `tracing::info!(target: "system.metrics", ...)` events at `telemetry.system_metrics_interval_secs`
+  interval (default 5 s); wired into `runner.rs` alongside other background tasks. Uses `sysinfo`
+  0.38.4 with `refresh_processes` API (platform-conditional `/proc/{pid}/fd` and
+  `Process::tasks()` helpers). Phase 4 adds Pyroscope continuous CPU profiling via `pprof-rs` 0.15
+  HTTP push: `start_pyroscope_push()` starts a `pprof::ProfilerGuard` at 100 Hz using `SIGPROF`
+  and pushes protobuf profiles every 10 s to `{pyroscope_endpoint}/ingest` — active when
+  `--features profiling-pyroscope`. New local observability stack in `docker/`:
+  `docker-compose.profiling.yml` (Grafana 11.4.0 + Tempo 2.6.0 + Pyroscope 1.9.0; all ports bound
+  to 127.0.0.1; health checks on Tempo and Pyroscope), `tempo/tempo.yaml` (OTLP gRPC/HTTP
+  receiver), `grafana/provisioning/datasources/tempo-pyroscope.yml` (Tempo uid: `tempo` +
+  Pyroscope uid: `pyroscope` with Tempo→Pyroscope time-range correlation), and
+  `grafana/dashboards/profiling.json` (4 panels: agent turn latency histogram, p99 latency by
+  phase, allocation rate, RSS+CPU% metrics). Neither `profiling-alloc` nor `profiling-pyroscope`
+  is included in the `full` feature.
 
 - **Profiling and tracing Phase 2: deep instrumentation** (`#2851`, `#2852`, `#2853`, `#2854`,
   `#2855`, `#2856`, `#2857`, epic `#2846`): added spans to all 5 subsystem crates. Memory:

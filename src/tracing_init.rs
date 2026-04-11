@@ -12,6 +12,8 @@ use zeph_core::config::{LogRotation, LoggingConfig, TelemetryConfig};
 ///
 /// Dropping any guard flushes and closes the corresponding writer.
 /// Pass this struct to the top-level `run()` and hold it until the process exits.
+// All fields intentionally share the `_guard` postfix to reflect their shared purpose.
+#[allow(clippy::struct_field_names)]
 pub(crate) struct TracingGuards {
     /// Async file-writer guard for the rolling log file. `None` when file logging is disabled.
     /// Held for its `Drop` side-effect (flushes the async file writer).
@@ -22,6 +24,12 @@ pub(crate) struct TracingGuards {
     #[cfg(feature = "profiling")]
     #[allow(dead_code)]
     pub(crate) chrome_guard: Option<tracing_chrome::FlushGuard>,
+    /// Pyroscope push guard. `None` when the `profiling-pyroscope` feature is absent,
+    /// telemetry is disabled, or no endpoint is configured.
+    /// Dropping this guard signals the background push task to stop.
+    #[cfg(feature = "profiling-pyroscope")]
+    #[allow(dead_code)]
+    pub(crate) pyroscope_guard: Option<crate::pyroscope_push::PyroscopeGuard>,
 }
 
 /// Resolve the effective log file path from CLI and config sources.
@@ -155,16 +163,38 @@ pub(crate) fn init_tracing(
         )));
     }
 
+    // Optional AllocLayer — records per-span heap allocation counts and bytes.
+    // Reads thread-local counters from CountingAllocator via the snapshot function pointer.
+    #[cfg(feature = "profiling-alloc")]
+    if telemetry.enabled {
+        layers.push(Box::new(zeph_core::alloc_layer::AllocLayer::new(
+            crate::alloc_counter::snapshot,
+        )));
+    }
+
     // Suppress unused warning when profiling feature is disabled.
     #[cfg(not(feature = "profiling"))]
     let _ = telemetry;
 
     tracing_subscriber::registry().with(layers).init();
 
+    // Start Pyroscope continuous profiling push (after subscriber init so tracing works).
+    #[cfg(feature = "profiling-pyroscope")]
+    let pyroscope_guard = if telemetry.enabled {
+        telemetry
+            .pyroscope_endpoint
+            .as_deref()
+            .and_then(|ep| crate::pyroscope_push::start_pyroscope_push(ep, &telemetry.service_name))
+    } else {
+        None
+    };
+
     TracingGuards {
         log_guard,
         #[cfg(feature = "profiling")]
         chrome_guard,
+        #[cfg(feature = "profiling-pyroscope")]
+        pyroscope_guard,
     }
 }
 
@@ -304,7 +334,7 @@ mod tests {
         drop(guard);
         let json_files: Vec<_> = std::fs::read_dir(dir.path())
             .expect("read dir")
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
             .collect();
         assert!(

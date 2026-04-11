@@ -195,8 +195,8 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::span!(tracing::Level::INFO, "llm.chat");
-            let _guard = span.enter();
-            drop(_guard);
+            let guard = span.enter();
+            drop(guard);
             // span closes on Drop of the Span object.
         });
 
@@ -220,8 +220,8 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::span!(tracing::Level::INFO, "some.other.span");
-            let _guard = span.enter();
-            drop(_guard);
+            let guard = span.enter();
+            drop(guard);
         });
 
         let snapshot = rx.borrow().clone();
@@ -231,7 +231,7 @@ mod tests {
         assert_eq!(snapshot.last_turn_timings.persist_message_ms, 0);
     }
 
-    /// All four watched span names must be present in WATCHED_SPANS.
+    /// All four watched span names must be present in `WATCHED_SPANS`.
     #[test]
     fn all_watched_span_names_registered() {
         let expected = [

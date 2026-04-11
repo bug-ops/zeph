@@ -1,0 +1,59 @@
+# Local observability stack for Zeph profiling (Phase 4).
+# Image versions pinned 2026-04-11. Review periodically.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.profiling.yml up -d
+#   cargo run --features profiling -- --config .local/config/testing.toml
+#   open http://localhost:3000  # Grafana
+#
+# Zeph config to enable export:
+#   [telemetry]
+#   enabled = true
+#   backend = "otlp"
+#   otlp_endpoint = "http://localhost:4318"
+#   pyroscope_endpoint = "http://localhost:4040"  # requires profiling-pyroscope feature
+services:
+  tempo:
+    image: grafana/tempo:2.6.0
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"   # OTLP gRPC
+      - "127.0.0.1:4318:4318"   # OTLP HTTP
+      - "127.0.0.1:3200:3200"   # Tempo query frontend
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3200/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pyroscope:
+    image: grafana/pyroscope:1.9.0
+    ports:
+      - "127.0.0.1:4040:4040"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:4040/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      tempo:
+        condition: service_healthy
+      pyroscope:
+        condition: service_healthy
+
+networks:
+  default:
+    name: zeph-profiling
