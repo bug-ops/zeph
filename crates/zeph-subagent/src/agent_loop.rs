@@ -85,7 +85,7 @@ fn tool_def_to_definition(
         map.remove("title");
     }
     zeph_llm::provider::ToolDefinition {
-        name: def.id.to_string(),
+        name: def.id.to_string().into(),
         description: def.description.to_string(),
         parameters: params,
     }
@@ -119,7 +119,7 @@ async fn handle_tool_step(
             for tc in &tool_calls {
                 assistant_parts.push(MessagePart::ToolUse {
                     id: tc.id.clone(),
-                    name: tc.name.clone(),
+                    name: tc.name.to_string(),
                     input: tc.input.clone(),
                 });
             }
@@ -127,9 +127,10 @@ async fn handle_tool_step(
 
             let mut result_parts: Vec<MessagePart> = Vec::new();
             for tc in &tool_calls {
-                let hook_env = make_hook_env(task_id, agent_name, &tc.name);
+                let hook_env = make_hook_env(task_id, agent_name, tc.name.as_str());
 
-                let pre_hooks: Vec<&HookDef> = matching_hooks(&hooks.pre_tool_use, &tc.name);
+                let pre_hooks: Vec<&HookDef> =
+                    matching_hooks(&hooks.pre_tool_use, tc.name.as_str());
                 if !pre_hooks.is_empty() {
                     let pre_owned: Vec<HookDef> = pre_hooks.into_iter().cloned().collect();
                     if let Err(e) = fire_hooks(&pre_owned, &hook_env).await {
@@ -169,7 +170,8 @@ async fn handle_tool_step(
                 });
 
                 if !hooks.post_tool_use.is_empty() {
-                    let post_hooks: Vec<&HookDef> = matching_hooks(&hooks.post_tool_use, &tc.name);
+                    let post_hooks: Vec<&HookDef> =
+                        matching_hooks(&hooks.post_tool_use, tc.name.as_str());
                     if !post_hooks.is_empty() {
                         let post_owned: Vec<HookDef> = post_hooks.into_iter().cloned().collect();
                         if let Err(e) = fire_hooks(&post_owned, &hook_env).await {

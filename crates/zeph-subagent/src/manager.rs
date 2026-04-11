@@ -3255,7 +3255,7 @@ mod tests {
                         + 'a,
                 >,
             > {
-                self.calls.lock().unwrap().push(call.tool_id.clone());
+                self.calls.lock().unwrap().push(call.tool_id.to_string());
                 let output = ToolOutput {
                     tool_name: call.tool_id.clone(),
                     summary: "executed".into(),

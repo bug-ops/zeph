@@ -170,13 +170,13 @@ impl ErasedToolExecutor for FilteredToolExecutor {
         call: &'a ToolCall,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
     {
-        if !self.is_allowed(&call.tool_id) {
+        if !self.is_allowed(call.tool_id.as_str()) {
             tracing::warn!(
                 tool_id = %call.tool_id,
                 "sub-agent tool call rejected by policy"
             );
             return Box::pin(std::future::ready(Err(ToolError::Blocked {
-                command: call.tool_id.clone(),
+                command: call.tool_id.to_string(),
             })));
         }
         Box::pin(self.inner.execute_tool_call_erased(call))
@@ -246,7 +246,7 @@ impl ErasedToolExecutor for PlanModeExecutor {
             "tool execution blocked in plan mode"
         );
         Box::pin(std::future::ready(Err(ToolError::Blocked {
-            command: call.tool_id.clone(),
+            command: call.tool_id.to_string(),
         })))
     }
 
