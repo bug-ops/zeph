@@ -485,7 +485,7 @@ pub fn deserialize_params<T: serde::de::DeserializeOwned>(
 ///             .unwrap_or("")
 ///             .to_owned();
 ///         Ok(Some(ToolOutput {
-///             tool_name: "echo".to_owned(),
+///             tool_name: "echo".into(),
 ///             summary: text,
 ///             blocks_executed: 1,
 ///             filter_stats: None,

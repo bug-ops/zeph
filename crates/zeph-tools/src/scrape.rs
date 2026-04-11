@@ -97,6 +97,7 @@ impl ExtractMode {
 ///
 /// ```rust,no_run
 /// use zeph_tools::{WebScrapeExecutor, ToolExecutor, ToolCall, config::ScrapeConfig};
+/// use zeph_common::ToolName;
 ///
 /// # async fn example() {
 /// let executor = WebScrapeExecutor::new(&ScrapeConfig::default());
