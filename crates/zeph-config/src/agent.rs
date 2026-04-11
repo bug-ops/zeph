@@ -279,7 +279,7 @@ fn default_telemetry_limit() -> usize {
 /// Background task supervisor configuration, nested under `[agent.supervisor]` in TOML.
 ///
 /// Controls per-class concurrency limits and turn-boundary behaviour for the
-/// [`BackgroundSupervisor`][zeph_core::agent::supervisor::BackgroundSupervisor].
+/// `BackgroundSupervisor` in `zeph-core`.
 /// All fields have sensible defaults that match the Phase 1 hardcoded values; only change
 /// these if you observe excessive background task drops under load.
 ///
