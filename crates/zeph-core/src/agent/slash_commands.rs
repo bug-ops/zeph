@@ -303,16 +303,6 @@ impl<C: crate::channel::Channel> Agent<C> {
         &mut self,
         trimmed: &str,
     ) -> Result<Option<bool>, error::AgentError> {
-        if trimmed == "/clear-queue" {
-            let n = self.clear_queue();
-            self.notify_queue_count().await;
-            self.channel
-                .send(&format!("Cleared {n} queued messages."))
-                .await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(Some(false));
-        }
-
         if trimmed == "/compact" {
             if self.msg.messages.len() > self.context_manager.compaction_preserve_tail + 1 {
                 match self.compact_context().await {
@@ -367,23 +357,6 @@ impl<C: crate::channel::Channel> Agent<C> {
             return Ok(Some(false));
         }
 
-        if trimmed == "/clear" {
-            self.clear_history();
-            self.tool_orchestrator.clear_cache();
-            self.security.user_provided_urls.write().clear();
-            let _ = self.channel.flush_chunks().await;
-            return Ok(Some(false));
-        }
-
-        if trimmed == "/reset" {
-            self.clear_history();
-            self.tool_orchestrator.clear_cache();
-            self.security.user_provided_urls.write().clear();
-            self.channel.send("Conversation history reset.").await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(Some(false));
-        }
-
         if trimmed == "/cache-stats" {
             let stats = self.tool_orchestrator.cache_stats();
             self.channel.send(&stats).await?;
@@ -400,29 +373,6 @@ impl<C: crate::channel::Channel> Agent<C> {
         if trimmed == "/provider" || trimmed.starts_with("/provider ") {
             self.handle_provider_command(trimmed).await;
             let _ = self.channel.flush_chunks().await;
-            return Ok(Some(false));
-        }
-
-        if trimmed == "/debug-dump" || trimmed.starts_with("/debug-dump ") {
-            self.handle_debug_dump_command(trimmed).await;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(Some(false));
-        }
-
-        if trimmed.starts_with("/dump-format") {
-            self.handle_dump_format_command(trimmed).await;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(Some(false));
-        }
-
-        if trimmed == "/exit" || trimmed == "/quit" {
-            if self.channel.supports_exit() {
-                return Ok(Some(true));
-            }
-            let _ = self
-                .channel
-                .send("/exit is not supported in this channel.")
-                .await;
             return Ok(Some(false));
         }
 
@@ -539,10 +489,6 @@ impl<C: crate::channel::Channel> Agent<C> {
                 .trim()
                 .to_owned();
             handled!(self.handle_policy_command(&args).await);
-        }
-
-        if trimmed == "/log" {
-            handled!(self.handle_log_command().await);
         }
 
         if trimmed.starts_with("/agent") || trimmed.starts_with('@') {

@@ -3,6 +3,8 @@
 
 mod autodream;
 mod builder;
+pub(crate) mod command_registry;
+mod commands;
 pub(crate) mod compaction_strategy;
 pub(super) mod compression_feedback;
 mod context;
@@ -43,6 +45,7 @@ pub(crate) mod supervisor;
 pub(crate) mod tool_execution;
 pub(crate) mod tool_orchestrator;
 mod trust_commands;
+pub(crate) mod turn;
 mod utils;
 
 use std::collections::{HashMap, VecDeque};
@@ -173,6 +176,11 @@ pub struct Agent<C: Channel> {
     pub(super) sidequest: sidequest::SidequestState,
     /// Tool filtering, dependency tracking, and iteration bookkeeping.
     pub(super) tool_state: ToolState,
+    /// Trait-based slash command registry (Batch 1 commands).
+    ///
+    /// Batch 2 and Batch 3 commands continue to dispatch through existing
+    /// `dispatch_slash_command` logic until they are migrated in a follow-up PR.
+    pub(super) command_registry: command_registry::CommandRegistry<C>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -295,6 +303,7 @@ impl<C: Channel> Agent<C> {
             focus: focus::FocusState::default(),
             sidequest: sidequest::SidequestState::default(),
             tool_state: ToolState::default(),
+            command_registry: build_command_registry(),
         }
     }
 
@@ -715,6 +724,7 @@ impl<C: Channel> Agent<C> {
     /// # Errors
     ///
     /// Returns an error if the channel, LLM provider, or tool execution encounters a fatal error.
+    #[allow(clippy::too_many_lines)] // run loop is inherently large; each branch is independent
     pub async fn run(&mut self) -> Result<(), error::AgentError> {
         if let Some(mut rx) = self.lifecycle.warmup_ready.take()
             && !*rx.borrow()
@@ -813,6 +823,65 @@ impl<C: Channel> Agent<C> {
 
             let trimmed = text.trim();
 
+            // Registry dispatch (Batch 1: trivial self-contained commands).
+            // Uses std::mem::take to avoid borrow-checker conflict between &self.command_registry
+            // and the &mut subsystem borrows required by CommandContext.
+            let registry_handled = {
+                let reg = std::mem::take(&mut self.command_registry);
+                let mut ctx = command_registry::CommandContext {
+                    channel: &mut self.channel,
+                    provider: &mut self.provider,
+                    embedding_provider: &self.embedding_provider,
+                    msg: &mut self.msg,
+                    memory_state: &mut self.memory_state,
+                    skill_state: &mut self.skill_state,
+                    context_manager: &mut self.context_manager,
+                    tool_orchestrator: &mut self.tool_orchestrator,
+                    mcp: &mut self.mcp,
+                    index: &self.index,
+                    debug_state: &mut self.debug_state,
+                    runtime: &mut self.runtime,
+                    metrics: &self.metrics,
+                    security: &mut self.security,
+                    orchestration: &mut self.orchestration,
+                    lifecycle: &mut self.lifecycle,
+                    focus: &self.focus,
+                    sidequest: &self.sidequest,
+                    providers: &mut self.providers,
+                    compression: &mut self.compression,
+                    tool_executor: &self.tool_executor,
+                    experiments: &mut self.experiments,
+                    feedback: &mut self.feedback,
+                    learning_engine: &mut self.learning_engine,
+                    tool_state: &mut self.tool_state,
+                };
+                let result = reg.dispatch(&mut ctx, trimmed).await;
+                self.command_registry = reg;
+                result
+            };
+            match registry_handled {
+                Some(Ok(command_registry::CommandOutput::Exit)) => {
+                    let _ = self.channel.flush_chunks().await;
+                    break;
+                }
+                Some(Ok(
+                    command_registry::CommandOutput::Continue
+                    | command_registry::CommandOutput::Silent,
+                )) => {
+                    let _ = self.channel.flush_chunks().await;
+                    continue;
+                }
+                Some(Ok(command_registry::CommandOutput::Message(msg))) => {
+                    let _ = self.channel.send(&msg).await;
+                    let _ = self.channel.flush_chunks().await;
+                    continue;
+                }
+                Some(Err(e)) => return Err(e),
+                None => {
+                    // Not handled by registry; fall through to existing dispatch.
+                }
+            }
+
             match self.handle_builtin_command(trimmed).await? {
                 Some(true) => break,
                 Some(false) => continue,
@@ -832,82 +901,6 @@ impl<C: Channel> Agent<C> {
         }
 
         Ok(())
-    }
-
-    /// Handle `/debug-dump` and `/debug-dump <path>` commands.
-    async fn handle_debug_dump_command(&mut self, trimmed: &str) {
-        let arg = trimmed.strip_prefix("/debug-dump").map_or("", str::trim);
-        if arg.is_empty() {
-            match &self.debug_state.debug_dumper {
-                Some(d) => {
-                    let _ = self
-                        .channel
-                        .send(&format!("Debug dump active: {}", d.dir().display()))
-                        .await;
-                }
-                None => {
-                    let _ = self
-                        .channel
-                        .send(
-                            "Debug dump is inactive. Use `/debug-dump <path>` to enable, \
-                             or start with `--debug-dump [dir]`.",
-                        )
-                        .await;
-                }
-            }
-            return;
-        }
-        let dir = std::path::PathBuf::from(arg);
-        match crate::debug_dump::DebugDumper::new(&dir, self.debug_state.dump_format) {
-            Ok(dumper) => {
-                let path = dumper.dir().display().to_string();
-                self.debug_state.debug_dumper = Some(dumper);
-                let _ = self
-                    .channel
-                    .send(&format!("Debug dump enabled: {path}"))
-                    .await;
-            }
-            Err(e) => {
-                let _ = self
-                    .channel
-                    .send(&format!("Failed to enable debug dump: {e}"))
-                    .await;
-            }
-        }
-    }
-
-    /// Handle `/dump-format <json|raw|trace>` command — switch debug dump format at runtime.
-    async fn handle_dump_format_command(&mut self, trimmed: &str) {
-        let arg = trimmed.strip_prefix("/dump-format").map_or("", str::trim);
-        if arg.is_empty() {
-            let _ = self
-                .channel
-                .send(&format!(
-                    "Current dump format: {:?}. Use `/dump-format json|raw|trace` to change.",
-                    self.debug_state.dump_format
-                ))
-                .await;
-            return;
-        }
-        let new_format = match arg {
-            "json" => crate::debug_dump::DumpFormat::Json,
-            "raw" => crate::debug_dump::DumpFormat::Raw,
-            "trace" => crate::debug_dump::DumpFormat::Trace,
-            other => {
-                let _ = self
-                    .channel
-                    .send(&format!(
-                        "Unknown format '{other}'. Valid values: json, raw, trace."
-                    ))
-                    .await;
-                return;
-            }
-        };
-        self.debug_state.switch_format(new_format);
-        let _ = self
-            .channel
-            .send(&format!("Debug dump format set to: {arg}"))
-            .await;
     }
 
     async fn resolve_message(
@@ -1000,6 +993,31 @@ impl<C: Channel> Agent<C> {
         (text, image_parts)
     }
 
+    /// Create a new [`Turn`] for the given input and advance the turn counter.
+    ///
+    /// Clears per-turn state that must not carry over between turns:
+    /// - per-turn `CancellationToken` (new token for each turn)
+    /// - per-turn URL set in `SecurityState` (cleared here; re-populated in
+    ///   `process_user_message_inner` after security checks)
+    fn begin_turn(&mut self, input: turn::TurnInput) -> turn::Turn {
+        let id = turn::TurnId(self.debug_state.iteration_counter as u64);
+        self.debug_state.iteration_counter += 1;
+        self.lifecycle.cancel_token = CancellationToken::new();
+        self.security.user_provided_urls.write().clear();
+        turn::Turn::new(id, input)
+    }
+
+    /// Finalise a turn: copy accumulated timings into `MetricsState` and flush.
+    ///
+    /// Must be called exactly once per turn, after `process_user_message_inner` returns
+    /// (regardless of success or error). Corresponds to the M2 resolution in the spec:
+    /// `TurnMetrics.timings` is the single source of truth; `MetricsState.pending_timings`
+    /// is populated from it here so the rest of the pipeline is unchanged.
+    fn end_turn(&mut self, turn: turn::Turn) {
+        self.metrics.pending_timings = turn.metrics.timings;
+        self.flush_turn_timings();
+    }
+
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "agent.turn", skip_all, fields(turn_id))
@@ -1009,16 +1027,16 @@ impl<C: Channel> Agent<C> {
         text: String,
         image_parts: Vec<zeph_llm::provider::MessagePart>,
     ) -> Result<(), error::AgentError> {
-        // Record iteration start in trace collector (C-02: owned guard, no borrow held).
-        let iteration_index = self.debug_state.iteration_counter;
-        self.debug_state.iteration_counter += 1;
-        tracing::Span::current().record("turn_id", iteration_index);
-        self.debug_state
-            .start_iteration_span(iteration_index, text.trim());
+        let input = turn::TurnInput::new(text, image_parts);
+        let mut t = self.begin_turn(input);
 
-        let result = self
-            .process_user_message_inner(text, image_parts, iteration_index)
-            .await;
+        let turn_idx = usize::try_from(t.id().0).unwrap_or(usize::MAX);
+        tracing::Span::current().record("turn_id", t.id().0);
+        // Record iteration start in trace collector (C-02: owned guard, no borrow held).
+        self.debug_state
+            .start_iteration_span(turn_idx, t.input.text.trim());
+
+        let result = self.process_user_message_inner(&mut t).await;
 
         // Close iteration span regardless of outcome (partial trace preserved on error).
         let span_status = if result.is_ok() {
@@ -1028,20 +1046,16 @@ impl<C: Channel> Agent<C> {
                 message: "iteration failed".to_owned(),
             }
         };
-        self.debug_state
-            .end_iteration_span(iteration_index, span_status);
+        self.debug_state.end_iteration_span(turn_idx, span_status);
 
+        self.end_turn(t);
         result
     }
 
     async fn process_user_message_inner(
         &mut self,
-        text: String,
-        image_parts: Vec<zeph_llm::provider::MessagePart>,
-        iteration_index: usize,
+        turn: &mut turn::Turn,
     ) -> Result<(), error::AgentError> {
-        let _ = iteration_index; // Used indirectly via debug_state.current_iteration_span_id.
-
         // Reap completed background tasks from the previous turn. The summarization signal
         // is applied here — between turns — so `unsummarized_count` is always reset on the
         // foreground without shared mutable state across tasks (S1 fix from critic review).
@@ -1070,11 +1084,13 @@ impl<C: Channel> Agent<C> {
                 .abort_class(supervisor::TaskClass::Enrichment);
         }
 
-        self.lifecycle.cancel_token = CancellationToken::new();
+        // Wire the per-turn cancellation token into the cancel bridge.
+        // The bridge translates the `cancel_signal` (Notify) into a CancellationToken cancel.
+        // Abort the previous bridge before spawning to prevent unbounded accumulation (#2737).
         let signal = Arc::clone(&self.lifecycle.cancel_signal);
-        let token = self.lifecycle.cancel_token.clone();
-        // Abort the previous cancel bridge task before spawning a new one to prevent
-        // unbounded task accumulation across turns (fix for #2737 leak 1).
+        let token = turn.cancel_token.clone();
+        // Keep lifecycle.cancel_token in sync so existing code that reads it still works.
+        self.lifecycle.cancel_token = turn.cancel_token.clone();
         if let Some(prev) = self.lifecycle.cancel_bridge_handle.take() {
             prev.abort();
         }
@@ -1082,7 +1098,11 @@ impl<C: Channel> Agent<C> {
             signal.notified().await;
             token.cancel();
         }));
-        let trimmed = text.trim();
+
+        // Clone text out of Turn so we can hold both `&str` borrows and mutate turn.metrics.
+        let text = turn.input.text.clone();
+        let trimmed_owned = text.trim().to_owned();
+        let trimmed = trimmed_owned.as_str();
 
         if let Some(result) = self.dispatch_slash_command(trimmed).await {
             return result;
@@ -1094,25 +1114,21 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
-        // Reset pending timings for this turn.
-        self.metrics.pending_timings = crate::metrics::TurnTimings::default();
-
         let t_ctx = std::time::Instant::now();
         tracing::debug!("turn timing: prepare_context start");
         self.advance_context_lifecycle(&text, trimmed).await;
-        self.metrics.pending_timings.prepare_context_ms =
+        turn.metrics_mut().timings.prepare_context_ms =
             u64::try_from(t_ctx.elapsed().as_millis()).unwrap_or(u64::MAX);
         tracing::debug!(
-            ms = self.metrics.pending_timings.prepare_context_ms,
+            ms = turn.metrics_snapshot().timings.prepare_context_ms,
             "turn timing: prepare_context done"
         );
 
+        let image_parts = std::mem::take(&mut turn.input.image_parts);
         let user_msg = self.build_user_message(&text, image_parts);
 
-        // Clear URLs from the previous turn before re-populating for this turn.
-        // The set is per-turn context; accumulating across turns causes unbounded growth (#2737).
-        self.security.user_provided_urls.write().clear();
         // Extract URLs from user input and add to user_provided_urls for grounding checks.
+        // URL set was cleared in begin_turn; re-populate for this turn.
         let urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
         if !urls.is_empty() {
             self.security.user_provided_urls.write().extend(urls);
@@ -1126,10 +1142,10 @@ impl<C: Channel> Agent<C> {
         tracing::debug!("turn timing: persist_message(user) start");
         // Image parts intentionally excluded — base64 payloads too large for message history.
         self.persist_message(Role::User, &text, &[], false).await;
-        self.metrics.pending_timings.persist_message_ms =
+        turn.metrics_mut().timings.persist_message_ms =
             u64::try_from(t_persist.elapsed().as_millis()).unwrap_or(u64::MAX);
         tracing::debug!(
-            ms = self.metrics.pending_timings.persist_message_ms,
+            ms = turn.metrics_snapshot().timings.persist_message_ms,
             "turn timing: persist_message(user) done"
         );
         self.push_message(user_msg);
@@ -1156,7 +1172,12 @@ impl<C: Channel> Agent<C> {
         }
         tracing::debug!("turn timing: process_response done");
 
-        self.flush_turn_timings();
+        // Collect llm_chat_ms and tool_exec_ms from MetricsState.pending_timings (accumulated
+        // by the tool execution chain) into turn.metrics so end_turn can flush them.
+        // This is the Phase 1 bridging: existing code writes to pending_timings directly;
+        // we harvest those values into Turn before end_turn overwrites pending_timings.
+        turn.metrics_mut().timings.llm_chat_ms = self.metrics.pending_timings.llm_chat_ms;
+        turn.metrics_mut().timings.tool_exec_ms = self.metrics.pending_timings.tool_exec_ms;
 
         Ok(())
     }
@@ -2370,6 +2391,24 @@ pub(crate) fn resolve_context_budget(config: &Config, provider: &AnyProvider) ->
     } else {
         tokens
     }
+}
+
+/// Build the command registry populated with all Batch 1 slash command handlers.
+///
+/// Batch 1 contains trivial, self-contained commands that do not require delegation
+/// to existing `Agent<C>` methods. Batch 2 and 3 commands continue to dispatch through
+/// `dispatch_slash_command` until they are migrated in a follow-up PR.
+fn build_command_registry<C: Channel>() -> command_registry::CommandRegistry<C> {
+    let mut reg = command_registry::CommandRegistry::new();
+    reg.register(commands::exit::ExitCommand);
+    reg.register(commands::exit::QuitCommand);
+    reg.register(commands::clear::ClearCommand);
+    reg.register(commands::clear::ResetCommand);
+    reg.register(commands::clear_queue::ClearQueueCommand);
+    reg.register(commands::debug_dump::DebugDumpCommand);
+    reg.register(commands::dump_format::DumpFormatCommand);
+    reg.register(commands::log::LogCommand);
+    reg
 }
 
 #[cfg(test)]

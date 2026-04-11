@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Turn domain type** (`#2895`): introduced `Turn` as a first-class domain entity in
+  `zeph-core::agent::turn`. Phase 1 includes `TurnId` (per-conversation monotonic newtype),
+  `TurnInput` (text + image parts), `TurnMetrics` (wraps `TurnTimings`), and `Turn` itself with
+  four fields: `id`, `input`, `metrics`, `cancel_token`. `Agent::process_user_message` now uses
+  `begin_turn`/`end_turn` lifecycle methods, making turn-level tracing and metrics deterministic.
+  Enables future per-turn metrics, cost tracking, and turn replay (Phase 2).
+
+- **CommandRegistry** (`#2896`): extracted slash command dispatch into a trait-based
+  `CommandRegistry<C>` in `zeph-core::agent::command_registry`. Introduces `CommandHandler<C>`
+  (object-safe via `Pin<Box<dyn Future>>`), `CommandContext<'_, C>` (lifetime-bound subsystem
+  borrows), and `CommandOutput` enum (`Message` / `Silent` / `Exit` / `Continue`). Batch 1
+  handlers migrated: `/exit`, `/quit`, `/clear`, `/reset`, `/clear-queue`, `/debug-dump`,
+  `/dump-format`, `/log`. Registry dispatches first; unregistered commands fall through to the
+  existing dispatcher. Enables independent handler unit testing and runtime command enumeration.
+  Batch 2/3 migration deferred to follow-up PRs.
+
 - **OTLP tracing pipeline wired** (`#2881`): `init_tracing` now activates the
   `tracing-opentelemetry` layer when `telemetry.enabled = true` and `backend = "otlp"` (requires
   `--features otel` or `--features server`). Spans are exported to an OTLP gRPC collector
