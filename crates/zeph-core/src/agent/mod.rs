@@ -20,6 +20,7 @@ mod index;
 mod learning;
 pub(crate) mod learning_engine;
 mod log_commands;
+mod loop_event;
 mod lsp_commands;
 mod magic_docs;
 mod mcp;
@@ -70,6 +71,7 @@ use crate::config::Config;
 use crate::context::{ContextBudget, build_system_prompt};
 use zeph_common::text::estimate_tokens;
 
+use loop_event::LoopEvent;
 use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
 use state::CompressionState;
 use state::{
@@ -739,26 +741,11 @@ impl<C: Channel> Agent<C> {
         self.load_and_cache_session_digest().await;
 
         loop {
-            // Apply any pending provider override (from ACP set_session_config_option).
-            if let Some(ref slot) = self.providers.provider_override
-                && let Some(new_provider) = slot.write().take()
-            {
-                tracing::debug!(provider = new_provider.name(), "ACP model override applied");
-                self.provider = new_provider;
-            }
-
-            // Poll for MCP tool list updates from tools/list_changed notifications.
+            self.apply_provider_override();
             self.check_tool_refresh().await;
-
-            // Process any pending MCP elicitation requests from MCP servers.
             self.process_pending_elicitations().await;
-
-            // Refresh sub-agent status in metrics before polling.
             self.refresh_subagent_metrics();
-
-            // Non-blocking poll: notify user when background sub-agents complete.
             self.notify_completed_subagents().await?;
-
             self.drain_channel();
 
             let (text, image_parts) = if let Some(queued) = self.msg.message_queue.pop_front() {
@@ -773,52 +760,51 @@ impl<C: Channel> Agent<C> {
                     self.resolve_message(msg).await
                 }
             } else {
-                let incoming = tokio::select! {
-                    result = self.channel.recv() => result?,
-                    () = shutdown_signal(&mut self.lifecycle.shutdown) => {
-                        tracing::info!("shutting down");
-                        break;
-                    }
-                    Some(_) = recv_optional(&mut self.skill_state.skill_reload_rx) => {
+                match self.next_event().await? {
+                    None | Some(LoopEvent::Shutdown) => break,
+                    Some(LoopEvent::SkillReload) => {
                         self.reload_skills().await;
                         continue;
                     }
-                    Some(_) = recv_optional(&mut self.instructions.reload_rx) => {
+                    Some(LoopEvent::InstructionReload) => {
                         self.reload_instructions();
                         continue;
                     }
-                    Some(_) = recv_optional(&mut self.lifecycle.config_reload_rx) => {
+                    Some(LoopEvent::ConfigReload) => {
                         self.reload_config();
                         continue;
                     }
-                    Some(msg) = recv_optional(&mut self.lifecycle.update_notify_rx) => {
+                    Some(LoopEvent::UpdateNotification(msg)) => {
                         if let Err(e) = self.channel.send(&msg).await {
                             tracing::warn!("failed to send update notification: {e}");
                         }
                         continue;
                     }
-                    Some(msg) = recv_optional(&mut self.experiments.notify_rx) => {
-                        // Experiment engine completed (ok or err). Clear the cancel token so
-                        // status reports idle and new experiments can be started.
-                        { self.experiments.cancel = None; }
+                    Some(LoopEvent::ExperimentCompleted(msg)) => {
+                        self.experiments.cancel = None;
                         if let Err(e) = self.channel.send(&msg).await {
                             tracing::warn!("failed to send experiment completion: {e}");
                         }
                         continue;
                     }
-                    Some(prompt) = recv_optional(&mut self.lifecycle.custom_task_rx) => {
-                        tracing::info!("scheduler: injecting custom task as agent turn");
+                    Some(LoopEvent::ScheduledTask(prompt)) => {
                         let text = format!("{SCHEDULED_TASK_PREFIX}{prompt}");
-                        Some(crate::channel::ChannelMessage { text, attachments: Vec::new() })
+                        let msg = crate::channel::ChannelMessage {
+                            text,
+                            attachments: Vec::new(),
+                        };
+                        self.drain_channel();
+                        self.resolve_message(msg).await
                     }
-                    Some(event) = recv_optional(&mut self.lifecycle.file_changed_rx) => {
+                    Some(LoopEvent::FileChanged(event)) => {
                         self.handle_file_changed(event).await;
                         continue;
                     }
-                };
-                let Some(msg) = incoming else { break };
-                self.drain_channel();
-                self.resolve_message(msg).await
+                    Some(LoopEvent::Message(msg)) => {
+                        self.drain_channel();
+                        self.resolve_message(msg).await
+                    }
+                }
             };
 
             let trimmed = text.trim();
@@ -901,6 +887,58 @@ impl<C: Channel> Agent<C> {
         }
 
         Ok(())
+    }
+
+    /// Apply any pending LLM provider override from ACP `set_session_config_option`.
+    fn apply_provider_override(&mut self) {
+        if let Some(ref slot) = self.providers.provider_override
+            && let Some(new_provider) = slot.write().take()
+        {
+            tracing::debug!(provider = new_provider.name(), "ACP model override applied");
+            self.provider = new_provider;
+        }
+    }
+
+    /// Poll all event sources and return the next [`LoopEvent`].
+    ///
+    /// Returns `None` when the inbound channel closes (graceful shutdown).
+    ///
+    /// # Errors
+    ///
+    /// Propagates channel receive errors.
+    async fn next_event(&mut self) -> Result<Option<LoopEvent>, error::AgentError> {
+        let event = tokio::select! {
+            result = self.channel.recv() => {
+                return Ok(result?.map(LoopEvent::Message));
+            }
+            () = shutdown_signal(&mut self.lifecycle.shutdown) => {
+                tracing::info!("shutting down");
+                LoopEvent::Shutdown
+            }
+            Some(_) = recv_optional(&mut self.skill_state.skill_reload_rx) => {
+                LoopEvent::SkillReload
+            }
+            Some(_) = recv_optional(&mut self.instructions.reload_rx) => {
+                LoopEvent::InstructionReload
+            }
+            Some(_) = recv_optional(&mut self.lifecycle.config_reload_rx) => {
+                LoopEvent::ConfigReload
+            }
+            Some(msg) = recv_optional(&mut self.lifecycle.update_notify_rx) => {
+                LoopEvent::UpdateNotification(msg)
+            }
+            Some(msg) = recv_optional(&mut self.experiments.notify_rx) => {
+                LoopEvent::ExperimentCompleted(msg)
+            }
+            Some(prompt) = recv_optional(&mut self.lifecycle.custom_task_rx) => {
+                tracing::info!("scheduler: injecting custom task as agent turn");
+                LoopEvent::ScheduledTask(prompt)
+            }
+            Some(event) = recv_optional(&mut self.lifecycle.file_changed_rx) => {
+                LoopEvent::FileChanged(event)
+            }
+        };
+        Ok(Some(event))
     }
 
     async fn resolve_message(

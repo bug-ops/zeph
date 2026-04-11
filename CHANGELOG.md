@@ -26,6 +26,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `#[serde(transparent)]` preserves wire format. Implements same `PartialEq<str/String>`
   set as `ToolName`.
 
+- **`LoopEvent` enum extraction** (`#2898`): the 117-line `tokio::select!` run loop in
+  `zeph-core::agent` is replaced by a `LoopEvent` enum with 9 variants, a `next_event()` method
+  that encapsulates the select, and per-event handler methods (`handle_user_message`,
+  `handle_skills_reloaded`, `handle_instructions_reloaded`, `handle_config_changed`,
+  `handle_update_available`, `handle_experiment_completed`, `handle_file_changed`).
+  `Agent::run()` body is now ~30 lines. Behavior is unchanged; cancellation safety is preserved.
+  New file: `crates/zeph-core/src/agent/loop_event.rs`.
+
+- **`zeph-skills` dependency decoupling** (`#2905`): removed unconditional dependencies on
+  `zeph-memory` and `zeph-tools` from `zeph-skills`. `SkillTrustLevel`, `ToolErrorCategory`,
+  `ErrorDomain`, injection patterns, and quarantine lists are moved to `zeph-common`; `zeph-tools`
+  re-exports them for backwards compatibility. The Qdrant skill matcher is now feature-gated behind
+  `zeph-skills/qdrant = ["dep:zeph-memory", "dep:qdrant-client"]`; `SkillError::Qdrant` and
+  `SkillMatcherBackend::Qdrant` are `#[cfg(feature = "qdrant")]`. Default builds of `zeph-skills`
+  compile without `zeph-memory` or `qdrant-client`.
+
 ### Added
 
 - **Turn domain type** (`#2895`): introduced `Turn` as a first-class domain entity in
