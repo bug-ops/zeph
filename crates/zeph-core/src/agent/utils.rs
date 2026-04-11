@@ -11,7 +11,7 @@ use zeph_tools::FilterStats;
 impl<C: Channel> Agent<C> {
     /// Read the community-detection failure counter from `SemanticMemory` and update metrics.
     pub fn sync_community_detection_failures(&self) {
-        if let Some(memory) = self.memory_state.memory.as_ref() {
+        if let Some(memory) = self.memory_state.persistence.memory.as_ref() {
             let failures = memory.community_detection_failures();
             self.update_metrics(|m| {
                 m.graph_community_detection_failures = failures;
@@ -21,7 +21,7 @@ impl<C: Channel> Agent<C> {
 
     /// Sync all graph counters (extraction count/failures) from `SemanticMemory` to metrics.
     pub fn sync_graph_extraction_metrics(&self) {
-        if let Some(memory) = self.memory_state.memory.as_ref() {
+        if let Some(memory) = self.memory_state.persistence.memory.as_ref() {
             let count = memory.graph_extraction_count();
             let failures = memory.graph_extraction_failures();
             self.update_metrics(|m| {
@@ -33,7 +33,7 @@ impl<C: Channel> Agent<C> {
 
     /// Fetch entity/edge/community counts from the graph store and write to metrics.
     pub async fn sync_graph_counts(&self) {
-        let Some(memory) = self.memory_state.memory.as_ref() else {
+        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
             return;
         };
         let Some(store) = memory.graph_store.as_ref() else {
@@ -53,7 +53,7 @@ impl<C: Channel> Agent<C> {
 
     /// Perform a real health check on the vector store and update metrics.
     pub async fn check_vector_store_health(&self, backend_name: &str) {
-        let connected = match self.memory_state.memory.as_ref() {
+        let connected = match self.memory_state.persistence.memory.as_ref() {
             Some(m) => m.is_vector_store_connected().await,
             None => false,
         };
@@ -69,10 +69,10 @@ impl<C: Channel> Agent<C> {
     /// Only fetches version and `created_at`; does not load the full guidelines text.
     /// Feature-gated: compiled only when `compression-guidelines` is enabled.
     pub async fn sync_guidelines_status(&self) {
-        let Some(memory) = self.memory_state.memory.as_ref() else {
+        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
             return;
         };
-        let cid = self.memory_state.conversation_id;
+        let cid = self.memory_state.persistence.conversation_id;
         match memory.sqlite().load_compression_guidelines_meta(cid).await {
             Ok((version, created_at)) => {
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

@@ -820,7 +820,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
         }
 
-        let gc = &self.memory_state.graph_config;
+        let gc = &self.memory_state.extraction.graph_config;
         if gc.enabled {
             let _ = writeln!(out);
             if gc.spreading_activation.enabled {
@@ -907,7 +907,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         let mut trust_map: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         for meta in &all_meta {
-            if let Some(memory) = &self.memory_state.memory {
+            if let Some(memory) = &self.memory_state.persistence.memory {
                 let info = memory
                     .sqlite()
                     .load_skill_trust(&meta.name)
@@ -944,7 +944,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
         }
 
-        if let Some(memory) = &self.memory_state.memory {
+        if let Some(memory) = &self.memory_state.persistence.memory {
             match memory.sqlite().load_skill_usage().await {
                 Ok(usage) if !usage.is_empty() => {
                     output.push_str("\nUsage statistics:\n\n");

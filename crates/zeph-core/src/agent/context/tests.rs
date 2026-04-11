@@ -1179,7 +1179,7 @@ async fn test_compact_context_calls_replace_conversation() {
 
     // After compaction, replace_conversation() must have been called:
     // original messages become agent_visible=0, summary row is inserted with agent_visible=1.
-    let memory_ref = agent.memory_state.memory.as_ref().unwrap();
+    let memory_ref = agent.memory_state.persistence.memory.as_ref().unwrap();
     let agent_visible = memory_ref
         .sqlite()
         .load_history_filtered(cid, 50, Some(true), None)
@@ -2944,7 +2944,7 @@ async fn summarize_then_prune_preserves_intact_content_for_summarizer() {
     // Correct order: summarize (deferred), then apply, then prune.
     agent.maybe_summarize_tool_pair().await;
     agent.apply_deferred_summaries();
-    let keep_recent = 2 * agent.memory_state.tool_call_cutoff + 2;
+    let keep_recent = 2 * agent.memory_state.persistence.tool_call_cutoff + 2;
     agent.prune_stale_tool_outputs(keep_recent);
 
     // The summary was inserted — summarizer must have seen content.
@@ -2987,7 +2987,7 @@ async fn prune_after_summarize_does_not_destroy_visible_pairs() {
 
     agent.maybe_summarize_tool_pair().await;
     agent.apply_deferred_summaries();
-    let keep_recent = 2 * agent.memory_state.tool_call_cutoff + 2;
+    let keep_recent = 2 * agent.memory_state.persistence.tool_call_cutoff + 2;
     agent.prune_stale_tool_outputs(keep_recent);
 
     // Verify all visible ToolOutput parts have non-empty bodies.
@@ -3079,7 +3079,7 @@ async fn cutoff_one_edge_case_summarize_then_prune() {
     // Apply deferred summaries so the Summary message is actually inserted.
     agent.apply_deferred_summaries();
 
-    let keep_recent = 2 * agent.memory_state.tool_call_cutoff + 2;
+    let keep_recent = 2 * agent.memory_state.persistence.tool_call_cutoff + 2;
     agent.prune_stale_tool_outputs(keep_recent);
 
     // Summary inserted: 1 pair hidden, summary present.
@@ -3127,7 +3127,7 @@ async fn summarizer_failure_prune_still_runs() {
 
     // Summarize fails (no panic), then prune runs.
     agent.maybe_summarize_tool_pair().await;
-    let keep_recent = 2 * agent.memory_state.tool_call_cutoff + 2;
+    let keep_recent = 2 * agent.memory_state.persistence.tool_call_cutoff + 2;
     let freed = agent.prune_stale_tool_outputs(keep_recent);
 
     // Messages count unchanged (no summary inserted due to failure).
@@ -3157,45 +3157,48 @@ fn make_mem_state(
     cid: zeph_memory::ConversationId,
     graph_enabled: bool,
 ) -> MemoryState {
+    use crate::agent::state::{
+        MemoryCompactionState, MemoryExtractionState, MemoryPersistenceState, MemorySubsystemState,
+    };
     MemoryState {
-        memory: Some(memory),
-        conversation_id: Some(cid),
-        history_limit: 50,
-        recall_limit: 5,
-        summarization_threshold: 100,
-        cross_session_score_threshold: 0.5,
-        autosave_assistant: false,
-        autosave_min_length: 20,
-        tool_call_cutoff: 6,
-        unsummarized_count: 0,
-        document_config: crate::config::DocumentConfig::default(),
-        graph_config: crate::config::GraphConfig {
-            enabled: graph_enabled,
-            ..Default::default()
+        persistence: MemoryPersistenceState {
+            memory: Some(memory),
+            conversation_id: Some(cid),
+            history_limit: 50,
+            recall_limit: 5,
+            cross_session_score_threshold: 0.5,
+            autosave_assistant: false,
+            autosave_min_length: 20,
+            tool_call_cutoff: 6,
+            unsummarized_count: 0,
+            last_recall_confidence: None,
         },
-        compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig::default(),
-        shutdown_summary: true,
-        shutdown_summary_min_messages: 4,
-        shutdown_summary_max_messages: 20,
-        shutdown_summary_timeout_secs: 10,
-        structured_summaries: false,
-        last_recall_confidence: None,
-        digest_config: crate::config::DigestConfig::default(),
-        cached_session_digest: None,
-        context_strategy: crate::config::ContextStrategy::default(),
-        crossover_turn_threshold: 20,
-        rpe_router: None,
-        goal_text: None,
-        persona_config: crate::config::PersonaConfig::default(),
-        trajectory_config: crate::config::TrajectoryConfig::default(),
-        category_config: crate::config::CategoryConfig::default(),
-        tree_config: crate::config::TreeConfig::default(),
-        tree_consolidation_handle: None,
-        microcompact_config: crate::config::MicrocompactConfig::default(),
-        autodream_config: crate::config::AutoDreamConfig::default(),
-        magic_docs_config: crate::config::MagicDocsConfig::default(),
-        autodream: crate::agent::autodream::AutoDreamState::new(),
-        magic_docs: crate::agent::magic_docs::MagicDocsState::new(),
+        compaction: MemoryCompactionState {
+            summarization_threshold: 100,
+            compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig::default(),
+            shutdown_summary: true,
+            shutdown_summary_min_messages: 4,
+            shutdown_summary_max_messages: 20,
+            shutdown_summary_timeout_secs: 10,
+            structured_summaries: false,
+            digest_config: crate::config::DigestConfig::default(),
+            cached_session_digest: None,
+            context_strategy: crate::config::ContextStrategy::default(),
+            crossover_turn_threshold: 20,
+        },
+        extraction: MemoryExtractionState {
+            document_config: crate::config::DocumentConfig::default(),
+            graph_config: crate::config::GraphConfig {
+                enabled: graph_enabled,
+                ..Default::default()
+            },
+            rpe_router: None,
+            goal_text: None,
+            persona_config: crate::config::PersonaConfig::default(),
+            trajectory_config: crate::config::TrajectoryConfig::default(),
+            category_config: crate::config::CategoryConfig::default(),
+        },
+        subsystems: MemorySubsystemState::default(),
     }
 }
 

@@ -119,7 +119,7 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return Ok(());
         };
         let Some(config) = self.learning_engine.config.as_ref() else {
@@ -405,7 +405,7 @@ impl<C: Channel> Agent<C> {
         if !self.is_learning_enabled() {
             return;
         }
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return;
         };
         let Ok(versions) = memory.sqlite().list_active_auto_versions().await else {
@@ -432,7 +432,7 @@ impl<C: Channel> Agent<C> {
         if !self.is_learning_enabled() {
             return;
         }
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return;
         };
         let Some(config) = &self.learning_engine.config else {

@@ -20,7 +20,7 @@ impl<C: Channel> Agent<C> {
 
     #[allow(clippy::too_many_lines)]
     async fn check_trust_transition_inner(&self, skill_name: &str) {
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return;
         };
         let Some(config) = &self.learning_engine.config else {

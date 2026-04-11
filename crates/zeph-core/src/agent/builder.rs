@@ -26,52 +26,183 @@ use crate::metrics::MetricsSnapshot;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::watcher::SkillEvent;
 
+/// Errors that can occur during agent construction.
+///
+/// Returned by [`Agent::build`] when required configuration is missing.
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError {
+    /// No LLM provider configured. Set at least one via `with_*_provider` methods or
+    /// pass a provider pool via `with_provider_pool`.
+    #[error("no LLM provider configured (set via with_*_provider or with_provider_pool)")]
+    MissingProviders,
+}
+
 impl<C: Channel> Agent<C> {
-    /// Attach a status channel for spinner/status messages sent to TUI or stderr.
-    /// The sender must be cloned from the provider's `StatusTx` before
-    /// `provider.set_status_tx()` consumes it.
-    #[must_use]
-    pub fn with_status_tx(mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
-        self.session.status_tx = Some(tx);
-        self
+    /// Validate the agent configuration and return `self` if all required fields are present.
+    ///
+    /// Call this as the final step in any agent construction chain to catch misconfiguration
+    /// early. Production bootstrap code should propagate the error with `?`; test helpers
+    /// may use `.build().unwrap()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BuildError::MissingProviders`] when no provider pool was configured and the
+    /// model name has not been set via `apply_session_config` (the agent cannot make LLM calls).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let agent = Agent::new(provider, channel, registry, None, 5, executor)
+    ///     .apply_session_config(session_cfg)
+    ///     .build()?;
+    /// ```
+    pub fn build(self) -> Result<Self, BuildError> {
+        // The primary provider is always set via Agent::new, but if provider_pool is empty
+        // *and* model_name is also empty, the agent was constructed without any valid provider
+        // configuration — likely a programming error (e.g. Agent::new called but
+        // apply_session_config was never called to set the model name).
+        if self.providers.provider_pool.is_empty() && self.runtime.model_name.is_empty() {
+            return Err(BuildError::MissingProviders);
+        }
+        Ok(self)
     }
 
-    /// Store a snapshot of the policy config for `/policy` command inspection.
-    #[must_use]
-    pub fn with_policy_config(mut self, config: zeph_tools::PolicyConfig) -> Self {
-        self.session.policy_config = Some(config);
-        self
-    }
+    // ---- Memory Core ----
 
-    /// Store adversarial policy gate info for `/status` display.
+    /// Configure the semantic memory store, conversation tracking, and recall parameters.
+    ///
+    /// All five parameters are required together — they form the persistent-memory contract
+    /// that the context assembly and summarization pipelines depend on.
     #[must_use]
-    pub fn with_adversarial_policy_info(
+    pub fn with_memory(
         mut self,
-        info: crate::agent::state::AdversarialPolicyInfo,
+        memory: Arc<SemanticMemory>,
+        conversation_id: zeph_memory::ConversationId,
+        history_limit: u32,
+        recall_limit: usize,
+        summarization_threshold: usize,
     ) -> Self {
-        self.runtime.adversarial_policy_info = Some(info);
+        self.memory_state.persistence.memory = Some(memory);
+        self.memory_state.persistence.conversation_id = Some(conversation_id);
+        self.memory_state.persistence.history_limit = history_limit;
+        self.memory_state.persistence.recall_limit = recall_limit;
+        self.memory_state.compaction.summarization_threshold = summarization_threshold;
+        self.update_metrics(|m| {
+            m.qdrant_available = false;
+            m.sqlite_conversation_id = Some(conversation_id);
+        });
         self
     }
 
-    #[must_use]
-    pub fn with_structured_summaries(mut self, enabled: bool) -> Self {
-        self.memory_state.structured_summaries = enabled;
-        self
-    }
-
+    /// Configure autosave behaviour for assistant messages.
     #[must_use]
     pub fn with_autosave_config(mut self, autosave_assistant: bool, min_length: usize) -> Self {
-        self.memory_state.autosave_assistant = autosave_assistant;
-        self.memory_state.autosave_min_length = min_length;
+        self.memory_state.persistence.autosave_assistant = autosave_assistant;
+        self.memory_state.persistence.autosave_min_length = min_length;
         self
     }
 
+    /// Set the maximum number of tool-call messages retained in the context window
+    /// before older ones are truncated.
     #[must_use]
     pub fn with_tool_call_cutoff(mut self, cutoff: usize) -> Self {
-        self.memory_state.tool_call_cutoff = cutoff;
+        self.memory_state.persistence.tool_call_cutoff = cutoff;
         self
     }
 
+    /// Enable or disable structured (JSON) summarization of conversation history.
+    #[must_use]
+    pub fn with_structured_summaries(mut self, enabled: bool) -> Self {
+        self.memory_state.compaction.structured_summaries = enabled;
+        self
+    }
+
+    // ---- Memory Formatting ----
+
+    /// Configure memory formatting: compression guidelines, digest, and context strategy.
+    #[must_use]
+    pub fn with_memory_formatting_config(
+        mut self,
+        compression_guidelines: zeph_memory::CompressionGuidelinesConfig,
+        digest: crate::config::DigestConfig,
+        context_strategy: crate::config::ContextStrategy,
+        crossover_turn_threshold: u32,
+    ) -> Self {
+        self.memory_state.compaction.compression_guidelines_config = compression_guidelines;
+        self.memory_state.compaction.digest_config = digest;
+        self.memory_state.compaction.context_strategy = context_strategy;
+        self.memory_state.compaction.crossover_turn_threshold = crossover_turn_threshold;
+        self
+    }
+
+    /// Set the document indexing configuration for `MagicDocs` and RAG.
+    #[must_use]
+    pub fn with_document_config(mut self, config: crate::config::DocumentConfig) -> Self {
+        self.memory_state.extraction.document_config = config;
+        self
+    }
+
+    /// Configure trajectory and category memory settings together.
+    #[must_use]
+    pub fn with_trajectory_and_category_config(
+        mut self,
+        trajectory: crate::config::TrajectoryConfig,
+        category: crate::config::CategoryConfig,
+    ) -> Self {
+        self.memory_state.extraction.trajectory_config = trajectory;
+        self.memory_state.extraction.category_config = category;
+        self
+    }
+
+    // ---- Memory Subsystems ----
+
+    /// Configure knowledge-graph extraction and the RPE router.
+    ///
+    /// When `config.rpe.enabled` is `true`, an `RpeRouter` is initialised and stored in the
+    /// memory state. Emits a WARN-level log when graph extraction is enabled, because extracted
+    /// entities are stored without PII redaction (pre-1.0 MVP limitation — see R-IMP-03).
+    #[must_use]
+    pub fn with_graph_config(mut self, config: crate::config::GraphConfig) -> Self {
+        // Delegates to MemoryExtractionState::apply_graph_config which handles the RPE router
+        // initialization and emits the R-IMP-03 PII warning.
+        self.memory_state.extraction.apply_graph_config(config);
+        self
+    }
+
+    /// Start the `TiMem` tree consolidation background loop and store the handle.
+    ///
+    /// Call after memory and tree configuration have been applied so that both the `SQLite`
+    /// store and config are available. The loop runs until the agent cancel token fires.
+    /// The handle is kept in the memory state and is aborted when the agent is dropped.
+    ///
+    /// No-op if tree consolidation is disabled in the config or memory has not been set.
+    #[must_use]
+    pub fn with_tree_consolidation_loop(mut self, provider: zeph_llm::any::AnyProvider) -> Self {
+        let cfg = &self.memory_state.subsystems.tree_config;
+        if !cfg.enabled {
+            return self;
+        }
+        let Some(ref memory) = self.memory_state.persistence.memory else {
+            return self;
+        };
+        let sqlite = std::sync::Arc::new(memory.sqlite().clone());
+        let tree_cfg = zeph_memory::TreeConsolidationConfig {
+            enabled: cfg.enabled,
+            sweep_interval_secs: cfg.sweep_interval_secs,
+            batch_size: cfg.batch_size,
+            similarity_threshold: cfg.similarity_threshold,
+            max_level: cfg.max_level,
+            min_cluster_size: cfg.min_cluster_size,
+        };
+        let cancel = self.lifecycle.cancel_token.clone();
+        let handle = zeph_memory::start_tree_consolidation_loop(sqlite, provider, tree_cfg, cancel);
+        self.memory_state.subsystems.tree_consolidation_handle = Some(handle);
+        self
+    }
+
+    // ---- Shutdown Summary ----
+
+    /// Configure the shutdown summary: whether to produce one, message count bounds, and timeout.
     #[must_use]
     pub fn with_shutdown_summary_config(
         mut self,
@@ -80,36 +211,52 @@ impl<C: Channel> Agent<C> {
         max_messages: usize,
         timeout_secs: u64,
     ) -> Self {
-        self.memory_state.shutdown_summary = enabled;
-        self.memory_state.shutdown_summary_min_messages = min_messages;
-        self.memory_state.shutdown_summary_max_messages = max_messages;
-        self.memory_state.shutdown_summary_timeout_secs = timeout_secs;
+        self.memory_state.compaction.shutdown_summary = enabled;
+        self.memory_state.compaction.shutdown_summary_min_messages = min_messages;
+        self.memory_state.compaction.shutdown_summary_max_messages = max_messages;
+        self.memory_state.compaction.shutdown_summary_timeout_secs = timeout_secs;
         self
     }
 
+    // ---- Skills ----
+
+    /// Configure skill hot-reload: watch paths and the event receiver.
     #[must_use]
-    pub fn with_response_cache(
+    pub fn with_skill_reload(
         mut self,
-        cache: std::sync::Arc<zeph_memory::ResponseCache>,
+        paths: Vec<PathBuf>,
+        rx: mpsc::Receiver<SkillEvent>,
     ) -> Self {
-        self.session.response_cache = Some(cache);
+        self.skill_state.skill_paths = paths;
+        self.skill_state.skill_reload_rx = Some(rx);
         self
     }
 
-    /// Set the parent tool call ID for subagent sessions.
-    ///
-    /// When set, every `LoopbackEvent::ToolStart` and `LoopbackEvent::ToolOutput` emitted
-    /// by this agent will carry the `parent_tool_use_id` so the IDE can build a subagent
-    /// hierarchy tree.
+    /// Set the directory used by `/skill install` and `/skill remove`.
     #[must_use]
-    pub fn with_parent_tool_use_id(mut self, id: impl Into<String>) -> Self {
-        self.session.parent_tool_use_id = Some(id.into());
+    pub fn with_managed_skills_dir(mut self, dir: PathBuf) -> Self {
+        self.skill_state.managed_dir = Some(dir);
         self
     }
 
+    /// Set the skill trust configuration (allowlists, sandbox flags).
     #[must_use]
-    pub fn with_stt(mut self, stt: Box<dyn zeph_llm::stt::SpeechToText>) -> Self {
-        self.providers.stt = Some(stt);
+    pub fn with_trust_config(mut self, config: crate::config::TrustConfig) -> Self {
+        self.skill_state.trust_config = config;
+        self
+    }
+
+    /// Configure skill matching parameters (disambiguation, two-stage, confusability).
+    #[must_use]
+    pub fn with_skill_matching_config(
+        mut self,
+        disambiguation_threshold: f32,
+        two_stage_matching: bool,
+        confusability_threshold: f32,
+    ) -> Self {
+        self.skill_state.disambiguation_threshold = disambiguation_threshold;
+        self.skill_state.two_stage_matching = two_stage_matching;
+        self.skill_state.confusability_threshold = confusability_threshold.clamp(0.0, 1.0);
         self
     }
 
@@ -129,270 +276,8 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Store the provider pool and config snapshot for runtime `/provider` switching.
-    #[must_use]
-    pub fn with_provider_pool(
-        mut self,
-        pool: Vec<ProviderEntry>,
-        snapshot: ProviderConfigSnapshot,
-    ) -> Self {
-        self.providers.provider_pool = pool;
-        self.providers.provider_config_snapshot = Some(snapshot);
-        self
-    }
-
-    /// Enable debug dump mode, writing LLM requests/responses and raw tool output to `dumper`.
-    #[must_use]
-    pub fn with_debug_dumper(mut self, dumper: crate::debug_dump::DebugDumper) -> Self {
-        self.debug_state.debug_dumper = Some(dumper);
-        self
-    }
-
-    /// Enable `OTel` trace collection. The collector writes `trace.json` at session end.
-    #[must_use]
-    pub fn with_trace_collector(
-        mut self,
-        collector: crate::debug_dump::trace::TracingCollector,
-    ) -> Self {
-        self.debug_state.trace_collector = Some(collector);
-        self
-    }
-
-    /// Store trace config so `/dump-format trace` can create a `TracingCollector` at runtime (CR-04).
-    #[must_use]
-    pub fn with_trace_config(
-        mut self,
-        dump_dir: std::path::PathBuf,
-        service_name: impl Into<String>,
-        redact: bool,
-    ) -> Self {
-        self.debug_state.dump_dir = Some(dump_dir);
-        self.debug_state.trace_service_name = service_name.into();
-        self.debug_state.trace_redact = redact;
-        self
-    }
-
-    /// Enable LSP context injection hooks (diagnostics-on-save, hover-on-read).
-    #[must_use]
-    pub fn with_lsp_hooks(mut self, runner: crate::lsp_hooks::LspHookRunner) -> Self {
-        self.session.lsp_hooks = Some(runner);
-        self
-    }
-
-    #[must_use]
-    pub fn with_update_notifications(mut self, rx: mpsc::Receiver<String>) -> Self {
-        self.lifecycle.update_notify_rx = Some(rx);
-        self
-    }
-
-    #[must_use]
-    pub fn with_custom_task_rx(mut self, rx: mpsc::Receiver<String>) -> Self {
-        self.lifecycle.custom_task_rx = Some(rx);
-        self
-    }
-
-    /// Wrap the current tool executor with an additional executor via `CompositeExecutor`.
-    #[must_use]
-    pub fn add_tool_executor(
-        mut self,
-        extra: impl zeph_tools::executor::ToolExecutor + 'static,
-    ) -> Self {
-        let existing = Arc::clone(&self.tool_executor);
-        let combined = zeph_tools::CompositeExecutor::new(zeph_tools::DynExecutor(existing), extra);
-        self.tool_executor = Arc::new(combined);
-        self
-    }
-
-    #[must_use]
-    pub fn with_memory(
-        mut self,
-        memory: Arc<SemanticMemory>,
-        conversation_id: zeph_memory::ConversationId,
-        history_limit: u32,
-        recall_limit: usize,
-        summarization_threshold: usize,
-    ) -> Self {
-        self.memory_state.memory = Some(memory);
-        self.memory_state.conversation_id = Some(conversation_id);
-        self.memory_state.history_limit = history_limit;
-        self.memory_state.recall_limit = recall_limit;
-        self.memory_state.summarization_threshold = summarization_threshold;
-        self.update_metrics(|m| {
-            m.qdrant_available = false;
-            m.sqlite_conversation_id = Some(conversation_id);
-        });
-        self
-    }
-
-    /// Configure skill matching parameters (disambiguation, two-stage, confusability).
-    #[must_use]
-    pub fn with_skill_matching_config(
-        mut self,
-        disambiguation_threshold: f32,
-        two_stage_matching: bool,
-        confusability_threshold: f32,
-    ) -> Self {
-        self.skill_state.disambiguation_threshold = disambiguation_threshold;
-        self.skill_state.two_stage_matching = two_stage_matching;
-        self.skill_state.confusability_threshold = confusability_threshold.clamp(0.0, 1.0);
-        self
-    }
-
-    #[must_use]
-    pub fn with_document_config(mut self, config: crate::config::DocumentConfig) -> Self {
-        self.memory_state.document_config = config;
-        self
-    }
-
-    /// Configure memory formatting: compression guidelines, digest, and context strategy.
-    #[must_use]
-    pub fn with_memory_formatting_config(
-        mut self,
-        compression_guidelines: zeph_memory::CompressionGuidelinesConfig,
-        digest: crate::config::DigestConfig,
-        context_strategy: crate::config::ContextStrategy,
-        crossover_turn_threshold: u32,
-    ) -> Self {
-        self.memory_state.compression_guidelines_config = compression_guidelines;
-        self.memory_state.digest_config = digest;
-        self.memory_state.context_strategy = context_strategy;
-        self.memory_state.crossover_turn_threshold = crossover_turn_threshold;
-        self
-    }
-
-    /// Configure trajectory and category memory settings together.
-    #[must_use]
-    pub fn with_trajectory_and_category_config(
-        mut self,
-        trajectory: crate::config::TrajectoryConfig,
-        category: crate::config::CategoryConfig,
-    ) -> Self {
-        self.memory_state.trajectory_config = trajectory;
-        self.memory_state.category_config = category;
-        self
-    }
-
-    /// Start the `TiMem` tree consolidation background loop and store the handle.
+    /// Enable BM25 hybrid search alongside embedding-based skill matching.
     ///
-    /// Call after memory and tree configuration have been applied so that both the `SQLite`
-    /// store and config are available. The loop runs until the agent cancel token fires.
-    /// The handle is kept in the memory state and is aborted when the agent is dropped.
-    ///
-    /// No-op if tree consolidation is disabled in the config or memory has not been set.
-    #[must_use]
-    pub fn with_tree_consolidation_loop(mut self, provider: zeph_llm::any::AnyProvider) -> Self {
-        let cfg = &self.memory_state.tree_config;
-        if !cfg.enabled {
-            return self;
-        }
-        let Some(ref memory) = self.memory_state.memory else {
-            return self;
-        };
-        let sqlite = std::sync::Arc::new(memory.sqlite().clone());
-        let tree_cfg = zeph_memory::TreeConsolidationConfig {
-            enabled: cfg.enabled,
-            sweep_interval_secs: cfg.sweep_interval_secs,
-            batch_size: cfg.batch_size,
-            similarity_threshold: cfg.similarity_threshold,
-            max_level: cfg.max_level,
-            min_cluster_size: cfg.min_cluster_size,
-        };
-        let cancel = self.lifecycle.cancel_token.clone();
-        let handle = zeph_memory::start_tree_consolidation_loop(sqlite, provider, tree_cfg, cancel);
-        self.memory_state.tree_consolidation_handle = Some(handle);
-        self
-    }
-
-    #[must_use]
-    pub fn with_graph_config(mut self, config: crate::config::GraphConfig) -> Self {
-        // R-IMP-03: graph extraction writes raw entity names/relations extracted by the LLM.
-        // No PII redaction is applied on the graph write path (pre-1.0 MVP limitation).
-        if config.enabled {
-            tracing::warn!(
-                "graph-memory is enabled: extracted entities are stored without PII redaction. \
-                 Do not use with sensitive personal data until redaction is implemented."
-            );
-        }
-        // Initialize RPE router when RPE routing is enabled.
-        if config.rpe.enabled {
-            self.memory_state.rpe_router = Some(std::sync::Mutex::new(
-                zeph_memory::RpeRouter::new(config.rpe.threshold, config.rpe.max_skip_turns),
-            ));
-        } else {
-            self.memory_state.rpe_router = None;
-        }
-        self.memory_state.graph_config = config;
-        self
-    }
-
-    #[must_use]
-    pub fn with_anomaly_detector(mut self, detector: zeph_tools::AnomalyDetector) -> Self {
-        self.debug_state.anomaly_detector = Some(detector);
-        self
-    }
-
-    #[must_use]
-    pub fn with_instruction_blocks(
-        mut self,
-        blocks: Vec<crate::instructions::InstructionBlock>,
-    ) -> Self {
-        self.instructions.blocks = blocks;
-        self
-    }
-
-    #[must_use]
-    pub fn with_instruction_reload(
-        mut self,
-        rx: mpsc::Receiver<InstructionEvent>,
-        state: InstructionReloadState,
-    ) -> Self {
-        self.instructions.reload_rx = Some(rx);
-        self.instructions.reload_state = Some(state);
-        self
-    }
-
-    #[must_use]
-    pub fn with_shutdown(mut self, rx: watch::Receiver<bool>) -> Self {
-        self.lifecycle.shutdown = rx;
-        self
-    }
-
-    #[must_use]
-    pub fn with_skill_reload(
-        mut self,
-        paths: Vec<PathBuf>,
-        rx: mpsc::Receiver<SkillEvent>,
-    ) -> Self {
-        self.skill_state.skill_paths = paths;
-        self.skill_state.skill_reload_rx = Some(rx);
-        self
-    }
-
-    #[must_use]
-    pub fn with_managed_skills_dir(mut self, dir: PathBuf) -> Self {
-        self.skill_state.managed_dir = Some(dir);
-        self
-    }
-
-    #[must_use]
-    pub fn with_trust_config(mut self, config: crate::config::TrustConfig) -> Self {
-        self.skill_state.trust_config = config;
-        self
-    }
-
-    #[must_use]
-    pub fn with_config_reload(mut self, path: PathBuf, rx: mpsc::Receiver<ConfigEvent>) -> Self {
-        self.lifecycle.config_path = Some(path);
-        self.lifecycle.config_reload_rx = Some(rx);
-        self
-    }
-
-    #[must_use]
-    pub fn with_logging_config(mut self, logging: crate::config::LoggingConfig) -> Self {
-        self.debug_state.logging_config = logging;
-        self
-    }
-
     /// # Panics
     ///
     #[must_use]
@@ -404,23 +289,6 @@ impl<C: Channel> Agent<C> {
             let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
             self.skill_state.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
         }
-        self
-    }
-
-    #[must_use]
-    pub fn with_learning(mut self, config: LearningConfig) -> Self {
-        if config.correction_detection {
-            self.feedback.detector = super::feedback_detector::FeedbackDetector::new(
-                config.correction_confidence_threshold,
-            );
-            if config.detector_mode == crate::config::DetectorMode::Judge {
-                self.feedback.judge = Some(super::feedback_detector::JudgeDetector::new(
-                    config.judge_adaptive_low,
-                    config.judge_adaptive_high,
-                ));
-            }
-        }
-        self.learning_engine.config = Some(config);
         self
     }
 
@@ -453,33 +321,25 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Attach an `LlmClassifier` for `detector_mode = "model"` feedback detection.
-    ///
-    /// When attached, the model-based path is used instead of `JudgeDetector`.
-    /// The classifier resolves the provider at construction time — if the provider
-    /// is unavailable, do not call this method (fallback to regex-only).
+    // ---- Providers ----
+
+    /// Set the dedicated summarization provider used for compaction LLM calls.
     #[must_use]
-    pub fn with_llm_classifier(
-        mut self,
-        classifier: zeph_llm::classifier::llm::LlmClassifier,
-    ) -> Self {
-        // If classifier_metrics is already set, wire it into the LlmClassifier for Feedback recording.
-        #[cfg(feature = "classifiers")]
-        let classifier = if let Some(ref m) = self.metrics.classifier_metrics {
-            classifier.with_metrics(std::sync::Arc::clone(m))
-        } else {
-            classifier
-        };
-        self.feedback.llm_classifier = Some(classifier);
+    pub fn with_summary_provider(mut self, provider: AnyProvider) -> Self {
+        self.providers.summary_provider = Some(provider);
         self
     }
 
+    /// Set the judge provider for feedback-based correction detection.
     #[must_use]
     pub fn with_judge_provider(mut self, provider: AnyProvider) -> Self {
         self.providers.judge_provider = Some(provider);
         self
     }
 
+    /// Set the probe provider for compaction probing LLM calls.
+    ///
+    /// Falls back to `summary_provider` (or primary) when `None`.
     #[must_use]
     pub fn with_probe_provider(mut self, provider: AnyProvider) -> Self {
         self.providers.probe_provider = Some(provider);
@@ -495,6 +355,7 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the planner provider for `LlmPlanner` orchestration calls.
     #[must_use]
     pub fn with_planner_provider(mut self, provider: AnyProvider) -> Self {
         self.orchestration.planner_provider = Some(provider);
@@ -510,6 +371,56 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set a dedicated judge provider for experiment evaluation.
+    ///
+    /// When set, the evaluator uses this provider instead of the agent's primary provider,
+    /// eliminating self-judge bias. Corresponds to `experiments.eval_model` in config.
+    #[must_use]
+    pub fn with_eval_provider(mut self, provider: AnyProvider) -> Self {
+        self.experiments.eval_provider = Some(provider);
+        self
+    }
+
+    /// Store the provider pool and config snapshot for runtime `/provider` switching.
+    #[must_use]
+    pub fn with_provider_pool(
+        mut self,
+        pool: Vec<ProviderEntry>,
+        snapshot: ProviderConfigSnapshot,
+    ) -> Self {
+        self.providers.provider_pool = pool;
+        self.providers.provider_config_snapshot = Some(snapshot);
+        self
+    }
+
+    /// Inject a shared provider override slot for runtime model switching (e.g. via ACP
+    /// `set_session_config_option`). The agent checks and swaps the provider before each turn.
+    #[must_use]
+    pub fn with_provider_override(mut self, slot: Arc<RwLock<Option<AnyProvider>>>) -> Self {
+        self.providers.provider_override = Some(slot);
+        self
+    }
+
+    /// Set the configured provider name (from `[[llm.providers]]` `name` field).
+    ///
+    /// Used by the TUI metrics panel and `/provider status` to display the logical name
+    /// instead of the provider type string returned by `LlmProvider::name()`.
+    #[must_use]
+    pub fn with_active_provider_name(mut self, name: impl Into<String>) -> Self {
+        self.runtime.active_provider_name = name.into();
+        self
+    }
+
+    /// Attach a speech-to-text backend for voice input.
+    #[must_use]
+    pub fn with_stt(mut self, stt: Box<dyn zeph_llm::stt::SpeechToText>) -> Self {
+        self.providers.stt = Some(stt);
+        self
+    }
+
+    // ---- MCP ----
+
+    /// Attach MCP tools, registry, manager, and connection parameters.
     #[must_use]
     pub fn with_mcp(
         mut self,
@@ -529,6 +440,7 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Store the per-server connection outcomes for TUI and `/status` display.
     #[must_use]
     pub fn with_mcp_server_outcomes(
         mut self,
@@ -538,6 +450,7 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach the shared MCP tool list (updated dynamically when servers reconnect).
     #[must_use]
     pub fn with_mcp_shared_tools(mut self, shared: Arc<RwLock<Vec<zeph_mcp::McpTool>>>) -> Self {
         self.mcp.shared_tools = Some(shared);
@@ -604,6 +517,10 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    // ---- Security ----
+
+    /// Apply the full security configuration: sanitizers, exfiltration guard, PII filter,
+    /// rate limiter, and pre-execution verifiers.
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
         self.security.sanitizer =
@@ -656,34 +573,7 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Attach an audit logger for pre-execution verifier blocks.
-    #[must_use]
-    pub fn with_audit_logger(mut self, logger: std::sync::Arc<zeph_tools::AuditLogger>) -> Self {
-        self.tool_orchestrator.audit_logger = Some(logger);
-        self
-    }
-
-    #[must_use]
-    pub fn with_channel_skills(mut self, config: zeph_config::ChannelSkillsConfig) -> Self {
-        self.runtime.channel_skills = config;
-        self
-    }
-
-    /// Configure Think-Augmented Function Calling (TAFC).
-    ///
-    /// `complexity_threshold` is clamped to [0.0, 1.0]; NaN / Inf are reset to 0.6.
-    #[must_use]
-    pub fn with_tafc_config(mut self, config: zeph_tools::TafcConfig) -> Self {
-        self.tool_orchestrator.tafc = config.validated();
-        self
-    }
-
-    #[must_use]
-    pub fn with_summary_provider(mut self, provider: AnyProvider) -> Self {
-        self.providers.summary_provider = Some(provider);
-        self
-    }
-
+    /// Attach a `QuarantinedSummarizer` for MCP cross-boundary audit.
     #[must_use]
     pub fn with_quarantine_summarizer(
         mut self,
@@ -699,6 +589,18 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_acp_session(mut self, is_acp: bool) -> Self {
         self.security.is_acp_session = is_acp;
+        self
+    }
+
+    /// Attach a temporal causal IPI analyzer.
+    ///
+    /// When `Some`, the native tool dispatch loop runs pre/post behavioral probes.
+    #[must_use]
+    pub fn with_causal_analyzer(
+        mut self,
+        analyzer: zeph_sanitizer::causal_ipi::TurnCausalAnalyzer,
+    ) -> Self {
+        self.security.causal_analyzer = Some(analyzer);
         self
     }
 
@@ -760,18 +662,6 @@ impl<C: Channel> Agent<C> {
             ),
         );
         self.security.sanitizer = old.with_three_class_backend(backend, threshold);
-        self
-    }
-
-    /// Attach a temporal causal IPI analyzer.
-    ///
-    /// When `Some`, the native tool dispatch loop runs pre/post behavioral probes.
-    #[must_use]
-    pub fn with_causal_analyzer(
-        mut self,
-        analyzer: zeph_sanitizer::causal_ipi::TurnCausalAnalyzer,
-    ) -> Self {
-        self.security.causal_analyzer = Some(analyzer);
         self
     }
 
@@ -849,6 +739,7 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach a guardrail filter for output safety checking.
     #[must_use]
     pub fn with_guardrail(mut self, filter: zeph_sanitizer::guardrail::GuardrailFilter) -> Self {
         use zeph_sanitizer::guardrail::GuardrailAction;
@@ -861,32 +752,16 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    pub(super) fn summary_or_primary_provider(&self) -> &AnyProvider {
-        self.providers
-            .summary_provider
-            .as_ref()
-            .unwrap_or(&self.provider)
+    /// Attach an audit logger for pre-execution verifier blocks.
+    #[must_use]
+    pub fn with_audit_logger(mut self, logger: std::sync::Arc<zeph_tools::AuditLogger>) -> Self {
+        self.tool_orchestrator.audit_logger = Some(logger);
+        self
     }
 
-    pub(super) fn probe_or_summary_provider(&self) -> &AnyProvider {
-        self.providers
-            .probe_provider
-            .as_ref()
-            .or(self.providers.summary_provider.as_ref())
-            .unwrap_or(&self.provider)
-    }
+    // ---- Context & Compression ----
 
-    /// Extract the last assistant message, truncated to 500 chars, for the judge prompt.
-    pub(super) fn last_assistant_response(&self) -> String {
-        self.msg
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == zeph_llm::provider::Role::Assistant)
-            .map(|m| super::context::truncate_chars(&m.content, 500))
-            .unwrap_or_default()
-    }
-
+    /// Configure the context token budget and compaction thresholds.
     #[must_use]
     pub fn with_context_budget(
         mut self,
@@ -908,9 +783,17 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Apply the compression strategy configuration.
     #[must_use]
     pub fn with_compression(mut self, compression: CompressionConfig) -> Self {
         self.context_manager.compression = compression;
+        self
+    }
+
+    /// Set the memory store routing config (heuristic vs. embedding-based).
+    #[must_use]
+    pub fn with_routing(mut self, routing: StoreRoutingConfig) -> Self {
+        self.context_manager.routing = routing;
         self
     }
 
@@ -926,287 +809,26 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    // ---- Tools ----
+
+    /// Wrap the current tool executor with an additional executor via `CompositeExecutor`.
     #[must_use]
-    pub fn with_routing(mut self, routing: StoreRoutingConfig) -> Self {
-        self.context_manager.routing = routing;
-        self
-    }
-
-    /// Set the configured provider name (from `[[llm.providers]]` `name` field).
-    ///
-    /// Used by the TUI metrics panel and `/provider status` to display the logical name
-    /// instead of the provider type string returned by `LlmProvider::name()`.
-    #[must_use]
-    pub fn with_active_provider_name(mut self, name: impl Into<String>) -> Self {
-        self.runtime.active_provider_name = name.into();
-        self
-    }
-
-    #[must_use]
-    pub fn with_working_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        let path = path.into();
-        self.session.env_context =
-            crate::context::EnvironmentContext::gather_for_dir(&self.runtime.model_name, &path);
-        self
-    }
-
-    /// Configure reactive hook events from the `[hooks]` config section.
-    ///
-    /// Stores hook definitions in `SessionState` and starts a `FileChangeWatcher`
-    /// when `file_changed.watch_paths` is non-empty. Initializes `last_known_cwd`
-    /// from the current process cwd at call time (the project root).
-    #[must_use]
-    pub fn with_hooks_config(mut self, config: &zeph_config::HooksConfig) -> Self {
-        self.session
-            .hooks_config
-            .cwd_changed
-            .clone_from(&config.cwd_changed);
-
-        if let Some(ref fc) = config.file_changed {
-            self.session
-                .hooks_config
-                .file_changed_hooks
-                .clone_from(&fc.hooks);
-
-            if !fc.watch_paths.is_empty() {
-                let (tx, rx) = tokio::sync::mpsc::channel(64);
-                match crate::file_watcher::FileChangeWatcher::start(
-                    &fc.watch_paths,
-                    fc.debounce_ms,
-                    tx,
-                ) {
-                    Ok(watcher) => {
-                        self.lifecycle.file_watcher = Some(watcher);
-                        self.lifecycle.file_changed_rx = Some(rx);
-                        tracing::info!(
-                            paths = ?fc.watch_paths,
-                            debounce_ms = fc.debounce_ms,
-                            "file change watcher started"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to start file change watcher");
-                    }
-                }
-            }
-        }
-
-        // Sync last_known_cwd with env_context.working_dir if already set.
-        let cwd_str = &self.session.env_context.working_dir;
-        if !cwd_str.is_empty() {
-            self.lifecycle.last_known_cwd = std::path::PathBuf::from(cwd_str);
-        }
-
-        self
-    }
-
-    #[must_use]
-    pub fn with_warmup_ready(mut self, rx: watch::Receiver<bool>) -> Self {
-        self.lifecycle.warmup_ready = Some(rx);
-        self
-    }
-
-    #[must_use]
-    pub fn with_cost_tracker(mut self, tracker: CostTracker) -> Self {
-        self.metrics.cost_tracker = Some(tracker);
-        self
-    }
-
-    #[must_use]
-    pub fn with_extended_context(mut self, enabled: bool) -> Self {
-        self.metrics.extended_context = enabled;
-        self
-    }
-
-    #[must_use]
-    pub fn with_repo_map(mut self, token_budget: usize, ttl_secs: u64) -> Self {
-        self.index.repo_map_tokens = token_budget;
-        self.index.repo_map_ttl = std::time::Duration::from_secs(ttl_secs);
-        self
-    }
-
-    /// Add an in-process `IndexMcpServer` as a tool executor.
-    ///
-    /// When enabled, the LLM can call `symbol_definition`, `find_text_references`,
-    /// `call_graph`, and `module_summary` tools on demand. Static repo-map injection
-    /// should be disabled when this is active (set `repo_map_tokens = 0` or skip
-    /// `inject_code_context`).
-    #[must_use]
-    pub fn with_index_mcp_server(self, project_root: impl Into<std::path::PathBuf>) -> Self {
-        let server = zeph_index::IndexMcpServer::new(project_root);
-        self.add_tool_executor(server)
-    }
-
-    #[must_use]
-    pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
-        let provider_name = if self.runtime.active_provider_name.is_empty() {
-            self.provider.name().to_owned()
-        } else {
-            self.runtime.active_provider_name.clone()
-        };
-        let model_name = self.runtime.model_name.clone();
-        let total_skills = self.skill_state.registry.read().all_meta().len();
-        let qdrant_available = false;
-        let conversation_id = self.memory_state.conversation_id;
-        let prompt_estimate = self
-            .msg
-            .messages
-            .first()
-            .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
-        let mcp_tool_count = self.mcp.tools.len();
-        let mcp_server_count = if self.mcp.server_outcomes.is_empty() {
-            // Fallback: count unique server IDs from connected tools
-            self.mcp
-                .tools
-                .iter()
-                .map(|t| &t.server_id)
-                .collect::<std::collections::HashSet<_>>()
-                .len()
-        } else {
-            self.mcp.server_outcomes.len()
-        };
-        let mcp_connected_count = if self.mcp.server_outcomes.is_empty() {
-            mcp_server_count
-        } else {
-            self.mcp
-                .server_outcomes
-                .iter()
-                .filter(|o| o.connected)
-                .count()
-        };
-        let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
-            .mcp
-            .server_outcomes
-            .iter()
-            .map(|o| crate::metrics::McpServerStatus {
-                id: o.id.clone(),
-                status: if o.connected {
-                    crate::metrics::McpServerConnectionStatus::Connected
-                } else {
-                    crate::metrics::McpServerConnectionStatus::Failed
-                },
-                tool_count: o.tool_count,
-                error: o.error.clone(),
-            })
-            .collect();
-        let extended_context = self.metrics.extended_context;
-        tx.send_modify(|m| {
-            m.provider_name = provider_name;
-            m.model_name = model_name;
-            m.total_skills = total_skills;
-            m.qdrant_available = qdrant_available;
-            m.sqlite_conversation_id = conversation_id;
-            m.context_tokens = prompt_estimate;
-            m.prompt_tokens = prompt_estimate;
-            m.total_tokens = prompt_estimate;
-            m.mcp_tool_count = mcp_tool_count;
-            m.mcp_server_count = mcp_server_count;
-            m.mcp_connected_count = mcp_connected_count;
-            m.mcp_servers = mcp_servers;
-            m.extended_context = extended_context;
-        });
-        self.metrics.metrics_tx = Some(tx);
-        self
-    }
-
-    /// Attach a histogram recorder for per-event Prometheus observations.
-    ///
-    /// When set, the agent records individual LLM call, turn, and tool execution
-    /// latencies into the provided recorder. The recorder must be `Send + Sync`
-    /// and is shared across the agent loop via `Arc`.
-    ///
-    /// Pass `None` to disable histogram recording (the default).
-    #[must_use]
-    pub fn with_histogram_recorder(
+    pub fn add_tool_executor(
         mut self,
-        recorder: Option<std::sync::Arc<dyn crate::metrics::HistogramRecorder>>,
+        extra: impl zeph_tools::executor::ToolExecutor + 'static,
     ) -> Self {
-        self.metrics.histogram_recorder = recorder;
+        let existing = Arc::clone(&self.tool_executor);
+        let combined = zeph_tools::CompositeExecutor::new(zeph_tools::DynExecutor(existing), extra);
+        self.tool_executor = Arc::new(combined);
         self
     }
 
-    /// Configure the background task supervisor with explicit limits and optional recorder.
+    /// Configure Think-Augmented Function Calling (TAFC).
     ///
-    /// Re-initialises the supervisor from `config`. Call this after
-    /// [`with_histogram_recorder`][Self::with_histogram_recorder] so the recorder is
-    /// available for passing to the supervisor.
+    /// `complexity_threshold` is clamped to [0.0, 1.0]; NaN / Inf are reset to 0.6.
     #[must_use]
-    pub fn with_supervisor_config(mut self, config: &crate::config::TaskSupervisorConfig) -> Self {
-        self.lifecycle.supervisor = crate::agent::supervisor::BackgroundSupervisor::new(
-            config,
-            self.metrics.histogram_recorder.clone(),
-        );
-        self.runtime.supervisor_config = config.clone();
-        self
-    }
-
-    /// Returns a handle that can cancel the current in-flight operation.
-    /// The returned `Notify` is stable across messages — callers invoke
-    /// `notify_waiters()` to cancel whatever operation is running.
-    #[must_use]
-    pub fn cancel_signal(&self) -> Arc<Notify> {
-        Arc::clone(&self.lifecycle.cancel_signal)
-    }
-
-    /// Inject a shared cancel signal so an external caller (e.g. ACP session) can
-    /// interrupt the agent loop by calling `notify_one()`.
-    #[must_use]
-    pub fn with_cancel_signal(mut self, signal: Arc<Notify>) -> Self {
-        self.lifecycle.cancel_signal = signal;
-        self
-    }
-
-    #[must_use]
-    pub fn with_subagent_manager(mut self, manager: zeph_subagent::SubAgentManager) -> Self {
-        self.orchestration.subagent_manager = Some(manager);
-        self
-    }
-
-    #[must_use]
-    pub fn with_subagent_config(mut self, config: crate::config::SubAgentConfig) -> Self {
-        self.orchestration.subagent_config = config;
-        self
-    }
-
-    #[must_use]
-    pub fn with_orchestration_config(mut self, config: crate::config::OrchestrationConfig) -> Self {
-        self.orchestration.orchestration_config = config;
-        self
-    }
-
-    /// Set the experiment configuration for the `/experiment` slash command.
-    #[must_use]
-    pub fn with_experiment_config(mut self, config: crate::config::ExperimentConfig) -> Self {
-        self.experiments.config = config;
-        self
-    }
-
-    /// Set the baseline config snapshot used when the agent runs an experiment.
-    ///
-    /// Call this alongside `with_experiment_config()` so the experiment engine uses
-    /// actual runtime config values (temperature, memory params, etc.) rather than
-    /// hardcoded defaults. Typically built via `ConfigSnapshot::from_config(&config)`.
-    #[must_use]
-    pub fn with_experiment_baseline(mut self, baseline: zeph_experiments::ConfigSnapshot) -> Self {
-        self.experiments.baseline = baseline;
-        self
-    }
-
-    /// Set a dedicated judge provider for experiment evaluation.
-    ///
-    /// When set, the evaluator uses this provider instead of the agent's primary provider,
-    /// eliminating self-judge bias. Corresponds to `experiments.eval_model` in config.
-    #[must_use]
-    pub fn with_eval_provider(mut self, provider: AnyProvider) -> Self {
-        self.experiments.eval_provider = Some(provider);
-        self
-    }
-
-    /// Inject a shared provider override slot for runtime model switching (e.g. via ACP
-    /// `set_session_config_option`). The agent checks and swaps the provider before each turn.
-    #[must_use]
-    pub fn with_provider_override(mut self, slot: Arc<RwLock<Option<AnyProvider>>>) -> Self {
-        self.providers.provider_override = Some(slot);
+    pub fn with_tafc_config(mut self, config: zeph_tools::TafcConfig) -> Self {
+        self.tool_orchestrator.tafc = config.validated();
         self
     }
 
@@ -1298,6 +920,469 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Add an in-process `IndexMcpServer` as a tool executor.
+    ///
+    /// When enabled, the LLM can call `symbol_definition`, `find_text_references`,
+    /// `call_graph`, and `module_summary` tools on demand. Static repo-map injection
+    /// should be disabled when this is active (set `repo_map_tokens = 0` or skip
+    /// `inject_code_context`).
+    #[must_use]
+    pub fn with_index_mcp_server(self, project_root: impl Into<std::path::PathBuf>) -> Self {
+        let server = zeph_index::IndexMcpServer::new(project_root);
+        self.add_tool_executor(server)
+    }
+
+    /// Configure the in-process repo-map injector.
+    #[must_use]
+    pub fn with_repo_map(mut self, token_budget: usize, ttl_secs: u64) -> Self {
+        self.index.repo_map_tokens = token_budget;
+        self.index.repo_map_ttl = std::time::Duration::from_secs(ttl_secs);
+        self
+    }
+
+    // ---- Debug & Diagnostics ----
+
+    /// Enable debug dump mode, writing LLM requests/responses and raw tool output to `dumper`.
+    #[must_use]
+    pub fn with_debug_dumper(mut self, dumper: crate::debug_dump::DebugDumper) -> Self {
+        self.debug_state.debug_dumper = Some(dumper);
+        self
+    }
+
+    /// Enable `OTel` trace collection. The collector writes `trace.json` at session end.
+    #[must_use]
+    pub fn with_trace_collector(
+        mut self,
+        collector: crate::debug_dump::trace::TracingCollector,
+    ) -> Self {
+        self.debug_state.trace_collector = Some(collector);
+        self
+    }
+
+    /// Store trace config so `/dump-format trace` can create a `TracingCollector` at runtime (CR-04).
+    #[must_use]
+    pub fn with_trace_config(
+        mut self,
+        dump_dir: std::path::PathBuf,
+        service_name: impl Into<String>,
+        redact: bool,
+    ) -> Self {
+        self.debug_state.dump_dir = Some(dump_dir);
+        self.debug_state.trace_service_name = service_name.into();
+        self.debug_state.trace_redact = redact;
+        self
+    }
+
+    /// Attach an anomaly detector for turn-level error rate monitoring.
+    #[must_use]
+    pub fn with_anomaly_detector(mut self, detector: zeph_tools::AnomalyDetector) -> Self {
+        self.debug_state.anomaly_detector = Some(detector);
+        self
+    }
+
+    /// Apply the logging configuration (log level, structured output).
+    #[must_use]
+    pub fn with_logging_config(mut self, logging: crate::config::LoggingConfig) -> Self {
+        self.debug_state.logging_config = logging;
+        self
+    }
+
+    // ---- Lifecycle & Session ----
+
+    /// Attach the graceful-shutdown receiver.
+    #[must_use]
+    pub fn with_shutdown(mut self, rx: watch::Receiver<bool>) -> Self {
+        self.lifecycle.shutdown = rx;
+        self
+    }
+
+    /// Attach the config-reload event stream.
+    #[must_use]
+    pub fn with_config_reload(mut self, path: PathBuf, rx: mpsc::Receiver<ConfigEvent>) -> Self {
+        self.lifecycle.config_path = Some(path);
+        self.lifecycle.config_reload_rx = Some(rx);
+        self
+    }
+
+    /// Attach the warmup-ready signal (fires after background init completes).
+    #[must_use]
+    pub fn with_warmup_ready(mut self, rx: watch::Receiver<bool>) -> Self {
+        self.lifecycle.warmup_ready = Some(rx);
+        self
+    }
+
+    /// Attach the update-notification receiver for in-process version alerts.
+    #[must_use]
+    pub fn with_update_notifications(mut self, rx: mpsc::Receiver<String>) -> Self {
+        self.lifecycle.update_notify_rx = Some(rx);
+        self
+    }
+
+    /// Attach a custom task receiver for programmatic task injection.
+    #[must_use]
+    pub fn with_custom_task_rx(mut self, rx: mpsc::Receiver<String>) -> Self {
+        self.lifecycle.custom_task_rx = Some(rx);
+        self
+    }
+
+    /// Inject a shared cancel signal so an external caller (e.g. ACP session) can
+    /// interrupt the agent loop by calling `notify_one()`.
+    #[must_use]
+    pub fn with_cancel_signal(mut self, signal: Arc<Notify>) -> Self {
+        self.lifecycle.cancel_signal = signal;
+        self
+    }
+
+    /// Configure reactive hook events from the `[hooks]` config section.
+    ///
+    /// Stores hook definitions in `SessionState` and starts a `FileChangeWatcher`
+    /// when `file_changed.watch_paths` is non-empty. Initializes `last_known_cwd`
+    /// from the current process cwd at call time (the project root).
+    #[must_use]
+    pub fn with_hooks_config(mut self, config: &zeph_config::HooksConfig) -> Self {
+        self.session
+            .hooks_config
+            .cwd_changed
+            .clone_from(&config.cwd_changed);
+
+        if let Some(ref fc) = config.file_changed {
+            self.session
+                .hooks_config
+                .file_changed_hooks
+                .clone_from(&fc.hooks);
+
+            if !fc.watch_paths.is_empty() {
+                let (tx, rx) = tokio::sync::mpsc::channel(64);
+                match crate::file_watcher::FileChangeWatcher::start(
+                    &fc.watch_paths,
+                    fc.debounce_ms,
+                    tx,
+                ) {
+                    Ok(watcher) => {
+                        self.lifecycle.file_watcher = Some(watcher);
+                        self.lifecycle.file_changed_rx = Some(rx);
+                        tracing::info!(
+                            paths = ?fc.watch_paths,
+                            debounce_ms = fc.debounce_ms,
+                            "file change watcher started"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to start file change watcher");
+                    }
+                }
+            }
+        }
+
+        // Sync last_known_cwd with env_context.working_dir if already set.
+        let cwd_str = &self.session.env_context.working_dir;
+        if !cwd_str.is_empty() {
+            self.lifecycle.last_known_cwd = std::path::PathBuf::from(cwd_str);
+        }
+
+        self
+    }
+
+    /// Set the working directory and initialise the environment context snapshot.
+    #[must_use]
+    pub fn with_working_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        self.session.env_context =
+            crate::context::EnvironmentContext::gather_for_dir(&self.runtime.model_name, &path);
+        self
+    }
+
+    /// Store a snapshot of the policy config for `/policy` command inspection.
+    #[must_use]
+    pub fn with_policy_config(mut self, config: zeph_tools::PolicyConfig) -> Self {
+        self.session.policy_config = Some(config);
+        self
+    }
+
+    /// Set the parent tool call ID for subagent sessions.
+    ///
+    /// When set, every `LoopbackEvent::ToolStart` and `LoopbackEvent::ToolOutput` emitted
+    /// by this agent will carry the `parent_tool_use_id` so the IDE can build a subagent
+    /// hierarchy tree.
+    #[must_use]
+    pub fn with_parent_tool_use_id(mut self, id: impl Into<String>) -> Self {
+        self.session.parent_tool_use_id = Some(id.into());
+        self
+    }
+
+    /// Attach a cached response store for per-session deduplication.
+    #[must_use]
+    pub fn with_response_cache(
+        mut self,
+        cache: std::sync::Arc<zeph_memory::ResponseCache>,
+    ) -> Self {
+        self.session.response_cache = Some(cache);
+        self
+    }
+
+    /// Enable LSP context injection hooks (diagnostics-on-save, hover-on-read).
+    #[must_use]
+    pub fn with_lsp_hooks(mut self, runner: crate::lsp_hooks::LspHookRunner) -> Self {
+        self.session.lsp_hooks = Some(runner);
+        self
+    }
+
+    /// Configure the background task supervisor with explicit limits and optional recorder.
+    ///
+    /// Re-initialises the supervisor from `config`. Call this after
+    /// [`with_histogram_recorder`][Self::with_histogram_recorder] so the recorder is
+    /// available for passing to the supervisor.
+    #[must_use]
+    pub fn with_supervisor_config(mut self, config: &crate::config::TaskSupervisorConfig) -> Self {
+        self.lifecycle.supervisor = crate::agent::supervisor::BackgroundSupervisor::new(
+            config,
+            self.metrics.histogram_recorder.clone(),
+        );
+        self.runtime.supervisor_config = config.clone();
+        self
+    }
+
+    /// Returns a handle that can cancel the current in-flight operation.
+    /// The returned `Notify` is stable across messages — callers invoke
+    /// `notify_waiters()` to cancel whatever operation is running.
+    #[must_use]
+    pub fn cancel_signal(&self) -> Arc<Notify> {
+        Arc::clone(&self.lifecycle.cancel_signal)
+    }
+
+    // ---- Metrics ----
+
+    /// Wire the metrics broadcast channel and emit the initial snapshot.
+    #[must_use]
+    pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
+        let provider_name = if self.runtime.active_provider_name.is_empty() {
+            self.provider.name().to_owned()
+        } else {
+            self.runtime.active_provider_name.clone()
+        };
+        let model_name = self.runtime.model_name.clone();
+        let total_skills = self.skill_state.registry.read().all_meta().len();
+        let qdrant_available = false;
+        let conversation_id = self.memory_state.persistence.conversation_id;
+        let prompt_estimate = self
+            .msg
+            .messages
+            .first()
+            .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
+        let mcp_tool_count = self.mcp.tools.len();
+        let mcp_server_count = if self.mcp.server_outcomes.is_empty() {
+            // Fallback: count unique server IDs from connected tools
+            self.mcp
+                .tools
+                .iter()
+                .map(|t| &t.server_id)
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+        } else {
+            self.mcp.server_outcomes.len()
+        };
+        let mcp_connected_count = if self.mcp.server_outcomes.is_empty() {
+            mcp_server_count
+        } else {
+            self.mcp
+                .server_outcomes
+                .iter()
+                .filter(|o| o.connected)
+                .count()
+        };
+        let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
+            .mcp
+            .server_outcomes
+            .iter()
+            .map(|o| crate::metrics::McpServerStatus {
+                id: o.id.clone(),
+                status: if o.connected {
+                    crate::metrics::McpServerConnectionStatus::Connected
+                } else {
+                    crate::metrics::McpServerConnectionStatus::Failed
+                },
+                tool_count: o.tool_count,
+                error: o.error.clone(),
+            })
+            .collect();
+        let extended_context = self.metrics.extended_context;
+        tx.send_modify(|m| {
+            m.provider_name = provider_name;
+            m.model_name = model_name;
+            m.total_skills = total_skills;
+            m.qdrant_available = qdrant_available;
+            m.sqlite_conversation_id = conversation_id;
+            m.context_tokens = prompt_estimate;
+            m.prompt_tokens = prompt_estimate;
+            m.total_tokens = prompt_estimate;
+            m.mcp_tool_count = mcp_tool_count;
+            m.mcp_server_count = mcp_server_count;
+            m.mcp_connected_count = mcp_connected_count;
+            m.mcp_servers = mcp_servers;
+            m.extended_context = extended_context;
+        });
+        self.metrics.metrics_tx = Some(tx);
+        self
+    }
+
+    /// Attach a cost tracker for per-session token budget accounting.
+    #[must_use]
+    pub fn with_cost_tracker(mut self, tracker: CostTracker) -> Self {
+        self.metrics.cost_tracker = Some(tracker);
+        self
+    }
+
+    /// Enable Claude extended-context mode tracking in metrics.
+    #[must_use]
+    pub fn with_extended_context(mut self, enabled: bool) -> Self {
+        self.metrics.extended_context = enabled;
+        self
+    }
+
+    /// Attach a histogram recorder for per-event Prometheus observations.
+    ///
+    /// When set, the agent records individual LLM call, turn, and tool execution
+    /// latencies into the provided recorder. The recorder must be `Send + Sync`
+    /// and is shared across the agent loop via `Arc`.
+    ///
+    /// Pass `None` to disable histogram recording (the default).
+    #[must_use]
+    pub fn with_histogram_recorder(
+        mut self,
+        recorder: Option<std::sync::Arc<dyn crate::metrics::HistogramRecorder>>,
+    ) -> Self {
+        self.metrics.histogram_recorder = recorder;
+        self
+    }
+
+    // ---- Orchestration ----
+
+    /// Configure orchestration, subagent management, and experiment baseline in a single call.
+    ///
+    /// Replaces the former `with_orchestration_config`, `with_subagent_manager`, and
+    /// `with_subagent_config` methods. All three are always configured together at the
+    /// call site in `runner.rs`, so they are grouped here to reduce boilerplate.
+    #[must_use]
+    pub fn with_orchestration(
+        mut self,
+        config: crate::config::OrchestrationConfig,
+        subagent_config: crate::config::SubAgentConfig,
+        manager: zeph_subagent::SubAgentManager,
+    ) -> Self {
+        self.orchestration.orchestration_config = config;
+        self.orchestration.subagent_config = subagent_config;
+        self.orchestration.subagent_manager = Some(manager);
+        self
+    }
+
+    /// Store adversarial policy gate info for `/status` display.
+    #[must_use]
+    pub fn with_adversarial_policy_info(
+        mut self,
+        info: crate::agent::state::AdversarialPolicyInfo,
+    ) -> Self {
+        self.runtime.adversarial_policy_info = Some(info);
+        self
+    }
+
+    // ---- Experiments ----
+
+    /// Set the experiment configuration and baseline config snapshot together.
+    ///
+    /// Replaces the former `with_experiment_config` and `with_experiment_baseline` methods.
+    /// Both are always set together at the call site, so they are grouped here to reduce
+    /// boilerplate.
+    ///
+    /// `baseline` should be built via `ConfigSnapshot::from_config(&config)` so the experiment
+    /// engine uses actual runtime config values (temperature, memory params, etc.) rather than
+    /// hardcoded defaults.
+    #[must_use]
+    pub fn with_experiment(
+        mut self,
+        config: crate::config::ExperimentConfig,
+        baseline: zeph_experiments::ConfigSnapshot,
+    ) -> Self {
+        self.experiments.config = config;
+        self.experiments.baseline = baseline;
+        self
+    }
+
+    // ---- Learning ----
+
+    /// Apply the learning configuration (correction detection, RL routing, classifier mode).
+    #[must_use]
+    pub fn with_learning(mut self, config: LearningConfig) -> Self {
+        if config.correction_detection {
+            self.feedback.detector = super::feedback_detector::FeedbackDetector::new(
+                config.correction_confidence_threshold,
+            );
+            if config.detector_mode == crate::config::DetectorMode::Judge {
+                self.feedback.judge = Some(super::feedback_detector::JudgeDetector::new(
+                    config.judge_adaptive_low,
+                    config.judge_adaptive_high,
+                ));
+            }
+        }
+        self.learning_engine.config = Some(config);
+        self
+    }
+
+    /// Attach an `LlmClassifier` for `detector_mode = "model"` feedback detection.
+    ///
+    /// When attached, the model-based path is used instead of `JudgeDetector`.
+    /// The classifier resolves the provider at construction time — if the provider
+    /// is unavailable, do not call this method (fallback to regex-only).
+    #[must_use]
+    pub fn with_llm_classifier(
+        mut self,
+        classifier: zeph_llm::classifier::llm::LlmClassifier,
+    ) -> Self {
+        // If classifier_metrics is already set, wire it into the LlmClassifier for Feedback recording.
+        #[cfg(feature = "classifiers")]
+        let classifier = if let Some(ref m) = self.metrics.classifier_metrics {
+            classifier.with_metrics(std::sync::Arc::clone(m))
+        } else {
+            classifier
+        };
+        self.feedback.llm_classifier = Some(classifier);
+        self
+    }
+
+    /// Configure the per-channel skill overrides (channel-specific skill resolution).
+    #[must_use]
+    pub fn with_channel_skills(mut self, config: zeph_config::ChannelSkillsConfig) -> Self {
+        self.runtime.channel_skills = config;
+        self
+    }
+
+    // ---- Internal helpers (pub(super)) ----
+
+    pub(super) fn summary_or_primary_provider(&self) -> &AnyProvider {
+        self.providers
+            .summary_provider
+            .as_ref()
+            .unwrap_or(&self.provider)
+    }
+
+    pub(super) fn probe_or_summary_provider(&self) -> &AnyProvider {
+        self.providers
+            .probe_provider
+            .as_ref()
+            .or(self.providers.summary_provider.as_ref())
+            .unwrap_or(&self.provider)
+    }
+
+    /// Extract the last assistant message, truncated to 500 chars, for the judge prompt.
+    pub(super) fn last_assistant_response(&self) -> String {
+        self.msg
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == zeph_llm::provider::Role::Assistant)
+            .map(|m| super::context::truncate_chars(&m.content, 500))
+            .unwrap_or_default()
+    }
+
     /// Apply all config-derived settings from [`AgentSessionConfig`] in a single call.
     ///
     /// Takes `cfg` by value and destructures it so the compiler emits an unused-variable warning
@@ -1385,21 +1470,23 @@ impl<C: Channel> Agent<C> {
             .with_security(security, timeouts)
             .with_learning(learning);
         self.runtime.redact_credentials = redact_credentials;
-        self.memory_state.tool_call_cutoff = tool_call_cutoff;
+        self.memory_state.persistence.tool_call_cutoff = tool_call_cutoff;
         self.skill_state.available_custom_secrets = secrets
             .iter()
             .map(|(k, v)| (k.clone(), crate::vault::Secret::new(v.expose().to_owned())))
             .collect();
         self.providers.server_compaction_active = server_compaction;
-        self.memory_state.document_config = document_config;
-        self.memory_state.apply_graph_config(graph_config);
-        self.memory_state.persona_config = persona_config;
-        self.memory_state.trajectory_config = trajectory_config;
-        self.memory_state.category_config = category_config;
-        self.memory_state.tree_config = tree_config;
-        self.memory_state.microcompact_config = microcompact_config;
-        self.memory_state.autodream_config = autodream_config;
-        self.memory_state.magic_docs_config = magic_docs_config;
+        self.memory_state.extraction.document_config = document_config;
+        self.memory_state
+            .extraction
+            .apply_graph_config(graph_config);
+        self.memory_state.extraction.persona_config = persona_config;
+        self.memory_state.extraction.trajectory_config = trajectory_config;
+        self.memory_state.extraction.category_config = category_config;
+        self.memory_state.subsystems.tree_config = tree_config;
+        self.memory_state.subsystems.microcompact_config = microcompact_config;
+        self.memory_state.subsystems.autodream_config = autodream_config;
+        self.memory_state.subsystems.magic_docs_config = magic_docs_config;
         self.orchestration.orchestration_config = orchestration_config;
         self.runtime.budget_hint_enabled = budget_hint_enabled;
 
@@ -1420,7 +1507,7 @@ impl<C: Channel> Agent<C> {
 
         // When MagicDocs is enabled, file-read tools must bypass the utility gate so that
         // MagicDocs detection can inspect real file content (not a [skipped] sentinel).
-        if self.memory_state.magic_docs_config.enabled {
+        if self.memory_state.subsystems.magic_docs_config.enabled {
             utility_config.exempt_tools.extend(
                 crate::agent::magic_docs::FILE_READ_TOOLS
                     .iter()
@@ -1431,6 +1518,39 @@ impl<C: Channel> Agent<C> {
         }
         self.tool_orchestrator.set_utility_config(utility_config);
 
+        self
+    }
+
+    // ---- Instruction reload ----
+
+    /// Configure instruction block hot-reload.
+    #[must_use]
+    pub fn with_instruction_blocks(
+        mut self,
+        blocks: Vec<crate::instructions::InstructionBlock>,
+    ) -> Self {
+        self.instructions.blocks = blocks;
+        self
+    }
+
+    /// Attach the instruction reload event stream.
+    #[must_use]
+    pub fn with_instruction_reload(
+        mut self,
+        rx: mpsc::Receiver<InstructionEvent>,
+        state: InstructionReloadState,
+    ) -> Self {
+        self.instructions.reload_rx = Some(rx);
+        self.instructions.reload_state = Some(state);
+        self
+    }
+
+    /// Attach a status channel for spinner/status messages sent to TUI or stderr.
+    /// The sender must be cloned from the provider's `StatusTx` before
+    /// `provider.set_status_tx()` consumes it.
+    #[must_use]
+    pub fn with_status_tx(mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+        self.session.status_tx = Some(tx);
         self
     }
 }
@@ -1597,7 +1717,7 @@ mod tests {
     fn default_graph_config_is_disabled() {
         let agent = make_agent();
         assert!(
-            !agent.memory_state.graph_config.enabled,
+            !agent.memory_state.extraction.graph_config.enabled,
             "graph_config must default to disabled"
         );
     }
@@ -1610,7 +1730,7 @@ mod tests {
         };
         let agent = make_agent().with_graph_config(cfg);
         assert!(
-            agent.memory_state.graph_config.enabled,
+            agent.memory_state.extraction.graph_config.enabled,
             "with_graph_config must set enabled flag"
         );
     }
@@ -1644,7 +1764,7 @@ mod tests {
 
         // Graph config must be set on memory_state.
         assert!(
-            agent.memory_state.graph_config.enabled,
+            agent.memory_state.extraction.graph_config.enabled,
             "apply_session_config must wire graph_config into agent"
         );
 
@@ -1736,6 +1856,40 @@ mod tests {
         assert!(
             agent.skill_state.confusability_threshold.abs() < f32::EPSILON,
             "with_skill_matching_config must clamp confusability below 0.0"
+        );
+    }
+
+    #[test]
+    fn build_succeeds_with_provider_pool() {
+        let (_tx, rx) = watch::channel(false);
+        // Provide a non-empty provider pool so the model_name check is bypassed.
+        let snapshot = crate::agent::state::ProviderConfigSnapshot {
+            claude_api_key: None,
+            openai_api_key: None,
+            gemini_api_key: None,
+            compatible_api_keys: std::collections::HashMap::new(),
+            llm_request_timeout_secs: 30,
+            embedding_model: String::new(),
+        };
+        let agent = make_agent()
+            .with_shutdown(rx)
+            .with_provider_pool(
+                vec![ProviderEntry {
+                    name: Some("test".into()),
+                    ..Default::default()
+                }],
+                snapshot,
+            )
+            .build();
+        assert!(agent.is_ok(), "build must succeed with a provider pool");
+    }
+
+    #[test]
+    fn build_fails_without_provider_or_model_name() {
+        let agent = make_agent().build();
+        assert!(
+            matches!(agent, Err(BuildError::MissingProviders)),
+            "build must return MissingProviders when pool is empty and model_name is unset"
         );
     }
 }

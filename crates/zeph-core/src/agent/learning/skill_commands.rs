@@ -194,7 +194,7 @@ impl<C: Channel> Agent<C> {
         match generator.approve_and_save(&generated).await {
             Ok(path) => {
                 // Register quarantined trust so hot-reload does not grant implicit trust.
-                if let Some(ref memory) = self.memory_state.memory {
+                if let Some(ref memory) = self.memory_state.persistence.memory {
                     let _ = memory
                         .sqlite()
                         .set_skill_trust_level(&generated.name, "quarantined")
@@ -249,7 +249,7 @@ impl<C: Channel> Agent<C> {
         } else {
             reason
         };
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -266,7 +266,7 @@ impl<C: Channel> Agent<C> {
             .record_skill_outcome(
                 name,
                 version_id,
-                self.memory_state.conversation_id,
+                self.memory_state.persistence.conversation_id,
                 "user_rejection",
                 Some(&reason),
                 Some("user_rejection"), // REV-002: structured outcome_detail
@@ -286,7 +286,7 @@ impl<C: Channel> Agent<C> {
     async fn handle_skill_stats(&mut self) -> Result<(), super::super::error::AgentError> {
         use std::fmt::Write;
 
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -326,7 +326,7 @@ impl<C: Channel> Agent<C> {
             self.channel.send("Usage: /skill versions <name>").await?;
             return Ok(());
         };
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -368,7 +368,7 @@ impl<C: Channel> Agent<C> {
             self.channel.send("Invalid version number.").await?;
             return Ok(());
         };
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -408,7 +408,7 @@ impl<C: Channel> Agent<C> {
             self.channel.send("Usage: /skill approve <name>").await?;
             return Ok(());
         };
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -455,7 +455,7 @@ impl<C: Channel> Agent<C> {
             self.channel.send("Usage: /skill reset <name>").await?;
             return Ok(());
         };
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };

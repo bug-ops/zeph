@@ -28,7 +28,7 @@ impl<C: Channel> Agent<C> {
         };
         let lr = cfg.learning_rate;
         let persist_interval = cfg.persist_interval;
-        let memory = self.memory_state.memory.clone();
+        let memory = self.memory_state.persistence.memory.clone();
 
         self.try_spawn_learning_task(async move {
             if !rl_head.update(reward, lr) {

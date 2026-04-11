@@ -193,6 +193,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **MCP handshake timeout not enforced** (`#2815`): `connect()`, `connect_url()`, and `connect_url_with_headers()` now wrap `handler.serve(transport)` with `tokio::time::timeout(timeout, ...)`, returning `McpError::Timeout` on expiry. `list_tools()` applies the same guard to `list_all_tools()`. Previously, a stalled MCP server during the initialize handshake or tool listing would block `connect_all()` indefinitely, causing TUI startup to hang at "Connecting tools..." forever. Only `call_tool` had a timeout; the fix brings the other paths to parity.
 
+### Changed
+
+- **MemoryState decomposition** (`#2897`): split the 37-field flat `MemoryState` struct into 4
+  concern-separated sub-structs (`MemoryPersistenceState`, `MemoryCompactionState`,
+  `MemoryExtractionState`, `MemorySubsystemState`), each in its own file under
+  `crates/zeph-core/src/agent/state/`. All call sites migrated. No behavioral changes.
+
+- **AgentBuilder consolidation** (`#2899`): added `BuildError` enum with `build()` validation
+  method; 93 builder methods reorganized into 15 doc-section groups; `with_orchestration` replaces
+  3 separate methods; `with_experiment` replaces 2 separate methods. Production bootstrap in
+  `src/runner.rs` now calls `.build()?`. No behavioral changes except early misconfiguration
+  detection.
+
 ## [0.18.6] - 2026-04-08
 
 ### Removed

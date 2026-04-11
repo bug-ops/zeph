@@ -26,7 +26,7 @@ pub(crate) struct AutoDreamState {
 }
 
 impl AutoDreamState {
-    pub(super) const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             sessions_since_consolidation: 0,
             last_consolidated_at: None,
@@ -66,27 +66,32 @@ impl<C: Channel> super::Agent<C> {
     /// `consolidation_provider` (falls back to the primary provider).
     /// Respects `max_iterations` as a safety bound via timeout.
     pub(super) async fn maybe_autodream(&mut self) {
-        let cfg = self.memory_state.autodream_config.clone();
+        let cfg = self.memory_state.subsystems.autodream_config.clone();
         if !cfg.enabled {
             return;
         }
 
-        self.memory_state.autodream.record_session();
+        self.memory_state.subsystems.autodream.record_session();
 
         if !self
             .memory_state
+            .subsystems
             .autodream
             .should_consolidate(cfg.min_sessions, cfg.min_hours)
         {
             tracing::debug!(
-                sessions = self.memory_state.autodream.sessions_since_consolidation,
+                sessions = self
+                    .memory_state
+                    .subsystems
+                    .autodream
+                    .sessions_since_consolidation,
                 min_sessions = cfg.min_sessions,
                 "autoDream: gates not met, skipping"
             );
             return;
         }
 
-        let Some(ref memory) = self.memory_state.memory else {
+        let Some(ref memory) = self.memory_state.persistence.memory else {
             tracing::debug!("autoDream: no memory backend, skipping");
             return;
         };
@@ -150,7 +155,7 @@ impl<C: Channel> super::Agent<C> {
                     elapsed_ms = start.elapsed().as_millis(),
                     "autoDream: consolidation complete"
                 );
-                self.memory_state.autodream.mark_consolidated();
+                self.memory_state.subsystems.autodream.mark_consolidated();
             }
             Ok(Err(e)) => {
                 tracing::warn!(error = %e, "autoDream: consolidation failed");

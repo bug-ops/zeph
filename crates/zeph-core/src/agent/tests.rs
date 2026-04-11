@@ -4391,7 +4391,7 @@ mod shutdown_summary_tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
-        // No .with_memory() call — memory_state.memory is None.
+        // No .with_memory() call — memory_state.persistence.memory is None.
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_shutdown_summary_config(true, 4, 20, 10);
 
@@ -4527,10 +4527,19 @@ mod shutdown_summary_tests {
         let agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_shutdown_summary_config(false, 7, 15, 10);
 
-        assert!(!agent.memory_state.shutdown_summary);
-        assert_eq!(agent.memory_state.shutdown_summary_min_messages, 7);
-        assert_eq!(agent.memory_state.shutdown_summary_max_messages, 15);
-        assert_eq!(agent.memory_state.shutdown_summary_timeout_secs, 10);
+        assert!(!agent.memory_state.compaction.shutdown_summary);
+        assert_eq!(
+            agent.memory_state.compaction.shutdown_summary_min_messages,
+            7
+        );
+        assert_eq!(
+            agent.memory_state.compaction.shutdown_summary_max_messages,
+            15
+        );
+        assert_eq!(
+            agent.memory_state.compaction.shutdown_summary_timeout_secs,
+            10
+        );
     }
 
     #[tokio::test]
@@ -4543,19 +4552,19 @@ mod shutdown_summary_tests {
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         assert!(
-            agent.memory_state.shutdown_summary,
+            agent.memory_state.compaction.shutdown_summary,
             "shutdown_summary must be enabled by default"
         );
         assert_eq!(
-            agent.memory_state.shutdown_summary_min_messages, 4,
+            agent.memory_state.compaction.shutdown_summary_min_messages, 4,
             "default min_messages must be 4"
         );
         assert_eq!(
-            agent.memory_state.shutdown_summary_max_messages, 20,
+            agent.memory_state.compaction.shutdown_summary_max_messages, 20,
             "default max_messages must be 20"
         );
         assert_eq!(
-            agent.memory_state.shutdown_summary_timeout_secs, 10,
+            agent.memory_state.compaction.shutdown_summary_timeout_secs, 10,
             "default timeout_secs must be 10"
         );
     }
@@ -5079,6 +5088,7 @@ mod flush_orphaned_tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()
@@ -5125,6 +5135,7 @@ mod flush_orphaned_tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()
@@ -5180,6 +5191,7 @@ mod flush_orphaned_tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()
@@ -5251,6 +5263,7 @@ mod flush_orphaned_tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()

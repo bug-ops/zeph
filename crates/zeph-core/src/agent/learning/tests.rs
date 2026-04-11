@@ -217,7 +217,7 @@ async fn check_improvement_allowed_below_min_failures_returns_false() {
         .with_learning(config.clone())
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.memory.as_ref().unwrap();
+    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
     let allowed = agent
         .check_improvement_allowed(mem, &config, "test-skill", None)
         .await
@@ -271,7 +271,7 @@ async fn check_improvement_allowed_high_success_rate_returns_false() {
         .with_learning(config.clone())
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.memory.as_ref().unwrap();
+    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
     let allowed = agent
         .check_improvement_allowed(mem, &config, "test-skill", None)
         .await
@@ -328,7 +328,7 @@ async fn check_improvement_allowed_all_conditions_met_returns_true() {
         .with_learning(config.clone())
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.memory.as_ref().unwrap();
+    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
     let allowed = agent
         .check_improvement_allowed(mem, &config, "test-skill", None)
         .await
@@ -354,7 +354,7 @@ async fn check_improvement_allowed_with_user_feedback_skips_metrics() {
         .with_learning(config.clone())
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.memory.as_ref().unwrap();
+    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
     let allowed = agent
         .check_improvement_allowed(mem, &config, "test-skill", Some("please improve this"))
         .await
@@ -823,7 +823,7 @@ async fn handle_skill_reject_records_outcome_and_replies() {
         "expected rejection confirmation, got: {sent:?}"
     );
 
-    let mem = agent.memory_state.memory.as_ref().unwrap();
+    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
     let row: Option<(String,)> = zeph_db::query_as(
         "SELECT outcome FROM skill_outcomes WHERE skill_name = 'test-skill' LIMIT 1",
     )
@@ -953,7 +953,7 @@ async fn check_trust_transition_auto_promotes_to_trusted() {
         .with_learning(config)
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.memory.as_ref().unwrap();
+    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
     agent.check_trust_transition("test-skill").await;
 
     let row = mem
@@ -990,7 +990,7 @@ async fn check_trust_transition_auto_demotes_to_quarantined() {
         .with_learning(config)
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.memory.as_ref().unwrap();
+    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
     agent.check_trust_transition("test-skill").await;
 
     let row = mem
@@ -1027,7 +1027,7 @@ async fn check_trust_transition_does_not_promote_blocked() {
         .with_learning(config)
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.memory.as_ref().unwrap();
+    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
     agent.check_trust_transition("test-skill").await;
 
     let row = mem

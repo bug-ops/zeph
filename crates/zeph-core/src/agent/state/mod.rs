@@ -4,7 +4,24 @@
 //! Sub-struct definitions for the `Agent` struct.
 //!
 //! Each struct groups a related cluster of `Agent` fields.
-//! All types are `pub(super)` — visible only within the `agent` module.
+//! All types are `pub(crate)` — visible only within the `zeph-core` crate.
+//!
+//! `MemoryState` is decomposed into four concern-separated sub-structs, each in its own file:
+//!
+//! - [`MemoryPersistenceState`] — `SQLite` handles, conversation IDs, recall budgets, autosave
+//! - [`MemoryCompactionState`] — summarization thresholds, shutdown summary, digest, strategy
+//! - [`MemoryExtractionState`] — graph config, RPE router, document config, semantic labels
+//! - [`MemorySubsystemState`] — `TiMem`, `autoDream`, `MagicDocs`, microcompact
+
+pub(crate) mod compaction;
+pub(crate) mod extraction;
+pub(crate) mod persistence;
+pub(crate) mod subsystems;
+
+pub(crate) use self::compaction::MemoryCompactionState;
+pub(crate) use self::extraction::MemoryExtractionState;
+pub(crate) use self::persistence::MemoryPersistenceState;
+pub(crate) use self::subsystems::MemorySubsystemState;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -30,7 +47,6 @@ use crate::metrics::MetricsSnapshot;
 use crate::vault::Secret;
 use zeph_config;
 use zeph_memory::TokenCounter;
-use zeph_memory::semantic::SemanticMemory;
 use zeph_sanitizer::ContentSanitizer;
 use zeph_sanitizer::quarantine::QuarantinedSummarizer;
 use zeph_skills::matcher::SkillMatcherBackend;
@@ -39,67 +55,23 @@ use zeph_skills::watcher::SkillEvent;
 
 use super::message_queue::QueuedMessage;
 
+/// Coordinator struct holding four concern-separated sub-structs for memory management.
+///
+/// Each sub-struct groups fields by a single concern:
+/// - [`persistence`](MemoryPersistenceState) — `SQLite` handles, conversation IDs, recall budgets
+/// - [`compaction`](MemoryCompactionState) — summarization thresholds, shutdown summary, digest
+/// - [`extraction`](MemoryExtractionState) — graph config, RPE router, semantic labels
+/// - [`subsystems`](MemorySubsystemState) — `TiMem`, `autoDream`, `MagicDocs`, microcompact
+#[derive(Default)]
 pub(crate) struct MemoryState {
-    pub(crate) memory: Option<Arc<SemanticMemory>>,
-    pub(crate) conversation_id: Option<zeph_memory::ConversationId>,
-    pub(crate) history_limit: u32,
-    pub(crate) recall_limit: usize,
-    pub(crate) summarization_threshold: usize,
-    pub(crate) cross_session_score_threshold: f32,
-    pub(crate) autosave_assistant: bool,
-    pub(crate) autosave_min_length: usize,
-    pub(crate) tool_call_cutoff: usize,
-    pub(crate) unsummarized_count: usize,
-    pub(crate) document_config: crate::config::DocumentConfig,
-    pub(crate) graph_config: crate::config::GraphConfig,
-    pub(crate) compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig,
-    pub(crate) shutdown_summary: bool,
-    pub(crate) shutdown_summary_min_messages: usize,
-    pub(crate) shutdown_summary_max_messages: usize,
-    pub(crate) shutdown_summary_timeout_secs: u64,
-    /// When `true`, hard compaction uses `AnchoredSummary` (structured JSON) instead of
-    /// free-form prose. Falls back to prose on any LLM or validation failure.
-    pub(crate) structured_summaries: bool,
-    /// Top-1 semantic recall score from the most recent `prepare_context` cycle.
-    /// Used by MAR (Memory-Augmented Routing) to bias the bandit toward cheap providers
-    /// when memory confidence is high. Reset to `None` at the start of each turn.
-    pub(crate) last_recall_confidence: Option<f32>,
-    /// Session digest configuration (#2289).
-    pub(crate) digest_config: crate::config::DigestConfig,
-    /// Cached session digest text and its token count, loaded at session start.
-    pub(crate) cached_session_digest: Option<(String, usize)>,
-    /// Context assembly strategy (#2288).
-    pub(crate) context_strategy: crate::config::ContextStrategy,
-    /// Turn threshold for `Adaptive` strategy crossover (#2288).
-    pub(crate) crossover_turn_threshold: u32,
-    /// D-MEM RPE router. `Some` when `graph_config.rpe.enabled = true`.
-    /// Protected by `std::sync::Mutex` for non-async access from `maybe_spawn_graph_extraction`.
-    pub(crate) rpe_router: Option<std::sync::Mutex<zeph_memory::RpeRouter>>,
-    /// Goal text for the current user turn, derived from raw user input (#2483).
-    /// Passed to A-MAC admission control to enable goal-conditioned write gating.
-    /// Reset at the start of each user turn. `None` only before the first user message.
-    pub(crate) goal_text: Option<String>,
-    /// Persona memory configuration (#2461).
-    pub(crate) persona_config: zeph_config::PersonaConfig,
-    /// Trajectory-informed memory configuration (#2498).
-    pub(crate) trajectory_config: zeph_config::TrajectoryConfig,
-    /// Category-aware memory configuration (#2428).
-    pub(crate) category_config: zeph_config::CategoryConfig,
-    /// `TiMem` temporal-hierarchical memory tree configuration (#2262).
-    pub(crate) tree_config: zeph_config::TreeConfig,
-    /// Time-based microcompact configuration (#2699).
-    pub(crate) microcompact_config: zeph_config::MicrocompactConfig,
-    /// autoDream configuration (#2697).
-    pub(crate) autodream_config: zeph_config::AutoDreamConfig,
-    /// `MagicDocs` configuration (#2702).
-    pub(crate) magic_docs_config: zeph_config::MagicDocsConfig,
-    /// Background tree consolidation loop handle — kept alive for the agent's lifetime (#2262).
-    /// `None` when tree consolidation is disabled or memory is not initialized.
-    pub(crate) tree_consolidation_handle: Option<tokio::task::JoinHandle<()>>,
-    /// autoDream session state (#2697). Tracks session count and last consolidation time.
-    pub(crate) autodream: super::autodream::AutoDreamState,
-    /// `MagicDocs` session state (#2702). Tracks registered doc paths and last update turn.
-    pub(crate) magic_docs: super::magic_docs::MagicDocsState,
+    /// `SQLite` handles, conversation IDs, recall budgets, and autosave policy.
+    pub(crate) persistence: MemoryPersistenceState,
+    /// Summarization thresholds, shutdown summary, digest config, and context strategy.
+    pub(crate) compaction: MemoryCompactionState,
+    /// Graph extraction config, RPE router, document config, and semantic label configs.
+    pub(crate) extraction: MemoryExtractionState,
+    /// `TiMem`, `autoDream`, `MagicDocs`, and microcompact subsystem state.
+    pub(crate) subsystems: MemorySubsystemState,
 }
 
 pub(crate) struct SkillState {
@@ -711,68 +683,6 @@ impl DebugState {
             raw
         };
         d.dump_response(id, &text);
-    }
-}
-
-impl Default for MemoryState {
-    fn default() -> Self {
-        Self {
-            memory: None,
-            conversation_id: None,
-            history_limit: 50,
-            recall_limit: 5,
-            summarization_threshold: 50,
-            cross_session_score_threshold: 0.35,
-            autosave_assistant: false,
-            autosave_min_length: 20,
-            tool_call_cutoff: 6,
-            unsummarized_count: 0,
-            document_config: crate::config::DocumentConfig::default(),
-            graph_config: crate::config::GraphConfig::default(),
-            compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig::default(),
-            shutdown_summary: true,
-            shutdown_summary_min_messages: 4,
-            shutdown_summary_max_messages: 20,
-            shutdown_summary_timeout_secs: 10,
-            structured_summaries: false,
-            last_recall_confidence: None,
-            digest_config: crate::config::DigestConfig::default(),
-            cached_session_digest: None,
-            context_strategy: crate::config::ContextStrategy::default(),
-            crossover_turn_threshold: 20,
-            rpe_router: None,
-            goal_text: None,
-            persona_config: crate::config::PersonaConfig::default(),
-            trajectory_config: crate::config::TrajectoryConfig::default(),
-            category_config: crate::config::CategoryConfig::default(),
-            tree_config: crate::config::TreeConfig::default(),
-            tree_consolidation_handle: None,
-            microcompact_config: crate::config::MicrocompactConfig::default(),
-            autodream_config: crate::config::AutoDreamConfig::default(),
-            magic_docs_config: crate::config::MagicDocsConfig::default(),
-            autodream: super::autodream::AutoDreamState::new(),
-            magic_docs: super::magic_docs::MagicDocsState::new(),
-        }
-    }
-}
-
-impl MemoryState {
-    pub(crate) fn apply_graph_config(&mut self, config: crate::config::GraphConfig) {
-        if config.enabled {
-            tracing::warn!(
-                "graph-memory is enabled: extracted entities are stored without PII redaction. \
-                 Do not use with sensitive personal data until redaction is implemented."
-            );
-        }
-        if config.rpe.enabled {
-            self.rpe_router = Some(std::sync::Mutex::new(zeph_memory::RpeRouter::new(
-                config.rpe.threshold,
-                config.rpe.max_skip_turns,
-            )));
-        } else {
-            self.rpe_router = None;
-        }
-        self.graph_config = config;
     }
 }
 

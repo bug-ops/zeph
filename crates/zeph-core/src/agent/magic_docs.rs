@@ -29,7 +29,7 @@ pub(crate) struct MagicDocsState {
 }
 
 impl MagicDocsState {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             registered: HashMap::new(),
             pending: None,
@@ -43,7 +43,7 @@ impl<C: Channel> super::Agent<C> {
     /// Call this after pushing an assistant message that may contain `ToolOutput` parts.
     /// No-op when `MagicDocs` is disabled.
     pub(super) fn detect_magic_docs_in_messages(&mut self) {
-        if !self.memory_state.magic_docs_config.enabled {
+        if !self.memory_state.subsystems.magic_docs_config.enabled {
             return;
         }
 
@@ -136,6 +136,7 @@ impl<C: Channel> super::Agent<C> {
 
         for path in detected_paths {
             self.memory_state
+                .subsystems
                 .magic_docs
                 .registered
                 .entry(path.clone())
@@ -149,13 +150,20 @@ impl<C: Channel> super::Agent<C> {
     /// Spawns a `tokio::task` that runs concurrently with the next user turn.
     /// No-op when `MagicDocs` is disabled, no docs are registered, or update is not due.
     pub(super) fn maybe_update_magic_docs(&mut self) {
-        let cfg = self.memory_state.magic_docs_config.clone();
-        if !cfg.enabled || self.memory_state.magic_docs.registered.is_empty() {
+        let cfg = self.memory_state.subsystems.magic_docs_config.clone();
+        if !cfg.enabled
+            || self
+                .memory_state
+                .subsystems
+                .magic_docs
+                .registered
+                .is_empty()
+        {
             return;
         }
 
         // Await any previous pending update before spawning another.
-        if let Some(handle) = self.memory_state.magic_docs.pending.take()
+        if let Some(handle) = self.memory_state.subsystems.magic_docs.pending.take()
             && !handle.is_finished()
         {
             tracing::debug!("magic_docs: previous update still running, skipping this turn");
@@ -165,6 +173,7 @@ impl<C: Channel> super::Agent<C> {
         let current_turn = u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX);
         let due_paths: Vec<PathBuf> = self
             .memory_state
+            .subsystems
             .magic_docs
             .registered
             .iter()
@@ -227,13 +236,19 @@ impl<C: Channel> super::Agent<C> {
         });
 
         // Mark all due paths as updated (due_paths moved into spawn — use registered keys).
-        for path in self.memory_state.magic_docs.registered.values_mut() {
+        for path in self
+            .memory_state
+            .subsystems
+            .magic_docs
+            .registered
+            .values_mut()
+        {
             if current_turn.saturating_sub(*path) >= cfg.min_turns_between_updates {
                 *path = current_turn;
             }
         }
 
-        self.memory_state.magic_docs.pending = Some(handle);
+        self.memory_state.subsystems.magic_docs.pending = Some(handle);
     }
 }
 

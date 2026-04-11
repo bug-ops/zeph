@@ -49,7 +49,7 @@ impl<C: Channel> Agent<C> {
 
         match result {
             Ok(installed) => {
-                if let Some(memory) = &self.memory_state.memory {
+                if let Some(memory) = &self.memory_state.persistence.memory {
                     let (source_kind, source_url, source_path) = match &installed.source {
                         SkillSource::Hub { url } => (SourceKind::Hub, Some(url.as_str()), None),
                         SkillSource::File { path } => (
@@ -144,7 +144,7 @@ impl<C: Channel> Agent<C> {
 
         match remove_result {
             Ok(()) => {
-                if let Some(memory) = &self.memory_state.memory
+                if let Some(memory) = &self.memory_state.persistence.memory
                     && let Err(e) = memory.sqlite().delete_skill_trust(name).await
                 {
                     tracing::warn!("failed to remove trust record for '{name}': {e:#}");

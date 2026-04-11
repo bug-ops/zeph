@@ -33,7 +33,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_memory_tiers(&mut self) -> Result<(), AgentError> {
-        let Some(memory) = self.memory_state.memory.clone() else {
+        let Some(memory) = self.memory_state.persistence.memory.clone() else {
             self.channel.send("Memory not configured.").await?;
             return Ok(());
         };
@@ -57,7 +57,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_memory_promote(&mut self, args: &str) -> Result<(), AgentError> {
-        let Some(memory) = self.memory_state.memory.clone() else {
+        let Some(memory) = self.memory_state.persistence.memory.clone() else {
             self.channel.send("Memory not configured.").await?;
             return Ok(());
         };

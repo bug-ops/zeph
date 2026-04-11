@@ -348,8 +348,9 @@ impl<C: Channel> Agent<C> {
         &self,
         chat_messages: &[Message],
     ) -> Option<zeph_memory::StructuredSummary> {
-        let timeout_dur =
-            std::time::Duration::from_secs(self.memory_state.shutdown_summary_timeout_secs);
+        let timeout_dur = std::time::Duration::from_secs(
+            self.memory_state.compaction.shutdown_summary_timeout_secs,
+        );
         match tokio::time::timeout(
             timeout_dur,
             self.provider
@@ -368,7 +369,7 @@ impl<C: Channel> Agent<C> {
             Err(_) => {
                 tracing::warn!(
                     "shutdown summary: structured LLM call timed out after {}s, falling back to plain",
-                    self.memory_state.shutdown_summary_timeout_secs
+                    self.memory_state.compaction.shutdown_summary_timeout_secs
                 );
                 self.plain_text_summary_fallback(chat_messages, timeout_dur)
                     .await
@@ -476,13 +477,13 @@ impl<C: Channel> Agent<C> {
     ///
     /// All errors are logged as warnings and swallowed — shutdown must never fail.
     async fn maybe_store_shutdown_summary(&mut self) {
-        if !self.memory_state.shutdown_summary {
+        if !self.memory_state.compaction.shutdown_summary {
             return;
         }
-        let Some(memory) = self.memory_state.memory.clone() else {
+        let Some(memory) = self.memory_state.persistence.memory.clone() else {
             return;
         };
-        let Some(conversation_id) = self.memory_state.conversation_id else {
+        let Some(conversation_id) = self.memory_state.persistence.conversation_id else {
             return;
         };
 
@@ -507,10 +508,10 @@ impl<C: Channel> Agent<C> {
             .skip(1)
             .filter(|m| m.role == Role::User)
             .count();
-        if user_count < self.memory_state.shutdown_summary_min_messages {
+        if user_count < self.memory_state.compaction.shutdown_summary_min_messages {
             tracing::debug!(
                 user_count,
-                min = self.memory_state.shutdown_summary_min_messages,
+                min = self.memory_state.compaction.shutdown_summary_min_messages,
                 "shutdown summary: too few user messages, skipping"
             );
             return;
@@ -520,7 +521,7 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("Saving session summary...").await;
 
         // Collect last N messages (skip system prompt at index 0).
-        let max = self.memory_state.shutdown_summary_max_messages;
+        let max = self.memory_state.compaction.shutdown_summary_max_messages;
         if max == 0 {
             tracing::debug!("shutdown summary: max_messages=0, skipping");
             return;
@@ -1046,7 +1047,7 @@ impl<C: Channel> Agent<C> {
         // foreground without shared mutable state across tasks (S1 fix from critic review).
         let bg_signal = self.lifecycle.supervisor.reap();
         if bg_signal.did_summarize {
-            self.memory_state.unsummarized_count = 0;
+            self.memory_state.persistence.unsummarized_count = 0;
             tracing::debug!("background summarization completed; unsummarized_count reset");
         }
         {
@@ -1119,7 +1120,7 @@ impl<C: Channel> Agent<C> {
 
         // Capture raw user input as goal text for A-MAC goal-conditioned write gating (#2483).
         // Derived from the raw input text before context assembly to avoid timing dependencies.
-        self.memory_state.goal_text = Some(text.clone());
+        self.memory_state.extraction.goal_text = Some(text.clone());
 
         let t_persist = std::time::Instant::now();
         tracing::debug!("turn timing: persist_message(user) start");
@@ -1242,7 +1243,7 @@ impl<C: Channel> Agent<C> {
 
         // Extract before rebuild_system_prompt so the value is not tainted
         // by the secrets-bearing system prompt (ConversationId is just an i64).
-        let conv_id = self.memory_state.conversation_id;
+        let conv_id = self.memory_state.persistence.conversation_id;
         self.rebuild_system_prompt(text).await;
 
         self.detect_and_record_corrections(trimmed, conv_id).await;
@@ -1300,7 +1301,7 @@ impl<C: Channel> Agent<C> {
 
         // MAR: propagate top-1 recall confidence to the router for cost-aware routing.
         self.provider
-            .set_memory_confidence(self.memory_state.last_recall_confidence);
+            .set_memory_confidence(self.memory_state.persistence.last_recall_confidence);
 
         self.learning_engine.reset_reflection();
     }
@@ -1743,7 +1744,7 @@ impl<C: Channel> Agent<C> {
 
     /// Update trust DB records for all reloaded skills.
     async fn update_trust_for_reloaded_skills(&self, all_meta: &[zeph_skills::loader::SkillMeta]) {
-        let Some(ref memory) = self.memory_state.memory else {
+        let Some(ref memory) = self.memory_state.persistence.memory else {
             return;
         };
         let trust_cfg = self.skill_state.trust_config.clone();
@@ -1963,9 +1964,10 @@ impl<C: Channel> Agent<C> {
         self.runtime.security = config.security;
         self.runtime.timeouts = config.timeouts;
         self.runtime.redact_credentials = config.memory.redact_credentials;
-        self.memory_state.history_limit = config.memory.history_limit;
-        self.memory_state.recall_limit = config.memory.semantic.recall_limit;
-        self.memory_state.summarization_threshold = config.memory.summarization_threshold;
+        self.memory_state.persistence.history_limit = config.memory.history_limit;
+        self.memory_state.persistence.recall_limit = config.memory.semantic.recall_limit;
+        self.memory_state.compaction.summarization_threshold =
+            config.memory.summarization_threshold;
         self.skill_state.max_active_skills = config.skills.max_active_skills;
         self.skill_state.disambiguation_threshold = config.skills.disambiguation_threshold;
         self.skill_state.min_injection_score = config.skills.min_injection_score;
@@ -1997,17 +1999,17 @@ impl<C: Channel> Agent<C> {
             let graph_cfg = &config.memory.graph;
             if graph_cfg.rpe.enabled {
                 // Re-create router only if it doesn't exist yet; preserve state on hot-reload.
-                if self.memory_state.rpe_router.is_none() {
-                    self.memory_state.rpe_router =
+                if self.memory_state.extraction.rpe_router.is_none() {
+                    self.memory_state.extraction.rpe_router =
                         Some(std::sync::Mutex::new(zeph_memory::RpeRouter::new(
                             graph_cfg.rpe.threshold,
                             graph_cfg.rpe.max_skip_turns,
                         )));
                 }
             } else {
-                self.memory_state.rpe_router = None;
+                self.memory_state.extraction.rpe_router = None;
             }
-            self.memory_state.graph_config = graph_cfg.clone();
+            self.memory_state.extraction.graph_config = graph_cfg.clone();
         }
         self.context_manager.soft_compaction_threshold = config.memory.soft_compaction_threshold;
         self.context_manager.hard_compaction_threshold = config.memory.hard_compaction_threshold;
@@ -2030,7 +2032,7 @@ impl<C: Channel> Agent<C> {
             );
             Some(std::sync::Arc::new(resolved))
         };
-        self.memory_state.cross_session_score_threshold =
+        self.memory_state.persistence.cross_session_score_threshold =
             config.memory.cross_session_score_threshold;
 
         self.index.repo_map_tokens = config.index.repo_map_tokens;

@@ -92,7 +92,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         if !plan_cache_config.enabled || self.orchestration.plan_cache.is_some() {
             return;
         }
-        if let Some(ref memory) = self.memory_state.memory {
+        if let Some(ref memory) = self.memory_state.persistence.memory {
             let pool = memory.sqlite().pool().clone();
             let embed_model = self.skill_state.embedding_model.clone();
             match zeph_orchestration::PlanCache::new(pool, plan_cache_config, &embed_model).await {

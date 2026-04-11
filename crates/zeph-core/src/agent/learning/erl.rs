@@ -16,7 +16,7 @@ impl<C: Channel> Agent<C> {
         if !config.erl_enabled {
             return String::new();
         }
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return String::new();
         };
 
@@ -66,7 +66,7 @@ impl<C: Channel> Agent<C> {
         if tool_names.is_empty() {
             return;
         }
-        let Some(memory) = self.memory_state.memory.clone() else {
+        let Some(memory) = self.memory_state.persistence.memory.clone() else {
             return;
         };
         let task_summary = self

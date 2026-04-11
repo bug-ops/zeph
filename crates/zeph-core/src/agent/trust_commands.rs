@@ -14,7 +14,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         args: &[&str],
     ) -> Result<(), super::error::AgentError> {
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -101,7 +101,7 @@ impl<C: Channel> Agent<C> {
             self.channel.send("Usage: /skill block <name>").await?;
             return Ok(());
         };
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -130,7 +130,7 @@ impl<C: Channel> Agent<C> {
             self.channel.send("Usage: /skill unblock <name>").await?;
             return Ok(());
         };
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -189,7 +189,7 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) async fn build_skill_trust_map(&self) -> HashMap<String, SkillTrustLevel> {
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return HashMap::new();
         };
         let Ok(rows) = memory.sqlite().load_all_skill_trust().await else {

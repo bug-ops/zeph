@@ -209,9 +209,10 @@ impl<C: Channel> Agent<C> {
                  not saved]",
                 output.len()
             )
-        } else if let (Some(memory), Some(conv_id)) =
-            (&self.memory_state.memory, self.memory_state.conversation_id)
-        {
+        } else if let (Some(memory), Some(conv_id)) = (
+            &self.memory_state.persistence.memory,
+            self.memory_state.persistence.conversation_id,
+        ) {
             match memory
                 .sqlite()
                 .save_overflow(conv_id.0, output.as_bytes())

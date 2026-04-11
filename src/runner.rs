@@ -1709,16 +1709,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         ) {
             tracing::warn!("sub-agent definition loading failed: {e:#}");
         }
-        let agent = agent.with_orchestration_config(config.orchestration.clone());
-        agent
-            .with_subagent_manager(mgr)
-            .with_subagent_config(config.agents.clone())
+        agent.with_orchestration(config.orchestration.clone(), config.agents.clone(), mgr)
     };
     let agent = {
         let baseline = zeph_experiments::ConfigSnapshot::from_config(config);
-        let agent = agent
-            .with_experiment_config(config.experiments.clone())
-            .with_experiment_baseline(baseline);
+        let agent = agent.with_experiment(config.experiments.clone(), baseline);
         if let Some(ep) = app.build_eval_provider() {
             agent.with_eval_provider(ep)
         } else {
@@ -1977,7 +1972,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     };
 
     // Wire supervisor config so concurrency limits and turn-boundary abort are applied (#2883).
-    let agent = agent.with_supervisor_config(&config.agent.supervisor);
+    let agent = agent
+        .with_supervisor_config(&config.agent.supervisor)
+        .build()
+        .map_err(|e| anyhow::anyhow!("agent construction failed: {e}"))?;
 
     #[cfg(not(feature = "tui"))]
     drop(metrics_rx);

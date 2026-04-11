@@ -42,7 +42,7 @@ impl<C: Channel> super::Agent<C> {
     /// Returns `None` when microcompact is disabled, `last_assistant_at` is `None`,
     /// or the elapsed gap is below the threshold.
     pub(super) fn cache_expiry_warning(&self) -> Option<String> {
-        let cfg = &self.memory_state.microcompact_config;
+        let cfg = &self.memory_state.subsystems.microcompact_config;
         if !cfg.enabled {
             return None;
         }
@@ -72,7 +72,7 @@ impl<C: Channel> super::Agent<C> {
     /// - `last_assistant_at` is `None` (first turn)
     /// - idle gap is below the threshold
     pub(super) fn maybe_time_based_microcompact(&mut self) {
-        let cfg = &self.memory_state.microcompact_config;
+        let cfg = &self.memory_state.subsystems.microcompact_config;
         if !cfg.enabled {
             return;
         }
@@ -224,7 +224,7 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent.memory_state.microcompact_config = cfg;
+        agent.memory_state.subsystems.microcompact_config = cfg;
         agent
     }
 

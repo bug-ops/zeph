@@ -98,7 +98,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     ) {
         let assistant_snippet = self.last_assistant_response();
         let user_msg_owned = trimmed.to_owned();
-        let memory_arc = self.memory_state.memory.clone();
+        let memory_arc = self.memory_state.persistence.memory.clone();
         let skill_name = self
             .skill_state
             .active_skill_names
@@ -308,7 +308,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             )
             .await;
         }
-        if let Some(memory) = &self.memory_state.memory {
+        if let Some(memory) = &self.memory_state.persistence.memory {
             let correction_text = context::truncate_chars(trimmed, 500);
             match memory
                 .sqlite()
@@ -353,7 +353,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             return Ok(());
         }
 
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.channel.send("Memory not available.").await?;
             return Ok(());
         };
@@ -369,7 +369,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .record_skill_outcome(
                 skill_name,
                 None,
-                self.memory_state.conversation_id,
+                self.memory_state.persistence.conversation_id,
                 outcome_type,
                 None,
                 Some(feedback),

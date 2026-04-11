@@ -798,7 +798,7 @@ impl<C: Channel> Agent<C> {
 
         // Summarize before pruning; apply deferred summaries after pruning.
         self.maybe_summarize_tool_pair().await;
-        let keep_recent = 2 * self.memory_state.tool_call_cutoff + 2;
+        let keep_recent = 2 * self.memory_state.persistence.tool_call_cutoff + 2;
         self.prune_stale_tool_outputs(keep_recent);
         self.maybe_apply_deferred_summaries();
         self.flush_deferred_summaries().await;
@@ -855,7 +855,11 @@ impl<C: Channel> Agent<C> {
 
         // RuntimeLayer before_chat hooks (MVP: empty vec = zero iterations).
         if !self.runtime.layers.is_empty() {
-            let conv_id_str = self.memory_state.conversation_id.map(|id| id.0.to_string());
+            let conv_id_str = self
+                .memory_state
+                .persistence
+                .conversation_id
+                .map(|id| id.0.to_string());
             let ctx = crate::runtime_layer::LayerContext {
                 conversation_id: conv_id_str.as_deref(),
                 turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
@@ -945,7 +949,11 @@ impl<C: Channel> Agent<C> {
 
         // RuntimeLayer after_chat hooks (MVP: empty vec = zero iterations).
         if !self.runtime.layers.is_empty() {
-            let conv_id_str = self.memory_state.conversation_id.map(|id| id.0.to_string());
+            let conv_id_str = self
+                .memory_state
+                .persistence
+                .conversation_id
+                .map(|id| id.0.to_string());
             let ctx = crate::runtime_layer::LayerContext {
                 conversation_id: conv_id_str.as_deref(),
                 turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
@@ -1821,7 +1829,11 @@ impl<C: Channel> Agent<C> {
 
                 // RuntimeLayer before_tool hooks: may short-circuit execution.
                 if !self.runtime.layers.is_empty() {
-                    let conv_id_str = self.memory_state.conversation_id.map(|id| id.0.to_string());
+                    let conv_id_str = self
+                        .memory_state
+                        .persistence
+                        .conversation_id
+                        .map(|id| id.0.to_string());
                     let ctx = crate::runtime_layer::LayerContext {
                         conversation_id: conv_id_str.as_deref(),
                         turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
@@ -1949,7 +1961,11 @@ impl<C: Channel> Agent<C> {
 
                 // RuntimeLayer after_tool hooks.
                 if !self.runtime.layers.is_empty() {
-                    let conv_id_str = self.memory_state.conversation_id.map(|id| id.0.to_string());
+                    let conv_id_str = self
+                        .memory_state
+                        .persistence
+                        .conversation_id
+                        .map(|id| id.0.to_string());
                     let ctx = crate::runtime_layer::LayerContext {
                         conversation_id: conv_id_str.as_deref(),
                         turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),

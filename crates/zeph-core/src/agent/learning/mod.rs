@@ -31,7 +31,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn is_skill_trusted_for_learning(&self, skill_name: &str) -> bool {
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return true;
         };
         let Ok(Some(row)) = memory.sqlite().load_skill_trust(skill_name).await else {
@@ -49,14 +49,14 @@ impl<C: Channel> Agent<C> {
         if self.skill_state.active_skill_names.is_empty() {
             return;
         }
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return;
         };
         let batch_result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             memory.sqlite().record_skill_outcomes_batch(
                 &self.skill_state.active_skill_names,
-                self.memory_state.conversation_id,
+                self.memory_state.persistence.conversation_id,
                 outcome,
                 error_context,
                 outcome_detail,
@@ -115,7 +115,7 @@ impl<C: Channel> Agent<C> {
         if outcomes.is_empty() || self.skill_state.active_skill_names.is_empty() {
             return;
         }
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return;
         };
 
@@ -126,7 +126,7 @@ impl<C: Channel> Agent<C> {
                 std::time::Duration::from_secs(5),
                 memory.sqlite().record_skill_outcomes_batch(
                     &self.skill_state.active_skill_names,
-                    self.memory_state.conversation_id,
+                    self.memory_state.persistence.conversation_id,
                     &o.outcome,
                     o.error_context.as_deref(),
                     o.outcome_detail.as_deref(),
@@ -205,7 +205,7 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(crate) async fn update_skill_confidence_metrics(&self) {
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return;
         };
         let Ok(stats) = memory.sqlite().load_skill_outcome_stats().await else {

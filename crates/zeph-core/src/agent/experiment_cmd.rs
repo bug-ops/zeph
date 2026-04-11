@@ -124,10 +124,10 @@ impl<C: Channel> Agent<C> {
 
         let generator = Box::new(GridStep::new(SearchSpace::default()));
         // Use the pre-built baseline snapshot that reflects actual runtime config values.
-        // Set via Agent::with_experiment_baseline(); defaults to ConfigSnapshot::default()
+        // Set via Agent::with_experiment(); defaults to ConfigSnapshot::default()
         // when not explicitly provided.
         let baseline = self.experiments.baseline.clone();
-        let memory = self.memory_state.memory.clone();
+        let memory = self.memory_state.persistence.memory.clone();
 
         Ok(
             ExperimentEngine::new(evaluator, generator, provider_arc, baseline, config, memory)
@@ -211,7 +211,7 @@ impl<C: Channel> Agent<C> {
             String::from("Experiment: **idle**. Use `/experiment start [N]` to begin.")
         };
 
-        if let Some(memory) = &self.memory_state.memory {
+        if let Some(memory) = &self.memory_state.persistence.memory {
             let rows = memory.sqlite().list_experiment_results(None, 1).await?;
             if let Some(latest) = rows.first()
                 && let Some(summary) = memory
@@ -237,7 +237,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_experiment_report(&mut self) -> Result<(), AgentError> {
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.channel
                 .send("Memory is not enabled — cannot query experiment results.")
                 .await?;
@@ -277,7 +277,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_experiment_best(&mut self) -> Result<(), AgentError> {
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.channel
                 .send("Memory is not enabled — cannot query experiment results.")
                 .await?;

@@ -314,7 +314,7 @@ impl<C: Channel> Agent<C> {
 
         // IMP-01: for the final consolidation, apply structured output when enabled.
         // Per-chunk summaries remain prose; only the consolidation becomes AnchoredSummary.
-        if self.memory_state.structured_summaries {
+        if self.memory_state.compaction.structured_summaries {
             let anchored_prompt = format!(
                 "<analysis>\n\
                  Merge these partial conversation summaries into a single structured summary.\n\
@@ -522,7 +522,7 @@ impl<C: Channel> Agent<C> {
         }
 
         // Structured path: attempt AnchoredSummary when enabled, fall back to prose on failure.
-        if self.memory_state.structured_summaries {
+        if self.memory_state.compaction.structured_summaries {
             match self.try_summarize_structured(messages, guidelines).await {
                 Ok(anchored) => {
                     if let Some(ref d) = self.debug_state.debug_dumper {
@@ -589,16 +589,16 @@ impl<C: Channel> Agent<C> {
     /// Returns an empty string when the feature is disabled, memory is not initialized,
     /// or the database query fails (non-fatal).
     async fn load_compression_guidelines_if_enabled(&self) -> String {
-        let config = &self.memory_state.compression_guidelines_config;
+        let config = &self.memory_state.compaction.compression_guidelines_config;
         if !config.enabled {
             return String::new();
         }
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return String::new();
         };
         match memory
             .sqlite()
-            .load_compression_guidelines(self.memory_state.conversation_id)
+            .load_compression_guidelines(self.memory_state.persistence.conversation_id)
             .await
         {
             Ok((_, text)) => text,
@@ -621,9 +621,10 @@ impl<C: Channel> Agent<C> {
         if !self.context_manager.compression.archive_tool_outputs {
             return Vec::new();
         }
-        let (Some(memory), Some(cid)) =
-            (&self.memory_state.memory, self.memory_state.conversation_id)
-        else {
+        let (Some(memory), Some(cid)) = (
+            &self.memory_state.persistence.memory,
+            self.memory_state.persistence.conversation_id,
+        ) else {
             return Vec::new();
         };
 
@@ -922,9 +923,10 @@ impl<C: Channel> Agent<C> {
             m.context_compactions += 1;
         });
 
-        if let (Some(memory), Some(cid)) =
-            (&self.memory_state.memory, self.memory_state.conversation_id)
-        {
+        if let (Some(memory), Some(cid)) = (
+            &self.memory_state.persistence.memory,
+            self.memory_state.persistence.conversation_id,
+        ) {
             // Persist compaction: mark originals as user_only, insert summary as agent_only.
             // Assumption: the system prompt is always the first (oldest) row for this conversation
             // in SQLite — i.e., ids[0] corresponds to self.msg.messages[0] (the system prompt).
@@ -1610,7 +1612,7 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) async fn maybe_summarize_tool_pair(&mut self) {
         // Drain the entire backlog above cutoff in one turn so that a resumed session
         // with many accumulated pairs catches up before Tier 1 pruning fires.
-        let cutoff = self.memory_state.tool_call_cutoff;
+        let cutoff = self.memory_state.persistence.tool_call_cutoff;
         let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
         let mut summarized = 0usize;
         loop {
@@ -1749,9 +1751,10 @@ impl<C: Channel> Agent<C> {
         if self.msg.deferred_db_hide_ids.is_empty() {
             return;
         }
-        let (Some(memory), Some(cid)) =
-            (&self.memory_state.memory, self.memory_state.conversation_id)
-        else {
+        let (Some(memory), Some(cid)) = (
+            &self.memory_state.persistence.memory,
+            self.memory_state.persistence.conversation_id,
+        ) else {
             self.msg.deferred_db_hide_ids.clear();
             self.msg.deferred_db_summaries.clear();
             return;
@@ -1788,7 +1791,7 @@ impl<C: Channel> Agent<C> {
             self.compaction_tier(),
             CompactionTier::Soft | CompactionTier::Hard
         );
-        let count_pressure = pending >= self.memory_state.tool_call_cutoff;
+        let count_pressure = pending >= self.memory_state.persistence.tool_call_cutoff;
         if !token_pressure && !count_pressure {
             return;
         }
@@ -2262,9 +2265,10 @@ impl<C: Channel> Agent<C> {
             m.context_compactions += 1;
         });
 
-        if let (Some(memory), Some(cid)) =
-            (&self.memory_state.memory, self.memory_state.conversation_id)
-        {
+        if let (Some(memory), Some(cid)) = (
+            &self.memory_state.persistence.memory,
+            self.memory_state.persistence.conversation_id,
+        ) {
             let sqlite = memory.sqlite();
             let ids = sqlite
                 .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))
@@ -2358,7 +2362,7 @@ impl<C: Channel> Agent<C> {
         // For single chunk, summarize directly
         if chunks.len() <= 1 {
             // Structured path for single-chunk (IMP-02): mirrors summarize_messages().
-            if self.memory_state.structured_summaries {
+            if self.memory_state.compaction.structured_summaries {
                 match self.try_summarize_structured(messages, &guidelines).await {
                     Ok(anchored) => {
                         if let Some(ref d) = self.debug_state.debug_dumper {
@@ -3143,7 +3147,7 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent.memory_state.structured_summaries = true;
+        agent.memory_state.compaction.structured_summaries = true;
 
         let messages = vec![Message {
             role: Role::User,
@@ -3187,7 +3191,7 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent.memory_state.structured_summaries = true;
+        agent.memory_state.compaction.structured_summaries = true;
 
         let messages = vec![Message {
             role: Role::User,
@@ -3221,7 +3225,7 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent.memory_state.structured_summaries = true;
+        agent.memory_state.compaction.structured_summaries = true;
 
         let messages = vec![Message {
             role: Role::User,
@@ -3295,7 +3299,7 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent.memory_state.structured_summaries = true;
+        agent.memory_state.compaction.structured_summaries = true;
 
         let messages = vec![Message {
             role: Role::User,

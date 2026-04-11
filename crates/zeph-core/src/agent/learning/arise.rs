@@ -82,7 +82,7 @@ impl<C: Channel> Agent<C> {
         if tool_names.len() < config.arise_min_tool_calls as usize {
             return;
         }
-        let Some(memory) = self.memory_state.memory.clone() else {
+        let Some(memory) = self.memory_state.persistence.memory.clone() else {
             return;
         };
         let Ok(skill) = self.skill_state.registry.read().get_skill(skill_name) else {

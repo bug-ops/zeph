@@ -18,7 +18,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns an error if sending the message to the channel fails.
     pub(super) async fn handle_guidelines_command(&mut self) -> Result<(), AgentError> {
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return self
                 .channel
                 .send("No memory backend initialised.")
@@ -26,7 +26,7 @@ impl<C: Channel> Agent<C> {
                 .map_err(AgentError::from);
         };
 
-        let cid = self.memory_state.conversation_id;
+        let cid = self.memory_state.persistence.conversation_id;
         let sqlite = memory.sqlite();
 
         let (version, text) = sqlite.load_compression_guidelines(cid).await.map_err(

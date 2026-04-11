@@ -116,16 +116,16 @@ impl<C: Channel> Agent<C> {
         budget_tokens: usize,
         tc: &TokenCounter,
     ) -> Result<Option<Message>, super::super::error::AgentError> {
-        if budget_tokens == 0 || !memory_state.graph_config.enabled {
+        if budget_tokens == 0 || !memory_state.extraction.graph_config.enabled {
             return Ok(None);
         }
-        let Some(ref memory) = memory_state.memory else {
+        let Some(ref memory) = memory_state.persistence.memory else {
             return Ok(None);
         };
-        let recall_limit = memory_state.graph_config.recall_limit;
-        let temporal_decay_rate = memory_state.graph_config.temporal_decay_rate;
+        let recall_limit = memory_state.extraction.graph_config.recall_limit;
+        let temporal_decay_rate = memory_state.extraction.graph_config.temporal_decay_rate;
         let edge_types = zeph_memory::classify_graph_subgraph(query);
-        let sa_config = &memory_state.graph_config.spreading_activation;
+        let sa_config = &memory_state.extraction.graph_config.spreading_activation;
 
         let mut body = String::from(GRAPH_FACTS_PREFIX);
         let mut tokens_so_far = tc.count_tokens(&body);
@@ -182,7 +182,7 @@ impl<C: Channel> Agent<C> {
             }
         } else {
             // BFS path (default when spreading_activation.enabled = false).
-            let max_hops = memory_state.graph_config.max_hops;
+            let max_hops = memory_state.extraction.graph_config.max_hops;
             let facts = memory
                 .recall_graph(
                     query,
@@ -232,14 +232,14 @@ impl<C: Channel> Agent<C> {
         budget_tokens: usize,
         tc: &TokenCounter,
     ) -> Result<Option<Message>, super::super::error::AgentError> {
-        if budget_tokens == 0 || !memory_state.persona_config.enabled {
+        if budget_tokens == 0 || !memory_state.extraction.persona_config.enabled {
             return Ok(None);
         }
-        let Some(ref memory) = memory_state.memory else {
+        let Some(ref memory) = memory_state.persistence.memory else {
             return Ok(None);
         };
 
-        let min_confidence = memory_state.persona_config.min_confidence;
+        let min_confidence = memory_state.extraction.persona_config.min_confidence;
         let facts = memory.sqlite().load_persona_facts(min_confidence).await?;
 
         if facts.is_empty() {
@@ -271,15 +271,15 @@ impl<C: Channel> Agent<C> {
         budget_tokens: usize,
         tc: &TokenCounter,
     ) -> Result<Option<Message>, super::super::error::AgentError> {
-        if budget_tokens == 0 || !memory_state.trajectory_config.enabled {
+        if budget_tokens == 0 || !memory_state.extraction.trajectory_config.enabled {
             return Ok(None);
         }
-        let Some(ref memory) = memory_state.memory else {
+        let Some(ref memory) = memory_state.persistence.memory else {
             return Ok(None);
         };
 
-        let top_k = memory_state.trajectory_config.recall_top_k;
-        let min_conf = memory_state.trajectory_config.min_confidence;
+        let top_k = memory_state.extraction.trajectory_config.recall_top_k;
+        let min_conf = memory_state.extraction.trajectory_config.min_confidence;
         let entries = memory
             .sqlite()
             .load_trajectory_entries(Some("procedural"), top_k)
@@ -318,14 +318,14 @@ impl<C: Channel> Agent<C> {
         budget_tokens: usize,
         tc: &TokenCounter,
     ) -> Result<Option<Message>, super::super::error::AgentError> {
-        if budget_tokens == 0 || !memory_state.tree_config.enabled {
+        if budget_tokens == 0 || !memory_state.subsystems.tree_config.enabled {
             return Ok(None);
         }
-        let Some(ref memory) = memory_state.memory else {
+        let Some(ref memory) = memory_state.persistence.memory else {
             return Ok(None);
         };
 
-        let top_k = memory_state.tree_config.recall_top_k;
+        let top_k = memory_state.subsystems.tree_config.recall_top_k;
         // Load level-1+ nodes (consolidated summaries) — level 0 are raw leaves.
         let nodes = memory.sqlite().load_tree_level(1, top_k).await?;
 
@@ -369,7 +369,7 @@ impl<C: Channel> Agent<C> {
         limit: usize,
         min_score: f32,
     ) -> Result<Option<Message>, super::super::error::AgentError> {
-        let Some(ref memory) = memory_state.memory else {
+        let Some(ref memory) = memory_state.persistence.memory else {
             return Ok(None);
         };
         let corrections = memory
@@ -422,20 +422,20 @@ impl<C: Channel> Agent<C> {
         tc: &TokenCounter,
         router: Option<&dyn zeph_memory::AsyncMemoryRouter>,
     ) -> Result<(Option<Message>, Option<f32>), super::super::error::AgentError> {
-        let Some(memory) = &memory_state.memory else {
+        let Some(memory) = &memory_state.persistence.memory else {
             return Ok((None, None));
         };
-        if memory_state.recall_limit == 0 || token_budget == 0 {
+        if memory_state.persistence.recall_limit == 0 || token_budget == 0 {
             return Ok((None, None));
         }
 
         let recalled = if let Some(r) = router {
             memory
-                .recall_routed_async(query, memory_state.recall_limit, None, r)
+                .recall_routed_async(query, memory_state.persistence.recall_limit, None, r)
                 .await?
         } else {
             memory
-                .recall(query, memory_state.recall_limit, None)
+                .recall(query, memory_state.persistence.recall_limit, None)
                 .await?
         };
         if recalled.is_empty() {
@@ -511,7 +511,7 @@ impl<C: Channel> Agent<C> {
     /// Spawn a fire-and-forget background task to generate and persist a session digest for
     /// `conversation_id`. No-op when digest is disabled or the conversation has no messages.
     fn spawn_outgoing_digest(&self, conversation_id: Option<zeph_memory::ConversationId>) {
-        if !self.memory_state.digest_config.enabled {
+        if !self.memory_state.compaction.digest_config.enabled {
             return;
         }
         let non_system: Vec<_> = self
@@ -525,8 +525,8 @@ impl<C: Channel> Agent<C> {
         if non_system.is_empty() {
             return;
         }
-        let digest_config = self.memory_state.digest_config.clone();
-        let memory = self.memory_state.memory.clone();
+        let digest_config = self.memory_state.compaction.digest_config.clone();
+        let memory = self.memory_state.persistence.memory.clone();
         let provider = self.provider.clone();
         let tc = self.metrics.token_counter.clone();
         let status_tx = self.session.status_tx.clone();
@@ -579,7 +579,7 @@ impl<C: Channel> Agent<C> {
         super::super::error::AgentError,
     > {
         // --- Step 1: create new ConversationId FIRST (fail-fast) ---
-        let new_conversation_id = if let Some(ref memory) = self.memory_state.memory {
+        let new_conversation_id = if let Some(ref memory) = self.memory_state.persistence.memory {
             match memory.sqlite().create_conversation().await {
                 Ok(id) => Some(id),
                 Err(e) => return Err(super::super::error::AgentError::Memory(e)),
@@ -588,7 +588,7 @@ impl<C: Channel> Agent<C> {
             None
         };
 
-        let old_conversation_id = self.memory_state.conversation_id;
+        let old_conversation_id = self.memory_state.persistence.conversation_id;
 
         // --- Step 2: fire-and-forget digest for outgoing conversation ---
         if !no_digest {
@@ -663,10 +663,10 @@ impl<C: Channel> Agent<C> {
         self.providers.cached_prompt_tokens = 0;
 
         // --- Step 10: update conversation ID and memory state ---
-        self.memory_state.conversation_id = new_conversation_id;
-        self.memory_state.unsummarized_count = 0;
+        self.memory_state.persistence.conversation_id = new_conversation_id;
+        self.memory_state.persistence.unsummarized_count = 0;
         // Clear cached digest — the new conversation has no prior digest yet.
-        self.memory_state.cached_session_digest = None;
+        self.memory_state.compaction.cached_session_digest = None;
 
         // --- Step 11: clear TUI status ---
         if let Some(ref tx) = self.session.status_tx {
@@ -682,15 +682,15 @@ impl<C: Channel> Agent<C> {
         token_budget: usize,
         tc: &TokenCounter,
     ) -> Result<Option<Message>, super::super::error::AgentError> {
-        if !memory_state.document_config.rag_enabled || token_budget == 0 {
+        if !memory_state.extraction.document_config.rag_enabled || token_budget == 0 {
             return Ok(None);
         }
-        let Some(memory) = &memory_state.memory else {
+        let Some(memory) = &memory_state.persistence.memory else {
             return Ok(None);
         };
 
-        let collection = &memory_state.document_config.collection;
-        let top_k = memory_state.document_config.top_k;
+        let collection = &memory_state.extraction.document_config.collection;
+        let top_k = memory_state.extraction.document_config.top_k;
         let points = memory
             .search_document_collection(collection, query, top_k)
             .await?;
@@ -761,14 +761,17 @@ impl<C: Channel> Agent<C> {
         token_budget: usize,
         tc: &TokenCounter,
     ) -> Result<Option<Message>, super::super::error::AgentError> {
-        let (Some(memory), Some(cid)) = (&memory_state.memory, memory_state.conversation_id) else {
+        let (Some(memory), Some(cid)) = (
+            &memory_state.persistence.memory,
+            memory_state.persistence.conversation_id,
+        ) else {
             return Ok(None);
         };
         if token_budget == 0 {
             return Ok(None);
         }
 
-        let threshold = memory_state.cross_session_score_threshold;
+        let threshold = memory_state.persistence.cross_session_score_threshold;
         let results: Vec<_> = memory
             .search_session_summaries(query, 5, Some(cid))
             .await?
@@ -829,7 +832,10 @@ impl<C: Channel> Agent<C> {
         token_budget: usize,
         tc: &TokenCounter,
     ) -> Result<Option<Message>, super::super::error::AgentError> {
-        let (Some(memory), Some(cid)) = (&memory_state.memory, memory_state.conversation_id) else {
+        let (Some(memory), Some(cid)) = (
+            &memory_state.persistence.memory,
+            memory_state.persistence.conversation_id,
+        ) else {
             return Ok(None);
         };
         if token_budget == 0 {
@@ -922,10 +928,10 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("recalling context...").await;
 
         let system_prompt = self.msg.messages.first().map_or("", |m| m.content.as_str());
-        let graph_enabled = self.memory_state.graph_config.enabled;
+        let graph_enabled = self.memory_state.extraction.graph_config.enabled;
 
         // Resolve effective context strategy (#2288).
-        let effective_strategy = match self.memory_state.context_strategy {
+        let effective_strategy = match self.memory_state.compaction.context_strategy {
             crate::config::ContextStrategy::FullHistory => {
                 crate::config::ContextStrategy::FullHistory
             }
@@ -934,7 +940,7 @@ impl<C: Channel> Agent<C> {
             }
             crate::config::ContextStrategy::Adaptive => {
                 if self.sidequest.turn_counter
-                    >= u64::from(self.memory_state.crossover_turn_threshold)
+                    >= u64::from(self.memory_state.compaction.crossover_turn_threshold)
                 {
                     crate::config::ContextStrategy::MemoryFirst
                 } else {
@@ -947,6 +953,7 @@ impl<C: Channel> Agent<C> {
         // Pre-count digest tokens so the budget allocator can deduct them before splits.
         let digest_tokens = self
             .memory_state
+            .compaction
             .cached_session_digest
             .as_ref()
             .map_or(0, |(_, tokens)| *tokens);
@@ -1080,25 +1087,34 @@ impl<C: Channel> Agent<C> {
                         .map(ContextSlot::GraphFacts)
                 }));
             }
-            if memory_state.persona_config.context_budget_tokens > 0 {
+            if memory_state.extraction.persona_config.context_budget_tokens > 0 {
                 fetchers.push(Box::pin(async {
-                    let persona_budget = memory_state.persona_config.context_budget_tokens;
+                    let persona_budget =
+                        memory_state.extraction.persona_config.context_budget_tokens;
                     Self::fetch_persona_facts(memory_state, persona_budget, &tc)
                         .await
                         .map(ContextSlot::PersonaFacts)
                 }));
             }
-            if memory_state.trajectory_config.context_budget_tokens > 0 {
+            if memory_state
+                .extraction
+                .trajectory_config
+                .context_budget_tokens
+                > 0
+            {
                 fetchers.push(Box::pin(async {
-                    let budget = memory_state.trajectory_config.context_budget_tokens;
+                    let budget = memory_state
+                        .extraction
+                        .trajectory_config
+                        .context_budget_tokens;
                     Self::fetch_trajectory_hints(memory_state, budget, &tc)
                         .await
                         .map(ContextSlot::TrajectoryHints)
                 }));
             }
-            if memory_state.tree_config.context_budget_tokens > 0 {
+            if memory_state.subsystems.tree_config.context_budget_tokens > 0 {
                 fetchers.push(Box::pin(async {
-                    let budget = memory_state.tree_config.context_budget_tokens;
+                    let budget = memory_state.subsystems.tree_config.context_budget_tokens;
                     Self::fetch_tree_memory(memory_state, budget, &tc)
                         .await
                         .map(ContextSlot::TreeMemory)
@@ -1133,7 +1149,7 @@ impl<C: Channel> Agent<C> {
         }
 
         // Store top-1 recall score on agent state for MAR routing signal.
-        self.memory_state.last_recall_confidence = recall_confidence;
+        self.memory_state.persistence.last_recall_confidence = recall_confidence;
 
         // MemoryFirst: drain conversation history BEFORE inserting memory messages so that the
         // memory inserts land into the shorter array and are not accidentally removed.
@@ -1283,6 +1299,7 @@ impl<C: Channel> Agent<C> {
         // (closest to the system prompt). #2289
         if let Some((digest_text, _)) = self
             .memory_state
+            .compaction
             .cached_session_digest
             .clone()
             .filter(|_| self.msg.messages.len() > 1)
@@ -1503,7 +1520,7 @@ impl<C: Channel> Agent<C> {
                 }
 
                 let metrics_map: std::collections::HashMap<String, (u32, u32)> =
-                    if let Some(memory) = &self.memory_state.memory {
+                    if let Some(memory) = &self.memory_state.persistence.memory {
                         memory
                             .sqlite()
                             .load_skill_outcome_stats()
@@ -1670,7 +1687,7 @@ impl<C: Channel> Agent<C> {
         });
 
         if !skills_to_record.is_empty()
-            && let Some(memory) = &self.memory_state.memory
+            && let Some(memory) = &self.memory_state.persistence.memory
         {
             let names: Vec<&str> = skills_to_record.iter().map(String::as_str).collect();
             if let Err(e) = memory.sqlite().record_skill_usage(&names).await {
@@ -1742,7 +1759,7 @@ impl<C: Channel> Agent<C> {
 
         // Build health_map: skill_name -> (posterior_mean, total_uses) for XML attributes.
         let health_map: std::collections::HashMap<String, (f64, u32)> = if let Some(memory) =
-            &self.memory_state.memory
+            &self.memory_state.persistence.memory
         {
             memory
                 .sqlite()

@@ -163,18 +163,22 @@ impl<C: Channel> Agent<C> {
     ///
     /// All errors are logged as warnings and swallowed — shutdown must never fail.
     pub(super) async fn maybe_store_session_digest(&mut self) {
-        if !self.memory_state.digest_config.enabled {
+        if !self.memory_state.compaction.digest_config.enabled {
             return;
         }
-        let Some(memory) = self.memory_state.memory.clone() else {
+        let Some(memory) = self.memory_state.persistence.memory.clone() else {
             return;
         };
-        let Some(conversation_id) = self.memory_state.conversation_id else {
+        let Some(conversation_id) = self.memory_state.persistence.conversation_id else {
             return;
         };
 
-        let max_input = self.memory_state.digest_config.max_input_messages;
-        let max_tokens = self.memory_state.digest_config.max_tokens;
+        let max_input = self
+            .memory_state
+            .compaction
+            .digest_config
+            .max_input_messages;
+        let max_tokens = self.memory_state.compaction.digest_config.max_tokens;
 
         // Collect last N non-system messages.
         let non_system: Vec<_> = self
@@ -265,7 +269,7 @@ impl<C: Channel> Agent<C> {
                 "session digest stored"
             );
             // Update the cached digest so it is available in the same session if re-used.
-            self.memory_state.cached_session_digest = Some((
+            self.memory_state.compaction.cached_session_digest = Some((
                 final_text,
                 usize::try_from(token_count).unwrap_or(max_tokens),
             ));
@@ -279,13 +283,13 @@ impl<C: Channel> Agent<C> {
     /// Called once at session start so the digest is ready for context injection.
     /// All errors are logged and swallowed.
     pub(super) async fn load_and_cache_session_digest(&mut self) {
-        if !self.memory_state.digest_config.enabled {
+        if !self.memory_state.compaction.digest_config.enabled {
             return;
         }
-        let Some(memory) = self.memory_state.memory.clone() else {
+        let Some(memory) = self.memory_state.persistence.memory.clone() else {
             return;
         };
-        let Some(conversation_id) = self.memory_state.conversation_id else {
+        let Some(conversation_id) = self.memory_state.persistence.conversation_id else {
             return;
         };
 
@@ -298,7 +302,8 @@ impl<C: Channel> Agent<C> {
                     tokens = token_count,
                     "session digest loaded"
                 );
-                self.memory_state.cached_session_digest = Some((digest.digest, token_count));
+                self.memory_state.compaction.cached_session_digest =
+                    Some((digest.digest, token_count));
             }
             Ok(None) => {}
             Err(e) => {

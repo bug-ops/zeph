@@ -210,7 +210,7 @@ impl<C: Channel> Agent<C> {
         if !self.learning_engine.should_analyze() {
             return;
         }
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             self.learning_engine.mark_analyzed();
             return;
         };
@@ -272,7 +272,7 @@ impl<C: Channel> Agent<C> {
     /// Load high-confidence learned preferences and inject them into the
     /// system prompt after the `<!-- cache:volatile -->` marker.
     pub(crate) async fn inject_learned_preferences(&self, prompt: &mut String) {
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return;
         };
         let prefs = match memory.sqlite().load_learned_preferences().await {

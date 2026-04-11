@@ -24,7 +24,7 @@ impl<C: Channel> Agent<C> {
         if !config.d2skill_enabled {
             return;
         }
-        let Some(memory) = self.memory_state.memory.clone() else {
+        let Some(memory) = self.memory_state.persistence.memory.clone() else {
             return;
         };
         let provider = self.resolve_background_provider(config.d2skill_provider.as_str());
@@ -89,7 +89,7 @@ impl<C: Channel> Agent<C> {
         if tool_names.is_empty() {
             return;
         }
-        let Some(memory) = self.memory_state.memory.clone() else {
+        let Some(memory) = self.memory_state.persistence.memory.clone() else {
             return;
         };
         let tool_sequence = zeph_skills::stem::normalize_tool_sequence(
@@ -123,7 +123,7 @@ impl<C: Channel> Agent<C> {
             sequence_hash,
             context_hash,
             outcome: outcome_owned,
-            conv_id: self.memory_state.conversation_id,
+            conv_id: self.memory_state.persistence.conversation_id,
             min_occurrences: config.stem_min_occurrences,
             min_success_rate: config.stem_min_success_rate,
             window_days: config.stem_pattern_window_days,
@@ -151,7 +151,7 @@ impl<C: Channel> Agent<C> {
         if !config.d2skill_enabled {
             return vec![];
         }
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return vec![];
         };
         let failure_kind = zeph_skills::evolution::FailureKind::from_error(error_context).as_str();
@@ -183,7 +183,7 @@ impl<C: Channel> Agent<C> {
         correction_ids: &[i64],
         was_successful: bool,
     ) {
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return;
         };
         for &id in correction_ids {

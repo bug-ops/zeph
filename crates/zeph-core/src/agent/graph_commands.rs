@@ -48,7 +48,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_graph_stats(&mut self) -> Result<(), AgentError> {
-        let Some(memory) = self.memory_state.memory.as_ref() else {
+        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
             self.channel.send("Graph memory is not enabled.").await?;
             return Ok(());
         };
@@ -80,7 +80,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_graph_entities(&mut self) -> Result<(), AgentError> {
-        let Some(memory) = self.memory_state.memory.as_ref() else {
+        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
             self.channel.send("Graph memory is not enabled.").await?;
             return Ok(());
         };
@@ -124,7 +124,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_graph_facts(&mut self, name: &str) -> Result<(), AgentError> {
-        let Some(memory) = self.memory_state.memory.as_ref() else {
+        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
             self.channel.send("Graph memory is not enabled.").await?;
             return Ok(());
         };
@@ -200,7 +200,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_graph_history(&mut self, name: &str) -> Result<(), AgentError> {
-        let Some(memory) = self.memory_state.memory.as_ref() else {
+        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
             self.channel.send("Graph memory is not enabled.").await?;
             return Ok(());
         };
@@ -283,7 +283,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_graph_communities(&mut self) -> Result<(), AgentError> {
-        let Some(memory) = self.memory_state.memory.as_ref() else {
+        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
             self.channel.send("Graph memory is not enabled.").await?;
             return Ok(());
         };
@@ -311,7 +311,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_graph_backfill(&mut self, limit: Option<usize>) -> Result<(), AgentError> {
-        let Some(memory) = self.memory_state.memory.clone() else {
+        let Some(memory) = self.memory_state.persistence.memory.clone() else {
             self.channel.send("Graph memory is not enabled.").await?;
             return Ok(());
         };
@@ -334,7 +334,7 @@ impl<C: Channel> Agent<C> {
         let mut total_entities = 0usize;
         let mut total_edges = 0usize;
 
-        let graph_cfg = self.memory_state.graph_config.clone();
+        let graph_cfg = self.memory_state.extraction.graph_config.clone();
         let provider = self.provider.clone();
 
         loop {

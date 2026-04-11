@@ -326,15 +326,21 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns an error if loading history from `SQLite` fails.
     pub async fn load_history(&mut self) -> Result<(), super::error::AgentError> {
-        let (Some(memory), Some(cid)) =
-            (&self.memory_state.memory, self.memory_state.conversation_id)
-        else {
+        let (Some(memory), Some(cid)) = (
+            &self.memory_state.persistence.memory,
+            self.memory_state.persistence.conversation_id,
+        ) else {
             return Ok(());
         };
 
         let history = memory
             .sqlite()
-            .load_history_filtered(cid, self.memory_state.history_limit, Some(true), None)
+            .load_history_filtered(
+                cid,
+                self.memory_state.persistence.history_limit,
+                Some(true),
+                None,
+            )
             .await?;
         if !history.is_empty() {
             let mut loaded = 0;
@@ -414,7 +420,7 @@ impl<C: Channel> Agent<C> {
         }
 
         if let Ok(count) = memory.unsummarized_message_count(cid).await {
-            self.memory_state.unsummarized_count = usize::try_from(count).unwrap_or(0);
+            self.memory_state.persistence.unsummarized_count = usize::try_from(count).unwrap_or(0);
         }
 
         self.recompute_prompt_tokens();
@@ -438,9 +444,10 @@ impl<C: Channel> Agent<C> {
         parts: &[MessagePart],
         has_injection_flags: bool,
     ) {
-        let (Some(memory), Some(cid)) =
-            (&self.memory_state.memory, self.memory_state.conversation_id)
-        else {
+        let (Some(memory), Some(cid)) = (
+            &self.memory_state.persistence.memory,
+            self.memory_state.persistence.conversation_id,
+        ) else {
             return;
         };
 
@@ -491,14 +498,14 @@ impl<C: Channel> Agent<C> {
         } else {
             match role {
                 Role::Assistant => {
-                    self.memory_state.autosave_assistant
-                        && content.len() >= self.memory_state.autosave_min_length
+                    self.memory_state.persistence.autosave_assistant
+                        && content.len() >= self.memory_state.persistence.autosave_min_length
                 }
                 _ => true,
             }
         };
 
-        let goal_text = self.memory_state.goal_text.clone();
+        let goal_text = self.memory_state.extraction.goal_text.clone();
 
         tracing::debug!(
             "persist_message: calling remember_with_parts, embed dispatched to background"
@@ -547,7 +554,7 @@ impl<C: Channel> Agent<C> {
             return;
         }
 
-        self.memory_state.unsummarized_count += 1;
+        self.memory_state.persistence.unsummarized_count += 1;
 
         self.update_metrics(|m| {
             m.sqlite_message_count += 1;
@@ -587,17 +594,19 @@ impl<C: Channel> Agent<C> {
     /// Enqueue background summarization via the supervisor (S1 fix: no shared `AtomicUsize`).
     fn enqueue_summarization_task(&mut self) {
         let (Some(memory), Some(cid)) = (
-            self.memory_state.memory.clone(),
-            self.memory_state.conversation_id,
+            self.memory_state.persistence.memory.clone(),
+            self.memory_state.persistence.conversation_id,
         ) else {
             return;
         };
 
-        if self.memory_state.unsummarized_count <= self.memory_state.summarization_threshold {
+        if self.memory_state.persistence.unsummarized_count
+            <= self.memory_state.compaction.summarization_threshold
+        {
             return;
         }
 
-        let batch_size = self.memory_state.summarization_threshold / 2;
+        let batch_size = self.memory_state.compaction.summarization_threshold / 2;
 
         self.lifecycle.supervisor.spawn_summarization("summarization", async move {
             match tokio::time::timeout(
@@ -641,7 +650,9 @@ impl<C: Channel> Agent<C> {
     ) {
         use zeph_memory::semantic::GraphExtractionConfig;
 
-        if self.memory_state.memory.is_none() || self.memory_state.conversation_id.is_none() {
+        if self.memory_state.persistence.memory.is_none()
+            || self.memory_state.persistence.conversation_id.is_none()
+        {
             return;
         }
         if has_tool_result_parts {
@@ -654,7 +665,7 @@ impl<C: Channel> Agent<C> {
         }
 
         let extraction_cfg = {
-            let cfg = &self.memory_state.graph_config;
+            let cfg = &self.memory_state.extraction.graph_config;
             if !cfg.enabled {
                 return;
             }
@@ -678,7 +689,7 @@ impl<C: Channel> Agent<C> {
                 link_weight_decay_interval_secs: cfg.link_weight_decay_interval_secs,
                 belief_revision_enabled: cfg.belief_revision.enabled,
                 belief_revision_similarity_threshold: cfg.belief_revision.similarity_threshold,
-                conversation_id: self.memory_state.conversation_id.map(|c| c.0),
+                conversation_id: self.memory_state.persistence.conversation_id.map(|c| c.0),
             }
         };
 
@@ -711,7 +722,7 @@ impl<C: Channel> Agent<C> {
             })
             .collect();
 
-        let Some(memory) = self.memory_state.memory.clone() else {
+        let Some(memory) = self.memory_state.persistence.memory.clone() else {
             return;
         };
 
@@ -769,13 +780,13 @@ impl<C: Channel> Agent<C> {
         self.sync_community_detection_failures();
         self.sync_graph_extraction_metrics();
         // sync_graph_counts and sync_guidelines_status are DB reads; move to Telemetry background.
-        let memory_for_sync = self.memory_state.memory.clone();
+        let memory_for_sync = self.memory_state.persistence.memory.clone();
         let metrics_tx_sync = self.metrics.metrics_tx.clone();
         let start_time_sync = self.lifecycle.start_time;
-        let cid_sync = self.memory_state.conversation_id;
+        let cid_sync = self.memory_state.persistence.conversation_id;
         let graph_store_sync = memory_for_sync.as_ref().and_then(|m| m.graph_store.clone());
         let sqlite_sync = memory_for_sync.as_ref().map(|m| m.sqlite().clone());
-        let guidelines_enabled = self.memory_state.graph_config.enabled;
+        let guidelines_enabled = self.memory_state.extraction.graph_config.enabled;
 
         self.lifecycle.supervisor.spawn(
             super::supervisor::TaskClass::Telemetry,
@@ -831,12 +842,12 @@ impl<C: Channel> Agent<C> {
     fn enqueue_persona_extraction_task(&mut self) {
         use zeph_memory::semantic::{PersonaExtractionConfig, extract_persona_facts};
 
-        let cfg = &self.memory_state.persona_config;
+        let cfg = &self.memory_state.extraction.persona_config;
         if !cfg.enabled {
             return;
         }
 
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return;
         };
 
@@ -875,7 +886,7 @@ impl<C: Channel> Agent<C> {
 
         let provider = self.resolve_background_provider(cfg.persona_provider.as_str());
         let store = memory.sqlite().clone();
-        let conversation_id = self.memory_state.conversation_id.map(|c| c.0);
+        let conversation_id = self.memory_state.persistence.conversation_id.map(|c| c.0);
 
         self.lifecycle.supervisor.spawn(
             super::supervisor::TaskClass::Enrichment,
@@ -907,16 +918,16 @@ impl<C: Channel> Agent<C> {
     fn enqueue_trajectory_extraction_task(&mut self) {
         use zeph_memory::semantic::{TrajectoryExtractionConfig, extract_trajectory_entries};
 
-        let cfg = self.memory_state.trajectory_config.clone();
+        let cfg = self.memory_state.extraction.trajectory_config.clone();
         if !cfg.enabled {
             return;
         }
 
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return;
         };
 
-        let conversation_id = match self.memory_state.conversation_id {
+        let conversation_id = match self.memory_state.persistence.conversation_id {
             Some(cid) => cid.0,
             None => return,
         };
@@ -1007,10 +1018,10 @@ impl<C: Channel> Agent<C> {
     /// Embeds `content`, computes RPE via the router, and updates the router state.
     /// Returns `false` (do not skip) on any error — conservative fallback.
     async fn rpe_should_skip(&mut self, content: &str) -> bool {
-        let Some(ref rpe_mutex) = self.memory_state.rpe_router else {
+        let Some(ref rpe_mutex) = self.memory_state.extraction.rpe_router else {
             return false;
         };
-        let Some(memory) = &self.memory_state.memory else {
+        let Some(memory) = &self.memory_state.persistence.memory else {
             return false;
         };
         let candidates = zeph_memory::extract_candidate_entities(content);
@@ -1269,8 +1280,8 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
             .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
-        agent.memory_state.autosave_assistant = false;
-        agent.memory_state.autosave_min_length = 20;
+        agent.memory_state.persistence.autosave_assistant = false;
+        agent.memory_state.persistence.autosave_min_length = 20;
 
         agent
             .persist_message(Role::Assistant, "short assistant reply", &[], false)
@@ -1278,6 +1289,7 @@ mod tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()
@@ -1306,8 +1318,8 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
             .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
-        agent.memory_state.autosave_assistant = true;
-        agent.memory_state.autosave_min_length = 1000;
+        agent.memory_state.persistence.autosave_assistant = true;
+        agent.memory_state.persistence.autosave_min_length = 1000;
 
         agent
             .persist_message(Role::Assistant, "too short", &[], false)
@@ -1315,6 +1327,7 @@ mod tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()
@@ -1343,8 +1356,8 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
             .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
-        agent.memory_state.autosave_assistant = true;
-        agent.memory_state.autosave_min_length = min_length;
+        agent.memory_state.persistence.autosave_assistant = true;
+        agent.memory_state.persistence.autosave_min_length = min_length;
 
         // Exact boundary: len == min_length → embed path.
         let content_at_boundary = "A".repeat(min_length);
@@ -1373,8 +1386,8 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
             .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
-        agent.memory_state.autosave_assistant = true;
-        agent.memory_state.autosave_min_length = min_length;
+        agent.memory_state.persistence.autosave_assistant = true;
+        agent.memory_state.persistence.autosave_min_length = min_length;
 
         // One below boundary: len == min_length - 1 → save_only path, no embedding.
         let content_below_boundary = "A".repeat(min_length - 1);
@@ -1385,6 +1398,7 @@ mod tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()
@@ -1416,15 +1430,15 @@ mod tests {
             100,
         );
 
-        assert_eq!(agent.memory_state.unsummarized_count, 0);
+        assert_eq!(agent.memory_state.persistence.unsummarized_count, 0);
 
         agent.persist_message(Role::User, "first", &[], false).await;
-        assert_eq!(agent.memory_state.unsummarized_count, 1);
+        assert_eq!(agent.memory_state.persistence.unsummarized_count, 1);
 
         agent
             .persist_message(Role::User, "second", &[], false)
             .await;
-        assert_eq!(agent.memory_state.unsummarized_count, 2);
+        assert_eq!(agent.memory_state.persistence.unsummarized_count, 2);
     }
 
     #[tokio::test]
@@ -1453,7 +1467,7 @@ mod tests {
         // the counter is NOT reset to 0 — only reset on Ok(Some(_)).
         // This verifies check_summarization is called and the guard condition works.
         // unsummarized_count must be >= 2 before any summarization or 0 if summarization ran.
-        assert!(agent.memory_state.unsummarized_count <= 2);
+        assert!(agent.memory_state.persistence.unsummarized_count <= 2);
     }
 
     #[tokio::test]
@@ -1466,7 +1480,7 @@ mod tests {
 
         agent.persist_message(Role::User, "hello", &[], false).await;
         // No memory configured — persist_message returns early, counter must stay 0.
-        assert_eq!(agent.memory_state.unsummarized_count, 0);
+        assert_eq!(agent.memory_state.persistence.unsummarized_count, 0);
     }
 
     // R-CRIT-01: unit tests for enqueue_graph_extraction_task guard conditions.
@@ -1509,6 +1523,7 @@ mod tests {
             let mut agent = agent_with_graph(&provider, enabled_graph_config()).await;
             let pool = agent
                 .memory_state
+                .persistence
                 .memory
                 .as_ref()
                 .unwrap()
@@ -1542,6 +1557,7 @@ mod tests {
             let mut agent = agent_with_graph(&provider, disabled_cfg).await;
             let pool = agent
                 .memory_state
+                .persistence
                 .memory
                 .as_ref()
                 .unwrap()
@@ -1571,6 +1587,7 @@ mod tests {
             let mut agent = agent_with_graph(&provider, enabled_graph_config()).await;
             let pool = agent
                 .memory_state
+                .persistence
                 .memory
                 .as_ref()
                 .unwrap()
@@ -1602,6 +1619,7 @@ mod tests {
             let mut agent = agent_with_graph(&provider, enabled_graph_config()).await;
             let pool = agent
                 .memory_state
+                .persistence
                 .memory
                 .as_ref()
                 .unwrap()
@@ -1657,6 +1675,7 @@ mod tests {
 
             let pool = agent
                 .memory_state
+                .persistence
                 .memory
                 .as_ref()
                 .unwrap()
@@ -1715,7 +1734,7 @@ mod tests {
                 MockToolExecutor::no_tools(),
             )
             .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
-            agent.memory_state.persona_config = config;
+            agent.memory_state.extraction.persona_config = config;
             agent
         }
 
@@ -1742,7 +1761,14 @@ mod tests {
 
             agent.enqueue_persona_extraction_task();
 
-            let store = agent.memory_state.memory.as_ref().unwrap().sqlite().clone();
+            let store = agent
+                .memory_state
+                .persistence
+                .memory
+                .as_ref()
+                .unwrap()
+                .sqlite()
+                .clone();
             let count = store.count_persona_facts().await.unwrap();
             assert_eq!(count, 0, "disabled persona config must not write any facts");
         }
@@ -1772,7 +1798,14 @@ mod tests {
 
             agent.enqueue_persona_extraction_task();
 
-            let store = agent.memory_state.memory.as_ref().unwrap().sqlite().clone();
+            let store = agent
+                .memory_state
+                .persistence
+                .memory
+                .as_ref()
+                .unwrap()
+                .sqlite()
+                .clone();
             let count = store.count_persona_facts().await.unwrap();
             assert_eq!(
                 count, 0,
@@ -1788,7 +1821,7 @@ mod tests {
             let registry = create_test_registry();
             let executor = MockToolExecutor::no_tools();
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-            agent.memory_state.persona_config = enabled_persona_config();
+            agent.memory_state.extraction.persona_config = enabled_persona_config();
             agent.msg.messages.push(zeph_llm::provider::Message {
                 role: Role::User,
                 content: "I like Rust".to_owned(),
@@ -1919,8 +1952,8 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
             .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
-        agent.memory_state.autosave_assistant = false;
-        agent.memory_state.autosave_min_length = 20;
+        agent.memory_state.persistence.autosave_assistant = false;
+        agent.memory_state.persistence.autosave_min_length = 20;
 
         let long_user_msg = "A".repeat(100);
         agent
@@ -1929,6 +1962,7 @@ mod tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()
@@ -1978,6 +2012,7 @@ mod tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()
@@ -2040,6 +2075,7 @@ mod tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()
@@ -2126,6 +2162,7 @@ mod tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()
@@ -2205,6 +2242,7 @@ mod tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()
@@ -3107,6 +3145,7 @@ mod tests {
 
         let history = agent
             .memory_state
+            .persistence
             .memory
             .as_ref()
             .unwrap()
@@ -3575,8 +3614,8 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
             .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
-        agent.memory_state.autosave_assistant = true;
-        agent.memory_state.autosave_min_length = 0;
+        agent.memory_state.persistence.autosave_assistant = true;
+        agent.memory_state.persistence.autosave_min_length = 0;
 
         let parts = vec![MessagePart::ToolResult {
             tool_use_id: "tu1".into(),
@@ -3616,8 +3655,8 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
             .with_metrics(tx)
             .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
-        agent.memory_state.autosave_assistant = true;
-        agent.memory_state.autosave_min_length = 0;
+        agent.memory_state.persistence.autosave_assistant = true;
+        agent.memory_state.persistence.autosave_min_length = 0;
 
         let parts = vec![MessagePart::ToolResult {
             tool_use_id: "tu2".into(),
@@ -3663,8 +3702,8 @@ mod tests {
             5,
             100,
         );
-        agent.memory_state.autosave_assistant = true;
-        agent.memory_state.autosave_min_length = 0;
+        agent.memory_state.persistence.autosave_assistant = true;
+        agent.memory_state.persistence.autosave_min_length = 0;
 
         let content = "total 42\ndrwxr-xr-x  5 user group";
         let parts = vec![MessagePart::ToolResult {
