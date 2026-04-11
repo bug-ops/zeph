@@ -4,7 +4,7 @@
 //! Per-turn state carrier for the agent loop.
 //!
 //! A [`Turn`] is created at the start of each `process_user_message` call, lives on the call
-//! stack for the duration of the turn, and is consumed at the end via [`Agent::end_turn`].
+//! stack for the duration of the turn, and is consumed at the end via `Agent::end_turn`.
 //! It is never stored on the `Agent` struct.
 //!
 //! # Phase 1 scope
