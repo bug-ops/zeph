@@ -50,7 +50,7 @@ impl McpErrorCode {
 ///
 /// let err = McpError::Timeout {
 ///     server_id: "github".to_owned(),
-///     tool_name: "create_issue".to_owned(),
+///     tool_name: "create_issue".into(),
 ///     timeout_secs: 30,
 /// };
 /// assert_eq!(err.code(), Some(McpErrorCode::Transient));
