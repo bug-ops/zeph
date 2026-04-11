@@ -248,7 +248,22 @@ pub async fn create_mcp_registry(
         return None;
     };
     let mut reg = zeph_mcp::McpToolRegistry::with_ops(ops.clone());
-    let embed_fn = provider.embed_fn();
+    let inner_embed = provider.embed_fn();
+    let embed_timeout = std::time::Duration::from_secs(config.timeouts.embedding_seconds);
+    let embed_fn = move |text: &str| -> zeph_llm::provider::EmbedFuture {
+        let fut = inner_embed(text);
+        Box::pin(async move {
+            if let Ok(result) = tokio::time::timeout(embed_timeout, fut).await {
+                result
+            } else {
+                tracing::warn!(
+                    timeout_secs = embed_timeout.as_secs(),
+                    "MCP tool embedding timed out, skipping tool"
+                );
+                Err(zeph_llm::LlmError::Timeout)
+            }
+        })
+    };
     if let Err(e) = reg.sync(mcp_tools, embedding_model, &embed_fn).await {
         tracing::warn!("MCP tool embedding sync failed: {e:#}");
     }

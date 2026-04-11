@@ -40,6 +40,8 @@ pub struct MockProvider {
     pub embed_invalid_input: bool,
     /// Tracks how many times `embed()` was called. Useful for verifying embed reuse.
     pub embed_call_count: Arc<std::sync::atomic::AtomicU64>,
+    /// Milliseconds to sleep inside `embed()` before returning. Used to simulate slow providers.
+    pub embed_delay_ms: u64,
 }
 
 impl Default for MockProvider {
@@ -60,6 +62,7 @@ impl Default for MockProvider {
             name_override: None,
             embed_invalid_input: false,
             embed_call_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            embed_delay_ms: 0,
         }
     }
 }
@@ -116,6 +119,23 @@ impl MockProvider {
     #[must_use]
     pub fn with_delay(mut self, ms: u64) -> Self {
         self.delay_ms = ms;
+        self
+    }
+
+    /// Enable embedding support with a fixed return vector.
+    #[must_use]
+    pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
+        self.embedding = embedding;
+        self.supports_embeddings = true;
+        self
+    }
+
+    /// Make `embed()` sleep for `ms` milliseconds before returning.
+    /// Useful for testing timeout behaviour.
+    #[must_use]
+    pub fn with_embed_delay(mut self, ms: u64) -> Self {
+        self.embed_delay_ms = ms;
+        self.supports_embeddings = true;
         self
     }
 
@@ -202,6 +222,9 @@ impl LlmProvider for MockProvider {
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, crate::LlmError> {
         self.embed_call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.embed_delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.embed_delay_ms)).await;
+        }
         if let Ok(mut errors) = self.errors.lock()
             && !errors.is_empty()
         {

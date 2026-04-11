@@ -1794,10 +1794,21 @@ impl<C: Channel> Agent<C> {
     /// Rebuild or sync the in-memory skill matcher and BM25 index after a registry update.
     async fn rebuild_skill_matcher(&mut self, all_meta: &[&zeph_skills::loader::SkillMeta]) {
         let provider = self.embedding_provider.clone();
-        let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
+        let embed_timeout = std::time::Duration::from_secs(self.runtime.timeouts.embedding_seconds);
+        let embed_fn = move |text: &str| -> zeph_skills::matcher::EmbedFuture {
             let owned = text.to_owned();
             let p = provider.clone();
-            Box::pin(async move { p.embed(&owned).await })
+            Box::pin(async move {
+                if let Ok(result) = tokio::time::timeout(embed_timeout, p.embed(&owned)).await {
+                    result
+                } else {
+                    tracing::warn!(
+                        timeout_secs = embed_timeout.as_secs(),
+                        "skill matcher: embedding timed out"
+                    );
+                    Err(zeph_llm::LlmError::Timeout)
+                }
+            })
         };
 
         let needs_inmemory_rebuild = !self

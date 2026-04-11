@@ -20,7 +20,22 @@ pub async fn create_skill_matcher(
     embedding_model: &str,
     qdrant_ops: Option<&QdrantOps>,
 ) -> Option<SkillMatcherBackend> {
-    let embed_fn = provider.embed_fn();
+    let inner_embed = provider.embed_fn();
+    let embed_timeout = std::time::Duration::from_secs(config.timeouts.embedding_seconds);
+    let embed_fn = move |text: &str| -> zeph_llm::provider::EmbedFuture {
+        let fut = inner_embed(text);
+        Box::pin(async move {
+            if let Ok(result) = tokio::time::timeout(embed_timeout, fut).await {
+                result
+            } else {
+                tracing::warn!(
+                    timeout_secs = embed_timeout.as_secs(),
+                    "skill matcher: embedding probe timed out"
+                );
+                Err(zeph_llm::LlmError::Timeout)
+            }
+        })
+    };
 
     if config.memory.semantic.enabled
         && memory.is_vector_store_connected().await

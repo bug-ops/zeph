@@ -1328,7 +1328,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     // Pre-resolve RL embed dim before embedding_provider is moved into the agent builder.
     let rl_embed_dim_resolved = if config.skills.rl_routing_enabled {
-        Some(resolve_rl_embed_dim(&config.skills, &embedding_provider).await)
+        Some(
+            resolve_rl_embed_dim(
+                &config.skills,
+                &embedding_provider,
+                config.timeouts.embedding_seconds,
+            )
+            .await,
+        )
     } else {
         None
     };
@@ -2183,17 +2190,32 @@ pub(crate) async fn load_rl_head(
 pub(crate) async fn resolve_rl_embed_dim(
     skills_config: &zeph_core::config::SkillsConfig,
     embedding_provider: &LlmAnyProvider,
+    embedding_timeout_secs: u64,
 ) -> usize {
+    const FALLBACK: usize = 1536;
     if let Some(dim) = skills_config.rl_embed_dim {
         return dim;
     }
-    match embedding_provider.embed(" ").await {
-        Ok(v) if !v.is_empty() => v.len(),
-        Ok(_) | Err(_) => {
-            const FALLBACK: usize = 1536;
+    let probe = tokio::time::timeout(
+        std::time::Duration::from_secs(embedding_timeout_secs),
+        embedding_provider.embed(" "),
+    )
+    .await;
+    match probe {
+        Ok(Ok(v)) if !v.is_empty() => v.len(),
+        Ok(Ok(_) | Err(_)) => {
             tracing::warn!(
                 fallback = FALLBACK,
                 "rl_head: could not probe embedding dimension from provider; \
+                 set `skills.rl_embed_dim` in config to avoid this fallback"
+            );
+            FALLBACK
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_secs = embedding_timeout_secs,
+                fallback = FALLBACK,
+                "rl_head: embedding probe timed out; \
                  set `skills.rl_embed_dim` in config to avoid this fallback"
             );
             FALLBACK
@@ -2597,5 +2619,31 @@ mod tests {
         config.acp.enabled = true;
         config.acp.transport = AcpTransport::Http;
         assert!(configured_acp_autostart_transport(&config, &cli).is_none());
+    }
+
+    // --- resolve_rl_embed_dim ---
+
+    /// A slow embed (1100 ms) cut off by a 1-second timeout must fall back to 1536.
+    #[tokio::test]
+    async fn resolve_rl_embed_dim_timeout_uses_fallback() {
+        use zeph_llm::mock::MockProvider;
+        let config = zeph_core::Config::default();
+        // 1100 ms delay > 1 s timeout → guaranteed to trigger, 100 ms safety margin
+        let provider =
+            zeph_llm::any::AnyProvider::Mock(MockProvider::default().with_embed_delay(1100));
+        let dim = resolve_rl_embed_dim(&config.skills, &provider, 1).await;
+        assert_eq!(dim, 1536);
+    }
+
+    /// A fast embed returning a 768-dim vector must be returned unchanged.
+    #[tokio::test]
+    async fn resolve_rl_embed_dim_fast_provider_returns_dim() {
+        use zeph_llm::mock::MockProvider;
+        let config = zeph_core::Config::default();
+        let provider = zeph_llm::any::AnyProvider::Mock(
+            MockProvider::default().with_embedding(vec![0.0f32; 768]),
+        );
+        let dim = resolve_rl_embed_dim(&config.skills, &provider, 30).await;
+        assert_eq!(dim, 768);
     }
 }

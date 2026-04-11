@@ -414,10 +414,21 @@ impl<C: Channel> Agent<C> {
             return;
         }
         let provider = self.embedding_provider.clone();
-        let embed_fn = |text: &str| -> zeph_mcp::registry::EmbedFuture {
+        let embed_timeout = std::time::Duration::from_secs(self.runtime.timeouts.embedding_seconds);
+        let embed_fn = move |text: &str| -> zeph_mcp::registry::EmbedFuture {
             let owned = text.to_owned();
             let p = provider.clone();
-            Box::pin(async move { p.embed(&owned).await })
+            Box::pin(async move {
+                if let Ok(result) = tokio::time::timeout(embed_timeout, p.embed(&owned)).await {
+                    result
+                } else {
+                    tracing::warn!(
+                        timeout_secs = embed_timeout.as_secs(),
+                        "MCP registry: embedding timed out"
+                    );
+                    Err(zeph_llm::LlmError::Timeout)
+                }
+            })
         };
         if let Err(e) = registry
             .sync(&self.mcp.tools, &self.skill_state.embedding_model, embed_fn)
@@ -586,7 +597,22 @@ impl<C: Channel> Agent<C> {
             .clone()
             .unwrap_or_else(|| self.embedding_provider.clone());
 
-        let embed_fn = provider.embed_fn();
+        let inner_embed = provider.embed_fn();
+        let embed_timeout = std::time::Duration::from_secs(self.runtime.timeouts.embedding_seconds);
+        let embed_fn = move |text: &str| -> zeph_llm::provider::EmbedFuture {
+            let fut = inner_embed(text);
+            Box::pin(async move {
+                if let Ok(result) = tokio::time::timeout(embed_timeout, fut).await {
+                    result
+                } else {
+                    tracing::warn!(
+                        timeout_secs = embed_timeout.as_secs(),
+                        "semantic index: embedding probe timed out"
+                    );
+                    Err(zeph_llm::LlmError::Timeout)
+                }
+            })
+        };
 
         match zeph_mcp::SemanticToolIndex::build(&self.mcp.tools, &embed_fn).await {
             Ok(idx) => {

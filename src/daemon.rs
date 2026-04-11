@@ -369,7 +369,14 @@ pub(crate) async fn run_daemon(
 
     // Pre-resolve RL embed dim before embedding_provider is moved into the agent builder.
     let rl_embed_dim_resolved = if config.skills.rl_routing_enabled {
-        Some(crate::runner::resolve_rl_embed_dim(&config.skills, &embedding_provider).await)
+        Some(
+            crate::runner::resolve_rl_embed_dim(
+                &config.skills,
+                &embedding_provider,
+                config.timeouts.embedding_seconds,
+            )
+            .await,
+        )
     } else {
         None
     };
