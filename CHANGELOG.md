@@ -180,6 +180,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **TUI startup hang on embedding model `:latest` suffix mismatch** (`#2894`): `EmbeddingRegistry::sync`
+  now normalises model names at comparison time only — `nomic-embed-text-v2-moe` and
+  `nomic-embed-text-v2-moe:latest` are treated as identical, preventing a spurious
+  `recreate_collection` call that caused a 3–4 minute frozen TUI when Ollama stored the `:latest`
+  suffix but the config omitted it.  Two additional improvements ship with the fix: (1) the
+  embedding loop is now parallel via `buffer_unordered(4)` (default concurrency configurable via
+  `EmbeddingRegistry::concurrency`), reducing worst-case re-embed time ~4×; (2) when
+  `Agent::rebuild_skill_matcher` performs a sync it emits `Syncing skills: N/M` status messages
+  so the TUI spinner shows real progress.  Stored Qdrant payloads are unchanged; no migration
+  required.
+
 - **MCP handshake timeout not enforced** (`#2815`): `connect()`, `connect_url()`, and `connect_url_with_headers()` now wrap `handler.serve(transport)` with `tokio::time::timeout(timeout, ...)`, returning `McpError::Timeout` on expiry. `list_tools()` applies the same guard to `list_all_tools()`. Previously, a stalled MCP server during the initialize handshake or tool listing would block `connect_all()` indefinitely, causing TUI startup to hang at "Connecting tools..." forever. Only `call_tool` had a timeout; the fix brings the other paths to parity.
 
 ## [0.18.6] - 2026-04-08

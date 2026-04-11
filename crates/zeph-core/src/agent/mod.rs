@@ -1834,8 +1834,23 @@ impl<C: Channel> Agent<C> {
                 .map(SkillMatcherBackend::InMemory);
         } else if let Some(ref mut backend) = self.skill_state.matcher {
             let _ = self.channel.send_status("syncing skill index...").await;
+            let on_progress: Option<Box<dyn Fn(usize, usize) + Send>> = self
+                .session
+                .status_tx
+                .clone()
+                .map(|tx| -> Box<dyn Fn(usize, usize) + Send> {
+                    Box::new(move |completed, total| {
+                        let msg = format!("Syncing skills: {completed}/{total}");
+                        let _ = tx.send(msg);
+                    })
+                });
             if let Err(e) = backend
-                .sync(all_meta, &self.skill_state.embedding_model, embed_fn)
+                .sync(
+                    all_meta,
+                    &self.skill_state.embedding_model,
+                    embed_fn,
+                    on_progress,
+                )
                 .await
             {
                 tracing::warn!("failed to sync skill embeddings: {e:#}");

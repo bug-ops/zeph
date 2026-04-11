@@ -65,6 +65,9 @@ impl QdrantSkillMatcher {
 
     /// Sync skill embeddings with Qdrant. Computes delta and upserts only changed skills.
     ///
+    /// `on_progress`, when provided, is called after each successful embed+upsert with
+    /// `(completed, total)` counts.
+    ///
     /// # Errors
     ///
     /// Returns an error if Qdrant communication fails.
@@ -77,19 +80,25 @@ impl QdrantSkillMatcher {
         meta: &[&SkillMeta],
         embedding_model: &str,
         embed_fn: F,
+        on_progress: Option<Box<dyn Fn(usize, usize) + Send>>,
     ) -> Result<SyncStats, SkillError>
     where
         F: Fn(&str) -> EmbedFuture,
     {
         let stats = self
             .registry
-            .sync(meta, embedding_model, |text| {
-                let fut = embed_fn(text);
-                Box::pin(async move {
-                    fut.await
-                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-                }) as zeph_memory::EmbedFuture
-            })
+            .sync(
+                meta,
+                embedding_model,
+                |text| {
+                    let fut = embed_fn(text);
+                    Box::pin(async move {
+                        fut.await
+                            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+                    }) as zeph_memory::EmbedFuture
+                },
+                on_progress,
+            )
             .await
             .map_err(|e| SkillError::Other(e.to_string()))?;
         tracing::info!(

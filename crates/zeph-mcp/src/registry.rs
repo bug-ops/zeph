@@ -139,13 +139,18 @@ impl McpToolRegistry {
         let refs: Vec<McpToolRef<'_>> = tools.iter().map(McpToolRef::new).collect();
         let stats = self
             .registry
-            .sync(&refs, embedding_model, |text| {
-                let fut = embed_fn(text);
-                Box::pin(async move {
-                    fut.await
-                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-                }) as zeph_memory::EmbedFuture
-            })
+            .sync(
+                &refs,
+                embedding_model,
+                |text| {
+                    let fut = embed_fn(text);
+                    Box::pin(async move {
+                        fut.await
+                            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+                    }) as zeph_memory::EmbedFuture
+                },
+                None,
+            )
             .await
             .map_err(|e| McpError::Embedding(e.to_string()))?;
         tracing::info!(

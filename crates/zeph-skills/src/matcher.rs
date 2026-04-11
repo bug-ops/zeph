@@ -539,17 +539,18 @@ impl SkillMatcherBackend {
         meta: &[&SkillMeta],
         embedding_model: &str,
         embed_fn: F,
+        on_progress: Option<Box<dyn Fn(usize, usize) + Send>>,
     ) -> Result<(), SkillError>
     where
         F: Fn(&str) -> EmbedFuture,
     {
         match self {
             Self::InMemory(_) => {
-                let _ = (meta, embedding_model, &embed_fn);
+                let _ = (meta, embedding_model, &embed_fn, on_progress);
                 Ok(())
             }
             Self::Qdrant(m) => {
-                m.sync(meta, embedding_model, embed_fn).await?;
+                m.sync(meta, embedding_model, embed_fn, on_progress).await?;
                 Ok(())
             }
         }
@@ -858,7 +859,7 @@ mod tests {
         };
         let mut backend = SkillMatcherBackend::InMemory(matcher);
         let metas: Vec<&SkillMeta> = vec![];
-        let result = backend.sync(&metas, "model", embed_fn_constant).await;
+        let result = backend.sync(&metas, "model", embed_fn_constant, None).await;
         assert!(result.is_ok());
     }
 

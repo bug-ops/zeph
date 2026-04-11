@@ -42,7 +42,7 @@ pub async fn create_skill_matcher(
         && let Some(ops) = qdrant_ops
     {
         let mut qm = QdrantSkillMatcher::with_ops(ops.clone());
-        match qm.sync(meta, embedding_model, &embed_fn).await {
+        match qm.sync(meta, embedding_model, &embed_fn, None).await {
             Ok(_) => return Some(SkillMatcherBackend::Qdrant(qm)),
             Err(e) => {
                 tracing::warn!("Qdrant skill sync failed, falling back to in-memory: {e:#}");
