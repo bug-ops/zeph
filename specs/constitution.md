@@ -21,13 +21,14 @@ related:
 
 ## I. Architecture
 
-- Cargo workspace (Edition 2024, resolver 3): 15 crates (including `zeph-common`), root binary `zeph`
+- Cargo workspace (Edition 2024, resolver 3): 22 crates (including `zeph-common`), root binary `zeph`
 - `zeph-core` orchestrates all crates. Crate dependencies must follow the layered DAG:
-  - **Layer 0** (foundation, no zeph-* deps): `zeph-llm`, `zeph-a2a`, `zeph-gateway`, `zeph-scheduler`, `zeph-common`
-  - **Layer 1** (depends on Layer 0): `zeph-memory` (→ llm), `zeph-tools` (→ common), `zeph-index` (→ llm, memory)
-  - **Layer 2** (depends on Layers 0–1): `zeph-skills` (→ llm, memory, tools), `zeph-mcp` (→ llm, memory, tools, common)
+  - **Layer 0** (foundation, no zeph-* deps): `zeph-llm`, `zeph-a2a`, `zeph-gateway`, `zeph-scheduler`, `zeph-common`, `zeph-config`, `zeph-vault`, `zeph-db`
+  - **Layer 1** (depends on Layer 0): `zeph-memory` (→ llm, config, vault, db), `zeph-tools` (→ common, config), `zeph-index` (→ llm, memory)
+  - **Layer 2** (depends on Layers 0–1): `zeph-skills` (→ llm, memory, tools), `zeph-mcp` (→ llm, memory, tools, common), `zeph-sanitizer` (→ llm, tools, common)
   - **Layer 3** (orchestrator): `zeph-core` (→ all Layer 0–2 crates)
-  - **Layer 4** (consumers): `zeph-channels`, `zeph-tui`, `zeph-acp` (→ core + selective Layer 0–2)
+  - **Layer 4** (consumers): `zeph-channels`, `zeph-tui`, `zeph-acp`, `zeph-orchestration`, `zeph-subagent` (→ core + selective Layer 0–2)
+  - **Special** (feature-gated, no mandatory deps): `zeph-bench` (benchmarking), `zeph-experiments` (internal research)
   - Same-layer imports are **prohibited** (e.g., a Layer 1 crate must NOT import another Layer 1 crate)
   - Cross-layer imports are permitted only downward (higher layer → lower layer)
 - New functionality requires integration at all applicable points: config, CLI, TUI, `--init` wizard, `--migrate-config`

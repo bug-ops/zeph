@@ -25,12 +25,14 @@ See `[[constitution]]` for project-wide non-negotiable rules.
 
 ## Numbering Scheme
 
-Spec IDs (001–034) follow a logical grouping:
+Spec IDs (001–036) follow a logical grouping:
 
 - **001–010**: Foundational contracts and core systems (invariants, loop, providers, memory, skills, tools, channels, mcp, orchestration, security)
 - **011–020**: User-facing features and operational integration (TUI, graph memory, protocols, self-learning, filtering, indexing, scheduler, gateway, config loading)
 - **021**: Reserved for future core feature
 - **022–034**: Architectural extensions and specialized features (provider registry, complexity routing, multi-model design, classifiers, TUI enhancements, hooks, database abstraction, handoff, feature flags, subagent context, benchmark harness)
+- **035–036**: Observability and telemetry (profiling/tracing instrumentation, Prometheus metrics export)
+- **037**: Configuration schema (`zeph-config` TOML schema, validation rules, env-var override table, migration)
 
 ---
 
@@ -77,4 +79,6 @@ Spec IDs (001–034) follow a logical grouping:
 | `032-handoff-skill-system/spec.md` | Skill-based YAML handoff protocol for inter-agent communication, structured skill exchange | `zeph-orchestration` |
 | `033-subagent-context-propagation/spec.md` | Gap analysis and resolution plan for `/agent spawn` context propagation | `zeph-subagent`, `zeph-core` |
 | `034-zeph-bench/spec.md` | Benchmark harness: BenchmarkChannel, dataset loaders, CLI `zeph bench run`, memory isolation, deterministic mode, baseline comparison | `zeph-bench` |
+| `035-profiling/spec.md` | Two-tier telemetry (Tier 1: local chrome traces, Tier 2: OTLP + Pyroscope), per-span `#[instrument]` macros, allocation tracking, InstrumentedChannel wrappers, system metrics; zero-overhead when disabled | cross-cutting |
 | `036-prometheus-metrics/spec.md` | Prometheus `/metrics` endpoint, OpenMetrics export, ~25 gauge/counter metrics from MetricsSnapshot, feature-gated with gateway | `zeph-gateway`, binary |
+| `037-config-schema/spec.md` | Canonical TOML schema reference: all top-level sections, validation rules, env-var override table, `--migrate-config` migration mechanism | `zeph-config` |

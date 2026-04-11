@@ -9,7 +9,7 @@ tags:
   - observability
   - cross-cutting
 created: 2026-04-10
-status: draft
+status: approved
 related:
   - "[[MOC-specs]]"
   - "[[constitution]]"

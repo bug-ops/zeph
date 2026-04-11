@@ -48,6 +48,7 @@ status: moc
 ### Configuration & Loading
 - [[020-config-loading/spec|Config Loading]] — config resolution order, mode-agnostic defaults, environment overrides
 - [[022-config-simplification/spec|Provider Registry]] — see LLM Providers section above
+- [[037-config-schema/spec|Config Schema]] — canonical TOML section inventory, validation rules, env-var override table, migration mechanism for `zeph-config` crate
 
 ---
 
@@ -187,8 +188,9 @@ status: moc
 | 032 | [[032-handoff-skill-system/spec\|Handoff Protocol]] | specify | approved |
 | 033 | [[033-subagent-context-propagation/spec\|Subagent Context]] | research | approved |
 | 034 | [[034-zeph-bench/spec\|Benchmark Harness]] | specify | approved |
-| 035 | [[035-profiling/spec\|Profiling & Tracing]] | specify | draft |
-| 036 | [[036-prometheus-metrics/spec\|Prometheus Metrics]] | specify | draft |
+| 035 | [[035-profiling/spec\|Profiling & Tracing]] | specify | approved |
+| 036 | [[036-prometheus-metrics/spec\|Prometheus Metrics]] | specify | approved |
+| 037 | [[037-config-schema/spec\|Config Schema]] | specify | approved |
 
 ---
 
