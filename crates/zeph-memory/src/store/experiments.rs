@@ -3,13 +3,14 @@
 
 use super::SqliteStore;
 use crate::error::MemoryError;
+use zeph_common::SessionId;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
 #[derive(Debug, Clone)]
 pub struct ExperimentResultRow {
     pub id: i64,
-    pub session_id: String,
+    pub session_id: SessionId,
     pub parameter: String,
     pub value_json: String,
     pub baseline_score: f64,
@@ -38,7 +39,7 @@ pub struct NewExperimentResult<'a> {
 
 #[derive(Debug, Clone)]
 pub struct SessionSummaryRow {
-    pub session_id: String,
+    pub session_id: SessionId,
     pub total: i64,
     pub accepted_count: i64,
     pub best_delta: f64,
@@ -106,7 +107,7 @@ type ResultTuple = (
 fn row_from_tuple(t: ResultTuple) -> ExperimentResultRow {
     ExperimentResultRow {
         id: t.0,
-        session_id: t.1,
+        session_id: SessionId::new(t.1),
         parameter: t.2,
         value_json: t.3,
         baseline_score: t.4,
@@ -259,7 +260,7 @@ impl SqliteStore {
         .await?;
         Ok(row.map(
             |(sid, total, accepted_count, best_delta, total_tokens)| SessionSummaryRow {
-                session_id: sid,
+                session_id: SessionId::new(sid),
                 total,
                 accepted_count,
                 best_delta: best_delta.unwrap_or(0.0),

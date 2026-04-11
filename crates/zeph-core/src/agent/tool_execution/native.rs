@@ -110,7 +110,7 @@ impl<C: Channel> Agent<C> {
 
         // Iteration 0: apply dynamic tool schema filter (#2020) if cached IDs are available.
         if let Some(ref filtered_ids) = self.tool_state.cached_filtered_tool_ids {
-            tool_defs.retain(|d| filtered_ids.contains(&d.name));
+            tool_defs.retain(|d| filtered_ids.contains(d.name.as_str()));
             tracing::debug!(
                 filtered = tool_defs.len(),
                 total = all_tool_defs.len(),
@@ -547,7 +547,7 @@ impl<C: Channel> Agent<C> {
         let tool_started_at = std::time::Instant::now();
         self.channel
             .send_tool_start(ToolStartEvent {
-                tool_name: &output.tool_name,
+                tool_name: output.tool_name.as_str(),
                 tool_call_id: &tool_call_id,
                 params: None,
                 parent_tool_use_id: self.session.parent_tool_use_id.clone(),
@@ -559,23 +559,26 @@ impl<C: Channel> Agent<C> {
             } else {
                 output.summary.clone()
             };
-            d.dump_tool_output(&output.tool_name, &dump_content);
+            d.dump_tool_output(output.tool_name.as_str(), &dump_content);
         }
         let processed = self.maybe_summarize_tool_output(&output.summary).await;
         let body = if let Some(ref fs) = output.filter_stats
             && fs.filtered_chars < fs.raw_chars
         {
-            format!("{}\n{processed}", fs.format_inline(&output.tool_name))
+            format!(
+                "{}\n{processed}",
+                fs.format_inline(output.tool_name.as_str())
+            )
         } else {
             processed.clone()
         };
         let filter_stats_inline = output.filter_stats.as_ref().and_then(|fs| {
-            (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&output.tool_name))
+            (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(output.tool_name.as_str()))
         });
-        let formatted_output = format_tool_output(&output.tool_name, &body);
+        let formatted_output = format_tool_output(output.tool_name.as_str(), &body);
         self.channel
             .send_tool_output(ToolOutputEvent {
-                tool_name: &output.tool_name,
+                tool_name: output.tool_name.as_str(),
                 body: &self.maybe_redact(&body),
                 diff: None,
                 filter_stats: filter_stats_inline,
@@ -590,7 +593,7 @@ impl<C: Channel> Agent<C> {
             .await?;
 
         let (llm_body, has_injection_flags) = self
-            .sanitize_tool_output(&processed, &output.tool_name)
+            .sanitize_tool_output(&processed, output.tool_name.as_str())
             .await;
         let user_msg = Message::from_parts(
             Role::User,
@@ -633,7 +636,7 @@ impl<C: Channel> Agent<C> {
                 let confirmed_started_at = std::time::Instant::now();
                 self.channel
                     .send_tool_start(ToolStartEvent {
-                        tool_name: &out.tool_name,
+                        tool_name: out.tool_name.as_str(),
                         tool_call_id: &confirmed_tool_call_id,
                         params: None,
                         parent_tool_use_id: self.session.parent_tool_use_id.clone(),
@@ -645,13 +648,13 @@ impl<C: Channel> Agent<C> {
                     } else {
                         out.summary.clone()
                     };
-                    d.dump_tool_output(&out.tool_name, &dump_content);
+                    d.dump_tool_output(out.tool_name.as_str(), &dump_content);
                 }
                 let processed = self.maybe_summarize_tool_output(&out.summary).await;
-                let formatted = format_tool_output(&out.tool_name, &processed);
+                let formatted = format_tool_output(out.tool_name.as_str(), &processed);
                 self.channel
                     .send_tool_output(ToolOutputEvent {
-                        tool_name: &out.tool_name,
+                        tool_name: out.tool_name.as_str(),
                         body: &self.maybe_redact(&processed),
                         diff: None,
                         filter_stats: None,
@@ -664,8 +667,9 @@ impl<C: Channel> Agent<C> {
                         started_at: Some(confirmed_started_at),
                     })
                     .await?;
-                let (llm_body, has_injection_flags) =
-                    self.sanitize_tool_output(&processed, &out.tool_name).await;
+                let (llm_body, has_injection_flags) = self
+                    .sanitize_tool_output(&processed, out.tool_name.as_str())
+                    .await;
                 let confirmed_msg = Message::from_parts(
                     Role::User,
                     vec![MessagePart::ToolOutput {
@@ -987,7 +991,9 @@ impl<C: Channel> Agent<C> {
                 let text_tokens = estimate_tokens(text.as_deref().unwrap_or(""));
                 let calls_tokens: usize = tool_calls
                     .iter()
-                    .map(|c| estimate_tokens(&c.name) + estimate_tokens(&c.input.to_string()))
+                    .map(|c| {
+                        estimate_tokens(c.name.as_str()) + estimate_tokens(&c.input.to_string())
+                    })
                     .sum();
                 (text_tokens + calls_tokens) as u64
             }
@@ -1131,7 +1137,7 @@ impl<C: Channel> Agent<C> {
         for tc in tool_calls {
             parts.push(MessagePart::ToolUse {
                 id: tc.id.clone(),
-                name: tc.name.clone(),
+                name: tc.name.to_string(),
                 input: tc.input.clone(),
             });
         }
@@ -1162,7 +1168,7 @@ impl<C: Channel> Agent<C> {
                     } else {
                         serde_json::Map::new()
                     };
-                if tafc_enabled && strip_tafc_fields(&mut params, &tc.name).is_err() {
+                if tafc_enabled && strip_tafc_fields(&mut params, tc.name.as_str()).is_err() {
                     // Model produced only think fields — skip this tool call.
                     return None;
                 }
@@ -1188,7 +1194,7 @@ impl<C: Channel> Agent<C> {
         for tc in tool_calls {
             let args_json = tc.input.to_string();
             let url_events = self.security.exfiltration_guard.validate_tool_call(
-                &tc.name,
+                tc.name.as_str(),
                 &args_json,
                 &self.security.flagged_urls,
             );
@@ -1203,7 +1209,7 @@ impl<C: Channel> Agent<C> {
                 });
                 self.push_security_event(
                     crate::metrics::SecurityEventCategory::ExfiltrationBlock,
-                    &tc.name,
+                    tc.name.as_str(),
                     format!(
                         "{} suspicious URL(s) flagged in tool args",
                         url_events.len()
@@ -1221,7 +1227,7 @@ impl<C: Channel> Agent<C> {
             for (idx, call) in calls.iter().enumerate() {
                 let args_value = serde_json::Value::Object(call.params.clone());
                 for verifier in &self.tool_orchestrator.pre_execution_verifiers {
-                    match verifier.verify(&call.tool_id, &args_value) {
+                    match verifier.verify(call.tool_id.as_str(), &args_value) {
                         zeph_tools::VerificationResult::Allow => {}
                         zeph_tools::VerificationResult::Block { reason } => {
                             tracing::warn!(
@@ -1233,7 +1239,7 @@ impl<C: Channel> Agent<C> {
                             self.update_metrics(|m| m.pre_execution_blocks += 1);
                             self.push_security_event(
                                 crate::metrics::SecurityEventCategory::PreExecutionBlock,
-                                &call.tool_id,
+                                call.tool_id.as_str(),
                                 format!("{}: {}", verifier.name(), reason),
                             );
                             if let Some(ref logger) = self.tool_orchestrator.audit_logger {
@@ -1285,7 +1291,7 @@ impl<C: Channel> Agent<C> {
                             self.update_metrics(|m| m.pre_execution_warnings += 1);
                             self.push_security_event(
                                 crate::metrics::SecurityEventCategory::PreExecutionWarn,
-                                &call.tool_id,
+                                call.tool_id.as_str(),
                                 format!("{}: {}", verifier.name(), message),
                             );
                         }
@@ -1342,7 +1348,7 @@ impl<C: Channel> Agent<C> {
                     if self
                         .tool_orchestrator
                         .utility_scorer
-                        .is_exempt(&call.tool_id)
+                        .is_exempt(call.tool_id.as_str())
                     {
                         return zeph_tools::UtilityAction::ToolCall;
                     }
@@ -1403,7 +1409,9 @@ impl<C: Channel> Agent<C> {
             .iter()
             .zip(args_hashes.iter())
             .map(|(call, &hash)| {
-                let blocked = self.tool_orchestrator.is_repeat(&call.tool_id, hash);
+                let blocked = self
+                    .tool_orchestrator
+                    .is_repeat(call.tool_id.as_str(), hash);
                 if blocked {
                     tracing::warn!(
                         tool = %call.tool_id,
@@ -1417,7 +1425,8 @@ impl<C: Channel> Agent<C> {
         // Cache hits are also pushed here (P1 invariant): a cached tool called N times must
         // still trigger repeat-detection to prevent infinite loops if the LLM keeps requesting it.
         for (call, &hash) in calls.iter().zip(args_hashes.iter()) {
-            self.tool_orchestrator.push_tool_call(&call.tool_id, hash);
+            self.tool_orchestrator
+                .push_tool_call(call.tool_id.as_str(), hash);
         }
 
         // Cache lookup: for each non-repeat, cacheable call, check result cache before dispatch.
@@ -1427,10 +1436,10 @@ impl<C: Channel> Agent<C> {
             .zip(args_hashes.iter())
             .zip(repeat_blocked.iter())
             .map(|((call, &hash), &blocked)| {
-                if blocked || !zeph_tools::is_cacheable(&call.tool_id) {
+                if blocked || !zeph_tools::is_cacheable(call.tool_id.as_str()) {
                     return None;
                 }
-                let key = zeph_tools::CacheKey::new(&call.tool_id, hash);
+                let key = zeph_tools::CacheKey::new(call.tool_id.as_str(), hash);
                 self.tool_orchestrator.result_cache.get(&key)
             })
             .collect();
@@ -1501,7 +1510,7 @@ impl<C: Channel> Agent<C> {
                     let result = if is_compress {
                         self.handle_compress_context().await
                     } else {
-                        self.handle_focus_tool(&tc.name, &tc.input)
+                        self.handle_focus_tool(tc.name.as_str(), &tc.input)
                     };
                     tool_results[idx] = Ok(Some(zeph_tools::ToolOutput {
                         tool_name: tc.name.clone(),
@@ -1561,7 +1570,7 @@ impl<C: Channel> Agent<C> {
                 let tool_call_id = &tool_call_ids[idx];
                 self.channel
                     .send_tool_start(ToolStartEvent {
-                        tool_name: &tc.name,
+                        tool_name: tc.name.as_str(),
                         tool_call_id,
                         params: Some(tc.input.clone()),
                         parent_tool_use_id: self.session.parent_tool_use_id.clone(),
@@ -1678,7 +1687,7 @@ impl<C: Channel> Agent<C> {
                             .send_status(&format!("Utility action: Respond ({})", tc.name))
                             .await;
                         let out = skipped_output(
-                            tc.name.clone(),
+                            tc.name.to_string(),
                             format!(
                                 "[skipped] Tool call to {} skipped — utility policy recommends a \
                                  direct response without further tool use.",
@@ -1706,7 +1715,7 @@ impl<C: Channel> Agent<C> {
                         );
                         pending_system_hints.push(hint);
                         let out = skipped_output(
-                            tc.name.clone(),
+                            tc.name.to_string(),
                             format!(
                                 "[skipped] Tool call to {} skipped — utility policy recommends \
                                  retrieving additional context first.",
@@ -1730,7 +1739,7 @@ impl<C: Channel> Agent<C> {
                         );
                         pending_system_hints.push(hint);
                         let out = skipped_output(
-                            tc.name.clone(),
+                            tc.name.to_string(),
                             format!(
                                 "[skipped] Tool call to {} skipped — utility policy recommends \
                                  verifying the previous result first.",
@@ -1747,7 +1756,7 @@ impl<C: Channel> Agent<C> {
                             .await;
                         let threshold = self.tool_orchestrator.utility_scorer.threshold();
                         let out = skipped_output(
-                            tc.name.clone(),
+                            tc.name.to_string(),
                             format!(
                                 "[stopped] Tool call to {} halted by the utility gate — \
                                  budget exhausted or score below threshold {threshold:.2}.",
@@ -1804,7 +1813,7 @@ impl<C: Channel> Agent<C> {
                     self.update_metrics(|m| m.rate_limit_trips += 1);
                     self.push_security_event(
                         crate::metrics::SecurityEventCategory::RateLimit,
-                        &tc.name,
+                        tc.name.as_str(),
                         format!(
                             "{} calls exceeded {}/min",
                             exceeded.category.as_str(),
@@ -1944,10 +1953,13 @@ impl<C: Channel> Agent<C> {
                 // Skip if this was already a cache hit (no point caching a cached result).
                 if !is_failed
                     && cache_hits[idx].is_none()
-                    && zeph_tools::is_cacheable(&tool_calls[idx].name)
+                    && zeph_tools::is_cacheable(tool_calls[idx].name.as_str())
                     && let Ok(Some(ref out)) = result
                 {
-                    let key = zeph_tools::CacheKey::new(&tool_calls[idx].name, args_hashes[idx]);
+                    let key = zeph_tools::CacheKey::new(
+                        tool_calls[idx].name.to_string(),
+                        args_hashes[idx],
+                    );
                     self.tool_orchestrator.result_cache.put(key, out.clone());
                 }
 
@@ -1956,7 +1968,7 @@ impl<C: Channel> Agent<C> {
                 if !is_failed && self.tool_state.dependency_graph.is_some() {
                     self.tool_state
                         .completed_tool_ids
-                        .insert(tool_calls[idx].name.clone());
+                        .insert(tool_calls[idx].name.to_string());
                 }
 
                 // RuntimeLayer after_tool hooks.
@@ -2050,7 +2062,7 @@ impl<C: Channel> Agent<C> {
                 if let Err(ref e) = result
                     && let Some(ref d) = self.debug_state.debug_dumper
                 {
-                    d.dump_tool_error(&tool_calls[idx].name, e);
+                    d.dump_tool_error(tool_calls[idx].name.as_str(), e);
                 }
                 tool_results[idx] = result;
             }
@@ -2084,7 +2096,10 @@ impl<C: Channel> Agent<C> {
                 }
 
                 let tc = &tool_calls[idx];
-                if !self.tool_executor.is_tool_retryable_erased(&tc.name) {
+                if !self
+                    .tool_executor
+                    .is_tool_retryable_erased(tc.name.as_str())
+                {
                     continue;
                 }
 
@@ -2279,7 +2294,8 @@ impl<C: Channel> Agent<C> {
                         self.record_filter_metrics(fs);
                     }
                     let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
-                        (fs.filtered_chars < fs.raw_chars).then(|| fs.format_inline(&tc.name))
+                        (fs.filtered_chars < fs.raw_chars)
+                            .then(|| fs.format_inline(tc.name.as_str()))
                     });
                     let kept = out
                         .filter_stats
@@ -2324,13 +2340,13 @@ impl<C: Channel> Agent<C> {
                     {
                         AnomalyOutcome::ReasoningQualityFailure {
                             model: self.provider.name().to_owned(),
-                            tool: tc.name.clone(),
+                            tool: tc.name.to_string(),
                         }
                     } else {
                         AnomalyOutcome::Error
                     };
                     if let Some(ref d) = self.debug_state.debug_dumper {
-                        d.dump_tool_error(&tc.name, e);
+                        d.dump_tool_error(tc.name.as_str(), e);
                     }
                     // Count memory write validation rejections.
                     if tc.name == "memory_save"
@@ -2370,7 +2386,8 @@ impl<C: Channel> Agent<C> {
                 && let Some(iter_span_id) = self.debug_state.current_iteration_span_id
             {
                 let latency = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let guard = trace_coll.begin_tool_call_at(&tc.name, iter_span_id, started_at);
+                let guard =
+                    trace_coll.begin_tool_call_at(tc.name.as_str(), iter_span_id, started_at);
                 let error_kind = if is_error {
                     Some(output.chars().take(200).collect::<String>())
                 } else {
@@ -2378,7 +2395,7 @@ impl<C: Channel> Agent<C> {
                 };
                 trace_coll.end_tool_call(
                     guard,
-                    &tc.name,
+                    tc.name.as_str(),
                     crate::debug_dump::trace::ToolAttributes {
                         latency_ms: latency,
                         is_error,
@@ -2451,7 +2468,7 @@ impl<C: Channel> Agent<C> {
             let body_display = self.maybe_redact(&body);
             self.channel
                 .send_tool_output(ToolOutputEvent {
-                    tool_name: &tc.name,
+                    tool_name: tc.name.as_str(),
                     body: &body_display,
                     diff,
                     filter_stats: inline_stats,
@@ -2468,13 +2485,14 @@ impl<C: Channel> Agent<C> {
             // Sanitize tool output before inserting into LLM message history (Bug #1490 fix).
             // sanitize_tool_output is the sole sanitization point for tool output data flows.
             // channel send above uses body_display (redacted for privacy); LLM sees sanitize_tool_output output.
-            let (llm_content, tool_had_injection_flags) =
-                self.sanitize_tool_output(&processed, &tc.name).await;
+            let (llm_content, tool_had_injection_flags) = self
+                .sanitize_tool_output(&processed, tc.name.as_str())
+                .await;
             has_any_injection_flags |= tool_had_injection_flags;
 
             // Capture tool call details for LSP hooks before building result part.
             if !is_error {
-                lsp_tool_calls.push((tc.name.clone(), tc.input.clone(), llm_content.clone()));
+                lsp_tool_calls.push((tc.name.to_string(), tc.input.clone(), llm_content.clone()));
             }
 
             result_parts.push(MessagePart::ToolResult {
@@ -2999,7 +3017,7 @@ async fn recv_elicitation(
 /// All four non-execute arms (Respond/Retrieve/Verify/Stop) produce an identical struct shape
 /// with zero blocks executed and no diff/filter metadata.
 fn skipped_output(
-    tool_name: impl Into<String>,
+    tool_name: impl Into<zeph_common::ToolName>,
     summary: impl Into<String>,
 ) -> zeph_tools::ToolOutput {
     zeph_tools::ToolOutput {
@@ -3229,7 +3247,7 @@ mod tests {
             });
 
         let call = ToolCall {
-            tool_id: "bash".to_owned(),
+            tool_id: zeph_common::ToolName::new("bash"),
             params: serde_json::Map::new(),
             caller_id: None,
         };

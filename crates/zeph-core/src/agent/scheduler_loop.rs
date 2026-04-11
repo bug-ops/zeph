@@ -491,7 +491,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     for tc in &tool_calls {
                         parts.push(MessagePart::ToolUse {
                             id: tc.id.clone(),
-                            name: tc.name.clone(),
+                            name: tc.name.to_string(),
                             input: tc.input.clone(),
                         });
                     }

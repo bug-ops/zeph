@@ -75,7 +75,9 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
 
     async fn check_policy(&self, call: &ToolCall) -> Result<(), ToolError> {
         let ctx = self.read_context();
-        let decision = self.enforcer.evaluate(&call.tool_id, &call.params, &ctx);
+        let decision = self
+            .enforcer
+            .evaluate(call.tool_id.as_str(), &call.params, &ctx);
 
         match &decision {
             PolicyDecision::Allow { trace } => {
@@ -172,9 +174,9 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
         // Populate mcp_server_id in audit when the inner executor produces MCP output.
         // MCP tool outputs use qualified_name() format: "server_id:tool_name".
         if let Ok(Some(ref output)) = result
-            && let Some(colon) = output.tool_name.find(':')
+            && let Some(colon) = output.tool_name.as_str().find(':')
         {
-            let server_id = output.tool_name[..colon].to_owned();
+            let server_id = output.tool_name.as_str()[..colon].to_owned();
             if let Some(audit) = &self.audit {
                 let entry = AuditEntry {
                     timestamp: chrono_now(),
@@ -333,7 +335,7 @@ mod tests {
             default_effect: DefaultEffect::Allow,
             rules: vec![PolicyRuleConfig {
                 effect: PolicyEffect::Deny,
-                tool: "shell".to_owned(),
+                tool: "shell".into(),
                 paths: vec!["/etc/*".to_owned()],
                 env: vec![],
                 trust_level: None,
@@ -356,7 +358,7 @@ mod tests {
             default_effect: DefaultEffect::Deny,
             rules: vec![PolicyRuleConfig {
                 effect: PolicyEffect::Allow,
-                tool: "shell".to_owned(),
+                tool: "shell".into(),
                 paths: vec!["/tmp/*".to_owned()],
                 env: vec![],
                 trust_level: None,
@@ -462,7 +464,7 @@ mod tests {
             default_effect: DefaultEffect::Deny,
             rules: vec![PolicyRuleConfig {
                 effect: PolicyEffect::Allow,
-                tool: "shell".to_owned(),
+                tool: "shell".into(),
                 paths: vec![],
                 env: vec![],
                 trust_level: Some(SkillTrustLevel::Verified),
@@ -490,7 +492,7 @@ mod tests {
             default_effect: DefaultEffect::Deny,
             rules: vec![PolicyRuleConfig {
                 effect: PolicyEffect::Allow,
-                tool: "shell".to_owned(),
+                tool: "shell".into(),
                 paths: vec![],
                 env: vec![],
                 trust_level: Some(SkillTrustLevel::Verified),

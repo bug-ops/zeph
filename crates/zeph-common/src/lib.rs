@@ -4,9 +4,10 @@
 //! Shared utility functions and security primitives for Zeph crates.
 //!
 //! This crate provides pure utility functions (text manipulation, network helpers,
-//! sanitization primitives) and security primitives (`Secret`, `VaultError`) that are
-//! needed by multiple crates. It has no `zeph-*` dependencies. The optional `treesitter`
-//! feature adds tree-sitter query constants and helpers.
+//! sanitization primitives), security primitives (`Secret`, `VaultError`), and
+//! strongly-typed identifiers (`ToolName`, `SessionId`) that are needed by multiple crates.
+//! It has no `zeph-*` dependencies. The optional `treesitter` feature adds tree-sitter
+//! query constants and helpers.
 
 pub mod config;
 pub mod hash;
@@ -15,6 +16,9 @@ pub mod net;
 pub mod sanitize;
 pub mod secret;
 pub mod text;
+pub mod types;
+
+pub use types::{SessionId, ToolName};
 
 #[cfg(feature = "treesitter")]
 pub mod treesitter;

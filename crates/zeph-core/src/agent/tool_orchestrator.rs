@@ -517,7 +517,7 @@ mod tests {
         // Directly manipulate the cache to simulate 1 hit and 1 miss.
         // put() one entry, get() it (hit), then get() a missing key (miss).
         let output = zeph_tools::ToolOutput {
-            tool_name: "read".to_owned(),
+            tool_name: "read".into(),
             summary: "contents".to_owned(),
             blocks_executed: 1,
             filter_stats: None,

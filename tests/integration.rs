@@ -179,7 +179,7 @@ struct OutputToolExecutor {
 impl ToolExecutor for OutputToolExecutor {
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         Ok(Some(ToolOutput {
-            tool_name: "bash".to_string(),
+            tool_name: zeph_tools::ToolName::new("bash"),
             summary: self.output.clone(),
             blocks_executed: 1,
             filter_stats: None,
@@ -213,7 +213,7 @@ struct EmptyOutputToolExecutor;
 impl ToolExecutor for EmptyOutputToolExecutor {
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         Ok(Some(ToolOutput {
-            tool_name: "bash".to_string(),
+            tool_name: zeph_tools::ToolName::new("bash"),
             summary: String::new(),
             blocks_executed: 1,
             filter_stats: None,
@@ -247,7 +247,7 @@ struct ErrorOutputToolExecutor;
 impl ToolExecutor for ErrorOutputToolExecutor {
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         Ok(Some(ToolOutput {
-            tool_name: "bash".to_string(),
+            tool_name: zeph_tools::ToolName::new("bash"),
             summary: "[error] command failed".into(),
             blocks_executed: 1,
             filter_stats: None,
@@ -303,7 +303,7 @@ impl ToolExecutor for ConfirmToolExecutor {
 
     async fn execute_confirmed(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         Ok(Some(ToolOutput {
-            tool_name: "bash".to_string(),
+            tool_name: zeph_tools::ToolName::new("bash"),
             summary: "confirmed output".into(),
             blocks_executed: 1,
             filter_stats: None,
@@ -380,7 +380,7 @@ struct ExitCodeToolExecutor;
 impl ToolExecutor for ExitCodeToolExecutor {
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         Ok(Some(ToolOutput {
-            tool_name: "bash".to_string(),
+            tool_name: zeph_tools::ToolName::new("bash"),
             summary: "[exit code 1] process failed".into(),
             blocks_executed: 1,
             filter_stats: None,
@@ -2487,7 +2487,7 @@ mod self_learning {
     impl ToolExecutor for ErrorToolExecutor {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
             Ok(Some(ToolOutput {
-                tool_name: "bash".to_string(),
+                tool_name: zeph_tools::ToolName::new("bash"),
                 summary: "[error] command failed".into(),
                 blocks_executed: 1,
                 filter_stats: None,

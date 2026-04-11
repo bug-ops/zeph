@@ -152,7 +152,11 @@ impl TokenCounter {
             // When body is emptied by compaction, count_tokens(body) returns 0 naturally.
             MessagePart::ToolOutput {
                 tool_name, body, ..
-            } => TOOL_OUTPUT_OVERHEAD + self.count_tokens(tool_name) + self.count_tokens(body),
+            } => {
+                TOOL_OUTPUT_OVERHEAD
+                    + self.count_tokens(tool_name.as_str())
+                    + self.count_tokens(body)
+            }
 
             // API sends structured JSON block: `{"type":"tool_use","id":"...","name":"...","input":...}`
             MessagePart::ToolUse { id, name, input } => {

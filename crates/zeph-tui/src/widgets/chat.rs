@@ -358,7 +358,10 @@ fn render_tool_message(
     _show_labels: bool,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let name = msg.tool_name.as_deref().unwrap_or("tool");
+    let name = msg
+        .tool_name
+        .as_ref()
+        .map_or("tool", zeph_common::ToolName::as_str);
     let content_lines: Vec<&str> = msg.content.lines().collect();
     let cmd_line = content_lines.first().copied().unwrap_or("");
     let dim = Style::default().add_modifier(Modifier::DIM);

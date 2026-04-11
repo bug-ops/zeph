@@ -25,6 +25,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
+use zeph_common::SessionId;
 use zeph_llm::any::AnyProvider;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::store::experiments::NewExperimentResult;
@@ -45,8 +46,8 @@ use zeph_config::ExperimentConfig;
 /// [`EvalError`]: crate::EvalError
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperimentSessionReport {
-    /// UUID generated at [`ExperimentEngine`] construction time.
-    pub session_id: String,
+    /// Session ID generated at [`ExperimentEngine`] construction time.
+    pub session_id: SessionId,
     /// All variation results recorded in this session (both accepted and rejected).
     pub results: Vec<ExperimentResult>,
     /// The best-known config snapshot at session end (may equal the initial baseline).
@@ -97,7 +98,7 @@ pub struct ExperimentEngine {
     baseline: ConfigSnapshot,
     config: ExperimentConfig,
     memory: Option<Arc<SemanticMemory>>,
-    session_id: String,
+    session_id: SessionId,
     cancel: CancellationToken,
     source: ExperimentSource,
 }
@@ -134,7 +135,7 @@ impl ExperimentEngine {
             baseline,
             config,
             memory,
-            session_id: uuid::Uuid::new_v4().to_string(),
+            session_id: SessionId::generate(),
             cancel: CancellationToken::new(),
             source: ExperimentSource::Manual,
         }
@@ -372,7 +373,7 @@ impl ExperimentEngine {
             .map_err(|e| EvalError::Storage(e.to_string()))?;
         #[allow(clippy::cast_possible_wrap)]
         let new_result = NewExperimentResult {
-            session_id: &self.session_id,
+            session_id: self.session_id.as_str(),
             parameter: variation.parameter.as_str(),
             value_json: &value_json,
             baseline_score,
@@ -881,13 +882,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows.len(), 1, "expected one persisted result");
-        assert_eq!(rows[0].session_id, session_id);
+        assert_eq!(rows[0].session_id, session_id.as_str());
     }
 
     #[test]
     fn session_report_serde_roundtrip() {
         let report = ExperimentSessionReport {
-            session_id: "test-session".to_string(),
+            session_id: SessionId::new("test-session"),
             results: vec![],
             best_config: ConfigSnapshot::default(),
             baseline_score: 7.5,

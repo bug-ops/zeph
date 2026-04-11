@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use zeph_common::ToolName;
+
 use crate::executor::{
     ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
 };
@@ -55,7 +57,7 @@ impl ToolExecutor for SetCwdExecutor {
         let summary = new_cwd.display().to_string();
 
         Ok(Some(ToolOutput {
-            tool_name: TOOL_NAME.to_owned(),
+            tool_name: ToolName::new(TOOL_NAME),
             summary,
             blocks_executed: 1,
             filter_stats: None,
@@ -97,7 +99,7 @@ mod tests {
             serde_json::Value::String(path.to_owned()),
         );
         ToolCall {
-            tool_id: TOOL_NAME.to_owned(),
+            tool_id: ToolName::new(TOOL_NAME),
             params,
             caller_id: None,
         }
@@ -123,7 +125,7 @@ mod tests {
     async fn set_cwd_returns_none_for_unknown_tool() {
         let executor = SetCwdExecutor;
         let call = ToolCall {
-            tool_id: "other_tool".to_owned(),
+            tool_id: ToolName::new("other_tool"),
             params: serde_json::Map::new(),
             caller_id: None,
         };

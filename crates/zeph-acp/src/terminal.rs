@@ -270,7 +270,7 @@ impl AcpShellExecutor {
             })?;
 
         Ok(Some(ToolOutput {
-            tool_name: "bash_stdin".to_owned(),
+            tool_name: zeph_tools::ToolName::new("bash_stdin"),
             summary: format!(
                 "wrote {} bytes to stdin of {}",
                 params.data.len(),
@@ -431,7 +431,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
         }));
 
         Ok(Some(ToolOutput {
-            tool_name: "bash".to_owned(),
+            tool_name: zeph_tools::ToolName::new("bash"),
             summary,
             blocks_executed: 1,
             filter_stats: None,
@@ -823,7 +823,7 @@ mod tests {
                 params.insert("command".to_owned(), serde_json::json!("echo"));
                 params.insert("args".to_owned(), serde_json::json!(["hello"]));
                 let call = ToolCall {
-                    tool_id: "bash".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("bash"),
                     params,
                     caller_id: None,
                 };
@@ -846,7 +846,7 @@ mod tests {
                 tokio::task::spawn_local(handler);
 
                 let call = ToolCall {
-                    tool_id: "unknown".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("unknown"),
                     params: serde_json::Map::new(),
                     caller_id: None,
                 };
@@ -936,7 +936,7 @@ mod tests {
                 let mut params = serde_json::Map::new();
                 params.insert("command".to_owned(), serde_json::json!("false"));
                 let call = ToolCall {
-                    tool_id: "bash".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("bash"),
                     params,
                     caller_id: None,
                 };
@@ -1027,7 +1027,7 @@ mod tests {
                 params.insert("command".to_owned(), serde_json::json!("rm"));
                 params.insert("args".to_owned(), serde_json::json!(["-rf", "/important"]));
                 let call = ToolCall {
-                    tool_id: "bash".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("bash"),
                     params,
                     caller_id: None,
                 };
@@ -1131,7 +1131,7 @@ mod tests {
                 let mut params = serde_json::Map::new();
                 params.insert("command".to_owned(), serde_json::json!("rm -rf /"));
                 let call = ToolCall {
-                    tool_id: "bash".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("bash"),
                     params,
                     caller_id: None,
                 };
@@ -1158,7 +1158,7 @@ mod tests {
                     serde_json::json!("sudo apt install vim"),
                 );
                 let call = ToolCall {
-                    tool_id: "bash".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("bash"),
                     params,
                     caller_id: None,
                 };
@@ -1187,7 +1187,7 @@ mod tests {
                     serde_json::json!(["-c", "sudo rm -rf /"]),
                 );
                 let call = ToolCall {
-                    tool_id: "bash".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("bash"),
                     params,
                     caller_id: None,
                 };
@@ -1215,7 +1215,7 @@ mod tests {
                     serde_json::json!(["-c", "shutdown -h now"]),
                 );
                 let call = ToolCall {
-                    tool_id: "bash".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("bash"),
                     params,
                     caller_id: None,
                 };
@@ -1255,7 +1255,7 @@ mod tests {
                 params.insert("terminal_id".to_owned(), serde_json::json!("term-1"));
                 params.insert("data".to_owned(), serde_json::json!("hello\n"));
                 let call = ToolCall {
-                    tool_id: "bash_stdin".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("bash_stdin"),
                     params,
                     caller_id: None,
                 };
@@ -1299,7 +1299,7 @@ mod tests {
                 params.insert("terminal_id".to_owned(), serde_json::json!("term-1"));
                 params.insert("data".to_owned(), serde_json::json!(oversized));
                 let call = ToolCall {
-                    tool_id: "bash_stdin".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("bash_stdin"),
                     params,
                     caller_id: None,
                 };
@@ -1349,7 +1349,7 @@ mod tests {
                 params.insert("terminal_id".to_owned(), serde_json::json!("term-1"));
                 params.insert("data".to_owned(), serde_json::json!("echo hello\n"));
                 let call = ToolCall {
-                    tool_id: "bash_stdin".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("bash_stdin"),
                     params,
                     caller_id: None,
                 };
@@ -1400,7 +1400,7 @@ mod tests {
                 params.insert("terminal_id".to_owned(), serde_json::json!("term-1"));
                 params.insert("data".to_owned(), serde_json::json!(at_limit));
                 let call = ToolCall {
-                    tool_id: "bash_stdin".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("bash_stdin"),
                     params,
                     caller_id: None,
                 };

@@ -215,7 +215,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
             .or_else(|| call.params.get("uri"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        self.check_trust(&call.tool_id, input)?;
+        self.check_trust(call.tool_id.as_str(), input)?;
         self.inner.execute_tool_call(call).await
     }
 
@@ -232,7 +232,9 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
                 });
             }
             SkillTrustLevel::Quarantined => {
-                if is_quarantine_denied(&call.tool_id) || self.is_mcp_tool(&call.tool_id) {
+                if is_quarantine_denied(call.tool_id.as_str())
+                    || self.is_mcp_tool(call.tool_id.as_str())
+                {
                     return Err(ToolError::Blocked {
                         command: format!("{} denied (trust=quarantined)", call.tool_id),
                     });

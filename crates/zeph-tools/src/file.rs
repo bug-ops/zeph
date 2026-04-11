@@ -11,6 +11,7 @@ use crate::executor::{
     ClaimSource, DiffData, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
 };
 use crate::registry::{InvocationHint, ToolDef};
+use zeph_common::ToolName;
 
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct ReadParams {
@@ -273,7 +274,7 @@ impl FileExecutor {
             .collect();
 
         Ok(Some(ToolOutput {
-            tool_name: "read".to_owned(),
+            tool_name: ToolName::new("read"),
             summary: selected.join("\n"),
             blocks_executed: 1,
             filter_stats: None,
@@ -296,7 +297,7 @@ impl FileExecutor {
         std::fs::write(&path, &params.content)?;
 
         Ok(Some(ToolOutput {
-            tool_name: "write".to_owned(),
+            tool_name: ToolName::new("write"),
             summary: format!("Wrote {} bytes to {}", params.content.len(), params.path),
             blocks_executed: 1,
             filter_stats: None,
@@ -328,7 +329,7 @@ impl FileExecutor {
         std::fs::write(&path, &new_content)?;
 
         Ok(Some(ToolOutput {
-            tool_name: "edit".to_owned(),
+            tool_name: ToolName::new("edit"),
             summary: format!("Edited {}", params.path),
             blocks_executed: 1,
             filter_stats: None,
@@ -369,7 +370,7 @@ impl FileExecutor {
         }
 
         Ok(Some(ToolOutput {
-            tool_name: "find_path".to_owned(),
+            tool_name: ToolName::new("find_path"),
             summary: if matches.is_empty() {
                 format!("No files matching: {}", params.pattern)
             } else if truncated {
@@ -415,7 +416,7 @@ impl FileExecutor {
         grep_recursive(&path, &regex, &mut results, 100, &sandbox)?;
 
         Ok(Some(ToolOutput {
-            tool_name: "grep".to_owned(),
+            tool_name: ToolName::new("grep"),
             summary: if results.is_empty() {
                 format!("No matches for: {}", params.pattern)
             } else {
@@ -472,7 +473,7 @@ impl FileExecutor {
         entries.extend(symlinks);
 
         Ok(Some(ToolOutput {
-            tool_name: "list_directory".to_owned(),
+            tool_name: ToolName::new("list_directory"),
             summary: if entries.is_empty() {
                 format!("Empty directory: {}", params.path)
             } else {
@@ -497,7 +498,7 @@ impl FileExecutor {
         std::fs::create_dir_all(&path)?;
 
         Ok(Some(ToolOutput {
-            tool_name: "create_directory".to_owned(),
+            tool_name: ToolName::new("create_directory"),
             summary: format!("Created directory: {}", params.path),
             blocks_executed: 1,
             filter_stats: None,
@@ -537,7 +538,7 @@ impl FileExecutor {
         }
 
         Ok(Some(ToolOutput {
-            tool_name: "delete_path".to_owned(),
+            tool_name: ToolName::new("delete_path"),
             summary: format!("Deleted: {}", params.path),
             blocks_executed: 1,
             filter_stats: None,
@@ -556,7 +557,7 @@ impl FileExecutor {
         std::fs::rename(&src, &dst)?;
 
         Ok(Some(ToolOutput {
-            tool_name: "move_path".to_owned(),
+            tool_name: ToolName::new("move_path"),
             summary: format!("Moved: {} -> {}", params.source, params.destination),
             blocks_executed: 1,
             filter_stats: None,
@@ -583,7 +584,7 @@ impl FileExecutor {
         }
 
         Ok(Some(ToolOutput {
-            tool_name: "copy_path".to_owned(),
+            tool_name: ToolName::new("copy_path"),
             summary: format!("Copied: {} -> {}", params.source, params.destination),
             blocks_executed: 1,
             filter_stats: None,
@@ -607,7 +608,7 @@ impl ToolExecutor for FileExecutor {
         tracing::instrument(name = "tool.file.execute_call", skip_all, fields(tool_id = %call.tool_id))
     )]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        self.execute_file_tool(&call.tool_id, &call.params)
+        self.execute_file_tool(call.tool_id.as_str(), &call.params)
     }
 
     fn tool_definitions(&self) -> Vec<ToolDef> {
@@ -1016,7 +1017,7 @@ mod tests {
 
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let call = ToolCall {
-            tool_id: "read".to_owned(),
+            tool_id: ToolName::new("read"),
             params: make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]),
             caller_id: None,
         };

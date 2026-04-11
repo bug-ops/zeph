@@ -427,7 +427,7 @@ impl SchedulerExecutor {
 
 fn make_output(tool_name: &str, summary: &str) -> ToolOutput {
     ToolOutput {
-        tool_name: tool_name.to_owned(),
+        tool_name: tool_name.to_owned().into(),
         summary: truncate_tool_output(summary),
         blocks_executed: 1,
         filter_stats: None,
@@ -552,7 +552,7 @@ mod tests {
             panic!("scheduler test params must be a JSON object");
         };
         ToolCall {
-            tool_id: tool_id.to_owned(),
+            tool_id: zeph_tools::ToolName::new(tool_id),
             params,
             caller_id: None,
         }

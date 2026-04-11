@@ -493,7 +493,7 @@ mod tests {
             role: Role::User,
             content: String::new(),
             parts: vec![MessagePart::ToolOutput {
-                tool_name: "shell".to_string(),
+                tool_name: "shell".into(),
                 body: big_content.clone(),
                 compacted_at: None,
             }],

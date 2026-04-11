@@ -5,6 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
+use zeph_common::ToolName;
+
 use crate::executor::ToolOutput;
 
 /// Tools that must never have their results cached due to side effects.
@@ -37,13 +39,13 @@ pub fn is_cacheable(tool_name: &str) -> bool {
 /// Composite key identifying a unique tool invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CacheKey {
-    pub tool_name: String,
+    pub tool_name: ToolName,
     pub args_hash: u64,
 }
 
 impl CacheKey {
     #[must_use]
-    pub fn new(tool_name: impl Into<String>, args_hash: u64) -> Self {
+    pub fn new(tool_name: impl Into<ToolName>, args_hash: u64) -> Self {
         Self {
             tool_name: tool_name.into(),
             args_hash,
@@ -178,10 +180,11 @@ impl ToolResultCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ToolName;
 
     fn make_output(summary: &str) -> ToolOutput {
         ToolOutput {
-            tool_name: "test".to_owned(),
+            tool_name: ToolName::new("test"),
             summary: summary.to_owned(),
             blocks_executed: 1,
             filter_stats: None,

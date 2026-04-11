@@ -151,7 +151,7 @@ impl ToolExecutor for BlockingMockExecutor {
 
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         Err(ToolError::Blocked {
-            command: call.tool_id.clone(),
+            command: call.tool_id.to_string(),
         })
     }
 }

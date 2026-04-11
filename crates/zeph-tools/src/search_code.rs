@@ -10,6 +10,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
 
+use zeph_common::ToolName;
+
 use crate::executor::{
     ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
 };
@@ -334,7 +336,7 @@ impl SearchCodeExecutor {
         });
 
         Ok(Some(ToolOutput {
-            tool_name: "search_code".to_owned(),
+            tool_name: ToolName::new("search_code"),
             summary,
             blocks_executed: 1,
             filter_stats: None,

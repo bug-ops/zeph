@@ -50,6 +50,7 @@ impl<E: ToolExecutor> ToolExecutor for ToolFilter<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ToolName;
 
     #[derive(Debug)]
     struct StubExecutor;
@@ -112,7 +113,7 @@ mod tests {
     async fn suppressed_tool_call_returns_none() {
         let filter = ToolFilter::new(StubExecutor, &["read", "glob"]);
         let call = ToolCall {
-            tool_id: "read".to_owned(),
+            tool_id: ToolName::new("read"),
             params: serde_json::Map::new(),
             caller_id: None,
         };
@@ -124,7 +125,7 @@ mod tests {
     async fn allowed_tool_call_passes_through() {
         let filter = ToolFilter::new(StubExecutor, &["read", "glob"]);
         let call = ToolCall {
-            tool_id: "edit".to_owned(),
+            tool_id: ToolName::new("edit"),
             params: serde_json::Map::new(),
             caller_id: None,
         };

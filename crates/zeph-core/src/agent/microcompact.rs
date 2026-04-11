@@ -111,7 +111,7 @@ impl<C: Channel> super::Agent<C> {
                     } => {
                         if compacted_at.is_some()
                             || body.starts_with(CLEARED_SENTINEL_PREFIX)
-                            || !is_low_value_tool(tool_name)
+                            || !is_low_value_tool(tool_name.as_str())
                         {
                             continue;
                         }

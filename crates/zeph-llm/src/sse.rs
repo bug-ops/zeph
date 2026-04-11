@@ -251,7 +251,7 @@ fn parse_gemini_sse_event(data: &str) -> Option<Result<StreamChunk, LlmError>> {
         if let Some(ref fc) = part.function_call {
             tool_calls.push(ToolUseRequest {
                 id: uuid::Uuid::new_v4().to_string(),
-                name: fc.name.clone(),
+                name: fc.name.clone().into(),
                 input: fc
                     .args
                     .clone()

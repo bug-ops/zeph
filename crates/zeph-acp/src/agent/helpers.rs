@@ -264,7 +264,7 @@ fn tool_start_to_updates(data: zeph_core::ToolStartData) -> Vec<acp::SessionUpda
         })
         .and_then(|v| v.as_str())
         .map_or_else(
-            || tool_name.clone(),
+            || tool_name.to_string(),
             |s| {
                 const MAX_CHARS: usize = 120;
                 if s.chars().count() > MAX_CHARS {
@@ -275,7 +275,7 @@ fn tool_start_to_updates(data: zeph_core::ToolStartData) -> Vec<acp::SessionUpda
                 }
             },
         );
-    let kind = tool_kind_from_name(&tool_name);
+    let kind = tool_kind_from_name(tool_name.as_str());
     let mut tool_call = acp::ToolCall::new(tool_call_id.clone(), title)
         .kind(kind)
         .status(acp::ToolCallStatus::InProgress);
@@ -309,7 +309,7 @@ fn tool_start_to_updates(data: zeph_core::ToolStartData) -> Vec<acp::SessionUpda
     let mut claude_code = serde_json::Map::new();
     claude_code.insert(
         "toolName".to_owned(),
-        serde_json::Value::String(tool_name.clone()),
+        serde_json::Value::String(tool_name.to_string()),
     );
     // Record ISO 8601 start time so clients can compute elapsed duration.
     let started_at_iso = {
@@ -340,7 +340,7 @@ fn tool_start_to_updates(data: zeph_core::ToolStartData) -> Vec<acp::SessionUpda
 fn terminal_tool_updates(
     tool_call_id: String,
     display: String,
-    tool_name: String,
+    tool_name: &zeph_tools::ToolName,
     elapsed_ms: Option<u64>,
     parent_tool_use_id: Option<String>,
     is_error: bool,
@@ -363,7 +363,10 @@ fn terminal_tool_updates(
         serde_json::json!({ "terminal_id": tool_call_id, "exit_code": exit_code, "signal": null }),
     );
     let mut cc = serde_json::Map::new();
-    cc.insert("toolName".to_owned(), serde_json::Value::String(tool_name));
+    cc.insert(
+        "toolName".to_owned(),
+        serde_json::Value::String(tool_name.to_string()),
+    );
     if let Some(ms) = elapsed_ms {
         cc.insert("elapsedMs".to_owned(), serde_json::Value::Number(ms.into()));
     }
@@ -394,7 +397,7 @@ fn non_terminal_tool_updates(
     tool_call_id: String,
     display: String,
     diff: Option<zeph_core::DiffData>,
-    tool_name: String,
+    tool_name: &zeph_tools::ToolName,
     elapsed_ms: Option<u64>,
     parent_tool_use_id: Option<String>,
     status: acp::ToolCallStatus,
@@ -416,7 +419,10 @@ fn non_terminal_tool_updates(
     }
     let mut meta = serde_json::Map::new();
     let mut cc = serde_json::Map::new();
-    cc.insert("toolName".to_owned(), serde_json::Value::String(tool_name));
+    cc.insert(
+        "toolName".to_owned(),
+        serde_json::Value::String(tool_name.to_string()),
+    );
     if let Some(ms) = elapsed_ms {
         cc.insert("elapsedMs".to_owned(), serde_json::Value::Number(ms.into()));
     }
@@ -463,7 +469,7 @@ fn tool_output_to_updates(data: zeph_core::ToolOutputData) -> Vec<acp::SessionUp
         let mut cc = serde_json::Map::new();
         cc.insert(
             "toolName".to_owned(),
-            serde_json::Value::String(tool_name.clone()),
+            serde_json::Value::String(tool_name.to_string()),
         );
         cc.insert("toolResponse".to_owned(), resp);
         if let Some(ref parent_id) = parent_tool_use_id {
@@ -483,7 +489,7 @@ fn tool_output_to_updates(data: zeph_core::ToolOutputData) -> Vec<acp::SessionUp
         terminal_tool_updates(
             tool_call_id,
             display,
-            tool_name,
+            &tool_name,
             elapsed_ms,
             parent_tool_use_id,
             is_error,
@@ -495,7 +501,7 @@ fn tool_output_to_updates(data: zeph_core::ToolOutputData) -> Vec<acp::SessionUp
             tool_call_id,
             display,
             diff,
-            tool_name,
+            &tool_name,
             elapsed_ms,
             parent_tool_use_id,
             status,

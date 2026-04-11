@@ -164,7 +164,11 @@ pub(super) fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Optio
         match block {
             AnthropicContentBlock::Text { text, .. } => text_parts.push(text),
             AnthropicContentBlock::ToolUse { id, name, input } => {
-                tool_calls.push(ToolUseRequest { id, name, input });
+                tool_calls.push(ToolUseRequest {
+                    id,
+                    name: name.into(),
+                    input,
+                });
             }
             AnthropicContentBlock::Thinking {
                 thinking,

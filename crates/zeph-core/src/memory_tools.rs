@@ -154,7 +154,7 @@ impl ToolExecutor for MemoryToolExecutor {
                 }
 
                 Ok(Some(ToolOutput {
-                    tool_name: "memory_search".to_owned(),
+                    tool_name: zeph_common::ToolName::new("memory_search"),
                     summary: output,
                     blocks_executed: 1,
                     filter_stats: None,
@@ -206,7 +206,7 @@ impl ToolExecutor for MemoryToolExecutor {
                 };
 
                 Ok(Some(ToolOutput {
-                    tool_name: "memory_save".to_owned(),
+                    tool_name: zeph_common::ToolName::new("memory_save"),
                     summary,
                     blocks_executed: 1,
                     filter_stats: None,
@@ -269,7 +269,7 @@ mod tests {
         let memory = make_memory().await;
         let executor = make_executor(memory);
         let call = ToolCall {
-            tool_id: "unknown_tool".to_owned(),
+            tool_id: zeph_common::ToolName::new("unknown_tool"),
             params: serde_json::Map::new(),
             caller_id: None,
         };
@@ -287,7 +287,7 @@ mod tests {
             serde_json::Value::String("test query".into()),
         );
         let call = ToolCall {
-            tool_id: "memory_search".to_owned(),
+            tool_id: zeph_common::ToolName::new("memory_search"),
             params,
             caller_id: None,
         };
@@ -314,7 +314,7 @@ mod tests {
             serde_json::Value::String("User prefers dark mode".into()),
         );
         let call = ToolCall {
-            tool_id: "memory_save".to_owned(),
+            tool_id: zeph_common::ToolName::new("memory_save"),
             params,
             caller_id: None,
         };
@@ -332,7 +332,7 @@ mod tests {
         let mut params = serde_json::Map::new();
         params.insert("content".into(), serde_json::Value::String(String::new()));
         let call = ToolCall {
-            tool_id: "memory_save".to_owned(),
+            tool_id: zeph_common::ToolName::new("memory_save"),
             params,
             caller_id: None,
         };
@@ -350,7 +350,7 @@ mod tests {
             serde_json::Value::String("x".repeat(4097)),
         );
         let call = ToolCall {
-            tool_id: "memory_save".to_owned(),
+            tool_id: zeph_common::ToolName::new("memory_save"),
             params,
             caller_id: None,
         };

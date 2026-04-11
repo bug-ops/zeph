@@ -215,7 +215,7 @@ impl Channel for TuiChannel {
             .to_owned();
         self.agent_event_tx
             .send(AgentEvent::ToolStart {
-                tool_name: event.tool_name.to_owned(),
+                tool_name: event.tool_name.into(),
                 command,
             })
             .await
@@ -231,7 +231,7 @@ impl Channel for TuiChannel {
         );
         self.agent_event_tx
             .send(AgentEvent::ToolOutput {
-                tool_name: event.tool_name.to_owned(),
+                tool_name: event.tool_name.into(),
                 command: event.body.to_owned(),
                 output: event.body.to_owned(),
                 success: !event.is_error,

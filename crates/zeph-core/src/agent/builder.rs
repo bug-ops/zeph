@@ -888,7 +888,7 @@ impl<C: Channel> Agent<C> {
             match provider.embed(&text).await {
                 Ok(emb) => {
                     embeddings.push(zeph_tools::ToolEmbedding {
-                        tool_id: def.id.to_string(),
+                        tool_id: def.id.as_ref().into(),
                         embedding: emb,
                     });
                 }

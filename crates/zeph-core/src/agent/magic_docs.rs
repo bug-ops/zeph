@@ -108,7 +108,7 @@ impl<C: Channel> super::Agent<C> {
                             .and_then(|idx| use_queue.remove(idx))
                             .and_then(|(_, p)| p);
 
-                        if is_file_read_tool(tool_name)
+                        if is_file_read_tool(tool_name.as_str())
                             && body.contains(MAGIC_DOC_HEADER)
                             && let Some(path_str) = file_path
                         {
@@ -122,7 +122,7 @@ impl<C: Channel> super::Agent<C> {
                         ..
                     } => {
                         if let Some((tool_name, file_path)) = id_map.get(tool_use_id)
-                            && is_file_read_tool(tool_name)
+                            && is_file_read_tool(tool_name.as_str())
                             && content.contains(MAGIC_DOC_HEADER)
                             && let Some(path_str) = file_path
                         {
@@ -403,7 +403,7 @@ mod tests {
                                 .and_then(|idx| use_queue.remove(idx))
                                 .and_then(|(_, p)| p);
 
-                            if is_file_read_tool(tool_name)
+                            if is_file_read_tool(tool_name.as_str())
                                 && body.contains(MAGIC_DOC_HEADER)
                                 && let Some(path_str) = file_path
                             {
@@ -450,7 +450,7 @@ mod tests {
                             .and_then(|idx| use_queue.remove(idx))
                             .and_then(|(_, p)| p);
 
-                        if is_file_read_tool(tool_name)
+                        if is_file_read_tool(tool_name.as_str())
                             && body.contains(MAGIC_DOC_HEADER)
                             && let Some(path_str) = file_path
                         {
@@ -516,7 +516,7 @@ mod tests {
                         ..
                     } = part
                         && let Some((tool_name, file_path)) = id_map.get(tool_use_id)
-                        && is_file_read_tool(tool_name)
+                        && is_file_read_tool(tool_name.as_str())
                         && content.contains(MAGIC_DOC_HEADER)
                         && let Some(path_str) = file_path
                     {
@@ -555,7 +555,7 @@ mod tests {
                         ..
                     } = part
                         && let Some((tool_name, file_path)) = id_map.get(tool_use_id)
-                        && is_file_read_tool(tool_name)
+                        && is_file_read_tool(tool_name.as_str())
                         && content.contains(MAGIC_DOC_HEADER)
                         && let Some(path_str) = file_path
                     {

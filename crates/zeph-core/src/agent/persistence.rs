@@ -2230,7 +2230,7 @@ mod tests {
         );
 
         let parts = vec![MessagePart::ToolOutput {
-            tool_name: "shell".to_string(),
+            tool_name: "shell".into(),
             body: "hello from shell".to_string(),
             compacted_at: None,
         }];
@@ -3131,12 +3131,12 @@ mod tests {
         let tool_calls = vec![
             zeph_llm::provider::ToolUseRequest {
                 id: "cancel_id_1".to_string(),
-                name: "shell".to_string(),
+                name: "shell".to_string().into(),
                 input: serde_json::json!({}),
             },
             zeph_llm::provider::ToolUseRequest {
                 id: "cancel_id_2".to_string(),
-                name: "read_file".to_string(),
+                name: "read_file".to_string().into(),
                 input: serde_json::json!({}),
             },
         ];

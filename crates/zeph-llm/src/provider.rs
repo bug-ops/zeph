@@ -12,6 +12,8 @@ use std::{
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 
+use zeph_common::ToolName;
+
 use crate::embed::owned_strs;
 use crate::error::LlmError;
 
@@ -111,7 +113,7 @@ pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> +
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     /// Tool name — must match the name used in the response `ToolUseRequest`.
-    pub name: String,
+    pub name: ToolName,
     /// Human-readable description guiding the model on when to call this tool.
     pub description: String,
     /// JSON Schema object describing parameters.
@@ -128,7 +130,7 @@ pub struct ToolUseRequest {
     /// Opaque call identifier assigned by the model; must be echoed in `ToolResult.tool_use_id`.
     pub id: String,
     /// Name of the tool to invoke, matching a [`ToolDefinition::name`].
-    pub name: String,
+    pub name: ToolName,
     /// JSON arguments the model wants to pass to the tool.
     pub input: serde_json::Value,
 }
@@ -262,7 +264,7 @@ pub enum MessagePart {
     Text { text: String },
     /// Output from a tool execution, optionally compacted.
     ToolOutput {
-        tool_name: String,
+        tool_name: zeph_common::ToolName,
         body: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         compacted_at: Option<i64>,

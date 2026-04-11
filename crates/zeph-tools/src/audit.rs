@@ -19,6 +19,8 @@
 
 use std::path::Path;
 
+use zeph_common::ToolName;
+
 use crate::config::AuditConfig;
 
 /// Async writer that appends [`AuditEntry`] records to a structured JSONL log.
@@ -59,7 +61,7 @@ pub struct AuditEntry {
     /// Unix timestamp (seconds) when the tool invocation started.
     pub timestamp: String,
     /// Tool identifier (e.g. `"shell"`, `"web_scrape"`, `"fetch"`).
-    pub tool: String,
+    pub tool: ToolName,
     /// Human-readable command or URL being invoked.
     pub command: String,
     /// Outcome of the invocation.

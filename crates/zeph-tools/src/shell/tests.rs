@@ -1183,7 +1183,7 @@ async fn shell_executor_cancel_returns_cancelled_error() {
 async fn execute_tool_call_valid_command() {
     let executor = ShellExecutor::new(&default_config());
     let call = ToolCall {
-        tool_id: "bash".to_owned(),
+        tool_id: ToolName::new("bash"),
         params: [("command".to_owned(), serde_json::json!("echo hi"))]
             .into_iter()
             .collect(),
@@ -1197,7 +1197,7 @@ async fn execute_tool_call_valid_command() {
 async fn execute_tool_call_missing_command_returns_invalid_params() {
     let executor = ShellExecutor::new(&default_config());
     let call = ToolCall {
-        tool_id: "bash".to_owned(),
+        tool_id: ToolName::new("bash"),
         params: serde_json::Map::new(),
         caller_id: None,
     };
@@ -1209,7 +1209,7 @@ async fn execute_tool_call_missing_command_returns_invalid_params() {
 async fn execute_tool_call_empty_command_returns_none() {
     let executor = ShellExecutor::new(&default_config());
     let call = ToolCall {
-        tool_id: "bash".to_owned(),
+        tool_id: ToolName::new("bash"),
         params: [("command".to_owned(), serde_json::json!(""))]
             .into_iter()
             .collect(),

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+use zeph_common::ToolName;
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, extract_fenced_blocks};
 use zeph_tools::registry::{InvocationHint, ToolDef};
 
@@ -127,7 +128,7 @@ impl ToolExecutor for McpToolExecutor {
         let text = crate::sanitize::intent_anchor_wrap(&tool.server_id, &tool.name, &raw_text);
 
         Ok(Some(ToolOutput {
-            tool_name: tool.qualified_name(),
+            tool_name: tool.qualified_name().into(),
             summary: text,
             blocks_executed: 1,
             filter_stats: None,
@@ -174,7 +175,7 @@ impl ToolExecutor for McpToolExecutor {
 
             // Delegate to execute_tool_call() so all security layers apply.
             let call = ToolCall {
-                tool_id: tool.sanitized_id(),
+                tool_id: tool.sanitized_id().into(),
                 params: match instruction.args {
                     serde_json::Value::Object(map) => map,
                     _ => serde_json::Map::new(),
@@ -188,7 +189,7 @@ impl ToolExecutor for McpToolExecutor {
 
         Ok(Some(ToolOutput {
             // SECURITY: Use qualified format so quarantine routing works (tool_name must contain ':').
-            tool_name: "mcp:fenced_block".to_owned(),
+            tool_name: ToolName::new("mcp:fenced_block"),
             summary: outputs.join("\n\n"),
             blocks_executed,
             filter_stats: None,
@@ -435,7 +436,7 @@ mod tests {
     async fn execute_tool_call_unknown_format_returns_none() {
         let executor = make_executor();
         let call = ToolCall {
-            tool_id: "no_colon_here".to_owned(),
+            tool_id: ToolName::new("no_colon_here"),
             params: serde_json::Map::new(),
             caller_id: None,
         };
@@ -447,7 +448,7 @@ mod tests {
     async fn execute_tool_call_unknown_server_returns_none() {
         let executor = make_executor();
         let call = ToolCall {
-            tool_id: "unknown_server:tool".to_owned(),
+            tool_id: ToolName::new("unknown_server:tool"),
             params: serde_json::Map::new(),
             caller_id: None,
         };
@@ -473,7 +474,7 @@ mod tests {
 
         // A different sanitized id must not match.
         let call = ToolCall {
-            tool_id: "gh_list_issues".to_owned(),
+            tool_id: ToolName::new("gh_list_issues"),
             params: serde_json::Map::new(),
             caller_id: None,
         };
@@ -497,7 +498,7 @@ mod tests {
 
         // tool_id matches the sanitized_id "missing_server_some_tool".
         let call = ToolCall {
-            tool_id: "missing_server_some_tool".to_owned(),
+            tool_id: ToolName::new("missing_server_some_tool"),
             params: serde_json::Map::new(),
             caller_id: None,
         };

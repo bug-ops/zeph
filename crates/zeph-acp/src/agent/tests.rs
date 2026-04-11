@@ -483,7 +483,7 @@ fn loopback_empty_chunk_returns_none() {
 #[test]
 fn loopback_tool_start_parent_tool_use_id_injected_into_meta() {
     let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         tool_call_id: "child-id".to_owned(),
         params: None,
         parent_tool_use_id: Some("parent-uuid".to_owned()),
@@ -511,7 +511,7 @@ fn loopback_tool_start_parent_tool_use_id_injected_into_meta() {
 #[test]
 fn loopback_tool_output_parent_tool_use_id_injected_into_meta() {
     let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         display: "done".to_owned(),
         diff: None,
         filter_stats: None,
@@ -551,7 +551,7 @@ fn loopback_tool_output_parent_tool_use_id_injected_into_meta() {
 #[test]
 fn loopback_tool_start_maps_to_tool_call_in_progress() {
     let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         tool_call_id: "test-id".to_owned(),
         params: None,
         parent_tool_use_id: None,
@@ -573,7 +573,7 @@ fn loopback_tool_start_maps_to_tool_call_in_progress() {
 fn loopback_tool_start_uses_command_as_title() {
     let params = serde_json::json!({ "command": "ls -la /tmp" });
     let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         tool_call_id: "test-id-2".to_owned(),
         params: Some(params),
         parent_tool_use_id: None,
@@ -595,7 +595,7 @@ fn loopback_tool_start_truncates_long_command() {
     let long_cmd = "a".repeat(200);
     let params = serde_json::json!({ "command": long_cmd });
     let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         tool_call_id: "test-id-3".to_owned(),
         params: Some(params),
         parent_tool_use_id: None,
@@ -615,7 +615,7 @@ fn loopback_tool_start_truncates_long_command() {
 #[test]
 fn loopback_tool_output_maps_to_tool_call_update() {
     let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         display: "done".to_owned(),
         diff: None,
         filter_stats: None,
@@ -641,7 +641,7 @@ fn loopback_tool_output_maps_to_tool_call_update() {
 #[test]
 fn loopback_tool_output_error_maps_to_failed() {
     let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         display: "error".to_owned(),
         diff: None,
         filter_stats: None,
@@ -668,7 +668,7 @@ fn loopback_tool_output_error_maps_to_failed() {
 #[test]
 fn tool_start_always_includes_tool_name_in_claude_code() {
     let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         tool_call_id: "tc-1".to_owned(),
         params: None,
         parent_tool_use_id: None,
@@ -697,7 +697,7 @@ fn tool_start_always_includes_tool_name_in_claude_code() {
 #[test]
 fn tool_start_tool_name_and_parent_merged_in_claude_code() {
     let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
-        tool_name: "read_file".to_owned(),
+        tool_name: "read_file".into(),
         tool_call_id: "tc-2".to_owned(),
         params: None,
         parent_tool_use_id: Some("parent-abc".to_owned()),
@@ -732,7 +732,7 @@ fn tool_start_tool_name_and_parent_merged_in_claude_code() {
 #[test]
 fn tool_output_always_includes_tool_name_in_claude_code() {
     let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         display: "ok".to_owned(),
         diff: None,
         filter_stats: None,
@@ -768,7 +768,7 @@ fn tool_output_always_includes_tool_name_in_claude_code() {
 fn tool_start_read_kind_sets_location_from_file_path_param() {
     let params = serde_json::json!({ "file_path": "/src/main.rs" });
     let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
-        tool_name: "read_file".to_owned(),
+        tool_name: "read_file".into(),
         tool_call_id: "tc-read".to_owned(),
         params: Some(params),
         parent_tool_use_id: None,
@@ -790,7 +790,7 @@ fn tool_start_read_kind_sets_location_from_file_path_param() {
 fn tool_start_read_kind_sets_location_from_path_param() {
     let params = serde_json::json!({ "path": "/tmp/file.txt" });
     let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
-        tool_name: "read_file".to_owned(),
+        tool_name: "read_file".into(),
         tool_call_id: "tc-read2".to_owned(),
         params: Some(params),
         parent_tool_use_id: None,
@@ -812,7 +812,7 @@ fn tool_start_read_kind_sets_location_from_path_param() {
 fn tool_start_execute_kind_does_not_set_locations() {
     let params = serde_json::json!({ "command": "ls" });
     let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         tool_call_id: "tc-bash".to_owned(),
         params: Some(params),
         parent_tool_use_id: None,
@@ -836,7 +836,7 @@ fn tool_output_with_raw_response_emits_intermediate_before_final() {
         "file": { "filePath": "/foo.rs", "content": "fn main(){}", "numLines": 1, "startLine": 1, "totalLines": 1 }
     });
     let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-        tool_name: "read_file".to_owned(),
+        tool_name: "read_file".into(),
         display: "fn main(){}".to_owned(),
         diff: None,
         filter_stats: None,
@@ -890,7 +890,7 @@ fn tool_output_terminal_with_raw_response_emits_three_updates() {
         "stdout": "hello", "stderr": "", "interrupted": false, "isImage": false, "noOutputExpected": false
     });
     let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         display: "hello".to_owned(),
         diff: None,
         filter_stats: None,
@@ -1201,7 +1201,7 @@ fn mime_to_ext_known_types() {
 #[test]
 fn loopback_tool_output_with_locations() {
     let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-        tool_name: "read_file".to_owned(),
+        tool_name: "read_file".into(),
         display: "content".to_owned(),
         diff: None,
         filter_stats: None,
@@ -1230,7 +1230,7 @@ fn loopback_tool_output_with_locations() {
 #[test]
 fn loopback_tool_output_empty_locations() {
     let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         display: "ok".to_owned(),
         diff: None,
         filter_stats: None,
@@ -1269,7 +1269,7 @@ fn tool_use_marker_filtered_duplicate() {
 #[test]
 fn loopback_tool_output_with_terminal_id() {
     let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         display: "ls output".to_owned(),
         diff: None,
         filter_stats: None,
@@ -1327,7 +1327,7 @@ fn loopback_tool_output_with_terminal_id() {
 #[test]
 fn loopback_tool_start_execute_sets_terminal_info() {
     let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         tool_call_id: "tc-bash".to_owned(),
         params: Some(serde_json::json!({ "command": "ls" })),
         parent_tool_use_id: None,
@@ -2204,7 +2204,7 @@ fn loopback_plan_empty_entries() {
 fn loopback_tool_output_multiline_preserves_newlines_in_terminal_data() {
     let raw = "file1.rs\nfile2.rs\nfile3.rs".to_owned();
     let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         display: raw.clone(),
         diff: None,
         filter_stats: None,
@@ -2375,7 +2375,7 @@ async fn new_session_meta_absent_when_no_rules() {
 #[test]
 fn tool_start_includes_started_at_in_meta() {
     let event = LoopbackEvent::ToolStart(Box::new(ToolStartData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         tool_call_id: "tc-elapsed".to_owned(),
         params: None,
         parent_tool_use_id: None,
@@ -2412,7 +2412,7 @@ fn tool_start_includes_started_at_in_meta() {
 fn tool_output_includes_elapsed_ms_in_meta() {
     let started_at = std::time::Instant::now();
     let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         display: "ok".to_owned(),
         diff: None,
         filter_stats: None,
@@ -2452,7 +2452,7 @@ fn tool_output_includes_elapsed_ms_in_meta() {
 #[test]
 fn tool_output_no_elapsed_ms_when_started_at_absent() {
     let event = LoopbackEvent::ToolOutput(Box::new(ToolOutputData {
-        tool_name: "bash".to_owned(),
+        tool_name: "bash".into(),
         display: "ok".to_owned(),
         diff: None,
         filter_stats: None,

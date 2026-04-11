@@ -71,7 +71,7 @@ pub struct ChatMessage {
     /// `true` while the message is still being streamed from the LLM.
     pub streaming: bool,
     /// Name of the tool that produced this message, if any.
-    pub tool_name: Option<String>,
+    pub tool_name: Option<zeph_common::ToolName>,
     /// Inline diff attached to a tool-output message.
     pub diff_data: Option<zeph_core::DiffData>,
     /// Human-readable filter statistics (e.g. "kept 12/40 lines").
@@ -135,11 +135,11 @@ impl ChatMessage {
     /// use zeph_tui::{ChatMessage, MessageRole};
     ///
     /// let msg = ChatMessage::new(MessageRole::Tool, "output")
-    ///     .with_tool("bash".to_string());
-    /// assert_eq!(msg.tool_name.as_deref(), Some("bash"));
+    ///     .with_tool(zeph_common::ToolName::new("bash"));
+    /// assert!(msg.tool_name.is_some());
     /// ```
     #[must_use]
-    pub fn with_tool(mut self, name: String) -> Self {
+    pub fn with_tool(mut self, name: zeph_common::ToolName) -> Self {
         self.tool_name = Some(name);
         self
     }

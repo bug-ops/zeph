@@ -27,7 +27,7 @@ impl<C: Channel> Agent<C> {
 
     async fn handle_scheduler_list(&mut self) -> Result<(), AgentError> {
         let call = ToolCall {
-            tool_id: "list_tasks".to_owned(),
+            tool_id: zeph_common::ToolName::new("list_tasks"),
             params: serde_json::Map::new(),
             caller_id: None,
         };

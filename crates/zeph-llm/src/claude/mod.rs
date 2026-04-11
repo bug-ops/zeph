@@ -899,7 +899,7 @@ impl LlmProvider for ClaudeProvider {
 
         let tool_name = format!("submit_{type_name}");
         let tool = ToolDefinition {
-            name: tool_name.clone(),
+            name: tool_name.clone().into(),
             description: format!("Submit the structured {type_name} result"),
             parameters: schema_value,
         };
@@ -907,7 +907,7 @@ impl LlmProvider for ClaudeProvider {
         let (system, mut chat_messages) =
             split_messages_structured(messages, self.cache_user_messages);
         let api_tool = AnthropicTool {
-            name: &tool.name,
+            name: tool.name.as_str(),
             description: &tool.description,
             input_schema: &tool.parameters,
         };

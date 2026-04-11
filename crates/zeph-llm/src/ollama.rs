@@ -339,7 +339,7 @@ impl LlmProvider for OllamaProvider {
                 .map(|t| ToolInfo {
                     tool_type: ToolType::Function,
                     function: ToolFunctionInfo {
-                        name: t.name.clone(),
+                        name: t.name.to_string(),
                         description: t.description.clone(),
                         parameters: serde_json::from_value(t.parameters.clone())
                             .unwrap_or_default(),
@@ -384,7 +384,7 @@ impl LlmProvider for OllamaProvider {
             .map(|t| ToolInfo {
                 tool_type: ToolType::Function,
                 function: ToolFunctionInfo {
-                    name: t.name.clone(),
+                    name: t.name.to_string(),
                     description: t.description.clone(),
                     parameters: serde_json::from_value(t.parameters.clone()).unwrap_or_default(),
                 },
@@ -420,7 +420,7 @@ impl LlmProvider for OllamaProvider {
             .enumerate()
             .map(|(i, tc)| ToolUseRequest {
                 id: format!("call_{i}"),
-                name: tc.function.name,
+                name: tc.function.name.into(),
                 input: tc.function.arguments,
             })
             .collect();

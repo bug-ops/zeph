@@ -3,6 +3,7 @@
 
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
+use zeph_common::SessionId;
 
 /// A single-parameter variation: the parameter to change and its candidate value.
 ///
@@ -212,8 +213,8 @@ impl std::fmt::Display for VariationValue {
 pub struct ExperimentResult {
     /// Row ID in the SQLite experiments table (`-1` when not yet persisted).
     pub id: i64,
-    /// UUID of the experiment session that produced this result.
-    pub session_id: String,
+    /// Session ID of the experiment session that produced this result.
+    pub session_id: SessionId,
     /// The parameter variation that was tested.
     pub variation: Variation,
     /// Mean score of the current progressive baseline before this variation was tested.
@@ -381,7 +382,7 @@ mod tests {
     fn experiment_result_serde_roundtrip() {
         let result = ExperimentResult {
             id: 1,
-            session_id: "sess-abc".to_string(),
+            session_id: SessionId::new("sess-abc"),
             variation: Variation {
                 parameter: ParameterKind::Temperature,
                 value: VariationValue::Float(OrderedFloat(0.7)),

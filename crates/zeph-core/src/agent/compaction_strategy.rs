@@ -112,7 +112,7 @@ pub(crate) fn extract_scorable_text(msg: &Message) -> String {
             MessagePart::ToolOutput {
                 body, tool_name, ..
             } => {
-                parts_text.push_str(tool_name);
+                parts_text.push_str(tool_name.as_str());
                 parts_text.push(' ');
                 parts_text.push_str(body);
                 parts_text.push(' ');

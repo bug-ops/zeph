@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`ToolName` newtype** (`#2901`): introduced `ToolName(Arc<str>)` in `zeph-common` replacing
+  raw `String` for all tool name fields across `zeph-tools` (`ToolCall.tool_id`,
+  `ToolOutput.tool_name`, `ToolEvent` variants), `zeph-llm` (`ToolDefinition.name`,
+  `ToolUseRequest.name`, `MessagePart::ToolOutput.tool_name`), `zeph-core` (`ToolStartData`,
+  `ToolOutputData`, `ToolTimeout`, channel events), `zeph-tui`, `zeph-mcp`, `zeph-sanitizer`,
+  `zeph-skills`, `zeph-acp`, and root binary. `ToolName` uses `Arc<str>` for O(1) clone in
+  event channels, `#[serde(transparent)]` for wire compatibility, and implements `Display`,
+  `AsRef<str>`, `Borrow<str>`, `From<&str>`, `From<String>`, `FromStr`.
+  Does not implement `Deref<Target=str>` to prevent `.to_owned()` footgun.
+
+- **`SessionId` newtype** (`#2902`): introduced `SessionId(String)` in `zeph-common` replacing
+  raw `String`/`uuid::Uuid` for session identifiers across `zeph-core`, `zeph-experiments`,
+  and `zeph-memory`. `SessionId::generate()` produces UUID v4; `SessionId::new(s)` wraps
+  arbitrary strings (test-only path, guarded with `debug_assert!(!s.is_empty())`).
+  Uses `String` internally to support both UUID and non-UUID values in tests.
+  `#[serde(transparent)]` preserves wire format. Implements same `PartialEq<str/String>`
+  set as `ToolName`.
+
 ### Added
 
 - **Turn domain type** (`#2895`): introduced `Turn` as a first-class domain entity in

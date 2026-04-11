@@ -17,7 +17,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 rand = { version = "0.8", features = ["small_rng"] }
-uuid = { version = "1.0", features = ["v4", "serde"] }
 tracing = "0.1"
 futures.workspace = true
 ordered-float.workspace = true
@@ -25,6 +24,7 @@ schemars.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 toml.workspace = true
+zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true

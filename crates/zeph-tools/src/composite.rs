@@ -87,13 +87,14 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ToolName;
 
     #[derive(Debug)]
     struct MatchingExecutor;
     impl ToolExecutor for MatchingExecutor {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
             Ok(Some(ToolOutput {
-                tool_name: "test".to_owned(),
+                tool_name: ToolName::new("test"),
                 summary: "matched".to_owned(),
                 blocks_executed: 1,
                 filter_stats: None,
@@ -130,7 +131,7 @@ mod tests {
     impl ToolExecutor for SecondExecutor {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
             Ok(Some(ToolOutput {
-                tool_name: "test".to_owned(),
+                tool_name: ToolName::new("test"),
                 summary: "second".to_owned(),
                 blocks_executed: 1,
                 filter_stats: None,
@@ -241,7 +242,7 @@ mod tests {
         ) -> Result<Option<ToolOutput>, ToolError> {
             if call.tool_id == "bash" {
                 Ok(Some(ToolOutput {
-                    tool_name: "bash".to_owned(),
+                    tool_name: ToolName::new("bash"),
                     summary: "shell_handler".to_owned(),
                     blocks_executed: 1,
                     filter_stats: None,
@@ -262,7 +263,7 @@ mod tests {
     async fn tool_call_routes_to_file_executor() {
         let composite = CompositeExecutor::new(FileToolExecutor, ShellToolExecutor);
         let call = ToolCall {
-            tool_id: "read".to_owned(),
+            tool_id: ToolName::new("read"),
             params: serde_json::Map::new(),
             caller_id: None,
         };
@@ -274,7 +275,7 @@ mod tests {
     async fn tool_call_routes_to_shell_executor() {
         let composite = CompositeExecutor::new(FileToolExecutor, ShellToolExecutor);
         let call = ToolCall {
-            tool_id: "bash".to_owned(),
+            tool_id: ToolName::new("bash"),
             params: serde_json::Map::new(),
             caller_id: None,
         };
@@ -286,7 +287,7 @@ mod tests {
     async fn tool_call_unhandled_returns_none() {
         let composite = CompositeExecutor::new(FileToolExecutor, ShellToolExecutor);
         let call = ToolCall {
-            tool_id: "unknown".to_owned(),
+            tool_id: ToolName::new("unknown"),
             params: serde_json::Map::new(),
             caller_id: None,
         };

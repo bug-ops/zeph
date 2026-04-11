@@ -31,7 +31,7 @@ pub enum AgentError {
 
     /// A tool call exceeded its configured timeout.
     #[error("tool timed out: {tool_name}")]
-    ToolTimeout { tool_name: String },
+    ToolTimeout { tool_name: zeph_common::ToolName },
 
     /// Structured output did not conform to the expected JSON schema.
     #[error("schema validation failed: {0}")]

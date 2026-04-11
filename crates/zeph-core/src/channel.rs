@@ -331,7 +331,7 @@ pub enum StopHint {
 /// Data carried by a [`LoopbackEvent::ToolStart`] variant.
 #[derive(Debug, Clone)]
 pub struct ToolStartData {
-    pub tool_name: String,
+    pub tool_name: zeph_common::ToolName,
     pub tool_call_id: String,
     /// Raw input parameters passed to the tool (e.g. `{"command": "..."}` for bash).
     pub params: Option<serde_json::Value>,
@@ -344,7 +344,7 @@ pub struct ToolStartData {
 /// Data carried by a [`LoopbackEvent::ToolOutput`] variant.
 #[derive(Debug, Clone)]
 pub struct ToolOutputData {
-    pub tool_name: String,
+    pub tool_name: zeph_common::ToolName,
     pub display: String,
     pub diff: Option<crate::DiffData>,
     pub filter_stats: Option<String>,
@@ -365,7 +365,7 @@ pub struct ToolOutputData {
 impl From<ToolStartEvent<'_>> for ToolStartData {
     fn from(e: ToolStartEvent<'_>) -> Self {
         Self {
-            tool_name: e.tool_name.to_owned(),
+            tool_name: e.tool_name.into(),
             tool_call_id: e.tool_call_id.to_owned(),
             params: e.params,
             parent_tool_use_id: e.parent_tool_use_id,
@@ -377,7 +377,7 @@ impl From<ToolStartEvent<'_>> for ToolStartData {
 impl From<ToolOutputEvent<'_>> for ToolOutputData {
     fn from(e: ToolOutputEvent<'_>) -> Self {
         Self {
-            tool_name: e.tool_name.to_owned(),
+            tool_name: e.tool_name.into(),
             display: e.body.to_owned(),
             diff: e.diff,
             filter_stats: e.filter_stats,

@@ -80,7 +80,7 @@ impl ToolExecutor for OverflowToolExecutor {
             Ok(Some(bytes)) => {
                 let text = String::from_utf8_lossy(&bytes).into_owned();
                 Ok(Some(ToolOutput {
-                    tool_name: Self::TOOL_NAME.to_owned(),
+                    tool_name: zeph_common::ToolName::new(Self::TOOL_NAME),
                     summary: text,
                     blocks_executed: 1,
                     filter_stats: None,
@@ -122,7 +122,7 @@ mod tests {
         let mut params = serde_json::Map::new();
         params.insert("id".into(), serde_json::Value::String(id.to_owned()));
         ToolCall {
-            tool_id: "read_overflow".to_owned(),
+            tool_id: zeph_common::ToolName::new("read_overflow"),
             params,
             caller_id: None,
         }
@@ -150,7 +150,7 @@ mod tests {
         let (store, _) = make_store_with_conv().await;
         let exec = OverflowToolExecutor::new(store);
         let call = ToolCall {
-            tool_id: "other_tool".to_owned(),
+            tool_id: zeph_common::ToolName::new("other_tool"),
             params: serde_json::Map::new(),
             caller_id: None,
         };

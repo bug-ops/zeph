@@ -165,7 +165,7 @@ impl UtilityScorer {
             return None;
         }
 
-        let gain = default_gain(&call.tool_id);
+        let gain = default_gain(call.tool_id.as_str());
 
         let cost = if ctx.token_budget > 0 {
             #[allow(clippy::cast_precision_loss)]
@@ -297,11 +297,12 @@ impl UtilityScorer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ToolName;
     use serde_json::json;
 
     fn make_call(name: &str, params: serde_json::Value) -> ToolCall {
         ToolCall {
-            tool_id: name.to_owned(),
+            tool_id: ToolName::new(name),
             params: if let serde_json::Value::Object(m) = params {
                 m
             } else {

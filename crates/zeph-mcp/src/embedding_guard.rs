@@ -14,6 +14,8 @@
 
 use std::sync::{Arc, LazyLock};
 
+use zeph_common::ToolName;
+
 use dashmap::DashMap;
 use regex::Regex;
 use tokio::sync::mpsc;
@@ -43,7 +45,7 @@ pub enum EmbeddingGuardResult {
 #[derive(Debug)]
 pub struct EmbeddingGuardEvent {
     pub server_id: String,
-    pub tool_name: String,
+    pub tool_name: ToolName,
     pub result: EmbeddingGuardResult,
 }
 
@@ -134,7 +136,7 @@ impl EmbeddingAnomalyGuard {
                 .result_tx
                 .send(EmbeddingGuardEvent {
                     server_id: server_id.to_owned(),
-                    tool_name: tool_name.to_owned(),
+                    tool_name: tool_name.into(),
                     result: EmbeddingGuardResult::RegexFallback { injection_detected },
                 })
                 .is_err()
@@ -148,7 +150,7 @@ impl EmbeddingAnomalyGuard {
         let threshold = self.threshold;
         let tx = self.result_tx.clone();
         let server_id = server_id.to_owned();
-        let tool_name = tool_name.to_owned();
+        let tool_name: ToolName = tool_name.into();
         let output = tool_output.to_owned();
 
         tokio::spawn(async move {
@@ -158,7 +160,7 @@ impl EmbeddingAnomalyGuard {
                     let result = if distance > threshold {
                         tracing::debug!(
                             server_id,
-                            tool_name,
+                            tool_name = %tool_name,
                             distance,
                             threshold,
                             "embedding anomaly detected"
@@ -185,7 +187,7 @@ impl EmbeddingAnomalyGuard {
                     // Fail-open: embedding failure does not block the tool output path.
                     tracing::debug!(
                         server_id,
-                        tool_name,
+                        tool_name = %tool_name,
                         "embedding guard: computation failed: {e:#}"
                     );
                 }

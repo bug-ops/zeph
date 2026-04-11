@@ -164,7 +164,7 @@ impl AgentViewTarget {
 pub struct TuiTranscriptEntry {
     pub role: String,
     pub content: String,
-    pub tool_name: Option<String>,
+    pub tool_name: Option<zeph_common::ToolName>,
     pub timestamp: Option<String>,
 }
 
@@ -518,7 +518,7 @@ impl App {
                 && let Some((tool_name, body)) = parse_tool_output(content, TOOL_SUFFIX)
             {
                 self.messages
-                    .push(ChatMessage::new(MessageRole::Tool, body).with_tool(tool_name));
+                    .push(ChatMessage::new(MessageRole::Tool, body).with_tool(tool_name.into()));
                 continue;
             }
 
@@ -1137,7 +1137,7 @@ impl App {
 
     fn handle_tool_output_event(
         &mut self,
-        tool_name: String,
+        tool_name: zeph_common::ToolName,
         output: String,
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
@@ -2352,7 +2352,7 @@ fn load_transcript_file(
                 let tool_name = msg
                     .get("tool_name")
                     .and_then(|t| t.as_str())
-                    .map(ToOwned::to_owned);
+                    .map(zeph_common::ToolName::new);
                 let timestamp = v
                     .get("timestamp")
                     .and_then(|t| t.as_str())
@@ -2373,7 +2373,7 @@ fn load_transcript_file(
                 let tool_name = v
                     .get("tool_name")
                     .and_then(|t| t.as_str())
-                    .map(ToOwned::to_owned);
+                    .map(zeph_common::ToolName::new);
                 let timestamp = v
                     .get("timestamp")
                     .and_then(|t| t.as_str())
@@ -2964,7 +2964,10 @@ mod tests {
         assert_eq!(app.messages()[0].role, MessageRole::User);
         assert_eq!(app.messages()[1].role, MessageRole::Assistant);
         assert_eq!(app.messages()[2].role, MessageRole::Tool);
-        assert_eq!(app.messages()[2].tool_name.as_deref(), Some("bash"));
+        assert_eq!(
+            app.messages()[2].tool_name.as_ref().map(|t| t.as_str()),
+            Some("bash")
+        );
         assert_eq!(app.messages()[2].content, "$ echo hello\nhello");
         assert_eq!(app.messages()[3].role, MessageRole::Assistant);
     }
@@ -2975,7 +2978,10 @@ mod tests {
         app.load_history(&[("user", "[tool output]\n```\n$ ls\nfile.txt\n```")]);
         assert_eq!(app.messages().len(), 1);
         assert_eq!(app.messages()[0].role, MessageRole::Tool);
-        assert_eq!(app.messages()[0].tool_name.as_deref(), Some("bash"));
+        assert_eq!(
+            app.messages()[0].tool_name.as_ref().map(|t| t.as_str()),
+            Some("bash")
+        );
         assert_eq!(app.messages()[0].content, "$ ls\nfile.txt");
     }
 
@@ -2988,7 +2994,10 @@ mod tests {
         )]);
         assert_eq!(app.messages().len(), 1);
         assert_eq!(app.messages()[0].role, MessageRole::Tool);
-        assert_eq!(app.messages()[0].tool_name.as_deref(), Some("tool"));
+        assert_eq!(
+            app.messages()[0].tool_name.as_ref().map(|t| t.as_str()),
+            Some("tool")
+        );
     }
 
     #[test]
@@ -2997,7 +3006,10 @@ mod tests {
         app.load_history(&[("user", "[tool_result: toolu_abc]\n$ echo hello\nhello")]);
         assert_eq!(app.messages().len(), 1);
         assert_eq!(app.messages()[0].role, MessageRole::Tool);
-        assert_eq!(app.messages()[0].tool_name.as_deref(), Some("bash"));
+        assert_eq!(
+            app.messages()[0].tool_name.as_ref().map(|t| t.as_str()),
+            Some("bash")
+        );
         assert_eq!(app.messages()[0].content, "$ echo hello\nhello");
     }
 
@@ -4518,7 +4530,7 @@ mod tests {
             timestamp: Some("12:34".into()),
         };
         let msg = entry.to_chat_message();
-        assert_eq!(msg.tool_name.as_deref(), Some("bash"));
+        assert_eq!(msg.tool_name.as_ref().map(|t| t.as_str()), Some("bash"));
         assert_eq!(msg.timestamp, "12:34");
         assert_eq!(msg.content, "result");
     }
@@ -4630,7 +4642,10 @@ mod tests {
         .unwrap();
         let (entries, _total) = load_transcript_file(tmp.path(), false);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].tool_name.as_deref(), Some("bash"));
+        assert_eq!(
+            entries[0].tool_name.as_ref().map(|t| t.as_str()),
+            Some("bash")
+        );
     }
 
     #[test]

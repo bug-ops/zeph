@@ -139,7 +139,7 @@ impl<C: Channel> Agent<C> {
             if let Some(ref logger) = self.tool_orchestrator.audit_logger {
                 let entry = zeph_tools::AuditEntry {
                     timestamp: zeph_tools::chrono_now(),
-                    tool: tool_name.to_owned(),
+                    tool: tool_name.into(),
                     command: String::new(),
                     result: zeph_tools::AuditResult::Success,
                     duration_ms: 0,

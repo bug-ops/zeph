@@ -204,7 +204,7 @@ mod tests {
     fn make_call(id: &str, input: Value) -> ToolUseRequest {
         ToolUseRequest {
             id: id.to_owned(),
-            name: "test_tool".to_owned(),
+            name: "test_tool".to_owned().into(),
             input,
         }
     }

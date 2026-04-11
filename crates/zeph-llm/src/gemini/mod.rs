@@ -497,7 +497,7 @@ fn parse_tool_response(resp: GenerateContentResponse) -> Result<ChatResponse, Ll
         if let Some(fc) = part.function_call {
             tool_calls.push(ToolUseRequest {
                 id: uuid::Uuid::new_v4().to_string(),
-                name: fc.name,
+                name: fc.name.into(),
                 input: fc
                     .args
                     .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::default())),
@@ -749,7 +749,7 @@ fn convert_tool_definitions(tools: &[ToolDefinition]) -> Vec<GeminiFunctionDecla
                 Some(prepared)
             };
             GeminiFunctionDeclaration {
-                name: t.name.clone(),
+                name: t.name.to_string(),
                 description: t.description.clone(),
                 parameters,
             }

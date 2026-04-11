@@ -33,6 +33,8 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+use zeph_common::ToolName;
+
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::config::ShellConfig;
 use crate::executor::{
@@ -334,7 +336,7 @@ impl ShellExecutor {
             .and_then(|e| serde_json::to_value(e).ok());
 
         Ok(Some(ToolOutput {
-            tool_name: "bash".to_owned(),
+            tool_name: ToolName::new("bash"),
             summary: outputs.join("\n\n"),
             blocks_executed,
             filter_stats: cumulative_filter_stats,
@@ -391,7 +393,7 @@ impl ShellExecutor {
 
         if let Some(ref tx) = self.tool_event_tx {
             let _ = tx.send(ToolEvent::Started {
-                tool_name: "bash".to_owned(),
+                tool_name: ToolName::new("bash"),
                 command: block.to_owned(),
             });
         }
@@ -450,7 +452,7 @@ impl ShellExecutor {
                         .await;
                         if let Some(ref tx) = self.tool_event_tx {
                             let _ = tx.send(ToolEvent::Rollback {
-                                tool_name: "bash".to_owned(),
+                                tool_name: ToolName::new("bash"),
                                 command: block.to_owned(),
                                 restored_count: report.restored_count,
                                 deleted_count: report.deleted_count,
@@ -566,7 +568,7 @@ impl ShellExecutor {
     ) {
         if let Some(ref tx) = self.tool_event_tx {
             let _ = tx.send(ToolEvent::Completed {
-                tool_name: "bash".to_owned(),
+                tool_name: ToolName::new("bash"),
                 command: command.to_owned(),
                 output: output.to_owned(),
                 success,
@@ -1276,7 +1278,7 @@ async fn execute_bash(
                         };
                         if let Some(tx) = event_tx {
                             let _ = tx.send(ToolEvent::OutputChunk {
-                                tool_name: "bash".to_owned(),
+                                tool_name: ToolName::new("bash"),
                                 command: code.to_owned(),
                                 chunk: interleaved.clone(),
                             });

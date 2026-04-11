@@ -626,7 +626,9 @@ pub(crate) fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> Too
         map.remove("title");
     }
     ToolDefinition {
-        name: def.id.to_string(),
+        // NOTE: ToolDef.id uses Cow<'static, str> for zero-copy registration.
+        // Converted to ToolName at the LLM boundary for type safety downstream.
+        name: zeph_common::ToolName::new(def.id.as_ref()),
         description: def.description.to_string(),
         parameters: params,
     }

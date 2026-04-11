@@ -464,7 +464,7 @@ fn test_normalize_schema_anyof_complex_dropped() {
 #[test]
 fn test_convert_tool_definitions_single() {
     let tool = ToolDefinition {
-        name: "get_weather".to_owned(),
+        name: "get_weather".to_owned().into(),
         description: "Get current weather".to_owned(),
         parameters: serde_json::json!({
             "type": "object",
@@ -495,12 +495,12 @@ fn test_convert_tool_definitions_empty() {
 fn test_convert_tool_definitions_multiple() {
     let tools = vec![
         ToolDefinition {
-            name: "tool_a".to_owned(),
+            name: "tool_a".to_owned().into(),
             description: "Tool A".to_owned(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
         },
         ToolDefinition {
-            name: "tool_b".to_owned(),
+            name: "tool_b".to_owned().into(),
             description: "Tool B".to_owned(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
         },
@@ -516,7 +516,7 @@ fn test_convert_tool_definitions_multiple() {
 #[test]
 fn test_convert_tool_no_parameters() {
     let tool = ToolDefinition {
-        name: "no_params".to_owned(),
+        name: "no_params".to_owned().into(),
         description: "A tool with no parameters".to_owned(),
         parameters: serde_json::json!({"type": "object", "properties": {}}),
     };
@@ -635,12 +635,12 @@ fn test_inline_refs_nested_multi_level() {
 fn test_build_tool_request_parameterless_tools_still_includes_tools_field() {
     let tools = vec![
         ToolDefinition {
-            name: "ping".to_owned(),
+            name: "ping".to_owned().into(),
             description: "Ping".to_owned(),
             parameters: serde_json::json!({"type": "object"}),
         },
         ToolDefinition {
-            name: "pong".to_owned(),
+            name: "pong".to_owned().into(),
             description: "Pong".to_owned(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
         },
@@ -1020,7 +1020,7 @@ fn test_parse_null_args_uses_empty_object() {
 fn test_debug_request_json_with_tools_includes_function_declarations() {
     let messages = vec![msg(Role::User, "What is the weather?")];
     let tools = vec![ToolDefinition {
-        name: "get_weather".to_owned(),
+        name: "get_weather".to_owned().into(),
         description: "Get weather".to_owned(),
         parameters: serde_json::json!({
             "type": "object",
@@ -1187,7 +1187,7 @@ async fn test_chat_with_tools_returns_tool_use() {
         .with_base_url(format!("http://127.0.0.1:{port}"));
     let messages = vec![msg(Role::User, "What's the weather in Berlin?")];
     let tools = vec![ToolDefinition {
-        name: "get_weather".to_owned(),
+        name: "get_weather".to_owned().into(),
         description: "Get weather".to_owned(),
         parameters: serde_json::json!({"type": "object", "properties": {"location": {"type": "string"}}}),
     }];

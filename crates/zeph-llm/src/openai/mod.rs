@@ -615,7 +615,7 @@ impl LlmProvider for OpenAiProvider {
                 .map(|t| OpenAiTool {
                     r#type: "function",
                     function: OpenAiFunction {
-                        name: &t.name,
+                        name: t.name.as_str(),
                         description: &t.description,
                         parameters: prepare_tool_params(&t.parameters),
                     },
@@ -754,7 +754,7 @@ impl LlmProvider for OpenAiProvider {
             .map(|t| OpenAiTool {
                 r#type: "function",
                 function: OpenAiFunction {
-                    name: &t.name,
+                    name: t.name.as_str(),
                     description: &t.description,
                     parameters: prepare_tool_params(&t.parameters),
                 },
@@ -843,7 +843,7 @@ impl OpenAiProvider {
                         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
                     ToolUseRequest {
                         id: tc.id,
-                        name: tc.function.name,
+                        name: tc.function.name.into(),
                         input,
                     }
                 })

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use zeph_common::ToolName;
+
 /// Typed error code for MCP tool call retry and recovery classification.
 ///
 /// Used by [`McpError::code`] and callers such as the agent retry loop to decide
@@ -62,7 +64,7 @@ pub enum McpError {
     #[error("tool call failed: {server_id}/{tool_name}: {message}")]
     ToolCall {
         server_id: String,
-        tool_name: String,
+        tool_name: ToolName,
         message: String,
         /// Typed error code for retry classification.
         code: McpErrorCode,
@@ -77,13 +79,13 @@ pub enum McpError {
     #[error("tool '{tool_name}' not found on server '{server_id}'")]
     ToolNotFound {
         server_id: String,
-        tool_name: String,
+        tool_name: ToolName,
     },
 
     #[error("tool call timed out after {timeout_secs}s: {server_id}/{tool_name}")]
     Timeout {
         server_id: String,
-        tool_name: String,
+        tool_name: ToolName,
         timeout_secs: u64,
     },
 

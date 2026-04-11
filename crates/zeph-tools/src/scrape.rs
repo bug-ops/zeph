@@ -24,6 +24,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use url::Url;
 
+use zeph_common::ToolName;
+
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::config::ScrapeConfig;
 use crate::executor::{
@@ -100,7 +102,7 @@ impl ExtractMode {
 /// let executor = WebScrapeExecutor::new(&ScrapeConfig::default());
 ///
 /// let call = ToolCall {
-///     tool_id: "fetch".to_owned(),
+///     tool_id: ToolName::new("fetch"),
 ///     params: {
 ///         let mut m = serde_json::Map::new();
 ///         m.insert("url".to_owned(), serde_json::json!("https://example.com"));
@@ -219,7 +221,7 @@ impl ToolExecutor for WebScrapeExecutor {
         }
 
         Ok(Some(ToolOutput {
-            tool_name: "web-scrape".to_owned(),
+            tool_name: ToolName::new("web-scrape"),
             summary: outputs.join("\n\n"),
             blocks_executed,
             filter_stats: None,
@@ -255,7 +257,7 @@ impl ToolExecutor for WebScrapeExecutor {
                         )
                         .await;
                         Ok(Some(ToolOutput {
-                            tool_name: "web-scrape".to_owned(),
+                            tool_name: ToolName::new("web-scrape"),
                             summary: output,
                             blocks_executed: 1,
                             filter_stats: None,
@@ -292,7 +294,7 @@ impl ToolExecutor for WebScrapeExecutor {
                         self.log_audit("fetch", &p.url, AuditResult::Success, duration_ms, None)
                             .await;
                         Ok(Some(ToolOutput {
-                            tool_name: "fetch".to_owned(),
+                            tool_name: ToolName::new("fetch"),
                             summary: output,
                             blocks_executed: 1,
                             filter_stats: None,
@@ -1691,7 +1693,7 @@ mod tests {
         let config = ScrapeConfig::default();
         let executor = WebScrapeExecutor::new(&config);
         let call = crate::executor::ToolCall {
-            tool_id: "fetch".to_owned(),
+            tool_id: ToolName::new("fetch"),
             params: {
                 let mut m = serde_json::Map::new();
                 m.insert("url".to_owned(), serde_json::json!("http://example.com"));
@@ -1708,7 +1710,7 @@ mod tests {
         let config = ScrapeConfig::default();
         let executor = WebScrapeExecutor::new(&config);
         let call = crate::executor::ToolCall {
-            tool_id: "fetch".to_owned(),
+            tool_id: ToolName::new("fetch"),
             params: {
                 let mut m = serde_json::Map::new();
                 m.insert(
@@ -1728,7 +1730,7 @@ mod tests {
         let config = ScrapeConfig::default();
         let executor = WebScrapeExecutor::new(&config);
         let call = crate::executor::ToolCall {
-            tool_id: "fetch".to_owned(),
+            tool_id: ToolName::new("fetch"),
             params: {
                 let mut m = serde_json::Map::new();
                 m.insert(
@@ -1748,7 +1750,7 @@ mod tests {
         let config = ScrapeConfig::default();
         let executor = WebScrapeExecutor::new(&config);
         let call = crate::executor::ToolCall {
-            tool_id: "unknown_tool".to_owned(),
+            tool_id: ToolName::new("unknown_tool"),
             params: serde_json::Map::new(),
             caller_id: None,
         };
@@ -1970,7 +1972,7 @@ mod tests {
         let executor = WebScrapeExecutor::new(&config).with_audit(logger);
 
         let call = crate::executor::ToolCall {
-            tool_id: "fetch".to_owned(),
+            tool_id: ToolName::new("fetch"),
             params: {
                 let mut m = serde_json::Map::new();
                 m.insert("url".to_owned(), serde_json::json!("http://example.com"));
@@ -2077,7 +2079,7 @@ mod tests {
         let executor = WebScrapeExecutor::new(&config).with_audit(logger);
 
         let call = crate::executor::ToolCall {
-            tool_id: "web_scrape".to_owned(),
+            tool_id: ToolName::new("web_scrape"),
             params: {
                 let mut m = serde_json::Map::new();
                 m.insert("url".to_owned(), serde_json::json!("http://example.com"));
@@ -2107,7 +2109,7 @@ mod tests {
         assert!(executor.audit_logger.is_none());
 
         let call = crate::executor::ToolCall {
-            tool_id: "fetch".to_owned(),
+            tool_id: ToolName::new("fetch"),
             params: {
                 let mut m = serde_json::Map::new();
                 m.insert("url".to_owned(), serde_json::json!("http://example.com"));

@@ -28,6 +28,7 @@ use std::fmt::Write as _;
 use std::sync::LazyLock;
 
 use regex::Regex;
+use zeph_common::ToolName;
 
 pub use zeph_config::ExfiltrationGuardConfig;
 
@@ -83,7 +84,7 @@ pub enum ExfiltrationEvent {
     /// A markdown image with an external URL was stripped from LLM output.
     MarkdownImageBlocked { url: String },
     /// A tool call argument contained a URL that appeared in untrusted flagged content.
-    SuspiciousToolUrl { url: String, tool_name: String },
+    SuspiciousToolUrl { url: String, tool_name: ToolName },
     /// A memory write was intercepted because the content had injection flags.
     MemoryWriteGuarded { reason: String },
 }
@@ -292,7 +293,7 @@ impl ExfiltrationGuard {
                 if flagged_urls.contains(url) {
                     events.push(ExfiltrationEvent::SuspiciousToolUrl {
                         url: url.to_owned(),
-                        tool_name: tool_name.to_owned(),
+                        tool_name: tool_name.into(),
                     });
                 }
             }
@@ -334,7 +335,7 @@ impl ExfiltrationGuard {
             .filter(|m| flagged_urls.contains(m.as_str()))
             .map(|m| ExfiltrationEvent::SuspiciousToolUrl {
                 url: m.as_str().to_owned(),
-                tool_name: tool_name.to_owned(),
+                tool_name: tool_name.into(),
             })
             .collect()
     }

@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use zeph_common::ToolName;
+
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
 use crate::registry::{InvocationHint, ToolDef};
 
@@ -134,7 +136,7 @@ impl ToolExecutor for DiagnosticsExecutor {
         };
 
         Ok(Some(ToolOutput {
-            tool_name: "diagnostics".to_owned(),
+            tool_name: ToolName::new("diagnostics"),
             summary,
             blocks_executed: 1,
             filter_stats: None,
@@ -343,7 +345,7 @@ mod tests {
         let exec = DiagnosticsExecutor::new(vec![dir.path().to_path_buf()]);
 
         let call = ToolCall {
-            tool_id: "diagnostics".to_owned(),
+            tool_id: ToolName::new("diagnostics"),
             params: make_params(&[("path", serde_json::json!("/etc"))]),
             caller_id: None,
         };
@@ -355,7 +357,7 @@ mod tests {
     async fn diagnostics_unknown_tool_returns_none() {
         let exec = DiagnosticsExecutor::new(vec![]);
         let call = ToolCall {
-            tool_id: "other".to_owned(),
+            tool_id: ToolName::new("other"),
             params: serde_json::Map::new(),
             caller_id: None,
         };

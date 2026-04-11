@@ -419,7 +419,7 @@ pub mod agent_tests {
         ]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Ok(Some(ToolOutput {
-            tool_name: "bash".to_string(),
+            tool_name: "bash".into(),
             summary: "tool executed successfully".to_string(),
             blocks_executed: 1,
             filter_stats: None,
@@ -724,7 +724,7 @@ pub mod agent_tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![
             Ok(Some(ToolOutput {
-                tool_name: "bash".to_string(),
+                tool_name: "bash".into(),
                 summary: "[error] command failed [exit code 1]".to_string(),
                 blocks_executed: 1,
                 filter_stats: None,
@@ -750,7 +750,7 @@ pub mod agent_tests {
         let channel = MockChannel::new(vec!["test".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Ok(Some(ToolOutput {
-            tool_name: "bash".to_string(),
+            tool_name: "bash".into(),
             summary: "   ".to_string(),
             blocks_executed: 1,
             filter_stats: None,
@@ -879,7 +879,7 @@ pub mod agent_tests {
         let channel = MockChannel::new(vec!["start task".to_string()]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::new(vec![Ok(Some(ToolOutput {
-            tool_name: "bash".to_string(),
+            tool_name: "bash".into(),
             summary: "step 1 complete".to_string(),
             blocks_executed: 1,
             filter_stats: None,
@@ -919,7 +919,7 @@ pub mod agent_tests {
         let mut outputs = vec![];
         for _ in 0..10 {
             outputs.push(Ok(Some(ToolOutput {
-                tool_name: "bash".to_string(),
+                tool_name: "bash".into(),
                 summary: "continuing".to_string(),
                 blocks_executed: 1,
                 filter_stats: None,
@@ -3872,7 +3872,7 @@ mod inline_tool_loop_tests {
             text: None,
             tool_calls: vec![ToolUseRequest {
                 id: tool_id.to_owned(),
-                name: tool_name.to_owned(),
+                name: tool_name.into(),
                 input: serde_json::json!({"arg": "val"}),
             }],
             thinking_blocks: vec![],
@@ -4160,7 +4160,7 @@ mod confirmation_propagation_tests {
 
         fn make_output(tool_name: &str, summary: &str) -> ToolOutput {
             ToolOutput {
-                tool_name: tool_name.to_owned(),
+                tool_name: tool_name.into(),
                 summary: summary.to_owned(),
                 blocks_executed: 1,
                 filter_stats: None,
@@ -4207,14 +4207,14 @@ mod confirmation_propagation_tests {
             call: &ToolCall,
         ) -> Result<Option<ToolOutput>, ToolError> {
             let mut results = self.results.lock().unwrap();
-            results.remove(&call.tool_id).unwrap_or(Ok(None))
+            results.remove(call.tool_id.as_str()).unwrap_or(Ok(None))
         }
 
         async fn execute_tool_call_confirmed(
             &self,
             call: &ToolCall,
         ) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(Self::make_output(&call.tool_id, "confirmed")))
+            Ok(Some(Self::make_output(call.tool_id.as_str(), "confirmed")))
         }
     }
 
@@ -4224,12 +4224,12 @@ mod confirmation_propagation_tests {
             tool_calls: vec![
                 ToolUseRequest {
                     id: "tool_a_id".to_owned(),
-                    name: "tool_a".to_owned(),
+                    name: "tool_a".to_owned().into(),
                     input: serde_json::json!({"arg": "value"}),
                 },
                 ToolUseRequest {
                     id: "tool_b_id".to_owned(),
-                    name: "tool_b".to_owned(),
+                    name: "tool_b".to_owned().into(),
                     input: serde_json::json!({"source": "tool_a_id"}),
                 },
             ],
@@ -4243,12 +4243,12 @@ mod confirmation_propagation_tests {
             tool_calls: vec![
                 ToolUseRequest {
                     id: "tool_a_id".to_owned(),
-                    name: "tool_a".to_owned(),
+                    name: "tool_a".to_owned().into(),
                     input: serde_json::json!({"arg": "value"}),
                 },
                 ToolUseRequest {
                     id: "tool_c_id".to_owned(),
-                    name: "tool_c".to_owned(),
+                    name: "tool_c".to_owned().into(),
                     input: serde_json::json!({"arg": "independent"}),
                 },
             ],
@@ -4594,7 +4594,7 @@ mod shutdown_summary_tests {
                 text: None,
                 tool_calls: vec![ToolUseRequest {
                     id: format!("toolu_{i:06}"),
-                    name: "stub_tool".to_owned(),
+                    name: "stub_tool".to_owned().into(),
                     // Vary the input so args_hash differs each iteration → no repeat-detect
                     input: serde_json::json!({ "iteration": i }),
                 }],
@@ -4649,7 +4649,7 @@ mod shutdown_summary_tests {
                 _call: &ToolCall,
             ) -> Result<Option<ToolOutput>, ToolError> {
                 Ok(Some(ToolOutput {
-                    tool_name: "shell".to_owned(),
+                    tool_name: "shell".into(),
                     summary: "filtered output".to_owned(),
                     blocks_executed: 1,
                     filter_stats: Some(FilterStats {
@@ -4676,7 +4676,7 @@ mod shutdown_summary_tests {
                 text: None,
                 tool_calls: vec![ToolUseRequest {
                     id: "call-1".to_owned(),
-                    name: "shell".to_owned(),
+                    name: "shell".to_owned().into(),
                     input: serde_json::json!({"cmd": "ls"}),
                 }],
                 thinking_blocks: vec![],
@@ -4745,7 +4745,7 @@ mod shutdown_summary_tests {
                 };
                 if n == 1 || call.tool_id == "tool_a_id" {
                     Ok(Some(ToolOutput {
-                        tool_name: "tool_a".to_owned(),
+                        tool_name: "tool_a".into(),
                         summary: "[error] command failed [exit code 1]".to_owned(),
                         blocks_executed: 1,
                         filter_stats: None,
@@ -4758,7 +4758,7 @@ mod shutdown_summary_tests {
                     }))
                 } else {
                     Ok(Some(ToolOutput {
-                        tool_name: "tool_b".to_owned(),
+                        tool_name: "tool_b".into(),
                         summary: "filtered output".to_owned(),
                         blocks_executed: 1,
                         filter_stats: Some(FilterStats {
@@ -4789,12 +4789,12 @@ mod shutdown_summary_tests {
                 tool_calls: vec![
                     ToolUseRequest {
                         id: "tool_a_id".to_owned(),
-                        name: "tool_a".to_owned(),
+                        name: "tool_a".to_owned().into(),
                         input: serde_json::json!({}),
                     },
                     ToolUseRequest {
                         id: "tool_b_id".to_owned(),
-                        name: "tool_b".to_owned(),
+                        name: "tool_b".to_owned().into(),
                         input: serde_json::json!({}),
                     },
                 ],
@@ -4963,7 +4963,7 @@ mod pre_execution_audit_tests {
                 text: None,
                 tool_calls: vec![ToolUseRequest {
                     id: "call-block".to_owned(),
-                    name: "read_file".to_owned(),
+                    name: "read_file".to_owned().into(),
                     input: serde_json::json!({"file_path": "/etc/passwd"}),
                 }],
                 thinking_blocks: vec![],

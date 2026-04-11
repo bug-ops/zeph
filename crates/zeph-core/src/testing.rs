@@ -156,7 +156,10 @@ impl MockToolExecutor {
 
     /// Executor that returns a single successful tool output with the given summary.
     #[must_use]
-    pub fn with_output(tool_name: impl Into<String>, summary: impl Into<String>) -> Self {
+    pub fn with_output(
+        tool_name: impl Into<zeph_tools::ToolName>,
+        summary: impl Into<String>,
+    ) -> Self {
         let output = ToolOutput {
             tool_name: tool_name.into(),
             summary: summary.into(),

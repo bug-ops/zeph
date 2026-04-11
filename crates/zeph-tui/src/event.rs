@@ -144,14 +144,14 @@ pub enum AgentEvent {
     /// A tool call has started; the TUI should display a spinner with the tool name.
     ToolStart {
         /// Canonical tool name (e.g. `"bash"`, `"read_file"`).
-        tool_name: String,
+        tool_name: zeph_common::ToolName,
         /// The primary command or argument string shown in the status bar.
         command: String,
     },
     /// An incremental output chunk from a long-running tool (e.g. streaming shell output).
     ToolOutputChunk {
         /// Tool that produced the chunk.
-        tool_name: String,
+        tool_name: zeph_common::ToolName,
         /// Command argument associated with the tool call.
         command: String,
         /// The chunk text to append.
@@ -160,7 +160,7 @@ pub enum AgentEvent {
     /// Final tool output, replacing any in-progress chunks for this call.
     ToolOutput {
         /// Tool that produced the output.
-        tool_name: String,
+        tool_name: zeph_common::ToolName,
         /// Command argument associated with the tool call.
         command: String,
         /// Full rendered output body.

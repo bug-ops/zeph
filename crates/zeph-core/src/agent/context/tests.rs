@@ -1276,7 +1276,7 @@ fn prune_stale_tool_outputs_clears_old() {
         agent.msg.messages.push(Message::from_parts(
             Role::User,
             vec![MessagePart::ToolOutput {
-                tool_name: format!("tool_{i}"),
+                tool_name: format!("tool_{i}").into(),
                 body: "x".repeat(200),
                 compacted_at: None,
             }],
@@ -2916,7 +2916,7 @@ fn make_tool_pair_with_output(agent: &mut Agent<MockChannel>, tool_name: &str) {
     agent.msg.messages.push(Message::from_parts(
         Role::User,
         vec![MessagePart::ToolOutput {
-            tool_name: tool_name.to_owned(),
+            tool_name: tool_name.into(),
             body: format!("full output of {tool_name}"),
             compacted_at: None,
         }],

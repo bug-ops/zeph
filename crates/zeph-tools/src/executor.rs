@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+use zeph_common::ToolName;
+
 /// Data for rendering file diffs in the TUI.
 ///
 /// Produced by [`ShellExecutor`](crate::ShellExecutor) and [`FileExecutor`](crate::FileExecutor)
@@ -26,9 +28,10 @@ pub struct DiffData {
 ///
 /// ```rust
 /// use zeph_tools::ToolCall;
+/// use zeph_common::ToolName;
 ///
 /// let call = ToolCall {
-///     tool_id: "bash".to_owned(),
+///     tool_id: ToolName::new("bash"),
 ///     params: {
 ///         let mut m = serde_json::Map::new();
 ///         m.insert("command".to_owned(), serde_json::Value::String("echo hello".to_owned()));
@@ -41,7 +44,7 @@ pub struct DiffData {
 #[derive(Debug, Clone)]
 pub struct ToolCall {
     /// The tool identifier, matching a value from [`ToolExecutor::tool_definitions`].
-    pub tool_id: String,
+    pub tool_id: ToolName,
     /// JSON parameters for the tool call, deserialized into the tool's parameter struct.
     pub params: serde_json::Map<String, serde_json::Value>,
     /// Opaque caller identifier propagated from the channel (user ID, session ID, etc.).
@@ -169,9 +172,10 @@ pub enum ClaimSource {
 ///
 /// ```rust
 /// use zeph_tools::{ToolOutput, executor::ClaimSource};
+/// use zeph_common::ToolName;
 ///
 /// let output = ToolOutput {
-///     tool_name: "shell".to_owned(),
+///     tool_name: ToolName::new("shell"),
 ///     summary: "hello\n".to_owned(),
 ///     blocks_executed: 1,
 ///     filter_stats: None,
@@ -187,7 +191,7 @@ pub enum ClaimSource {
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
     /// Name of the tool that produced this output (e.g. `"shell"`, `"web-scrape"`).
-    pub tool_name: String,
+    pub tool_name: ToolName,
     /// Human-readable result text injected into the LLM context.
     pub summary: String,
     /// Number of code blocks processed in this invocation.
@@ -278,16 +282,19 @@ pub fn truncate_tool_output_at(output: &str, max_chars: usize) -> String {
 #[derive(Debug, Clone)]
 pub enum ToolEvent {
     /// The tool has started. Displayed in the TUI as a spinner with the command text.
-    Started { tool_name: String, command: String },
+    Started {
+        tool_name: ToolName,
+        command: String,
+    },
     /// A chunk of streaming output was produced (e.g. from a long-running command).
     OutputChunk {
-        tool_name: String,
+        tool_name: ToolName,
         command: String,
         chunk: String,
     },
     /// The tool finished. Contains the full output and optional filter/diff data.
     Completed {
-        tool_name: String,
+        tool_name: ToolName,
         command: String,
         /// Full output text (possibly filtered and truncated).
         output: String,
@@ -298,7 +305,7 @@ pub enum ToolEvent {
     },
     /// A transactional rollback was performed, restoring or deleting files.
     Rollback {
-        tool_name: String,
+        tool_name: ToolName,
         command: String,
         /// Number of files restored to their pre-execution content.
         restored_count: usize,
@@ -778,7 +785,7 @@ mod tests {
     #[test]
     fn tool_output_display() {
         let output = ToolOutput {
-            tool_name: "bash".to_owned(),
+            tool_name: ToolName::new("bash"),
             summary: "$ echo hello\nhello".to_owned(),
             blocks_executed: 1,
             filter_stats: None,
@@ -1068,7 +1075,7 @@ mod tests {
     async fn execute_tool_call_default_returns_none() {
         let exec = DefaultExecutor;
         let call = ToolCall {
-            tool_id: "anything".to_owned(),
+            tool_id: ToolName::new("anything"),
             params: serde_json::Map::new(),
             caller_id: None,
         };
@@ -1132,7 +1139,7 @@ mod tests {
     impl ToolExecutor for FixedExecutor {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
             Ok(Some(ToolOutput {
-                tool_name: self.tool_id.to_owned(),
+                tool_name: ToolName::new(self.tool_id),
                 summary: self.output.to_owned(),
                 blocks_executed: 1,
                 filter_stats: None,
@@ -1154,7 +1161,7 @@ mod tests {
             _call: &ToolCall,
         ) -> Result<Option<ToolOutput>, ToolError> {
             Ok(Some(ToolOutput {
-                tool_name: self.tool_id.to_owned(),
+                tool_name: ToolName::new(self.tool_id),
                 summary: self.output.to_owned(),
                 blocks_executed: 1,
                 filter_stats: None,
@@ -1212,7 +1219,7 @@ mod tests {
         });
         let exec = DynExecutor(inner);
         let call = ToolCall {
-            tool_id: "bash".to_owned(),
+            tool_id: ToolName::new("bash"),
             params: serde_json::Map::new(),
             caller_id: None,
         };

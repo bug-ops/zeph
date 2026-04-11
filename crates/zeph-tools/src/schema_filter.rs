@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use zeph_common::ToolName;
 use zeph_common::math::cosine_similarity;
 
 use crate::config::ToolDependency;
@@ -16,7 +17,7 @@ use crate::config::ToolDependency;
 /// Cached embedding for a tool definition.
 #[derive(Debug, Clone)]
 pub struct ToolEmbedding {
-    pub tool_id: String,
+    pub tool_id: ToolName,
     pub embedding: Vec<f32>,
 }
 
@@ -42,7 +43,7 @@ pub enum InclusionReason {
 /// Exclusion reason for a tool that was blocked by the dependency gate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DependencyExclusion {
-    pub tool_id: String,
+    pub tool_id: ToolName,
     /// IDs of `requires` entries that are not yet satisfied.
     pub unmet_requires: Vec<String>,
 }
@@ -210,7 +211,7 @@ impl ToolDependencyGraph {
                 .collect();
             if !unmet.is_empty() {
                 to_exclude.push(DependencyExclusion {
-                    tool_id: tool_id.clone(),
+                    tool_id: tool_id.as_str().into(),
                     unmet_requires: unmet,
                 });
             }
@@ -235,8 +236,8 @@ impl ToolDependencyGraph {
 
         // Apply hard gates.
         for excl in &to_exclude {
-            result.included.remove(&excl.tool_id);
-            result.excluded.push(excl.tool_id.clone());
+            result.included.remove(excl.tool_id.as_str());
+            result.excluded.push(excl.tool_id.to_string());
             tracing::debug!(
                 tool_id = %excl.tool_id,
                 unmet = ?excl.unmet_requires,
@@ -462,10 +463,10 @@ impl ToolSchemaFilter {
         let mut scores: Vec<(String, f32)> = self
             .embeddings
             .iter()
-            .filter(|e| !included.contains(&e.tool_id))
+            .filter(|e| !included.contains(e.tool_id.as_str()))
             .map(|e| {
                 let score = cosine_similarity(query_embedding, &e.embedding);
-                (e.tool_id.clone(), score)
+                (e.tool_id.to_string(), score)
             })
             .collect();
 

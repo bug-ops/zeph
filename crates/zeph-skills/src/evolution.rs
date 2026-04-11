@@ -14,6 +14,8 @@
 //! Step corrections ([`StepCorrection`]) allow fine-grained recovery: when a specific tool
 //! failure pattern is detected, a hint is injected into the next agent turn.
 
+use zeph_common::ToolName;
+
 /// Structured failure classification for tool execution errors.
 ///
 /// Used to decide whether a failure is attributable to the skill (systematic) or to
@@ -107,8 +109,8 @@ pub struct FailurePattern {
     pub failure_kind: String,
     /// Substring match against `error_context` (empty = match any error text).
     pub error_substring: String,
-    /// Optional tool name filter (empty = match any tool).
-    pub tool_name: String,
+    /// Optional tool name filter (empty string = match any tool).
+    pub tool_name: ToolName,
 }
 
 /// A step-level correction hint: when a tool failure matches `trigger`,
@@ -848,7 +850,7 @@ mod tests {
             trigger: FailurePattern {
                 failure_kind: "exit_nonzero".to_string(),
                 error_substring: "not a git repo".to_string(),
-                tool_name: String::new(),
+                tool_name: "".into(),
             },
             hint: "Run git init before any git commands.".to_string(),
         };
@@ -862,7 +864,7 @@ mod tests {
         let original = FailurePattern {
             failure_kind: "timeout".to_string(),
             error_substring: "timed out".to_string(),
-            tool_name: "shell".to_string(),
+            tool_name: "shell".into(),
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: FailurePattern = serde_json::from_str(&json).unwrap();

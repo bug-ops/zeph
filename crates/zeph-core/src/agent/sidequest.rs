@@ -35,7 +35,7 @@ pub(crate) struct ToolOutputCursor {
     /// Part index within the message parts vec.
     pub(crate) part_index: usize,
     /// Tool name for display.
-    pub(crate) tool_name: String,
+    pub(crate) tool_name: zeph_common::ToolName,
     /// Token count of the tool output.
     pub(crate) token_count: usize,
     /// One-line preview (first 120 chars).
@@ -107,7 +107,7 @@ impl SidequestState {
                 continue;
             }
             for (part_index, part) in msg.parts.iter().enumerate() {
-                let (body, tool_name) = match part {
+                let (body, tool_name): (&str, zeph_common::ToolName) = match part {
                     MessagePart::ToolOutput {
                         body,
                         tool_name,
@@ -118,7 +118,7 @@ impl SidequestState {
                         if compacted_at.is_some() || body.is_empty() {
                             continue;
                         }
-                        (body.as_str(), tool_name.as_str())
+                        (body.as_str(), tool_name.clone())
                     }
                     MessagePart::ToolResult {
                         tool_use_id,
@@ -128,7 +128,10 @@ impl SidequestState {
                         if content == "[evicted by sidequest]" || content.is_empty() {
                             continue;
                         }
-                        (content.as_str(), tool_use_id.as_str())
+                        (
+                            content.as_str(),
+                            zeph_common::ToolName::new(tool_use_id.as_str()),
+                        )
                     }
                     _ => continue,
                 };
@@ -140,7 +143,7 @@ impl SidequestState {
                 self.tool_output_cursors.push(ToolOutputCursor {
                     msg_index,
                     part_index,
-                    tool_name: tool_name.to_string(),
+                    tool_name,
                     token_count,
                     preview,
                 });
@@ -306,7 +309,7 @@ mod tests {
         state.tool_output_cursors.push(ToolOutputCursor {
             msg_index: 1,
             part_index: 0,
-            tool_name: "my_tool".to_string(),
+            tool_name: "my_tool".into(),
             token_count: 500,
             preview: "some output".to_string(),
         });
@@ -445,7 +448,7 @@ mod tests {
                     role: Role::User,
                     content: body.clone(),
                     parts: vec![MessagePart::ToolOutput {
-                        tool_name: format!("tool_{i}"),
+                        tool_name: zeph_common::ToolName::new(format!("tool_{i}")),
                         body,
                         compacted_at: None,
                     }],
@@ -558,7 +561,7 @@ mod tests {
         state.tool_output_cursors.push(ToolOutputCursor {
             msg_index: 0,
             part_index: 0,
-            tool_name: "shell".to_string(),
+            tool_name: "shell".into(),
             token_count: 100,
             preview: "output".to_string(),
         });

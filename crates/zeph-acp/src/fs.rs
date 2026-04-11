@@ -342,7 +342,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                     }
                 }));
                 Ok(Some(ToolOutput {
-                    tool_name: "read_file".to_owned(),
+                    tool_name: zeph_tools::ToolName::new("read_file"),
                     summary: content,
                     blocks_executed: 1,
                     filter_stats: None,
@@ -465,7 +465,7 @@ impl AcpFileExecutor {
                 message: e.to_string(),
             })?;
         Ok(Some(ToolOutput {
-            tool_name: "write_file".to_owned(),
+            tool_name: zeph_tools::ToolName::new("write_file"),
             summary: format!("wrote {}", params.path),
             blocks_executed: 1,
             filter_stats: None,
@@ -520,7 +520,7 @@ impl AcpFileExecutor {
         });
         let summary = serde_json::to_string(&items).unwrap_or_default();
         Ok(Some(ToolOutput {
-            tool_name: "list_directory".to_owned(),
+            tool_name: zeph_tools::ToolName::new("list_directory"),
             summary,
             blocks_executed: 1,
             filter_stats: None,
@@ -571,7 +571,7 @@ impl AcpFileExecutor {
 
         let summary = matches.join("\n");
         Ok(Some(ToolOutput {
-            tool_name: "find_path".to_owned(),
+            tool_name: zeph_tools::ToolName::new("find_path"),
             summary,
             blocks_executed: 1,
             filter_stats: None,
@@ -723,7 +723,7 @@ mod tests {
                 let mut params = serde_json::Map::new();
                 params.insert("path".to_owned(), serde_json::json!(test_path("test.txt")));
                 let call = ToolCall {
-                    tool_id: "read_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("read_file"),
                     params,
                     caller_id: None,
                 };
@@ -755,7 +755,7 @@ mod tests {
                 params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
                 params.insert("content".to_owned(), serde_json::json!("data"));
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };
@@ -783,7 +783,7 @@ mod tests {
                 tokio::task::spawn_local(handler);
 
                 let call = ToolCall {
-                    tool_id: "unknown".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("unknown"),
                     params: serde_json::Map::new(),
                     caller_id: None,
                 };
@@ -868,7 +868,7 @@ mod tests {
             serde_json::json!(dir.path().to_str().unwrap()),
         );
         let call = ToolCall {
-            tool_id: "list_directory".to_owned(),
+            tool_id: zeph_tools::ToolName::new("list_directory"),
             params,
             caller_id: None,
         };
@@ -900,7 +900,7 @@ mod tests {
             serde_json::json!(dir.path().to_str().unwrap()),
         );
         let call = ToolCall {
-            tool_id: "find_path".to_owned(),
+            tool_id: zeph_tools::ToolName::new("find_path"),
             params,
             caller_id: None,
         };
@@ -926,7 +926,7 @@ mod tests {
                 let mut params = serde_json::Map::new();
                 params.insert("path".to_owned(), serde_json::json!(test_path("test.txt")));
                 let call = ToolCall {
-                    tool_id: "read_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("read_file"),
                     params,
                     caller_id: None,
                 };
@@ -954,7 +954,7 @@ mod tests {
                 params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
                 params.insert("content".to_owned(), serde_json::json!("data"));
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };
@@ -983,7 +983,7 @@ mod tests {
             serde_json::json!(nonexistent.to_string_lossy()),
         );
         let call = ToolCall {
-            tool_id: "list_directory".to_owned(),
+            tool_id: zeph_tools::ToolName::new("list_directory"),
             params,
             caller_id: None,
         };
@@ -1009,7 +1009,7 @@ mod tests {
             serde_json::json!(dir.path().to_str().unwrap()),
         );
         let call = ToolCall {
-            tool_id: "list_directory".to_owned(),
+            tool_id: zeph_tools::ToolName::new("list_directory"),
             params,
             caller_id: None,
         };
@@ -1036,7 +1036,7 @@ mod tests {
             serde_json::json!(dir.path().to_str().unwrap()),
         );
         let call = ToolCall {
-            tool_id: "find_path".to_owned(),
+            tool_id: zeph_tools::ToolName::new("find_path"),
             params,
             caller_id: None,
         };
@@ -1063,7 +1063,7 @@ mod tests {
             serde_json::json!(dir.path().to_str().unwrap()),
         );
         let call = ToolCall {
-            tool_id: "find_path".to_owned(),
+            tool_id: zeph_tools::ToolName::new("find_path"),
             params,
             caller_id: None,
         };
@@ -1085,7 +1085,7 @@ mod tests {
         let mut params = serde_json::Map::new();
         params.insert("path".to_owned(), serde_json::json!(test_path("some_dir")));
         let call = ToolCall {
-            tool_id: "list_directory".to_owned(),
+            tool_id: zeph_tools::ToolName::new("list_directory"),
             params,
             caller_id: None,
         };
@@ -1112,7 +1112,7 @@ mod tests {
             serde_json::json!(dir.path().to_str().unwrap()),
         );
         let call = ToolCall {
-            tool_id: "find_path".to_owned(),
+            tool_id: zeph_tools::ToolName::new("find_path"),
             params,
             caller_id: None,
         };
@@ -1139,7 +1139,7 @@ mod tests {
             serde_json::json!(dir.path().to_str().unwrap()),
         );
         let call = ToolCall {
-            tool_id: "find_path".to_owned(),
+            tool_id: zeph_tools::ToolName::new("find_path"),
             params,
             caller_id: None,
         };
@@ -1162,7 +1162,7 @@ mod tests {
         params.insert("pattern".to_owned(), serde_json::json!("*.rs"));
         // no "path" key — should error, not default to "."
         let call = ToolCall {
-            tool_id: "find_path".to_owned(),
+            tool_id: zeph_tools::ToolName::new("find_path"),
             params,
             caller_id: None,
         };
@@ -1213,7 +1213,7 @@ mod tests {
                 let mut params = serde_json::Map::new();
                 params.insert("path".to_owned(), serde_json::json!("relative/path.txt"));
                 let call = ToolCall {
-                    tool_id: "read_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("read_file"),
                     params,
                     caller_id: None,
                 };
@@ -1260,7 +1260,7 @@ mod tests {
                 params.insert("path".to_owned(), serde_json::json!(traversal));
                 params.insert("content".to_owned(), serde_json::json!("evil"));
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };
@@ -1357,7 +1357,7 @@ mod tests {
                 params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
                 params.insert("content".to_owned(), serde_json::json!("data"));
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };
@@ -1384,7 +1384,7 @@ mod tests {
                 params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
                 params.insert("content".to_owned(), serde_json::json!("data"));
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };
@@ -1411,7 +1411,7 @@ mod tests {
                 params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
                 params.insert("content".to_owned(), serde_json::json!("data"));
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };
@@ -1486,7 +1486,7 @@ mod tests {
             serde_json::json!(sandbox.path().to_str().unwrap()),
         );
         let call = ToolCall {
-            tool_id: "list_directory".to_owned(),
+            tool_id: zeph_tools::ToolName::new("list_directory"),
             params,
             caller_id: None,
         };
@@ -1530,7 +1530,7 @@ mod tests {
             serde_json::json!(sandbox.path().to_str().unwrap()),
         );
         let call = ToolCall {
-            tool_id: "find_path".to_owned(),
+            tool_id: zeph_tools::ToolName::new("find_path"),
             params,
             caller_id: None,
         };
@@ -1575,7 +1575,7 @@ mod tests {
                 let mut params = serde_json::Map::new();
                 params.insert("path".to_owned(), serde_json::json!(link.to_str().unwrap()));
                 let call = ToolCall {
-                    tool_id: "read_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("read_file"),
                     params,
                     caller_id: None,
                 };
@@ -1616,7 +1616,7 @@ mod tests {
                 params.insert("path".to_owned(), serde_json::json!(link.to_str().unwrap()));
                 params.insert("content".to_owned(), serde_json::json!("evil"));
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };
@@ -1667,7 +1667,7 @@ mod tests {
                 params.insert("path".to_owned(), serde_json::json!(test_path("big.txt")));
                 params.insert("content".to_owned(), serde_json::json!(oversized));
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };
@@ -1698,7 +1698,7 @@ mod tests {
                     serde_json::json!("hello\u{0000}world"),
                 );
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };
@@ -1767,7 +1767,7 @@ mod tests {
                 params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
                 params.insert("content".to_owned(), serde_json::json!("new content\n"));
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };
@@ -1836,7 +1836,7 @@ mod tests {
                 params.insert("path".to_owned(), serde_json::json!(test_path("out.txt")));
                 params.insert("content".to_owned(), serde_json::json!("new\n"));
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };
@@ -1948,7 +1948,7 @@ mod tests {
                 params.insert("path".to_owned(), serde_json::json!(test_path("toctou.txt")));
                 params.insert("content".to_owned(), serde_json::json!("my new content\n"));
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };
@@ -1982,7 +1982,7 @@ mod tests {
                 params.insert("path".to_owned(), serde_json::json!(test_path("new.txt")));
                 params.insert("content".to_owned(), serde_json::json!("hello\n"));
                 let call = ToolCall {
-                    tool_id: "write_file".to_owned(),
+                    tool_id: zeph_tools::ToolName::new("write_file"),
                     params,
                     caller_id: None,
                 };

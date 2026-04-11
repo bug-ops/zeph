@@ -16,6 +16,8 @@ use std::time::Instant;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
+use zeph_common::ToolName;
+
 use crate::manager::McpTrustLevel;
 use crate::tool::{DataSensitivity, McpTool};
 
@@ -31,7 +33,7 @@ pub enum DataFlowViolation {
     )]
     SensitivityTrustMismatch {
         server_id: String,
-        tool_name: String,
+        tool_name: ToolName,
         sensitivity: DataSensitivity,
         trust: McpTrustLevel,
     },
@@ -55,7 +57,7 @@ pub fn check_data_flow(
         (DataSensitivity::High, McpTrustLevel::Untrusted | McpTrustLevel::Sandboxed) => {
             Err(DataFlowViolation::SensitivityTrustMismatch {
                 server_id: tool.server_id.clone(),
-                tool_name: tool.name.clone(),
+                tool_name: tool.name.as_str().into(),
                 sensitivity: tool.security_meta.data_sensitivity,
                 trust: server_trust,
             })
@@ -104,13 +106,13 @@ pub enum PolicyViolation {
     #[error("tool '{tool_name}' is denied on server '{server_id}'")]
     ToolDenied {
         server_id: String,
-        tool_name: String,
+        tool_name: ToolName,
     },
 
     #[error("tool '{tool_name}' is not in the allowlist for server '{server_id}'")]
     ToolNotAllowed {
         server_id: String,
-        tool_name: String,
+        tool_name: ToolName,
     },
 
     #[error("rate limit exceeded for server '{server_id}' (max {max_calls_per_minute}/min)")]

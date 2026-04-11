@@ -317,7 +317,7 @@ async fn drain_embedding_guard_events(
             } => {
                 tracing::warn!(
                     server_id = event.server_id,
-                    tool_name = event.tool_name,
+                    tool_name = %event.tool_name,
                     distance,
                     threshold,
                     "embedding anomaly detected in MCP tool output"
@@ -328,7 +328,7 @@ async fn drain_embedding_guard_events(
             } => {
                 tracing::warn!(
                     server_id = event.server_id,
-                    tool_name = event.tool_name,
+                    tool_name = %event.tool_name,
                     "regex injection detected in MCP tool output (cold-start fallback)"
                 );
             }

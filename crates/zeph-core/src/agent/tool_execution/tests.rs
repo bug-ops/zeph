@@ -230,7 +230,7 @@ impl ToolExecutor for FailingNthExecutor {
 fn make_calls(n: usize) -> Vec<ToolCall> {
     (0..n)
         .map(|i| ToolCall {
-            tool_id: format!("tool-{i}"),
+            tool_id: zeph_common::ToolName::new(format!("tool-{i}")),
             params: serde_json::Map::new(),
             caller_id: None,
         })
@@ -3916,7 +3916,7 @@ fn schema_complexity_range() {
 fn augment_with_tafc_injects_think_field() {
     use zeph_llm::provider::ToolDefinition;
     let def = ToolDefinition {
-        name: "file_op".to_owned(),
+        name: "file_op".to_owned().into(),
         description: "file operation".to_owned(),
         parameters: make_complex_schema(),
     };
@@ -3935,7 +3935,7 @@ fn augment_with_tafc_injects_think_field() {
 fn augment_with_tafc_skips_simple_schema() {
     use zeph_llm::provider::ToolDefinition;
     let def = ToolDefinition {
-        name: "bash".to_owned(),
+        name: "bash".to_owned().into(),
         description: "run shell".to_owned(),
         parameters: make_simple_schema(),
     };
@@ -4071,7 +4071,7 @@ fn tool_def_to_definition_with_tafc_skips_when_disabled() {
 fn tafc_complexity_threshold_boundary() {
     use zeph_llm::provider::ToolDefinition;
     let def = ToolDefinition {
-        name: "op".to_owned(),
+        name: "op".to_owned().into(),
         description: "op".to_owned(),
         parameters: make_complex_schema(),
     };
@@ -4691,7 +4691,7 @@ async fn utility_gate_blocks_call_and_produces_skipped_output() {
 
     let tool_calls = vec![ToolUseRequest {
         id: "call-1".to_owned(),
-        name: "bash".to_owned(),
+        name: "bash".to_owned().into(),
         input: serde_json::json!({"command": "ls"}),
     }];
 
@@ -4740,7 +4740,7 @@ async fn utility_gate_disabled_does_not_produce_skipped_output() {
 
     let tool_calls = vec![ToolUseRequest {
         id: "call-2".to_owned(),
-        name: "bash".to_owned(),
+        name: "bash".to_owned().into(),
         input: serde_json::json!({"command": "ls"}),
     }];
 
@@ -5101,12 +5101,12 @@ mod histogram_recorder_wiring {
         let tool_calls = vec![
             ToolUseRequest {
                 id: "id-hr4a".to_owned(),
-                name: "bash".to_owned(),
+                name: "bash".to_owned().into(),
                 input: serde_json::json!({"command": "echo a"}),
             },
             ToolUseRequest {
                 id: "id-hr4b".to_owned(),
-                name: "bash".to_owned(),
+                name: "bash".to_owned().into(),
                 input: serde_json::json!({"command": "echo b"}),
             },
         ];

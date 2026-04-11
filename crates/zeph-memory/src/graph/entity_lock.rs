@@ -15,6 +15,7 @@
 use std::time::Duration;
 
 use tokio::time::sleep;
+use zeph_common::SessionId;
 use zeph_db::{DbPool, query, query_scalar, sql};
 
 use crate::error::MemoryError;
@@ -31,12 +32,16 @@ const BASE_BACKOFF_MS: u64 = 50;
 /// Advisory entity lock manager for a single session.
 pub struct EntityLockManager {
     pool: DbPool,
-    session_id: String,
+    session_id: SessionId,
 }
 
 impl EntityLockManager {
+    /// Create an `EntityLockManager` for the given session.
+    ///
+    /// Accepts anything convertible to [`SessionId`]: a `SessionId` directly,
+    /// a `&str`, or a `String`.
     #[must_use]
-    pub fn new(pool: DbPool, session_id: impl Into<String>) -> Self {
+    pub fn new(pool: DbPool, session_id: impl Into<SessionId>) -> Self {
         Self {
             pool,
             session_id: session_id.into(),
@@ -92,9 +97,9 @@ impl EntityLockManager {
              RETURNING (session_id = ?) AS acquired"
         ))
         .bind(entity_name)
-        .bind(&self.session_id)
+        .bind(self.session_id.as_str())
         .bind(LOCK_TTL_SECS.to_string())
-        .bind(&self.session_id)
+        .bind(self.session_id.as_str())
         .fetch_optional(self.pool())
         .await?
         .unwrap_or(false);
@@ -124,7 +129,7 @@ impl EntityLockManager {
         ))
         .bind(extra_secs.to_string())
         .bind(entity_name)
-        .bind(&self.session_id)
+        .bind(self.session_id.as_str())
         .execute(self.pool())
         .await?
         .rows_affected();
@@ -145,7 +150,7 @@ impl EntityLockManager {
              WHERE entity_name = ? AND session_id = ?"
         ))
         .bind(entity_name)
-        .bind(&self.session_id)
+        .bind(self.session_id.as_str())
         .execute(self.pool())
         .await?;
 
@@ -163,7 +168,7 @@ impl EntityLockManager {
         query(sql!(
             "DELETE FROM entity_advisory_locks WHERE session_id = ?"
         ))
-        .bind(&self.session_id)
+        .bind(self.session_id.as_str())
         .execute(self.pool())
         .await?;
 

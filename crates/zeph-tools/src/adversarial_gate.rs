@@ -69,7 +69,7 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
 
         let decision = self
             .validator
-            .validate(&call.tool_id, &call.params, self.llm.as_ref())
+            .validate(call.tool_id.as_str(), &call.params, self.llm.as_ref())
             .await;
 
         match decision {

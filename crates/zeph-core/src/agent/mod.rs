@@ -460,7 +460,7 @@ impl<C: Channel> Agent<C> {
             .filter(|(id, _, _)| !paired_ids.contains(*id))
             .map(|(id, name, input)| zeph_llm::provider::ToolUseRequest {
                 id: (*id).to_owned(),
-                name: (*name).to_owned(),
+                name: (*name).to_owned().into(),
                 input: (*input).clone(),
             })
             .collect();

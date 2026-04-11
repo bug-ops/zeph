@@ -19,8 +19,10 @@ use zeph_tools::registry::{InvocationHint, ToolDef};
 
 use crate::tool::McpTool;
 
+use zeph_tools::ToolName;
+
 type MockResponses = Arc<Mutex<HashMap<String, Vec<Result<String, String>>>>>;
-type RecordedCalls = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
+type RecordedCalls = Arc<Mutex<Vec<(ToolName, serde_json::Value)>>>;
 
 /// Configurable MCP tool executor for unit tests.
 ///
@@ -144,7 +146,7 @@ impl ToolExecutor for MockMcpServer {
         let known = self
             .tools
             .iter()
-            .any(|t| t.qualified_name() == call.tool_id);
+            .any(|t| t.qualified_name() == call.tool_id.as_str());
         if !known {
             return Ok(None);
         }
@@ -154,7 +156,7 @@ impl ToolExecutor for MockMcpServer {
             .responses
             .lock()
             .unwrap()
-            .get_mut(&call.tool_id)
+            .get_mut(call.tool_id.as_str())
             .and_then(|queue| {
                 if queue.is_empty() {
                     None

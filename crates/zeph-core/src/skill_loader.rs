@@ -63,7 +63,7 @@ impl ToolExecutor for SkillLoaderExecutor {
         };
 
         Ok(Some(ToolOutput {
-            tool_name: "load_skill".to_owned(),
+            tool_name: zeph_common::ToolName::new("load_skill"),
             summary,
             blocks_executed: 1,
             filter_stats: None,
@@ -101,7 +101,7 @@ mod tests {
             make_registry_with_skill(dir.path(), "git-commit", "## Instructions\nDo git stuff");
         let executor = SkillLoaderExecutor::new(Arc::new(RwLock::new(registry)));
         let call = ToolCall {
-            tool_id: "load_skill".to_owned(),
+            tool_id: zeph_common::ToolName::new("load_skill"),
             params: serde_json::json!({"skill_name": "git-commit"})
                 .as_object()
                 .unwrap()
@@ -119,7 +119,7 @@ mod tests {
         let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
         let executor = SkillLoaderExecutor::new(Arc::new(RwLock::new(registry)));
         let call = ToolCall {
-            tool_id: "load_skill".to_owned(),
+            tool_id: zeph_common::ToolName::new("load_skill"),
             params: serde_json::json!({"skill_name": "nonexistent"})
                 .as_object()
                 .unwrap()
@@ -147,7 +147,7 @@ mod tests {
         let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
         let executor = SkillLoaderExecutor::new(Arc::new(RwLock::new(registry)));
         let call = ToolCall {
-            tool_id: "bash".to_owned(),
+            tool_id: zeph_common::ToolName::new("bash"),
             params: serde_json::Map::new(),
             caller_id: None,
         };
@@ -163,7 +163,7 @@ mod tests {
         let registry = make_registry_with_skill(dir.path(), "big-skill", &long_body);
         let executor = SkillLoaderExecutor::new(Arc::new(RwLock::new(registry)));
         let call = ToolCall {
-            tool_id: "load_skill".to_owned(),
+            tool_id: zeph_common::ToolName::new("load_skill"),
             params: serde_json::json!({"skill_name": "big-skill"})
                 .as_object()
                 .unwrap()
@@ -181,7 +181,7 @@ mod tests {
         let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
         let executor = SkillLoaderExecutor::new(Arc::new(RwLock::new(registry)));
         let call = ToolCall {
-            tool_id: "load_skill".to_owned(),
+            tool_id: zeph_common::ToolName::new("load_skill"),
             params: serde_json::json!({"skill_name": "any"})
                 .as_object()
                 .unwrap()
@@ -215,7 +215,7 @@ mod tests {
                 let ex = Arc::clone(&executor);
                 tokio::spawn(async move {
                     let call = ToolCall {
-                        tool_id: "load_skill".to_owned(),
+                        tool_id: zeph_common::ToolName::new("load_skill"),
                         params: serde_json::json!({"skill_name": "shared-skill"})
                             .as_object()
                             .unwrap()
@@ -240,7 +240,7 @@ mod tests {
         let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
         let executor = SkillLoaderExecutor::new(Arc::new(RwLock::new(registry)));
         let call = ToolCall {
-            tool_id: "load_skill".to_owned(),
+            tool_id: zeph_common::ToolName::new("load_skill"),
             params: serde_json::json!({"skill_name": ""})
                 .as_object()
                 .unwrap()
@@ -258,7 +258,7 @@ mod tests {
         let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
         let executor = SkillLoaderExecutor::new(Arc::new(RwLock::new(registry)));
         let call = ToolCall {
-            tool_id: "load_skill".to_owned(),
+            tool_id: zeph_common::ToolName::new("load_skill"),
             params: serde_json::Map::new(),
             caller_id: None,
         };
