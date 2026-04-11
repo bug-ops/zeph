@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Bench isolation per scenario** (`#2830`): new `BenchIsolation` struct in `zeph-bench` providing
+  per-run `SQLite` database and Qdrant collection isolation. The Qdrant collection name follows
+  `bench_{dataset}_{run_id}` so production collections are never touched. `reset()` deletes the
+  `SQLite` file before each scenario run (uses `std::fs`, no extra tokio feature required).
+
+- **LongMemEval dataset loader** (`#2832`): `LongMemEvalLoader` (JSONL, one record per line) and
+  `LongMemEvalEvaluator` for the
+  [`xiaowu0162/longmemeval`](https://huggingface.co/datasets/xiaowu0162/longmemeval) benchmark.
+  Evaluator uses exact match as primary (`passed`) metric and token F1 as partial-credit `score`;
+  `details` reports both metrics.
+
+- **tau-bench dataset loader** (`#2838`): `TauBenchLoader` (JSON array) and `TauBenchEvaluator`
+  for the [`sierra-research/tau-bench`](https://github.com/sierra-research/tau-bench) benchmark.
+  Binary exact match: `score = 1.0` on pass, `0.0` on fail; `details` = `task_completion=true/false`.
+
+- **Baseline comparison** (`#2834`): `BaselineComparison::compute()` joins two `BenchRun`s
+  (memory-on vs memory-off) by scenario ID and computes per-scenario deltas and aggregate mean
+  delta. Writes `comparison.json` atomically and appends a `## Baseline Comparison` section to
+  `summary.md`.
+
 - **Prometheus metrics follow-up fixes** (`#2872`, `#2873`, `#2874`): removed dead
   `ZEPH_METRICS_HOST` environment variable from `docker/docker-compose.metrics.yml` (Prometheus
   does not support env var substitution in its config file; added a comment in

@@ -49,29 +49,35 @@
 //!
 //! | Module | Purpose |
 //! |--------|---------|
+//! | [`baseline`] | Baseline comparison types and delta computation |
 //! | [`channel`] | Headless [`BenchmarkChannel`] that drives the agent without I/O |
 //! | [`cli`] | Clap subcommand definition ([`BenchCommand`]) |
 //! | [`dataset`] | Dataset registry and metadata types |
 //! | [`deterministic`] | Temperature-zero override helpers |
 //! | [`error`] | [`BenchError`] error type |
-//! | [`loaders`] | Concrete loaders for LOCOMO, FRAMES, and GAIA |
+//! | [`isolation`] | Per-scenario storage isolation ([`BenchIsolation`]) |
+//! | [`loaders`] | Concrete loaders for LOCOMO, FRAMES, GAIA, LongMemEval, and tau-bench |
 //! | [`results`] | Result types and [`ResultWriter`] |
 //! | [`scenario`] | Core traits ([`DatasetLoader`], [`Evaluator`]) and scoring helpers |
 
+pub mod baseline;
 pub mod channel;
 pub mod cli;
 pub mod dataset;
 pub mod deterministic;
 pub mod error;
+pub mod isolation;
 pub mod loaders;
 pub mod results;
 pub mod scenario;
 
+pub use baseline::{BaselineComparison, ScenarioDelta};
 pub use channel::BenchmarkChannel;
 pub use cli::BenchCommand;
 pub use dataset::{DatasetFormat, DatasetMeta, DatasetRegistry};
 pub use deterministic::apply_deterministic_overrides;
 pub use error::BenchError;
+pub use isolation::BenchIsolation;
 pub use results::{Aggregate, BenchRun, ResultWriter, RunStatus, ScenarioResult};
 pub use scenario::{
     DatasetLoader, EvalResult, Evaluator, Scenario, exact_match, gaia_normalized_exact_match,
