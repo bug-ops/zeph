@@ -115,8 +115,11 @@ where
     fn on_enter(&self, id: &tracing::span::Id, ctx: Context<'_, S>) {
         if let Some(span) = ctx.span(id) {
             // Cheap extension check — no name comparison needed here.
+            // Use `replace` rather than `insert`: async spans re-enter on every
+            // poll cycle, so a `SpanEntry` from a prior enter may already exist.
+            // `insert` panics on a second call for the same type; `replace` does not.
             if span.extensions().get::<WatchedSpan>().is_some() {
-                span.extensions_mut().insert(SpanEntry(Instant::now()));
+                span.extensions_mut().replace(SpanEntry(Instant::now()));
             }
         }
     }
