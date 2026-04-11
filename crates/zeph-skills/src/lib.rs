@@ -62,6 +62,7 @@ pub mod manager;
 pub mod matcher;
 pub mod miner;
 pub mod prompt;
+#[cfg(feature = "qdrant")]
 pub mod qdrant_matcher;
 pub mod registry;
 pub mod resource;

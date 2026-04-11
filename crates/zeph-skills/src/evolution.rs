@@ -80,9 +80,9 @@ impl FailureKind {
     }
 }
 
-impl From<zeph_tools::error_taxonomy::ToolErrorCategory> for FailureKind {
-    fn from(cat: zeph_tools::error_taxonomy::ToolErrorCategory) -> Self {
-        use zeph_tools::error_taxonomy::ToolErrorCategory as C;
+impl From<zeph_common::error_taxonomy::ToolErrorCategory> for FailureKind {
+    fn from(cat: zeph_common::error_taxonomy::ToolErrorCategory) -> Self {
+        use zeph_common::error_taxonomy::ToolErrorCategory as C;
         match cat {
             C::Timeout => Self::Timeout,
             // Quality-attributable: skill chose the wrong approach or wrong tool.
@@ -816,7 +816,7 @@ mod tests {
 
     #[test]
     fn failure_kind_from_tool_error_category_key_mappings() {
-        use zeph_tools::error_taxonomy::ToolErrorCategory as C;
+        use zeph_common::error_taxonomy::ToolErrorCategory as C;
         assert_eq!(FailureKind::from(C::Timeout), FailureKind::Timeout);
         assert_eq!(
             FailureKind::from(C::PolicyBlocked),

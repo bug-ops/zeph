@@ -439,9 +439,16 @@ impl SkillMatcher {
     }
 }
 
+/// Backend selection for the skill embedding matcher.
+///
+/// `InMemory` uses a pre-computed in-process embedding index; `Qdrant` delegates to a
+/// remote Qdrant vector store and requires the `qdrant` feature to be enabled.
 #[derive(Debug, Clone)]
 pub enum SkillMatcherBackend {
+    /// In-process embedding index built at startup from skill descriptions.
     InMemory(SkillMatcher),
+    /// Qdrant-backed vector store for large skill libraries (requires `qdrant` feature).
+    #[cfg(feature = "qdrant")]
     Qdrant(crate::qdrant_matcher::QdrantSkillMatcher),
 }
 
@@ -452,18 +459,25 @@ impl SkillMatcherBackend {
     pub fn skill_embedding(&self, skill_index: usize) -> Option<&[f32]> {
         match self {
             Self::InMemory(m) => m.skill_embedding(skill_index),
+            #[cfg(feature = "qdrant")]
             Self::Qdrant(_) => None,
         }
     }
 
+    /// Returns `true` if this backend is a Qdrant vector store.
     #[must_use]
     pub fn is_qdrant(&self) -> bool {
         match self {
             Self::InMemory(_) => false,
+            #[cfg(feature = "qdrant")]
             Self::Qdrant(_) => true,
         }
     }
 
+    /// Match skills by embedding similarity for the given `query`.
+    ///
+    /// Dispatches to the underlying backend (in-memory or Qdrant). Returns up to `limit`
+    /// candidates sorted by descending cosine similarity.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "skill.match", skip_all, fields(query_len = %query.len(), candidates = tracing::field::Empty, top_score = tracing::field::Empty))
@@ -484,6 +498,7 @@ impl SkillMatcherBackend {
                 m.match_skills(meta.len(), query, limit, two_stage, embed_fn)
                     .await
             }
+            #[cfg(feature = "qdrant")]
             Self::Qdrant(m) => m.match_skills(meta, query, limit, embed_fn).await,
         }
     }
@@ -516,6 +531,7 @@ impl SkillMatcherBackend {
                     }
                 })
             }
+            #[cfg(feature = "qdrant")]
             Self::Qdrant(_) => ConfusabilityReport {
                 pairs: vec![],
                 threshold,
@@ -549,6 +565,7 @@ impl SkillMatcherBackend {
                 let _ = (meta, embedding_model, &embed_fn, on_progress);
                 Ok(())
             }
+            #[cfg(feature = "qdrant")]
             Self::Qdrant(m) => {
                 m.sync(meta, embedding_model, embed_fn, on_progress).await?;
                 Ok(())

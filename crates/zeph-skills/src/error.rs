@@ -27,6 +27,7 @@ pub enum SkillError {
     Io(#[from] std::io::Error),
 
     /// Qdrant client error (boxed to keep the variant size small).
+    #[cfg(feature = "qdrant")]
     #[error("Qdrant error: {0}")]
     Qdrant(#[from] Box<qdrant_client::QdrantError>),
 

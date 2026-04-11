@@ -3,254 +3,30 @@
 
 //! 12-category tool invocation error taxonomy (arXiv:2601.16280).
 //!
-//! Provides fine-grained error classification beyond the binary `ErrorKind`
-//! (Transient/Permanent), enabling category-specific recovery strategies,
-//! structured LLM feedback, and quality-attributable reputation scoring.
+//! The [`ToolErrorCategory`] and [`ErrorDomain`] enums are defined in `zeph-common` and
+//! re-exported here for backwards compatibility. Tool-specific helpers (`classify_http_status`,
+//! `classify_io_error`, `ToolErrorFeedback`) remain in this module.
+
+pub use zeph_common::error_taxonomy::{ErrorDomain, ToolErrorCategory, ToolInvocationPhase};
 
 use crate::executor::ErrorKind;
 
-/// Invocation phase in which a tool failure occurred, per arXiv:2601.16280.
+/// Extension trait adding `zeph-tools`-specific methods to [`ToolErrorCategory`].
 ///
-/// Maps Zeph's `ToolErrorCategory` variants to the 4-phase diagnostic framework:
-/// Setup → `ParamHandling` → Execution → `ResultInterpretation`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolInvocationPhase {
-    /// Tool lookup/registration phase: was the tool name valid?
-    Setup,
-    /// Parameter validation phase: were the provided arguments well-formed?
-    ParamHandling,
-    /// Runtime execution phase: did the tool run successfully?
-    Execution,
-    /// Output parsing/interpretation phase: was the result usable?
-    /// Reserved for future use — no current `ToolErrorCategory` maps here.
-    ResultInterpretation,
-}
-
-impl ToolInvocationPhase {
-    /// Human-readable label for audit logs.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Setup => "setup",
-            Self::ParamHandling => "param_handling",
-            Self::Execution => "execution",
-            Self::ResultInterpretation => "result_interpretation",
-        }
-    }
-}
-
-/// High-level error domain for recovery strategy dispatch.
-///
-/// Groups the 11 `ToolErrorCategory` variants into 4 domains that map to distinct
-/// recovery strategies in the agent loop. Does NOT replace `ToolErrorCategory` — it
-/// is a companion abstraction for coarse dispatch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ErrorDomain {
-    /// The agent selected the wrong tool or misunderstood the task.
-    /// Recovery: re-plan, pick a different tool or approach.
-    /// Categories: `ToolNotFound`
-    Planning,
-
-    /// The agent's output (parameters, types) was malformed.
-    /// Recovery: reformat parameters using tool schema, retry once.
-    /// Categories: `InvalidParameters`, `TypeMismatch`
-    Reflection,
-
-    /// External action failed due to policy or resource constraints.
-    /// Recovery: inform user, suggest alternative, or skip.
-    /// Categories: `PolicyBlocked`, `ConfirmationRequired`, `PermanentFailure`, `Cancelled`
-    Action,
-
-    /// Transient infrastructure failure.
-    /// Recovery: automatic retry with backoff.
-    /// Categories: `RateLimited`, `ServerError`, `NetworkError`, `Timeout`
-    System,
-}
-
-impl ErrorDomain {
-    /// Whether errors in this domain should trigger automatic retry.
-    #[must_use]
-    pub fn is_auto_retryable(self) -> bool {
-        matches!(self, Self::System)
-    }
-
-    /// Whether the LLM should be asked to fix its output.
-    #[must_use]
-    pub fn needs_llm_correction(self) -> bool {
-        matches!(self, Self::Reflection | Self::Planning)
-    }
-
-    /// Human-readable label for audit logs.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Planning => "planning",
-            Self::Reflection => "reflection",
-            Self::Action => "action",
-            Self::System => "system",
-        }
-    }
-}
-
-/// Fine-grained 12-category classification of tool invocation errors.
-///
-/// Each category determines retry eligibility, LLM parameter reformat path,
-/// quality attribution for reputation scoring, and structured feedback content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum ToolErrorCategory {
-    // ── Initialization failures ──────────────────────────────────────────
-    /// Tool name not found in the registry (LLM requested a non-existent tool).
-    ToolNotFound,
-
-    // ── Parameter failures ───────────────────────────────────────────────
-    /// LLM provided invalid or missing parameters for the tool.
-    InvalidParameters,
-    /// Parameter type mismatch (e.g., string where integer expected).
-    TypeMismatch,
-
-    // ── Permission / policy failures ─────────────────────────────────────
-    /// Blocked by security policy (blocklist, sandbox, trust gate).
-    PolicyBlocked,
-    /// Requires user confirmation before execution.
-    ConfirmationRequired,
-
-    // ── Execution failures (permanent) ───────────────────────────────────
-    /// HTTP 403/404 or equivalent permanent resource rejection.
-    PermanentFailure,
-    /// Operation cancelled by the user.
-    Cancelled,
-
-    // ── Execution failures (transient) ───────────────────────────────────
-    /// HTTP 429 (rate limit) or resource exhaustion.
-    RateLimited,
-    /// HTTP 5xx or equivalent server-side error.
-    ServerError,
-    /// Network connectivity failure (DNS, connection refused, reset).
-    NetworkError,
-    /// Operation timed out.
-    Timeout,
-}
-
-impl ToolErrorCategory {
-    /// Whether this error category is eligible for automatic retry with backoff.
-    #[must_use]
-    pub fn is_retryable(self) -> bool {
-        matches!(
-            self,
-            Self::RateLimited | Self::ServerError | Self::NetworkError | Self::Timeout
-        )
-    }
-
-    /// Whether the LLM should be asked to reformat parameters and retry.
-    ///
-    /// Only `InvalidParameters` and `TypeMismatch` trigger the reformat path.
-    /// A single reformat attempt is allowed; if it fails, the error is final.
-    #[must_use]
-    pub fn needs_parameter_reformat(self) -> bool {
-        matches!(self, Self::InvalidParameters | Self::TypeMismatch)
-    }
-
-    /// Whether this error is attributable to LLM output quality.
-    ///
-    /// Quality failures affect reputation scoring in triage routing and are the
-    /// only category for which `attempt_self_reflection` should be triggered.
-    /// Infrastructure errors (network, timeout, server, rate limit) are NOT
-    /// the model's fault and must never trigger self-reflection.
-    #[must_use]
-    pub fn is_quality_failure(self) -> bool {
-        matches!(
-            self,
-            Self::InvalidParameters | Self::TypeMismatch | Self::ToolNotFound
-        )
-    }
-
-    /// Map to the high-level error domain for recovery dispatch.
-    ///
-    /// Use the returned `ErrorDomain` to select a recovery strategy in the agent loop
-    /// instead of checking multiple predicate methods individually.
-    #[must_use]
-    pub fn domain(self) -> ErrorDomain {
-        match self {
-            Self::ToolNotFound => ErrorDomain::Planning,
-            Self::InvalidParameters | Self::TypeMismatch => ErrorDomain::Reflection,
-            Self::PolicyBlocked
-            | Self::ConfirmationRequired
-            | Self::PermanentFailure
-            | Self::Cancelled => ErrorDomain::Action,
-            Self::RateLimited | Self::ServerError | Self::NetworkError | Self::Timeout => {
-                ErrorDomain::System
-            }
-        }
-    }
-
+/// This trait exists because `ToolErrorCategory` is defined in `zeph-common` but
+/// `ErrorKind` is defined in `zeph-tools`. Callers in `zeph-tools` use
+/// `use crate::error_taxonomy::ToolErrorCategoryExt` to access these methods.
+pub trait ToolErrorCategoryExt {
     /// Coarse classification for backward compatibility with existing `ErrorKind`.
-    #[must_use]
-    pub fn error_kind(self) -> ErrorKind {
+    fn error_kind(self) -> ErrorKind;
+}
+
+impl ToolErrorCategoryExt for ToolErrorCategory {
+    fn error_kind(self) -> ErrorKind {
         if self.is_retryable() {
             ErrorKind::Transient
         } else {
             ErrorKind::Permanent
-        }
-    }
-
-    /// Map to the diagnostic invocation phase per arXiv:2601.16280.
-    #[must_use]
-    pub fn phase(self) -> ToolInvocationPhase {
-        match self {
-            Self::ToolNotFound => ToolInvocationPhase::Setup,
-            Self::InvalidParameters | Self::TypeMismatch => ToolInvocationPhase::ParamHandling,
-            Self::PolicyBlocked
-            | Self::ConfirmationRequired
-            | Self::PermanentFailure
-            | Self::Cancelled
-            | Self::RateLimited
-            | Self::ServerError
-            | Self::NetworkError
-            | Self::Timeout => ToolInvocationPhase::Execution,
-        }
-    }
-
-    /// Human-readable label for audit logs, TUI status indicators, and structured feedback.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::ToolNotFound => "tool_not_found",
-            Self::InvalidParameters => "invalid_parameters",
-            Self::TypeMismatch => "type_mismatch",
-            Self::PolicyBlocked => "policy_blocked",
-            Self::ConfirmationRequired => "confirmation_required",
-            Self::PermanentFailure => "permanent_failure",
-            Self::Cancelled => "cancelled",
-            Self::RateLimited => "rate_limited",
-            Self::ServerError => "server_error",
-            Self::NetworkError => "network_error",
-            Self::Timeout => "timeout",
-        }
-    }
-
-    /// Recovery suggestion for the LLM based on error category.
-    #[must_use]
-    pub fn suggestion(self) -> &'static str {
-        match self {
-            Self::ToolNotFound => {
-                "Check the tool name. Use tool_definitions to see available tools."
-            }
-            Self::InvalidParameters => "Review the tool schema and provide correct parameters.",
-            Self::TypeMismatch => "Check parameter types against the tool schema.",
-            Self::PolicyBlocked => {
-                "This operation is blocked by security policy. Try an alternative approach."
-            }
-            Self::ConfirmationRequired => "This operation requires user confirmation.",
-            Self::PermanentFailure => {
-                "This resource is not available. Try an alternative approach."
-            }
-            Self::Cancelled => "Operation was cancelled by the user.",
-            Self::RateLimited => "Rate limit exceeded. The system will retry if possible.",
-            Self::ServerError => "Server error. The system will retry if possible.",
-            Self::NetworkError => "Network error. The system will retry if possible.",
-            Self::Timeout => "Operation timed out. The system will retry if possible.",
         }
     }
 }
@@ -261,8 +37,11 @@ impl ToolErrorCategory {
 /// do next, replacing the opaque `[error] ...` string format.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ToolErrorFeedback {
+    /// Fine-grained category of the error (used to select suggestion and label).
     pub category: ToolErrorCategory,
+    /// Human-readable error message from the failing executor.
     pub message: String,
+    /// Whether the agent loop should attempt an automatic retry for this error.
     pub retryable: bool,
 }
 
@@ -324,6 +103,7 @@ pub fn classify_io_error(err: &std::io::Error) -> ToolErrorCategory {
 
 #[cfg(test)]
 mod tests {
+    use super::ToolErrorCategoryExt as _;
     use super::*;
 
     #[test]
@@ -348,8 +128,6 @@ mod tests {
         assert!(ToolErrorCategory::TypeMismatch.is_quality_failure());
         assert!(ToolErrorCategory::ToolNotFound.is_quality_failure());
 
-        // Infrastructure errors must NOT be quality failures — they must not trigger
-        // self-reflection, as they are not attributable to LLM output quality.
         assert!(!ToolErrorCategory::NetworkError.is_quality_failure());
         assert!(!ToolErrorCategory::ServerError.is_quality_failure());
         assert!(!ToolErrorCategory::RateLimited.is_quality_failure());
@@ -369,7 +147,6 @@ mod tests {
 
     #[test]
     fn error_kind_backward_compat() {
-        // Retryable categories → Transient
         assert_eq!(
             ToolErrorCategory::NetworkError.error_kind(),
             ErrorKind::Transient
@@ -378,7 +155,6 @@ mod tests {
             ToolErrorCategory::Timeout.error_kind(),
             ErrorKind::Transient
         );
-        // Non-retryable → Permanent
         assert_eq!(
             ToolErrorCategory::InvalidParameters.error_kind(),
             ErrorKind::Permanent
@@ -411,8 +187,6 @@ mod tests {
 
     #[test]
     fn classify_io_not_found_is_permanent_not_tool_not_found() {
-        // B2 fix: OS-level NotFound must NOT map to ToolNotFound.
-        // ToolNotFound is reserved for registry misses (LLM requested unknown tool name).
         let err = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
         assert_eq!(classify_io_error(&err), ToolErrorCategory::PermanentFailure);
     }
@@ -445,275 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn all_categories_have_labels() {
-        let categories = [
-            ToolErrorCategory::ToolNotFound,
-            ToolErrorCategory::InvalidParameters,
-            ToolErrorCategory::TypeMismatch,
-            ToolErrorCategory::PolicyBlocked,
-            ToolErrorCategory::ConfirmationRequired,
-            ToolErrorCategory::PermanentFailure,
-            ToolErrorCategory::Cancelled,
-            ToolErrorCategory::RateLimited,
-            ToolErrorCategory::ServerError,
-            ToolErrorCategory::NetworkError,
-            ToolErrorCategory::Timeout,
-        ];
-        for cat in categories {
-            assert!(!cat.label().is_empty(), "category {cat:?} has empty label");
-            assert!(
-                !cat.suggestion().is_empty(),
-                "category {cat:?} has empty suggestion"
-            );
-        }
-    }
-
-    // ── classify_http_status: full coverage per taxonomy spec ────────────────
-
-    #[test]
-    fn classify_http_400_is_invalid_parameters() {
-        assert_eq!(
-            classify_http_status(400),
-            ToolErrorCategory::InvalidParameters
-        );
-    }
-
-    #[test]
-    fn classify_http_401_is_policy_blocked() {
-        assert_eq!(classify_http_status(401), ToolErrorCategory::PolicyBlocked);
-    }
-
-    #[test]
-    fn classify_http_502_is_server_error() {
-        assert_eq!(classify_http_status(502), ToolErrorCategory::ServerError);
-    }
-
-    // ── ToolErrorFeedback: category-specific content ──────────────────────────
-
-    #[test]
-    fn feedback_permanent_failure_not_retryable() {
-        let fb = ToolErrorFeedback {
-            category: ToolErrorCategory::PermanentFailure,
-            message: "resource does not exist".to_owned(),
-            retryable: false,
-        };
-        let s = fb.format_for_llm();
-        assert!(s.contains("permanent_failure"));
-        assert!(s.contains("resource does not exist"));
-        assert!(s.contains("retryable: false"));
-        // Suggestion must not mention auto-retry for a permanent error.
-        let suggestion = ToolErrorCategory::PermanentFailure.suggestion();
-        assert!(!suggestion.contains("retry automatically"), "{suggestion}");
-    }
-
-    #[test]
-    fn feedback_rate_limited_is_retryable_and_mentions_retry() {
-        let fb = ToolErrorFeedback {
-            category: ToolErrorCategory::RateLimited,
-            message: "too many requests".to_owned(),
-            retryable: true,
-        };
-        let s = fb.format_for_llm();
-        assert!(s.contains("rate_limited"));
-        assert!(s.contains("retryable: true"));
-        // RateLimited suggestion must mention retry but not promise it is automatic.
-        let suggestion = ToolErrorCategory::RateLimited.suggestion();
-        assert!(suggestion.contains("retry"), "{suggestion}");
-        assert!(!suggestion.contains("automatically"), "{suggestion}");
-    }
-
-    #[test]
-    fn transient_suggestion_neutral_no_automatically() {
-        // Suggestion text must not promise "automatically" — retry may or may not fire
-        // (executor may not be retryable, or retries may be exhausted).
-        for cat in [
-            ToolErrorCategory::ServerError,
-            ToolErrorCategory::NetworkError,
-            ToolErrorCategory::RateLimited,
-            ToolErrorCategory::Timeout,
-        ] {
-            let s = cat.suggestion();
-            assert!(
-                !s.contains("automatically"),
-                "{cat:?} suggestion must not promise automatic retry: {s}"
-            );
-        }
-    }
-
-    #[test]
-    fn feedback_retryable_matches_category_is_retryable() {
-        // Transient categories must produce retryable: true feedback.
-        for cat in [
-            ToolErrorCategory::ServerError,
-            ToolErrorCategory::NetworkError,
-            ToolErrorCategory::RateLimited,
-            ToolErrorCategory::Timeout,
-        ] {
-            let fb = ToolErrorFeedback {
-                category: cat,
-                message: "error".to_owned(),
-                retryable: cat.is_retryable(),
-            };
-            assert!(fb.retryable, "{cat:?} feedback must be retryable");
-        }
-
-        // Permanent categories must produce retryable: false feedback.
-        for cat in [
-            ToolErrorCategory::InvalidParameters,
-            ToolErrorCategory::PolicyBlocked,
-            ToolErrorCategory::PermanentFailure,
-        ] {
-            let fb = ToolErrorFeedback {
-                category: cat,
-                message: "error".to_owned(),
-                retryable: cat.is_retryable(),
-            };
-            assert!(!fb.retryable, "{cat:?} feedback must not be retryable");
-        }
-    }
-
-    // ── B4 regression: infrastructure errors must NOT be quality failures ─────
-
-    #[test]
-    fn b4_infrastructure_errors_not_quality_failures() {
-        // These categories must never trigger self-reflection (B4 fix).
-        for cat in [
-            ToolErrorCategory::NetworkError,
-            ToolErrorCategory::ServerError,
-            ToolErrorCategory::RateLimited,
-            ToolErrorCategory::Timeout,
-        ] {
-            assert!(
-                !cat.is_quality_failure(),
-                "{cat:?} must not be a quality failure"
-            );
-            // And they must be retryable.
-            assert!(cat.is_retryable(), "{cat:?} must be retryable");
-        }
-    }
-
-    #[test]
-    fn b4_quality_failures_may_trigger_reflection() {
-        // These categories should trigger self-reflection.
-        for cat in [
-            ToolErrorCategory::InvalidParameters,
-            ToolErrorCategory::TypeMismatch,
-            ToolErrorCategory::ToolNotFound,
-        ] {
-            assert!(
-                cat.is_quality_failure(),
-                "{cat:?} must be a quality failure"
-            );
-            // Quality failures are not retryable.
-            assert!(!cat.is_retryable(), "{cat:?} must not be retryable");
-        }
-    }
-
-    // ── ErrorDomain mapping: all 11 categories ───────────────────────────────
-
-    #[test]
-    fn domain_planning() {
-        assert_eq!(
-            ToolErrorCategory::ToolNotFound.domain(),
-            ErrorDomain::Planning
-        );
-    }
-
-    #[test]
-    fn domain_reflection() {
-        assert_eq!(
-            ToolErrorCategory::InvalidParameters.domain(),
-            ErrorDomain::Reflection
-        );
-        assert_eq!(
-            ToolErrorCategory::TypeMismatch.domain(),
-            ErrorDomain::Reflection
-        );
-    }
-
-    #[test]
-    fn domain_action() {
-        for cat in [
-            ToolErrorCategory::PolicyBlocked,
-            ToolErrorCategory::ConfirmationRequired,
-            ToolErrorCategory::PermanentFailure,
-            ToolErrorCategory::Cancelled,
-        ] {
-            assert_eq!(
-                cat.domain(),
-                ErrorDomain::Action,
-                "{cat:?} must map to Action"
-            );
-        }
-    }
-
-    #[test]
-    fn domain_system() {
-        for cat in [
-            ToolErrorCategory::RateLimited,
-            ToolErrorCategory::ServerError,
-            ToolErrorCategory::NetworkError,
-            ToolErrorCategory::Timeout,
-        ] {
-            assert_eq!(
-                cat.domain(),
-                ErrorDomain::System,
-                "{cat:?} must map to System"
-            );
-        }
-    }
-
-    #[test]
-    fn error_domain_helper_methods() {
-        assert!(ErrorDomain::System.is_auto_retryable());
-        assert!(!ErrorDomain::Planning.is_auto_retryable());
-        assert!(!ErrorDomain::Reflection.is_auto_retryable());
-        assert!(!ErrorDomain::Action.is_auto_retryable());
-
-        assert!(ErrorDomain::Reflection.needs_llm_correction());
-        assert!(ErrorDomain::Planning.needs_llm_correction());
-        assert!(!ErrorDomain::System.needs_llm_correction());
-        assert!(!ErrorDomain::Action.needs_llm_correction());
-    }
-
-    #[test]
-    fn error_domain_labels() {
-        assert_eq!(ErrorDomain::Planning.label(), "planning");
-        assert_eq!(ErrorDomain::Reflection.label(), "reflection");
-        assert_eq!(ErrorDomain::Action.label(), "action");
-        assert_eq!(ErrorDomain::System.label(), "system");
-    }
-
-    // ── B2 regression: io::NotFound must NOT produce ToolNotFound ────────────
-
-    #[test]
-    fn b2_io_not_found_maps_to_permanent_failure_not_tool_not_found() {
-        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "bash: command not found");
-        let cat = classify_io_error(&err);
-        assert_ne!(
-            cat,
-            ToolErrorCategory::ToolNotFound,
-            "OS-level NotFound must NOT map to ToolNotFound"
-        );
-        assert_eq!(
-            cat,
-            ToolErrorCategory::PermanentFailure,
-            "OS-level NotFound must map to PermanentFailure"
-        );
-    }
-
-    // ── ToolErrorCategory::Cancelled: not retryable, not quality failure ──────
-
-    #[test]
-    fn cancelled_is_not_retryable_and_not_quality_failure() {
-        assert!(!ToolErrorCategory::Cancelled.is_retryable());
-        assert!(!ToolErrorCategory::Cancelled.is_quality_failure());
-        assert!(!ToolErrorCategory::Cancelled.needs_parameter_reformat());
-    }
-
-    // ── ToolInvocationPhase ──────────────────────────────────────────────────
-
-    #[test]
     fn phase_setup_for_tool_not_found() {
         assert_eq!(
             ToolErrorCategory::ToolNotFound.phase(),
@@ -731,33 +236,5 @@ mod tests {
             ToolErrorCategory::TypeMismatch.phase(),
             ToolInvocationPhase::ParamHandling
         );
-    }
-
-    #[test]
-    fn phase_execution_for_runtime_errors() {
-        for cat in [
-            ToolErrorCategory::PolicyBlocked,
-            ToolErrorCategory::ConfirmationRequired,
-            ToolErrorCategory::PermanentFailure,
-            ToolErrorCategory::Cancelled,
-            ToolErrorCategory::RateLimited,
-            ToolErrorCategory::ServerError,
-            ToolErrorCategory::NetworkError,
-            ToolErrorCategory::Timeout,
-        ] {
-            assert_eq!(cat.phase(), ToolInvocationPhase::Execution, "{cat:?}");
-        }
-    }
-
-    #[test]
-    fn phase_label_non_empty() {
-        for phase in [
-            ToolInvocationPhase::Setup,
-            ToolInvocationPhase::ParamHandling,
-            ToolInvocationPhase::Execution,
-            ToolInvocationPhase::ResultInterpretation,
-        ] {
-            assert!(!phase.label().is_empty(), "{phase:?}");
-        }
     }
 }

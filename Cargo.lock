@@ -10326,7 +10326,6 @@ dependencies = [
  "zeph-config",
  "zeph-llm",
  "zeph-memory",
- "zeph-tools",
 ]
 
 [[package]]

@@ -20,9 +20,9 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-use zeph_tools::SkillTrustLevel;
-use zeph_tools::patterns::{RAW_INJECTION_PATTERNS, strip_format_chars};
-use zeph_tools::trust_gate::QUARANTINE_DENIED;
+use zeph_common::SkillTrustLevel;
+use zeph_common::patterns::{RAW_INJECTION_PATTERNS, strip_format_chars};
+use zeph_common::quarantine::QUARANTINE_DENIED;
 
 struct CompiledPattern {
     name: &'static str,

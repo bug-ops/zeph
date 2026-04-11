@@ -34,7 +34,7 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::OnceLock;
 
-use zeph_tools::SkillTrustLevel;
+use zeph_common::SkillTrustLevel;
 
 use crate::error::SkillError;
 use crate::loader::{Skill, SkillMeta, load_skill_body, load_skill_meta, validate_path_within};

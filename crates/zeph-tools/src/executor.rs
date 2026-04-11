@@ -418,6 +418,7 @@ impl ToolError {
     ///   I/O error kinds — retrying would waste time with no benefit.
     #[must_use]
     pub fn kind(&self) -> ErrorKind {
+        use crate::error_taxonomy::ToolErrorCategoryExt;
         self.category().error_kind()
     }
 }

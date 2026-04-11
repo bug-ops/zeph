@@ -10,14 +10,19 @@
 //! query constants and helpers.
 
 pub mod config;
+pub mod error_taxonomy;
 pub mod hash;
 pub mod math;
 pub mod net;
+pub mod patterns;
+pub mod quarantine;
 pub mod sanitize;
 pub mod secret;
 pub mod text;
+pub mod trust_level;
 pub mod types;
 
+pub use trust_level::SkillTrustLevel;
 pub use types::{SessionId, ToolName};
 
 #[cfg(feature = "treesitter")]

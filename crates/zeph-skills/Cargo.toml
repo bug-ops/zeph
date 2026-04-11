@@ -16,6 +16,7 @@ readme = "README.md"
 profiling = []
 default = []
 miner = ["anyhow", "clap", "dirs", "toml", "tracing-subscriber"]
+qdrant = ["dep:zeph-memory", "dep:qdrant-client"]
 
 [dependencies]
 anyhow = { workspace = true, optional = true }
@@ -26,7 +27,7 @@ include_dir.workspace = true
 futures.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
-qdrant-client = { workspace = true, features = ["serde"] }
+qdrant-client = { workspace = true, features = ["serde"], optional = true }
 regex.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls"] }
 schemars.workspace = true
@@ -41,8 +42,7 @@ uuid = { workspace = true, features = ["v5"] }
 zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-llm.workspace = true
-zeph-memory.workspace = true
-zeph-tools.workspace = true
+zeph-memory = { workspace = true, optional = true }
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [[bin]]

@@ -21,7 +21,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-pub use zeph_tools::SkillTrustLevel;
+pub use zeph_common::SkillTrustLevel;
 
 /// Provenance record for an installed skill.
 ///

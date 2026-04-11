@@ -19,33 +19,10 @@ use crate::registry::ToolDef;
 
 /// Tools denied when a Quarantined skill is active.
 ///
-/// Uses the actual tool IDs registered by `FileExecutor` and other executors.
-/// Previously contained `"file_write"` which matched nothing (dead rule).
-///
-/// MCP tools use a server-prefixed ID (e.g. `filesystem_write_file`). The
-/// `is_quarantine_denied` predicate checks both exact matches and `_{entry}`
-/// suffix matches to cover MCP-wrapped versions of these native tool IDs.
-/// False positives (a safe tool whose name ends with a denied suffix) are
-/// acceptable at the Quarantined trust level.
-///
-/// Public so that `zeph-skills::scanner::check_capability_escalation` can use
-/// this as the single source of truth for quarantine-denied tools.
-pub const QUARANTINE_DENIED: &[&str] = &[
-    // Shell execution
-    "bash",
-    // File write/mutation tools (FileExecutor IDs)
-    "write",
-    "edit",
-    "delete_path",
-    "move_path",
-    "copy_path",
-    "create_directory",
-    // Web access
-    "web_scrape",
-    "fetch",
-    // Memory persistence
-    "memory_save",
-];
+/// Re-exported from `zeph_common::quarantine::QUARANTINE_DENIED` — the canonical definition
+/// lives there so both `zeph-skills` and `zeph-tools` can reference it without a dependency
+/// cycle.
+pub use zeph_common::quarantine::QUARANTINE_DENIED;
 
 fn is_quarantine_denied(tool_id: &str) -> bool {
     QUARANTINE_DENIED
