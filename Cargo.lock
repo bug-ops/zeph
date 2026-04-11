@@ -4590,10 +4590,14 @@ version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f69cd6acbb9af919df949cd1ec9e5e7fdc2ef15d234b6b795aaa525cc02f71f"
 dependencies = [
+ "http",
  "opentelemetry",
  "opentelemetry-proto",
  "opentelemetry_sdk",
+ "prost 0.14.3",
  "thiserror 2.0.18",
+ "tokio",
+ "tonic 0.14.5",
 ]
 
 [[package]]
@@ -4604,6 +4608,9 @@ checksum = "a7175df06de5eaee9909d4805a3d07e28bb752c34cab57fa9cff549da596b30f"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
+ "prost 0.14.3",
+ "tonic 0.14.5",
+ "tonic-prost",
 ]
 
 [[package]]
@@ -4616,6 +4623,8 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "opentelemetry",
+ "percent-encoding",
+ "rand 0.9.2",
  "thiserror 2.0.18",
 ]
 

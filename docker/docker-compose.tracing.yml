@@ -11,11 +11,6 @@
 #   Jaeger UI: http://localhost:16686
 #
 # Enable tracing in Zeph config (requires --features otel or --features server):
-#   [observability]
-#   exporter  = "otlp"
-#   endpoint  = "http://localhost:4317"
-#
-# Or via the [telemetry] block (requires --features profiling):
 #   [telemetry]
 #   enabled       = true
 #   backend       = "otlp"

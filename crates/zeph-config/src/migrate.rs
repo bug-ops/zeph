@@ -33,7 +33,6 @@ static CANONICAL_ORDER: &[&str] = &[
     "vault",
     "timeouts",
     "cost",
-    "observability",
     "debug",
     "logging",
     "tui",

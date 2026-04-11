@@ -423,36 +423,6 @@ impl Default for CostConfig {
     }
 }
 
-/// OpenTelemetry observability configuration, nested under `[observability]` in TOML.
-///
-/// When `exporter` is non-empty, trace spans are exported via OTLP to the given endpoint.
-///
-/// # Example (TOML)
-///
-/// ```toml
-/// [observability]
-/// exporter = "otlp"
-/// endpoint = "http://localhost:4317"
-/// ```
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ObservabilityConfig {
-    /// OTLP exporter type. Empty string disables exporting. Default: `""`.
-    #[serde(default)]
-    pub exporter: String,
-    /// OTLP collector endpoint URL. Default: `"http://localhost:4317"`.
-    #[serde(default = "default_otlp_endpoint")]
-    pub endpoint: String,
-}
-
-impl Default for ObservabilityConfig {
-    fn default() -> Self {
-        Self {
-            exporter: String::new(),
-            endpoint: default_otlp_endpoint(),
-        }
-    }
-}
-
 /// HTTP webhook gateway configuration, nested under `[gateway]` in TOML.
 ///
 /// When `enabled = true`, an HTTP server accepts webhook payloads and injects them
@@ -701,7 +671,7 @@ fn default_trace_service_name() -> String {
 #[serde(default)]
 pub struct TraceConfig {
     /// OTLP gRPC endpoint (only used when `otel` feature is enabled).
-    /// Defaults to `observability.endpoint` if unset (I-01).
+    /// Default: `"http://localhost:4317"`.
     #[serde(default = "default_otlp_endpoint")]
     pub otlp_endpoint: String,
     /// Service name reported to the `OTel` collector.

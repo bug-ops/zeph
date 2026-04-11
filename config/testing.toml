@@ -280,9 +280,6 @@ enabled = false
 [logging]
 file = ".local/testing/debug/zeph-acp.log"
 
-[observability]
-exporter = ""
-
 [memory.tiers]
 enabled = true
 promotion_min_sessions = 2

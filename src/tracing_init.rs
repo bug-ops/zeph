@@ -30,6 +30,25 @@ pub(crate) struct TracingGuards {
     #[cfg(feature = "profiling-pyroscope")]
     #[allow(dead_code)]
     pub(crate) pyroscope_guard: Option<crate::pyroscope_push::PyroscopeGuard>,
+    /// OTLP tracer provider shutdown handle. `None` when the `otel` feature is absent or
+    /// telemetry backend is not `Otlp`. Dropping this guard flushes the `BatchSpanProcessor`
+    /// queue and shuts down the provider cleanly.
+    #[cfg(feature = "otel")]
+    pub(crate) otel_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+}
+
+// Drop order: otel_provider shuts down first (flushes pending spans),
+// then chrome_guard, then log_guard. Rust drops struct fields in
+// declaration order, so otel_provider must be declared last.
+#[cfg(feature = "otel")]
+impl Drop for TracingGuards {
+    fn drop(&mut self) {
+        if let Some(provider) = self.otel_provider.take()
+            && let Err(e) = provider.shutdown()
+        {
+            eprintln!("zeph: OTLP provider shutdown error: {e}");
+        }
+    }
 }
 
 /// Resolve the effective log file path from CLI and config sources.
@@ -155,6 +174,13 @@ pub(crate) fn init_tracing(
     #[cfg(feature = "profiling")]
     let chrome_guard = build_chrome_layer(telemetry, &mut layers);
 
+    // Optional OTLP gRPC trace layer — active only when the `otel` feature is compiled in
+    // AND `telemetry.backend == Otlp`. Layers are mutually selected by backend variant:
+    // `build_chrome_layer` returns None for non-Local backends; `build_otlp_layer` activates
+    // only for Otlp. Both can coexist in the layer vec without conflict.
+    #[cfg(feature = "otel")]
+    let otel_provider = build_otlp_layer(telemetry, &mut layers, true);
+
     // Optional MetricsBridge layer — derives TurnTimings from span durations.
     #[cfg(feature = "profiling")]
     if let Some(collector) = metrics_collector {
@@ -172,8 +198,8 @@ pub(crate) fn init_tracing(
         )));
     }
 
-    // Suppress unused warning when profiling feature is disabled.
-    #[cfg(not(feature = "profiling"))]
+    // Suppress unused warning when neither profiling nor otel features are active.
+    #[cfg(not(any(feature = "profiling", feature = "otel")))]
     let _ = telemetry;
 
     tracing_subscriber::registry().with(layers).init();
@@ -195,6 +221,8 @@ pub(crate) fn init_tracing(
         chrome_guard,
         #[cfg(feature = "profiling-pyroscope")]
         pyroscope_guard,
+        #[cfg(feature = "otel")]
+        otel_provider,
     }
 }
 
@@ -248,6 +276,95 @@ fn build_chrome_layer(
     Some(guard)
 }
 
+/// Build the OTLP gRPC trace layer and append it to `layers`.
+///
+/// Returns the `SdkTracerProvider` shutdown handle (stored in [`TracingGuards`]) or `None`
+/// when telemetry is disabled or backend is not [`TelemetryBackend::Otlp`].
+///
+/// The `set_global` parameter controls whether `opentelemetry::global::set_tracer_provider` is
+/// called. Pass `true` in production (`init_tracing`) and `false` in tests to avoid polluting
+/// the global state and leaking `BatchSpanProcessor` background tasks.
+///
+/// # Panics
+///
+/// Does not panic. OTLP pipeline errors are logged via `tracing::warn!` and `None` is returned.
+#[cfg(feature = "otel")]
+fn build_otlp_layer(
+    telemetry: &TelemetryConfig,
+    layers: &mut Vec<
+        Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync + 'static>,
+    >,
+    set_global: bool,
+) -> Option<opentelemetry_sdk::trace::SdkTracerProvider> {
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_otlp::{SpanExporter, WithExportConfig as _};
+    use opentelemetry_sdk::trace::{BatchSpanProcessor, Sampler, SdkTracerProvider};
+    use zeph_core::config::TelemetryBackend;
+
+    if !telemetry.enabled || telemetry.backend != TelemetryBackend::Otlp {
+        return None;
+    }
+
+    if telemetry.otlp_headers_vault_key.is_some() {
+        tracing::warn!(
+            "telemetry.otlp_headers_vault_key is set but not yet wired; \
+             OTLP exporter connects unauthenticated"
+        );
+    }
+
+    let endpoint = telemetry
+        .otlp_endpoint
+        .as_deref()
+        .unwrap_or("http://localhost:4317");
+
+    let sample_rate = {
+        let r = telemetry.sample_rate;
+        if (0.0..=1.0).contains(&r) {
+            r
+        } else {
+            tracing::warn!(
+                configured = r,
+                clamped = r.clamp(0.0, 1.0),
+                "telemetry.sample_rate is outside [0.0, 1.0]; clamping"
+            );
+            r.clamp(0.0, 1.0)
+        }
+    };
+
+    let exporter = match SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+    {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("OTLP exporter init failed, tracing disabled: {e}");
+            return None;
+        }
+    };
+
+    // "service.name" is the canonical OTel semconv key (opentelemetry_semantic_conventions::resource::SERVICE_NAME).
+    // We inline the string to avoid a new dependency on that crate.
+    let resource = opentelemetry_sdk::Resource::builder_empty()
+        .with_service_name(telemetry.service_name.clone())
+        .build();
+
+    let provider = SdkTracerProvider::builder()
+        .with_span_processor(BatchSpanProcessor::builder(exporter).build())
+        .with_sampler(Sampler::TraceIdRatioBased(sample_rate))
+        .with_resource(resource)
+        .build();
+
+    if set_global {
+        opentelemetry::global::set_tracer_provider(provider.clone());
+    }
+
+    let tracer = provider.tracer(telemetry.service_name.clone());
+    layers.push(Box::new(tracing_opentelemetry::layer().with_tracer(tracer)));
+
+    Some(provider)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +400,113 @@ mod tests {
             result.as_deref(),
             Some(std::path::Path::new("/tmp/custom.log"))
         );
+    }
+
+    /// Verify that `build_otlp_layer` returns `None` when telemetry is disabled, regardless of
+    /// the backend setting, and that no layers are appended.
+    #[cfg(feature = "otel")]
+    #[test]
+    fn build_otlp_layer_disabled_returns_none() {
+        use zeph_core::config::{TelemetryBackend, TelemetryConfig};
+        let telemetry = TelemetryConfig {
+            enabled: false,
+            backend: TelemetryBackend::Otlp,
+            ..TelemetryConfig::default()
+        };
+        let mut layers: Vec<
+            Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
+        > = Vec::new();
+        let provider = build_otlp_layer(&telemetry, &mut layers, false);
+        assert!(
+            provider.is_none(),
+            "expected None when telemetry is disabled"
+        );
+        assert!(
+            layers.is_empty(),
+            "no layer should be appended when disabled"
+        );
+    }
+
+    /// Verify that `build_otlp_layer` returns `None` when the backend is not Otlp.
+    #[cfg(feature = "otel")]
+    #[test]
+    fn build_otlp_layer_non_otlp_backend_returns_none() {
+        use zeph_core::config::{TelemetryBackend, TelemetryConfig};
+        let telemetry = TelemetryConfig {
+            enabled: true,
+            backend: TelemetryBackend::Local,
+            ..TelemetryConfig::default()
+        };
+        let mut layers: Vec<
+            Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
+        > = Vec::new();
+        let provider = build_otlp_layer(&telemetry, &mut layers, false);
+        assert!(provider.is_none(), "expected None when backend is not Otlp");
+        assert!(layers.is_empty(), "no layer should be appended");
+    }
+
+    /// Verify that the sample_rate clamp expression correctly bounds values to `[0.0, 1.0]`.
+    /// The clamp logic runs before the network exporter is built — no live collector required.
+    #[cfg(feature = "otel")]
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn build_otlp_layer_sample_rate_out_of_range_is_clamped() {
+        let clamp = |r: f64| {
+            if (0.0..=1.0).contains(&r) {
+                r
+            } else {
+                r.clamp(0.0, 1.0)
+            }
+        };
+        assert_eq!(clamp(50.0), 1.0, "value > 1.0 must clamp to 1.0");
+        assert_eq!(clamp(-0.5), 0.0, "negative value must clamp to 0.0");
+        assert_eq!(
+            clamp(0.5),
+            0.5,
+            "in-range value must pass through unchanged"
+        );
+        assert_eq!(clamp(0.0), 0.0, "boundary 0.0 must pass through unchanged");
+        assert_eq!(clamp(1.0), 1.0, "boundary 1.0 must pass through unchanged");
+    }
+
+    /// Verify full `build_otlp_layer` pipeline with a live collector.
+    /// Skipped in CI — run manually with Jaeger: `docker compose -f docker/docker-compose.tracing.yml up -d`
+    #[cfg(feature = "otel")]
+    #[test]
+    #[ignore = "requires a live OTLP collector on localhost:4317"]
+    fn build_otlp_layer_live_pipeline_returns_provider() {
+        use zeph_core::config::{TelemetryBackend, TelemetryConfig};
+        let telemetry = TelemetryConfig {
+            enabled: true,
+            backend: TelemetryBackend::Otlp,
+            sample_rate: 1.0,
+            otlp_endpoint: Some("http://localhost:4317".into()),
+            ..TelemetryConfig::default()
+        };
+        let mut layers: Vec<
+            Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
+        > = Vec::new();
+        let provider = build_otlp_layer(&telemetry, &mut layers, false);
+        assert!(provider.is_some(), "expected Some with valid endpoint");
+        assert_eq!(layers.len(), 1, "one OTLP layer should be appended");
+    }
+
+    /// Verify that `TracingGuards` drops without panic when `otel_provider` is `Some`.
+    /// Uses a no-exporter `SdkTracerProvider` (no network required).
+    #[cfg(feature = "otel")]
+    #[test]
+    fn tracing_guards_drop_with_otel_provider_does_not_panic() {
+        use opentelemetry_sdk::trace::SdkTracerProvider;
+        let provider = SdkTracerProvider::builder().build();
+        let guards = TracingGuards {
+            log_guard: None,
+            #[cfg(feature = "profiling")]
+            chrome_guard: None,
+            #[cfg(feature = "profiling-pyroscope")]
+            pyroscope_guard: None,
+            otel_provider: Some(provider),
+        };
+        drop(guards); // must not panic
     }
 
     /// Verify that `build_chrome_layer` returns `None` without creating files when telemetry

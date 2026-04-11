@@ -232,8 +232,10 @@ dialoguer.workspace = true
 futures.workspace = true
 glob.workspace = true
 opentelemetry = { workspace = true, optional = true }
-opentelemetry-otlp = { workspace = true, optional = true }
-opentelemetry_sdk = { workspace = true, optional = true }
+# NOTE: grpc-tonic pulls tonic ^0.14 which coexists with qdrant-client's tonic 0.12.
+# Binary bloat is acceptable until qdrant-client upgrades (tracked in #2347).
+opentelemetry-otlp = { workspace = true, optional = true, features = ["grpc-tonic", "trace"] }
+opentelemetry_sdk = { workspace = true, optional = true, features = ["trace"] }
 parking_lot.workspace = true
 prometheus-client = { workspace = true, optional = true }
 reqwest.workspace = true

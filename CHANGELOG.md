@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **OTLP tracing pipeline wired** (`#2881`): `init_tracing` now activates the
+  `tracing-opentelemetry` layer when `telemetry.enabled = true` and `backend = "otlp"` (requires
+  `--features otel` or `--features server`). Spans are exported to an OTLP gRPC collector
+  (default: `http://localhost:4317`, overridable via `telemetry.otlp_endpoint`).
+  `sample_rate` outside `[0.0, 1.0]` is clamped with a `tracing::warn!`.
+  `TracingGuards` now holds the `SdkTracerProvider` shutdown handle and flushes the
+  `BatchSpanProcessor` queue on drop. Dead `ObservabilityConfig` struct removed from
+  `zeph-config`; existing configs with `[observability]` sections are silently ignored.
+  `testing.toml` updated to use `[telemetry]` block.
+
 - **Bench isolation per scenario** (`#2830`): new `BenchIsolation` struct in `zeph-bench` providing
   per-run `SQLite` database and Qdrant collection isolation. The Qdrant collection name follows
   `bench_{dataset}_{run_id}` so production collections are never touched. `reset()` deletes the

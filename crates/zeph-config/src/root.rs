@@ -13,8 +13,8 @@ use crate::classifiers::ClassifiersConfig;
 use crate::defaults::{default_skill_paths, default_sqlite_path_field};
 use crate::experiment::{ExperimentConfig, OrchestrationConfig};
 use crate::features::{
-    CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, ObservabilityConfig,
-    SchedulerConfig, SkillPromptMode, SkillsConfig, VaultConfig,
+    CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, SchedulerConfig,
+    SkillPromptMode, SkillsConfig, VaultConfig,
 };
 use crate::hooks::HooksConfig;
 use crate::learning::LearningConfig;
@@ -67,8 +67,6 @@ pub struct Config {
     pub timeouts: TimeoutConfig,
     #[serde(default)]
     pub cost: CostConfig,
-    #[serde(default)]
-    pub observability: ObservabilityConfig,
     #[serde(default)]
     pub gateway: GatewayConfig,
     #[serde(default)]
@@ -248,7 +246,6 @@ impl Default for Config {
             security: SecurityConfig::default(),
             timeouts: TimeoutConfig::default(),
             cost: CostConfig::default(),
-            observability: ObservabilityConfig::default(),
             gateway: GatewayConfig::default(),
             daemon: DaemonConfig::default(),
             scheduler: SchedulerConfig::default(),

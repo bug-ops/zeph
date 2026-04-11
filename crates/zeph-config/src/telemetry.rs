@@ -29,8 +29,7 @@ fn default_system_metrics_interval_secs() -> u64 {
 ///
 /// - `Local`: writes Chrome JSON traces to `trace_dir` on disk.
 /// - `Otlp`: exports spans to an OpenTelemetry collector via OTLP gRPC (requires the `otel`
-///   feature). Falls back to the existing `[observability]` endpoint when `otlp_endpoint` is
-///   unset.
+///   feature). Uses `otlp_endpoint` (default: `"http://localhost:4317"`) when set.
 /// - `Pyroscope`: continuous profiling via Pyroscope (requires the `profiling-pyroscope`
 ///   feature).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -83,7 +82,7 @@ pub struct TelemetryConfig {
     #[serde(default = "default_include_args")]
     pub include_args: bool,
     /// OTLP gRPC endpoint URL (used when `backend = "otlp"`).
-    /// Falls back to `[observability].endpoint` when unset.
+    /// Default: `"http://localhost:4317"` when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otlp_endpoint: Option<String>,
     /// Vault key for OTLP authentication headers (e.g. `ZEPH_OTLP_HEADERS`).

@@ -474,11 +474,6 @@ enabled = true
 # Maximum daily spend in cents (0 = unlimited)
 max_daily_cents = 0
 
-[observability]
-# Tracing exporter: "" (disabled) or "otlp" (requires otel feature)
-exporter = ""
-# OTLP collector endpoint
-endpoint = "http://localhost:4317"
 
 [vault]
 # Secret retrieval backend: "env" reads from environment variables
@@ -744,7 +739,7 @@ format = "json"
 
 [debug.traces]
 # OTLP gRPC endpoint for trace export (only used when format = "trace" and otel feature enabled).
-# Falls back to observability.endpoint if unset.
+# Default: "http://localhost:4317".
 otlp_endpoint = "http://localhost:4317"
 # Service name reported to the OTel collector.
 service_name = "zeph"
@@ -1082,7 +1077,7 @@ sweep_batch_size = 100
 # # Include function arguments in span attributes. Keep false (default) in production
 # # to avoid logging user messages, LLM responses, or tool outputs with PII.
 # include_args = false
-# # OTLP gRPC endpoint (backend = "otlp"; falls back to [observability].endpoint)
+# # OTLP gRPC endpoint (backend = "otlp"). Default: "http://localhost:4317".
 # otlp_endpoint = "http://localhost:4317"
 # # Vault key for OTLP auth headers (e.g. ZEPH_OTLP_HEADERS)
 # # otlp_headers_vault_key = ""
