@@ -9816,6 +9816,7 @@ dependencies = [
  "zeph-acp",
  "zeph-bench",
  "zeph-channels",
+ "zeph-common",
  "zeph-core",
  "zeph-db",
  "zeph-experiments",
