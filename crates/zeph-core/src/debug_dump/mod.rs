@@ -644,7 +644,7 @@ mod tests {
         let messages = sample_messages();
         let tools = sample_tools();
 
-        dumper.dump_request(&RequestDebugDump {
+        let _ = dumper.dump_request(&RequestDebugDump {
             model_name: "claude-sonnet-test",
             messages: &messages,
             tools: &tools,
@@ -673,7 +673,7 @@ mod tests {
         let messages = sample_messages();
         let tools = sample_tools();
 
-        dumper.dump_request(&RequestDebugDump {
+        let _ = dumper.dump_request(&RequestDebugDump {
             model_name: "gpt-5-mini",
             messages: &messages,
             tools: &tools,
