@@ -23,6 +23,11 @@ pub mod text;
 pub mod trust_level;
 pub mod types;
 
+/// Prefix embedded in tool output bodies when the full output was stored externally.
+///
+/// Format: `[full output stored — ID: {uuid} — {bytes} bytes, use read_overflow tool to retrieve]`
+pub const OVERFLOW_NOTICE_PREFIX: &str = "[full output stored \u{2014} ID: ";
+
 pub use policy::{PolicyLlmClient, PolicyMessage, PolicyRole};
 pub use trust_level::SkillTrustLevel;
 pub use types::{SessionId, ToolDefinition, ToolName};

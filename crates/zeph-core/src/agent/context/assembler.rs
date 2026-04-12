@@ -1,312 +1,33 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Stateless context assembler.
+//! Context assembly helpers for the Zeph agent.
 //!
-//! [`ContextAssembler`] gathers all memory-sourced context for a single agent turn by running
-//! all async fetch operations concurrently. It takes only borrowed references via
-//! [`ContextAssemblyInput`] and returns a [`PreparedContext`] ready for injection.
+//! This module provides utility functions for fetching individual context slots
+//! (summaries, cross-session context, semantic recall, etc.) used by
+//! `Agent::prepare_context` and test helpers.
 //!
-//! Invariants:
-//! - No `Agent` field mutations inside `gather()`.
-//! - No channel communication inside `gather()`.
-//! - All `send_status` calls remain in `Agent::prepare_context`.
-//! - `session_digest` is cached (not async) and stays in `Agent::apply_prepared_context`.
+//! The top-level gather logic is in [`zeph_context::assembler::ContextAssembler`].
 
-use std::future::Future;
-use std::pin::Pin;
+#[cfg(test)]
 use std::sync::Arc;
 
-use futures::StreamExt as _;
-use futures::stream::FuturesUnordered;
-
+#[cfg(test)]
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+#[cfg(test)]
 use zeph_memory::TokenCounter;
 
+#[cfg(test)]
 use super::super::error::AgentError;
+#[cfg(test)]
 use super::super::{
     CORRECTIONS_PREFIX, CROSS_SESSION_PREFIX, DOCUMENT_RAG_PREFIX, GRAPH_FACTS_PREFIX, MemoryState,
     RECALL_PREFIX, SUMMARY_PREFIX,
 };
-use super::ContextSlot;
-use crate::agent::context_manager::ContextManager;
-use crate::agent::learning_engine::LearningEngine;
-use crate::agent::state::{IndexState, SkillState};
+#[cfg(test)]
 use crate::redact::scrub_content;
 
-/// All borrowed fields needed to assemble context for one agent turn.
-///
-/// All fields are shared references — `ContextAssembler::gather` never mutates state.
-pub(crate) struct ContextAssemblyInput<'a> {
-    pub memory_state: &'a MemoryState,
-    pub context_manager: &'a ContextManager,
-    pub token_counter: &'a Arc<TokenCounter>,
-    pub skill_state: &'a SkillState,
-    pub index: &'a IndexState,
-    pub learning_engine: &'a LearningEngine,
-    /// Current value of `Agent::sidequest.turn_counter`, for adaptive strategy selection.
-    pub sidequest_turn_counter: u64,
-    /// Message window snapshot used for strategy resolution and system-prompt extraction.
-    pub messages: &'a [Message],
-    /// The user query for the current turn, used as the search query for all memory lookups.
-    pub query: &'a str,
-}
-
-/// Result of one context-assembly pass.
-///
-/// All source fields are `Option` — `None` means disabled, empty, or budget-exhausted.
-/// `session_digest` is excluded: it is a cached value injected by `Agent::apply_prepared_context`.
-pub(crate) struct PreparedContext {
-    pub graph_facts: Option<Message>,
-    pub doc_rag: Option<Message>,
-    pub corrections: Option<Message>,
-    pub recall: Option<Message>,
-    pub recall_confidence: Option<f32>,
-    pub cross_session: Option<Message>,
-    pub summaries: Option<Message>,
-    pub code_context: Option<String>,
-    pub persona_facts: Option<Message>,
-    pub trajectory_hints: Option<Message>,
-    pub tree_memory: Option<Message>,
-    /// Whether the memory-first context strategy is active for this turn.
-    pub memory_first: bool,
-    /// Token budget for recent conversation history (passed to trim step in apply).
-    pub recent_history_budget: usize,
-}
-
-/// Stateless coordinator for parallel context fetching.
-pub(crate) struct ContextAssembler;
-
-impl ContextAssembler {
-    /// Gather all context sources concurrently and return a [`PreparedContext`].
-    ///
-    /// Returns an empty `PreparedContext` immediately when `context_manager.budget` is `None`.
-    ///
-    /// # Errors
-    ///
-    /// Propagates errors from any async fetch operation.
-    #[allow(clippy::too_many_lines)] // parallel context gathering: memory, graph, skills — coupled async fanout
-    pub(crate) async fn gather(
-        input: &ContextAssemblyInput<'_>,
-    ) -> Result<PreparedContext, AgentError> {
-        type CtxFuture<'a> =
-            Pin<Box<dyn Future<Output = Result<ContextSlot, AgentError>> + Send + 'a>>;
-
-        let Some(ref budget) = input.context_manager.budget else {
-            return Ok(PreparedContext {
-                graph_facts: None,
-                doc_rag: None,
-                corrections: None,
-                recall: None,
-                recall_confidence: None,
-                cross_session: None,
-                summaries: None,
-                code_context: None,
-                persona_facts: None,
-                trajectory_hints: None,
-                tree_memory: None,
-                memory_first: false,
-                recent_history_budget: 0,
-            });
-        };
-
-        let memory_state = input.memory_state;
-        let tc = input.token_counter.clone();
-
-        let effective_strategy = match memory_state.compaction.context_strategy {
-            crate::config::ContextStrategy::FullHistory => {
-                crate::config::ContextStrategy::FullHistory
-            }
-            crate::config::ContextStrategy::MemoryFirst => {
-                crate::config::ContextStrategy::MemoryFirst
-            }
-            crate::config::ContextStrategy::Adaptive => {
-                if input.sidequest_turn_counter
-                    >= u64::from(memory_state.compaction.crossover_turn_threshold)
-                {
-                    crate::config::ContextStrategy::MemoryFirst
-                } else {
-                    crate::config::ContextStrategy::FullHistory
-                }
-            }
-        };
-        let memory_first = effective_strategy == crate::config::ContextStrategy::MemoryFirst;
-
-        let system_prompt = input
-            .messages
-            .first()
-            .filter(|m| m.role == Role::System)
-            .map_or("", |m| m.content.as_str());
-
-        let digest_tokens = memory_state
-            .compaction
-            .cached_session_digest
-            .as_ref()
-            .map_or(0, |(_, tokens)| *tokens);
-
-        let graph_enabled = memory_state.extraction.graph_config.enabled;
-
-        let alloc = budget.allocate_with_opts(
-            system_prompt,
-            &input.skill_state.last_skills_prompt,
-            &tc,
-            graph_enabled,
-            digest_tokens,
-            memory_first,
-        );
-
-        let correction_params = input
-            .learning_engine
-            .config
-            .as_ref()
-            .filter(|c| c.correction_detection)
-            .map(|c| {
-                (
-                    c.correction_recall_limit as usize,
-                    c.correction_min_similarity,
-                )
-            });
-        let (recall_limit, min_sim) = correction_params.unwrap_or((3, 0.75));
-
-        let router = input.context_manager.build_router();
-        let router_ref: &dyn zeph_memory::AsyncMemoryRouter = router.as_ref();
-        let query = input.query;
-
-        let mut fetchers: FuturesUnordered<CtxFuture<'_>> = FuturesUnordered::new();
-
-        tracing::debug!(
-            active_sources = alloc.active_sources(),
-            "context budget allocated"
-        );
-
-        if alloc.summaries > 0 {
-            fetchers.push(Box::pin(async {
-                fetch_summaries(memory_state, alloc.summaries, &tc)
-                    .await
-                    .map(ContextSlot::Summaries)
-            }));
-        }
-        if alloc.cross_session > 0 {
-            fetchers.push(Box::pin(async {
-                fetch_cross_session(memory_state, query, alloc.cross_session, &tc)
-                    .await
-                    .map(ContextSlot::CrossSession)
-            }));
-        }
-        if alloc.semantic_recall > 0 {
-            fetchers.push(Box::pin(async {
-                fetch_semantic_recall(
-                    memory_state,
-                    query,
-                    alloc.semantic_recall,
-                    &tc,
-                    Some(router_ref),
-                )
-                .await
-                .map(|(msg, score)| ContextSlot::SemanticRecall(msg, score))
-            }));
-            fetchers.push(Box::pin(async {
-                fetch_document_rag(memory_state, query, alloc.semantic_recall, &tc)
-                    .await
-                    .map(ContextSlot::DocumentRag)
-            }));
-        }
-        // Corrections are safety-critical and never budget-gated.
-        fetchers.push(Box::pin(async {
-            fetch_corrections(memory_state, query, recall_limit, min_sim)
-                .await
-                .map(ContextSlot::Corrections)
-        }));
-        if alloc.code_context > 0 {
-            let index = input.index;
-            fetchers.push(Box::pin(async {
-                index
-                    .fetch_code_rag(query, alloc.code_context)
-                    .await
-                    .map(ContextSlot::CodeContext)
-            }));
-        }
-        if alloc.graph_facts > 0 {
-            fetchers.push(Box::pin(async {
-                fetch_graph_facts(memory_state, query, alloc.graph_facts, &tc)
-                    .await
-                    .map(ContextSlot::GraphFacts)
-            }));
-        }
-        if memory_state.extraction.persona_config.context_budget_tokens > 0 {
-            fetchers.push(Box::pin(async {
-                let persona_budget = memory_state.extraction.persona_config.context_budget_tokens;
-                fetch_persona_facts(memory_state, persona_budget, &tc)
-                    .await
-                    .map(ContextSlot::PersonaFacts)
-            }));
-        }
-        if memory_state
-            .extraction
-            .trajectory_config
-            .context_budget_tokens
-            > 0
-        {
-            fetchers.push(Box::pin(async {
-                let tbudget = memory_state
-                    .extraction
-                    .trajectory_config
-                    .context_budget_tokens;
-                fetch_trajectory_hints(memory_state, tbudget, &tc)
-                    .await
-                    .map(ContextSlot::TrajectoryHints)
-            }));
-        }
-        if memory_state.subsystems.tree_config.context_budget_tokens > 0 {
-            fetchers.push(Box::pin(async {
-                let tbudget = memory_state.subsystems.tree_config.context_budget_tokens;
-                fetch_tree_memory(memory_state, tbudget, &tc)
-                    .await
-                    .map(ContextSlot::TreeMemory)
-            }));
-        }
-
-        let mut prepared = PreparedContext {
-            graph_facts: None,
-            doc_rag: None,
-            corrections: None,
-            recall: None,
-            recall_confidence: None,
-            cross_session: None,
-            summaries: None,
-            code_context: None,
-            persona_facts: None,
-            trajectory_hints: None,
-            tree_memory: None,
-            memory_first,
-            recent_history_budget: alloc.recent_history,
-        };
-
-        while let Some(result) = fetchers.next().await {
-            match result {
-                Ok(slot) => match slot {
-                    ContextSlot::Summaries(msg) => prepared.summaries = msg,
-                    ContextSlot::CrossSession(msg) => prepared.cross_session = msg,
-                    ContextSlot::SemanticRecall(msg, score) => {
-                        prepared.recall = msg;
-                        prepared.recall_confidence = score;
-                    }
-                    ContextSlot::DocumentRag(msg) => prepared.doc_rag = msg,
-                    ContextSlot::Corrections(msg) => prepared.corrections = msg,
-                    ContextSlot::CodeContext(text) => prepared.code_context = text,
-                    ContextSlot::GraphFacts(msg) => prepared.graph_facts = msg,
-                    ContextSlot::PersonaFacts(msg) => prepared.persona_facts = msg,
-                    ContextSlot::TrajectoryHints(msg) => prepared.trajectory_hints = msg,
-                    ContextSlot::TreeMemory(msg) => prepared.tree_memory = msg,
-                },
-                Err(e) => return Err(e),
-            }
-        }
-
-        Ok(prepared)
-    }
-}
-
+#[cfg(test)]
 pub(super) fn effective_recall_timeout_ms(configured: u64) -> u64 {
     if configured == 0 {
         tracing::warn!(
@@ -319,6 +40,7 @@ pub(super) fn effective_recall_timeout_ms(configured: u64) -> u64 {
     }
 }
 
+#[cfg(test)]
 pub(super) async fn fetch_graph_facts(
     memory_state: &MemoryState,
     query: &str,
@@ -424,6 +146,7 @@ pub(super) async fn fetch_graph_facts(
     Ok(Some(Message::from_legacy(Role::System, body)))
 }
 
+#[cfg(test)]
 pub(super) async fn fetch_persona_facts(
     memory_state: &MemoryState,
     budget_tokens: usize,
@@ -463,6 +186,7 @@ pub(super) async fn fetch_persona_facts(
     Ok(Some(Message::from_legacy(Role::System, body)))
 }
 
+#[cfg(test)]
 pub(super) async fn fetch_trajectory_hints(
     memory_state: &MemoryState,
     budget_tokens: usize,
@@ -510,6 +234,7 @@ pub(super) async fn fetch_trajectory_hints(
     Ok(Some(Message::from_legacy(Role::System, body)))
 }
 
+#[cfg(test)]
 pub(super) async fn fetch_tree_memory(
     memory_state: &MemoryState,
     budget_tokens: usize,
@@ -549,6 +274,7 @@ pub(super) async fn fetch_tree_memory(
     Ok(Some(Message::from_legacy(Role::System, body)))
 }
 
+#[cfg(test)]
 pub(super) fn format_correction_note(_original_output: &str, correction_text: &str) -> String {
     // Never replay the faulty assistant/tool output itself into future prompts.
     format!(
@@ -557,6 +283,7 @@ pub(super) fn format_correction_note(_original_output: &str, correction_text: &s
     )
 }
 
+#[cfg(test)]
 pub(super) async fn fetch_corrections(
     memory_state: &MemoryState,
     query: &str,
@@ -584,6 +311,7 @@ pub(super) async fn fetch_corrections(
     Ok(Some(Message::from_legacy(Role::System, text)))
 }
 
+#[cfg(test)]
 pub(super) async fn fetch_semantic_recall(
     memory_state: &MemoryState,
     query: &str,
@@ -650,6 +378,7 @@ pub(super) async fn fetch_semantic_recall(
     }
 }
 
+#[cfg(test)]
 pub(super) async fn fetch_document_rag(
     memory_state: &MemoryState,
     query: &str,
@@ -705,6 +434,7 @@ pub(super) async fn fetch_document_rag(
     }
 }
 
+#[cfg(test)]
 pub(super) async fn fetch_summaries(
     memory_state: &MemoryState,
     token_budget: usize,
@@ -750,6 +480,7 @@ pub(super) async fn fetch_summaries(
     }
 }
 
+#[cfg(test)]
 pub(super) async fn fetch_cross_session(
     memory_state: &MemoryState,
     query: &str,

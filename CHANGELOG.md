@@ -23,6 +23,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `bootstrap/provider.rs` and `bootstrap/skills.rs` so the binary crate is unaffected.
   Prerequisite for moving `bootstrap/` to the binary crate (#2906).
 
+- **`zeph-context` crate extraction** (`#2900`, Phase 1): context assembly, budget, manager, and
+  slot logic extracted from `zeph-core` into a new standalone `zeph-context` crate. `zeph-core`
+  now delegates to `zeph_context::assembler::ContextAssembler::gather` rather than owning the
+  assembly pipeline. Duplicate `chunk_messages`, `cap_summary`, `BudgetAllocation`, `ContextBudget`,
+  and `ContextManager` implementations removed from `zeph-core`; re-exported for call-site
+  compatibility. `scrub_content` is passed as a `fn(&str) -> Cow<'_, str>` pointer to avoid a
+  circular dependency. `zeph-core` reduced by ~900 LOC.
+
 - **`ContextAssembler` extraction** (`#2904`): extracted stateless `ContextAssembler` struct
   with `gather(input: &ContextAssemblyInput<'_>) -> Result<PreparedContext, AgentError>` into
   `crates/zeph-core/src/agent/context/assembler.rs`. All 9 `fetch_*` methods moved from

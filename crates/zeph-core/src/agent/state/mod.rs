@@ -601,6 +601,18 @@ impl IndexState {
             Ok(Some(context_text))
         }
     }
+
+    /// Return `Some(self)` when code indexing is enabled, `None` otherwise.
+    ///
+    /// Used by `prepare_context` to pass an optional `IndexAccess` reference to
+    /// `zeph_context::assembler::ContextAssembler::gather` without wrapping the whole state.
+    pub(crate) fn as_index_access(&self) -> Option<&dyn zeph_context::input::IndexAccess> {
+        if self.retriever.is_some() {
+            Some(self)
+        } else {
+            None
+        }
+    }
 }
 
 impl DebugState {

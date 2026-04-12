@@ -9986,6 +9986,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeph-context"
+version = "0.18.6"
+dependencies = [
+ "futures",
+ "parking_lot",
+ "regex",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zeph-common",
+ "zeph-config",
+ "zeph-llm",
+ "zeph-memory",
+]
+
+[[package]]
 name = "zeph-core"
 version = "0.18.6"
 dependencies = [
@@ -10028,6 +10045,7 @@ dependencies = [
  "uuid",
  "zeph-common",
  "zeph-config",
+ "zeph-context",
  "zeph-db",
  "zeph-experiments",
  "zeph-index",

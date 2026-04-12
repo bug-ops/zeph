@@ -1,0 +1,31 @@
+[package]
+name = "zeph-context"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+description = "Context budget, manager, compaction strategy, and assembler for the Zeph agent"
+readme = "README.md"
+
+[dependencies]
+futures.workspace = true
+parking_lot.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+zeph-common.workspace = true
+zeph-config.workspace = true
+zeph-llm.workspace = true
+zeph-memory.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

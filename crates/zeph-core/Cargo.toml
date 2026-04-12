@@ -58,6 +58,7 @@ tree-sitter.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 zeph-common.workspace = true
 zeph-config.workspace = true
+zeph-context.workspace = true
 zeph-vault.workspace = true
 zeph-orchestration.workspace = true
 zeph-sanitizer.workspace = true

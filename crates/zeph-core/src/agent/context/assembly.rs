@@ -398,8 +398,8 @@ impl<C: Channel> Agent<C> {
 
     /// Gather context from all memory sources and inject into the message window.
     ///
-    /// Delegates concurrent fetching to [`super::assembler::ContextAssembler::gather`] and then
-    /// calls [`Self::apply_prepared_context`] to mutate the message window.
+    /// Delegates concurrent fetching to [`zeph_context::assembler::ContextAssembler::gather`] and
+    /// then calls [`Self::apply_prepared_context`] to mutate the message window.
     pub(in crate::agent) async fn prepare_context(
         &mut self,
         query: &str,
@@ -422,20 +422,50 @@ impl<C: Channel> Agent<C> {
         self.remove_trajectory_hints_messages();
         self.remove_tree_memory_messages();
 
-        let input = super::assembler::ContextAssemblyInput {
-            memory_state: &self.memory_state,
+        let memory_view = zeph_context::input::ContextMemoryView {
+            memory: self.memory_state.persistence.memory.clone(),
+            conversation_id: self.memory_state.persistence.conversation_id,
+            recall_limit: self.memory_state.persistence.recall_limit,
+            cross_session_score_threshold: self
+                .memory_state
+                .persistence
+                .cross_session_score_threshold,
+            context_strategy: self.memory_state.compaction.context_strategy,
+            crossover_turn_threshold: self.memory_state.compaction.crossover_turn_threshold,
+            cached_session_digest: self.memory_state.compaction.cached_session_digest.clone(),
+            graph_config: self.memory_state.extraction.graph_config.clone(),
+            document_config: self.memory_state.extraction.document_config.clone(),
+            persona_config: self.memory_state.extraction.persona_config.clone(),
+            trajectory_config: self.memory_state.extraction.trajectory_config.clone(),
+            tree_config: self.memory_state.subsystems.tree_config.clone(),
+        };
+        let correction_config =
+            self.learning_engine
+                .config
+                .as_ref()
+                .map(|c| zeph_context::input::CorrectionConfig {
+                    correction_detection: c.correction_detection,
+                    correction_recall_limit: c.correction_recall_limit,
+                    correction_min_similarity: c.correction_min_similarity,
+                });
+        let index_access: Option<&dyn zeph_context::input::IndexAccess> =
+            self.index.as_index_access();
+        let input = zeph_context::input::ContextAssemblyInput {
+            memory: &memory_view,
             context_manager: &self.context_manager,
             token_counter: &self.metrics.token_counter,
-            skill_state: &self.skill_state,
-            index: &self.index,
-            learning_engine: &self.learning_engine,
+            skills_prompt: &self.skill_state.last_skills_prompt,
+            index: index_access,
+            correction_config,
             sidequest_turn_counter: self.sidequest.turn_counter,
             messages: &self.msg.messages,
             query,
+            scrub: crate::redact::scrub_content,
         };
 
-        let prepared = super::assembler::ContextAssembler::gather(&input)
+        let prepared = zeph_context::assembler::ContextAssembler::gather(&input)
             .await
+            .map_err(|e| super::super::error::AgentError::Other(format!("{e:#}")))
             .inspect_err(|_| {
                 // Status clear is best-effort; we drop the future intentionally.
                 std::mem::drop(self.channel.send_status(""));
@@ -446,12 +476,12 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    /// Apply a [`super::assembler::PreparedContext`] to the agent's message window.
+    /// Apply a [`zeph_context::assembler::PreparedContext`] to the agent's message window.
     ///
     /// Injects all fetched messages in order, handles `MemoryFirst` history drain, sanitizes
     /// memory content, trims to budget, and injects the session digest.
     #[allow(clippy::too_many_lines)] // sequential message injection: order matters, cannot split
-    async fn apply_prepared_context(&mut self, prepared: super::assembler::PreparedContext) {
+    async fn apply_prepared_context(&mut self, prepared: zeph_context::assembler::PreparedContext) {
         use std::borrow::Cow;
         use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
 
@@ -1447,60 +1477,12 @@ impl BudgetHint {
 ///
 /// Starts at 2 (coherence anchor) and extends backward past any leading `Role::User` messages
 /// that carry `MessagePart::ToolResult` parts. Such messages must always be immediately preceded
-/// by the `Role::Assistant` message that issued the corresponding `ToolUse`, otherwise the
-/// provider returns HTTP 400.
-///
-/// `history_start` is the index of the first non-system message (typically 1).
-/// Maximum number of messages scanned backward by `memory_first_keep_tail` before
-/// stopping at the next non-`ToolResult` boundary to avoid O(N) scans on long sessions.
-const MAX_KEEP_TAIL_SCAN: usize = 50;
-
-fn memory_first_keep_tail(messages: &[Message], history_start: usize) -> usize {
-    let mut keep_tail = 2usize;
-    let len = messages.len();
-    let max = len.saturating_sub(history_start);
-
-    while keep_tail < max {
-        let first_retained = &messages[len - keep_tail];
-        let is_tool_result = first_retained.role == Role::User
-            && first_retained
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolResult { .. }));
-
-        if is_tool_result {
-            keep_tail += 1;
-        } else {
-            // Non-ToolResult boundary — safe to stop regardless of cap.
-            break;
-        }
-
-        if keep_tail >= MAX_KEEP_TAIL_SCAN {
-            // Cap reached. Check whether the message just before the retained tail is a
-            // ToolUse (Assistant message with ToolUse parts). If so, include it to avoid
-            // leaving a ToolResult without its preceding ToolUse (HTTP 400 from providers).
-            let preceding_idx = len.saturating_sub(keep_tail + 1);
-            if preceding_idx >= history_start {
-                let preceding = &messages[preceding_idx];
-                let is_tool_use = preceding.role == Role::Assistant
-                    && preceding
-                        .parts
-                        .iter()
-                        .any(|p| matches!(p, MessagePart::ToolUse { .. }));
-                if is_tool_use {
-                    keep_tail += 1;
-                }
-            }
-            break;
-        }
-    }
-
-    keep_tail
-}
+use zeph_context::assembler::memory_first_keep_tail;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_context::assembler::MAX_KEEP_TAIL_SCAN;
     use zeph_llm::provider::{Message, MessagePart, Role};
 
     // ── effective_recall_timeout_ms tests (#2514) ────────────────────────────
