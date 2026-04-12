@@ -134,7 +134,7 @@ async fn spawn_warmup_with_backfill_status(
 }
 
 #[cfg(feature = "tui")]
-pub(crate) async fn run_tui_agent<C: Channel>(
+pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     agent: zeph_core::agent::Agent<C>,
     params: TuiRunParams<'_>,
 ) -> anyhow::Result<()> {
