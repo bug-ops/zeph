@@ -561,10 +561,10 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     // ----- /compact -----
     //
-    // compact_context() is not Send because load_compression_guidelines_if_enabled holds &self
-    // across an .await. The method signature is required by the AgentAccess trait (NullAgent
-    // needs it), but Agent<C>'s implementation panics — the actual dispatch remains in
-    // dispatch_slash_command which calls self.compact_context() directly without the Send bound.
+    // compact_context() is not Send because summarize_messages holds &self (via &AnyProvider
+    // in SummarizationDeps) across .await points — a fundamental HRTB limitation.
+    // The actual dispatch remains in dispatch_slash_command which calls compact_context()
+    // directly without the Send bound.
 
     fn compact_context<'a>(
         &'a mut self,
@@ -581,14 +581,21 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     fn reset_conversation<'a>(
         &'a mut self,
-        _keep_plan: bool,
-        _no_digest: bool,
+        keep_plan: bool,
+        no_digest: bool,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(CommandError::new(
-                "/new cannot be dispatched via AgentAccess (non-Send future); \
-                 handled directly in dispatch_slash_command",
-            ))
+        Box::pin(async move {
+            match self.reset_conversation(keep_plan, no_digest).await {
+                Ok((old_id, new_id)) => {
+                    let old = old_id.map_or_else(|| "none".to_string(), |id| id.0.to_string());
+                    let new = new_id.map_or_else(|| "none".to_string(), |id| id.0.to_string());
+                    let keep_note = if keep_plan { " (plan preserved)" } else { "" };
+                    Ok(format!(
+                        "New conversation started. Previous: {old} → Current: {new}{keep_note}"
+                    ))
+                }
+                Err(e) => Ok(format!("Failed to start new conversation: {e}")),
+            }
         })
     }
 
@@ -635,8 +642,9 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     // ----- /mcp -----
     //
-    // handle_mcp_command holds RwLockGuard across .await points — not Send.
-    // Dispatched via slash_commands directly, not through AgentAccess.
+    // handle_mcp_command_as_string is not Send because McpManager::add_server/remove_server
+    // hold tokio::sync::RwLockWriteGuard across .await points — an HRTB limitation.
+    // The actual dispatch remains in dispatch_slash_command.
 
     fn handle_mcp<'a>(
         &'a mut self,
@@ -644,7 +652,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async {
             Err(CommandError::new(
-                "/mcp cannot be dispatched via AgentAccess (RwLockGuard held across await); \
+                "/mcp cannot be dispatched via AgentAccess (non-Send future); \
                  handled directly in dispatch_slash_command",
             ))
         })
@@ -654,13 +662,13 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     fn handle_plan<'a>(
         &'a mut self,
-        _input: &'a str,
+        input: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(CommandError::new(
-                "/plan cannot be dispatched via AgentAccess (non-Send future); \
-                 handled directly in dispatch_slash_command",
-            ))
+        Box::pin(async move {
+            self.dispatch_plan_command(input)
+                .await
+                .map(|()| String::new())
+                .map_err(|e| CommandError::new(e.to_string()))
         })
     }
 
@@ -668,13 +676,12 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     fn handle_experiment<'a>(
         &'a mut self,
-        _input: &'a str,
+        input: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(CommandError::new(
-                "/experiment cannot be dispatched via AgentAccess (non-Send future); \
-                 handled directly in dispatch_slash_command",
-            ))
+        Box::pin(async move {
+            self.handle_experiment_command_as_string(input)
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))
         })
     }
 

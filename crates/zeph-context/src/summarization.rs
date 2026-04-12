@@ -25,6 +25,7 @@ use zeph_memory::{AnchoredSummary, TokenCounter};
 ///
 /// Passed to [`single_pass_summary`], [`summarize_with_llm`], and [`summarize_structured`]
 /// so these functions can be called from `zeph-context` without depending on `zeph-core`.
+#[derive(Clone)]
 pub struct SummarizationDeps {
     /// LLM provider used for all summarization calls.
     pub provider: AnyProvider,

@@ -55,6 +55,14 @@ impl<C: Channel> Agent<C> {
         zeph_context::summarization::summarize_structured(&deps, messages, guidelines).await
     }
 
+    async fn try_summarize_structured_with_deps(
+        deps: SummarizationDeps,
+        messages: &[Message],
+        guidelines: &str,
+    ) -> Result<AnchoredSummary, zeph_llm::LlmError> {
+        zeph_context::summarization::summarize_structured(&deps, messages, guidelines).await
+    }
+
     /// Build a metadata-only summary without calling the LLM.
     /// Used as last-resort fallback when LLM summarization repeatedly fails.
     pub(super) fn build_metadata_summary(messages: &[Message]) -> String {
@@ -69,6 +77,14 @@ impl<C: Channel> Agent<C> {
         guidelines: &str,
     ) -> Result<String, zeph_llm::LlmError> {
         let deps = self.build_summarization_deps();
+        zeph_context::summarization::summarize_with_llm(&deps, messages, guidelines).await
+    }
+
+    async fn try_summarize_with_llm_with_deps(
+        deps: SummarizationDeps,
+        messages: &[Message],
+        guidelines: &str,
+    ) -> Result<String, zeph_llm::LlmError> {
         zeph_context::summarization::summarize_with_llm(&deps, messages, guidelines).await
     }
 
@@ -170,29 +186,117 @@ impl<C: Channel> Agent<C> {
         Ok(Self::build_metadata_summary(messages))
     }
 
+    /// Summarize `messages` using `deps` extracted from `&self` before any `.await`.
+    ///
+    /// Equivalent to `summarize_messages` but takes `SummarizationDeps` by value so the
+    /// caller can extract deps synchronously, then call this without holding `&self` across
+    /// any `.await`, making the enclosing future `Send`.
+    async fn summarize_messages_with_deps(
+        deps: SummarizationDeps,
+        structured_summaries: bool,
+        messages: &[Message],
+        guidelines: &str,
+    ) -> Result<String, super::super::error::AgentError> {
+        if structured_summaries {
+            match Self::try_summarize_structured_with_deps(deps.clone(), messages, guidelines).await
+            {
+                Ok(anchored) => {
+                    if let Some(ref cb) = deps.on_anchored_summary {
+                        cb(&anchored, false);
+                    }
+                    return Ok(super::cap_summary(anchored.to_markdown(), 16_000));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "structured summarization failed, falling back to prose");
+                    if let Some(ref cb) = deps.on_anchored_summary {
+                        let empty = AnchoredSummary {
+                            session_intent: String::new(),
+                            files_modified: vec![],
+                            decisions_made: vec![],
+                            open_questions: vec![],
+                            next_steps: vec![],
+                        };
+                        cb(&empty, true);
+                    }
+                }
+            }
+        }
+
+        match Self::try_summarize_with_llm_with_deps(deps.clone(), messages, guidelines).await {
+            Ok(summary) => return Ok(summary),
+            Err(e) if !e.is_context_length_error() => return Err(e.into()),
+            Err(e) => {
+                tracing::warn!(
+                    "summarization hit context length error ({e}), trying progressive tool response removal"
+                );
+            }
+        }
+
+        for fraction in [0.10f32, 0.20, 0.50, 1.0] {
+            let reduced = Self::remove_tool_responses_middle_out(messages.to_vec(), fraction);
+            tracing::debug!(
+                fraction,
+                "retrying summarization with reduced tool responses"
+            );
+            match Self::try_summarize_with_llm_with_deps(deps.clone(), &reduced, guidelines).await {
+                Ok(summary) => {
+                    tracing::info!(
+                        fraction,
+                        "summarization succeeded after tool response removal"
+                    );
+                    return Ok(summary);
+                }
+                Err(e) if e.is_context_length_error() => {
+                    tracing::warn!(fraction, "still context length error, trying next tier");
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        tracing::warn!("all LLM summarization attempts failed, using metadata fallback");
+        Ok(Self::build_metadata_summary(messages))
+    }
+
     /// Load the current compression guidelines from `SQLite` if the feature is enabled.
     ///
     /// Returns an empty string when the feature is disabled, memory is not initialized,
     /// or the database query fails (non-fatal).
-    async fn load_compression_guidelines_if_enabled(&self) -> String {
-        let config = &self.memory_state.compaction.compression_guidelines_config;
-        if !config.enabled {
+    ///
+    /// Callers must extract `memory` and `conv_id` from `&self` before the first `.await`
+    /// so that `&self` is not held across the await boundary (required for Send futures).
+    async fn load_compression_guidelines(
+        enabled: bool,
+        memory: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
+        conv_id: Option<zeph_memory::ConversationId>,
+    ) -> String {
+        if !enabled {
             return String::new();
         }
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = memory else {
             return String::new();
         };
-        match memory
-            .sqlite()
-            .load_compression_guidelines(self.memory_state.persistence.conversation_id)
-            .await
-        {
+        match memory.sqlite().load_compression_guidelines(conv_id).await {
             Ok((_, text)) => text,
             Err(e) => {
                 tracing::warn!("failed to load compression guidelines: {e:#}");
                 String::new()
             }
         }
+    }
+
+    /// Load the current compression guidelines from `SQLite` if the feature is enabled.
+    ///
+    /// Returns an empty string when the feature is disabled, memory is not initialized,
+    /// or the database query fails (non-fatal).
+    async fn load_compression_guidelines_if_enabled(&self) -> String {
+        let enabled = self
+            .memory_state
+            .compaction
+            .compression_guidelines_config
+            .enabled;
+        let memory = self.memory_state.persistence.memory.clone();
+        let conv_id = self.memory_state.persistence.conversation_id;
+        Self::load_compression_guidelines(enabled, memory, conv_id).await
     }
 
     /// Archive tool output bodies from `to_compact` messages before compaction (Memex #2432).
@@ -203,14 +307,19 @@ impl<C: Channel> Agent<C> {
     ///
     /// References are injected AFTER summarization (fix C1: LLM would destroy them).
     /// Returns an empty vec when `archive_tool_outputs` is disabled or memory is unavailable.
-    async fn archive_tool_outputs_for_compaction(&self, to_compact: &[Message]) -> Vec<String> {
-        if !self.context_manager.compression.archive_tool_outputs {
+    ///
+    /// Callers must extract `memory` and `cid` from `&self` before the first `.await`
+    /// so that `&self` is not held across the await boundary (required for Send futures).
+    async fn archive_tool_outputs(
+        archive_enabled: bool,
+        memory: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
+        cid: Option<zeph_memory::ConversationId>,
+        to_compact: &[Message],
+    ) -> Vec<String> {
+        if !archive_enabled {
             return Vec::new();
         }
-        let (Some(memory), Some(cid)) = (
-            &self.memory_state.persistence.memory,
-            self.memory_state.persistence.conversation_id,
-        ) else {
+        let (Some(memory), Some(cid)) = (memory, cid) else {
             return Vec::new();
         };
 
@@ -256,6 +365,13 @@ impl<C: Channel> Agent<C> {
             );
         }
         refs
+    }
+
+    async fn archive_tool_outputs_for_compaction(&self, to_compact: &[Message]) -> Vec<String> {
+        let archive_enabled = self.context_manager.compression.archive_tool_outputs;
+        let memory = self.memory_state.persistence.memory.clone();
+        let cid = self.memory_state.persistence.conversation_id;
+        Self::archive_tool_outputs(archive_enabled, memory, cid, to_compact).await
     }
 
     #[allow(clippy::too_many_lines)]
@@ -345,7 +461,17 @@ impl<C: Channel> Agent<C> {
         }
 
         // Load compression guidelines if configured.
-        let guidelines = self.load_compression_guidelines_if_enabled().await;
+        // Extract all params from &self before .await so no &self is held across await.
+        let guidelines = {
+            let enabled = self
+                .memory_state
+                .compaction
+                .compression_guidelines_config
+                .enabled;
+            let memory = self.memory_state.persistence.memory.clone();
+            let conv_id = self.memory_state.persistence.conversation_id;
+            Self::load_compression_guidelines(enabled, memory, conv_id).await
+        };
 
         // Memex: archive tool output bodies before compaction (#2432).
         //
@@ -355,10 +481,20 @@ impl<C: Channel> Agent<C> {
         //
         // Invariant: save_archive() is called before the placeholder is created;
         // the placeholder is only inserted into the postfix, not into `to_compact`.
-        let archived_refs: Vec<String> =
-            self.archive_tool_outputs_for_compaction(&to_compact).await;
+        // Extract all params from &self before .await so no &self is held across await.
+        let archived_refs: Vec<String> = {
+            let archive_enabled = self.context_manager.compression.archive_tool_outputs;
+            let memory = self.memory_state.persistence.memory.clone();
+            let cid = self.memory_state.persistence.conversation_id;
+            Self::archive_tool_outputs(archive_enabled, memory, cid, &to_compact).await
+        };
 
-        let summary = self.summarize_messages(&to_compact, &guidelines).await?;
+        // Extract deps before .await so &self is not held across the await boundary.
+        let summary = {
+            let deps = self.build_summarization_deps();
+            let structured = self.memory_state.compaction.structured_summaries;
+            Self::summarize_messages_with_deps(deps, structured, &to_compact, &guidelines).await?
+        };
 
         // Compaction probe: validate summary quality before committing it.
         if self.context_manager.compression.probe.enabled {

@@ -210,7 +210,9 @@ impl<C: Channel> Agent<C> {
         super::super::error::AgentError,
     > {
         // --- Step 1: create new ConversationId FIRST (fail-fast) ---
-        let new_conversation_id = if let Some(ref memory) = self.memory_state.persistence.memory {
+        // Clone the Arc before .await so &mut self is not held across the await boundary.
+        let memory_arc = self.memory_state.persistence.memory.clone();
+        let new_conversation_id = if let Some(memory) = memory_arc {
             match memory.sqlite().create_conversation().await {
                 Ok(id) => Some(id),
                 Err(e) => return Err(super::super::error::AgentError::Memory(e)),

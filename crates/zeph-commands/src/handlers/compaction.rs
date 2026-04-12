@@ -1,7 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Context compaction and conversation reset handlers: `/compact`, `/new`.
+//! Conversation reset handler: `/new`.
+//!
+//! Note: `/compact` is intentionally absent. `AgentAccess::compact_context` cannot be made
+//! `Send` due to HRTB constraints on `AnyProvider` (the provider is `!Sync`, so
+//! `&AnyProvider` across `.await` in a `Box<dyn Future + Send>` fails). `/compact` remains
+//! in `dispatch_slash_command` until `AnyProvider` is made `Sync` in `zeph-llm`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -9,50 +14,11 @@ use std::pin::Pin;
 use crate::context::CommandContext;
 use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 
-/// Context compaction handler stub.
+/// New conversation handler for `/new`.
 ///
-/// This handler is NOT registered in any command registry. The `/compact` command is
-/// dispatched directly via `dispatch_slash_command` because `compact_context` holds `&self`
-/// across `.await` points (via `load_compression_guidelines_if_enabled`), making the future
-/// non-Send.
-///
-/// This struct exists to document the intended handler shape for when the Send constraint
-/// is lifted in a future migration phase.
-pub struct CompactCommand;
-
-impl CommandHandler<CommandContext<'_>> for CompactCommand {
-    fn name(&self) -> &'static str {
-        "/compact"
-    }
-
-    fn description(&self) -> &'static str {
-        "Compact the context window"
-    }
-
-    fn category(&self) -> SlashCategory {
-        SlashCategory::Session
-    }
-
-    fn handle<'a>(
-        &'a self,
-        ctx: &'a mut CommandContext<'_>,
-        _args: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.compact_context().await?;
-            Ok(CommandOutput::Message(result))
-        })
-    }
-}
-
-/// New conversation handler stub.
-///
-/// This handler is NOT registered in any command registry. The `/new` command is dispatched
-/// directly via `dispatch_slash_command` for the same non-Send reason as `CompactCommand`
-/// (calls `load_compression_guidelines_if_enabled` across an `.await`).
-///
-/// This struct exists to document the intended handler shape for when the Send constraint
-/// is lifted in a future migration phase.
+/// Delegates to [`AgentAccess::reset_conversation`] which is now Send-compatible:
+/// `reset_conversation` clones the `Arc<SemanticMemory>` before `.await` so no
+/// `&mut self` borrow is held across the await boundary.
 pub struct NewConversationCommand;
 
 impl CommandHandler<CommandContext<'_>> for NewConversationCommand {
@@ -78,10 +44,51 @@ impl CommandHandler<CommandContext<'_>> for NewConversationCommand {
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
         Box::pin(async move {
-            let keep_plan = args.split_whitespace().any(|a| a == "--keep-plan");
-            let no_digest = args.split_whitespace().any(|a| a == "--no-digest");
+            let (keep_plan, no_digest) = parse_new_flags(args);
             let result = ctx.agent.reset_conversation(keep_plan, no_digest).await?;
             Ok(CommandOutput::Message(result))
         })
+    }
+}
+
+/// Parse `--keep-plan` and `--no-digest` flags from the `/new` command args string.
+fn parse_new_flags(args: &str) -> (bool, bool) {
+    let keep_plan = args.split_whitespace().any(|a| a == "--keep-plan");
+    let no_digest = args.split_whitespace().any(|a| a == "--no-digest");
+    (keep_plan, no_digest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_new_flags;
+
+    #[test]
+    fn no_flags_both_false() {
+        assert_eq!(parse_new_flags(""), (false, false));
+        assert_eq!(parse_new_flags("   "), (false, false));
+    }
+
+    #[test]
+    fn keep_plan_flag_detected() {
+        assert_eq!(parse_new_flags("--keep-plan"), (true, false));
+        assert_eq!(parse_new_flags("--keep-plan --no-digest"), (true, true));
+    }
+
+    #[test]
+    fn no_digest_flag_detected() {
+        assert_eq!(parse_new_flags("--no-digest"), (false, true));
+    }
+
+    #[test]
+    fn both_flags_order_independent() {
+        assert_eq!(parse_new_flags("--no-digest --keep-plan"), (true, true));
+        assert_eq!(parse_new_flags("--keep-plan --no-digest"), (true, true));
+    }
+
+    #[test]
+    fn partial_flag_name_not_matched() {
+        assert_eq!(parse_new_flags("--keep"), (false, false));
+        assert_eq!(parse_new_flags("--no"), (false, false));
+        assert_eq!(parse_new_flags("keep-plan"), (false, false));
     }
 }

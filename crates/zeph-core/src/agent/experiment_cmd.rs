@@ -314,6 +314,197 @@ impl<C: Channel> Agent<C> {
         }
         Ok(())
     }
+    /// Dispatch `/experiment` returning output as a string instead of writing to the channel.
+    ///
+    /// All `Arc` clones are extracted before `.await` so `&mut self` is not held across await
+    /// boundaries, making the returned future `Send`.
+    pub(super) async fn handle_experiment_command_as_string(
+        &mut self,
+        input: &str,
+    ) -> Result<String, AgentError> {
+        let args = input.strip_prefix("/experiment").unwrap_or("").trim();
+        match args {
+            "" | "status" => self.experiment_status().await,
+            "stop" => Ok(self.experiment_stop()),
+            "report" => self.experiment_report().await,
+            "best" => self.experiment_best().await,
+            _ if args == "start" || args.starts_with("start ") => {
+                let max_override = args
+                    .strip_prefix("start")
+                    .and_then(|s| s.trim().parse::<u32>().ok());
+                Ok(self.experiment_start(max_override))
+            }
+            _ => Ok(
+                "Unknown /experiment subcommand. Available: /experiment start [N], \
+                 /experiment stop, /experiment status, /experiment report, /experiment best"
+                    .to_owned(),
+            ),
+        }
+    }
+
+    async fn experiment_status(&mut self) -> Result<String, AgentError> {
+        let running = self
+            .experiments
+            .cancel
+            .as_ref()
+            .is_some_and(|t| !t.is_cancelled());
+        let mut msg = if running {
+            String::from("Experiment: **running**. Use `/experiment stop` to cancel.")
+        } else {
+            String::from("Experiment: **idle**. Use `/experiment start [N]` to begin.")
+        };
+        let memory = self.memory_state.persistence.memory.clone();
+        if let Some(memory) = memory {
+            let rows = memory.sqlite().list_experiment_results(None, 1).await?;
+            if let Some(latest) = rows.first()
+                && let Some(summary) = memory
+                    .sqlite()
+                    .experiment_session_summary(&latest.session_id)
+                    .await?
+            {
+                let sid_len = summary.session_id.len().min(11);
+                let _ = write!(
+                    msg,
+                    "\nLast session: `{}` | {} experiments | {} accepted | best delta: {:.3}",
+                    &summary.session_id[..sid_len],
+                    summary.total,
+                    summary.accepted_count,
+                    summary.best_delta,
+                );
+            }
+        }
+        Ok(msg)
+    }
+
+    fn experiment_stop(&mut self) -> String {
+        match &self.experiments.cancel {
+            Some(token) if !token.is_cancelled() => {
+                token.cancel();
+                "Experiment session cancelled. Results so far are saved.".to_owned()
+            }
+            _ => "No experiment is currently running.".to_owned(),
+        }
+    }
+
+    async fn experiment_report(&mut self) -> Result<String, AgentError> {
+        let memory = self.memory_state.persistence.memory.clone();
+        let Some(memory) = memory else {
+            return Ok("Memory is not enabled — cannot query experiment results.".to_owned());
+        };
+        let rows = memory.sqlite().list_experiment_results(None, 50).await?;
+        if rows.is_empty() {
+            return Ok("No experiment results found.".to_owned());
+        }
+        let mut out = String::from("**Experiment Results** (last 50, newest first)\n\n```\n");
+        let _ = writeln!(
+            out,
+            "{:<8} {:<12} {:<20} {:<8} {:<8} {:<8} {:<8}",
+            "ID", "Session", "Parameter", "Delta", "Baseline", "Candidate", "Accepted"
+        );
+        for r in &rows {
+            let sid_len = r.session_id.len().min(11);
+            let _ = writeln!(
+                out,
+                "{:<8} {:<12} {:<20} {:<8.3} {:<8.3} {:<8.3} {:<8}",
+                r.id,
+                &r.session_id[..sid_len],
+                &r.parameter,
+                r.delta,
+                r.baseline_score,
+                r.candidate_score,
+                if r.accepted { "yes" } else { "no" },
+            );
+        }
+        out.push_str("```");
+        Ok(out)
+    }
+
+    async fn experiment_best(&mut self) -> Result<String, AgentError> {
+        let memory = self.memory_state.persistence.memory.clone();
+        let Some(memory) = memory else {
+            return Ok("Memory is not enabled — cannot query experiment results.".to_owned());
+        };
+        let row = memory.sqlite().best_experiment_result(None).await?;
+        let msg = match row {
+            None => "No accepted experiment results found yet.".to_owned(),
+            Some(r) => {
+                let sid_len = r.session_id.len().min(11);
+                format!(
+                    "**Best experiment result**\n\
+                     - Session: `{}`\n\
+                     - Parameter: `{}`\n\
+                     - Delta: `{:.3}` ({:.3} → {:.3})\n\
+                     - Source: `{}`\n\
+                     - At: {}",
+                    &r.session_id[..sid_len],
+                    r.parameter,
+                    r.delta,
+                    r.baseline_score,
+                    r.candidate_score,
+                    r.source,
+                    r.created_at,
+                )
+            }
+        };
+        Ok(msg)
+    }
+
+    fn experiment_start(&mut self, max_override: Option<u32>) -> String {
+        if self
+            .experiments
+            .cancel
+            .as_ref()
+            .is_some_and(|t| !t.is_cancelled())
+        {
+            return "Experiment already running. Use /experiment stop to cancel.".to_owned();
+        }
+        let mut config = self.experiments.config.clone();
+        if !config.enabled {
+            return "Experiments are disabled. Set `experiments.enabled = true` in config and restart."
+                .to_owned();
+        }
+        if let Some(n) = max_override {
+            config.max_experiments = n;
+        }
+        if let Err(e) = config.validate() {
+            return format!("Experiment config is invalid: {e}");
+        }
+        let max_n = config.max_experiments;
+        let engine = match self.build_experiment_engine(config) {
+            Ok(e) => e,
+            Err(msg) => return msg,
+        };
+        let cancel = engine.cancel_token();
+        self.experiments.cancel = Some(cancel);
+        let notify_tx = self.experiments.notify_tx.clone();
+        tokio::spawn(async move {
+            let mut engine = engine;
+            let msg = match engine.run().await {
+                Ok(report) => {
+                    let accepted = report.results.iter().filter(|r| r.accepted).count();
+                    let wall_secs =
+                        f64::from(u32::try_from(report.wall_time_ms).unwrap_or(u32::MAX)) / 1000.0;
+                    format!(
+                        "Experiment session `{}` complete: {}/{} accepted, \
+                         baseline {:.3} → {:.3} (improvement {:.3}), {wall_secs:.1}s{}",
+                        &report.session_id[..report.session_id.len().min(8)],
+                        accepted,
+                        report.results.len(),
+                        report.baseline_score,
+                        report.final_score,
+                        report.total_improvement,
+                        if report.cancelled { " [cancelled]" } else { "" },
+                    )
+                }
+                Err(e) => format!("Experiment session failed: {e}"),
+            };
+            let _ = notify_tx.send(msg).await;
+        });
+        format!(
+            "Experiment session starting (max {max_n} experiments). \
+             Use /experiment stop to cancel. Results will be shown when complete."
+        )
+    }
 }
 
 #[cfg(test)]

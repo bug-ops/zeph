@@ -9,14 +9,11 @@ use std::pin::Pin;
 use crate::context::CommandContext;
 use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 
-/// Planning handler stub.
+/// Planning handler for `/plan`.
 ///
-/// This handler is NOT registered in any command registry. The `/plan` command is dispatched
-/// directly via `dispatch_slash_command` because `dispatch_plan_command` produces a non-Send
-/// future.
-///
-/// This struct exists to document the intended handler shape for when the Send constraint
-/// is lifted in a future migration phase.
+/// Delegates to [`AgentAccess::handle_plan`] which dispatches to `dispatch_plan_command`.
+/// The future is Send because `Agent<C>: Send` and no non-Send guards are held across
+/// await boundaries.
 pub struct PlanCommand;
 
 impl CommandHandler<CommandContext<'_>> for PlanCommand {

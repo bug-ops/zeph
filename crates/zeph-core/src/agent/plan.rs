@@ -106,12 +106,14 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
-    pub(super) async fn goal_embedding_for_cache(&self, goal: &str) -> Option<Vec<f32>> {
+    pub(super) async fn goal_embedding_for_cache(&mut self, goal: &str) -> Option<Vec<f32>> {
         use zeph_orchestration::normalize_goal;
 
         self.orchestration.plan_cache.as_ref()?;
         let normalized = normalize_goal(goal);
-        match self.embedding_provider.embed(&normalized).await {
+        // Clone provider before .await so &self is not held across the await boundary.
+        let provider = self.embedding_provider.clone();
+        match provider.embed(&normalized).await {
             Ok(emb) => Some(emb),
             Err(zeph_llm::LlmError::EmbedUnsupported { .. }) => {
                 tracing::debug!(
@@ -914,7 +916,6 @@ impl<C: crate::channel::Channel> Agent<C> {
                     .map_err(error::AgentError::from)?;
             }
         }
-        let _ = self.channel.flush_chunks().await;
         Ok(())
     }
 }

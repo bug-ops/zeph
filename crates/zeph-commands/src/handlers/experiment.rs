@@ -9,14 +9,11 @@ use std::pin::Pin;
 use crate::context::CommandContext;
 use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 
-/// Experimental features handler stub.
+/// Experimental features handler for `/experiment`.
 ///
-/// This handler is NOT registered in any command registry. The `/experiment` command is
-/// dispatched directly via `dispatch_slash_command` because `handle_experiment_command`
-/// produces a non-Send future.
-///
-/// This struct exists to document the intended handler shape for when the Send constraint
-/// is lifted in a future migration phase.
+/// Delegates to [`AgentAccess::handle_experiment`] which is now Send-compatible:
+/// `handle_experiment_command_as_string` clones all `Arc` references before `.await`
+/// so no `&mut self` borrow is held across await boundaries.
 pub struct ExperimentCommand;
 
 impl CommandHandler<CommandContext<'_>> for ExperimentCommand {

@@ -32,10 +32,8 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// Commands that remain here could not be migrated to the registry pattern because their
     /// implementations hold non-Send futures (references across `.await` points):
     /// - `/skill`, `/skills`, `/feedback` — non-Send DB references
-    /// - `/compact`, `/new` — `compact_context`/`reset_conversation` hold `&self` across .await
-    /// - `/mcp` — `RwLockGuard` across .await
-    /// - `/plan` — orchestration internals
-    /// - `/experiment` — spawned task handles
+    /// - `/compact` — `AnyProvider::embed/chat` creates `&AnyProvider` across await (HRTB)
+    /// - `/mcp` — `McpManager` methods hold `RwLockWriteGuard` across await (HRTB)
     ///
     /// All other slash commands are dispatched through `session_registry` or `agent_registry`
     /// in `Agent::run`.
@@ -79,33 +77,9 @@ impl<C: crate::channel::Channel> Agent<C> {
             handled!(self.channel.send(&msg).await.map_err(Into::into));
         }
 
-        if trimmed == "/new" || trimmed.starts_with("/new ") {
-            let args = trimmed.strip_prefix("/new").unwrap_or("").trim();
-            let keep_plan = args.split_whitespace().any(|a| a == "--keep-plan");
-            let no_digest = args.split_whitespace().any(|a| a == "--no-digest");
-            let msg = match self.reset_conversation(keep_plan, no_digest).await {
-                Ok((old_id, new_id)) => {
-                    let old = old_id.map_or_else(|| "none".to_string(), |id| id.0.to_string());
-                    let new = new_id.map_or_else(|| "none".to_string(), |id| id.0.to_string());
-                    let keep_note = if keep_plan { " (plan preserved)" } else { "" };
-                    format!("New conversation started. Previous: {old} → Current: {new}{keep_note}")
-                }
-                Err(e) => format!("Failed to start new conversation: {e}"),
-            };
-            handled!(self.channel.send(&msg).await.map_err(Into::into));
-        }
-
         if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
             let args = trimmed.strip_prefix("/mcp").unwrap_or("").trim().to_owned();
             handled!(self.handle_mcp_command(&args).await);
-        }
-
-        if trimmed == "/plan" || trimmed.starts_with("/plan ") {
-            return Some(self.dispatch_plan_command(trimmed).await);
-        }
-
-        if trimmed == "/experiment" || trimmed.starts_with("/experiment ") {
-            handled!(self.handle_experiment_command(trimmed).await);
         }
 
         if trimmed == "/skills" || trimmed.starts_with("/skills ") {
