@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Handler migration phase 4** (`#2924`): migrated 13 remaining slash commands from the legacy
+  `dispatch_slash_command` fallback in `zeph-core` to typed handler structs in `zeph-commands`.
+  Moved the `COMMANDS` constant from `zeph-core::agent::slash_commands` to
+  `zeph-commands::commands` with runtime `feature_gate` fields (no compile-time `#[cfg]` gating).
+  Added 12 new methods to the `AgentAccess` trait: `compact_context`, `reset_conversation`,
+  `cache_stats`, `session_status`, `guardrail_status`, `focus_status`, `sidequest_status`,
+  `load_image`, `handle_mcp`, `handle_plan`, `handle_experiment`, `handle_agent_dispatch`.
+  Created handler files: `help`, `compaction`, `status`, `misc`, `mcp`, `plan`, `experiment`,
+  `agent_cmd`. Registered in session-registry: `HelpCommand`. Registered in agent-registry:
+  `CacheStatsCommand`, `ImageCommand`, `StatusCommand`, `GuardrailCommand`, `FocusCommand`,
+  `SideQuestCommand`, `AgentCommand`. Commands that cannot be registered due to non-Send
+  constraints (`/compact`, `/new`, `/mcp`, `/plan`, `/experiment`) remain in
+  `dispatch_slash_command` with `unreachable!()` in their `AgentAccess` implementations.
+  Removed channel-sending duplicate methods from `provider_cmd.rs`, `model_commands.rs`,
+  `policy_commands.rs`, and `slash_commands.rs`. Updated all affected tests.
+
 - **Bootstrap module migration** (`#2906`): moved the `bootstrap` module (AppBuilder, provider
   construction, skill wiring, MCP initialization, vault setup) from `crates/zeph-core/src/bootstrap/`
   to `src/bootstrap/` in the `zeph` binary crate. All `zeph_core::bootstrap::*` import paths in

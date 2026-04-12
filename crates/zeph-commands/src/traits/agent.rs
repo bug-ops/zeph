@@ -189,6 +189,140 @@ pub trait AgentAccess: Send {
     fn lsp_status<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /compact -----
+
+    /// Compact the context window and return a user-visible status string.
+    ///
+    /// Delegates to the agent's compaction subsystem. Returns a message describing
+    /// whether compaction ran, was rejected by the probe, or there was nothing to compact.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when an internal agent error occurs.
+    fn compact_context<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /new -----
+
+    /// Start a new conversation and return a user-visible status string.
+    ///
+    /// `keep_plan` preserves the current plan. `no_digest` skips saving a digest of
+    /// the previous conversation. Returns a formatted string with old and new session IDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the reset operation fails.
+    fn reset_conversation<'a>(
+        &'a mut self,
+        keep_plan: bool,
+        no_digest: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /cache-stats -----
+
+    /// Return formatted tool orchestrator cache statistics.
+    fn cache_stats(&self) -> String;
+
+    // ----- /status -----
+
+    /// Return a formatted session status string.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when an internal agent error occurs.
+    fn session_status<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /guardrail -----
+
+    /// Return formatted guardrail status.
+    fn guardrail_status(&self) -> String;
+
+    // ----- /focus -----
+
+    /// Return formatted Focus Agent status.
+    fn focus_status(&self) -> String;
+
+    // ----- /sidequest -----
+
+    /// Return formatted `SideQuest` eviction stats.
+    fn sidequest_status(&self) -> String;
+
+    // ----- /image -----
+
+    /// Load an image from `path` and enqueue it for the next message.
+    ///
+    /// Returns a user-visible confirmation or error string.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when an internal agent error occurs.
+    fn load_image<'a>(
+        &'a mut self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /mcp -----
+
+    /// Handle `/mcp [add|list|tools|remove]` and send output via the agent channel.
+    ///
+    /// Returns `Ok(())` on success. Intermediate messages are sent directly by the
+    /// `Agent<C>` implementation via `self.channel`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when a channel send or MCP operation fails.
+    fn handle_mcp<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /plan -----
+
+    /// Dispatch a `/plan` command and send output via the agent channel.
+    ///
+    /// `input` is the full trimmed command string (e.g. `"/plan status"`).
+    /// Returns `Ok(())` on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when a channel send or orchestration error occurs.
+    fn handle_plan<'a>(
+        &'a mut self,
+        input: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /experiment -----
+
+    /// Dispatch a `/experiment` command and send output via the agent channel.
+    ///
+    /// `input` is the full trimmed command string (e.g. `"/experiment start"`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when a channel send or experiment operation fails.
+    fn handle_experiment<'a>(
+        &'a mut self,
+        input: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /agent, @mention -----
+
+    /// Dispatch a `/agent` or `@mention` command and return an optional response string.
+    ///
+    /// `input` is the full trimmed command string. Returns `Ok(None)` when no agent
+    /// matched an `@mention` (caller should fall through to LLM processing).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when a channel send or subagent operation fails.
+    fn handle_agent_dispatch<'a>(
+        &'a mut self,
+        input: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>>;
 }
 
 /// A no-op [`AgentAccess`] implementation.
@@ -290,5 +424,76 @@ impl AgentAccess for NullAgent {
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async { Ok(String::new()) })
+    }
+
+    fn compact_context<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn reset_conversation<'a>(
+        &'a mut self,
+        _keep_plan: bool,
+        _no_digest: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn cache_stats(&self) -> String {
+        String::new()
+    }
+
+    fn session_status<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn guardrail_status(&self) -> String {
+        String::new()
+    }
+
+    fn focus_status(&self) -> String {
+        String::new()
+    }
+
+    fn sidequest_status(&self) -> String {
+        String::new()
+    }
+
+    fn load_image<'a>(
+        &'a mut self,
+        _path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn handle_mcp<'a>(
+        &'a mut self,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn handle_plan<'a>(
+        &'a mut self,
+        _input: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn handle_experiment<'a>(
+        &'a mut self,
+        _input: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn handle_agent_dispatch<'a>(
+        &'a mut self,
+        _input: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
     }
 }

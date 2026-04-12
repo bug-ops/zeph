@@ -558,6 +558,139 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                 .map_err(|e| CommandError::new(e.to_string()))
         })
     }
+
+    // ----- /compact -----
+    //
+    // compact_context() is not Send because load_compression_guidelines_if_enabled holds &self
+    // across an .await. The method signature is required by the AgentAccess trait (NullAgent
+    // needs it), but Agent<C>'s implementation panics — the actual dispatch remains in
+    // dispatch_slash_command which calls self.compact_context() directly without the Send bound.
+
+    fn compact_context<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(CommandError::new(
+                "/compact cannot be dispatched via AgentAccess (non-Send future); \
+                 handled directly in dispatch_slash_command",
+            ))
+        })
+    }
+
+    // ----- /new -----
+
+    fn reset_conversation<'a>(
+        &'a mut self,
+        _keep_plan: bool,
+        _no_digest: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(CommandError::new(
+                "/new cannot be dispatched via AgentAccess (non-Send future); \
+                 handled directly in dispatch_slash_command",
+            ))
+        })
+    }
+
+    // ----- /cache-stats -----
+
+    fn cache_stats(&self) -> String {
+        self.tool_orchestrator.cache_stats()
+    }
+
+    // ----- /status -----
+
+    fn session_status<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async move { Ok(self.handle_status_as_string()) })
+    }
+
+    // ----- /guardrail -----
+
+    fn guardrail_status(&self) -> String {
+        self.format_guardrail_status()
+    }
+
+    // ----- /focus -----
+
+    fn focus_status(&self) -> String {
+        self.format_focus_status()
+    }
+
+    // ----- /sidequest -----
+
+    fn sidequest_status(&self) -> String {
+        self.format_sidequest_status()
+    }
+
+    // ----- /image -----
+
+    fn load_image<'a>(
+        &'a mut self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async move { Ok(self.handle_image_as_string(path)) })
+    }
+
+    // ----- /mcp -----
+    //
+    // handle_mcp_command holds RwLockGuard across .await points — not Send.
+    // Dispatched via slash_commands directly, not through AgentAccess.
+
+    fn handle_mcp<'a>(
+        &'a mut self,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(CommandError::new(
+                "/mcp cannot be dispatched via AgentAccess (RwLockGuard held across await); \
+                 handled directly in dispatch_slash_command",
+            ))
+        })
+    }
+
+    // ----- /plan -----
+
+    fn handle_plan<'a>(
+        &'a mut self,
+        _input: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(CommandError::new(
+                "/plan cannot be dispatched via AgentAccess (non-Send future); \
+                 handled directly in dispatch_slash_command",
+            ))
+        })
+    }
+
+    // ----- /experiment -----
+
+    fn handle_experiment<'a>(
+        &'a mut self,
+        _input: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(CommandError::new(
+                "/experiment cannot be dispatched via AgentAccess (non-Send future); \
+                 handled directly in dispatch_slash_command",
+            ))
+        })
+    }
+
+    // ----- /agent, @mention -----
+
+    fn handle_agent_dispatch<'a>(
+        &'a mut self,
+        input: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
+        Box::pin(async move {
+            match self.dispatch_agent_command(input).await {
+                Some(Err(e)) => Err(CommandError::new(e.to_string())),
+                Some(Ok(())) | None => Ok(None),
+            }
+        })
+    }
 }
 
 /// Convert `AgentError` to `CommandError` for the trait boundary.

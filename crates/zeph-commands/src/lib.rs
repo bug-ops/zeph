@@ -24,10 +24,13 @@
 //! This crate does NOT depend on `zeph-core`. A change in `zeph-core`'s agent loop does
 //! not recompile `zeph-commands`.
 
+pub mod commands;
 pub mod context;
 pub mod handlers;
 pub mod sink;
 pub mod traits;
+
+pub use commands::COMMANDS;
 
 pub use context::CommandContext;
 pub use sink::{ChannelSink, NullSink};

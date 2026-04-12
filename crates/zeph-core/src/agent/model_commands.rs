@@ -125,10 +125,4 @@ impl<C: crate::channel::Channel> Agent<C> {
             self.model_switch_as_string(arg).await
         }
     }
-
-    /// Handle `/model`, `/model <id>`, and `/model refresh` — sends result to channel.
-    pub(super) async fn handle_model_command(&mut self, trimmed: &str) {
-        let result = self.handle_model_command_as_string(trimmed).await;
-        let _ = self.channel.send(&result).await;
-    }
 }

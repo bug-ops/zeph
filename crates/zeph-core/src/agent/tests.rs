@@ -1554,39 +1554,34 @@ pub mod agent_tests {
         assert!(parts.is_empty());
     }
 
-    #[tokio::test]
-    async fn handle_image_command_rejects_path_traversal() {
+    #[test]
+    fn handle_image_command_rejects_path_traversal() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let result = agent.handle_image_command("../../etc/passwd").await;
-        assert!(result.is_ok());
+        let result = agent.handle_image_as_string("../../etc/passwd");
         assert!(agent.msg.pending_image_parts.is_empty());
-        // Channel should have received an error message
-        let sent = agent.channel.sent_messages();
-        assert!(sent.iter().any(|m| m.contains("traversal")));
+        assert!(result.contains("traversal"));
     }
 
-    #[tokio::test]
-    async fn handle_image_command_missing_file_sends_error() {
+    #[test]
+    fn handle_image_command_missing_file_sends_error() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let result = agent.handle_image_command("/nonexistent/image.png").await;
-        assert!(result.is_ok());
+        let result = agent.handle_image_as_string("/nonexistent/image.png");
         assert!(agent.msg.pending_image_parts.is_empty());
-        let sent = agent.channel.sent_messages();
-        assert!(sent.iter().any(|m| m.contains("Cannot read image")));
+        assert!(result.contains("Cannot read image"));
     }
 
-    #[tokio::test]
-    async fn handle_image_command_loads_valid_file() {
+    #[test]
+    fn handle_image_command_loads_valid_file() {
         use std::io::Write;
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
@@ -1600,8 +1595,7 @@ pub mod agent_tests {
         tmp.write_all(&data).unwrap();
         let path = tmp.path().to_str().unwrap().to_owned();
 
-        let result = agent.handle_image_command(&path).await;
-        assert!(result.is_ok());
+        let result = agent.handle_image_as_string(&path);
         assert_eq!(agent.msg.pending_image_parts.len(), 1);
         match &agent.msg.pending_image_parts[0] {
             zeph_llm::provider::MessagePart::Image(img) => {
@@ -1610,8 +1604,7 @@ pub mod agent_tests {
             }
             _ => panic!("expected Image part"),
         }
-        let sent = agent.channel.sent_messages();
-        assert!(sent.iter().any(|m| m.contains("Image loaded")));
+        assert!(result.contains("Image loaded"));
     }
 
     // ── handle_agent_command tests ────────────────────────────────────────────
@@ -1804,16 +1797,16 @@ pub mod agent_tests {
     async fn model_command_switch_sends_confirmation() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
-        let sent = channel.sent.clone();
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.handle_model_command("/model my-new-model").await;
-        let messages = sent.lock().unwrap();
+        let out = agent
+            .handle_model_command_as_string("/model my-new-model")
+            .await;
         assert!(
-            messages.iter().any(|m| m.contains("my-new-model")),
-            "expected switch confirmation, got: {messages:?}"
+            out.contains("my-new-model"),
+            "expected switch confirmation, got: {out}"
         );
     }
 
@@ -1822,19 +1815,17 @@ pub mod agent_tests {
         // With mock provider, list_models_remote returns empty vec — agent sends "No models".
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
-        let sent = channel.sent.clone();
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
         // Ensure cache is stale for mock provider slug
         zeph_llm::model_cache::ModelCache::for_slug("mock").invalidate();
-        agent.handle_model_command("/model").await;
-        let messages = sent.lock().unwrap();
+        let out = agent.handle_model_command_as_string("/model").await;
         // Mock returns empty list → "No models available."
         assert!(
-            messages.iter().any(|m| m.contains("No models")),
-            "expected empty model list message, got: {messages:?}"
+            out.contains("No models"),
+            "expected empty model list message, got: {out}"
         );
     }
 
@@ -1842,16 +1833,14 @@ pub mod agent_tests {
     async fn model_command_refresh_sends_result() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
-        let sent = channel.sent.clone();
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.handle_model_command("/model refresh").await;
-        let messages = sent.lock().unwrap();
+        let out = agent.handle_model_command_as_string("/model refresh").await;
         assert!(
-            messages.iter().any(|m| m.contains("Fetched")),
-            "expected fetch confirmation, got: {messages:?}"
+            out.contains("Fetched"),
+            "expected fetch confirmation, got: {out}"
         );
     }
 
@@ -1876,23 +1865,21 @@ pub mod agent_tests {
         ];
         let provider = mock_provider_with_models(vec![], models);
         let channel = MockChannel::new(vec![]);
-        let sent = channel.sent.clone();
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.handle_model_command("/model llama3:8b").await;
+        let out = agent
+            .handle_model_command_as_string("/model llama3:8b")
+            .await;
 
-        let messages = sent.lock().unwrap();
         assert!(
-            messages
-                .iter()
-                .any(|m| m.contains("Switched to model: llama3:8b")),
-            "expected switch confirmation, got: {messages:?}"
+            out.contains("Switched to model: llama3:8b"),
+            "expected switch confirmation, got: {out}"
         );
         assert!(
-            !messages.iter().any(|m| m.contains("Unknown model")),
-            "unexpected rejection for valid model, got: {messages:?}"
+            !out.contains("Unknown model"),
+            "unexpected rejection for valid model, got: {out}"
         );
     }
 
@@ -1909,27 +1896,25 @@ pub mod agent_tests {
         }];
         let provider = mock_provider_with_models(vec![], models);
         let channel = MockChannel::new(vec![]);
-        let sent = channel.sent.clone();
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.handle_model_command("/model nonexistent-model").await;
+        let out = agent
+            .handle_model_command_as_string("/model nonexistent-model")
+            .await;
 
-        let messages = sent.lock().unwrap();
         assert!(
-            messages
-                .iter()
-                .any(|m| m.contains("Unknown model") && m.contains("nonexistent-model")),
-            "expected rejection with model name, got: {messages:?}"
+            out.contains("Unknown model") && out.contains("nonexistent-model"),
+            "expected rejection with model name, got: {out}"
         );
         assert!(
-            messages.iter().any(|m| m.contains("qwen3:8b")),
-            "expected available models list, got: {messages:?}"
+            out.contains("qwen3:8b"),
+            "expected available models list, got: {out}"
         );
         assert!(
-            !messages.iter().any(|m| m.contains("Switched to model")),
-            "should not switch to invalid model, got: {messages:?}"
+            !out.contains("Switched to model"),
+            "should not switch to invalid model, got: {out}"
         );
     }
 
@@ -1941,23 +1926,21 @@ pub mod agent_tests {
 
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
-        let sent = channel.sent.clone();
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.handle_model_command("/model unknown-model").await;
+        let out = agent
+            .handle_model_command_as_string("/model unknown-model")
+            .await;
 
-        let messages = sent.lock().unwrap();
         assert!(
-            messages.iter().any(|m| m.contains("unavailable")),
-            "expected warning about unavailable model list, got: {messages:?}"
+            out.contains("unavailable"),
+            "expected warning about unavailable model list, got: {out}"
         );
         assert!(
-            messages
-                .iter()
-                .any(|m| m.contains("Switched to model: unknown-model")),
-            "expected switch to proceed despite missing model list, got: {messages:?}"
+            out.contains("Switched to model: unknown-model"),
+            "expected switch to proceed despite missing model list, got: {out}"
         );
     }
 
@@ -2185,7 +2168,7 @@ pub mod agent_tests {
 
     #[test]
     fn slash_commands_registry_has_no_ingest() {
-        use super::super::slash_commands::COMMANDS;
+        use zeph_commands::COMMANDS;
         assert!(
             !COMMANDS.iter().any(|c| c.name == "/ingest"),
             "/ingest is not implemented and must not appear in COMMANDS"
@@ -2194,7 +2177,7 @@ pub mod agent_tests {
 
     #[test]
     fn slash_commands_graph_and_plan_have_no_feature_gate() {
-        use super::super::slash_commands::COMMANDS;
+        use zeph_commands::COMMANDS;
         for cmd in COMMANDS {
             if cmd.name == "/graph" || cmd.name == "/plan" {
                 assert!(

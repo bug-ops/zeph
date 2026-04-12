@@ -1,258 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Static registry of all slash commands available in the agent loop.
+//! Slash command helpers for `Agent<C>`.
 //!
-//! Used by `/help` to enumerate and display commands grouped by category.
-
-use zeph_commands::{CommandInfo, SlashCategory};
-
-/// All slash commands recognised by the agent loop, in display order.
-///
-/// Feature-gated entries are wrapped in `#[cfg(feature = "...")]` so that
-/// only commands compiled into the binary appear in `/help`.
-pub const COMMANDS: &[CommandInfo] = &[
-    // --- Debugging (info/status commands) ---
-    CommandInfo {
-        name: "/help",
-        args: "",
-        description: "Show this help message",
-        category: SlashCategory::Debugging,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/status",
-        args: "",
-        description: "Show current session status (provider, model, tokens, uptime)",
-        category: SlashCategory::Debugging,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/skills",
-        args: "",
-        description: "List loaded skills (grouped by category when available)",
-        category: SlashCategory::Skills,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/skills confusability",
-        args: "",
-        description: "Show skill pairs with high embedding similarity (potential disambiguation failures)",
-        category: SlashCategory::Skills,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/guardrail",
-        args: "",
-        description: "Show guardrail status (provider, model, action, timeout, stats)",
-        category: SlashCategory::Debugging,
-        feature_gate: Some("guardrail"),
-    },
-    CommandInfo {
-        name: "/log",
-        args: "",
-        description: "Toggle verbose log output",
-        category: SlashCategory::Debugging,
-        feature_gate: None,
-    },
-    // --- Session ---
-    CommandInfo {
-        name: "/exit",
-        args: "",
-        description: "Exit the agent (also: /quit)",
-        category: SlashCategory::Session,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/new",
-        args: "[--no-digest] [--keep-plan]",
-        description: "Start a new conversation (reset context, preserve memory and MCP)",
-        category: SlashCategory::Session,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/clear",
-        args: "",
-        description: "Clear conversation history",
-        category: SlashCategory::Session,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/reset",
-        args: "",
-        description: "Reset conversation history (alias for /clear, replies with confirmation)",
-        category: SlashCategory::Session,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/clear-queue",
-        args: "",
-        description: "Discard queued messages",
-        category: SlashCategory::Session,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/compact",
-        args: "",
-        description: "Compact the context window",
-        category: SlashCategory::Session,
-        feature_gate: None,
-    },
-    // --- Configuration (model/provider) ---
-    CommandInfo {
-        name: "/model",
-        args: "[id|refresh]",
-        description: "Show or switch the active model",
-        category: SlashCategory::Configuration,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/provider",
-        args: "[name|status]",
-        description: "List configured providers or switch to one by name",
-        category: SlashCategory::Configuration,
-        feature_gate: None,
-    },
-    // --- Memory ---
-    CommandInfo {
-        name: "/feedback",
-        args: "<skill> <message>",
-        description: "Submit feedback for a skill",
-        category: SlashCategory::Memory,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/graph",
-        args: "[subcommand]",
-        description: "Query or manage the knowledge graph",
-        category: SlashCategory::Memory,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/memory",
-        args: "[tiers|promote <id>...]",
-        description: "Show memory tier stats or manually promote messages to semantic tier",
-        category: SlashCategory::Memory,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/guidelines",
-        args: "",
-        description: "Show current compression guidelines",
-        category: SlashCategory::Memory,
-        feature_gate: Some("compression-guidelines"),
-    },
-    // --- Skills ---
-    CommandInfo {
-        name: "/skill",
-        args: "<name>",
-        description: "Load and display a skill body",
-        category: SlashCategory::Skills,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/skill create",
-        args: "<description>",
-        description: "Generate a SKILL.md from natural language via LLM",
-        category: SlashCategory::Skills,
-        feature_gate: None,
-    },
-    // --- Integration (external tools) ---
-    CommandInfo {
-        name: "/mcp",
-        args: "[add|list|tools|remove]",
-        description: "Manage MCP servers",
-        category: SlashCategory::Integration,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/image",
-        args: "<path>",
-        description: "Attach an image to the next message",
-        category: SlashCategory::Integration,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/agent",
-        args: "[subcommand]",
-        description: "Manage sub-agents",
-        category: SlashCategory::Integration,
-        feature_gate: None,
-    },
-    // --- Planning ---
-    CommandInfo {
-        name: "/plan",
-        args: "[goal|confirm|cancel|status|list|resume|retry]",
-        description: "Create or manage execution plans",
-        category: SlashCategory::Planning,
-        feature_gate: None,
-    },
-    // --- Debugging ---
-    CommandInfo {
-        name: "/debug-dump",
-        args: "[path]",
-        description: "Enable or toggle debug dump output",
-        category: SlashCategory::Debugging,
-        feature_gate: None,
-    },
-    CommandInfo {
-        name: "/dump-format",
-        args: "<json|raw|trace>",
-        description: "Switch debug dump format at runtime",
-        category: SlashCategory::Debugging,
-        feature_gate: None,
-    },
-    // --- Advanced (feature-gated) ---
-    #[cfg(feature = "scheduler")]
-    CommandInfo {
-        name: "/scheduler",
-        args: "[list]",
-        description: "List scheduled tasks",
-        category: SlashCategory::Integration,
-        feature_gate: Some("scheduler"),
-    },
-    CommandInfo {
-        name: "/experiment",
-        args: "[subcommand]",
-        description: "Experimental features",
-        category: SlashCategory::Advanced,
-        feature_gate: Some("experiments"),
-    },
-    CommandInfo {
-        name: "/lsp",
-        args: "",
-        description: "Show LSP context status",
-        category: SlashCategory::Debugging,
-        feature_gate: Some("lsp-context"),
-    },
-    CommandInfo {
-        name: "/policy",
-        args: "[status|check <tool> [args_json]]",
-        description: "Inspect policy status or dry-run evaluation",
-        category: SlashCategory::Advanced,
-        feature_gate: Some("policy-enforcer"),
-    },
-    CommandInfo {
-        name: "/focus",
-        args: "",
-        description: "Show Focus Agent status (active session, knowledge block size)",
-        category: SlashCategory::Advanced,
-        feature_gate: Some("context-compression"),
-    },
-    CommandInfo {
-        name: "/sidequest",
-        args: "",
-        description: "Show SideQuest eviction stats (passes run, tokens freed)",
-        category: SlashCategory::Advanced,
-        feature_gate: Some("context-compression"),
-    },
-];
+//! The `COMMANDS` constant has moved to `zeph-commands::commands`. This module now
+//! contains only the `Agent<C>` helper methods used by the `AgentAccess` trait
+//! implementations and the remaining un-migrated commands (`/skill`, `/skills`, `/feedback`).
 
 use zeph_llm::provider::LlmProvider;
 
 use super::Agent;
 use super::error;
-use super::message_queue::{MAX_IMAGE_BYTES, detect_image_mime};
 
 impl<C: crate::channel::Channel> Agent<C> {
     /// Handle built-in slash commands that short-circuit the main `run` loop.
@@ -260,90 +18,27 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// Returns `Some(true)` to break the loop (exit), `Some(false)` to continue to the next
     /// iteration, or `None` if the command was not recognized (caller should call
     /// `process_user_message`).
-    #[allow(clippy::too_many_lines)]
-    pub(super) async fn handle_builtin_command(
-        &mut self,
-        trimmed: &str,
-    ) -> Result<Option<bool>, error::AgentError> {
-        if trimmed == "/compact" {
-            if self.msg.messages.len() > self.context_manager.compaction_preserve_tail + 1 {
-                match self.compact_context().await {
-                    Ok(
-                        super::context::CompactionOutcome::Compacted
-                        | super::context::CompactionOutcome::NoChange,
-                    ) => {
-                        let _ = self.channel.send("Context compacted successfully.").await;
-                    }
-                    Ok(super::context::CompactionOutcome::ProbeRejected) => {
-                        let _ = self
-                            .channel
-                            .send(
-                                "Compaction rejected: summary quality below threshold. \
-                                 Original context preserved.",
-                            )
-                            .await;
-                    }
-                    Err(e) => {
-                        let _ = self.channel.send(&format!("Compaction failed: {e}")).await;
-                    }
-                }
-            } else {
-                let _ = self.channel.send("Nothing to compact.").await;
-            }
-            let _ = self.channel.flush_chunks().await;
-            return Ok(Some(false));
-        }
-
-        if trimmed == "/new" || trimmed.starts_with("/new ") {
-            let args = trimmed.strip_prefix("/new").unwrap_or("").trim();
-            let keep_plan = args.split_whitespace().any(|a| a == "--keep-plan");
-            let no_digest = args.split_whitespace().any(|a| a == "--no-digest");
-            match self.reset_conversation(keep_plan, no_digest).await {
-                Ok((old_id, new_id)) => {
-                    let old = old_id.map_or_else(|| "none".to_string(), |id| id.0.to_string());
-                    let new = new_id.map_or_else(|| "none".to_string(), |id| id.0.to_string());
-                    let keep_note = if keep_plan { " (plan preserved)" } else { "" };
-                    self.channel
-                        .send(&format!(
-                            "New conversation started. Previous: {old} → Current: {new}{keep_note}"
-                        ))
-                        .await?;
-                }
-                Err(e) => {
-                    self.channel
-                        .send(&format!("Failed to start new conversation: {e}"))
-                        .await?;
-                }
-            }
-            let _ = self.channel.flush_chunks().await;
-            return Ok(Some(false));
-        }
-
-        if trimmed == "/cache-stats" {
-            let stats = self.tool_orchestrator.cache_stats();
-            self.channel.send(&stats).await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(Some(false));
-        }
-
-        if trimmed == "/model" || trimmed.starts_with("/model ") {
-            self.handle_model_command(trimmed).await;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(Some(false));
-        }
-
-        if trimmed == "/provider" || trimmed.starts_with("/provider ") {
-            self.handle_provider_command(trimmed).await;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(Some(false));
-        }
-
-        Ok(None)
+    ///
+    /// Most commands are now handled through the session-registry or agent-registry. This
+    /// method is kept for commands that could not be migrated due to non-Sync type constraints.
+    #[allow(clippy::unused_self)]
+    pub(super) fn handle_builtin_command(&self, _trimmed: &str) -> Option<bool> {
+        None
     }
 
     /// Dispatch slash commands. Returns `Some(Ok(()))` when handled,
     /// `Some(Err(_))` on I/O error, `None` to fall through to LLM processing.
-    #[allow(clippy::too_many_lines)]
+    ///
+    /// Commands that remain here could not be migrated to the registry pattern because their
+    /// implementations hold non-Send futures (references across `.await` points):
+    /// - `/skill`, `/skills`, `/feedback` — non-Send DB references
+    /// - `/compact`, `/new` — `compact_context`/`reset_conversation` hold `&self` across .await
+    /// - `/mcp` — `RwLockGuard` across .await
+    /// - `/plan` — orchestration internals
+    /// - `/experiment` — spawned task handles
+    ///
+    /// All other slash commands are dispatched through `session_registry` or `agent_registry`
+    /// in `Agent::run`.
     pub(super) async fn dispatch_slash_command(
         &mut self,
         trimmed: &str,
@@ -363,15 +58,54 @@ impl<C: crate::channel::Channel> Agent<C> {
             self.security.user_provided_urls.write().extend(slash_urls);
         }
 
-        if trimmed == "/help" {
-            handled!(self.handle_help_command().await);
+        if trimmed == "/compact" {
+            let msg = if self.msg.messages.len() > self.context_manager.compaction_preserve_tail + 1
+            {
+                match self.compact_context().await {
+                    Ok(
+                        super::context::CompactionOutcome::Compacted
+                        | super::context::CompactionOutcome::NoChange,
+                    ) => "Context compacted successfully.".to_owned(),
+                    Ok(super::context::CompactionOutcome::ProbeRejected) => {
+                        "Compaction rejected: summary quality below threshold. \
+                         Original context preserved."
+                            .to_owned()
+                    }
+                    Err(e) => format!("Compaction failed: {e}"),
+                }
+            } else {
+                "Nothing to compact.".to_owned()
+            };
+            handled!(self.channel.send(&msg).await.map_err(Into::into));
         }
 
-        if trimmed == "/status" {
-            handled!(self.handle_status_command().await);
+        if trimmed == "/new" || trimmed.starts_with("/new ") {
+            let args = trimmed.strip_prefix("/new").unwrap_or("").trim();
+            let keep_plan = args.split_whitespace().any(|a| a == "--keep-plan");
+            let no_digest = args.split_whitespace().any(|a| a == "--no-digest");
+            let msg = match self.reset_conversation(keep_plan, no_digest).await {
+                Ok((old_id, new_id)) => {
+                    let old = old_id.map_or_else(|| "none".to_string(), |id| id.0.to_string());
+                    let new = new_id.map_or_else(|| "none".to_string(), |id| id.0.to_string());
+                    let keep_note = if keep_plan { " (plan preserved)" } else { "" };
+                    format!("New conversation started. Previous: {old} → Current: {new}{keep_note}")
+                }
+                Err(e) => format!("Failed to start new conversation: {e}"),
+            };
+            handled!(self.channel.send(&msg).await.map_err(Into::into));
         }
-        if trimmed == "/guardrail" {
-            handled!(self.handle_guardrail_command().await);
+
+        if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
+            let args = trimmed.strip_prefix("/mcp").unwrap_or("").trim().to_owned();
+            handled!(self.handle_mcp_command(&args).await);
+        }
+
+        if trimmed == "/plan" || trimmed.starts_with("/plan ") {
+            return Some(self.dispatch_plan_command(trimmed).await);
+        }
+
+        if trimmed == "/experiment" || trimmed.starts_with("/experiment ") {
+            handled!(self.handle_experiment_command(trimmed).await);
         }
 
         if trimmed == "/skills" || trimmed.starts_with("/skills ") {
@@ -397,70 +131,9 @@ impl<C: crate::channel::Channel> Agent<C> {
             handled!(self.handle_feedback(&rest).await);
         }
 
-        if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
-            let args = trimmed.strip_prefix("/mcp").unwrap_or("").trim().to_owned();
-            handled!(self.handle_mcp_command(&args).await);
-        }
-
-        if trimmed == "/image" || trimmed.starts_with("/image ") {
-            let path = trimmed
-                .strip_prefix("/image")
-                .unwrap_or("")
-                .trim()
-                .to_owned();
-            if path.is_empty() {
-                handled!(
-                    self.channel
-                        .send("Usage: /image <path>")
-                        .await
-                        .map_err(Into::into)
-                );
-            }
-            handled!(self.handle_image_command(&path).await);
-        }
-
-        if trimmed == "/plan" || trimmed.starts_with("/plan ") {
-            return Some(self.dispatch_plan_command(trimmed).await);
-        }
-
-        if trimmed == "/graph" || trimmed.starts_with("/graph ") {
-            handled!(self.handle_graph_command(trimmed).await);
-        }
-
-        if trimmed == "/memory" || trimmed.starts_with("/memory ") {
-            handled!(self.handle_memory_command(trimmed).await);
-        }
-        if trimmed == "/guidelines" {
-            handled!(self.handle_guidelines_command().await);
-        }
-
-        #[cfg(feature = "scheduler")]
-        if trimmed == "/scheduler" || trimmed.starts_with("/scheduler ") {
-            handled!(self.handle_scheduler_command(trimmed).await);
-        }
-        if trimmed == "/experiment" || trimmed.starts_with("/experiment ") {
-            handled!(self.handle_experiment_command(trimmed).await);
-        }
-        if trimmed == "/lsp" {
-            handled!(self.handle_lsp_status_command().await);
-        }
-        if trimmed == "/policy" || trimmed.starts_with("/policy ") {
-            let args = trimmed
-                .strip_prefix("/policy")
-                .unwrap_or("")
-                .trim()
-                .to_owned();
-            handled!(self.handle_policy_command(&args).await);
-        }
-
-        if trimmed.starts_with("/agent") || trimmed.starts_with('@') {
+        // @mention dispatch: not a `/` command, so not in the registry.
+        if trimmed.starts_with('@') {
             return self.dispatch_agent_command(trimmed).await;
-        }
-        if trimmed == "/focus" {
-            handled!(self.handle_focus_status_command().await);
-        }
-        if trimmed == "/sidequest" {
-            handled!(self.handle_sidequest_status_command().await);
         }
 
         None
@@ -500,98 +173,9 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
-    pub(super) async fn handle_image_command(
-        &mut self,
-        path: &str,
-    ) -> Result<(), error::AgentError> {
-        use std::path::Component;
-        use zeph_llm::provider::{ImageData, MessagePart};
-
-        let has_parent_dir = std::path::Path::new(path)
-            .components()
-            .any(|c| c == Component::ParentDir);
-        if has_parent_dir {
-            self.channel
-                .send("Invalid image path: path traversal not allowed")
-                .await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-
-        let data = match std::fs::read(path) {
-            Ok(d) => d,
-            Err(e) => {
-                self.channel
-                    .send(&format!("Cannot read image {path}: {e}"))
-                    .await?;
-                let _ = self.channel.flush_chunks().await;
-                return Ok(());
-            }
-        };
-        if data.len() > MAX_IMAGE_BYTES {
-            self.channel
-                .send(&format!(
-                    "Image {path} exceeds size limit ({} MB), skipping",
-                    MAX_IMAGE_BYTES / 1024 / 1024
-                ))
-                .await?;
-            let _ = self.channel.flush_chunks().await;
-            return Ok(());
-        }
-        let mime_type = detect_image_mime(Some(path)).to_string();
-        self.msg
-            .pending_image_parts
-            .push(MessagePart::Image(Box::new(ImageData { data, mime_type })));
-        self.channel
-            .send(&format!("Image loaded: {path}. Send your message."))
-            .await?;
-        let _ = self.channel.flush_chunks().await;
-        Ok(())
-    }
-
-    pub(super) async fn handle_help_command(&mut self) -> Result<(), error::AgentError> {
-        use std::fmt::Write;
-
-        let mut out = String::from("Slash commands:\n\n");
-
-        let categories = [
-            SlashCategory::Session,
-            SlashCategory::Configuration,
-            SlashCategory::Memory,
-            SlashCategory::Skills,
-            SlashCategory::Planning,
-            SlashCategory::Integration,
-            SlashCategory::Debugging,
-            SlashCategory::Advanced,
-        ];
-
-        for cat in &categories {
-            let entries: Vec<_> = COMMANDS.iter().filter(|c| &c.category == cat).collect();
-            if entries.is_empty() {
-                continue;
-            }
-            let _ = writeln!(out, "{}:", cat.as_str());
-            for cmd in entries {
-                if cmd.args.is_empty() {
-                    let _ = write!(out, "  {}", cmd.name);
-                } else {
-                    let _ = write!(out, "  {} {}", cmd.name, cmd.args);
-                }
-                let _ = write!(out, "  — {}", cmd.description);
-                if let Some(feat) = cmd.feature_gate {
-                    let _ = write!(out, " [requires: {feat}]");
-                }
-                let _ = writeln!(out);
-            }
-            let _ = writeln!(out);
-        }
-
-        self.channel.send(out.trim_end()).await?;
-        Ok(())
-    }
-
+    /// Return formatted session status string for use via [`AgentAccess::session_status`].
     #[allow(clippy::too_many_lines)]
-    pub(super) async fn handle_status_command(&mut self) -> Result<(), error::AgentError> {
+    pub(super) fn handle_status_as_string(&mut self) -> String {
         use std::fmt::Write;
         use zeph_llm::provider::Role;
 
@@ -742,11 +326,11 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
         }
 
-        self.channel.send(out.trim_end()).await?;
-        Ok(())
+        out.trim_end().to_owned()
     }
 
-    pub(super) async fn handle_guardrail_command(&mut self) -> Result<(), error::AgentError> {
+    /// Return formatted guardrail status string for use via [`AgentAccess::guardrail_status`].
+    pub(super) fn format_guardrail_status(&self) -> String {
         use std::fmt::Write;
 
         let mut out = String::new();
@@ -776,9 +360,75 @@ impl<C: crate::channel::Channel> Agent<C> {
                 "Enable with: --guardrail flag or [security.guardrail] enabled = true in config",
             );
         }
+        out.trim_end().to_owned()
+    }
 
-        self.channel.send(out.trim_end()).await?;
-        Ok(())
+    /// Return formatted Focus Agent status string for use via [`AgentAccess::focus_status`].
+    pub(super) fn format_focus_status(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::from("Focus Agent status\n\n");
+        let _ = writeln!(out, "Enabled:          {}", self.focus.config.enabled);
+        let _ = writeln!(out, "Active session:   {}", self.focus.is_active());
+        if let Some(ref scope) = self.focus.active_scope {
+            let _ = writeln!(out, "Active scope:     {scope}");
+        }
+        let _ = writeln!(
+            out,
+            "Knowledge blocks: {}",
+            self.focus.knowledge_blocks.len()
+        );
+        let _ = writeln!(out, "Turns since focus: {}", self.focus.turns_since_focus);
+        out.trim_end().to_owned()
+    }
+
+    /// Return formatted `SideQuest` eviction status string for use via
+    /// [`AgentAccess::sidequest_status`].
+    pub(super) fn format_sidequest_status(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::from("SideQuest status\n\n");
+        let _ = writeln!(out, "Enabled:        {}", self.sidequest.config.enabled);
+        let _ = writeln!(
+            out,
+            "Interval turns: {}",
+            self.sidequest.config.interval_turns
+        );
+        let _ = writeln!(out, "Turn counter:   {}", self.sidequest.turn_counter);
+        let _ = writeln!(out, "Passes run:     {}", self.sidequest.passes_run);
+        let _ = writeln!(
+            out,
+            "Total evicted:  {} tool outputs",
+            self.sidequest.total_evicted
+        );
+        out.trim_end().to_owned()
+    }
+
+    /// Load an image and return a status string for use via [`AgentAccess::load_image`].
+    pub(super) fn handle_image_as_string(&mut self, path: &str) -> String {
+        use std::path::Component;
+        use zeph_llm::provider::{ImageData, MessagePart};
+
+        let has_parent_dir = std::path::Path::new(path)
+            .components()
+            .any(|c| c == Component::ParentDir);
+        if has_parent_dir {
+            return "Invalid image path: path traversal not allowed".to_owned();
+        }
+
+        let data = match std::fs::read(path) {
+            Ok(d) => d,
+            Err(e) => return format!("Cannot read image {path}: {e}"),
+        };
+        if data.len() > super::message_queue::MAX_IMAGE_BYTES {
+            return format!(
+                "Image {path} exceeds size limit ({} MB), skipping",
+                super::message_queue::MAX_IMAGE_BYTES / 1024 / 1024
+            );
+        }
+        let mime_type = super::message_queue::detect_image_mime(Some(path)).to_string();
+        self.msg
+            .pending_image_parts
+            .push(MessagePart::Image(Box::new(ImageData { data, mime_type })));
+        format!("Image loaded: {path}. Send your message.")
     }
 
     pub(super) async fn handle_skills_family(

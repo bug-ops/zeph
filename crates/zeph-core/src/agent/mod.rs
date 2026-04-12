@@ -831,6 +831,7 @@ impl<C: Channel> Agent<C> {
                 use zeph_commands::handlers::debug::{
                     DebugDumpCommand, DumpFormatCommand, LogCommand,
                 };
+                use zeph_commands::handlers::help::HelpCommand;
                 use zeph_commands::handlers::session::{
                     ClearCommand, ClearQueueCommand, ExitCommand, QuitCommand, ResetCommand,
                 };
@@ -844,6 +845,7 @@ impl<C: Channel> Agent<C> {
                 reg.register(LogCommand);
                 reg.register(DebugDumpCommand);
                 reg.register(DumpFormatCommand);
+                reg.register(HelpCommand);
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut sink_adapter,
@@ -890,11 +892,14 @@ impl<C: Channel> Agent<C> {
             > = if registry_handled.is_none() {
                 use zeph_commands::CommandRegistry;
                 use zeph_commands::handlers::{
+                    agent_cmd::AgentCommand,
                     lsp::LspCommand,
                     memory::{GraphCommand, GuidelinesCommand, MemoryCommand},
+                    misc::{CacheStatsCommand, ImageCommand},
                     model::{ModelCommand, ProviderCommand},
                     policy::PolicyCommand,
                     scheduler::SchedulerCommand,
+                    status::{FocusCommand, GuardrailCommand, SideQuestCommand, StatusCommand},
                 };
 
                 let mut agent_reg = CommandRegistry::new();
@@ -905,10 +910,20 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(ProviderCommand);
                 // Note: SkillCommand, SkillsCommand, FeedbackCommand are intentionally NOT
                 // registered here — their implementations hold non-Send references across .await
-                // points. They continue to be dispatched via handle_builtin_command below.
+                // points. They continue to be dispatched via dispatch_slash_command below.
+                // Similarly, CompactCommand, NewConversationCommand, McpCommand, PlanCommand,
+                // ExperimentCommand hold non-Send futures and remain in dispatch_slash_command.
                 agent_reg.register(PolicyCommand);
                 agent_reg.register(SchedulerCommand);
                 agent_reg.register(LspCommand);
+                // Phase 4 migrations (Send-safe commands):
+                agent_reg.register(CacheStatsCommand);
+                agent_reg.register(ImageCommand);
+                agent_reg.register(StatusCommand);
+                agent_reg.register(GuardrailCommand);
+                agent_reg.register(FocusCommand);
+                agent_reg.register(SideQuestCommand);
+                agent_reg.register(AgentCommand);
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut agent_null_sink,
@@ -945,7 +960,7 @@ impl<C: Channel> Agent<C> {
                 }
             }
 
-            match self.handle_builtin_command(trimmed).await? {
+            match self.handle_builtin_command(trimmed) {
                 Some(true) => break,
                 Some(false) => continue,
                 None => {}
@@ -2175,46 +2190,6 @@ impl<C: Channel> Agent<C> {
         self.index.repo_map_ttl = std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
 
         tracing::info!("config reloaded");
-    }
-
-    /// `/focus` slash command: display Focus Agent status.
-    async fn handle_focus_status_command(&mut self) -> Result<(), error::AgentError> {
-        use std::fmt::Write;
-        let mut out = String::from("Focus Agent status\n\n");
-        let _ = writeln!(out, "Enabled:          {}", self.focus.config.enabled);
-        let _ = writeln!(out, "Active session:   {}", self.focus.is_active());
-        if let Some(ref scope) = self.focus.active_scope {
-            let _ = writeln!(out, "Active scope:     {scope}");
-        }
-        let _ = writeln!(
-            out,
-            "Knowledge blocks: {}",
-            self.focus.knowledge_blocks.len()
-        );
-        let _ = writeln!(out, "Turns since focus: {}", self.focus.turns_since_focus);
-        self.channel.send(&out).await?;
-        Ok(())
-    }
-
-    /// `/sidequest` slash command: display `SideQuest` eviction stats.
-    async fn handle_sidequest_status_command(&mut self) -> Result<(), error::AgentError> {
-        use std::fmt::Write;
-        let mut out = String::from("SideQuest status\n\n");
-        let _ = writeln!(out, "Enabled:        {}", self.sidequest.config.enabled);
-        let _ = writeln!(
-            out,
-            "Interval turns: {}",
-            self.sidequest.config.interval_turns
-        );
-        let _ = writeln!(out, "Turn counter:   {}", self.sidequest.turn_counter);
-        let _ = writeln!(out, "Passes run:     {}", self.sidequest.passes_run);
-        let _ = writeln!(
-            out,
-            "Total evicted:  {} tool outputs",
-            self.sidequest.total_evicted
-        );
-        self.channel.send(&out).await?;
-        Ok(())
     }
 
     /// Run `SideQuest` tool output eviction pass (#1885).
