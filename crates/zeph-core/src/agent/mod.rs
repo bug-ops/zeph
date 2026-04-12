@@ -15,8 +15,6 @@ pub mod error;
 mod experiment_cmd;
 pub(super) mod feedback_detector;
 pub(crate) mod focus;
-mod graph_commands;
-mod guidelines_commands;
 mod index;
 mod learning;
 pub(crate) mod learning_engine;
@@ -25,7 +23,6 @@ mod loop_event;
 mod lsp_commands;
 mod magic_docs;
 mod mcp;
-mod memory_commands;
 mod message_queue;
 mod microcompact;
 mod model_commands;
@@ -36,6 +33,7 @@ mod provider_cmd;
 pub(crate) mod rate_limiter;
 #[cfg(feature = "scheduler")]
 mod scheduler_commands;
+#[cfg(feature = "scheduler")]
 mod scheduler_loop;
 pub mod session_config;
 mod session_digest;
