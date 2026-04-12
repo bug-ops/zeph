@@ -102,7 +102,6 @@ pub use agent::error::AgentError;
 pub use agent::session_config::{AgentSessionConfig, CONTEXT_BUDGET_RESERVE_RATIO};
 pub use agent::state::AdversarialPolicyInfo;
 pub use agent::state::ProviderConfigSnapshot;
-#[allow(deprecated)]
 pub use channel::{
     Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, LoopbackChannel,
     LoopbackEvent, LoopbackHandle, StopHint, ToolOutputData, ToolOutputEvent, ToolStartData,

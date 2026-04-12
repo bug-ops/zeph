@@ -354,14 +354,12 @@ pub struct ToolOutputEvent {
 
 /// Backward-compatible alias for [`ToolStartEvent`].
 ///
-/// Deprecated name kept for use in the ACP layer. Prefer `ToolStartEvent` in new code.
-#[deprecated(since = "0.18.6", note = "use ToolStartEvent directly")]
+/// Kept for use in the ACP layer. Prefer [`ToolStartEvent`] in new code.
 pub type ToolStartData = ToolStartEvent;
 
 /// Backward-compatible alias for [`ToolOutputEvent`].
 ///
-/// Deprecated name kept for use in the ACP layer. Prefer `ToolOutputEvent` in new code.
-#[deprecated(since = "0.18.6", note = "use ToolOutputEvent directly")]
+/// Kept for use in the ACP layer. Prefer [`ToolOutputEvent`] in new code.
 pub type ToolOutputData = ToolOutputEvent;
 
 /// Events emitted by the agent side toward the A2A caller.
