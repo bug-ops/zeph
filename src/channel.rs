@@ -244,7 +244,7 @@ mod tests {
         let mut ch = make_app_channel();
         assert!(
             ch.send_tool_start(ToolStartEvent {
-                tool_name: zeph_core::ToolName::from("shell"),
+                tool_name: zeph_common::ToolName::from("shell"),
                 tool_call_id: "tc-001".to_string(),
                 params: None,
                 parent_tool_use_id: None,
@@ -296,7 +296,7 @@ mod tests {
         .unwrap();
         // 13. send_tool_start
         ch.send_tool_start(ToolStartEvent {
-            tool_name: zeph_core::ToolName::from("bash"),
+            tool_name: zeph_common::ToolName::from("bash"),
             tool_call_id: "x".to_string(),
             params: None,
             parent_tool_use_id: None,
@@ -306,7 +306,7 @@ mod tests {
         .unwrap();
         // 14. send_tool_output
         ch.send_tool_output(ToolOutputEvent {
-            tool_name: zeph_core::ToolName::from("bash"),
+            tool_name: zeph_common::ToolName::from("bash"),
             display: "ok".to_string(),
             diff: None,
             filter_stats: None,

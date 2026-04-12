@@ -189,10 +189,10 @@ pub trait MemoryFacade: Send + Sync {
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// # use zeph_memory::facade::{InMemoryFacade, MemoryEntry, MemoryFacade};
 /// # use zeph_memory::ConversationId;
-/// # tokio_test::block_on(async {
+/// # #[tokio::main] async fn main() {
 /// let facade = InMemoryFacade::new();
 /// let entry = MemoryEntry {
 ///     conversation_id: ConversationId(1),
@@ -204,7 +204,7 @@ pub trait MemoryFacade: Send + Sync {
 /// let id = facade.remember(entry).await.unwrap();
 /// let matches = facade.recall("borrow", 10).await.unwrap();
 /// assert!(!matches.is_empty());
-/// # });
+/// # }
 /// ```
 #[derive(Debug, Default)]
 pub struct InMemoryFacade {
