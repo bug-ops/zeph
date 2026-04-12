@@ -100,6 +100,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existing dispatcher. Enables independent handler unit testing and runtime command enumeration.
   Batch 2/3 migration deferred to follow-up PRs.
 
+- **Command handler migration to `zeph-commands`** (`#2923`): migrated all remaining command
+  handlers from `zeph-core` to `zeph-commands`. Introduces the `AgentAccess` fat trait
+  (object-safe via `Pin<Box<dyn Future + Send>>`) bridging `zeph-commands` handlers to
+  `zeph-core` subsystems that require simultaneous access to multiple `Agent<C>` fields.
+  `Agent<C>` implements `AgentAccess` in `agent_access_impl.rs`; `CommandContext` holds
+  `agent: &mut dyn AgentAccess`. Handlers migrated: `/memory`, `/graph`, `/guidelines`,
+  `/model`, `/provider`, `/policy`, `/scheduler`, `/lsp`. `NullAgent` and `NullSink` sentinels
+  enable split-borrow dispatch blocks in the agent run loop. `/skill`, `/skills`, `/feedback`
+  are registered as stubs — their implementations hold non-`Send` references across `.await`
+  points and continue to be dispatched via `handle_builtin_command`; migration is deferred until
+  `SemanticMemory` and `AnyProvider` implement `Sync`.
+
 - **OTLP tracing pipeline wired** (`#2881`): `init_tracing` now activates the
   `tracing-opentelemetry` layer when `telemetry.enabled = true` and `backend = "otlp"` (requires
   `--features otel` or `--features server`). Spans are exported to an OTLP gRPC collector

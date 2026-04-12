@@ -519,6 +519,59 @@ impl Channel for LoopbackChannel {
     }
 }
 
+/// Adapter that wraps a [`Channel`] reference and implements [`zeph_commands::ChannelSink`].
+///
+/// Used at command dispatch time to coerce `&mut C` into `&mut dyn ChannelSink` without
+/// a blanket impl (which would violate Rust's orphan rules).
+pub(crate) struct ChannelSinkAdapter<'a, C: Channel>(pub &'a mut C);
+
+impl<C: Channel> zeph_commands::ChannelSink for ChannelSinkAdapter<'_, C> {
+    fn send<'a>(
+        &'a mut self,
+        msg: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), zeph_commands::CommandError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.0
+                .send(msg)
+                .await
+                .map_err(zeph_commands::CommandError::new)
+        })
+    }
+
+    fn flush_chunks<'a>(
+        &'a mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), zeph_commands::CommandError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.0
+                .flush_chunks()
+                .await
+                .map_err(zeph_commands::CommandError::new)
+        })
+    }
+
+    fn send_queue_count<'a>(
+        &'a mut self,
+        count: usize,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), zeph_commands::CommandError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.0
+                .send_queue_count(count)
+                .await
+                .map_err(zeph_commands::CommandError::new)
+        })
+    }
+
+    fn supports_exit(&self) -> bool {
+        self.0.supports_exit()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -137,8 +137,10 @@ impl<C: Channel> Agent<C> {
                 let configured_name = entry.effective_name();
 
                 self.provider = new_provider;
-                self.runtime.model_name = model_name.clone();
-                self.runtime.active_provider_name = configured_name.clone();
+                self.runtime.model_name.clone_from(&model_name);
+                self.runtime
+                    .active_provider_name
+                    .clone_from(&configured_name);
 
                 // Reset state that is provider-specific.
                 self.providers.cached_prompt_tokens = 0;
@@ -237,6 +239,138 @@ impl<C: Channel> Agent<C> {
             m.provider_temperature = provider_temperature;
             m.provider_top_p = provider_top_p;
         });
+    }
+
+    /// Channel-free version of [`Self::handle_provider_command`] for use via
+    /// [`zeph_commands::traits::agent::AgentAccess`].
+    pub(super) fn handle_provider_command_as_string(&mut self, arg: &str) -> String {
+        match arg {
+            "" => self.provider_list_as_string(),
+            "status" => self.provider_status_as_string(),
+            name => self.provider_switch_as_string(name),
+        }
+    }
+
+    fn provider_list_as_string(&self) -> String {
+        let pool = &self.providers.provider_pool;
+        if pool.is_empty() {
+            return "No providers configured in [[llm.providers]].".to_owned();
+        }
+        let current = if self.runtime.active_provider_name.is_empty() {
+            self.provider.name().to_owned()
+        } else {
+            self.runtime.active_provider_name.clone()
+        };
+        let mut lines = vec!["Configured providers:".to_string()];
+        for (i, entry) in pool.iter().enumerate() {
+            let name = entry.effective_name();
+            let model = entry.model.as_deref().unwrap_or("(default)");
+            let marker = if name.eq_ignore_ascii_case(&current) {
+                " (active)"
+            } else {
+                ""
+            };
+            lines.push(format!(
+                "  {}. {} [{}] model={}{}",
+                i + 1,
+                name,
+                entry.provider_type,
+                model,
+                marker
+            ));
+        }
+        lines.join("\n")
+    }
+
+    fn provider_status_as_string(&self) -> String {
+        let mut out = String::from("Current provider:\n\n");
+        let display_name = if self.runtime.active_provider_name.is_empty() {
+            self.provider.name().to_owned()
+        } else {
+            self.runtime.active_provider_name.clone()
+        };
+        let _ = writeln!(out, "Name:  {display_name}");
+        let _ = writeln!(out, "Model: {}", self.runtime.model_name);
+        if let Some(ref tx) = self.metrics.metrics_tx {
+            let m = tx.borrow();
+            let _ = writeln!(out, "API calls: {}", m.api_calls);
+            let _ = writeln!(
+                out,
+                "Tokens:    {} prompt / {} completion",
+                m.prompt_tokens, m.completion_tokens
+            );
+            if m.cost_spent_cents > 0.0 {
+                let _ = writeln!(out, "Cost:      ${:.4}", m.cost_spent_cents / 100.0);
+            }
+        }
+        out.trim_end().to_owned()
+    }
+
+    fn provider_switch_as_string(&mut self, name: &str) -> String {
+        let entry_clone = self
+            .providers
+            .provider_pool
+            .iter()
+            .find(|e| e.effective_name().eq_ignore_ascii_case(name))
+            .cloned();
+
+        let Some(entry) = entry_clone else {
+            let names: Vec<_> = self
+                .providers
+                .provider_pool
+                .iter()
+                .map(zeph_config::ProviderEntry::effective_name)
+                .collect();
+            return format!(
+                "Unknown provider '{}'. Available: {}",
+                name,
+                names.join(", ")
+            );
+        };
+
+        let current_name = if self.runtime.active_provider_name.is_empty() {
+            self.provider.name().to_owned()
+        } else {
+            self.runtime.active_provider_name.clone()
+        };
+        if current_name.eq_ignore_ascii_case(name) {
+            return format!("Provider '{current_name}' is already active.");
+        }
+
+        let Some(ref snapshot) = self.providers.provider_config_snapshot else {
+            return "Provider switching unavailable (config snapshot missing).".to_owned();
+        };
+
+        match crate::provider_factory::build_provider_for_switch(&entry, snapshot) {
+            Ok(new_provider) => {
+                let model_name = entry.effective_model();
+                let configured_name = entry.effective_name();
+
+                self.provider = new_provider;
+                self.runtime.model_name.clone_from(&model_name);
+                self.runtime
+                    .active_provider_name
+                    .clone_from(&configured_name);
+                self.providers.cached_prompt_tokens = 0;
+                self.providers.server_compaction_active = entry.server_compaction;
+                self.metrics.extended_context = entry.enable_extended_context;
+
+                tracing::info!(
+                    provider = configured_name,
+                    model = model_name,
+                    "provider switched via /provider command"
+                );
+
+                if let Some(ref override_slot) = self.providers.provider_override {
+                    *override_slot.write() = None;
+                }
+
+                self.update_provider_instructions(&entry);
+                self.apply_provider_switch_metrics(&entry, &configured_name);
+                self.build_switch_message(&configured_name)
+            }
+            Err(e) => format!("Failed to switch to '{name}': {e}"),
+        }
     }
 
     /// Build the switch confirmation message, including embedding provider notice when relevant.

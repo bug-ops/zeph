@@ -25,6 +25,23 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
+    /// Channel-free version of [`Self::handle_scheduler_list`] for use via
+    /// [`zeph_commands::traits::agent::AgentAccess`].
+    pub(super) async fn handle_scheduler_list_as_string(&mut self) -> Result<String, AgentError> {
+        let call = ToolCall {
+            tool_id: zeph_common::ToolName::new("list_tasks"),
+            params: serde_json::Map::new(),
+            caller_id: None,
+        };
+        match self.tool_executor.execute_tool_call_erased(&call).await {
+            Ok(Some(output)) => Ok(output.summary),
+            Ok(None) => {
+                Ok("Scheduler is not enabled or list_tasks tool is unavailable.".to_owned())
+            }
+            Err(e) => Ok(format!("Failed to list scheduled tasks: {e}")),
+        }
+    }
+
     async fn handle_scheduler_list(&mut self) -> Result<(), AgentError> {
         let call = ToolCall {
             tool_id: zeph_common::ToolName::new("list_tasks"),

@@ -44,3 +44,37 @@ pub trait ChannelSink: Send {
     /// Returns `true` if the channel supports a hard exit (e.g., CLI).
     fn supports_exit(&self) -> bool;
 }
+
+/// A [`ChannelSink`] that discards all output.
+///
+/// Used when a [`crate::CommandContext`] needs a sink reference but the handlers being invoked
+/// produce their output exclusively via [`crate::CommandOutput`] return values (not via sink
+/// calls). This avoids borrow-checker conflicts in dispatch blocks that also hold a mutable
+/// borrow of the agent.
+pub struct NullSink;
+
+impl ChannelSink for NullSink {
+    fn send<'a>(
+        &'a mut self,
+        _msg: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn flush_chunks<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn send_queue_count<'a>(
+        &'a mut self,
+        _count: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<(), CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn supports_exit(&self) -> bool {
+        false
+    }
+}

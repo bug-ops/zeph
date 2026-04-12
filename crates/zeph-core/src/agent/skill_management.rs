@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use zeph_memory::store::SourceKind;
 use zeph_skills::SkillSource;
@@ -164,10 +164,3 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 }
-
-// REV-004: AgentError::Other variant needed for spawn_blocking join errors.
-// Checked: AgentError already has an Other(String) variant via the error module.
-// Using PathBuf import to satisfy compiler (used in spawn_blocking closure via Path::new).
-const _: fn() = || {
-    let _: PathBuf = PathBuf::new();
-};

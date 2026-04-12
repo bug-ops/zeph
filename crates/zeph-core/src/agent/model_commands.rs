@@ -8,8 +8,6 @@ use super::Agent;
 impl<C: crate::channel::Channel> Agent<C> {
     /// Switch the active provider to one serving `model_id`.
     ///
-    /// Looks up the model in the provider's remote model list (or cache).
-    ///
     /// # Errors
     ///
     /// Returns `Err` if the model is not found.
@@ -31,7 +29,8 @@ impl<C: crate::channel::Channel> Agent<C> {
         Ok(())
     }
 
-    pub(super) async fn handle_model_refresh(&mut self) {
+    /// Refresh the remote model cache, then return a result message.
+    pub(crate) async fn model_refresh_as_string(&mut self) -> String {
         if let Some(cache_dir) = dirs::cache_dir() {
             let models_dir = cache_dir.join("zeph").join("models");
             if let Ok(entries) = std::fs::read_dir(&models_dir) {
@@ -44,22 +43,13 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
         }
         match self.provider.list_models_remote().await {
-            Ok(models) => {
-                let _ = self
-                    .channel
-                    .send(&format!("Fetched {} models.", models.len()))
-                    .await;
-            }
-            Err(e) => {
-                let _ = self
-                    .channel
-                    .send(&format!("Error fetching models: {e}"))
-                    .await;
-            }
+            Ok(models) => format!("Fetched {} models.", models.len()),
+            Err(e) => format!("Error fetching models: {e}"),
         }
     }
 
-    pub(super) async fn handle_model_list(&mut self) {
+    /// List available models, returning a formatted string.
+    pub(crate) async fn model_list_as_string(&mut self) -> String {
         let cache = zeph_llm::model_cache::ModelCache::for_slug(self.provider.name());
         let cached = if cache.is_stale() {
             None
@@ -71,27 +61,21 @@ impl<C: crate::channel::Channel> Agent<C> {
         } else {
             match self.provider.list_models_remote().await {
                 Ok(m) => m,
-                Err(e) => {
-                    let _ = self
-                        .channel
-                        .send(&format!("Error fetching models: {e}"))
-                        .await;
-                    return;
-                }
+                Err(e) => return format!("Error fetching models: {e}"),
             }
         };
         if models.is_empty() {
-            let _ = self.channel.send("No models available.").await;
-            return;
+            return "No models available.".to_owned();
         }
         let mut lines = vec!["Available models:".to_string()];
         for (i, m) in models.iter().enumerate() {
             lines.push(format!("  {}. {} ({})", i + 1, m.display_name, m.id));
         }
-        let _ = self.channel.send(&lines.join("\n")).await;
+        lines.join("\n")
     }
 
-    pub(super) async fn handle_model_switch(&mut self, model_id: &str) {
+    /// Switch to a different model, returning a result message.
+    pub(crate) async fn model_switch_as_string(&mut self, model_id: &str) -> String {
         let cache = zeph_llm::model_cache::ModelCache::for_slug(self.provider.name());
         let known_models: Option<Vec<zeph_llm::model_cache::RemoteModelInfo>> = if cache.is_stale()
         {
@@ -102,45 +86,49 @@ impl<C: crate::channel::Channel> Agent<C> {
         } else {
             cache.load().unwrap_or(None)
         };
+        let list_unavailable = known_models.is_none();
         if let Some(models) = known_models {
             if !models.iter().any(|m| m.id == model_id) {
                 let mut lines = vec![format!("Unknown model '{model_id}'. Available models:")];
                 for m in &models {
                     lines.push(format!("  • {} ({})", m.display_name, m.id));
                 }
-                let _ = self.channel.send(&lines.join("\n")).await;
-                return;
+                return lines.join("\n");
             }
         } else {
-            let _ = self
-                .channel
-                .send(
-                    "Model list unavailable, switching anyway — verify your model name is correct.",
-                )
-                .await;
+            // Model list unavailable — proceed with a warning.
+            tracing::warn!("model list unavailable, switching to '{model_id}' without validation");
         }
         match self.set_model(model_id) {
             Ok(()) => {
-                let _ = self
-                    .channel
-                    .send(&format!("Switched to model: {model_id}"))
-                    .await;
+                let switch_msg = format!("Switched to model: {model_id}");
+                if list_unavailable {
+                    format!(
+                        "Model list unavailable, switching anyway — verify your model name is correct.\n{switch_msg}"
+                    )
+                } else {
+                    switch_msg
+                }
             }
-            Err(e) => {
-                let _ = self.channel.send(&format!("Error: {e}")).await;
-            }
+            Err(e) => format!("Error: {e}"),
         }
     }
 
-    /// Handle `/model`, `/model <id>`, and `/model refresh` commands.
-    pub(super) async fn handle_model_command(&mut self, trimmed: &str) {
+    /// Handle `/model`, `/model <id>`, and `/model refresh` commands, returning a string result.
+    pub(crate) async fn handle_model_command_as_string(&mut self, trimmed: &str) -> String {
         let arg = trimmed.strip_prefix("/model").map_or("", str::trim);
         if arg == "refresh" {
-            self.handle_model_refresh().await;
+            self.model_refresh_as_string().await
         } else if arg.is_empty() {
-            self.handle_model_list().await;
+            self.model_list_as_string().await
         } else {
-            self.handle_model_switch(arg).await;
+            self.model_switch_as_string(arg).await
         }
+    }
+
+    /// Handle `/model`, `/model <id>`, and `/model refresh` — sends result to channel.
+    pub(super) async fn handle_model_command(&mut self, trimmed: &str) {
+        let result = self.handle_model_command_as_string(trimmed).await;
+        let _ = self.channel.send(&result).await;
     }
 }

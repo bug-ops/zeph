@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod agent_access_impl;
 mod autodream;
 mod builder;
-pub(crate) mod command_registry;
-mod commands;
+mod command_context_impls;
 pub(crate) mod compaction_strategy;
 pub(super) mod compression_feedback;
 mod context;
@@ -179,11 +179,6 @@ pub struct Agent<C: Channel> {
     pub(super) sidequest: sidequest::SidequestState,
     /// Tool filtering, dependency tracking, and iteration bookkeeping.
     pub(super) tool_state: ToolState,
-    /// Trait-based slash command registry (Batch 1 commands).
-    ///
-    /// Batch 2 and Batch 3 commands continue to dispatch through existing
-    /// `dispatch_slash_command` logic until they are migrated in a follow-up PR.
-    pub(super) command_registry: command_registry::CommandRegistry<C>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -306,7 +301,6 @@ impl<C: Channel> Agent<C> {
             focus: focus::FocusState::default(),
             sidequest: sidequest::SidequestState::default(),
             tool_state: ToolState::default(),
-            command_registry: build_command_registry(),
         }
     }
 
@@ -728,7 +722,10 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns an error if the channel, LLM provider, or tool execution encounters a fatal error.
     #[allow(clippy::too_many_lines)] // run loop is inherently large; each branch is independent
-    pub async fn run(&mut self) -> Result<(), error::AgentError> {
+    pub async fn run(&mut self) -> Result<(), error::AgentError>
+    where
+        C: 'static,
+    {
         if let Some(mut rx) = self.lifecycle.warmup_ready.take()
             && !*rx.borrow()
         {
@@ -810,62 +807,141 @@ impl<C: Channel> Agent<C> {
 
             let trimmed = text.trim();
 
-            // Registry dispatch (Batch 1: trivial self-contained commands).
-            // Uses std::mem::take to avoid borrow-checker conflict between &self.command_registry
-            // and the &mut subsystem borrows required by CommandContext.
+            // Registry dispatch: build the command registry, construct CommandContext, dispatch.
+            // The registry is built inline (all handlers are ZSTs) to avoid borrow-checker
+            // conflicts when constructing CommandContext from Agent<C> fields.
+            // Build context first so that borrows outlive the registry (drop order matters).
+            let session_impl = command_context_impls::SessionAccessImpl {
+                supports_exit: self.channel.supports_exit(),
+            };
+            let mut messages_impl = command_context_impls::MessageAccessImpl {
+                msg: &mut self.msg,
+                tool_state: &mut self.tool_state,
+                providers: &mut self.providers,
+                metrics: &self.metrics,
+                security: &mut self.security,
+                tool_orchestrator: &mut self.tool_orchestrator,
+            };
+            // sink_adapter declared before reg so it is dropped after reg (LIFO).
+            let mut sink_adapter = crate::channel::ChannelSinkAdapter(&mut self.channel);
+            // null_agent must be declared before reg so it lives longer (LIFO drop order).
+            let mut null_agent = zeph_commands::NullAgent;
             let registry_handled = {
-                let reg = std::mem::take(&mut self.command_registry);
-                let mut ctx = command_registry::CommandContext {
-                    channel: &mut self.channel,
-                    provider: &mut self.provider,
-                    embedding_provider: &self.embedding_provider,
-                    msg: &mut self.msg,
-                    memory_state: &mut self.memory_state,
-                    skill_state: &mut self.skill_state,
-                    context_manager: &mut self.context_manager,
-                    tool_orchestrator: &mut self.tool_orchestrator,
-                    mcp: &mut self.mcp,
-                    index: &self.index,
-                    debug_state: &mut self.debug_state,
-                    runtime: &mut self.runtime,
-                    metrics: &self.metrics,
-                    security: &mut self.security,
-                    orchestration: &mut self.orchestration,
-                    lifecycle: &mut self.lifecycle,
-                    focus: &self.focus,
-                    sidequest: &self.sidequest,
-                    providers: &mut self.providers,
-                    compression: &mut self.compression,
-                    tool_executor: &self.tool_executor,
-                    experiments: &mut self.experiments,
-                    feedback: &mut self.feedback,
-                    learning_engine: &mut self.learning_engine,
-                    tool_state: &mut self.tool_state,
+                use zeph_commands::CommandRegistry;
+                use zeph_commands::handlers::debug::{
+                    DebugDumpCommand, DumpFormatCommand, LogCommand,
                 };
-                let result = reg.dispatch(&mut ctx, trimmed).await;
-                self.command_registry = reg;
-                result
+                use zeph_commands::handlers::session::{
+                    ClearCommand, ClearQueueCommand, ExitCommand, QuitCommand, ResetCommand,
+                };
+
+                let mut reg = CommandRegistry::new();
+                reg.register(ExitCommand);
+                reg.register(QuitCommand);
+                reg.register(ClearCommand);
+                reg.register(ResetCommand);
+                reg.register(ClearQueueCommand);
+                reg.register(LogCommand);
+                reg.register(DebugDumpCommand);
+                reg.register(DumpFormatCommand);
+
+                let mut ctx = zeph_commands::CommandContext {
+                    sink: &mut sink_adapter,
+                    debug: &mut self.debug_state,
+                    messages: &mut messages_impl,
+                    session: &session_impl,
+                    agent: &mut null_agent,
+                };
+                reg.dispatch(&mut ctx, trimmed).await
             };
             match registry_handled {
-                Some(Ok(command_registry::CommandOutput::Exit)) => {
+                Some(Ok(zeph_commands::CommandOutput::Exit)) => {
                     let _ = self.channel.flush_chunks().await;
                     break;
                 }
                 Some(Ok(
-                    command_registry::CommandOutput::Continue
-                    | command_registry::CommandOutput::Silent,
+                    zeph_commands::CommandOutput::Continue | zeph_commands::CommandOutput::Silent,
                 )) => {
                     let _ = self.channel.flush_chunks().await;
                     continue;
                 }
-                Some(Ok(command_registry::CommandOutput::Message(msg))) => {
+                Some(Ok(zeph_commands::CommandOutput::Message(msg))) => {
                     let _ = self.channel.send(&msg).await;
                     let _ = self.channel.flush_chunks().await;
                     continue;
                 }
-                Some(Err(e)) => return Err(e),
+                Some(Err(e)) => return Err(error::AgentError::Other(e.0)),
                 None => {
-                    // Not handled by registry; fall through to existing dispatch.
+                    // Not handled by the session/debug registry; try agent-command registry.
+                }
+            }
+
+            // Agent-command registry: handlers access Agent<C> directly.
+            // Null sentinels declared here so they outlive ctx regardless of whether the `if`
+            // block is entered. `ctx` borrows both `self` and the sentinels; it must drop before
+            // any subsequent `self.channel.*` calls. Because Rust drops in LIFO order, the
+            // sentinels here will outlive ctx (ctx is declared later, inside the block).
+            let mut agent_null_debug = command_context_impls::NullDebugAccess;
+            let mut agent_null_messages = command_context_impls::NullMessageAccess;
+            let agent_null_session = command_context_impls::NullSessionAccess;
+            let mut agent_null_sink = zeph_commands::NullSink;
+            let agent_result: Option<
+                Result<zeph_commands::CommandOutput, zeph_commands::CommandError>,
+            > = if registry_handled.is_none() {
+                use zeph_commands::CommandRegistry;
+                use zeph_commands::handlers::{
+                    lsp::LspCommand,
+                    memory::{GraphCommand, GuidelinesCommand, MemoryCommand},
+                    model::{ModelCommand, ProviderCommand},
+                    policy::PolicyCommand,
+                    scheduler::SchedulerCommand,
+                };
+
+                let mut agent_reg = CommandRegistry::new();
+                agent_reg.register(MemoryCommand);
+                agent_reg.register(GraphCommand);
+                agent_reg.register(GuidelinesCommand);
+                agent_reg.register(ModelCommand);
+                agent_reg.register(ProviderCommand);
+                // Note: SkillCommand, SkillsCommand, FeedbackCommand are intentionally NOT
+                // registered here — their implementations hold non-Send references across .await
+                // points. They continue to be dispatched via handle_builtin_command below.
+                agent_reg.register(PolicyCommand);
+                agent_reg.register(SchedulerCommand);
+                agent_reg.register(LspCommand);
+
+                let mut ctx = zeph_commands::CommandContext {
+                    sink: &mut agent_null_sink,
+                    debug: &mut agent_null_debug,
+                    messages: &mut agent_null_messages,
+                    session: &agent_null_session,
+                    agent: self,
+                };
+                // self is reborrowed; ctx drops at end of this block.
+                agent_reg.dispatch(&mut ctx, trimmed).await
+            } else {
+                None
+            };
+            // self.channel is available again here (ctx borrow dropped above).
+            match agent_result {
+                Some(Ok(zeph_commands::CommandOutput::Exit)) => {
+                    let _ = self.channel.flush_chunks().await;
+                    break;
+                }
+                Some(Ok(
+                    zeph_commands::CommandOutput::Continue | zeph_commands::CommandOutput::Silent,
+                )) => {
+                    let _ = self.channel.flush_chunks().await;
+                    continue;
+                }
+                Some(Ok(zeph_commands::CommandOutput::Message(msg))) => {
+                    let _ = self.channel.send(&msg).await;
+                    let _ = self.channel.flush_chunks().await;
+                    continue;
+                }
+                Some(Err(e)) => return Err(error::AgentError::Other(e.0)),
+                None => {
+                    // Not handled by agent registry; fall through to existing dispatch.
                 }
             }
 
@@ -2430,24 +2506,6 @@ pub(crate) fn resolve_context_budget(config: &Config, provider: &AnyProvider) ->
     } else {
         tokens
     }
-}
-
-/// Build the command registry populated with all Batch 1 slash command handlers.
-///
-/// Batch 1 contains trivial, self-contained commands that do not require delegation
-/// to existing `Agent<C>` methods. Batch 2 and 3 commands continue to dispatch through
-/// `dispatch_slash_command` until they are migrated in a follow-up PR.
-fn build_command_registry<C: Channel>() -> command_registry::CommandRegistry<C> {
-    let mut reg = command_registry::CommandRegistry::new();
-    reg.register(commands::exit::ExitCommand);
-    reg.register(commands::exit::QuitCommand);
-    reg.register(commands::clear::ClearCommand);
-    reg.register(commands::clear::ResetCommand);
-    reg.register(commands::clear_queue::ClearQueueCommand);
-    reg.register(commands::debug_dump::DebugDumpCommand);
-    reg.register(commands::dump_format::DumpFormatCommand);
-    reg.register(commands::log::LogCommand);
-    reg
 }
 
 #[cfg(test)]

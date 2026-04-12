@@ -10,20 +10,28 @@
 //! - [`CommandInfo`] — static metadata for a registered command
 //! - [`CommandHandler`] — object-safe handler trait (no `C` generic)
 //! - [`CommandRegistry`] — registry with longest-word-boundary dispatch
+//! - [`CommandContext`] — non-generic dispatch context with trait-object fields
+//! - [`traits`] — sub-trait definitions for subsystem access
+//! - [`handlers`] — concrete handler implementations (session, debug)
 //!
 //! # Design
 //!
-//! `CommandRegistry` and `CommandHandler` are non-generic: they use `&mut dyn ChannelSink`
-//! instead of `&mut C`. The concrete `CommandContext` struct lives in `zeph-core` alongside
-//! the agent subsystem types it references. `zeph-core` implements `ChannelSink` for each
-//! channel type and bridges the dispatch.
+//! `CommandRegistry` and `CommandHandler` are non-generic: they operate on [`CommandContext`],
+//! a concrete struct whose fields are trait objects (`&mut dyn DebugAccess`, etc.). `zeph-core`
+//! implements these traits on its internal state types and constructs `CommandContext` at dispatch
+//! time from `Agent<C>` fields.
 //!
 //! This crate does NOT depend on `zeph-core`. A change in `zeph-core`'s agent loop does
 //! not recompile `zeph-commands`.
 
+pub mod context;
+pub mod handlers;
 pub mod sink;
+pub mod traits;
 
-pub use sink::ChannelSink;
+pub use context::CommandContext;
+pub use sink::{ChannelSink, NullSink};
+pub use traits::agent::{AgentAccess, NullAgent};
 
 use std::future::Future;
 use std::pin::Pin;
