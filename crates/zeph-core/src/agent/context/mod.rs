@@ -32,27 +32,7 @@ pub(super) const PERSONA_PREFIX: &str = "[Persona context]\n";
 pub(super) const TRAJECTORY_PREFIX: &str = "[Past experience]\n";
 pub(super) const TREE_MEMORY_PREFIX: &str = "[Memory summary]\n";
 
-/// Tagged output of each concurrent context-fetch future in test helpers.
-///
-/// Using an enum instead of a tuple allows individual sources to be added or
-/// removed (including cfg-gated ones) without rewriting the join combinator.
-#[cfg(test)]
-pub(super) enum ContextSlot {
-    Summaries(Option<Message>),
-    CrossSession(Option<Message>),
-    /// Semantic recall result. Carries the formatted message and the top-1 similarity score.
-    SemanticRecall(Option<Message>, Option<f32>),
-    DocumentRag(Option<Message>),
-    Corrections(Option<Message>),
-    CodeContext(Option<String>),
-    GraphFacts(Option<Message>),
-    /// Persona memory facts injected after the system prompt (#2461).
-    PersonaFacts(Option<Message>),
-    /// Top-k procedural trajectory hints recalled for the current turn (#2498).
-    TrajectoryHints(Option<Message>),
-    /// `TiMem` tree summary nodes recalled for context (#2262).
-    TreeMemory(Option<Message>),
-}
+
 impl<C: Channel> Agent<C> {
     pub(super) fn compaction_tier(&self) -> super::context_manager::CompactionTier {
         self.context_manager

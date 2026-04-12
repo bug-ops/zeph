@@ -10,22 +10,24 @@
 //! The top-level gather logic is in [`zeph_context::assembler::ContextAssembler`].
 
 #[cfg(test)]
-use std::sync::Arc;
-
-#[cfg(test)]
-use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+use zeph_llm::provider::{Message, MessagePart, Role};
 #[cfg(test)]
 use zeph_memory::TokenCounter;
 
 #[cfg(test)]
 use super::super::error::AgentError;
 #[cfg(test)]
-use super::super::{
-    CORRECTIONS_PREFIX, CROSS_SESSION_PREFIX, DOCUMENT_RAG_PREFIX, GRAPH_FACTS_PREFIX, MemoryState,
-    RECALL_PREFIX, SUMMARY_PREFIX,
-};
+use super::super::{CROSS_SESSION_PREFIX, GRAPH_FACTS_PREFIX, MemoryState, RECALL_PREFIX, SUMMARY_PREFIX};
 #[cfg(test)]
 use crate::redact::scrub_content;
+
+#[cfg(test)]
+pub(super) fn format_correction_note(_original_output: &str, correction_text: &str) -> String {
+    format!(
+        "- Past user correction: \"{}\"",
+        super::truncate_chars(&scrub_content(correction_text), 200)
+    )
+}
 
 #[cfg(test)]
 pub(super) fn effective_recall_timeout_ms(configured: u64) -> u64 {
@@ -147,171 +149,6 @@ pub(super) async fn fetch_graph_facts(
 }
 
 #[cfg(test)]
-pub(super) async fn fetch_persona_facts(
-    memory_state: &MemoryState,
-    budget_tokens: usize,
-    tc: &TokenCounter,
-) -> Result<Option<Message>, AgentError> {
-    if budget_tokens == 0 || !memory_state.extraction.persona_config.enabled {
-        return Ok(None);
-    }
-    let Some(ref memory) = memory_state.persistence.memory else {
-        return Ok(None);
-    };
-
-    let min_confidence = memory_state.extraction.persona_config.min_confidence;
-    let facts = memory.sqlite().load_persona_facts(min_confidence).await?;
-
-    if facts.is_empty() {
-        return Ok(None);
-    }
-
-    let mut body = String::from(super::PERSONA_PREFIX);
-    let mut tokens_so_far = tc.count_tokens(&body);
-
-    for fact in &facts {
-        let line = format!("[{}] {}\n", fact.category, fact.content);
-        let line_tokens = tc.count_tokens(&line);
-        if tokens_so_far + line_tokens > budget_tokens {
-            break;
-        }
-        body.push_str(&line);
-        tokens_so_far += line_tokens;
-    }
-
-    if body == super::PERSONA_PREFIX {
-        return Ok(None);
-    }
-
-    Ok(Some(Message::from_legacy(Role::System, body)))
-}
-
-#[cfg(test)]
-pub(super) async fn fetch_trajectory_hints(
-    memory_state: &MemoryState,
-    budget_tokens: usize,
-    tc: &TokenCounter,
-) -> Result<Option<Message>, AgentError> {
-    if budget_tokens == 0 || !memory_state.extraction.trajectory_config.enabled {
-        return Ok(None);
-    }
-    let Some(ref memory) = memory_state.persistence.memory else {
-        return Ok(None);
-    };
-
-    let top_k = memory_state.extraction.trajectory_config.recall_top_k;
-    let min_conf = memory_state.extraction.trajectory_config.min_confidence;
-    let entries = memory
-        .sqlite()
-        .load_trajectory_entries(Some("procedural"), top_k)
-        .await?;
-
-    if entries.is_empty() {
-        return Ok(None);
-    }
-
-    let mut body = String::from(super::TRAJECTORY_PREFIX);
-    let mut tokens_so_far = tc.count_tokens(&body);
-
-    for entry in entries
-        .iter()
-        .filter(|e| e.confidence >= min_conf)
-        .take(top_k)
-    {
-        let line = format!("- {}: {}\n", entry.intent, entry.outcome);
-        let line_tokens = tc.count_tokens(&line);
-        if tokens_so_far + line_tokens > budget_tokens {
-            break;
-        }
-        body.push_str(&line);
-        tokens_so_far += line_tokens;
-    }
-
-    if body == super::TRAJECTORY_PREFIX {
-        return Ok(None);
-    }
-
-    Ok(Some(Message::from_legacy(Role::System, body)))
-}
-
-#[cfg(test)]
-pub(super) async fn fetch_tree_memory(
-    memory_state: &MemoryState,
-    budget_tokens: usize,
-    tc: &TokenCounter,
-) -> Result<Option<Message>, AgentError> {
-    if budget_tokens == 0 || !memory_state.subsystems.tree_config.enabled {
-        return Ok(None);
-    }
-    let Some(ref memory) = memory_state.persistence.memory else {
-        return Ok(None);
-    };
-
-    let top_k = memory_state.subsystems.tree_config.recall_top_k;
-    let nodes = memory.sqlite().load_tree_level(1, top_k).await?;
-
-    if nodes.is_empty() {
-        return Ok(None);
-    }
-
-    let mut body = String::from(super::TREE_MEMORY_PREFIX);
-    let mut tokens_so_far = tc.count_tokens(&body);
-
-    for node in nodes.iter().take(top_k) {
-        let line = format!("- {}\n", node.content);
-        let line_tokens = tc.count_tokens(&line);
-        if tokens_so_far + line_tokens > budget_tokens {
-            break;
-        }
-        body.push_str(&line);
-        tokens_so_far += line_tokens;
-    }
-
-    if body == super::TREE_MEMORY_PREFIX {
-        return Ok(None);
-    }
-
-    Ok(Some(Message::from_legacy(Role::System, body)))
-}
-
-#[cfg(test)]
-pub(super) fn format_correction_note(_original_output: &str, correction_text: &str) -> String {
-    // Never replay the faulty assistant/tool output itself into future prompts.
-    format!(
-        "- Past user correction: \"{}\"",
-        super::truncate_chars(&scrub_content(correction_text), 200)
-    )
-}
-
-#[cfg(test)]
-pub(super) async fn fetch_corrections(
-    memory_state: &MemoryState,
-    query: &str,
-    limit: usize,
-    min_score: f32,
-) -> Result<Option<Message>, AgentError> {
-    let Some(ref memory) = memory_state.persistence.memory else {
-        return Ok(None);
-    };
-    let corrections = memory
-        .retrieve_similar_corrections(query, limit, min_score)
-        .await
-        .unwrap_or_default();
-    if corrections.is_empty() {
-        return Ok(None);
-    }
-    let mut text = String::from(CORRECTIONS_PREFIX);
-    for c in &corrections {
-        text.push_str(&format_correction_note(
-            &c.original_output,
-            &c.correction_text,
-        ));
-        text.push('\n');
-    }
-    Ok(Some(Message::from_legacy(Role::System, text)))
-}
-
-#[cfg(test)]
 pub(super) async fn fetch_semantic_recall(
     memory_state: &MemoryState,
     query: &str,
@@ -375,62 +212,6 @@ pub(super) async fn fetch_semantic_recall(
         ))
     } else {
         Ok((None, None))
-    }
-}
-
-#[cfg(test)]
-pub(super) async fn fetch_document_rag(
-    memory_state: &MemoryState,
-    query: &str,
-    token_budget: usize,
-    tc: &TokenCounter,
-) -> Result<Option<Message>, AgentError> {
-    if !memory_state.extraction.document_config.rag_enabled || token_budget == 0 {
-        return Ok(None);
-    }
-    let Some(memory) = &memory_state.persistence.memory else {
-        return Ok(None);
-    };
-
-    let collection = &memory_state.extraction.document_config.collection;
-    let top_k = memory_state.extraction.document_config.top_k;
-    let points = memory
-        .search_document_collection(collection, query, top_k)
-        .await?;
-    if points.is_empty() {
-        return Ok(None);
-    }
-
-    let mut text = String::from(DOCUMENT_RAG_PREFIX);
-    let mut tokens_used = tc.count_tokens(&text);
-
-    for point in &points {
-        let chunk = point
-            .payload
-            .get("text")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if chunk.is_empty() {
-            continue;
-        }
-        let entry = format!("{chunk}\n");
-        let cost = tc.count_tokens(&entry);
-        if tokens_used + cost > token_budget {
-            break;
-        }
-        text.push_str(&entry);
-        tokens_used += cost;
-    }
-
-    if tokens_used > tc.count_tokens(DOCUMENT_RAG_PREFIX) {
-        Ok(Some(Message {
-            role: Role::System,
-            content: text,
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }))
-    } else {
-        Ok(None)
     }
 }
 

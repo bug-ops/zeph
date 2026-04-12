@@ -166,7 +166,6 @@ enum CompactTarget {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::agent::Agent;
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
