@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Provider helpers extraction** (`#2916`): extracted `BootstrapError`, `build_provider_for_switch`,
+  `build_provider_from_entry`, and `effective_embedding_model` from `zeph-core/src/bootstrap/` into
+  a new internal module `crates/zeph-core/src/provider_factory.rs`. All 5 internal callers
+  (`autodream.rs`, `learning/arise.rs`, `magic_docs.rs`, `provider_cmd.rs`, `session_config.rs`)
+  updated to use `crate::provider_factory::`. Backward-compat `pub use` re-exports added to
+  `bootstrap/provider.rs` and `bootstrap/skills.rs` so the binary crate is unaffected.
+  Prerequisite for moving `bootstrap/` to the binary crate (#2906).
+
 - **`ContextAssembler` extraction** (`#2904`): extracted stateless `ContextAssembler` struct
   with `gather(input: &ContextAssemblyInput<'_>) -> Result<PreparedContext, AgentError>` into
   `crates/zeph-core/src/agent/context/assembler.rs`. All 9 `fetch_*` methods moved from

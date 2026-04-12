@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+pub use crate::provider_factory::effective_embedding_model;
+
 use std::path::PathBuf;
 use zeph_llm::any::AnyProvider;
 use zeph_memory::QdrantOps;
@@ -90,29 +92,6 @@ pub fn create_embedding_provider(config: &Config, primary: &AnyProvider) -> AnyP
             primary.clone()
         }
     }
-}
-
-pub fn effective_embedding_model(config: &Config) -> String {
-    // Prefer a dedicated embed provider.
-    if let Some(m) = config
-        .llm
-        .providers
-        .iter()
-        .find(|e| e.embed)
-        .and_then(|e| e.embedding_model.as_ref())
-    {
-        return m.clone();
-    }
-    // Fall back to the first provider's embedding model.
-    if let Some(m) = config
-        .llm
-        .providers
-        .first()
-        .and_then(|e| e.embedding_model.as_ref())
-    {
-        return m.clone();
-    }
-    config.llm.embedding_model.clone()
 }
 
 /// Returns the default managed skills directory: `~/.config/zeph/skills/`.

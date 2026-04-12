@@ -133,7 +133,7 @@ impl AgentSessionConfig {
                 .tools
                 .permission_policy(config.security.autonomy_level),
             model_name: config.llm.effective_model().to_owned(),
-            embed_model: crate::bootstrap::effective_embedding_model(config),
+            embed_model: crate::provider_factory::effective_embedding_model(config),
             semantic_cache_enabled: config.llm.semantic_cache_enabled,
             semantic_cache_threshold: config.llm.semantic_cache_threshold,
             semantic_cache_max_candidates: config.llm.semantic_cache_max_candidates,
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(sc.model_name, config.llm.effective_model());
         assert_eq!(
             sc.embed_model,
-            crate::bootstrap::effective_embedding_model(&config)
+            crate::provider_factory::effective_embedding_model(&config)
         );
         assert_eq!(sc.semantic_cache_enabled, config.llm.semantic_cache_enabled);
         assert!(

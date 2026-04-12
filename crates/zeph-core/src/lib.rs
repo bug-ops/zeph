@@ -82,6 +82,7 @@ pub mod metrics;
 pub mod metrics_bridge;
 pub mod pipeline;
 pub mod project;
+pub mod provider_factory;
 pub mod redact;
 #[cfg(feature = "sysinfo")]
 pub mod system_metrics;

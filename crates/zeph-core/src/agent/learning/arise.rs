@@ -31,7 +31,7 @@ impl<C: Channel> Agent<C> {
         let Some(ref snapshot) = self.providers.provider_config_snapshot else {
             return self.provider.clone();
         };
-        match crate::bootstrap::build_provider_for_switch(&entry, snapshot) {
+        match crate::provider_factory::build_provider_for_switch(&entry, snapshot) {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!("failed to build provider '{provider_name}': {e:#}, using primary");

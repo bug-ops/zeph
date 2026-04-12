@@ -128,7 +128,7 @@ impl<C: Channel> Agent<C> {
             return;
         };
 
-        match crate::bootstrap::build_provider_for_switch(&entry, snapshot) {
+        match crate::provider_factory::build_provider_for_switch(&entry, snapshot) {
             Ok(new_provider) => {
                 // Resolve actual model name: use the entry's effective model (explicit or
                 // provider-type default) instead of the provider type string returned by name().
@@ -336,7 +336,8 @@ mod tests {
 
         let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         let snapshot = ollama_snapshot();
-        let new_provider = crate::bootstrap::build_provider_for_switch(&entry, &snapshot).unwrap();
+        let new_provider =
+            crate::provider_factory::build_provider_for_switch(&entry, &snapshot).unwrap();
 
         let mut agent = Agent::new(new_provider, channel, registry, None, 5, executor);
         agent.providers.provider_pool = vec![entry];
@@ -365,7 +366,8 @@ mod tests {
     async fn provider_switch_already_active_warns() {
         let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         let snapshot = ollama_snapshot();
-        let provider = crate::bootstrap::build_provider_for_switch(&entry, &snapshot).unwrap();
+        let provider =
+            crate::provider_factory::build_provider_for_switch(&entry, &snapshot).unwrap();
 
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
@@ -397,7 +399,8 @@ mod tests {
         let entry_a = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         let entry_b = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
         let snapshot = ollama_snapshot();
-        let provider_a = crate::bootstrap::build_provider_for_switch(&entry_a, &snapshot).unwrap();
+        let provider_a =
+            crate::provider_factory::build_provider_for_switch(&entry_a, &snapshot).unwrap();
 
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
@@ -465,7 +468,8 @@ mod tests {
         let snapshot = ollama_snapshot();
 
         // Build a real Ollama provider for entry_b to switch to.
-        let provider_b = crate::bootstrap::build_provider_for_switch(&entry_b, &snapshot).unwrap();
+        let provider_b =
+            crate::provider_factory::build_provider_for_switch(&entry_b, &snapshot).unwrap();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
         // embedding_provider defaults to provider.clone() (mock). After switch the chat
@@ -497,7 +501,8 @@ mod tests {
         let entry_a = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         let entry_b = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
         let snapshot = ollama_snapshot();
-        let provider_a = crate::bootstrap::build_provider_for_switch(&entry_a, &snapshot).unwrap();
+        let provider_a =
+            crate::provider_factory::build_provider_for_switch(&entry_a, &snapshot).unwrap();
 
         // embed_provider is a MockProvider — name() returns "mock", which differs from
         // any Ollama provider's name() ("ollama").
@@ -533,11 +538,12 @@ mod tests {
         let entry_a = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         let entry_b = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
         let snapshot = ollama_snapshot();
-        let provider_a = crate::bootstrap::build_provider_for_switch(&entry_a, &snapshot).unwrap();
+        let provider_a =
+            crate::provider_factory::build_provider_for_switch(&entry_a, &snapshot).unwrap();
 
         let entry_embed = make_entry("embed", ProviderKind::Ollama, Some("nomic-embed-text"));
         let embed_provider =
-            crate::bootstrap::build_provider_for_switch(&entry_embed, &snapshot).unwrap();
+            crate::provider_factory::build_provider_for_switch(&entry_embed, &snapshot).unwrap();
 
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();

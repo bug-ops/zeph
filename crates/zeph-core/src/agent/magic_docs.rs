@@ -197,7 +197,7 @@ impl<C: Channel> super::Agent<C> {
                 .find(|e| e.name.as_deref() == Some(cfg.update_provider.as_str())),
             self.providers.provider_config_snapshot.as_ref(),
         ) {
-            crate::bootstrap::provider::build_provider_for_switch(entry, snapshot).unwrap_or_else(
+            crate::provider_factory::build_provider_for_switch(entry, snapshot).unwrap_or_else(
                 |e| {
                     tracing::warn!(
                         provider = cfg.update_provider.as_str(),
