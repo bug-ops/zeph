@@ -46,79 +46,8 @@ use super::state::{
 };
 use super::tool_orchestrator;
 
-/// Result of executing a slash command.
-///
-/// Replaces the heterogeneous return types of `handle_builtin_command`
-/// (`Option<bool>`) and `dispatch_slash_command` (`Option<Result<(), AgentError>>`)
-/// with a single, exhaustive enum.
-pub(crate) enum CommandOutput {
-    /// Send a message to the user via the channel.
-    Message(String),
-    /// Command handled silently; no output (e.g., `/clear`).
-    Silent,
-    /// Exit the agent loop immediately.
-    Exit,
-    /// Continue to the next loop iteration (command handled, don't process as LLM input).
-    Continue,
-}
-
-/// Category for grouping commands in `/help` output.
-// Used by CommandHandler implementations in commands/ and future /help handler.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SlashCategory {
-    /// Session management: `/clear`, `/reset`, `/exit`, etc.
-    Session,
-    /// Model and provider configuration: `/model`, `/provider`, `/guardrail`, etc.
-    Configuration,
-    /// Memory and knowledge: `/memory`, `/graph`, `/compact`, etc.
-    Memory,
-    /// Skill management: `/skill`, `/skills`, etc.
-    Skills,
-    /// Planning and focus: `/plan`, `/focus`, `/sidequest`, etc.
-    Planning,
-    /// Debugging and diagnostics: `/debug-dump`, `/log`, `/lsp`, etc.
-    Debugging,
-    /// External integrations: `/mcp`, `/image`, `/agent`, etc.
-    Integration,
-    /// Advanced and experimental: `/experiment`, `/policy`, `/scheduler`, etc.
-    Advanced,
-}
-
-impl SlashCategory {
-    /// Return the display label for this category in `/help` output.
-    // Used by future /help handler; suppressed until handler is wired.
-    #[must_use]
-    #[allow(dead_code)]
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Session => "Session",
-            Self::Configuration => "Configuration",
-            Self::Memory => "Memory",
-            Self::Skills => "Skills",
-            Self::Planning => "Planning",
-            Self::Debugging => "Debugging",
-            Self::Integration => "Integration",
-            Self::Advanced => "Advanced",
-        }
-    }
-}
-
-/// Static metadata about a registered command, used for `/help` output generation.
-// Fields read by future /help handler; suppressed until wired.
-#[allow(dead_code)]
-pub(crate) struct CommandInfo {
-    /// Command name including the leading slash, e.g. `"/help"`.
-    pub name: &'static str,
-    /// Argument hint shown after the command name in help, e.g. `"[path]"`.
-    pub args: &'static str,
-    /// One-line description shown in `/help` output.
-    pub description: &'static str,
-    /// Category for grouping in `/help`.
-    pub category: SlashCategory,
-    /// Feature gate label, if this command is conditionally compiled.
-    pub feature_gate: Option<&'static str>,
-}
+// Re-export shared types from zeph-commands to avoid duplication.
+pub(crate) use zeph_commands::{CommandInfo, CommandOutput, SlashCategory};
 
 /// Typed access to agent subsystems needed by command handlers.
 ///

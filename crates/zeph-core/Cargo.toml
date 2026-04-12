@@ -25,7 +25,6 @@ mock = ["zeph-vault/mock"]
 scheduler = []
 
 [dependencies]
-async-trait.workspace = true
 base64.workspace = true
 blake3.workspace = true
 chrono.workspace = true
@@ -56,6 +55,7 @@ tracing-subscriber = { workspace = true, features = ["parking_lot", "registry"],
 sysinfo = { workspace = true, optional = true }
 tree-sitter.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
+zeph-commands.workspace = true
 zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-context.workspace = true

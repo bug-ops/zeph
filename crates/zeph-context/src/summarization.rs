@@ -1,20 +1,278 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Pure prompt-building and compaction helpers for context summarization.
+//! Pure prompt-building, compaction helpers, and async LLM summarization for context.
 //!
-//! All functions in this module are stateless: they take only `Message` slices and
-//! configuration values as input and return `String` or transformed `Vec<Message>`.
-//! They contain no agent state access and can be called from any crate that depends
-//! on `zeph-context`.
+//! Stateless functions take only `Message` slices and configuration values; they contain
+//! no agent state access. The `SummarizationDeps` struct provides explicit LLM dependencies
+//! for the async summarization functions, avoiding coupling to `Agent<C>`.
 //!
-//! The orchestration layer (`Agent::summarize_messages`, `Agent::maybe_summarize_tool_pair`,
-//! etc.) lives in `zeph-core` and calls these helpers.
+//! The orchestration layer (`Agent::compact_context`, `Agent::maybe_compact`, etc.)
+//! lives in `zeph-core` and calls these helpers.
 
 use std::fmt::Write as _;
+use std::sync::Arc;
+use std::time::Duration;
 
+use futures::StreamExt as _;
 use zeph_common::OVERFLOW_NOTICE_PREFIX;
-use zeph_llm::provider::{Message, MessagePart, Role};
+use zeph_llm::LlmProvider as _;
+use zeph_llm::any::AnyProvider;
+use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+use zeph_memory::{AnchoredSummary, TokenCounter};
+
+/// Explicit LLM dependencies for async summarization, avoiding coupling to `Agent<C>`.
+///
+/// Passed to [`single_pass_summary`], [`summarize_with_llm`], and [`summarize_structured`]
+/// so these functions can be called from `zeph-context` without depending on `zeph-core`.
+pub struct SummarizationDeps {
+    /// LLM provider used for all summarization calls.
+    pub provider: AnyProvider,
+    /// Timeout applied to each individual LLM call.
+    pub llm_timeout: Duration,
+    /// Token counter for chunking message slices.
+    pub token_counter: Arc<TokenCounter>,
+    /// Whether to attempt structured `AnchoredSummary` output before prose.
+    pub structured_summaries: bool,
+    /// Optional callback invoked with the `AnchoredSummary` result and a `fallback` flag.
+    ///
+    /// Used by `zeph-core` to write debug dumps without the `SummarizationDeps` knowing
+    /// about `DebugDumper`. Pass `None` when debug dumps are not needed.
+    #[allow(clippy::type_complexity)]
+    pub on_anchored_summary: Option<Arc<dyn Fn(&AnchoredSummary, bool) + Send + Sync>>,
+}
+
+/// Attempt structured summarization via `chat_typed_erased::<AnchoredSummary>()`.
+///
+/// Returns `Ok(AnchoredSummary)` on success, `Err` when mandatory fields are missing
+/// or the LLM fails. The caller is responsible for falling back to prose on `Err`.
+///
+/// # Errors
+/// Returns [`zeph_llm::LlmError`] when the LLM call fails, times out, or the
+/// returned summary is incomplete.
+pub async fn summarize_structured(
+    deps: &SummarizationDeps,
+    messages: &[Message],
+    guidelines: &str,
+) -> Result<AnchoredSummary, zeph_llm::LlmError> {
+    let prompt = build_anchored_summary_prompt(messages, guidelines);
+    let msgs = [Message {
+        role: Role::User,
+        content: prompt,
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    }];
+    let summary: AnchoredSummary = tokio::time::timeout(
+        deps.llm_timeout,
+        deps.provider.chat_typed_erased::<AnchoredSummary>(&msgs),
+    )
+    .await
+    .map_err(|_| zeph_llm::LlmError::Timeout)??;
+
+    if !summary.files_modified.is_empty() && summary.decisions_made.is_empty() {
+        tracing::warn!("structured summary: decisions_made is empty");
+    } else if summary.files_modified.is_empty() {
+        tracing::warn!(
+            "structured summary: files_modified is empty (may be a pure discussion session)"
+        );
+    }
+
+    if !summary.is_complete() {
+        tracing::warn!(
+            session_intent_empty = summary.session_intent.trim().is_empty(),
+            next_steps_empty = summary.next_steps.is_empty(),
+            "structured summary incomplete: mandatory fields missing, falling back to prose"
+        );
+        return Err(zeph_llm::LlmError::Other(
+            "structured summary missing mandatory fields".into(),
+        ));
+    }
+
+    if let Err(msg) = summary.validate() {
+        tracing::warn!(
+            error = %msg,
+            "structured summary failed field validation, falling back to prose"
+        );
+        return Err(zeph_llm::LlmError::Other(msg));
+    }
+
+    Ok(summary)
+}
+
+/// Single-pass LLM summarization over a message slice.
+///
+/// # Errors
+/// Returns [`zeph_llm::LlmError`] when the LLM call fails or times out.
+pub async fn single_pass_summary(
+    deps: &SummarizationDeps,
+    messages: &[Message],
+    guidelines: &str,
+) -> Result<String, zeph_llm::LlmError> {
+    let prompt = build_chunk_prompt(messages, guidelines);
+    let msgs = [Message {
+        role: Role::User,
+        content: prompt,
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    }];
+    tokio::time::timeout(deps.llm_timeout, deps.provider.chat(&msgs))
+        .await
+        .map_err(|_| zeph_llm::LlmError::Timeout)?
+}
+
+/// Chunked multi-pass LLM summarization with bounded concurrency.
+///
+/// Splits `messages` into token-bounded chunks and summarizes each chunk with the LLM.
+/// Partial results are consolidated into a final summary. Falls back to single-pass on
+/// chunk failures or context length errors.
+///
+/// # Errors
+/// Returns [`zeph_llm::LlmError`] when all summarization attempts fail.
+#[allow(clippy::too_many_lines)]
+pub async fn summarize_with_llm(
+    deps: &SummarizationDeps,
+    messages: &[Message],
+    guidelines: &str,
+) -> Result<String, zeph_llm::LlmError> {
+    const CHUNK_TOKEN_BUDGET: usize = 4096;
+    const OVERSIZED_THRESHOLD: usize = CHUNK_TOKEN_BUDGET / 2;
+
+    let chunks = crate::slot::chunk_messages(
+        messages,
+        CHUNK_TOKEN_BUDGET,
+        OVERSIZED_THRESHOLD,
+        &deps.token_counter,
+    );
+
+    if chunks.len() <= 1 {
+        return single_pass_summary(deps, messages, guidelines).await;
+    }
+
+    // Summarize chunks with bounded concurrency to prevent runaway API calls
+    let provider = deps.provider.clone();
+    let guidelines_owned = guidelines.to_string();
+    let timeout = deps.llm_timeout;
+    let results: Vec<_> = futures::stream::iter(chunks.iter().map(|chunk| {
+        let prompt = build_chunk_prompt(chunk, &guidelines_owned);
+        let p = provider.clone();
+        async move {
+            tokio::time::timeout(
+                timeout,
+                p.chat(&[Message {
+                    role: Role::User,
+                    content: prompt,
+                    parts: vec![],
+                    metadata: MessageMetadata::default(),
+                }]),
+            )
+            .await
+            .map_err(|_| zeph_llm::LlmError::Timeout)?
+        }
+    }))
+    .buffer_unordered(4)
+    .collect()
+    .await;
+
+    let partial_summaries: Vec<String> = results
+        .into_iter()
+        .collect::<Result<Vec<_>, zeph_llm::LlmError>>()
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                "chunked compaction: one or more chunks failed: {e:#}, falling back to single-pass"
+            );
+            Vec::new()
+        });
+
+    if partial_summaries.is_empty() {
+        return single_pass_summary(deps, messages, guidelines).await;
+    }
+
+    // Consolidate partial summaries
+    let numbered = {
+        let cap: usize = partial_summaries.iter().map(|s| s.len() + 8).sum();
+        let mut buf = String::with_capacity(cap);
+        for (i, s) in partial_summaries.iter().enumerate() {
+            if i > 0 {
+                buf.push_str("\n\n");
+            }
+            let _ = write!(buf, "{}. {s}", i + 1);
+        }
+        buf
+    };
+
+    if deps.structured_summaries {
+        let anchored_prompt = format!(
+            "<analysis>\n\
+             Merge these partial conversation summaries into a single structured summary.\n\
+             </analysis>\n\
+             \n\
+             Produce a JSON object with exactly these 5 fields:\n\
+             - session_intent: string — what the user is trying to accomplish\n\
+             - files_modified: string[] — file paths, function names, structs touched\n\
+             - decisions_made: string[] — each entry: \"Decision: X — Reason: Y\"\n\
+             - open_questions: string[] — unresolved questions or blockers\n\
+             - next_steps: string[] — concrete next actions\n\
+             \n\
+             Partial summaries:\n{numbered}"
+        );
+        let anchored_msgs = [Message {
+            role: Role::User,
+            content: anchored_prompt,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        match tokio::time::timeout(
+            timeout,
+            deps.provider
+                .chat_typed_erased::<AnchoredSummary>(&anchored_msgs),
+        )
+        .await
+        {
+            Ok(Ok(anchored)) if anchored.is_complete() => {
+                if let Some(ref cb) = deps.on_anchored_summary {
+                    cb(&anchored, false);
+                }
+                return Ok(crate::slot::cap_summary(anchored.to_markdown(), 16_000));
+            }
+            Ok(Ok(anchored)) => {
+                tracing::warn!(
+                    "chunked consolidation: structured summary incomplete, falling back to prose"
+                );
+                if let Some(ref cb) = deps.on_anchored_summary {
+                    cb(&anchored, true);
+                }
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "chunked consolidation: structured output failed, falling back to prose");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "chunked consolidation: structured output timed out, falling back to prose"
+                );
+            }
+        }
+    }
+
+    let consolidation_prompt = format!(
+        "<analysis>\n\
+         Merge these partial conversation summaries into a single structured compaction note.\n\
+         Produce exactly these 9 sections covering all partial summaries:\n\
+         1. User Intent\n2. Technical Concepts\n3. Files & Code\n4. Errors & Fixes\n\
+         5. Problem Solving\n6. User Messages\n7. Pending Tasks\n8. Current Work\n9. Next Step\n\
+         </analysis>\n\n\
+         Partial summaries:\n{numbered}"
+    );
+
+    let consolidation_msgs = [Message {
+        role: Role::User,
+        content: consolidation_prompt,
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    }];
+    tokio::time::timeout(timeout, deps.provider.chat(&consolidation_msgs))
+        .await
+        .map_err(|_| zeph_llm::LlmError::Timeout)?
+}
 
 /// Build a prose summarization prompt from a message slice and optional guidelines.
 ///
@@ -383,5 +641,66 @@ mod tests {
     #[test]
     fn extract_overflow_ref_returns_none_when_absent() {
         assert_eq!(extract_overflow_ref("normal output"), None);
+    }
+
+    fn tool_result_msg(content: &str) -> Message {
+        use zeph_llm::provider::MessagePart;
+        Message {
+            role: Role::User,
+            content: content.to_string(),
+            parts: vec![
+                MessagePart::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: serde_json::Value::Null,
+                },
+                MessagePart::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: content.to_string(),
+                    is_error: false,
+                },
+            ],
+            metadata: MessageMetadata::default(),
+        }
+    }
+
+    #[test]
+    fn remove_tool_responses_middle_out_clears_correct_fraction() {
+        // 4 tool messages, fraction=0.5 → ceil(4*0.5)=2 must be replaced with [compacted]
+        let mut messages = vec![
+            tool_result_msg("out0"),
+            tool_result_msg("out1"),
+            tool_result_msg("out2"),
+            tool_result_msg("out3"),
+        ];
+        messages = remove_tool_responses_middle_out(messages, 0.5);
+
+        let compacted_count = messages
+            .iter()
+            .flat_map(|m| m.parts.iter())
+            .filter(|p| {
+                if let zeph_llm::provider::MessagePart::ToolResult { content, .. } = p {
+                    content == "[compacted]"
+                } else {
+                    false
+                }
+            })
+            .count();
+
+        assert_eq!(
+            compacted_count, 2,
+            "ceil(4 * 0.5) = 2 tool results must be replaced with [compacted]"
+        );
+    }
+
+    #[test]
+    fn remove_tool_responses_middle_out_no_tool_messages_returns_unchanged() {
+        let messages = vec![user_msg("hello"), assistant_msg("hi")];
+        let result = remove_tool_responses_middle_out(messages.clone(), 0.5);
+        assert_eq!(result.len(), messages.len());
+        assert!(
+            result.iter().all(|m| m.parts.is_empty()),
+            "non-tool messages must be unchanged"
+        );
     }
 }

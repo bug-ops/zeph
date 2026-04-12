@@ -318,6 +318,14 @@ impl Drop for EarlyTuiGuard {
 
 #[allow(clippy::too_many_lines, clippy::large_futures)]
 pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
+    // Early-exit flags that do not require config loading.
+    if cli.dump_config_defaults {
+        let toml = zeph_core::config::Config::dump_defaults()
+            .map_err(|e| anyhow::anyhow!("failed to serialize default config: {e}"))?;
+        print!("{toml}");
+        return Ok(());
+    }
+
     // Load logging config early (sync, cheap) so every code path gets file logging.
     let config_path = resolve_config_path(cli.config.as_deref());
     let base_config = zeph_core::config::Config::load(&config_path).unwrap_or_default();

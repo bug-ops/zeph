@@ -1,0 +1,23 @@
+[package]
+name = "zeph-commands"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+description = "Slash command registry, handler trait, and channel sink abstraction for Zeph"
+
+[dependencies]
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

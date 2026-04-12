@@ -64,6 +64,7 @@ pub mod exfiltration;
 pub mod guardrail;
 pub mod memory_validation;
 pub mod pii;
+pub mod pipeline;
 pub mod quarantine;
 pub mod response_verifier;
 pub mod types;

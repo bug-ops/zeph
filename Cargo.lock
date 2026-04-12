@@ -9946,6 +9946,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeph-commands"
+version = "0.18.6"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "zeph-common"
 version = "0.18.6"
 dependencies = [
@@ -10007,7 +10016,6 @@ name = "zeph-core"
 version = "0.18.6"
 dependencies = [
  "age",
- "async-trait",
  "base64 0.22.1",
  "blake3",
  "chrono",
@@ -10043,6 +10051,7 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "uuid",
+ "zeph-commands",
  "zeph-common",
  "zeph-config",
  "zeph-context",

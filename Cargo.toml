@@ -133,6 +133,7 @@ zeph-db = { path = "crates/zeph-db", default-features = false }
 zeph-channels = { path = "crates/zeph-channels" }
 zeph-common = { path = "crates/zeph-common" }
 zeph-config = { path = "crates/zeph-config" }
+zeph-commands = { path = "crates/zeph-commands" }
 zeph-context = { path = "crates/zeph-context" }
 zeph-core = { path = "crates/zeph-core" }
 zeph-experiments = { path = "crates/zeph-experiments" }

@@ -174,6 +174,12 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) experiment_report: bool,
 
+    /// Print default configuration as TOML to stdout and exit.
+    ///
+    /// Useful for bootstrapping a new config file or exploring available options.
+    #[arg(long)]
+    pub(crate) dump_config_defaults: bool,
+
     /// Disable pre-execution verifiers for tool calls.
     /// Use in trusted environments or when verifiers produce false positives.
     #[arg(long)]

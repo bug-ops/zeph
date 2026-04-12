@@ -10,6 +10,7 @@
 pub mod trace;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use base64::Engine as _;
@@ -19,9 +20,11 @@ use crate::redact::scrub_content;
 
 pub use zeph_config::DumpFormat;
 
+/// Cloneable debug dump writer; clones share the same atomic counter.
+#[derive(Clone)]
 pub struct DebugDumper {
     dir: PathBuf,
-    counter: AtomicU32,
+    counter: Arc<AtomicU32>,
     format: DumpFormat,
 }
 
@@ -47,7 +50,7 @@ impl DebugDumper {
         tracing::info!(path = %dir.display(), format = ?format, "debug dump directory created");
         Ok(Self {
             dir,
-            counter: AtomicU32::new(0),
+            counter: Arc::new(AtomicU32::new(0)),
             format,
         })
     }
@@ -82,6 +85,7 @@ impl DebugDumper {
     ///
     /// Returns an ID that must be passed to `dump_response` to correlate request and response.
     /// When `format = Trace`, no file is written (spans are collected by `trace::TracingCollector`).
+    #[must_use]
     pub fn dump_request(&self, request: &RequestDebugDump<'_>) -> u32 {
         let id = self.next_id();
         // In Trace format, skip legacy numbered files — span data lives in TracingCollector.

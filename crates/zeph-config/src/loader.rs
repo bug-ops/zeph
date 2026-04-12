@@ -27,6 +27,35 @@ impl Config {
         Ok(config)
     }
 
+    /// Serialize the default configuration to a TOML string.
+    ///
+    /// Produces a pretty-printed TOML representation of [`Config::default()`].
+    /// Useful for bootstrapping a new config file or documenting available options.
+    ///
+    /// The `secrets` field is always excluded from the output because it is
+    /// populated at runtime only and must never be written to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails (unlikely — the default value is
+    /// always structurally valid).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use zeph_config::Config;
+    ///
+    /// let toml = Config::dump_defaults().expect("serialization failed");
+    /// assert!(toml.contains("[agent]"));
+    /// assert!(toml.contains("[memory]"));
+    /// ```
+    pub fn dump_defaults() -> Result<String, crate::error::ConfigError> {
+        let defaults = Self::default();
+        toml::to_string_pretty(&defaults).map_err(|e| {
+            crate::error::ConfigError::Validation(format!("failed to serialize defaults: {e}"))
+        })
+    }
+
     /// Validate configuration values are within sane bounds.
     ///
     /// # Errors
