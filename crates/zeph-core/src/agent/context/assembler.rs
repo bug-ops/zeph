@@ -17,7 +17,9 @@ use zeph_memory::TokenCounter;
 #[cfg(test)]
 use super::super::error::AgentError;
 #[cfg(test)]
-use super::super::{CROSS_SESSION_PREFIX, GRAPH_FACTS_PREFIX, MemoryState, RECALL_PREFIX, SUMMARY_PREFIX};
+use super::super::{
+    CROSS_SESSION_PREFIX, GRAPH_FACTS_PREFIX, MemoryState, RECALL_PREFIX, SUMMARY_PREFIX,
+};
 #[cfg(test)]
 use crate::redact::scrub_content;
 
