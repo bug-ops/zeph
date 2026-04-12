@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Handler migration phase 5** (`#2928`): migrated `/new`, `/experiment`, and `/plan` from the
+  legacy `dispatch_slash_command` to the `CommandHandler` registry using the extract-before-await
+  pattern. `/compact` and `/mcp` remain in `dispatch_slash_command` pending upstream fixes:
+  `AnyProvider: !Sync` blocks `/compact`, `RwLockWriteGuard`-across-await blocks `/mcp`. Added
+  `parse_new_flags()` helper and 5 unit tests for `--keep-plan`/`--no-digest` argument parsing.
+  Removed dead `CompactCommand` and `McpCommand` structs. Removed redundant `flush_chunks` call
+  from `dispatch_plan_command`.
+
 - **Handler migration phase 4** (`#2924`): migrated 13 remaining slash commands from the legacy
   `dispatch_slash_command` fallback in `zeph-core` to typed handler structs in `zeph-commands`.
   Moved the `COMMANDS` constant from `zeph-core::agent::slash_commands` to
