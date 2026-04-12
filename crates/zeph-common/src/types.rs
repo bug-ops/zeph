@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Strongly-typed identifiers shared across `zeph-*` crates.
+//! Strongly-typed identifiers and shared tool types across `zeph-*` crates.
 //!
-//! This module defines `ToolName` and `SessionId` — newtypes that replace raw `String`
-//! fields in tool execution, LLM provider, and experiment subsystems.
+//! This module defines `ToolName`, `SessionId`, and `ToolDefinition` — types shared
+//! by multiple crates without creating cross-crate dependencies.
 //!
-//! Both types use `#[serde(transparent)]` for zero-cost serialization compatibility:
-//! the JSON wire format is unchanged relative to plain `String` fields.
+//! `ToolName` and `SessionId` use `#[serde(transparent)]` for zero-cost serialization
+//! compatibility: the JSON wire format is unchanged relative to plain `String` fields.
 
 use std::borrow::Borrow;
 use std::fmt;
@@ -350,6 +350,42 @@ impl PartialEq<SessionId> for String {
     fn eq(&self, other: &SessionId) -> bool {
         *self == other.0
     }
+}
+
+// ── ToolDefinition ───────────────────────────────────────────────────────────
+
+/// Minimal tool definition passed to LLM providers.
+///
+/// Decoupled from `zeph-tools::ToolDef` to avoid cross-crate dependencies.
+/// Providers translate this into their native tool/function format before sending to the API.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::types::ToolDefinition;
+/// use zeph_common::ToolName;
+///
+/// let tool = ToolDefinition {
+///     name: ToolName::new("get_weather"),
+///     description: "Return current weather for a city.".into(),
+///     parameters: serde_json::json!({
+///         "type": "object",
+///         "properties": {
+///             "city": { "type": "string" }
+///         },
+///         "required": ["city"]
+///     }),
+/// };
+/// assert_eq!(tool.name, "get_weather");
+/// ```
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ToolDefinition {
+    /// Tool name — must match the name used in the response `ToolUseRequest`.
+    pub name: ToolName,
+    /// Human-readable description guiding the model on when to call this tool.
+    pub description: String,
+    /// JSON Schema object describing parameters.
+    pub parameters: serde_json::Value,
 }
 
 #[cfg(test)]

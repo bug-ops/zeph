@@ -1506,7 +1506,7 @@ impl<C: Channel> Agent<C> {
         let mut i = 1; // skip system prompt
         while i < self.msg.messages.len() {
             let msg = &self.msg.messages[i];
-            if !msg.metadata.agent_visible {
+            if !msg.metadata.visibility.is_agent_visible() {
                 i += 1;
                 continue;
             }
@@ -1517,7 +1517,7 @@ impl<C: Channel> Agent<C> {
                     .any(|p| matches!(p, MessagePart::ToolUse { .. }));
             if is_tool_request && i + 1 < self.msg.messages.len() {
                 let next = &self.msg.messages[i + 1];
-                if next.metadata.agent_visible
+                if next.metadata.visibility.is_agent_visible()
                     && next.role == Role::User
                     && next.parts.iter().any(|p| {
                         matches!(
@@ -1547,7 +1547,7 @@ impl<C: Channel> Agent<C> {
         let mut i = 1; // skip system prompt
         while i < self.msg.messages.len() {
             let msg = &self.msg.messages[i];
-            if !msg.metadata.agent_visible {
+            if !msg.metadata.visibility.is_agent_visible() {
                 i += 1;
                 continue;
             }
@@ -1558,7 +1558,7 @@ impl<C: Channel> Agent<C> {
                     .any(|p| matches!(p, MessagePart::ToolUse { .. }));
             if is_tool_request && i + 1 < self.msg.messages.len() {
                 let next = &self.msg.messages[i + 1];
-                if next.metadata.agent_visible
+                if next.metadata.visibility.is_agent_visible()
                     && next.role == Role::User
                     && next.parts.iter().any(|p| {
                         matches!(
@@ -1687,10 +1687,13 @@ impl<C: Channel> Agent<C> {
             }
             // Verify the structural invariant: tool response preceded by matching tool request.
             if self.msg.messages[i].role == Role::User
-                && self.msg.messages[i].metadata.agent_visible
+                && self.msg.messages[i].metadata.visibility.is_agent_visible()
                 && i > 0
                 && self.msg.messages[i - 1].role == Role::Assistant
-                && self.msg.messages[i - 1].metadata.agent_visible
+                && self.msg.messages[i - 1]
+                    .metadata
+                    .visibility
+                    .is_agent_visible()
                 && self.msg.messages[i - 1]
                     .parts
                     .iter()
@@ -1722,8 +1725,10 @@ impl<C: Channel> Agent<C> {
             let req_db_id = self.msg.messages[req_idx].metadata.db_id;
             let resp_db_id = self.msg.messages[resp_idx].metadata.db_id;
 
-            self.msg.messages[req_idx].metadata.agent_visible = false;
-            self.msg.messages[resp_idx].metadata.agent_visible = false;
+            self.msg.messages[req_idx].metadata.visibility =
+                zeph_llm::provider::MessageVisibility::UserOnly;
+            self.msg.messages[resp_idx].metadata.visibility =
+                zeph_llm::provider::MessageVisibility::UserOnly;
             self.msg.messages[resp_idx].metadata.deferred_summary = None;
 
             if let (Some(req_id), Some(resp_id)) = (req_db_id, resp_db_id) {
@@ -2710,7 +2715,9 @@ impl<C: Channel> Agent<C> {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == zeph_llm::provider::Role::User && m.metadata.agent_visible)
+            .find(|m| {
+                m.role == zeph_llm::provider::Role::User && m.metadata.visibility.is_agent_visible()
+            })
             .map(|m| m.content.as_str())
             .unwrap_or_default();
 
@@ -2736,7 +2743,7 @@ impl<C: Channel> Agent<C> {
             .messages
             .iter()
             .filter(|m| {
-                m.metadata.agent_visible
+                m.metadata.visibility.is_agent_visible()
                     && matches!(
                         m.role,
                         zeph_llm::provider::Role::User | zeph_llm::provider::Role::Assistant

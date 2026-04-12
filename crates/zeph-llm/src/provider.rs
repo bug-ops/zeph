@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use zeph_common::ToolName;
 
+pub use zeph_common::ToolDefinition;
+
 use crate::embed::owned_strs;
 use crate::error::LlmError;
 
@@ -86,39 +88,6 @@ pub enum StreamChunk {
 /// Obtain via [`LlmProvider::chat_stream`]. Drive the stream with
 /// `futures::StreamExt::next` or `tokio_stream::StreamExt::next`.
 pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>;
-
-/// Minimal tool definition for LLM providers.
-///
-/// Decoupled from `zeph-tools::ToolDef` to avoid cross-crate dependency.
-/// Providers translate this into their native tool/function format before sending to the API.
-///
-/// # Examples
-///
-/// ```
-/// use zeph_llm::provider::ToolDefinition;
-///
-/// let tool = ToolDefinition {
-///     name: "get_weather".into(),
-///     description: "Return current weather for a city.".into(),
-///     parameters: serde_json::json!({
-///         "type": "object",
-///         "properties": {
-///             "city": { "type": "string" }
-///         },
-///         "required": ["city"]
-///     }),
-/// };
-/// assert_eq!(tool.name, "get_weather");
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDefinition {
-    /// Tool name — must match the name used in the response `ToolUseRequest`.
-    pub name: ToolName,
-    /// Human-readable description guiding the model on when to call this tool.
-    pub description: String,
-    /// JSON Schema object describing parameters.
-    pub parameters: serde_json::Value,
-}
 
 /// Structured tool invocation request from the model.
 ///
@@ -358,20 +327,85 @@ mod serde_bytes_base64 {
     }
 }
 
-/// Per-message visibility flags controlling agent context and user display.
+/// Visibility of a message to agent and user.
 ///
-/// The `agent_visible` and `user_visible` flags are independent: a message can be
-/// visible to the agent (included in the LLM context) but hidden from the user (UI),
-/// or shown to the user but stripped from the LLM context.
+/// Replaces the former `(agent_visible: bool, user_visible: bool)` pair, which
+/// allowed the semantically invalid `(false, false)` combination. Every variant
+/// guarantees at least one consumer can see the message.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::MessageVisibility;
+///
+/// let v = MessageVisibility::AgentOnly;
+/// assert!(v.is_agent_visible());
+/// assert!(!v.is_user_visible());
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageVisibility {
+    /// Visible to both the agent (LLM context) and the user (conversation log).
+    Both,
+    /// Visible to the agent only (e.g. compaction summaries, internal context).
+    AgentOnly,
+    /// Visible to the user only (e.g. compacted originals shown in history).
+    UserOnly,
+}
+
+impl MessageVisibility {
+    /// Returns `true` if this message should be included in the LLM request context.
+    #[must_use]
+    pub fn is_agent_visible(self) -> bool {
+        matches!(self, MessageVisibility::Both | MessageVisibility::AgentOnly)
+    }
+
+    /// Returns `true` if this message should appear in the user-facing conversation log.
+    #[must_use]
+    pub fn is_user_visible(self) -> bool {
+        matches!(self, MessageVisibility::Both | MessageVisibility::UserOnly)
+    }
+}
+
+impl Default for MessageVisibility {
+    /// Defaults to [`Both`](MessageVisibility::Both) — visible to agent and user.
+    fn default() -> Self {
+        MessageVisibility::Both
+    }
+}
+
+impl MessageVisibility {
+    /// Serialize to the SQLite/PostgreSQL text value stored in the `visibility` column.
+    #[must_use]
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            MessageVisibility::Both => "both",
+            MessageVisibility::AgentOnly => "agent_only",
+            MessageVisibility::UserOnly => "user_only",
+        }
+    }
+
+    /// Deserialize from the SQLite/PostgreSQL text value stored in the `visibility` column.
+    ///
+    /// Unknown values (e.g. from a future migration) default to `Both` for safety.
+    #[must_use]
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "agent_only" => MessageVisibility::AgentOnly,
+            "user_only" => MessageVisibility::UserOnly,
+            _ => MessageVisibility::Both,
+        }
+    }
+}
+
+/// Per-message visibility and metadata controlling agent context and user display.
 ///
 /// Constructors [`agent_only`](Self::agent_only), [`user_only`](Self::user_only),
-/// and [`focus_pinned`](Self::focus_pinned) cover the most common flag combinations.
+/// and [`focus_pinned`](Self::focus_pinned) cover the most common combinations.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MessageMetadata {
-    /// Include this message in the LLM request context.
-    pub agent_visible: bool,
-    /// Show this message in the user-facing conversation log.
-    pub user_visible: bool,
+    /// Who can see this message.
+    pub visibility: MessageVisibility,
     /// Unix timestamp (seconds) when this message was compacted, if applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compacted_at: Option<i64>,
@@ -396,8 +430,7 @@ pub struct MessageMetadata {
 impl Default for MessageMetadata {
     fn default() -> Self {
         Self {
-            agent_visible: true,
-            user_visible: true,
+            visibility: MessageVisibility::Both,
             compacted_at: None,
             deferred_summary: None,
             focus_pinned: false,
@@ -412,8 +445,7 @@ impl MessageMetadata {
     #[must_use]
     pub fn agent_only() -> Self {
         Self {
-            agent_visible: true,
-            user_visible: false,
+            visibility: MessageVisibility::AgentOnly,
             compacted_at: None,
             deferred_summary: None,
             focus_pinned: false,
@@ -426,8 +458,7 @@ impl MessageMetadata {
     #[must_use]
     pub fn user_only() -> Self {
         Self {
-            agent_visible: false,
-            user_visible: true,
+            visibility: MessageVisibility::UserOnly,
             compacted_at: None,
             deferred_summary: None,
             focus_pinned: false,
@@ -440,8 +471,7 @@ impl MessageMetadata {
     #[must_use]
     pub fn focus_pinned() -> Self {
         Self {
-            agent_visible: true,
-            user_visible: false,
+            visibility: MessageVisibility::AgentOnly,
             compacted_at: None,
             deferred_summary: None,
             focus_pinned: true,
@@ -1565,31 +1595,34 @@ mod tests {
     #[test]
     fn message_metadata_default_both_visible() {
         let m = MessageMetadata::default();
-        assert!(m.agent_visible);
-        assert!(m.user_visible);
+        assert!(m.visibility.is_agent_visible());
+        assert!(m.visibility.is_user_visible());
+        assert_eq!(m.visibility, MessageVisibility::Both);
         assert!(m.compacted_at.is_none());
     }
 
     #[test]
     fn message_metadata_agent_only() {
         let m = MessageMetadata::agent_only();
-        assert!(m.agent_visible);
-        assert!(!m.user_visible);
+        assert!(m.visibility.is_agent_visible());
+        assert!(!m.visibility.is_user_visible());
+        assert_eq!(m.visibility, MessageVisibility::AgentOnly);
     }
 
     #[test]
     fn message_metadata_user_only() {
         let m = MessageMetadata::user_only();
-        assert!(!m.agent_visible);
-        assert!(m.user_visible);
+        assert!(!m.visibility.is_agent_visible());
+        assert!(m.visibility.is_user_visible());
+        assert_eq!(m.visibility, MessageVisibility::UserOnly);
     }
 
     #[test]
     fn message_metadata_serde_default() {
         let json = r#"{"role":"user","content":"hello"}"#;
         let msg: Message = serde_json::from_str(json).unwrap();
-        assert!(msg.metadata.agent_visible);
-        assert!(msg.metadata.user_visible);
+        assert!(msg.metadata.visibility.is_agent_visible());
+        assert!(msg.metadata.visibility.is_user_visible());
     }
 
     #[test]
@@ -1602,8 +1635,9 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: Message = serde_json::from_str(&json).unwrap();
-        assert!(decoded.metadata.agent_visible);
-        assert!(!decoded.metadata.user_visible);
+        assert!(decoded.metadata.visibility.is_agent_visible());
+        assert!(!decoded.metadata.visibility.is_user_visible());
+        assert_eq!(decoded.metadata.visibility, MessageVisibility::AgentOnly);
     }
 
     #[test]
@@ -1708,5 +1742,41 @@ mod tests {
         for vec in &result {
             assert_eq!(vec, &[0.1_f32, 0.2, 0.3]);
         }
+    }
+
+    #[test]
+    fn message_visibility_db_roundtrip_both() {
+        assert_eq!(MessageVisibility::Both.as_db_str(), "both");
+        assert_eq!(
+            MessageVisibility::from_db_str("both"),
+            MessageVisibility::Both
+        );
+    }
+
+    #[test]
+    fn message_visibility_db_roundtrip_agent_only() {
+        assert_eq!(MessageVisibility::AgentOnly.as_db_str(), "agent_only");
+        assert_eq!(
+            MessageVisibility::from_db_str("agent_only"),
+            MessageVisibility::AgentOnly
+        );
+    }
+
+    #[test]
+    fn message_visibility_db_roundtrip_user_only() {
+        assert_eq!(MessageVisibility::UserOnly.as_db_str(), "user_only");
+        assert_eq!(
+            MessageVisibility::from_db_str("user_only"),
+            MessageVisibility::UserOnly
+        );
+    }
+
+    #[test]
+    fn message_visibility_from_db_str_unknown_defaults_to_both() {
+        assert_eq!(
+            MessageVisibility::from_db_str("unknown_future_value"),
+            MessageVisibility::Both
+        );
+        assert_eq!(MessageVisibility::from_db_str(""), MessageVisibility::Both);
     }
 }

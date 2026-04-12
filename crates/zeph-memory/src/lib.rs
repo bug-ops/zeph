@@ -71,6 +71,7 @@ pub mod compression_guidelines;
 pub mod compression_predictor;
 pub mod consolidation;
 pub mod document;
+pub mod facade;
 pub mod forgetting;
 pub mod scenes;
 pub mod tiers;
@@ -127,6 +128,10 @@ pub use embedding_registry::{
 pub use embedding_store::ensure_qdrant_collection;
 pub use error::MemoryError;
 pub use eviction::{EbbinghausPolicy, EvictionConfig, EvictionPolicy, start_eviction_loop};
+pub use facade::{
+    CompactionContext, CompactionResult, InMemoryFacade, MemoryEntry, MemoryFacade, MemoryMatch,
+    MemorySource,
+};
 pub use forgetting::{ForgettingConfig, ForgettingResult, start_forgetting_loop};
 pub use graph::EntityLockManager;
 pub use graph::{

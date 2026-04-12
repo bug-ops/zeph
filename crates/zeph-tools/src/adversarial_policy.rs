@@ -10,9 +10,9 @@
 //! Addresses CRIT-02: LLM client is injected via `PolicyLlmClient` trait.
 //! Addresses CRIT-01: fail behavior is configurable via `fail_open: bool`.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
+
+pub use zeph_common::{PolicyLlmClient, PolicyMessage, PolicyRole};
 
 /// Decision returned by the adversarial policy validator.
 #[derive(Debug, Clone)]
@@ -26,34 +26,6 @@ pub enum PolicyDecision {
     },
     /// LLM call failed (timeout, network error, or malformed response).
     Error { message: String },
-}
-
-/// Trait for sending chat messages to the policy LLM.
-///
-/// Implemented in `runner.rs` on a newtype wrapping `Arc<AnyProvider>`.
-/// `zeph-tools` defines the trait; `runner.rs` supplies the implementation,
-/// keeping `zeph-tools` decoupled from `zeph-llm`.
-pub trait PolicyLlmClient: Send + Sync {
-    /// Send a sequence of messages and return the assistant's text response.
-    fn chat<'a>(
-        &'a self,
-        messages: &'a [PolicyMessage],
-    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
-}
-
-/// Minimal message type for policy LLM calls.
-///
-/// Uses a dedicated type to avoid importing `zeph-llm` types into `zeph-tools`.
-#[derive(Debug, Clone)]
-pub struct PolicyMessage {
-    pub role: PolicyRole,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PolicyRole {
-    System,
-    User,
 }
 
 /// Validates tool calls against plain-language policies using an LLM.
@@ -252,8 +224,11 @@ pub fn parse_policy_lines(content: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::Arc;
+
+    use super::*;
 
     struct MockLlmClient {
         response: String,

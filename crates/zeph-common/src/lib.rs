@@ -15,6 +15,7 @@ pub mod hash;
 pub mod math;
 pub mod net;
 pub mod patterns;
+pub mod policy;
 pub mod quarantine;
 pub mod sanitize;
 pub mod secret;
@@ -22,8 +23,9 @@ pub mod text;
 pub mod trust_level;
 pub mod types;
 
+pub use policy::{PolicyLlmClient, PolicyMessage, PolicyRole};
 pub use trust_level::SkillTrustLevel;
-pub use types::{SessionId, ToolName};
+pub use types::{SessionId, ToolDefinition, ToolName};
 
 #[cfg(feature = "treesitter")]
 pub mod treesitter;

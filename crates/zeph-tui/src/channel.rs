@@ -201,7 +201,7 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
-    async fn send_tool_start(&mut self, event: ToolStartEvent<'_>) -> Result<(), ChannelError> {
+    async fn send_tool_start(&mut self, event: ToolStartEvent) -> Result<(), ChannelError> {
         let command = event
             .params
             .as_ref()
@@ -211,11 +211,11 @@ impl Channel for TuiChannel {
                     .or_else(|| p.get("url"))
             })
             .and_then(|v| v.as_str())
-            .unwrap_or(event.tool_name)
+            .unwrap_or(event.tool_name.as_str())
             .to_owned();
         self.agent_event_tx
             .send(AgentEvent::ToolStart {
-                tool_name: event.tool_name.into(),
+                tool_name: event.tool_name,
                 command,
             })
             .await
@@ -223,17 +223,17 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
-    async fn send_tool_output(&mut self, event: ToolOutputEvent<'_>) -> Result<(), ChannelError> {
+    async fn send_tool_output(&mut self, event: ToolOutputEvent) -> Result<(), ChannelError> {
         tracing::debug!(
-            tool_name = %event.tool_name,
+            tool_name = %event.tool_name.as_str(),
             has_diff = event.diff.is_some(),
             "TuiChannel::send_tool_output called"
         );
         self.agent_event_tx
             .send(AgentEvent::ToolOutput {
-                tool_name: event.tool_name.into(),
-                command: event.body.to_owned(),
-                output: event.body.to_owned(),
+                tool_name: event.tool_name,
+                command: event.display.clone(),
+                output: event.display.clone(),
                 success: !event.is_error,
                 diff: event.diff,
                 filter_stats: event.filter_stats,
@@ -464,10 +464,11 @@ mod tests {
         use zeph_core::channel::ToolStartEvent;
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
         ch.send_tool_start(ToolStartEvent {
-            tool_name: "bash",
-            tool_call_id: "id1",
+            tool_name: "bash".into(),
+            tool_call_id: "id1".into(),
             params: Some(serde_json::json!({"command": "ls -la"})),
             parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
         })
         .await
         .unwrap();
@@ -484,10 +485,11 @@ mod tests {
         use zeph_core::channel::ToolStartEvent;
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
         ch.send_tool_start(ToolStartEvent {
-            tool_name: "memory_search",
-            tool_call_id: "id2",
+            tool_name: "memory_search".into(),
+            tool_call_id: "id2".into(),
             params: None,
             parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
         })
         .await
         .unwrap();
@@ -509,13 +511,15 @@ mod tests {
             new_content: "new".into(),
         };
         ch.send_tool_output(ToolOutputEvent {
-            tool_name: "bash",
-            body: "[tool output: bash]\n```\nok\n```",
+            tool_name: "bash".into(),
+            display: "[tool output: bash]\n```\nok\n```".into(),
             diff: Some(diff),
             filter_stats: None,
             kept_lines: None,
             locations: None,
-            tool_call_id: "",
+            tool_call_id: "".into(),
+
+            terminal_id: None,
             is_error: false,
             parent_tool_use_id: None,
             raw_response: None,
@@ -536,13 +540,15 @@ mod tests {
         use zeph_core::channel::ToolOutputEvent;
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
         ch.send_tool_output(ToolOutputEvent {
-            tool_name: "read",
-            body: "[tool output: read]\n```\ncontent\n```",
+            tool_name: "read".into(),
+            display: "[tool output: read]\n```\ncontent\n```".into(),
             diff: None,
             filter_stats: None,
             kept_lines: None,
             locations: None,
-            tool_call_id: "",
+            tool_call_id: "".into(),
+
+            terminal_id: None,
             is_error: false,
             parent_tool_use_id: None,
             raw_response: None,

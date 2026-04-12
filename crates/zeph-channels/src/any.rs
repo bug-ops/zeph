@@ -137,7 +137,7 @@ impl Channel for AnyChannel {
         dispatch_channel!(self, send_diff, diff)
     }
 
-    async fn send_tool_output(&mut self, event: ToolOutputEvent<'_>) -> Result<(), ChannelError> {
+    async fn send_tool_output(&mut self, event: ToolOutputEvent) -> Result<(), ChannelError> {
         dispatch_channel!(self, send_tool_output, event)
     }
 
@@ -164,7 +164,7 @@ impl Channel for AnyChannel {
         )
     }
 
-    async fn send_tool_start(&mut self, event: ToolStartEvent<'_>) -> Result<(), ChannelError> {
+    async fn send_tool_start(&mut self, event: ToolStartEvent) -> Result<(), ChannelError> {
         dispatch_channel!(self, send_tool_start, event)
     }
 }
@@ -253,10 +253,11 @@ mod tests {
         let mut ch = AnyChannel::Cli(CliChannel::new());
         assert!(
             ch.send_tool_start(ToolStartEvent {
-                tool_name: "shell",
-                tool_call_id: "tc-001",
+                tool_name: "shell".into(),
+                tool_call_id: "tc-001".into(),
                 params: None,
                 parent_tool_use_id: None,
+                started_at: std::time::Instant::now(),
             })
             .await
             .is_ok()
@@ -305,22 +306,25 @@ mod tests {
         .unwrap();
         // 13. send_tool_start
         ch.send_tool_start(ToolStartEvent {
-            tool_name: "bash",
-            tool_call_id: "x",
+            tool_name: "bash".into(),
+            tool_call_id: "x".into(),
             params: None,
             parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
         })
         .await
         .unwrap();
         // 14. send_tool_output
         ch.send_tool_output(ToolOutputEvent {
-            tool_name: "bash",
-            body: "ok",
+            tool_name: "bash".into(),
+            display: "ok".into(),
             diff: None,
             filter_stats: None,
             kept_lines: None,
             locations: None,
-            tool_call_id: "x",
+            tool_call_id: "x".into(),
+
+            terminal_id: None,
             is_error: false,
             parent_tool_use_id: None,
             raw_response: None,

@@ -435,14 +435,14 @@ async fn save_message_with_metadata_stores_visibility() {
     let cid = store.create_conversation().await.unwrap();
 
     let id = store
-        .save_message_with_metadata(cid, "user", "hello", "[]", false, true)
+        .save_message_with_metadata(cid, "user", "hello", "[]", MessageVisibility::UserOnly)
         .await
         .unwrap();
 
     let history = store.load_history(cid, 10).await.unwrap();
     assert_eq!(history.len(), 1);
-    assert!(!history[0].metadata.agent_visible);
-    assert!(history[0].metadata.user_visible);
+    assert!(!history[0].metadata.visibility.is_agent_visible());
+    assert!(history[0].metadata.visibility.is_user_visible());
     assert_eq!(id, MessageId(1));
 }
 
@@ -452,11 +452,17 @@ async fn load_history_filtered_by_agent_visible() {
     let cid = store.create_conversation().await.unwrap();
 
     store
-        .save_message_with_metadata(cid, "user", "visible to agent", "[]", true, true)
+        .save_message_with_metadata(
+            cid,
+            "user",
+            "visible to agent",
+            "[]",
+            MessageVisibility::Both,
+        )
         .await
         .unwrap();
     store
-        .save_message_with_metadata(cid, "user", "user only", "[]", false, true)
+        .save_message_with_metadata(cid, "user", "user only", "[]", MessageVisibility::UserOnly)
         .await
         .unwrap();
 
@@ -474,11 +480,17 @@ async fn load_history_filtered_by_user_visible() {
     let cid = store.create_conversation().await.unwrap();
 
     store
-        .save_message_with_metadata(cid, "system", "agent only summary", "[]", true, false)
+        .save_message_with_metadata(
+            cid,
+            "system",
+            "agent only summary",
+            "[]",
+            MessageVisibility::AgentOnly,
+        )
         .await
         .unwrap();
     store
-        .save_message_with_metadata(cid, "user", "user sees this", "[]", true, true)
+        .save_message_with_metadata(cid, "user", "user sees this", "[]", MessageVisibility::Both)
         .await
         .unwrap();
 
@@ -496,11 +508,11 @@ async fn load_history_filtered_no_filter_returns_all() {
     let cid = store.create_conversation().await.unwrap();
 
     store
-        .save_message_with_metadata(cid, "user", "msg1", "[]", true, false)
+        .save_message_with_metadata(cid, "user", "msg1", "[]", MessageVisibility::AgentOnly)
         .await
         .unwrap();
     store
-        .save_message_with_metadata(cid, "user", "msg2", "[]", false, true)
+        .save_message_with_metadata(cid, "user", "msg2", "[]", MessageVisibility::UserOnly)
         .await
         .unwrap();
 
@@ -532,19 +544,19 @@ async fn replace_conversation_marks_originals_and_inserts_summary() {
     let all = store.load_history(cid, 50).await.unwrap();
     // id1 and id2 marked agent_visible=false, id3 untouched, summary inserted
     let by_id1 = all.iter().find(|m| m.content == "first").unwrap();
-    assert!(!by_id1.metadata.agent_visible);
-    assert!(by_id1.metadata.user_visible);
+    assert!(!by_id1.metadata.visibility.is_agent_visible());
+    assert!(by_id1.metadata.visibility.is_user_visible());
 
     let by_id2 = all.iter().find(|m| m.content == "second").unwrap();
-    assert!(!by_id2.metadata.agent_visible);
+    assert!(!by_id2.metadata.visibility.is_agent_visible());
 
     let by_id3 = all.iter().find(|m| m.content == "third").unwrap();
-    assert!(by_id3.metadata.agent_visible);
+    assert!(by_id3.metadata.visibility.is_agent_visible());
 
     // Summary is agent_only (agent_visible=1, user_visible=0)
     let summary = all.iter().find(|m| m.content == "summary text").unwrap();
-    assert!(summary.metadata.agent_visible);
-    assert!(!summary.metadata.user_visible);
+    assert!(summary.metadata.visibility.is_agent_visible());
+    assert!(!summary.metadata.visibility.is_user_visible());
     assert!(summary_id > id3);
 }
 
@@ -573,8 +585,8 @@ async fn message_metadata_default_both_visible() {
     store.save_message(cid, "user", "normal").await.unwrap();
 
     let history = store.load_history(cid, 10).await.unwrap();
-    assert!(history[0].metadata.agent_visible);
-    assert!(history[0].metadata.user_visible);
+    assert!(history[0].metadata.visibility.is_agent_visible());
+    assert!(history[0].metadata.visibility.is_user_visible());
     assert!(history[0].metadata.compacted_at.is_none());
 }
 
@@ -662,7 +674,7 @@ async fn load_history_filtered_empty_parts_json_fast_path() {
     let cid = store.create_conversation().await.unwrap();
 
     store
-        .save_message_with_metadata(cid, "user", "msg", "[]", true, true)
+        .save_message_with_metadata(cid, "user", "msg", "[]", MessageVisibility::Both)
         .await
         .unwrap();
 
@@ -896,8 +908,8 @@ async fn migration_039_default_importance_score_for_preexisting_rows() {
     let cid = store.create_conversation().await.unwrap();
 
     sqlx::query(sql!(
-        "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible) \
-         VALUES (?, 'user', 'legacy row', '[]', 1, 1)"
+        "INSERT INTO messages (conversation_id, role, content, parts, visibility) \
+         VALUES (?, 'user', 'legacy row', '[]', 'both')"
     ))
     .bind(cid)
     .execute(store.pool())
@@ -1240,8 +1252,8 @@ async fn migration_042_default_tier_for_preexisting_rows() {
     let cid = store.create_conversation().await.unwrap();
 
     sqlx::query(sql!(
-        "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible) \
-         VALUES (?, 'user', 'legacy row', '[]', 1, 1)"
+        "INSERT INTO messages (conversation_id, role, content, parts, visibility) \
+         VALUES (?, 'user', 'legacy row', '[]', 'both')"
     ))
     .bind(cid)
     .execute(store.pool())
@@ -1267,8 +1279,8 @@ async fn migration_042_default_session_count_for_preexisting_rows() {
     let cid = store.create_conversation().await.unwrap();
 
     sqlx::query(sql!(
-        "INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible) \
-         VALUES (?, 'user', 'session count row', '[]', 1, 1)"
+        "INSERT INTO messages (conversation_id, role, content, parts, visibility) \
+         VALUES (?, 'user', 'session count row', '[]', 'both')"
     ))
     .bind(cid)
     .execute(store.pool())

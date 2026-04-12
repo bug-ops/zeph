@@ -258,7 +258,7 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
     // The default trait impl calls self.send(&formatted), which would push tool output
     // into responses and corrupt benchmark metrics. Override to no-op until Phase 2
     // when tool calls are captured separately.
-    async fn send_tool_output(&mut self, _event: ToolOutputEvent<'_>) -> Result<(), ChannelError> {
+    async fn send_tool_output(&mut self, _event: ToolOutputEvent) -> Result<(), ChannelError> {
         Ok(())
     }
 }
@@ -350,13 +350,15 @@ mod tests {
         let mut ch = BenchmarkChannel::new(vec!["p".into()]);
         let _ = ch.recv().await.unwrap();
         ch.send_tool_output(ToolOutputEvent {
-            tool_name: "bash",
-            body: "some tool output",
+            tool_name: "bash".into(),
+            display: "some tool output".into(),
             diff: None,
             filter_stats: None,
             kept_lines: None,
             locations: None,
-            tool_call_id: "tc-1",
+            tool_call_id: "tc-1".into(),
+
+            terminal_id: None,
             is_error: false,
             parent_tool_use_id: None,
             raw_response: None,

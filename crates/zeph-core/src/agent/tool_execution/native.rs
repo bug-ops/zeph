@@ -547,10 +547,11 @@ impl<C: Channel> Agent<C> {
         let tool_started_at = std::time::Instant::now();
         self.channel
             .send_tool_start(ToolStartEvent {
-                tool_name: output.tool_name.as_str(),
-                tool_call_id: &tool_call_id,
+                tool_name: output.tool_name.clone(),
+                tool_call_id: tool_call_id.clone(),
                 params: None,
                 parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+                started_at: std::time::Instant::now(),
             })
             .await?;
         if let Some(ref d) = self.debug_state.debug_dumper {
@@ -578,13 +579,14 @@ impl<C: Channel> Agent<C> {
         let formatted_output = format_tool_output(output.tool_name.as_str(), &body);
         self.channel
             .send_tool_output(ToolOutputEvent {
-                tool_name: output.tool_name.as_str(),
-                body: &self.maybe_redact(&body),
+                tool_name: output.tool_name.clone(),
+                display: self.maybe_redact(&body).to_string(),
                 diff: None,
                 filter_stats: filter_stats_inline,
                 kept_lines: None,
                 locations: output.locations,
-                tool_call_id: &tool_call_id,
+                tool_call_id: tool_call_id.clone(),
+                terminal_id: None,
                 is_error: false,
                 parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                 raw_response: None,
@@ -636,10 +638,11 @@ impl<C: Channel> Agent<C> {
                 let confirmed_started_at = std::time::Instant::now();
                 self.channel
                     .send_tool_start(ToolStartEvent {
-                        tool_name: out.tool_name.as_str(),
-                        tool_call_id: &confirmed_tool_call_id,
+                        tool_name: out.tool_name.clone(),
+                        tool_call_id: confirmed_tool_call_id.clone(),
                         params: None,
                         parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+                        started_at: std::time::Instant::now(),
                     })
                     .await?;
                 if let Some(ref d) = self.debug_state.debug_dumper {
@@ -654,13 +657,14 @@ impl<C: Channel> Agent<C> {
                 let formatted = format_tool_output(out.tool_name.as_str(), &processed);
                 self.channel
                     .send_tool_output(ToolOutputEvent {
-                        tool_name: out.tool_name.as_str(),
-                        body: &self.maybe_redact(&processed),
+                        tool_name: out.tool_name.clone(),
+                        display: self.maybe_redact(&processed).to_string(),
                         diff: None,
                         filter_stats: None,
                         kept_lines: None,
                         locations: out.locations,
-                        tool_call_id: &confirmed_tool_call_id,
+                        tool_call_id: confirmed_tool_call_id.clone(),
+                        terminal_id: None,
                         is_error: false,
                         parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                         raw_response: None,
@@ -1570,10 +1574,11 @@ impl<C: Channel> Agent<C> {
                 let tool_call_id = &tool_call_ids[idx];
                 self.channel
                     .send_tool_start(ToolStartEvent {
-                        tool_name: tc.name.as_str(),
-                        tool_call_id,
+                        tool_name: tc.name.clone(),
+                        tool_call_id: tool_call_id.clone(),
                         params: Some(tc.input.clone()),
                         parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+                        started_at: std::time::Instant::now(),
                     })
                     .await?;
             }
@@ -2468,14 +2473,15 @@ impl<C: Channel> Agent<C> {
             let body_display = self.maybe_redact(&body);
             self.channel
                 .send_tool_output(ToolOutputEvent {
-                    tool_name: tc.name.as_str(),
-                    body: &body_display,
+                    tool_name: tc.name.clone(),
+                    display: body_display.into_owned(),
                     diff,
                     filter_stats: inline_stats,
                     kept_lines,
                     locations,
-                    tool_call_id,
+                    tool_call_id: tool_call_id.clone(),
                     is_error,
+                    terminal_id: None,
                     parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                     raw_response: None,
                     started_at: Some(*started_at),

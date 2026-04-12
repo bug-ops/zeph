@@ -34,6 +34,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `Agent::run()` body is now ~30 lines. Behavior is unchanged; cancellation safety is preserved.
   New file: `crates/zeph-core/src/agent/loop_event.rs`.
 
+- **Type-safety cleanup + `MemoryFacade` trait** (`#2907`, `#2903`):
+  - `ToolDefinition` moved from `zeph-llm` to `zeph-common`; `zeph-llm` re-exports it.
+  - `PolicyMessage`, `PolicyRole`, `PolicyLlmClient` moved from `zeph-tools` to `zeph-common`.
+  - `MessageVisibility` enum (`Both` | `AgentOnly` | `UserOnly`) replaces the `(agent_visible: bool, user_visible: bool)` pair in `MessageMetadata`. The invalid `(false, false)` state is now unrepresentable. SQLite migration 073 drops the two boolean columns and adds a single `visibility TEXT NOT NULL DEFAULT 'both'` column.
+  - `ToolStartEvent` and `ToolOutputEvent` are now owned structs (no lifetimes). `ToolStartData` / `ToolOutputData` are type aliases for backward compatibility with the ACP layer. `ToolOutputEvent.display` replaces the former `body` field.
+  - `MemoryFacade` trait (`remember` / `recall` / `summarize` / `compact`) and `InMemoryFacade` in-process test double added to `zeph-memory`. `SemanticMemory` implements `MemoryFacade`.
+
 - **`zeph-skills` dependency decoupling** (`#2905`): removed unconditional dependencies on
   `zeph-memory` and `zeph-tools` from `zeph-skills`. `SkillTrustLevel`, `ToolErrorCategory`,
   `ErrorDomain`, injection patterns, and quarantine lists are moved to `zeph-common`; `zeph-tools`

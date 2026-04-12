@@ -454,14 +454,14 @@ fn sanitize_dump_name(name: &str) -> String {
 fn messages_to_api_value(messages: &[Message]) -> serde_json::Value {
     let system: String = messages
         .iter()
-        .filter(|m| m.metadata.agent_visible && m.role == Role::System)
+        .filter(|m| m.metadata.visibility.is_agent_visible() && m.role == Role::System)
         .map(zeph_llm::provider::Message::to_llm_content)
         .collect::<Vec<_>>()
         .join("\n\n");
 
     let chat: Vec<serde_json::Value> = messages
         .iter()
-        .filter(|m| m.metadata.agent_visible && m.role != Role::System)
+        .filter(|m| m.metadata.visibility.is_agent_visible() && m.role != Role::System)
         .filter_map(|m| {
             let role = match m.role {
                 Role::User => "user",

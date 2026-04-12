@@ -2478,8 +2478,8 @@ fn count_unsummarized_pairs_ignores_hidden_pairs() {
 
     make_tool_pair(&mut agent, "bash");
     // hide the first pair
-    agent.msg.messages[1].metadata.agent_visible = false;
-    agent.msg.messages[2].metadata.agent_visible = false;
+    agent.msg.messages[1].metadata.visibility = zeph_llm::provider::MessageVisibility::UserOnly;
+    agent.msg.messages[2].metadata.visibility = zeph_llm::provider::MessageVisibility::UserOnly;
 
     assert_eq!(agent.count_unsummarized_pairs(), 0);
 }
@@ -2514,8 +2514,8 @@ fn find_oldest_unsummarized_pair_skips_hidden() {
     make_tool_pair(&mut agent, "bash");
     make_tool_pair(&mut agent, "read_file");
     // hide first pair
-    agent.msg.messages[1].metadata.agent_visible = false;
-    agent.msg.messages[2].metadata.agent_visible = false;
+    agent.msg.messages[1].metadata.visibility = zeph_llm::provider::MessageVisibility::UserOnly;
+    agent.msg.messages[2].metadata.visibility = zeph_llm::provider::MessageVisibility::UserOnly;
 
     // second pair: request = 3, response = 4
     assert_eq!(agent.find_oldest_unsummarized_pair(), Some((3, 4)));
@@ -2580,8 +2580,8 @@ async fn maybe_summarize_tool_pair_above_cutoff_stores_deferred_summary() {
     // message count must NOT change — deferred, no immediate mutation
     assert_eq!(agent.msg.messages.len(), msg_count_before);
     // oldest pair (indices 1, 2) must remain visible
-    assert!(agent.msg.messages[1].metadata.agent_visible);
-    assert!(agent.msg.messages[2].metadata.agent_visible);
+    assert!(agent.msg.messages[1].metadata.visibility.is_agent_visible());
+    assert!(agent.msg.messages[2].metadata.visibility.is_agent_visible());
     // deferred_summary must be set on the response message (index 2)
     assert_eq!(
         agent.msg.messages[2].metadata.deferred_summary.as_deref(),
@@ -2642,8 +2642,8 @@ async fn maybe_summarize_tool_pair_llm_error_skips_gracefully() {
     agent.maybe_summarize_tool_pair().await;
     // No messages should be added or hidden
     assert_eq!(agent.msg.messages.len(), msg_count_before);
-    assert!(agent.msg.messages[1].metadata.agent_visible);
-    assert!(agent.msg.messages[2].metadata.agent_visible);
+    assert!(agent.msg.messages[1].metadata.visibility.is_agent_visible());
+    assert!(agent.msg.messages[2].metadata.visibility.is_agent_visible());
 }
 
 #[test]
@@ -2957,11 +2957,11 @@ async fn summarize_then_prune_preserves_intact_content_for_summarizer() {
 
     // The summarized pair is now hidden.
     assert!(
-        !agent.msg.messages[1].metadata.agent_visible,
+        !agent.msg.messages[1].metadata.visibility.is_agent_visible(),
         "oldest pair request should be hidden"
     );
     assert!(
-        !agent.msg.messages[2].metadata.agent_visible,
+        !agent.msg.messages[2].metadata.visibility.is_agent_visible(),
         "oldest pair response should be hidden"
     );
 }
@@ -2995,7 +2995,7 @@ async fn prune_after_summarize_does_not_destroy_visible_pairs() {
         .msg
         .messages
         .iter()
-        .filter(|m| m.metadata.agent_visible)
+        .filter(|m| m.metadata.visibility.is_agent_visible())
     {
         for part in &msg.parts {
             if let MessagePart::ToolOutput {
@@ -3095,7 +3095,7 @@ async fn cutoff_one_edge_case_summarize_then_prune() {
         .msg
         .messages
         .iter()
-        .filter(|m| m.metadata.agent_visible)
+        .filter(|m| m.metadata.visibility.is_agent_visible())
         .flat_map(|m| m.parts.iter())
         .filter(|p| matches!(p, MessagePart::ToolOutput { .. }))
         .collect();
@@ -3262,7 +3262,7 @@ async fn deferred_summary_stored_not_applied() {
     // All messages stay visible
     for msg in &agent.msg.messages {
         assert!(
-            msg.metadata.agent_visible,
+            msg.metadata.visibility.is_agent_visible(),
             "no message should be hidden after deferred storage"
         );
     }
@@ -3361,7 +3361,7 @@ fn apply_deferred_summaries_batch() {
         .msg
         .messages
         .iter()
-        .filter(|m| !m.metadata.agent_visible)
+        .filter(|m| !m.metadata.visibility.is_agent_visible())
         .count();
     assert_eq!(hidden, 6);
 
@@ -3427,15 +3427,15 @@ fn apply_deferred_summaries_reverse_order() {
     assert_eq!(applied, 2);
 
     // req3 and resp3 are hidden
-    assert!(!agent.msg.messages[5].metadata.agent_visible);
-    assert!(!agent.msg.messages[6].metadata.agent_visible);
+    assert!(!agent.msg.messages[5].metadata.visibility.is_agent_visible());
+    assert!(!agent.msg.messages[6].metadata.visibility.is_agent_visible());
 
     // 4 total messages hidden
     let hidden = agent
         .msg
         .messages
         .iter()
-        .filter(|m| !m.metadata.agent_visible)
+        .filter(|m| !m.metadata.visibility.is_agent_visible())
         .count();
     assert_eq!(hidden, 4);
 

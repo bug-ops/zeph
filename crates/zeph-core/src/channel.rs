@@ -73,31 +73,6 @@ impl ChannelError {
     }
 }
 
-/// All fields that describe a tool-start event sent to a channel.
-#[derive(Debug)]
-pub struct ToolStartEvent<'a> {
-    pub tool_name: &'a str,
-    pub tool_call_id: &'a str,
-    pub params: Option<serde_json::Value>,
-    pub parent_tool_use_id: Option<String>,
-}
-
-/// All fields that describe a completed tool-output event sent to a channel.
-#[derive(Debug)]
-pub struct ToolOutputEvent<'a> {
-    pub tool_name: &'a str,
-    pub body: &'a str,
-    pub diff: Option<crate::DiffData>,
-    pub filter_stats: Option<String>,
-    pub kept_lines: Option<Vec<usize>>,
-    pub locations: Option<Vec<String>>,
-    pub tool_call_id: &'a str,
-    pub is_error: bool,
-    pub parent_tool_use_id: Option<String>,
-    pub raw_response: Option<serde_json::Value>,
-    pub started_at: Option<std::time::Instant>,
-}
-
 /// Kind of binary attachment on an incoming message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentKind {
@@ -248,26 +223,25 @@ pub trait Channel: Send {
     /// Returns an error if the underlying I/O fails.
     fn send_tool_start(
         &mut self,
-        _event: ToolStartEvent<'_>,
+        _event: ToolStartEvent,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
 
     /// Send a complete tool output with optional diff and filter stats atomically.
     ///
-    /// `body` is the raw tool output content (no header). The default implementation
-    /// formats it with `[tool output: <name>]` prefix for human-readable channels.
-    /// Structured channels (e.g. `LoopbackChannel`) override this to emit a typed event
-    /// so consumers can access `tool_name` and `body` as separate fields.
+    /// `display` is the formatted tool output. The default implementation forwards to
+    /// [`Channel::send`]. Structured channels (e.g. `LoopbackChannel`) override this to
+    /// emit a typed event so consumers can access `tool_name` and `display` as separate fields.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
     fn send_tool_output(
         &mut self,
-        event: ToolOutputEvent<'_>,
+        event: ToolOutputEvent,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
-        let formatted = crate::agent::format_tool_output(event.tool_name, event.body);
+        let formatted = crate::agent::format_tool_output(event.tool_name.as_str(), &event.display);
         async move { self.send(&formatted).await }
     }
 
@@ -328,10 +302,15 @@ pub enum StopHint {
     MaxTurnRequests,
 }
 
-/// Data carried by a [`LoopbackEvent::ToolStart`] variant.
+/// Event carrying data for a tool call start, emitted before execution begins.
+///
+/// Passed by value to [`Channel::send_tool_start`] and carried by
+/// [`LoopbackEvent::ToolStart`]. All fields are owned — no lifetime parameters.
 #[derive(Debug, Clone)]
-pub struct ToolStartData {
+pub struct ToolStartEvent {
+    /// Name of the tool being invoked.
     pub tool_name: zeph_common::ToolName,
+    /// Opaque tool call ID assigned by the LLM.
     pub tool_call_id: String,
     /// Raw input parameters passed to the tool (e.g. `{"command": "..."}` for bash).
     pub params: Option<serde_json::Value>,
@@ -341,16 +320,27 @@ pub struct ToolStartData {
     pub started_at: std::time::Instant,
 }
 
-/// Data carried by a [`LoopbackEvent::ToolOutput`] variant.
+/// Event carrying data for a completed tool output, emitted after execution.
+///
+/// Passed by value to [`Channel::send_tool_output`] and carried by
+/// [`LoopbackEvent::ToolOutput`]. All fields are owned — no lifetime parameters.
 #[derive(Debug, Clone)]
-pub struct ToolOutputData {
+pub struct ToolOutputEvent {
+    /// Name of the tool that produced this output.
     pub tool_name: zeph_common::ToolName,
+    /// Human-readable output text.
     pub display: String,
+    /// Optional diff for file-editing tools.
     pub diff: Option<crate::DiffData>,
+    /// Optional filter statistics from output filtering.
     pub filter_stats: Option<String>,
+    /// Kept line indices after filtering (for display).
     pub kept_lines: Option<Vec<usize>>,
+    /// Source locations for code search results.
     pub locations: Option<Vec<String>>,
+    /// Opaque tool call ID matching the corresponding `ToolStartEvent`.
     pub tool_call_id: String,
+    /// Whether this output represents an error.
     pub is_error: bool,
     /// Terminal ID for shell tool calls routed through the IDE terminal.
     pub terminal_id: Option<String>,
@@ -358,40 +348,21 @@ pub struct ToolOutputData {
     pub parent_tool_use_id: Option<String>,
     /// Structured tool response payload for ACP intermediate `tool_call_update` notifications.
     pub raw_response: Option<serde_json::Value>,
-    /// Wall-clock instant when the corresponding `ToolStart` was emitted; used for elapsed time.
+    /// Wall-clock instant when the corresponding `ToolStartEvent` was emitted.
     pub started_at: Option<std::time::Instant>,
 }
 
-impl From<ToolStartEvent<'_>> for ToolStartData {
-    fn from(e: ToolStartEvent<'_>) -> Self {
-        Self {
-            tool_name: e.tool_name.into(),
-            tool_call_id: e.tool_call_id.to_owned(),
-            params: e.params,
-            parent_tool_use_id: e.parent_tool_use_id,
-            started_at: std::time::Instant::now(),
-        }
-    }
-}
+/// Backward-compatible alias for [`ToolStartEvent`].
+///
+/// Deprecated name kept for use in the ACP layer. Prefer `ToolStartEvent` in new code.
+#[deprecated(since = "0.18.6", note = "use ToolStartEvent directly")]
+pub type ToolStartData = ToolStartEvent;
 
-impl From<ToolOutputEvent<'_>> for ToolOutputData {
-    fn from(e: ToolOutputEvent<'_>) -> Self {
-        Self {
-            tool_name: e.tool_name.into(),
-            display: e.body.to_owned(),
-            diff: e.diff,
-            filter_stats: e.filter_stats,
-            kept_lines: e.kept_lines,
-            locations: e.locations,
-            tool_call_id: e.tool_call_id.to_owned(),
-            is_error: e.is_error,
-            terminal_id: None,
-            parent_tool_use_id: e.parent_tool_use_id,
-            raw_response: e.raw_response,
-            started_at: e.started_at,
-        }
-    }
-}
+/// Backward-compatible alias for [`ToolOutputEvent`].
+///
+/// Deprecated name kept for use in the ACP layer. Prefer `ToolOutputEvent` in new code.
+#[deprecated(since = "0.18.6", note = "use ToolOutputEvent directly")]
+pub type ToolOutputData = ToolOutputEvent;
 
 /// Events emitted by the agent side toward the A2A caller.
 #[derive(Debug, Clone)]
@@ -401,8 +372,8 @@ pub enum LoopbackEvent {
     FullMessage(String),
     Status(String),
     /// Emitted immediately before tool execution begins.
-    ToolStart(Box<ToolStartData>),
-    ToolOutput(Box<ToolOutputData>),
+    ToolStart(Box<ToolStartEvent>),
+    ToolOutput(Box<ToolOutputEvent>),
     /// Token usage from the last LLM turn.
     Usage {
         input_tokens: u64,
@@ -508,16 +479,16 @@ impl Channel for LoopbackChannel {
             .map_err(|_| ChannelError::ChannelClosed)
     }
 
-    async fn send_tool_start(&mut self, event: ToolStartEvent<'_>) -> Result<(), ChannelError> {
+    async fn send_tool_start(&mut self, event: ToolStartEvent) -> Result<(), ChannelError> {
         self.output_tx
-            .send(LoopbackEvent::ToolStart(Box::new(event.into())))
+            .send(LoopbackEvent::ToolStart(Box::new(event)))
             .await
             .map_err(|_| ChannelError::ChannelClosed)
     }
 
-    async fn send_tool_output(&mut self, event: ToolOutputEvent<'_>) -> Result<(), ChannelError> {
+    async fn send_tool_output(&mut self, event: ToolOutputEvent) -> Result<(), ChannelError> {
         self.output_tx
-            .send(LoopbackEvent::ToolOutput(Box::new(event.into())))
+            .send(LoopbackEvent::ToolOutput(Box::new(event)))
             .await
             .map_err(|_| ChannelError::ChannelClosed)
     }
@@ -763,13 +734,14 @@ mod tests {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
         channel
             .send_tool_output(ToolOutputEvent {
-                tool_name: "bash",
-                body: "exit 0",
+                tool_name: "bash".into(),
+                display: "exit 0".into(),
                 diff: None,
                 filter_stats: None,
                 kept_lines: None,
                 locations: None,
-                tool_call_id: "",
+                tool_call_id: String::new(),
+                terminal_id: None,
                 is_error: false,
                 parent_tool_use_id: None,
                 raw_response: None,
@@ -907,18 +879,19 @@ mod tests {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
         channel
             .send_tool_start(ToolStartEvent {
-                tool_name: "shell",
-                tool_call_id: "tc-001",
+                tool_name: "shell".into(),
+                tool_call_id: "tc-001".into(),
                 params: Some(serde_json::json!({"command": "ls"})),
                 parent_tool_use_id: None,
+                started_at: std::time::Instant::now(),
             })
             .await
             .unwrap();
         let event = handle.output_rx.recv().await.unwrap();
         match event {
             LoopbackEvent::ToolStart(data) => {
-                assert_eq!(data.tool_name, "shell");
-                assert_eq!(data.tool_call_id, "tc-001");
+                assert_eq!(data.tool_name.as_str(), "shell");
+                assert_eq!(data.tool_call_id.as_str(), "tc-001");
                 assert!(data.params.is_some());
                 assert!(data.parent_tool_use_id.is_none());
             }
@@ -931,10 +904,11 @@ mod tests {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
         channel
             .send_tool_start(ToolStartEvent {
-                tool_name: "web",
-                tool_call_id: "tc-002",
+                tool_name: "web".into(),
+                tool_call_id: "tc-002".into(),
                 params: None,
                 parent_tool_use_id: Some("parent-123".into()),
+                started_at: std::time::Instant::now(),
             })
             .await
             .unwrap();
@@ -951,10 +925,11 @@ mod tests {
         drop(handle);
         let result = channel
             .send_tool_start(ToolStartEvent {
-                tool_name: "shell",
-                tool_call_id: "tc-003",
+                tool_name: "shell".into(),
+                tool_call_id: "tc-003".into(),
                 params: None,
                 parent_tool_use_id: None,
+                started_at: std::time::Instant::now(),
             })
             .await;
         assert!(matches!(result, Err(ChannelError::ChannelClosed)));
@@ -965,13 +940,14 @@ mod tests {
         let mut ch = StubChannel;
         // Default impl calls self.send() which is a no-op in StubChannel — just verify it doesn't panic.
         ch.send_tool_output(ToolOutputEvent {
-            tool_name: "bash",
-            body: "hello",
+            tool_name: "bash".into(),
+            display: "hello".into(),
             diff: None,
             filter_stats: None,
             kept_lines: None,
             locations: None,
-            tool_call_id: "id",
+            tool_call_id: "id".into(),
+            terminal_id: None,
             is_error: false,
             parent_tool_use_id: None,
             raw_response: None,

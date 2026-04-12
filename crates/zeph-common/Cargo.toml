@@ -26,6 +26,7 @@ treesitter = [
 [dependencies]
 blake3.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace = true
 thiserror.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeroize = { workspace = true, features = ["alloc", "derive", "serde"] }

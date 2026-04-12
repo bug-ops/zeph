@@ -247,6 +247,7 @@ pub(super) fn build_config_options(
     opts
 }
 
+#[allow(deprecated)]
 fn tool_start_to_updates(data: zeph_core::ToolStartData) -> Vec<acp::SessionUpdate> {
     let tool_name = data.tool_name;
     let tool_call_id = data.tool_call_id;
@@ -437,6 +438,7 @@ fn non_terminal_tool_updates(
     vec![acp::SessionUpdate::ToolCallUpdate(update)]
 }
 
+#[allow(deprecated)]
 fn tool_output_to_updates(data: zeph_core::ToolOutputData) -> Vec<acp::SessionUpdate> {
     let tool_name = data.tool_name;
     let display = data.display;

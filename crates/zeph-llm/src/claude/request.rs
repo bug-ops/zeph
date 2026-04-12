@@ -18,7 +18,7 @@ pub(super) fn split_messages(messages: &[Message]) -> (Option<String>, Vec<ApiMe
     let mut chat = Vec::new();
 
     for msg in messages {
-        if !msg.metadata.agent_visible {
+        if !msg.metadata.visibility.is_agent_visible() {
             continue;
         }
         match msg.role {
@@ -55,7 +55,7 @@ pub(super) fn split_messages_structured(
 
     for msg in messages
         .iter()
-        .filter(|m| m.metadata.agent_visible && m.role == Role::System)
+        .filter(|m| m.metadata.visibility.is_agent_visible() && m.role == Role::System)
     {
         system_parts.push(msg.to_llm_content());
     }
@@ -64,7 +64,7 @@ pub(super) fn split_messages_structured(
     // user or assistant message (RC4: system messages in `visible` would break +1 index peek).
     let visible: Vec<&Message> = messages
         .iter()
-        .filter(|m| m.metadata.agent_visible && m.role != Role::System)
+        .filter(|m| m.metadata.visibility.is_agent_visible() && m.role != Role::System)
         .collect();
 
     // Track which tool_use IDs were actually emitted as native AnthropicContentBlock::ToolUse

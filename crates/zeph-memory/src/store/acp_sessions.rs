@@ -319,12 +319,12 @@ impl SqliteStore {
         // Copy messages in order. Only columns present across all migrations are included;
         // per-message auto-fields (id, created_at, last_accessed, access_count, qdrant_cleaned)
         // are excluded so they are generated fresh for the target conversation.
-        zeph_db::query(
-            sql!("INSERT INTO messages \
-                (conversation_id, role, content, parts, agent_visible, user_visible, compacted_at, deleted_at) \
-             SELECT ?, role, content, parts, agent_visible, user_visible, compacted_at, deleted_at \
-             FROM messages WHERE conversation_id = ? ORDER BY id"),
-        )
+        zeph_db::query(sql!(
+            "INSERT INTO messages \
+                (conversation_id, role, content, parts, visibility, compacted_at, deleted_at) \
+             SELECT ?, role, content, parts, visibility, compacted_at, deleted_at \
+             FROM messages WHERE conversation_id = ? ORDER BY id"
+        ))
         .bind(target)
         .bind(source)
         .execute(&mut *tx)

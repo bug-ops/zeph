@@ -8,7 +8,7 @@ use zeph_db::ActiveDialect;
 use zeph_db::fts::sanitize_fts_query;
 #[allow(unused_imports)]
 use zeph_db::{begin_write, sql};
-use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+use zeph_llm::provider::{Message, MessageMetadata, MessagePart, MessageVisibility, Role};
 
 use super::SqliteStore;
 use crate::error::MemoryError;
@@ -164,8 +164,14 @@ impl SqliteStore {
         content: &str,
         parts_json: &str,
     ) -> Result<MessageId, MemoryError> {
-        self.save_message_with_metadata(conversation_id, role, content, parts_json, true, true)
-            .await
+        self.save_message_with_metadata(
+            conversation_id,
+            role,
+            content,
+            parts_json,
+            MessageVisibility::Both,
+        )
+        .await
     }
 
     /// Save a message with an optional category tag.
@@ -185,9 +191,9 @@ impl SqliteStore {
         let importance_score = crate::semantic::importance::compute_importance(content, role);
         let row: (MessageId,) = zeph_db::query_as(sql!(
             "INSERT INTO messages \
-                 (conversation_id, role, content, parts, agent_visible, user_visible, \
+                 (conversation_id, role, content, parts, visibility, \
                   importance_score, category) \
-                 VALUES (?, ?, ?, '[]', 1, 1, ?, ?) RETURNING id"
+                 VALUES (?, ?, ?, '[]', 'both', ?, ?) RETURNING id"
         ))
         .bind(conversation_id)
         .bind(role)
@@ -210,8 +216,7 @@ impl SqliteStore {
         role: &str,
         content: &str,
         parts_json: &str,
-        agent_visible: bool,
-        user_visible: bool,
+        visibility: MessageVisibility,
     ) -> Result<MessageId, MemoryError> {
         const MAX_BYTES: usize = 100 * 1024;
 
@@ -234,15 +239,14 @@ impl SqliteStore {
 
         let importance_score = crate::semantic::importance::compute_importance(&content_cow, role);
         let row: (MessageId,) = zeph_db::query_as(
-            sql!("INSERT INTO messages (conversation_id, role, content, parts, agent_visible, user_visible, importance_score) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id"),
+            sql!("INSERT INTO messages (conversation_id, role, content, parts, visibility, importance_score) \
+             VALUES (?, ?, ?, ?, ?, ?) RETURNING id"),
         )
         .bind(conversation_id)
         .bind(role)
         .bind(content_cow.as_ref())
         .bind(parts_json)
-        .bind(i64::from(agent_visible))
-        .bind(i64::from(user_visible))
+        .bind(visibility.as_db_str())
         .bind(importance_score)
         .fetch_one(&self.pool)
         .await?;
@@ -259,9 +263,9 @@ impl SqliteStore {
         conversation_id: ConversationId,
         limit: u32,
     ) -> Result<Vec<Message>, MemoryError> {
-        let rows: Vec<(String, String, String, i64, i64, i64)> = zeph_db::query_as(sql!(
-            "SELECT role, content, parts, agent_visible, user_visible, id FROM (\
-                SELECT role, content, parts, agent_visible, user_visible, id FROM messages \
+        let rows: Vec<(String, String, String, String, i64)> = zeph_db::query_as(sql!(
+            "SELECT role, content, parts, visibility, id FROM (\
+                SELECT role, content, parts, visibility, id FROM messages \
                 WHERE conversation_id = ? AND deleted_at IS NULL \
                 ORDER BY id DESC \
                 LIMIT ?\
@@ -274,25 +278,22 @@ impl SqliteStore {
 
         let messages = rows
             .into_iter()
-            .map(
-                |(role_str, content, parts_json, agent_visible, user_visible, row_id)| {
-                    let parts = parse_parts_json(&role_str, &parts_json);
-                    Message {
-                        role: parse_role(&role_str),
-                        content,
-                        parts,
-                        metadata: MessageMetadata {
-                            agent_visible: agent_visible != 0,
-                            user_visible: user_visible != 0,
-                            compacted_at: None,
-                            deferred_summary: None,
-                            focus_pinned: false,
-                            focus_marker_id: None,
-                            db_id: Some(row_id),
-                        },
-                    }
-                },
-            )
+            .map(|(role_str, content, parts_json, visibility_str, row_id)| {
+                let parts = parse_parts_json(&role_str, &parts_json);
+                Message {
+                    role: parse_role(&role_str),
+                    content,
+                    parts,
+                    metadata: MessageMetadata {
+                        visibility: MessageVisibility::from_db_str(&visibility_str),
+                        compacted_at: None,
+                        deferred_summary: None,
+                        focus_pinned: false,
+                        focus_marker_id: None,
+                        db_id: Some(row_id),
+                    },
+                }
+            })
             .collect();
         Ok(messages)
     }
@@ -311,50 +312,50 @@ impl SqliteStore {
         agent_visible: Option<bool>,
         user_visible: Option<bool>,
     ) -> Result<Vec<Message>, MemoryError> {
-        let av = agent_visible.map(i64::from);
-        let uv = user_visible.map(i64::from);
+        // Map boolean filters to SQL predicates on the visibility column.
+        // agent_visible=true  → exclude 'user_only'  rows
+        // user_visible=true   → exclude 'agent_only' rows
+        // The two filters are independent; when both are Some(true) the
+        // combined effect is to keep only 'both' rows.
+        let exclude_user_only = agent_visible == Some(true);
+        let exclude_agent_only = user_visible == Some(true);
 
-        let rows: Vec<(String, String, String, i64, i64, i64)> = zeph_db::query_as(
-            sql!("WITH recent AS (\
-                SELECT role, content, parts, agent_visible, user_visible, id FROM messages \
+        let rows: Vec<(String, String, String, String, i64)> = zeph_db::query_as(sql!(
+            "WITH recent AS (\
+                SELECT role, content, parts, visibility, id FROM messages \
                 WHERE conversation_id = ? \
                   AND deleted_at IS NULL \
-                  AND (? IS NULL OR agent_visible = ?) \
-                  AND (? IS NULL OR user_visible = ?) \
+                  AND (NOT ? OR visibility != 'user_only') \
+                  AND (NOT ? OR visibility != 'agent_only') \
                 ORDER BY id DESC \
                 LIMIT ?\
-             ) SELECT role, content, parts, agent_visible, user_visible, id FROM recent ORDER BY id ASC"),
-        )
+             ) SELECT role, content, parts, visibility, id FROM recent ORDER BY id ASC"
+        ))
         .bind(conversation_id)
-        .bind(av)
-        .bind(av)
-        .bind(uv)
-        .bind(uv)
+        .bind(exclude_user_only)
+        .bind(exclude_agent_only)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
         let messages = rows
             .into_iter()
-            .map(
-                |(role_str, content, parts_json, agent_visible, user_visible, row_id)| {
-                    let parts = parse_parts_json(&role_str, &parts_json);
-                    Message {
-                        role: parse_role(&role_str),
-                        content,
-                        parts,
-                        metadata: MessageMetadata {
-                            agent_visible: agent_visible != 0,
-                            user_visible: user_visible != 0,
-                            compacted_at: None,
-                            deferred_summary: None,
-                            focus_pinned: false,
-                            focus_marker_id: None,
-                            db_id: Some(row_id),
-                        },
-                    }
-                },
-            )
+            .map(|(role_str, content, parts_json, visibility_str, row_id)| {
+                let parts = parse_parts_json(&role_str, &parts_json);
+                Message {
+                    role: parse_role(&role_str),
+                    content,
+                    parts,
+                    metadata: MessageMetadata {
+                        visibility: MessageVisibility::from_db_str(&visibility_str),
+                        compacted_at: None,
+                        deferred_summary: None,
+                        focus_pinned: false,
+                        focus_marker_id: None,
+                        db_id: Some(row_id),
+                    },
+                }
+            })
             .collect();
         Ok(messages)
     }
@@ -362,8 +363,8 @@ impl SqliteStore {
     /// Atomically mark a range of messages as user-only and insert a summary as agent-only.
     ///
     /// Within a single transaction:
-    /// 1. Updates `agent_visible=0, compacted_at=now` for messages in `compacted_range`.
-    /// 2. Inserts `summary_content` with `agent_visible=1, user_visible=0`.
+    /// 1. Updates `visibility=user_only, compacted_at=now` for messages in `compacted_range`.
+    /// 2. Inserts `summary_content` with `visibility=agent_only`.
     ///
     /// Returns the `MessageId` of the inserted summary.
     ///
@@ -390,7 +391,7 @@ impl SqliteStore {
         let mut tx = self.pool.begin().await?;
 
         zeph_db::query(sql!(
-            "UPDATE messages SET agent_visible = 0, compacted_at = ? \
+            "UPDATE messages SET visibility = 'user_only', compacted_at = ? \
              WHERE conversation_id = ? AND id >= ? AND id <= ?"
         ))
         .bind(&now)
@@ -403,8 +404,8 @@ impl SqliteStore {
         // importance_score uses schema DEFAULT 0.5 (neutral); compaction summaries are not scored at write time.
         let row: (MessageId,) = zeph_db::query_as(sql!(
             "INSERT INTO messages \
-             (conversation_id, role, content, parts, agent_visible, user_visible) \
-             VALUES (?, ?, ?, '[]', 1, 0) RETURNING id"
+             (conversation_id, role, content, parts, visibility) \
+             VALUES (?, ?, ?, '[]', 'agent_only') RETURNING id"
         ))
         .bind(conversation_id)
         .bind(summary_role)
@@ -420,7 +421,7 @@ impl SqliteStore {
     /// Atomically hide `tool_use/tool_result` message pairs and insert summary messages.
     ///
     /// Within a single transaction:
-    /// 1. Sets `agent_visible=0, compacted_at=<now>` for each ID in `hide_ids`.
+    /// 1. Sets `visibility=user_only, compacted_at=<now>` for each ID in `hide_ids`.
     /// 2. Inserts each text in `summaries` as a new agent-only assistant message.
     ///
     /// # Errors
@@ -446,7 +447,7 @@ impl SqliteStore {
 
         for &id in hide_ids {
             zeph_db::query(sql!(
-                "UPDATE messages SET agent_visible = 0, compacted_at = ? WHERE id = ?"
+                "UPDATE messages SET visibility = 'user_only', compacted_at = ? WHERE id = ?"
             ))
             .bind(&now)
             .bind(id)
@@ -462,8 +463,8 @@ impl SqliteStore {
             .unwrap_or_else(|_| "[]".to_string());
             zeph_db::query(sql!(
                 "INSERT INTO messages \
-                 (conversation_id, role, content, parts, agent_visible, user_visible) \
-                 VALUES (?, 'assistant', ?, ?, 1, 0)"
+                 (conversation_id, role, content, parts, visibility) \
+                 VALUES (?, 'assistant', ?, ?, 'agent_only')"
             ))
             .bind(conversation_id)
             .bind(&content)
@@ -519,32 +520,29 @@ impl SqliteStore {
         &self,
         message_id: MessageId,
     ) -> Result<Option<Message>, MemoryError> {
-        let row: Option<(String, String, String, i64, i64)> = zeph_db::query_as(
-            sql!("SELECT role, content, parts, agent_visible, user_visible FROM messages WHERE id = ? AND deleted_at IS NULL"),
+        let row: Option<(String, String, String, String)> = zeph_db::query_as(
+            sql!("SELECT role, content, parts, visibility FROM messages WHERE id = ? AND deleted_at IS NULL"),
         )
         .bind(message_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(
-            |(role_str, content, parts_json, agent_visible, user_visible)| {
-                let parts = parse_parts_json(&role_str, &parts_json);
-                Message {
-                    role: parse_role(&role_str),
-                    content,
-                    parts,
-                    metadata: MessageMetadata {
-                        agent_visible: agent_visible != 0,
-                        user_visible: user_visible != 0,
-                        compacted_at: None,
-                        deferred_summary: None,
-                        focus_pinned: false,
-                        focus_marker_id: None,
-                        db_id: None,
-                    },
-                }
-            },
-        ))
+        Ok(row.map(|(role_str, content, parts_json, visibility_str)| {
+            let parts = parse_parts_json(&role_str, &parts_json);
+            Message {
+                role: parse_role(&role_str),
+                content,
+                parts,
+                metadata: MessageMetadata {
+                    visibility: MessageVisibility::from_db_str(&visibility_str),
+                    compacted_at: None,
+                    deferred_summary: None,
+                    focus_pinned: false,
+                    focus_marker_id: None,
+                    db_id: None,
+                },
+            }
+        }))
     }
 
     /// Fetch messages by a list of IDs in a single query.
@@ -564,7 +562,7 @@ impl SqliteStore {
 
         let query = format!(
             "SELECT id, role, content, parts FROM messages \
-             WHERE id IN ({placeholders}) AND agent_visible = 1 AND deleted_at IS NULL"
+             WHERE id IN ({placeholders}) AND visibility != 'user_only' AND deleted_at IS NULL"
         );
         let mut q = zeph_db::query_as::<_, (MessageId, String, String, String)>(&query);
         for &id in ids {
@@ -724,7 +722,7 @@ impl SqliteStore {
                 sql!("SELECT m.id, -rank AS score \
                  FROM messages_fts f \
                  JOIN messages m ON m.id = f.rowid \
-                 WHERE messages_fts MATCH ? AND m.conversation_id = ? AND m.agent_visible = 1 AND m.deleted_at IS NULL \
+                 WHERE messages_fts MATCH ? AND m.conversation_id = ? AND m.visibility != 'user_only' AND m.deleted_at IS NULL \
                  ORDER BY rank \
                  LIMIT ?"),
             )
@@ -738,7 +736,7 @@ impl SqliteStore {
                 "SELECT m.id, -rank AS score \
                  FROM messages_fts f \
                  JOIN messages m ON m.id = f.rowid \
-                 WHERE messages_fts MATCH ? AND m.agent_visible = 1 AND m.deleted_at IS NULL \
+                 WHERE messages_fts MATCH ? AND m.visibility != 'user_only' AND m.deleted_at IS NULL \
                  ORDER BY rank \
                  LIMIT ?"
             ))
@@ -798,7 +796,7 @@ impl SqliteStore {
             "SELECT m.id, -rank AS score \
              FROM messages_fts f \
              JOIN messages m ON m.id = f.rowid \
-             WHERE messages_fts MATCH ? AND m.agent_visible = 1 AND m.deleted_at IS NULL\
+             WHERE messages_fts MATCH ? AND m.visibility != 'user_only' AND m.deleted_at IS NULL\
              {after_clause}{before_clause}{conv_clause} \
              ORDER BY rank \
              LIMIT ?"
@@ -1133,9 +1131,9 @@ impl SqliteStore {
         let epoch_now = <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
         let promote_insert_raw = format!(
             "INSERT INTO messages \
-             (conversation_id, role, content, parts, agent_visible, user_visible, \
+             (conversation_id, role, content, parts, visibility, \
               tier, promotion_timestamp) \
-             VALUES (?, 'assistant', ?, '[]', 1, 0, 'semantic', {epoch_now}) \
+             VALUES (?, 'assistant', ?, '[]', 'agent_only', 'semantic', {epoch_now}) \
              RETURNING id"
         );
         let promote_insert_sql = zeph_db::rewrite_placeholders(&promote_insert_raw);
@@ -1346,9 +1344,9 @@ impl SqliteStore {
         let importance = crate::semantic::importance::compute_importance(merged_content, role);
         let row: (MessageId,) = zeph_db::query_as(sql!(
             "INSERT INTO messages \
-               (conversation_id, role, content, parts, agent_visible, user_visible, \
+               (conversation_id, role, content, parts, visibility, \
                 importance_score, consolidated, consolidation_confidence) \
-             VALUES (?, ?, ?, '[]', 1, 1, ?, 1, ?) \
+             VALUES (?, ?, ?, '[]', 'both', ?, 1, ?) \
              RETURNING id"
         ))
         .bind(conversation_id)
