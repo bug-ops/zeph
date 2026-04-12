@@ -24,7 +24,7 @@
 /// vectors (handled upstream by [`strip_format_chars`]), exfiltration channels
 /// (markdown/HTML images), and delimiter-escape attempts against Zeph's own wrapper tags.
 ///
-/// Both `zeph-mcp` and `zeph-core::sanitizer` compile their own [`regex::Regex`] instances
+/// Both `zeph-mcp` and `zeph-core::sanitizer` compile their own `regex::Regex` instances
 /// from this slice. Do not export a compiled `LazyLock` — let each consumer own its state.
 pub const RAW_INJECTION_PATTERNS: &[(&str, &str)] = &[
     (
