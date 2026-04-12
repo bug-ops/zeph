@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`ContextAssembler` extraction** (`#2904`): extracted stateless `ContextAssembler` struct
+  with `gather(input: &ContextAssemblyInput<'_>) -> Result<PreparedContext, AgentError>` into
+  `crates/zeph-core/src/agent/context/assembler.rs`. All 9 `fetch_*` methods moved from
+  `impl<C: Channel> Agent<C>` to module-level free functions in `assembler.rs`. `Agent::prepare_context`
+  is now a thin wrapper (~30 LOC) that builds `ContextAssemblyInput`, calls `ContextAssembler::gather`,
+  and delegates injection to `Agent::apply_prepared_context`. `ContextAssemblyInput<'a>` borrows all
+  fields from `Agent`; `PreparedContext` carries all fetched `Option<Message>` values plus
+  `memory_first` flag and `recent_history_budget`. `session_digest` stays in
+  `apply_prepared_context` (cached, not async). No public API changes.
+
 - **`ToolName` newtype** (`#2901`): introduced `ToolName(Arc<str>)` in `zeph-common` replacing
   raw `String` for all tool name fields across `zeph-tools` (`ToolCall.tool_id`,
   `ToolOutput.tool_name`, `ToolEvent` variants), `zeph-llm` (`ToolDefinition.name`,

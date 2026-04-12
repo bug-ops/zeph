@@ -237,7 +237,7 @@ impl ContextManager {
     /// Returns a `Box<dyn AsyncMemoryRouter>` so callers can use `route_async()` for LLM-based
     /// classification. `HeuristicRouter` implements `AsyncMemoryRouter` via a blanket impl that
     /// delegates to the sync `route_with_confidence`.
-    pub(super) fn build_router(&self) -> Box<dyn zeph_memory::AsyncMemoryRouter + Send + Sync> {
+    pub(crate) fn build_router(&self) -> Box<dyn zeph_memory::AsyncMemoryRouter + Send + Sync> {
         use crate::config::StoreRoutingStrategy;
         if !self.routing.enabled {
             return Box::new(zeph_memory::HeuristicRouter);
