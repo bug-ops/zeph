@@ -8,7 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::config::{Config, ProviderEntry, ProviderKind};
+use crate::bootstrap::mcp::create_mcp_manager;
+use zeph_core::config::{Config, ProviderEntry, ProviderKind};
 use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::ollama::OllamaProvider;
 
@@ -311,7 +312,7 @@ fn create_mcp_manager_with_http_transport() {
     use std::collections::HashMap;
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.mcp.servers = vec![crate::config::McpServerConfig {
+    config.mcp.servers = vec![zeph_core::config::McpServerConfig {
         id: "test".into(),
         url: Some("http://localhost:3000".into()),
         command: None,
@@ -340,7 +341,7 @@ fn create_mcp_manager_with_stdio_transport() {
     use std::collections::HashMap;
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.mcp.servers = vec![crate::config::McpServerConfig {
+    config.mcp.servers = vec![zeph_core::config::McpServerConfig {
         id: "test".into(),
         url: None,
         command: Some("node".into()),
@@ -480,7 +481,7 @@ async fn create_skill_matcher_when_semantic_disabled() {
 #[test]
 fn appbuilder_qdrant_ops_invalid_url_returns_err() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.memory.vector_backend = crate::config::VectorBackend::Qdrant;
+    config.memory.vector_backend = zeph_core::config::VectorBackend::Qdrant;
     config.memory.qdrant_url = "not a valid url".into();
 
     let result = zeph_memory::QdrantOps::new(&config.memory.qdrant_url);
@@ -501,7 +502,7 @@ fn appbuilder_qdrant_ops_valid_url_succeeds() {
 // Full integration tests require a live provider (Ollama/OpenAI). These tests only verify
 // the early-return behavior when `detector_mode != Model` — no LLM call is made.
 
-fn make_builder_with_detector_mode(mode: crate::config::DetectorMode) -> AppBuilder {
+fn make_builder_with_detector_mode(mode: zeph_core::config::DetectorMode) -> AppBuilder {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.skills.learning.detector_mode = mode;
     AppBuilder {
@@ -523,7 +524,7 @@ fn make_mock_primary() -> zeph_llm::any::AnyProvider {
 
 #[test]
 fn build_feedback_classifier_regex_mode_returns_none() {
-    let b = make_builder_with_detector_mode(crate::config::DetectorMode::Regex);
+    let b = make_builder_with_detector_mode(zeph_core::config::DetectorMode::Regex);
     let primary = make_mock_primary();
     let result = b.build_feedback_classifier(&primary);
     assert!(
@@ -534,7 +535,7 @@ fn build_feedback_classifier_regex_mode_returns_none() {
 
 #[test]
 fn build_feedback_classifier_judge_mode_returns_none() {
-    let b = make_builder_with_detector_mode(crate::config::DetectorMode::Judge);
+    let b = make_builder_with_detector_mode(zeph_core::config::DetectorMode::Judge);
     let primary = make_mock_primary();
     let result = b.build_feedback_classifier(&primary);
     assert!(

@@ -262,7 +262,7 @@ pub fn build_provider_from_entry(
                 repeat_penalty: candle.generation.repeat_penalty,
                 repeat_last_n: candle.generation.repeat_last_n,
             };
-            let device = crate::bootstrap::select_device(&candle.device)?;
+            let device = select_device(&candle.device)?;
             // Floor at 1s so that inference_timeout_secs = 0 does not cause every request to
             // immediately time out.
             let inference_timeout =
@@ -283,6 +283,54 @@ pub fn build_provider_from_entry(
         ProviderKind::Candle => Err(BootstrapError::Provider(
             "candle feature is not enabled".into(),
         )),
+    }
+}
+
+/// Select the candle compute device based on a string preference.
+///
+/// Resolution order: `"metal"` → Metal GPU (requires `metal` feature),
+/// `"cuda"` → CUDA GPU (requires `cuda` feature), `"auto"` → best available,
+/// anything else → CPU.
+///
+/// # Errors
+///
+/// Returns `BootstrapError::Provider` when the requested device is not available (e.g.
+/// `"metal"` requested but compiled without the `metal` feature).
+#[cfg(feature = "candle")]
+pub fn select_device(
+    preference: &str,
+) -> Result<zeph_llm::candle_provider::Device, BootstrapError> {
+    match preference {
+        "metal" => {
+            #[cfg(feature = "metal")]
+            return zeph_llm::candle_provider::Device::new_metal(0)
+                .map_err(|e| BootstrapError::Provider(e.to_string()));
+            #[cfg(not(feature = "metal"))]
+            return Err(BootstrapError::Provider(
+                "candle compiled without metal feature".into(),
+            ));
+        }
+        "cuda" => {
+            #[cfg(feature = "cuda")]
+            return zeph_llm::candle_provider::Device::new_cuda(0)
+                .map_err(|e| BootstrapError::Provider(e.to_string()));
+            #[cfg(not(feature = "cuda"))]
+            return Err(BootstrapError::Provider(
+                "candle compiled without cuda feature".into(),
+            ));
+        }
+        "auto" => {
+            #[cfg(feature = "metal")]
+            if let Ok(device) = zeph_llm::candle_provider::Device::new_metal(0) {
+                return Ok(device);
+            }
+            #[cfg(feature = "cuda")]
+            if let Ok(device) = zeph_llm::candle_provider::Device::new_cuda(0) {
+                return Ok(device);
+            }
+            Ok(zeph_llm::candle_provider::Device::Cpu)
+        }
+        _ => Ok(zeph_llm::candle_provider::Device::Cpu),
     }
 }
 
@@ -314,4 +362,52 @@ pub fn effective_embedding_model(config: &Config) -> String {
         return m.clone();
     }
     config.llm.embedding_model.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "candle")]
+    use super::select_device;
+
+    #[cfg(feature = "candle")]
+    #[test]
+    fn select_device_cpu_default() {
+        let device = select_device("cpu").unwrap();
+        assert!(matches!(device, zeph_llm::candle_provider::Device::Cpu));
+    }
+
+    #[cfg(feature = "candle")]
+    #[test]
+    fn select_device_unknown_defaults_to_cpu() {
+        let device = select_device("unknown").unwrap();
+        assert!(matches!(device, zeph_llm::candle_provider::Device::Cpu));
+    }
+
+    #[cfg(all(feature = "candle", not(feature = "metal")))]
+    #[test]
+    fn select_device_metal_without_feature_errors() {
+        let result = select_device("metal");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("metal feature"));
+    }
+
+    #[cfg(all(feature = "candle", not(feature = "cuda")))]
+    #[test]
+    fn select_device_cuda_without_feature_errors() {
+        let result = select_device("cuda");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cuda feature"));
+    }
+
+    #[cfg(feature = "candle")]
+    #[test]
+    fn select_device_auto_fallback() {
+        let device = select_device("auto").unwrap();
+        assert!(matches!(
+            device,
+            zeph_llm::candle_provider::Device::Cpu
+                | zeph_llm::candle_provider::Device::Cuda(_)
+                | zeph_llm::candle_provider::Device::Metal(_)
+        ));
+    }
 }

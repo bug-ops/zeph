@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-pub use crate::provider_factory::effective_embedding_model;
+pub use zeph_core::provider_factory::effective_embedding_model;
 
 use std::path::PathBuf;
 use zeph_llm::any::AnyProvider;
@@ -11,7 +11,7 @@ use zeph_skills::loader::SkillMeta;
 use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
 use zeph_skills::qdrant_matcher::QdrantSkillMatcher;
 
-use crate::config::Config;
+use zeph_core::config::Config;
 
 #[allow(unused_variables)]
 pub async fn create_skill_matcher(
@@ -96,5 +96,5 @@ pub fn create_embedding_provider(config: &Config, primary: &AnyProvider) -> AnyP
 
 /// Returns the default managed skills directory: `~/.config/zeph/skills/`.
 pub fn managed_skills_dir() -> PathBuf {
-    crate::vault::default_vault_dir().join("skills")
+    zeph_core::vault::default_vault_dir().join("skills")
 }

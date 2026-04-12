@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use zeph_core::bootstrap::resolve_config_path;
+use crate::bootstrap::resolve_config_path;
 use zeph_core::config::Config;
 use zeph_db::{DbConfig, redact_url};
 

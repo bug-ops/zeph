@@ -14,7 +14,7 @@
 //! an agent, call [`Agent::run`] to execute the main loop.
 //! Always call [`Agent::shutdown`] before dropping to persist state.
 //!
-//! See the `bootstrap` module for config loading and provider setup examples.
+//! See the `bootstrap` module in the `zeph` binary crate for config loading and provider setup examples.
 //!
 //! # Key Components
 //!
@@ -27,7 +27,8 @@
 //! - [`pipeline`] — Structured execution pipelines for complex workflows
 //! - [`project`] — Project indexing and semantic retrieval
 //! - [`memory_tools`] — Memory search and management utilities
-//! - [`bootstrap`] — Initialization and provider setup
+//!
+//! Note: The `bootstrap` module (`AppBuilder`, provider setup, etc.) lives in the `zeph` binary crate.
 //!
 //! # Architecture
 //!
@@ -65,8 +66,6 @@
 pub mod agent;
 #[cfg(feature = "profiling-alloc")]
 pub mod alloc_layer;
-#[allow(clippy::missing_errors_doc, clippy::must_use_candidate)]
-pub mod bootstrap;
 pub mod channel;
 pub mod config;
 pub mod config_watcher;

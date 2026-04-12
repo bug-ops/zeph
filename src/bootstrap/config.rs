@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::bootstrap::VaultArgs;
-use crate::config::Config;
+use zeph_core::config::Config;
 
 pub fn resolve_config_path(cli_override: Option<&Path>) -> PathBuf {
     let cwd_default = Path::new("config/default.toml");
@@ -62,7 +62,7 @@ pub fn parse_vault_args(
         .unwrap_or_else(|| config.vault.backend.clone());
 
     let env_key = std::env::var("ZEPH_VAULT_KEY").ok();
-    let default_dir = crate::vault::default_vault_dir();
+    let default_dir = zeph_core::vault::default_vault_dir();
     let key_path = cli_key_path
         .map(|p| p.to_string_lossy().into_owned())
         .or(env_key)

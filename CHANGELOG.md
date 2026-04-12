@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Bootstrap module migration** (`#2906`): moved the `bootstrap` module (AppBuilder, provider
+  construction, skill wiring, MCP initialization, vault setup) from `crates/zeph-core/src/bootstrap/`
+  to `src/bootstrap/` in the `zeph` binary crate. All `zeph_core::bootstrap::*` import paths in
+  binary source files updated to `crate::bootstrap::*`. The `select_device` function and its 5 tests
+  moved to `crates/zeph-core/src/provider_factory.rs`. The `crates/zeph-core/src/bootstrap/` directory
+  deleted. `zeph-core` lib.rs doc comment updated to note the module's new location.
+
 - **Provider helpers extraction** (`#2916`): extracted `BootstrapError`, `build_provider_for_switch`,
   `build_provider_from_entry`, and `effective_embedding_model` from `zeph-core/src/bootstrap/` into
   a new internal module `crates/zeph-core/src/provider_factory.rs`. All 5 internal callers

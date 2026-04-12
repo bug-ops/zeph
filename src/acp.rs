@@ -9,10 +9,10 @@ use parking_lot::RwLock;
 
 #[cfg(feature = "acp")]
 use crate::agent_setup;
+#[cfg(any(feature = "acp", feature = "acp-http"))]
+use crate::bootstrap::{AppBuilder, create_mcp_registry};
 #[cfg(feature = "acp")]
 use zeph_core::agent::Agent;
-#[cfg(any(feature = "acp", feature = "acp-http"))]
-use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
 #[cfg(feature = "acp")]
 use zeph_tools::ErasedToolExecutor;
 
@@ -237,8 +237,7 @@ async fn build_acp_deps(
     log_acp_runtime_paths(app.config(), app.config_path());
     let (provider, _status_tx, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
-    let embedding_provider =
-        zeph_core::bootstrap::create_embedding_provider(app.config(), &provider);
+    let embedding_provider = crate::bootstrap::create_embedding_provider(app.config(), &provider);
     let budget_tokens = app.auto_budget_tokens(&provider);
     let registry = std::sync::Arc::new(RwLock::new(app.build_registry()));
     let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
@@ -303,13 +302,10 @@ async fn build_acp_deps(
         m
     } else {
         let builder =
-            zeph_core::bootstrap::create_mcp_manager_with_vault(config, false, app.age_vault_arc());
-        let builder = zeph_core::bootstrap::wire_trust_calibration(
-            builder,
-            config,
-            Some(memory.sqlite().pool()),
-        )
-        .await;
+            crate::bootstrap::create_mcp_manager_with_vault(config, false, app.age_vault_arc());
+        let builder =
+            crate::bootstrap::wire_trust_calibration(builder, config, Some(memory.sqlite().pool()))
+                .await;
         std::sync::Arc::new(builder)
     };
     let (mcp_tools, _mcp_outcomes) = mcp_manager.connect_all().await;
@@ -355,7 +351,7 @@ async fn build_acp_deps(
     let summary_provider = app.build_summary_provider();
     let skill_paths = app.skill_paths();
     let acp_project_rules = collect_project_rules(&skill_paths);
-    let zeph_core::bootstrap::WatcherBundle {
+    let crate::bootstrap::WatcherBundle {
         skill_watcher,
         skill_reload_rx: mpsc_skill_rx,
         config_watcher,
@@ -566,7 +562,7 @@ async fn spawn_acp_agent(
     let quarantine_provider = d.quarantine_provider.clone();
     let guardrail_provider = d.guardrail_provider.clone();
     let session_config = d.session_config.clone();
-    let managed_skills_dir = zeph_core::bootstrap::managed_skills_dir();
+    let managed_skills_dir = crate::bootstrap::managed_skills_dir();
     let skill_reload_tx = d.skill_reload_tx.clone();
     let config_reload_tx = d.config_reload_tx.clone();
     #[cfg(feature = "scheduler")]
@@ -1228,7 +1224,7 @@ pub(crate) async fn run_acp_http_server(
 
     // CLI flag overrides config/env values for auth token.
     let auth_bearer_token = auth_token_override.or(app.config().acp.auth_token.clone());
-    let mcp_manager_for_acp = Arc::new(zeph_core::bootstrap::create_mcp_manager_with_vault(
+    let mcp_manager_for_acp = Arc::new(crate::bootstrap::create_mcp_manager_with_vault(
         app.config(),
         false,
         app.age_vault_arc(),

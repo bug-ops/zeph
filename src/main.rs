@@ -99,6 +99,7 @@ static GLOBAL: alloc_counter::CountingAllocator = alloc_counter::CountingAllocat
 
 mod acp;
 mod agent_setup;
+mod bootstrap;
 mod channel;
 mod cli;
 mod commands;

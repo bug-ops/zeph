@@ -7,7 +7,7 @@ pub(crate) async fn handle_memory_command(
     cmd: MemoryCommand,
     config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    use zeph_core::bootstrap::resolve_config_path;
+    use crate::bootstrap::resolve_config_path;
     use zeph_memory::store::SqliteStore;
 
     let config_file = resolve_config_path(config_path);

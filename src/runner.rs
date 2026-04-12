@@ -17,13 +17,13 @@ use crate::tui_bridge::{
     TuiRunParams, forward_index_progress_to_tui, run_tui_agent, start_tui_early,
 };
 
+use crate::bootstrap::resolve_config_path;
+#[cfg(not(feature = "tui"))]
+use crate::bootstrap::warmup_provider;
+use crate::bootstrap::{AppBuilder, create_mcp_registry};
 use parking_lot::RwLock;
 use zeph_channels::AnyChannel;
 use zeph_core::agent::Agent;
-use zeph_core::bootstrap::resolve_config_path;
-#[cfg(not(feature = "tui"))]
-use zeph_core::bootstrap::warmup_provider;
-use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
 #[cfg(feature = "acp")]
 use zeph_core::config::AcpTransport;
 use zeph_llm::{ThinkingConfig, ThinkingEffort};
@@ -607,8 +607,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let (provider, agent_status_tx, status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
-    let embedding_provider =
-        zeph_core::bootstrap::create_embedding_provider(app.config(), &provider);
+    let embedding_provider = crate::bootstrap::create_embedding_provider(app.config(), &provider);
     let budget_tokens = app.auto_budget_tokens(&provider);
 
     let config = app.config();
@@ -694,9 +693,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         let memory_arc = std::sync::Arc::clone(&memory);
         #[cfg(feature = "tui")]
         let _backfill_handle =
-            zeph_core::bootstrap::spawn_embed_backfill(memory_arc, 300, Some(backfill_tx));
+            crate::bootstrap::spawn_embed_backfill(memory_arc, 300, Some(backfill_tx));
         #[cfg(not(feature = "tui"))]
-        let _backfill_handle = zeph_core::bootstrap::spawn_embed_backfill(memory_arc, 300, None);
+        let _backfill_handle = crate::bootstrap::spawn_embed_backfill(memory_arc, 300, None);
     }
     #[cfg(feature = "tui")]
     tui_status!("Connecting tools...");
@@ -720,7 +719,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // Populate trust DB for all loaded skills.
     {
         let trust_cfg = config.skills.trust.clone();
-        let managed_dir = zeph_core::bootstrap::managed_skills_dir();
+        let managed_dir = crate::bootstrap::managed_skills_dir();
 
         // Step 1: collect all hashes in a single spawn_blocking to avoid blocking the async
         // executor with synchronous FS reads (compute_skill_hash does std::fs::read).
@@ -1260,8 +1259,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         if discovery.embedding_provider.is_empty() {
             provider.clone()
         } else {
-            match zeph_core::bootstrap::create_named_provider(&discovery.embedding_provider, config)
-            {
+            match crate::bootstrap::create_named_provider(&discovery.embedding_provider, config) {
                 Ok(p) => {
                     tracing::info!(
                         provider = %discovery.embedding_provider,
@@ -1295,7 +1293,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .as_deref()
         .filter(|s| !s.is_empty())
         .and_then(
-            |name| match zeph_core::bootstrap::create_named_provider(name, config) {
+            |name| match crate::bootstrap::create_named_provider(name, config) {
                 Ok(p) => {
                     tracing::info!(provider = %name, "Using dedicated embed provider for indexer");
                     Some(p)
@@ -1360,7 +1358,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.skills.confusability_threshold,
     )
     .with_skill_reload(skill_paths.clone(), reload_rx)
-    .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
+    .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())
     .with_trust_config(config.skills.trust.clone())
     .with_memory(
         std::sync::Arc::clone(&memory),
@@ -1554,7 +1552,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         cache_pool,
         config.llm.response_cache_ttl_secs,
         config.llm.semantic_cache_enabled,
-        zeph_core::bootstrap::effective_embedding_model(config),
+        crate::bootstrap::effective_embedding_model(config),
     );
     let agent =
         agent_setup::apply_cost_tracker(agent, config.cost.enabled, config.cost.max_daily_cents);
@@ -1873,7 +1871,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             .and_then(|e| e.stt_model.clone());
         let compaction_model = config.llm.summary_model.clone();
         let semantic_cache_enabled = config.llm.semantic_cache_enabled;
-        let embedding_model = zeph_core::bootstrap::effective_embedding_model(config).clone();
+        let embedding_model = crate::bootstrap::effective_embedding_model(config).clone();
         let self_learning_enabled = config.skills.learning.enabled;
         let token_budget = u64::try_from(budget_tokens).ok();
         let compaction_threshold = u32::try_from(budget_tokens).ok().map(|b| {
@@ -2228,7 +2226,7 @@ pub(crate) async fn resolve_rl_embed_dim(
 /// # Errors
 ///
 /// Returns an error if the database cannot be opened or the query fails.
-async fn run_experiment_report(app: &zeph_core::bootstrap::AppBuilder) -> anyhow::Result<()> {
+async fn run_experiment_report(app: &crate::bootstrap::AppBuilder) -> anyhow::Result<()> {
     use zeph_memory::store::SqliteStore;
 
     let store = SqliteStore::new(crate::db_url::resolve_db_url(app.config())).await?;
@@ -2266,7 +2264,7 @@ async fn run_experiment_report(app: &zeph_core::bootstrap::AppBuilder) -> anyhow
 ///
 /// Returns an error if config is invalid, benchmark fails to load, or engine fails.
 async fn run_experiment_session(
-    app: zeph_core::bootstrap::AppBuilder,
+    app: crate::bootstrap::AppBuilder,
     provider: zeph_llm::any::AnyProvider,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;

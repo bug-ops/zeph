@@ -1,9 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-pub use crate::provider_factory::{
-    BootstrapError, build_provider_for_switch, build_provider_from_entry,
-};
+pub use zeph_core::provider_factory::{BootstrapError, build_provider_from_entry};
 
 use zeph_llm::any::AnyProvider;
 use zeph_llm::ollama::OllamaProvider;
@@ -11,7 +9,7 @@ use zeph_llm::router::cascade::ClassifierMode;
 use zeph_llm::router::triage::{ComplexityTier, TriageRouter};
 use zeph_llm::router::{AsiRouterConfig, BanditRouterConfig, CascadeRouterConfig, RouterProvider};
 
-use crate::config::{Config, LlmRoutingStrategy, ProviderEntry};
+use zeph_core::config::{Config, LlmRoutingStrategy, ProviderEntry};
 
 /// Build the primary `AnyProvider` from the resolved config.
 ///
@@ -27,12 +25,12 @@ pub fn create_provider(config: &Config) -> Result<AnyProvider, BootstrapError> {
 }
 
 fn build_cascade_router_config(
-    cascade_cfg: &crate::config::CascadeConfig,
+    cascade_cfg: &zeph_core::config::CascadeConfig,
     config: &Config,
 ) -> CascadeRouterConfig {
     let classifier_mode = match cascade_cfg.classifier_mode {
-        crate::config::CascadeClassifierMode::Heuristic => ClassifierMode::Heuristic,
-        crate::config::CascadeClassifierMode::Judge => ClassifierMode::Judge,
+        zeph_core::config::CascadeClassifierMode::Heuristic => ClassifierMode::Heuristic,
+        zeph_core::config::CascadeClassifierMode::Judge => ClassifierMode::Judge,
     };
     // SEC-CASCADE-01: clamp quality_threshold to [0.0, 1.0]; reject NaN/Inf.
     let raw_threshold = cascade_cfg.quality_threshold;
@@ -191,53 +189,6 @@ pub fn create_summary_provider(
         "summary_model '{model_spec}' not found in [[llm.providers]]. \
          Use a provider name or 'type/model' shorthand (e.g. 'ollama/qwen3:1.7b')."
     )))
-}
-
-/// Select the hardware device for Candle inference based on a preference string.
-///
-/// Preference values: `"metal"` (Apple GPU), `"cuda"` (NVIDIA GPU), `"auto"` (best available),
-/// or any other string falls back to CPU.
-///
-/// # Errors
-///
-/// Returns `BootstrapError::Provider` when the requested device is not available (e.g.
-/// `"metal"` requested but compiled without the `metal` feature).
-#[cfg(feature = "candle")]
-pub fn select_device(
-    preference: &str,
-) -> Result<zeph_llm::candle_provider::Device, BootstrapError> {
-    match preference {
-        "metal" => {
-            #[cfg(feature = "metal")]
-            return zeph_llm::candle_provider::Device::new_metal(0)
-                .map_err(|e| BootstrapError::Provider(e.to_string()));
-            #[cfg(not(feature = "metal"))]
-            return Err(BootstrapError::Provider(
-                "candle compiled without metal feature".into(),
-            ));
-        }
-        "cuda" => {
-            #[cfg(feature = "cuda")]
-            return zeph_llm::candle_provider::Device::new_cuda(0)
-                .map_err(|e| BootstrapError::Provider(e.to_string()));
-            #[cfg(not(feature = "cuda"))]
-            return Err(BootstrapError::Provider(
-                "candle compiled without cuda feature".into(),
-            ));
-        }
-        "auto" => {
-            #[cfg(feature = "metal")]
-            if let Ok(device) = zeph_llm::candle_provider::Device::new_metal(0) {
-                return Ok(device);
-            }
-            #[cfg(feature = "cuda")]
-            if let Ok(device) = zeph_llm::candle_provider::Device::new_cuda(0) {
-                return Ok(device);
-            }
-            Ok(zeph_llm::candle_provider::Device::Cpu)
-        }
-        _ => Ok(zeph_llm::candle_provider::Device::Cpu),
-    }
 }
 
 /// Build the primary `AnyProvider` from the new `[[llm.providers]]` pool.
@@ -418,8 +369,8 @@ fn build_all_pool_providers(
 /// If `bypass_single_provider = true` and all configured tiers resolve to the same provider,
 /// returns a single provider instead of wrapping in a `TriageRouter`.
 fn build_triage_provider(
-    pool: &[crate::config::ProviderEntry],
-    config: &crate::config::Config,
+    pool: &[zeph_core::config::ProviderEntry],
+    config: &zeph_core::config::Config,
 ) -> Result<AnyProvider, BootstrapError> {
     let cr = config.llm.complexity_routing.as_ref().ok_or_else(|| {
         BootstrapError::Provider(
@@ -430,7 +381,7 @@ fn build_triage_provider(
     // Resolve triage classification provider.
     let default_triage_name = pool
         .first()
-        .map(crate::config::ProviderEntry::effective_name)
+        .map(zeph_core::config::ProviderEntry::effective_name)
         .unwrap_or_default();
     let triage_prov_name = cr
         .triage_provider
@@ -543,7 +494,7 @@ fn build_single_provider_from_pool(
 mod tests {
     use std::path::Path;
 
-    use crate::config::{Config, ProviderEntry, ProviderKind};
+    use zeph_core::config::{Config, ProviderEntry, ProviderKind};
 
     use super::build_all_pool_providers;
 

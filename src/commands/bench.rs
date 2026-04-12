@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::bootstrap::resolve_config_path;
 use zeph_bench::{BenchCommand, DatasetRegistry};
-use zeph_core::bootstrap::resolve_config_path;
 use zeph_core::config::Config;
 
 pub(crate) fn handle_bench_command(

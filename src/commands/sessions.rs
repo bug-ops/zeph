@@ -9,7 +9,7 @@ pub(crate) async fn handle_sessions_command(
     cmd: SessionsCommand,
     config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    use zeph_core::bootstrap::resolve_config_path;
+    use crate::bootstrap::resolve_config_path;
     use zeph_core::text::truncate_to_chars;
     use zeph_memory::store::SqliteStore;
 

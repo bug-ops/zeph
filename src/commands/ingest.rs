@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use zeph_core::bootstrap::AppBuilder;
+use crate::bootstrap::AppBuilder;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::{IngestionPipeline, QdrantOps, SplitterConfig, TextLoader, TextSplitter};
 

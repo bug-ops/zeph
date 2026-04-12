@@ -12,19 +12,17 @@ pub mod skills;
 
 pub use config::{parse_vault_args, resolve_config_path};
 pub use health::{health_check, warmup_provider};
-pub use mcp::{
-    create_mcp_manager, create_mcp_manager_with_vault, create_mcp_registry, wire_trust_calibration,
-};
+pub use mcp::{create_mcp_manager_with_vault, create_mcp_registry, wire_trust_calibration};
 pub use oauth::VaultCredentialStore;
-#[cfg(feature = "candle")]
-pub use provider::select_device;
 pub use provider::{
-    BootstrapError, build_provider_for_switch, build_provider_from_entry, create_named_provider,
-    create_provider, create_summary_provider,
+    BootstrapError, build_provider_from_entry, create_named_provider, create_provider,
+    create_summary_provider,
 };
 pub use skills::{
     create_embedding_provider, create_skill_matcher, effective_embedding_model, managed_skills_dir,
 };
+#[cfg(feature = "candle")]
+pub use zeph_core::provider_factory::select_device;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,14 +38,15 @@ use zeph_skills::matcher::SkillMatcherBackend;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::{SkillEvent, SkillWatcher};
 
-use crate::config::{Config, SecretResolver};
-use crate::config_watcher::{ConfigEvent, ConfigWatcher};
-use crate::vault::AgeVaultProvider;
-use crate::vault::{EnvVaultProvider, VaultProvider};
+use zeph_core::config::{Config, SecretResolver};
+use zeph_core::config_watcher::{ConfigEvent, ConfigWatcher};
+use zeph_core::vault::AgeVaultProvider;
+use zeph_core::vault::{EnvVaultProvider, VaultProvider};
 
 pub struct AppBuilder {
     config: Config,
     config_path: PathBuf,
+    #[allow(dead_code)]
     vault: Box<dyn VaultProvider>,
     /// Present when the vault backend is `age`. Used to pass to `create_mcp_manager_with_vault`
     /// for OAuth credential persistence across sessions.
@@ -63,9 +62,9 @@ pub struct VaultArgs {
 
 pub struct WatcherBundle {
     pub skill_watcher: Option<SkillWatcher>,
-    pub skill_reload_rx: crate::instrumented_channel::InstrumentedReceiver<SkillEvent>,
+    pub skill_reload_rx: zeph_core::instrumented_channel::InstrumentedReceiver<SkillEvent>,
     pub config_watcher: Option<ConfigWatcher>,
-    pub config_reload_rx: crate::instrumented_channel::InstrumentedReceiver<ConfigEvent>,
+    pub config_reload_rx: zeph_core::instrumented_channel::InstrumentedReceiver<ConfigEvent>,
 }
 
 impl AppBuilder {
@@ -110,7 +109,7 @@ impl AppBuilder {
                     .map_err(BootstrapError::VaultInit)?;
                 let arc = Arc::new(RwLock::new(provider));
                 let boxed: Box<dyn VaultProvider> =
-                    Box::new(crate::vault::ArcAgeVaultProvider(Arc::clone(&arc)));
+                    Box::new(zeph_core::vault::ArcAgeVaultProvider(Arc::clone(&arc)));
                 (boxed, Some(arc))
             }
             other => {
@@ -123,7 +122,7 @@ impl AppBuilder {
         config.resolve_secrets(vault.as_ref()).await?;
 
         let qdrant_ops = match config.memory.vector_backend {
-            crate::config::VectorBackend::Qdrant => {
+            zeph_core::config::VectorBackend::Qdrant => {
                 let ops = QdrantOps::new(&config.memory.qdrant_url).map_err(|e| {
                     BootstrapError::Provider(format!(
                         "invalid qdrant_url '{}': {e}",
@@ -132,7 +131,7 @@ impl AppBuilder {
                 })?;
                 Some(ops)
             }
-            crate::config::VectorBackend::Sqlite => None,
+            zeph_core::config::VectorBackend::Sqlite => None,
         };
 
         Ok(Self {
@@ -164,6 +163,7 @@ impl AppBuilder {
     ///
     /// Retained as part of the public `Bootstrap` API for external callers
     /// that may inspect or override vault behavior at runtime.
+    #[allow(dead_code)]
     pub fn vault(&self) -> &dyn VaultProvider {
         self.vault.as_ref()
     }
@@ -263,7 +263,7 @@ impl AppBuilder {
         }
 
         let mut memory = match self.config.memory.vector_backend {
-            crate::config::VectorBackend::Sqlite => {
+            zeph_core::config::VectorBackend::Sqlite => {
                 SemanticMemory::with_sqlite_backend_and_pool_size(
                     db_path,
                     provider.clone(),
@@ -275,7 +275,7 @@ impl AppBuilder {
                 .await
                 .map_err(|e| BootstrapError::Memory(e.to_string()))?
             }
-            crate::config::VectorBackend::Qdrant => {
+            zeph_core::config::VectorBackend::Qdrant => {
                 let ops = self
                     .qdrant_ops
                     .as_ref()
@@ -601,12 +601,13 @@ impl AppBuilder {
         paths
     }
 
+    #[allow(dead_code)]
     pub fn managed_skills_dir() -> PathBuf {
         managed_skills_dir()
     }
 
     pub fn build_watchers(&self) -> WatcherBundle {
-        use crate::instrumented_channel::instrumented_channel;
+        use zeph_core::instrumented_channel::instrumented_channel;
 
         let skill_paths = self.skill_paths();
         let (skill_tx, skill_reload_rx) = instrumented_channel(4, "skill_reload_rx");
@@ -721,6 +722,7 @@ impl AppBuilder {
     ///
     /// Returns `None` when guardrail is disabled or provider resolution fails.
     /// Emits a `tracing::warn` on resolution failure (guardrail silently disabled).
+    #[allow(dead_code)]
     pub fn build_guardrail_filter(&self) -> Option<zeph_sanitizer::guardrail::GuardrailFilter> {
         let (provider, config) = self.build_guardrail_provider()?;
         match zeph_sanitizer::guardrail::GuardrailFilter::new(provider, &config) {
@@ -768,7 +770,7 @@ impl AppBuilder {
     /// Returns `None` when mode is `Regex` or `judge_model` is empty (primary provider used).
     /// Emits a `tracing::warn` when mode is `Judge` but no model is specified.
     pub fn build_judge_provider(&self) -> Option<AnyProvider> {
-        use crate::config::DetectorMode;
+        use zeph_core::config::DetectorMode;
         let learning = &self.config.skills.learning;
         if learning.detector_mode != DetectorMode::Judge {
             return None;
@@ -800,7 +802,7 @@ impl AppBuilder {
         &self,
         primary: &AnyProvider,
     ) -> Option<zeph_llm::classifier::llm::LlmClassifier> {
-        use crate::config::DetectorMode;
+        use zeph_core::config::DetectorMode;
         let learning = &self.config.skills.learning;
         if learning.detector_mode != DetectorMode::Model {
             return None;
@@ -1069,11 +1071,11 @@ impl AppBuilder {
     }
 
     #[cfg(test)]
-    pub fn for_test(config: crate::config::Config) -> Self {
+    pub fn for_test(config: zeph_core::config::Config) -> Self {
         Self {
             config,
             config_path: std::path::PathBuf::new(),
-            vault: Box::new(crate::vault::EnvVaultProvider),
+            vault: Box::new(zeph_core::vault::EnvVaultProvider),
             age_vault: None,
             qdrant_ops: None,
         }

@@ -12,7 +12,7 @@ pub(crate) async fn run_tui_remote(
     use futures::StreamExt;
     use std::time::Duration;
 
-    let config_file = zeph_core::bootstrap::resolve_config_path(config_path);
+    let config_file = crate::bootstrap::resolve_config_path(config_path);
     let config = zeph_core::config::Config::load(&config_file)
         .unwrap_or_else(|_| zeph_core::config::Config::default());
     config.validate()?;

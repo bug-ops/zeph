@@ -394,12 +394,12 @@ pub(crate) async fn build_tool_setup(
     );
 
     let mut mcp_manager_builder =
-        zeph_core::bootstrap::create_mcp_manager_with_vault(config, suppress_stderr, age_vault);
+        crate::bootstrap::create_mcp_manager_with_vault(config, suppress_stderr, age_vault);
     if let Some(tx) = status_tx {
         mcp_manager_builder = mcp_manager_builder.with_status_tx(tx);
     }
     mcp_manager_builder =
-        zeph_core::bootstrap::wire_trust_calibration(mcp_manager_builder, config, pool).await;
+        crate::bootstrap::wire_trust_calibration(mcp_manager_builder, config, pool).await;
     if config.security.content_isolation.embedding_guard.enabled {
         let guard_config = &config.security.content_isolation.embedding_guard;
         let embed_fn = Arc::new(provider.embed_fn());
@@ -1041,7 +1041,7 @@ pub(crate) fn apply_mcp_pruning<C: Channel>(
     let pruning_provider = if pruning.pruning_provider.is_empty() {
         None
     } else {
-        match zeph_core::bootstrap::create_named_provider(&pruning.pruning_provider, config) {
+        match crate::bootstrap::create_named_provider(&pruning.pruning_provider, config) {
             Ok(p) => {
                 tracing::info!(
                     provider = %pruning.pruning_provider,
@@ -1097,7 +1097,7 @@ pub(crate) fn apply_mcp_discovery<C: Channel>(
     let discovery_provider = if discovery.embedding_provider.is_empty() {
         None
     } else {
-        match zeph_core::bootstrap::create_named_provider(&discovery.embedding_provider, config) {
+        match crate::bootstrap::create_named_provider(&discovery.embedding_provider, config) {
             Ok(p) => {
                 tracing::info!(
                     provider = %discovery.embedding_provider,

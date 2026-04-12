@@ -8,11 +8,11 @@ use std::path::PathBuf;
 use parking_lot::RwLock;
 
 use crate::agent_setup;
+use crate::bootstrap::{AppBuilder, create_mcp_registry};
 #[cfg(feature = "gateway")]
 use crate::gateway_spawn::spawn_gateway_server;
 use tokio::sync::watch;
 use zeph_core::agent::Agent;
-use zeph_core::bootstrap::{AppBuilder, create_mcp_registry};
 use zeph_core::config::Config;
 
 fn spawn_a2a_server(
@@ -229,8 +229,7 @@ pub(crate) async fn run_daemon(
 
     let (provider, status_tx, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
-    let embedding_provider =
-        zeph_core::bootstrap::create_embedding_provider(app.config(), &provider);
+    let embedding_provider = crate::bootstrap::create_embedding_provider(app.config(), &provider);
     let budget_tokens = app.auto_budget_tokens(&provider);
 
     let registry = std::sync::Arc::new(RwLock::new(app.build_registry()));
@@ -295,9 +294,9 @@ pub(crate) async fn run_daemon(
             .collect(),
     );
     let mcp_manager_builder =
-        zeph_core::bootstrap::create_mcp_manager_with_vault(config, false, app.age_vault_arc())
+        crate::bootstrap::create_mcp_manager_with_vault(config, false, app.age_vault_arc())
             .with_status_tx(status_tx);
-    let mcp_manager_builder = zeph_core::bootstrap::wire_trust_calibration(
+    let mcp_manager_builder = crate::bootstrap::wire_trust_calibration(
         mcp_manager_builder,
         config,
         Some(memory.sqlite().pool()),
@@ -398,7 +397,7 @@ pub(crate) async fn run_daemon(
             config.skills.confusability_threshold,
         )
         .with_skill_reload(skill_paths, reload_rx)
-        .with_managed_skills_dir(zeph_core::bootstrap::managed_skills_dir())
+        .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())
         .with_memory(
             std::sync::Arc::clone(&memory),
             conversation_id,

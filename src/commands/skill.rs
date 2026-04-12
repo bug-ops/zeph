@@ -8,8 +8,8 @@ pub(crate) async fn handle_skill_command(
     cmd: SkillCommand,
     config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
+    use crate::bootstrap::{managed_skills_dir, resolve_config_path};
     use std::collections::HashMap;
-    use zeph_core::bootstrap::{managed_skills_dir, resolve_config_path};
     use zeph_skills::manager::SkillManager;
 
     let config_file = resolve_config_path(config_path);
@@ -205,7 +205,7 @@ pub(crate) async fn handle_skill_command(
 
             // REV-003: re-verify hash before promoting to trusted/verified.
             if matches!(level.as_str(), "trusted" | "verified") {
-                let managed_dir = zeph_core::bootstrap::managed_skills_dir();
+                let managed_dir = crate::bootstrap::managed_skills_dir();
                 let mgr = zeph_skills::manager::SkillManager::new(managed_dir.clone());
                 let name_clone = name.clone();
                 let current_hash = tokio::task::spawn_blocking(move || mgr.verify(&name_clone))

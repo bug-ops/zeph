@@ -8,8 +8,8 @@ use std::sync::Arc;
 use rmcp::transport::auth::{AuthError, CredentialStore, StoredCredentials};
 use tokio::sync::RwLock;
 
-use crate::vault::AgeVaultProvider;
-use crate::vault::VaultProvider as _;
+use zeph_core::vault::AgeVaultProvider;
+use zeph_core::vault::VaultProvider as _;
 
 /// `CredentialStore` backed by Zeph's age vault.
 ///
@@ -37,6 +37,7 @@ impl VaultCredentialStore {
 
     /// Return the vault key this store uses.
     #[must_use]
+    #[allow(dead_code)]
     pub fn vault_key(&self) -> &str {
         &self.vault_key
     }

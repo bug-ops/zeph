@@ -10,9 +10,10 @@ use zeph_llm::any::AnyProvider;
 use zeph_memory::QdrantOps;
 
 use crate::bootstrap::VaultCredentialStore;
-use crate::config::{Config, OAuthTokenStorage};
-use crate::vault::AgeVaultProvider;
+use zeph_core::config::{Config, OAuthTokenStorage};
+use zeph_core::vault::AgeVaultProvider;
 
+#[allow(dead_code)]
 pub fn create_mcp_manager(config: &Config, suppress_stderr: bool) -> zeph_mcp::McpManager {
     create_mcp_manager_with_vault(config, suppress_stderr, None)
 }
@@ -111,7 +112,7 @@ pub fn create_mcp_manager_with_vault(
 }
 
 fn build_transport(
-    s: &crate::config::McpServerConfig,
+    s: &zeph_core::config::McpServerConfig,
     vault: Option<&Arc<RwLock<AgeVaultProvider>>>,
 ) -> zeph_mcp::McpTransport {
     if let Some(ref oauth) = s.oauth

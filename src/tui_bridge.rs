@@ -5,9 +5,9 @@
 use std::time::Duration;
 
 #[cfg(feature = "tui")]
-use crate::channel::TuiHandle;
+use crate::bootstrap::warmup_provider;
 #[cfg(feature = "tui")]
-use zeph_core::bootstrap::warmup_provider;
+use crate::channel::TuiHandle;
 #[cfg(feature = "tui")]
 use zeph_core::channel::Channel;
 #[cfg(feature = "tui")]

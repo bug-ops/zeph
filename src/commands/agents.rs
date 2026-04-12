@@ -5,8 +5,8 @@ use std::io::{self, Write as _};
 use std::path::Path;
 use std::process::Command;
 
+use crate::bootstrap::resolve_config_path;
 use anyhow::{Context as _, bail};
-use zeph_core::bootstrap::resolve_config_path;
 use zeph_subagent::error::SubAgentError;
 use zeph_subagent::{SubAgentDef, ToolPolicy, is_valid_agent_name, resolve_agent_paths};
 
