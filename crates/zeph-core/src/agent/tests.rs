@@ -1575,9 +1575,35 @@ pub mod agent_tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let result = agent.handle_image_as_string("/nonexistent/image.png");
+        let result = agent.handle_image_as_string("nonexistent/image.png");
         assert!(agent.msg.pending_image_parts.is_empty());
         assert!(result.contains("Cannot read image"));
+    }
+
+    #[test]
+    fn handle_image_command_absolute_path_is_rejected() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.handle_image_as_string("/etc/passwd");
+        assert!(agent.msg.pending_image_parts.is_empty());
+        assert!(result.contains("path traversal not allowed"));
+    }
+
+    #[test]
+    fn handle_image_command_parent_dir_traversal_is_rejected() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let result = agent.handle_image_as_string("../../etc/passwd");
+        assert!(agent.msg.pending_image_parts.is_empty());
+        assert!(result.contains("path traversal not allowed"));
     }
 
     #[test]
