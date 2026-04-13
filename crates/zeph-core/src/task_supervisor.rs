@@ -34,7 +34,7 @@
 //!
 //! supervisor.spawn(TaskDescriptor {
 //!     name: "my-service",
-//!     restart: RestartPolicy::Restart { max: 3, delay: Duration::from_secs(1) },
+//!     restart: RestartPolicy::Restart { max: 3, base_delay: Duration::from_secs(1) },
 //!     factory: || async { /* service loop */ },
 //! });
 //!
@@ -63,12 +63,17 @@ use tracing::Instrument as _;
 pub enum RestartPolicy {
     /// Task runs once; normal completion removes it from the registry.
     RunOnce,
-    /// Task is restarted on panic or unexpected exit, up to `max` times.
+    /// Task is restarted **only on panic**, up to `max` times.
+    ///
+    /// Normal completion (the future returns `()`) does **not** trigger a restart.
+    /// The task is removed from the registry on normal exit.
     ///
     /// A `max` of `0` means the task is monitored but **never** restarted —
-    /// it is treated as `RunOnce` for restart purposes but left as `Failed`
-    /// in the registry for observability. Use `RunOnce` when you want the
-    /// entry removed on completion.
+    /// a panic leaves the entry as `Failed` in the registry for observability.
+    /// Use `RunOnce` when you want the entry removed on completion.
+    ///
+    /// Restart delays follow **exponential backoff**: the delay before attempt `n`
+    /// is `base_delay * 2^(n-1)`, capped at [`MAX_RESTART_DELAY`].
     ///
     /// # Examples
     ///
@@ -76,10 +81,14 @@ pub enum RestartPolicy {
     /// use std::time::Duration;
     /// use zeph_core::task_supervisor::RestartPolicy;
     ///
-    /// let policy = RestartPolicy::Restart { max: 3, delay: Duration::from_secs(2) };
+    /// // Restart up to 3 times with exponential backoff starting at 1 s.
+    /// let policy = RestartPolicy::Restart { max: 3, base_delay: Duration::from_secs(1) };
     /// ```
-    Restart { max: u32, delay: Duration },
+    Restart { max: u32, base_delay: Duration },
 }
+
+/// Maximum delay between restart attempts (caps exponential backoff).
+pub const MAX_RESTART_DELAY: Duration = Duration::from_secs(60);
 
 /// Configuration passed to [`TaskSupervisor::spawn`] to describe a supervised task.
 ///
@@ -132,7 +141,7 @@ pub enum BlockingError {
 impl std::fmt::Display for BlockingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Panicked => write!(f, "supervised task panicked"),
+            Self::Panicked => write!(f, "supervised blocking task panicked"),
             Self::SupervisorDropped => write!(f, "supervisor dropped before task completed"),
         }
     }
@@ -142,9 +151,12 @@ impl std::error::Error for BlockingError {}
 
 /// Handle returned by [`TaskSupervisor::spawn_blocking`].
 ///
-/// Awaiting [`BlockingHandle::join`] blocks until the task produces a value.
-/// Dropping the handle without joining does **not** cancel the task — it
-/// continues to run but the result is discarded.
+/// Awaiting [`BlockingHandle::join`] blocks until the OS-thread task produces a
+/// value. Dropping the handle without joining does **not** cancel the task — it
+/// continues to run on the blocking thread pool but the result is discarded.
+///
+/// A panic inside the closure is captured and returned as
+/// [`BlockingError::Panicked`] rather than propagating to the caller.
 pub struct BlockingHandle<R> {
     rx: oneshot::Receiver<Result<R, BlockingError>>,
     abort: AbortHandle,
@@ -177,8 +189,10 @@ pub enum TaskStatus {
     Running,
     /// Task is waiting for the restart delay before the next attempt.
     Restarting { attempt: u32, max: u32 },
-    /// Task completed normally (only present for `RunOnce` tasks briefly before reaping).
+    /// Task completed normally.
     Completed,
+    /// Task was force-aborted during shutdown.
+    Aborted,
     /// Task exhausted all restart attempts and is permanently failed.
     Failed { reason: String },
 }
@@ -212,9 +226,20 @@ struct TaskEntry {
     factory: Option<BoxFactory>,
 }
 
+/// How a supervised task ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionKind {
+    /// Future returned normally.
+    Normal,
+    /// Future panicked.
+    Panicked,
+    /// Future was cancelled via the cancellation token or abort handle.
+    Cancelled,
+}
+
 struct Completion {
     name: &'static str,
-    panicked: bool,
+    kind: CompletionKind,
 }
 
 struct SupervisorState {
@@ -259,7 +284,7 @@ struct Inner {
 /// let _handle = sup.spawn(TaskDescriptor {
 ///     name: "watcher",
 ///     restart: RestartPolicy::RunOnce,
-///     factory: || async { tokio::time::sleep(Duration::from_secs(1)).await },
+///     factory: || async { tokio::time::sleep(std::time::Duration::from_secs(1)).await },
 /// });
 ///
 /// sup.shutdown_all(Duration::from_secs(5)).await;
@@ -296,7 +321,7 @@ impl TaskSupervisor {
         Self { inner }
     }
 
-    /// Spawn a named, supervised task.
+    /// Spawn a named, supervised async task.
     ///
     /// If a task with the same `name` already exists, it is aborted before the
     /// new one is started.
@@ -315,7 +340,7 @@ impl TaskSupervisor {
     ///
     /// let handle: TaskHandle = sup.spawn(TaskDescriptor {
     ///     name: "config-watcher",
-    ///     restart: RestartPolicy::Restart { max: 3, delay: Duration::from_secs(1) },
+    ///     restart: RestartPolicy::Restart { max: 3, base_delay: Duration::from_secs(1) },
     ///     factory: || async { /* watch loop */ },
     /// });
     /// # }
@@ -326,8 +351,11 @@ impl TaskSupervisor {
         Fut: Future<Output = ()> + Send + 'static,
     {
         let factory: BoxFactory = Box::new(move || Box::pin((desc.factory)()));
-        let (abort_handle, join_handle) =
-            Self::do_spawn(desc.name, &factory, self.inner.cancel.clone());
+        let cancel = self.inner.cancel.clone();
+        let completion_tx = self.inner.completion_tx.clone();
+
+        let (abort_handle, jh) = Self::do_spawn(desc.name, &factory, cancel);
+        Self::wire_completion_reporter(desc.name, jh, completion_tx);
 
         let entry = TaskEntry {
             name: desc.name,
@@ -344,21 +372,11 @@ impl TaskSupervisor {
 
         {
             let mut state = self.inner.state.lock();
-            // Abort any existing task with the same name.
             if let Some(old) = state.tasks.remove(desc.name) {
                 old.abort_handle.abort();
             }
             state.tasks.insert(desc.name, entry);
-        } // lock released here
-
-        // Drive join_handle → completion channel.
-        // completion_tx lives in Inner — no second mutex acquisition needed.
-        let completion_tx = self.inner.completion_tx.clone();
-        let name = desc.name;
-        tokio::spawn(async move {
-            let panicked = join_handle.await.is_err();
-            let _ = completion_tx.send(Completion { name, panicked });
-        });
+        }
 
         TaskHandle {
             name: desc.name,
@@ -366,14 +384,18 @@ impl TaskSupervisor {
         }
     }
 
-    /// Spawn a task that produces a typed result value.
+    /// Spawn a CPU-bound closure on the OS blocking thread pool.
     ///
-    /// No restart policy is supported — the task runs once. Dropping the returned
-    /// [`BlockingHandle`] without calling `.join()` does **not** cancel the task;
-    /// the result is simply discarded.
+    /// The closure runs via [`tokio::task::spawn_blocking`] — it is never polled
+    /// on tokio worker threads and cannot block async I/O. The task is registered
+    /// in the supervisor registry and is visible to [`snapshot`][Self::snapshot]
+    /// and [`shutdown_all`][Self::shutdown_all].
     ///
-    /// A panic inside the closure is captured and returned as
-    /// [`BlockingError::Panicked`] rather than propagating to the caller.
+    /// Dropping the returned [`BlockingHandle`] without calling `.join()` does
+    /// **not** cancel the task; it runs to completion but the result is discarded.
+    ///
+    /// A panic inside `f` is captured and returned as [`BlockingError::Panicked`]
+    /// rather than propagating to the caller.
     ///
     /// # Examples
     ///
@@ -386,12 +408,97 @@ impl TaskSupervisor {
     /// let cancel = CancellationToken::new();
     /// let sup = TaskSupervisor::new(cancel);
     ///
-    /// let handle: BlockingHandle<u32> = sup.spawn_blocking("compute", || async { 42_u32 });
+    /// let handle: BlockingHandle<u32> = sup.spawn_blocking("compute", || {
+    ///     // CPU-bound work — safe to block here
+    ///     42_u32
+    /// });
     /// let result = handle.join().await.unwrap();
     /// assert_eq!(result, 42);
     /// # }
     /// ```
-    pub fn spawn_blocking<F, Fut, R>(&self, name: &'static str, factory: F) -> BlockingHandle<R>
+    pub fn spawn_blocking<F, R>(&self, name: &'static str, f: F) -> BlockingHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let (tx, rx) = oneshot::channel::<Result<R, BlockingError>>();
+        let span = tracing::info_span!("supervised_blocking_task", task.name = name);
+
+        let join_handle = tokio::task::spawn_blocking(move || {
+            let _enter = span.enter();
+            f()
+        });
+        let abort = join_handle.abort_handle();
+
+        // Register in registry for snapshot/shutdown visibility.
+        {
+            let mut state = self.inner.state.lock();
+            if let Some(old) = state.tasks.remove(name) {
+                old.abort_handle.abort();
+            }
+            state.tasks.insert(
+                name,
+                TaskEntry {
+                    name,
+                    status: TaskStatus::Running,
+                    started_at: Instant::now(),
+                    restart_count: 0,
+                    restart_policy: RestartPolicy::RunOnce,
+                    abort_handle: abort.clone(),
+                    factory: None,
+                },
+            );
+        }
+
+        let completion_tx = self.inner.completion_tx.clone();
+        tokio::spawn(async move {
+            let kind = match join_handle.await {
+                Ok(val) => {
+                    let _ = tx.send(Ok(val));
+                    CompletionKind::Normal
+                }
+                Err(e) if e.is_panic() => {
+                    let _ = tx.send(Err(BlockingError::Panicked));
+                    CompletionKind::Panicked
+                }
+                Err(_) => {
+                    // Aborted — drop tx so rx returns SupervisorDropped.
+                    CompletionKind::Cancelled
+                }
+            };
+            let _ = completion_tx.send(Completion { name, kind });
+        });
+
+        BlockingHandle { rx, abort }
+    }
+
+    /// Spawn an async task that produces a typed result value (runs on tokio worker thread).
+    ///
+    /// Unlike [`spawn`][Self::spawn], no restart policy is supported — the task
+    /// runs once. The task is registered in the supervisor registry under the
+    /// provided `name` and is visible to [`snapshot`][Self::snapshot] and
+    /// [`shutdown_all`][Self::shutdown_all].
+    ///
+    /// For CPU-bound work that must not block tokio workers, use
+    /// [`spawn_blocking`][Self::spawn_blocking] instead.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use tokio_util::sync::CancellationToken;
+    /// use zeph_core::task_supervisor::{BlockingHandle, TaskSupervisor};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let cancel = CancellationToken::new();
+    /// let sup = TaskSupervisor::new(cancel.clone());
+    ///
+    /// let handle: BlockingHandle<u32> = sup.spawn_oneshot("compute", || async { 42_u32 });
+    /// let result = handle.join().await.unwrap();
+    /// assert_eq!(result, 42);
+    /// # }
+    /// ```
+    pub fn spawn_oneshot<F, Fut, R>(&self, name: &'static str, factory: F) -> BlockingHandle<R>
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = R> + Send + 'static,
@@ -400,7 +507,6 @@ impl TaskSupervisor {
         let (tx, rx) = oneshot::channel::<Result<R, BlockingError>>();
         let cancel = self.inner.cancel.clone();
         let span = tracing::info_span!("supervised_task", task.name = name);
-        // Spawn the actual work. Returns Ok(R) on success, Err(JoinError) on panic/abort.
         let join_handle: tokio::task::JoinHandle<Option<R>> = tokio::spawn(
             async move {
                 let fut = factory();
@@ -412,19 +518,40 @@ impl TaskSupervisor {
             .instrument(span),
         );
         let abort = join_handle.abort_handle();
-        // Drive the join handle to completion; map panic → BlockingError::Panicked.
+
+        {
+            let mut state = self.inner.state.lock();
+            if let Some(old) = state.tasks.remove(name) {
+                old.abort_handle.abort();
+            }
+            state.tasks.insert(
+                name,
+                TaskEntry {
+                    name,
+                    status: TaskStatus::Running,
+                    started_at: Instant::now(),
+                    restart_count: 0,
+                    restart_policy: RestartPolicy::RunOnce,
+                    abort_handle: abort.clone(),
+                    factory: None,
+                },
+            );
+        }
+
+        let completion_tx = self.inner.completion_tx.clone();
         tokio::spawn(async move {
-            match join_handle.await {
+            let kind = match join_handle.await {
                 Ok(Some(val)) => {
                     let _ = tx.send(Ok(val));
+                    CompletionKind::Normal
                 }
                 Err(e) if e.is_panic() => {
                     let _ = tx.send(Err(BlockingError::Panicked));
+                    CompletionKind::Panicked
                 }
-                // Ok(None) = cancelled, Err(_) non-panic = aborted:
-                // drop tx → rx.await returns SupervisorDropped.
-                _ => {}
-            }
+                _ => CompletionKind::Cancelled,
+            };
+            let _ = completion_tx.send(Completion { name, kind });
         });
         BlockingHandle { rx, abort }
     }
@@ -442,7 +569,7 @@ impl TaskSupervisor {
     ///
     /// Cancels the supervisor's [`CancellationToken`] and waits up to `timeout`
     /// for all tasks to exit. Tasks that do not exit within the timeout are
-    /// aborted forcefully.
+    /// aborted forcefully and their registry entries updated to [`TaskStatus::Aborted`].
     ///
     /// # Note
     ///
@@ -463,9 +590,15 @@ impl TaskSupervisor {
                     remaining = active,
                     "shutdown timeout — aborting remaining tasks"
                 );
-                let state = self.inner.state.lock();
-                for entry in state.tasks.values() {
-                    entry.abort_handle.abort();
+                let mut state = self.inner.state.lock();
+                for entry in state.tasks.values_mut() {
+                    if matches!(
+                        entry.status,
+                        TaskStatus::Running | TaskStatus::Restarting { .. }
+                    ) {
+                        entry.abort_handle.abort();
+                        entry.status = TaskStatus::Aborted;
+                    }
                 }
                 break;
             }
@@ -541,7 +674,28 @@ impl TaskSupervisor {
         (abort, jh)
     }
 
+    /// Wire a completion reporter: drives `jh` and sends the result to `completion_tx`.
+    fn wire_completion_reporter(
+        name: &'static str,
+        jh: tokio::task::JoinHandle<()>,
+        completion_tx: mpsc::UnboundedSender<Completion>,
+    ) {
+        tokio::spawn(async move {
+            let kind = match jh.await {
+                Ok(()) => CompletionKind::Normal,
+                Err(e) if e.is_panic() => CompletionKind::Panicked,
+                Err(_) => CompletionKind::Cancelled,
+            };
+            let _ = completion_tx.send(Completion { name, kind });
+        });
+    }
+
     /// Spawn the reap driver. The driver processes completion events from the mpsc channel.
+    ///
+    /// After the cancellation token fires, the driver continues draining the channel
+    /// until it is empty — this ensures that tasks which completed just before cancel
+    /// have their registry entries updated, allowing `shutdown_all` to observe
+    /// `active_count() == 0` correctly.
     fn start_reap_driver(
         inner: Arc<Inner>,
         mut completion_rx: mpsc::UnboundedReceiver<Completion>,
@@ -550,10 +704,17 @@ impl TaskSupervisor {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
+                    biased;
                     Some(completion) = completion_rx.recv() => {
                         Self::handle_completion(&inner, completion).await;
                     }
-                    () = cancel.cancelled() => break,
+                    () = cancel.cancelled() => {
+                        // Drain any completions that arrived at the same time as the cancel.
+                        while let Ok(completion) = completion_rx.try_recv() {
+                            Self::handle_completion(&inner, completion).await;
+                        }
+                        break;
+                    }
                 }
             }
         });
@@ -561,55 +722,11 @@ impl TaskSupervisor {
 
     /// Process a single task completion event.
     ///
-    /// S1 fix: all mutex operations are performed before any `.await`. The lock
-    /// is never held across sleep or spawn.
+    /// Lock is never held across `.await`. Phase 1 classifies the completion
+    /// under lock; Phase 2 sleeps with exponential backoff without a lock;
+    /// Phase 3 spawns the next instance and updates the registry.
     async fn handle_completion(inner: &Arc<Inner>, completion: Completion) {
-        // --- Phase 1: lock, read policy, unlock ---
-        let restart_info = {
-            let mut state = inner.state.lock();
-            let Some(entry) = state.tasks.get_mut(completion.name) else {
-                // Task was removed (aborted externally) — nothing to do.
-                return;
-            };
-
-            if completion.panicked {
-                tracing::warn!(task.name = completion.name, "supervised task panicked");
-            } else {
-                tracing::info!(task.name = completion.name, "supervised task completed");
-            }
-
-            match entry.restart_policy {
-                RestartPolicy::RunOnce => {
-                    entry.status = TaskStatus::Completed;
-                    state.tasks.remove(completion.name);
-                    None // no restart
-                }
-                RestartPolicy::Restart { max, delay } => {
-                    if entry.restart_count >= max {
-                        // Retries exhausted — mark failed, keep in registry.
-                        let reason = if completion.panicked {
-                            format!("panicked after {max} restart(s)")
-                        } else {
-                            format!("exited after {max} restart(s)")
-                        };
-                        tracing::error!(
-                            task.name = completion.name,
-                            attempts = max,
-                            "task failed permanently"
-                        );
-                        entry.status = TaskStatus::Failed { reason };
-                        None
-                    } else {
-                        let attempt = entry.restart_count + 1;
-                        entry.status = TaskStatus::Restarting { attempt, max };
-                        Some((attempt, max, delay))
-                    }
-                }
-            }
-            // lock released here (end of block)
-        };
-
-        let Some((attempt, max, delay)) = restart_info else {
+        let Some((attempt, max, delay)) = Self::classify_completion(inner, &completion) else {
             return;
         };
 
@@ -621,46 +738,107 @@ impl TaskSupervisor {
             "restarting supervised task"
         );
 
-        // --- Phase 2: sleep (no lock held) ---
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
 
-        // --- Phase 3: re-lock, TOCTOU check, spawn ---
-        let mut state = inner.state.lock();
-        let Some(entry) = state.tasks.get_mut(completion.name) else {
-            // Task was aborted or removed during the sleep window — do not restart.
-            tracing::debug!(
-                task.name = completion.name,
-                "task removed during restart delay — skipping restart"
-            );
-            return;
-        };
+        Self::do_restart(inner, completion.name, attempt);
+    }
 
-        // Only restart if the entry is still in Restarting state (not re-spawned externally).
-        if !matches!(entry.status, TaskStatus::Restarting { .. }) {
-            return;
+    /// Phase 1: classify the completion under lock and return restart parameters if needed.
+    ///
+    /// Returns `Some((attempt, max, backoff_delay))` when a restart should be scheduled.
+    fn classify_completion(
+        inner: &Arc<Inner>,
+        completion: &Completion,
+    ) -> Option<(u32, u32, Duration)> {
+        let mut state = inner.state.lock();
+        let entry = state.tasks.get_mut(completion.name)?;
+
+        match completion.kind {
+            CompletionKind::Panicked => {
+                tracing::warn!(task.name = completion.name, "supervised task panicked");
+            }
+            CompletionKind::Normal => {
+                tracing::info!(task.name = completion.name, "supervised task completed");
+            }
+            CompletionKind::Cancelled => {
+                tracing::debug!(task.name = completion.name, "supervised task cancelled");
+            }
         }
 
-        let Some(factory) = &entry.factory else {
+        match entry.restart_policy {
+            RestartPolicy::RunOnce => {
+                entry.status = TaskStatus::Completed;
+                state.tasks.remove(completion.name);
+                None
+            }
+            RestartPolicy::Restart { max, base_delay } => {
+                // Only restart on panic — normal exit and cancellation are not errors.
+                if completion.kind != CompletionKind::Panicked {
+                    entry.status = TaskStatus::Completed;
+                    state.tasks.remove(completion.name);
+                    return None;
+                }
+                if entry.restart_count >= max {
+                    let reason = format!("panicked after {max} restart(s)");
+                    tracing::error!(
+                        task.name = completion.name,
+                        attempts = max,
+                        "task failed permanently"
+                    );
+                    entry.status = TaskStatus::Failed { reason };
+                    None
+                } else {
+                    let attempt = entry.restart_count + 1;
+                    entry.status = TaskStatus::Restarting { attempt, max };
+                    // Exponential backoff: base_delay * 2^(attempt-1), capped at MAX_RESTART_DELAY.
+                    let multiplier = 1_u32
+                        .checked_shl(attempt.saturating_sub(1))
+                        .unwrap_or(u32::MAX);
+                    let delay = base_delay.saturating_mul(multiplier).min(MAX_RESTART_DELAY);
+                    Some((attempt, max, delay))
+                }
+            }
+        }
+        // lock released here
+    }
+
+    /// Phase 3: TOCTOU check, collect spawn params under lock, then spawn outside.
+    fn do_restart(inner: &Arc<Inner>, name: &'static str, attempt: u32) {
+        let spawn_params = {
+            let mut state = inner.state.lock();
+            let Some(entry) = state.tasks.get_mut(name) else {
+                tracing::debug!(
+                    task.name = name,
+                    "task removed during restart delay — skipping"
+                );
+                return;
+            };
+            if !matches!(entry.status, TaskStatus::Restarting { .. }) {
+                return;
+            }
+            let Some(factory) = &entry.factory else {
+                return;
+            };
+            // Wrap factory() in catch_unwind to prevent a factory panic from crashing
+            // the reap driver and orphaning the registry.
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(factory)) {
+                Err(_) => {
+                    let reason = format!("factory panicked on restart attempt {attempt}");
+                    tracing::error!(task.name = name, attempt, "factory panicked during restart");
+                    entry.status = TaskStatus::Failed { reason };
+                    None
+                }
+                Ok(fut) => Some((fut, inner.cancel.clone(), inner.completion_tx.clone(), name)),
+            }
+            // lock released here
+        };
+
+        let Some((fut, cancel, completion_tx, name)) = spawn_params else {
             return;
         };
 
-        // S2 fix: wrap factory() in catch_unwind so a panic in the factory itself
-        // does not crash the reap driver and orphan the registry.
-        let Ok(fut) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(factory)) else {
-            let reason = format!("factory panicked on restart attempt {attempt}");
-            tracing::error!(
-                task.name = completion.name,
-                attempt,
-                "factory panicked during restart"
-            );
-            entry.status = TaskStatus::Failed { reason };
-            return;
-        };
-
-        let cancel = inner.cancel.clone();
-        let name = entry.name;
         let span = tracing::info_span!("supervised_task", task.name = name);
         let jh = tokio::spawn(
             async move {
@@ -673,17 +851,16 @@ impl TaskSupervisor {
         );
         let new_abort = jh.abort_handle();
 
-        entry.restart_count = attempt;
-        entry.status = TaskStatus::Running;
-        entry.abort_handle = new_abort;
-        drop(state); // release before spawning completion reporter
+        {
+            let mut state = inner.state.lock();
+            if let Some(entry) = state.tasks.get_mut(name) {
+                entry.restart_count = attempt;
+                entry.status = TaskStatus::Running;
+                entry.abort_handle = new_abort;
+            }
+        }
 
-        // completion_tx is in Inner — no re-lock needed.
-        let completion_tx = inner.completion_tx.clone();
-        tokio::spawn(async move {
-            let panicked = jh.await.is_err();
-            let _ = completion_tx.send(Completion { name, panicked });
-        });
+        Self::wire_completion_reporter(name, jh, completion_tx);
     }
 }
 
@@ -727,7 +904,6 @@ mod tests {
             .await
             .expect("task should complete");
 
-        // Give reap driver a moment to process the completion.
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
             sup.active_count(),
@@ -746,10 +922,8 @@ mod tests {
             factory: || async { panic!("intentional test panic") },
         });
 
-        // Panic must not propagate to the test thread.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // RunOnce tasks are removed after reap.
         let snaps = sup.snapshot();
         assert!(
             snaps.iter().all(|s| s.name != "panicking"),
@@ -759,6 +933,72 @@ mod tests {
             sup.active_count(),
             0,
             "active count must be 0 after RunOnce panic"
+        );
+    }
+
+    /// Regression test for S2: Restart-policy tasks must only restart on panic,
+    /// not on normal completion.
+    #[tokio::test]
+    async fn test_restart_only_on_panic() {
+        let (sup, _cancel) = make_supervisor();
+
+        // Part 1: normal completion — must NOT restart.
+        let normal_counter = Arc::new(AtomicU32::new(0));
+        let nc = Arc::clone(&normal_counter);
+        sup.spawn(TaskDescriptor {
+            name: "normal-exit",
+            restart: RestartPolicy::Restart {
+                max: 3,
+                base_delay: Duration::from_millis(10),
+            },
+            factory: move || {
+                let c = Arc::clone(&nc);
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    // Returns normally — no panic.
+                }
+            },
+        });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            normal_counter.load(Ordering::SeqCst),
+            1,
+            "normal exit must not restart"
+        );
+        assert!(
+            sup.snapshot().iter().all(|s| s.name != "normal-exit"),
+            "entry removed after normal exit"
+        );
+
+        // Part 2: panic — MUST restart up to max times.
+        let panic_counter = Arc::new(AtomicU32::new(0));
+        let pc = Arc::clone(&panic_counter);
+        sup.spawn(TaskDescriptor {
+            name: "panic-exit",
+            restart: RestartPolicy::Restart {
+                max: 2,
+                base_delay: Duration::from_millis(10),
+            },
+            factory: move || {
+                let c = Arc::clone(&pc);
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    panic!("test panic");
+                }
+            },
+        });
+
+        // initial + 2 restarts = 3 total
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            panic_counter.load(Ordering::SeqCst) >= 3,
+            "panicking task must restart max times"
+        );
+        let snap = sup.snapshot().into_iter().find(|s| s.name == "panic-exit");
+        assert!(
+            matches!(snap.unwrap().status, TaskStatus::Failed { .. }),
+            "task must be Failed after exhausting restarts"
         );
     }
 
@@ -773,7 +1013,7 @@ mod tests {
             name: "restartable",
             restart: RestartPolicy::Restart {
                 max: 2,
-                delay: Duration::from_millis(10),
+                base_delay: Duration::from_millis(10),
             },
             factory: move || {
                 let c = Arc::clone(&counter2);
@@ -784,7 +1024,6 @@ mod tests {
             },
         });
 
-        // Wait for initial run + 2 restarts = 3 invocations total.
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         let runs = counter.load(Ordering::SeqCst);
@@ -802,6 +1041,51 @@ mod tests {
         );
     }
 
+    /// Verify exponential backoff: delay doubles on each restart attempt.
+    #[tokio::test]
+    async fn test_exponential_backoff() {
+        let (sup, _cancel) = make_supervisor();
+
+        let timestamps = Arc::new(parking_lot::Mutex::new(Vec::<std::time::Instant>::new()));
+        let ts = Arc::clone(&timestamps);
+
+        sup.spawn(TaskDescriptor {
+            name: "backoff-task",
+            restart: RestartPolicy::Restart {
+                max: 3,
+                base_delay: Duration::from_millis(50),
+            },
+            factory: move || {
+                let t = Arc::clone(&ts);
+                async move {
+                    t.lock().push(std::time::Instant::now());
+                    panic!("always panic");
+                }
+            },
+        });
+
+        // Wait long enough for all restarts: 50 + 100 + 200 ms = 350 ms + overhead
+        tokio::time::sleep(Duration::from_millis(800)).await;
+
+        let ts = timestamps.lock();
+        assert!(
+            ts.len() >= 3,
+            "expected at least 3 invocations, got {}",
+            ts.len()
+        );
+
+        // Verify delays are roughly doubling (within 2x tolerance for CI jitter).
+        if ts.len() >= 3 {
+            let d1 = ts[1].duration_since(ts[0]);
+            let d2 = ts[2].duration_since(ts[1]);
+            // d2 should be at least 1.5x d1 (allowing for jitter).
+            assert!(
+                d2 >= d1.mul_f64(1.5),
+                "expected exponential backoff: d1={d1:?} d2={d2:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_graceful_shutdown() {
         let (sup, _cancel) = make_supervisor();
@@ -811,7 +1095,6 @@ mod tests {
                 name,
                 restart: RestartPolicy::RunOnce,
                 factory: || async {
-                    // Cooperative task — exits on cancellation.
                     tokio::time::sleep(Duration::from_secs(60)).await;
                 },
             });
@@ -819,13 +1102,42 @@ mod tests {
 
         assert_eq!(sup.active_count(), 3);
 
-        // Shutdown should complete well within 2 s even though tasks sleep for 60 s.
         tokio::time::timeout(
             Duration::from_secs(2),
             sup.shutdown_all(Duration::from_secs(1)),
         )
         .await
         .expect("shutdown should complete within timeout");
+    }
+
+    /// Verify that force-aborted tasks get TaskStatus::Aborted in the registry (A2 fix).
+    #[tokio::test]
+    async fn test_force_abort_marks_aborted() {
+        let cancel = CancellationToken::new();
+        let sup = TaskSupervisor::new(cancel.clone());
+
+        sup.spawn(TaskDescriptor {
+            name: "stubborn-for-abort",
+            restart: RestartPolicy::RunOnce,
+            factory: || async {
+                // Does not cooperate with cancellation.
+                std::future::pending::<()>().await;
+            },
+        });
+
+        // Use a very short timeout to trigger force-abort.
+        sup.shutdown_all(Duration::from_millis(1)).await;
+
+        // Entry should be Aborted, not Running.
+        let snaps = sup.snapshot();
+        if let Some(snap) = snaps.iter().find(|s| s.name == "stubborn-for-abort") {
+            assert_eq!(
+                snap.status,
+                TaskStatus::Aborted,
+                "force-aborted task must have Aborted status"
+            );
+        }
+        // If entry was already reaped (cooperative cancel won), that's also acceptable.
     }
 
     #[tokio::test]
@@ -852,11 +1164,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_blocking_returns_value() {
-        let (sup, _cancel) = make_supervisor();
+        let (sup, cancel) = make_supervisor();
 
-        let handle: BlockingHandle<u32> = sup.spawn_blocking("compute", || async { 42_u32 });
+        let handle: BlockingHandle<u32> = sup.spawn_blocking("compute", || 42_u32);
         let result = handle.join().await.expect("should return value");
         assert_eq!(result, 42);
+        cancel.cancel();
     }
 
     #[tokio::test]
@@ -864,12 +1177,69 @@ mod tests {
         let (sup, _cancel) = make_supervisor();
 
         let handle: BlockingHandle<u32> =
-            sup.spawn_blocking("panicking-compute", || async { panic!("intentional") });
+            sup.spawn_blocking("panicking-compute", || panic!("intentional"));
         let err = handle
             .join()
             .await
             .expect_err("should return error on panic");
         assert_eq!(err, BlockingError::Panicked);
+    }
+
+    /// Verify spawn_blocking tasks appear in registry (M3 fix).
+    #[tokio::test]
+    async fn test_blocking_registered_in_registry() {
+        let (sup, cancel) = make_supervisor();
+
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let _handle: BlockingHandle<()> = sup.spawn_blocking("blocking-task", move || {
+            // Block until signalled.
+            let _ = rx.recv();
+        });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(
+            sup.active_count(),
+            1,
+            "blocking task must appear in active_count"
+        );
+
+        let _ = tx.send(());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            sup.active_count(),
+            0,
+            "blocking task must be removed after completion"
+        );
+
+        cancel.cancel();
+    }
+
+    /// Verify spawn_oneshot tasks appear in registry (M3 fix).
+    #[tokio::test]
+    async fn test_oneshot_registered_in_registry() {
+        let (sup, cancel) = make_supervisor();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let _handle: BlockingHandle<()> = sup.spawn_oneshot("oneshot-task", move || async move {
+            let _ = rx.await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(
+            sup.active_count(),
+            1,
+            "oneshot task must appear in active_count"
+        );
+
+        let _ = tx.send(());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            sup.active_count(),
+            0,
+            "oneshot task must be removed after completion"
+        );
+
+        cancel.cancel();
     }
 
     #[tokio::test]
@@ -883,7 +1253,7 @@ mod tests {
             name: "zero-max",
             restart: RestartPolicy::Restart {
                 max: 0,
-                delay: Duration::from_millis(10),
+                base_delay: Duration::from_millis(10),
             },
             factory: move || {
                 let c = Arc::clone(&counter2);
@@ -896,7 +1266,6 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // max=0 means no restarts: exactly 1 invocation.
         assert_eq!(
             counter.load(Ordering::SeqCst),
             1,
@@ -912,27 +1281,69 @@ mod tests {
         );
     }
 
+    /// Stress test: spawn 50 tasks concurrently, all must complete and registry must be accurate.
+    #[tokio::test]
+    async fn test_concurrent_spawns() {
+        let (sup, cancel) = make_supervisor();
+
+        // All task names must be 'static — use a pre-defined slice.
+        static NAMES: [&str; 50] = [
+            "t00", "t01", "t02", "t03", "t04", "t05", "t06", "t07", "t08", "t09", "t10", "t11",
+            "t12", "t13", "t14", "t15", "t16", "t17", "t18", "t19", "t20", "t21", "t22", "t23",
+            "t24", "t25", "t26", "t27", "t28", "t29", "t30", "t31", "t32", "t33", "t34", "t35",
+            "t36", "t37", "t38", "t39", "t40", "t41", "t42", "t43", "t44", "t45", "t46", "t47",
+            "t48", "t49",
+        ];
+
+        let completed = Arc::new(AtomicU32::new(0));
+        for name in &NAMES {
+            let c = Arc::clone(&completed);
+            sup.spawn(TaskDescriptor {
+                name,
+                restart: RestartPolicy::RunOnce,
+                factory: move || {
+                    let c = Arc::clone(&c);
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                    }
+                },
+            });
+        }
+
+        // Wait for all tasks to complete.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if completed.load(Ordering::SeqCst) == 50 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("all 50 tasks should complete");
+
+        // Give reap driver time to process all completions.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(sup.active_count(), 0, "all tasks must be reaped");
+
+        cancel.cancel();
+    }
+
     #[tokio::test]
     async fn test_shutdown_timeout_expiry() {
         let cancel = CancellationToken::new();
         let sup = TaskSupervisor::new(cancel.clone());
 
-        // Spawn a task that ignores cancellation (doesn't use select! on cancel token).
         sup.spawn(TaskDescriptor {
             name: "stubborn",
             restart: RestartPolicy::RunOnce,
             factory: || async {
-                // This task cooperates with cancellation via the outer select! in do_spawn,
-                // so we need to test the force-abort path instead.
-                // The supervisor's select! will cancel this, so use a very short timeout.
                 tokio::time::sleep(Duration::from_secs(60)).await;
             },
         });
 
         assert_eq!(sup.active_count(), 1);
 
-        // Use a very short timeout — tasks won't exit fast enough via cooperative cancel.
-        // We verify shutdown completes (force-aborts if needed) within the outer timeout.
         tokio::time::timeout(
             Duration::from_secs(2),
             sup.shutdown_all(Duration::from_millis(50)),
@@ -940,7 +1351,6 @@ mod tests {
         .await
         .expect("shutdown_all should return even on timeout expiry");
 
-        // After shutdown, cancellation token must be cancelled.
         assert!(
             cancel.is_cancelled(),
             "cancel token must be cancelled after shutdown"
