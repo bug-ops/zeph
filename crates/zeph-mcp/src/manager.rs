@@ -157,12 +157,21 @@ struct IngestLimits {
     instructions_bytes: usize,
 }
 
-/// Mutable connection state shared across concurrent `handle_connect_result` calls.
-struct ConnectState<'a> {
-    all_tools: &'a mut Vec<McpTool>,
-    clients: &'a mut HashMap<String, McpClient>,
-    server_tools: &'a mut HashMap<String, Vec<McpTool>>,
-    outcomes: &'a mut Vec<ServerConnectOutcome>,
+/// Owned output produced by a single [`McpManager::handle_connect_result`] call.
+///
+/// Accumulates the data that must be inserted into shared maps after all async work
+/// completes, so write guards are never held across `.await` points.
+struct ConnectOutput {
+    /// `Some((server_id, client))` on success, `None` on failure.
+    client_entry: Option<(String, McpClient)>,
+    /// `Some((server_id, tools))` on success, `None` on failure.
+    tools_entry: Option<(String, Vec<McpTool>)>,
+    /// Flattened tool list to extend `all_tools` (empty on failure).
+    tools: Vec<McpTool>,
+    /// Per-server outcome (both success and failure).
+    outcome: ServerConnectOutcome,
+    /// `Some((server_id, truncated_instructions))` when the server sent instructions.
+    instructions: Option<(String, String)>,
 }
 
 /// Outcome of a single server connection attempt from [`McpManager::connect_all`].
@@ -670,48 +679,68 @@ impl McpManager {
             });
         }
 
-        let mut all_tools = Vec::new();
-        let mut outcomes: Vec<ServerConnectOutcome> = Vec::new();
-
-        // Collect all connection results first — no locks held during async work.
-        let mut connect_results = Vec::new();
+        // Drain join_set without holding any locks, then process each result through
+        // handle_connect_result — which also holds no locks. All async work (network
+        // calls, probing, lock-free reads) happens here with zero contention on the
+        // shared maps.
+        let mut raw_results = Vec::new();
         while let Some(result) = join_set.join_next().await {
             let Ok((server_id, connect_result)) = result else {
                 tracing::warn!("MCP connection task panicked");
                 continue;
             };
-            connect_results.push((server_id, connect_result));
+            raw_results.push((server_id, connect_result));
         }
 
-        // Process results one at a time, acquiring locks per-result.
-        // NOTE: `clients` and `server_tools` write guards are acquired here and held
-        // across the `handle_connect_result(...).await` call, which may perform HTTP
-        // requests, probe execution, and additional lock acquisitions on other fields
-        // (server_instructions, server_trust). Other tasks needing clients/server_tools
-        // are blocked for the duration of each handle_connect_result call. This is
-        // strictly better than the previous code (which held both locks for ALL results),
-        // but the contention window per-result remains. A future optimization could pass
-        // owned data into handle_connect_result instead of mutable guard references.
-        for (server_id, connect_result) in connect_results {
-            let mut clients = self.clients.write().await;
-            let mut server_tools = self.server_tools.write().await;
+        let limits = IngestLimits {
+            description_bytes: self.max_description_bytes,
+            instructions_bytes: self.max_instructions_bytes,
+        };
+        let mut outputs = Vec::with_capacity(raw_results.len());
+        for (server_id, connect_result) in raw_results {
+            outputs.push(
+                self.handle_connect_result(server_id, connect_result, limits)
+                    .await,
+            );
+        }
 
-            self.handle_connect_result(
-                server_id,
-                connect_result,
-                &mut ConnectState {
-                    all_tools: &mut all_tools,
-                    clients: &mut clients,
-                    server_tools: &mut server_tools,
-                    outcomes: &mut outcomes,
-                },
-                IngestLimits {
-                    description_bytes: self.max_description_bytes,
-                    instructions_bytes: self.max_instructions_bytes,
-                },
-            )
-            .await;
-            // clients and server_tools write guards dropped here at end of each iteration.
+        // All async work is done. Collect into vecs first, then commit each lock
+        // in its own guarded block — never hold one lock across another .await.
+        let mut pending_instructions: Vec<(String, String)> = Vec::new();
+        let mut pending_clients: Vec<(String, _)> = Vec::new();
+        let mut pending_tools: Vec<(String, _)> = Vec::new();
+        let mut all_tools = Vec::new();
+        let mut outcomes: Vec<ServerConnectOutcome> = Vec::new();
+        for output in outputs {
+            if let Some((sid, instr)) = output.instructions {
+                pending_instructions.push((sid, instr));
+            }
+            if let Some((sid, client)) = output.client_entry {
+                pending_clients.push((sid, client));
+            }
+            if let Some((sid, tools)) = output.tools_entry {
+                pending_tools.push((sid, tools));
+            }
+            all_tools.extend(output.tools);
+            outcomes.push(output.outcome);
+        }
+        {
+            let mut g = self.server_instructions.write().await;
+            for (sid, instr) in pending_instructions {
+                g.insert(sid, instr);
+            }
+        }
+        {
+            let mut g = self.clients.write().await;
+            for (sid, client) in pending_clients {
+                g.insert(sid, client);
+            }
+        }
+        {
+            let mut g = self.server_tools.write().await;
+            for (sid, tools) in pending_tools {
+                g.insert(sid, tools);
+            }
         }
 
         // Detect sanitized_id collisions across the aggregated tool list (SF-6/MF-1).
@@ -797,25 +826,32 @@ impl McpManager {
 
             match connect_result {
                 Ok(OAuthConnectResult::Connected(client)) => {
-                    let mut all_tools = Vec::new();
-                    let mut clients = self.clients.write().await;
-                    let mut server_tools = self.server_tools.write().await;
-                    self.handle_connect_result(
-                        config.id.clone(),
-                        Ok(client),
-                        &mut ConnectState {
-                            all_tools: &mut all_tools,
-                            clients: &mut clients,
-                            server_tools: &mut server_tools,
-                            outcomes: &mut outcomes,
-                        },
-                        IngestLimits {
-                            description_bytes: self.max_description_bytes,
-                            instructions_bytes: self.max_instructions_bytes,
-                        },
-                    )
-                    .await;
-                    let updated: Vec<McpTool> = server_tools.values().flatten().cloned().collect();
+                    let output = self
+                        .handle_connect_result(
+                            config.id.clone(),
+                            Ok(client),
+                            IngestLimits {
+                                description_bytes: self.max_description_bytes,
+                                instructions_bytes: self.max_instructions_bytes,
+                            },
+                        )
+                        .await;
+                    outcomes.push(output.outcome);
+                    if let Some((sid, instr)) = output.instructions {
+                        self.server_instructions.write().await.insert(sid, instr);
+                    }
+                    let mut clients_guard = self.clients.write().await;
+                    let mut server_tools_guard = self.server_tools.write().await;
+                    if let Some((sid, client)) = output.client_entry {
+                        clients_guard.insert(sid, client);
+                    }
+                    if let Some((sid, tools)) = output.tools_entry {
+                        server_tools_guard.insert(sid, tools);
+                    }
+                    let updated: Vec<McpTool> =
+                        server_tools_guard.values().flatten().cloned().collect();
+                    drop(clients_guard);
+                    drop(server_tools_guard);
                     let _ = self.tools_watch_tx.send(updated);
                 }
                 Ok(OAuthConnectResult::AuthorizationRequired(pending_box)) => {
@@ -854,26 +890,32 @@ impl McpManager {
                             }
                             match McpClient::complete_oauth(pending, &code, &csrf_token).await {
                                 Ok(client) => {
-                                    let mut all_tools = Vec::new();
-                                    let mut clients = self.clients.write().await;
-                                    let mut server_tools = self.server_tools.write().await;
-                                    self.handle_connect_result(
-                                        config.id.clone(),
-                                        Ok(client),
-                                        &mut ConnectState {
-                                            all_tools: &mut all_tools,
-                                            clients: &mut clients,
-                                            server_tools: &mut server_tools,
-                                            outcomes: &mut outcomes,
-                                        },
-                                        IngestLimits {
-                                            description_bytes: self.max_description_bytes,
-                                            instructions_bytes: self.max_instructions_bytes,
-                                        },
-                                    )
-                                    .await;
+                                    let output = self
+                                        .handle_connect_result(
+                                            config.id.clone(),
+                                            Ok(client),
+                                            IngestLimits {
+                                                description_bytes: self.max_description_bytes,
+                                                instructions_bytes: self.max_instructions_bytes,
+                                            },
+                                        )
+                                        .await;
+                                    outcomes.push(output.outcome);
+                                    if let Some((sid, instr)) = output.instructions {
+                                        self.server_instructions.write().await.insert(sid, instr);
+                                    }
+                                    let mut clients_guard = self.clients.write().await;
+                                    let mut server_tools_guard = self.server_tools.write().await;
+                                    if let Some((sid, client)) = output.client_entry {
+                                        clients_guard.insert(sid, client);
+                                    }
+                                    if let Some((sid, tools)) = output.tools_entry {
+                                        server_tools_guard.insert(sid, tools);
+                                    }
                                     let updated: Vec<McpTool> =
-                                        server_tools.values().flatten().cloned().collect();
+                                        server_tools_guard.values().flatten().cloned().collect();
+                                    drop(clients_guard);
+                                    drop(server_tools_guard);
                                     let _ = self.tools_watch_tx.send(updated);
                                 }
                                 Err(e) => {
@@ -950,40 +992,48 @@ impl McpManager {
         }
     }
 
+    /// Process a single server connection result without holding any shared write locks.
+    ///
+    /// Returns a [`ConnectOutput`] with all owned data the caller must commit to the
+    /// shared maps. The caller is responsible for inserting this data under a write
+    /// guard after all async work completes.
     async fn handle_connect_result(
         &self,
         server_id: String,
         connect_result: Result<McpClient, McpError>,
-        state: &mut ConnectState<'_>,
         limits: IngestLimits,
-    ) {
+    ) -> ConnectOutput {
+        let fail = |error: String| ConnectOutput {
+            client_entry: None,
+            tools_entry: None,
+            tools: Vec::new(),
+            instructions: None,
+            outcome: ServerConnectOutcome {
+                id: server_id.clone(),
+                connected: false,
+                tool_count: 0,
+                error,
+            },
+        };
+
         match connect_result {
             Ok(client) => match client.list_tools().await {
                 Ok(raw_tools) => {
                     // Phase 1: run pre-connect probe if configured.
                     if let Err(e) = self.run_probe(&server_id, &client).await {
                         client.shutdown().await;
-                        state.outcomes.push(ServerConnectOutcome {
-                            id: server_id,
-                            connected: false,
-                            tool_count: 0,
-                            error: format!("{e:#}"),
-                        });
-                        return;
+                        return fail(format!("{e:#}"));
                     }
 
                     // Capture server instructions from handshake and apply cap.
-                    if let Some(ref instructions) = client.server_instructions() {
+                    let instructions = client.server_instructions().as_ref().map(|instr| {
                         let truncated = crate::sanitize::truncate_instructions(
-                            instructions,
+                            instr,
                             &server_id,
                             limits.instructions_bytes,
                         );
-                        self.server_instructions
-                            .write()
-                            .await
-                            .insert(server_id.clone(), truncated);
-                    }
+                        (server_id.clone(), truncated)
+                    });
 
                     let (trust_level, allowlist, expected_tools) =
                         self.server_trust.read().await.get(&server_id).map_or(
@@ -1011,39 +1061,32 @@ impl McpManager {
                     .await;
                     tracing::info!(server_id, tools = tools.len(), "connected to MCP server");
                     let tool_count = tools.len();
-                    state.server_tools.insert(server_id.clone(), tools.clone());
-                    state.all_tools.extend(tools);
-                    state.clients.insert(server_id.clone(), client);
                     self.connected_server_ids.write().insert(server_id.clone());
-                    state.outcomes.push(ServerConnectOutcome {
-                        id: server_id,
-                        connected: true,
-                        tool_count,
-                        error: String::new(),
-                    });
+                    ConnectOutput {
+                        client_entry: Some((server_id.clone(), client)),
+                        tools_entry: Some((server_id.clone(), tools.clone())),
+                        tools,
+                        instructions,
+                        outcome: ServerConnectOutcome {
+                            id: server_id,
+                            connected: true,
+                            tool_count,
+                            error: String::new(),
+                        },
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(server_id, "failed to list tools: {e:#}");
                     // Connection failed — remove lock so the server is not left permanently locked.
                     self.tool_list_locked.remove(&server_id);
-                    state.outcomes.push(ServerConnectOutcome {
-                        id: server_id,
-                        connected: false,
-                        tool_count: 0,
-                        error: format!("{e:#}"),
-                    });
+                    fail(format!("{e:#}"))
                 }
             },
             Err(e) => {
                 tracing::warn!(server_id, "MCP server connection failed: {e:#}");
                 // Connection failed — remove lock so the server is not left permanently locked.
                 self.tool_list_locked.remove(&server_id);
-                state.outcomes.push(ServerConnectOutcome {
-                    id: server_id,
-                    connected: false,
-                    tool_count: 0,
-                    error: format!("{e:#}"),
-                });
+                fail(format!("{e:#}"))
             }
         }
     }
