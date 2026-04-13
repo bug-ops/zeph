@@ -26,57 +26,17 @@ impl<C: crate::channel::Channel> Agent<C> {
         None
     }
 
-    /// Dispatch slash commands. Returns `Some(Ok(()))` when handled,
-    /// `Some(Err(_))` on I/O error, `None` to fall through to LLM processing.
+    /// Dispatch slash commands that cannot be handled by the registry.
     ///
-    /// Commands that remain here could not be migrated to the registry pattern because their
-    /// implementations hold non-Send futures (references across `.await` points):
-    /// - `/skill`, `/skills`, `/feedback` — non-Send DB references
+    /// Currently handles only `@mention` dispatch. All `/` slash commands are now
+    /// dispatched through the session or agent command registry in `Agent::run`.
     ///
-    /// All other slash commands are dispatched through `session_registry` or `agent_registry`
-    /// in `Agent::run`.
+    /// Returns `Some(Ok(()))` when handled, `Some(Err(_))` on I/O error, `None` to
+    /// fall through to LLM processing.
     pub(super) async fn dispatch_slash_command(
         &mut self,
         trimmed: &str,
     ) -> Option<Result<(), error::AgentError>> {
-        macro_rules! handled {
-            ($expr:expr) => {{
-                if let Err(e) = $expr {
-                    return Some(Err(e));
-                }
-                let _ = self.channel.flush_chunks().await;
-                return Some(Ok(()));
-            }};
-        }
-
-        let slash_urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
-        if !slash_urls.is_empty() {
-            self.security.user_provided_urls.write().extend(slash_urls);
-        }
-
-        if trimmed == "/skills" || trimmed.starts_with("/skills ") {
-            let subcommand = trimmed.strip_prefix("/skills").unwrap_or("").trim();
-            handled!(self.handle_skills_family(subcommand).await);
-        }
-
-        if trimmed == "/skill" || trimmed.starts_with("/skill ") {
-            let rest = trimmed
-                .strip_prefix("/skill")
-                .unwrap_or("")
-                .trim()
-                .to_owned();
-            handled!(self.handle_skill_command(&rest).await);
-        }
-
-        if trimmed == "/feedback" || trimmed.starts_with("/feedback ") {
-            let rest = trimmed
-                .strip_prefix("/feedback")
-                .unwrap_or("")
-                .trim()
-                .to_owned();
-            handled!(self.handle_feedback(&rest).await);
-        }
-
         // @mention dispatch: not a `/` command, so not in the registry.
         if trimmed.starts_with('@') {
             return self.dispatch_agent_command(trimmed).await;
@@ -375,25 +335,24 @@ impl<C: crate::channel::Channel> Agent<C> {
         format!("Image loaded: {path}. Send your message.")
     }
 
-    pub(super) async fn handle_skills_family(
+    /// Return the `/skills [subcommand]` output as a `String` without sending via channel.
+    ///
+    /// Used by the `AgentAccess::handle_skills` implementation to satisfy the `Send` bound
+    /// on the returned future.
+    pub(super) async fn handle_skills_as_string(
         &mut self,
         subcommand: &str,
-    ) -> Result<(), error::AgentError> {
+    ) -> Result<String, error::AgentError> {
         match subcommand {
-            "" => self.handle_skills_command().await,
-            "confusability" => self.handle_skills_confusability_command().await,
-            other => {
-                self.channel
-                    .send(&format!(
-                        "Unknown /skills subcommand: '{other}'. Available: confusability"
-                    ))
-                    .await?;
-                Ok(())
-            }
+            "" => self.handle_skills_command_as_string().await,
+            "confusability" => self.handle_skills_confusability_as_string().await,
+            other => Ok(format!(
+                "Unknown /skills subcommand: '{other}'. Available: confusability"
+            )),
         }
     }
 
-    pub(super) async fn handle_skills_command(&mut self) -> Result<(), error::AgentError> {
+    async fn handle_skills_command_as_string(&mut self) -> Result<String, error::AgentError> {
         use std::collections::BTreeMap;
         use std::fmt::Write;
 
@@ -406,10 +365,12 @@ impl<C: crate::channel::Channel> Agent<C> {
             .cloned()
             .collect();
 
+        // Clone Arc before .await to avoid holding &self across suspension points.
+        let memory = self.memory_state.persistence.memory.clone();
         let mut trust_map: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         for meta in &all_meta {
-            if let Some(memory) = &self.memory_state.persistence.memory {
+            if let Some(ref memory) = memory {
                 let info = memory
                     .sqlite()
                     .load_skill_trust(&meta.name)
@@ -446,7 +407,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
         }
 
-        if let Some(memory) = &self.memory_state.persistence.memory {
+        if let Some(ref memory) = memory {
             match memory.sqlite().load_skill_usage().await {
                 Ok(usage) if !usage.is_empty() => {
                     output.push_str("\nUsage statistics:\n\n");
@@ -463,29 +424,21 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
         }
 
-        self.channel.send(&output).await?;
-        Ok(())
+        Ok(output)
     }
 
-    pub(super) async fn handle_skills_confusability_command(
-        &mut self,
-    ) -> Result<(), error::AgentError> {
+    async fn handle_skills_confusability_as_string(&mut self) -> Result<String, error::AgentError> {
         let threshold = self.skill_state.confusability_threshold;
         if threshold <= 0.0 {
-            self.channel
-                .send(
-                    "Confusability monitoring is disabled. \
-                     Set [skills] confusability_threshold in config (e.g. 0.85) to enable.",
-                )
-                .await?;
-            return Ok(());
+            return Ok("Confusability monitoring is disabled. \
+                 Set [skills] confusability_threshold in config (e.g. 0.85) to enable."
+                .to_owned());
         }
 
         let Some(matcher) = &self.skill_state.matcher else {
-            self.channel
-                .send("Skill matcher not available (no embedding provider configured).")
-                .await?;
-            return Ok(());
+            return Ok(
+                "Skill matcher not available (no embedding provider configured).".to_owned(),
+            );
         };
 
         let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
@@ -499,7 +452,6 @@ impl<C: crate::channel::Channel> Agent<C> {
         let refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta.iter().collect();
 
         let report = matcher.confusability_report(&refs, threshold).await;
-        self.channel.send(&report.to_string()).await?;
-        Ok(())
+        Ok(report.to_string())
     }
 }

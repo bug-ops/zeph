@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`/skill`, `/skills`, `/feedback` migrated to `CommandHandler` registry** (`#2945`): resolved
+  HRTB blockers by splitting each handler into a `_as_string` variant that holds no `&self`
+  references across `.await` points. Key changes: `SemanticMemory` Arc cloned before every
+  `.await`; `SkillVersionRow` fields cloned (owned) before activation awaits; `generate_improved_skill`
+  restricted to non-registry path (non-Send); `reload_skills` removed from `_as_string` installs
+  (hot-reload handles activation). Three new `AgentAccess` methods (`handle_skill`, `handle_skills`,
+  `handle_feedback_command`) delegate to the `_as_string` variants inside `Box::pin(async move)`.
+  `SkillCommand`, `SkillsCommand`, `FeedbackCommand` registered in the agent registry;
+  `/skill`, `/skills`, `/feedback` removed from `dispatch_slash_command`.
+
 - **`/compact` migrated to `CommandHandler` registry** (`#2942`): resolved HRTB blocker by
   decomposing `compact_context` so no `&DbStore` is held across `.await` points. `CompactCommand`
   is now registered in the agent registry; `/compact` removed from `dispatch_slash_command`.

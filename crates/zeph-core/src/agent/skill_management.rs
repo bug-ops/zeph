@@ -11,23 +11,16 @@ use super::error::AgentError;
 use super::{Agent, Channel};
 
 impl<C: Channel> Agent<C> {
-    /// Handle `/skill install <url|path>` in-session command.
-    pub(super) async fn handle_skill_install(
+    pub(super) async fn handle_skill_install_as_string(
         &mut self,
         source: Option<&str>,
-    ) -> Result<(), AgentError> {
+    ) -> Result<String, AgentError> {
         let Some(source) = source else {
-            self.channel
-                .send("Usage: /skill install <url|path>")
-                .await?;
-            return Ok(());
+            return Ok("Usage: /skill install <url|path>".to_owned());
         };
 
         let Some(managed_dir) = self.skill_state.managed_dir.clone() else {
-            self.channel
-                .send("Skill management directory not configured.")
-                .await?;
-            return Ok(());
+            return Ok("Skill management directory not configured.".to_owned());
         };
 
         let mgr = SkillManager::new(managed_dir.clone());
@@ -49,7 +42,7 @@ impl<C: Channel> Agent<C> {
 
         match result {
             Ok(installed) => {
-                if let Some(memory) = &self.memory_state.persistence.memory {
+                if let Some(memory) = self.memory_state.persistence.memory.clone() {
                     let (source_kind, source_url, source_path) = match &installed.source {
                         SkillSource::Hub { url } => (SourceKind::Hub, Some(url.as_str()), None),
                         SkillSource::File { path } => (
@@ -75,7 +68,10 @@ impl<C: Channel> Agent<C> {
                     }
                 }
 
-                self.reload_skills().await;
+                // Note: reload_skills() is not called here because it calls rebuild_skill_matcher
+                // which contains closures with HRTB lifetime constraints that make the future
+                // non-Send. Hot-reload will pick up the new skill on the next cycle.
+                tracing::info!(skill = %installed.name, "installed — hot-reload will activate it");
 
                 // Check if installed skill requires secrets that are missing.
                 let skill_md = managed_dir.join(&installed.name).join("SKILL.md");
@@ -108,31 +104,22 @@ impl<C: Channel> Agent<C> {
                     );
                 }
 
-                self.channel.send(&msg).await?;
+                Ok(msg)
             }
-            Err(e) => {
-                self.channel.send(&format!("Install failed: {e}")).await?;
-            }
+            Err(e) => Ok(format!("Install failed: {e}")),
         }
-
-        Ok(())
     }
 
-    /// Handle `/skill remove <name>` in-session command.
-    pub(super) async fn handle_skill_remove(
+    pub(super) async fn handle_skill_remove_as_string(
         &mut self,
         name: Option<&str>,
-    ) -> Result<(), AgentError> {
+    ) -> Result<String, AgentError> {
         let Some(name) = name else {
-            self.channel.send("Usage: /skill remove <name>").await?;
-            return Ok(());
+            return Ok("Usage: /skill remove <name>".to_owned());
         };
 
         let Some(managed_dir) = &self.skill_state.managed_dir else {
-            self.channel
-                .send("Skill management directory not configured.")
-                .await?;
-            return Ok(());
+            return Ok("Skill management directory not configured.".to_owned());
         };
 
         let mgr = SkillManager::new(managed_dir.clone());
@@ -144,23 +131,18 @@ impl<C: Channel> Agent<C> {
 
         match remove_result {
             Ok(()) => {
-                if let Some(memory) = &self.memory_state.persistence.memory
+                if let Some(memory) = self.memory_state.persistence.memory.clone()
                     && let Err(e) = memory.sqlite().delete_skill_trust(name).await
                 {
                     tracing::warn!("failed to remove trust record for '{name}': {e:#}");
                 }
 
-                self.reload_skills().await;
+                // Note: reload_skills() is not called here — same HRTB constraint as install.
+                // Hot-reload will deactivate the removed skill on the next cycle.
 
-                self.channel
-                    .send(&format!("Skill \"{name}\" removed."))
-                    .await?;
+                Ok(format!("Skill \"{name}\" removed."))
             }
-            Err(e) => {
-                self.channel.send(&format!("Remove failed: {e}")).await?;
-            }
+            Err(e) => Ok(format!("Remove failed: {e}")),
         }
-
-        Ok(())
     }
 }

@@ -719,6 +719,48 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         }
     }
 
+    // ----- /skill -----
+
+    fn handle_skill<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let args_owned = args.to_owned();
+        Box::pin(async move {
+            self.handle_skill_command_as_string(&args_owned)
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))
+        })
+    }
+
+    // ----- /skills -----
+
+    fn handle_skills<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let args_owned = args.to_owned();
+        Box::pin(async move {
+            self.handle_skills_as_string(&args_owned)
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))
+        })
+    }
+
+    // ----- /feedback -----
+
+    fn handle_feedback_command<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let args_owned = args.to_owned();
+        Box::pin(async move {
+            self.handle_feedback_as_string(&args_owned)
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))
+        })
+    }
+
     // ----- /plan -----
 
     #[cfg(feature = "scheduler")]

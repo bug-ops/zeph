@@ -1,21 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Skill command stubs: `/skill`, `/skills`, `/feedback`.
+//! Skill command handlers: `/skill`, `/skills`, `/feedback`.
 //!
-//! These handlers are registered so the command registry recognises the slash
-//! commands and can surface them in help/completion output, but the actual
-//! dispatch is intentionally left to `handle_builtin_command` in `zeph-core`.
-//!
-//! # Why not implement them here?
-//!
-//! `handle_skill_command_as_string`, `handle_skills_family_as_string`, and
-//! `handle_feedback_as_string` hold `&SemanticMemory` and `&AnyProvider`
-//! references across `.await` points.  `&'a T: Send` requires `T: Sync`, but
-//! neither `SemanticMemory` nor `AnyProvider` implement `Sync`.  Adding them to
-//! `AgentAccess` would therefore break the `Send` bound that object-safe trait
-//! dispatch requires.  The migration is deferred until those types implement
-//! `Sync`.
+//! These handlers delegate to `AgentAccess` methods which in turn call the
+//! `_as_string` variants in `zeph-core`. The clone-before-await pattern in the
+//! `AgentAccess` impl ensures the returned futures are `Send`-safe.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -27,9 +17,6 @@ use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 ///
 /// Subcommands: `stats`, `versions`, `activate`, `approve`, `reset`, `trust`,
 /// `block`, `unblock`, `install`, `remove`, `create`, `scan`, `reject`.
-///
-/// Actual dispatch is handled by `handle_builtin_command` in `zeph-core`; this
-/// stub exists so the registry exposes `/skill` in help and completion lists.
 pub struct SkillCommand;
 
 impl CommandHandler<CommandContext<'_>> for SkillCommand {
@@ -51,20 +38,19 @@ impl CommandHandler<CommandContext<'_>> for SkillCommand {
 
     fn handle<'a>(
         &'a self,
-        _ctx: &'a mut CommandContext<'_>,
-        _args: &'a str,
+        ctx: &'a mut CommandContext<'_>,
+        args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        // Deferred: dispatched via handle_builtin_command in zeph-core.
-        Box::pin(async move { Ok(CommandOutput::Silent) })
+        Box::pin(async move {
+            let result = ctx.agent.handle_skill(args).await?;
+            Ok(CommandOutput::Message(result))
+        })
     }
 }
 
 /// List loaded skills.
 ///
-/// Subcommands: (none) list all; `confusability` show pairs with high embedding
-/// similarity.
-///
-/// Actual dispatch is handled by `handle_builtin_command` in `zeph-core`.
+/// Subcommands: (none) list all; `confusability` show pairs with high embedding similarity.
 pub struct SkillsCommand;
 
 impl CommandHandler<CommandContext<'_>> for SkillsCommand {
@@ -82,17 +68,17 @@ impl CommandHandler<CommandContext<'_>> for SkillsCommand {
 
     fn handle<'a>(
         &'a self,
-        _ctx: &'a mut CommandContext<'_>,
-        _args: &'a str,
+        ctx: &'a mut CommandContext<'_>,
+        args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        // Deferred: dispatched via handle_builtin_command in zeph-core.
-        Box::pin(async move { Ok(CommandOutput::Silent) })
+        Box::pin(async move {
+            let result = ctx.agent.handle_skills(args).await?;
+            Ok(CommandOutput::Message(result))
+        })
     }
 }
 
 /// Submit feedback for a skill invocation.
-///
-/// Actual dispatch is handled by `handle_builtin_command` in `zeph-core`.
 pub struct FeedbackCommand;
 
 impl CommandHandler<CommandContext<'_>> for FeedbackCommand {
@@ -114,10 +100,12 @@ impl CommandHandler<CommandContext<'_>> for FeedbackCommand {
 
     fn handle<'a>(
         &'a self,
-        _ctx: &'a mut CommandContext<'_>,
-        _args: &'a str,
+        ctx: &'a mut CommandContext<'_>,
+        args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        // Deferred: dispatched via handle_builtin_command in zeph-core.
-        Box::pin(async move { Ok(CommandOutput::Silent) })
+        Box::pin(async move {
+            let result = ctx.agent.handle_feedback_command(args).await?;
+            Ok(CommandOutput::Message(result))
+        })
     }
 }

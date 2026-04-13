@@ -149,10 +149,48 @@ pub trait AgentAccess: Send {
         arg: &'a str,
     ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 
-    // Note: /skill, /skills, /feedback are handled via handle_builtin_command in zeph-core
-    // because their implementations hold non-Send references (&SemanticMemory, &AnyProvider)
-    // across .await points. Adding them here would require those types to be Sync, which is a
-    // broader change. They remain as TODO for a future migration phase.
+    // ----- /skill -----
+
+    /// Handle `/skill [subcommand]` and return a user-visible result.
+    ///
+    /// Subcommands: `stats`, `versions`, `activate`, `approve`, `reset`, `trust`,
+    /// `block`, `unblock`, `install`, `remove`, `create`, `scan`, `reject`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when a database or I/O operation fails.
+    fn handle_skill<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /skills -----
+
+    /// Handle `/skills [subcommand]` and return a user-visible result.
+    ///
+    /// Subcommands: (none) list all; `confusability` show pairs with high embedding similarity.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when a database or embedding operation fails.
+    fn handle_skills<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /feedback -----
+
+    /// Handle `/feedback <skill_name> <message>` and return a user-visible result.
+    ///
+    /// Records skill outcome feedback and optionally triggers skill improvement.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the database operation fails.
+    fn handle_feedback_command<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
 
     // ----- /policy -----
 
@@ -405,6 +443,27 @@ impl AgentAccess for NullAgent {
         _arg: &'a str,
     ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
         Box::pin(async { String::new() })
+    }
+
+    fn handle_skill<'a>(
+        &'a mut self,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn handle_skills<'a>(
+        &'a mut self,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn handle_feedback_command<'a>(
+        &'a mut self,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
     }
 
     fn handle_policy<'a>(

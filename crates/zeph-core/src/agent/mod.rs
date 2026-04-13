@@ -806,6 +806,15 @@ impl<C: Channel> Agent<C> {
 
             let trimmed = text.trim();
 
+            // M3: extract flagged URLs from all slash commands before any registry dispatch,
+            // so `/skill install <url>` and similar commands populate user_provided_urls.
+            if trimmed.starts_with('/') {
+                let slash_urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
+                if !slash_urls.is_empty() {
+                    self.security.user_provided_urls.write().extend(slash_urls);
+                }
+            }
+
             // Registry dispatch: build the command registry, construct CommandContext, dispatch.
             // The registry is built inline (all handlers are ZSTs) to avoid borrow-checker
             // conflicts when constructing CommandContext from Agent<C> fields.
@@ -902,6 +911,7 @@ impl<C: Channel> Agent<C> {
                     plan::PlanCommand,
                     policy::PolicyCommand,
                     scheduler::SchedulerCommand,
+                    skill::{FeedbackCommand, SkillCommand, SkillsCommand},
                     status::{FocusCommand, GuardrailCommand, SideQuestCommand, StatusCommand},
                 };
 
@@ -911,9 +921,10 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(GuidelinesCommand);
                 agent_reg.register(ModelCommand);
                 agent_reg.register(ProviderCommand);
-                // Note: SkillCommand, SkillsCommand, FeedbackCommand are intentionally NOT
-                // registered here — their implementations hold non-Send DB references across
-                // .await points. They continue to be dispatched via dispatch_slash_command.
+                // Phase 6 migrations: /skill, /skills, /feedback use clone-before-await pattern.
+                agent_reg.register(SkillCommand);
+                agent_reg.register(SkillsCommand);
+                agent_reg.register(FeedbackCommand);
                 agent_reg.register(McpCommand);
                 agent_reg.register(PolicyCommand);
                 agent_reg.register(SchedulerCommand);
@@ -1901,8 +1912,13 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Update trust DB records for all reloaded skills.
-    async fn update_trust_for_reloaded_skills(&self, all_meta: &[zeph_skills::loader::SkillMeta]) {
-        let Some(ref memory) = self.memory_state.persistence.memory else {
+    async fn update_trust_for_reloaded_skills(
+        &mut self,
+        all_meta: &[zeph_skills::loader::SkillMeta],
+    ) {
+        // Clone Arc before any .await so no &self fields are held across suspension points.
+        let memory = self.memory_state.persistence.memory.clone();
+        let Some(memory) = memory else {
             return;
         };
         let trust_cfg = self.skill_state.trust_config.clone();

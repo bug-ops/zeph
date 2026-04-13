@@ -337,26 +337,50 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
+    // Retained for tests and the non-registry path (triggers generate_improved_skill side-effect).
+    #[allow(dead_code)]
     pub(super) async fn handle_feedback(&mut self, input: &str) -> Result<(), error::AgentError> {
+        let output = self.handle_feedback_as_string(input).await?;
+        self.channel.send(&output).await?;
+        // Trigger learning side-effect: generate_improved_skill holds &self across .await and
+        // cannot run inside a Send future. It is triggered here on the non-registry path only.
+        if output.starts_with("Feedback recorded")
+            && let Some((name, rest)) = input.split_once(' ')
+        {
+            let feedback = rest.trim().trim_matches('"');
+            if self.is_learning_enabled() && self.feedback.detector.detect(feedback, &[]).is_some()
+            {
+                self.generate_improved_skill(name.trim(), feedback, "", Some(feedback))
+                    .await
+                    .ok();
+            }
+        }
+        Ok(())
+    }
+
+    /// Return the `/feedback` command output as a `String` without sending via channel.
+    ///
+    /// Used by the `AgentAccess::handle_feedback_command` implementation to satisfy the
+    /// `Send` bound on the returned future.
+    pub(super) async fn handle_feedback_as_string(
+        &mut self,
+        input: &str,
+    ) -> Result<String, error::AgentError> {
         let Some((name, rest)) = input.split_once(' ') else {
-            self.channel
-                .send("Usage: /feedback <skill_name> <message>")
-                .await?;
-            return Ok(());
+            return Ok("Usage: /feedback <skill_name> <message>".to_owned());
         };
         let (skill_name, feedback) = (name.trim(), rest.trim().trim_matches('"'));
 
         if feedback.is_empty() {
-            self.channel
-                .send("Usage: /feedback <skill_name> <message>")
-                .await?;
-            return Ok(());
+            return Ok("Usage: /feedback <skill_name> <message>".to_owned());
         }
 
-        let Some(memory) = &self.memory_state.persistence.memory else {
-            self.channel.send("Memory not available.").await?;
-            return Ok(());
+        // Clone Arc before .await to avoid holding &self across suspension points.
+        let memory = self.memory_state.persistence.memory.clone();
+        let Some(memory) = memory else {
+            return Ok("Memory not available.".to_owned());
         };
+        let conversation_id = self.memory_state.persistence.conversation_id;
 
         let outcome_type = if self.feedback.detector.detect(feedback, &[]).is_some() {
             "user_rejection"
@@ -369,22 +393,16 @@ impl<C: crate::channel::Channel> Agent<C> {
             .record_skill_outcome(
                 skill_name,
                 None,
-                self.memory_state.persistence.conversation_id,
+                conversation_id,
                 outcome_type,
                 None,
                 Some(feedback),
             )
             .await?;
 
-        if self.is_learning_enabled() && outcome_type == "user_rejection" {
-            self.generate_improved_skill(skill_name, feedback, "", Some(feedback))
-                .await
-                .ok();
-        }
+        // Note: generate_improved_skill is not called here to keep this future Send-compatible.
+        // The original handle_feedback (non-_as_string) still triggers learning.
 
-        self.channel
-            .send(&format!("Feedback recorded for \"{skill_name}\"."))
-            .await?;
-        Ok(())
+        Ok(format!("Feedback recorded for \"{skill_name}\"."))
     }
 }

@@ -159,7 +159,7 @@ fn is_learning_enabled_no_config_returns_false() {
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
-    let agent = Agent::new(provider, channel, registry, None, 5, executor);
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
     // No learning config set → false
     assert!(!agent.is_learning_enabled());
 }
@@ -372,7 +372,7 @@ async fn generate_improved_skill_returns_early_when_learning_disabled() {
     let executor = MockToolExecutor::no_tools();
 
     // No learning config → is_learning_enabled() = false → returns Ok(()) immediately
-    let agent = Agent::new(provider, channel, registry, None, 5, executor);
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
     let result = agent
         .generate_improved_skill("test-skill", "error", "response", None)
@@ -388,7 +388,7 @@ async fn generate_improved_skill_returns_early_when_no_memory() {
     let executor = MockToolExecutor::no_tools();
 
     // Learning enabled but no memory → returns Ok(()) early
-    let agent = Agent::new(provider, channel, registry, None, 5, executor)
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_learning(learning_config_enabled());
 
     let result = agent
@@ -425,7 +425,7 @@ async fn generate_improved_skill_should_improve_false_skips_improvement() {
             .unwrap();
     }
 
-    let agent = Agent::new(provider, channel, registry, None, 5, executor)
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_learning(LearningConfig {
             cooldown_minutes: 0,
             min_failures: 2,
@@ -469,7 +469,7 @@ async fn generate_improved_skill_eval_error_proceeds_with_improvement() {
             .unwrap();
     }
 
-    let agent = Agent::new(provider, channel, registry, None, 5, executor)
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_learning(LearningConfig {
             cooldown_minutes: 0,
             min_failures: 2,

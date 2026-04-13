@@ -106,7 +106,7 @@ impl<C: Channel> Agent<C> {
 
     #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
     pub(crate) async fn generate_improved_skill(
-        &self,
+        &mut self,
         skill_name: &str,
         error_context: &str,
         successful_response: &str,
@@ -119,10 +119,13 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        // Clone Arc before any .await so no &self fields are held across suspension points.
+        let memory = self.memory_state.persistence.memory.clone();
+        let Some(memory) = memory else {
             return Ok(());
         };
-        let Some(config) = self.learning_engine.config.as_ref() else {
+        let config = self.learning_engine.config.clone();
+        let Some(config) = config else {
             return Ok(());
         };
 
@@ -134,13 +137,13 @@ impl<C: Channel> Agent<C> {
             .await?;
 
         if !self
-            .check_improvement_allowed(memory, config, skill_name, user_feedback)
+            .check_improvement_allowed(&memory, &config, skill_name, user_feedback)
             .await?
         {
             return Ok(());
         }
 
-        // Structured evaluation: ask LLM whether improvement is actually needed
+        // Structured evaluation: ask LLM whether improvement is actually needed.
         if user_feedback.is_none() {
             let metrics_row = memory.sqlite().skill_metrics(skill_name).await?;
             if let Some(row) = metrics_row {
@@ -221,8 +224,8 @@ impl<C: Channel> Agent<C> {
         }
 
         self.store_improved_version(
-            memory,
-            config,
+            &memory,
+            &config,
             skill_name,
             generated_body,
             skill.description(),
