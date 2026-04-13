@@ -17,16 +17,19 @@ zeph (binary)
 │   ├── zeph-llm            LlmProvider trait, Ollama/Claude/OpenAI/Gemini/Candle backends, orchestrator
 │   ├── zeph-memory         SQLite + Qdrant, SemanticMemory, summarization, document loaders
 │   ├── zeph-tools          ToolExecutor trait, ShellExecutor, FileExecutor, TrustLevel
-│   └── zeph-skills         SKILL.md parser, registry, embedding matcher, hot-reload
+│   ├── zeph-skills         SKILL.md parser, registry, embedding matcher, hot-reload
+│   └── zeph-db             Database abstraction, SQLite/PostgreSQL backends
 │
 ├── Layer 3 — Agent Subsystems
+│   ├── zeph-context        Context assembly, budget allocation, message compaction (extracted from zeph-core)
 │   ├── zeph-sanitizer      Content sanitization pipeline, PII filter, exfiltration guard
 │   ├── zeph-experiments    Autonomous experiment engine, hyperparameter tuning, LLM-as-judge
 │   ├── zeph-subagent       Subagent lifecycle, grants, transcripts, lifecycle hooks
 │   └── zeph-orchestration  DAG-based task orchestration, planner, router, aggregator
 │
-├── Layer 4 — Agent Core
-│   └── zeph-core           Agent loop, AppBuilder bootstrap, context builder, metrics
+├── Layer 4 — Agent Core & Commands
+│   ├── zeph-core           Agent loop, context builder, metrics, channel trait
+│   └── zeph-commands       Slash command handlers, CommandHandler registry, AgentAccess trait
 │
 └── Layer 5 — I/O & Optional Extensions
     ├── zeph-channels       Telegram + CLI + Discord + Slack channel adapters
@@ -51,6 +54,7 @@ zeph (binary)
   │     ├── zeph-memory (leaf)
   │     ├── zeph-channels (leaf)
   │     ├── zeph-tools  (leaf)
+  │     ├── zeph-context (leaf)
   │     ├── zeph-sanitizer (leaf)
   │     ├── zeph-experiments (optional, leaf)
   │     ├── zeph-subagent (leaf)
@@ -58,10 +62,11 @@ zeph (binary)
   │     ├── zeph-index  (leaf, always-on)
   │     ├── zeph-mcp    (optional, leaf)
   │     └── zeph-tui    (optional, leaf)
+  ├── zeph-commands (depends on zeph-core for AgentAccess trait)
   └── zeph-a2a  (optional, wired by binary, not by zeph-core)
 ```
 
-`zeph-core` is the only crate that depends on other workspace crates. All leaf crates are independent and can be tested in isolation. `zeph-a2a` is feature-gated and wired directly by the binary.
+`zeph-core` orchestrates most subsystems. `zeph-commands` depends on `zeph-core` to access the `AgentAccess` trait for bridging command handlers to agent subsystems. All other leaf crates are independent and can be tested in isolation. `zeph-a2a` is feature-gated and wired directly by the binary.
 
 ## Crate Responsibilities
 
@@ -74,11 +79,14 @@ zeph (binary)
 | `zeph-memory` | 2 | SQLite persistence, Qdrant vector search, document loaders, token counter, semantic response cache, anchored summarization, MAGMA typed edges, SYNAPSE spreading activation, write-time importance scoring |
 | `zeph-tools` | 2 | Tool execution framework, shell sandbox, file executor, trust model, TAFC schema augmentation, tool result cache, tool dependency graph, tool schema filtering |
 | `zeph-skills` | 2 | SKILL.md parser, skill registry, embedding matcher, hot-reload |
+| `zeph-db` | 2 | Database abstraction layer, SQLite and PostgreSQL backends |
+| `zeph-context` | 3 | Context assembly pipeline, budget allocation, message compaction, `ContextAssembler` and `ContextManager` |
 | `zeph-sanitizer` | 3 | Content sanitization, injection detection, PII filtering, exfiltration guard |
 | `zeph-experiments` | 3 | Autonomous experiment engine, hyperparameter search, LLM-as-judge evaluation |
 | `zeph-subagent` | 3 | Subagent spawning, capability grants, transcripts, lifecycle hooks |
 | `zeph-orchestration` | 3 | DAG task graph, DagScheduler, AgentRouter, LlmPlanner, LlmAggregator, plan template caching |
-| `zeph-core` | 4 | Agent loop, `AppBuilder`, context engineering, metrics, channel trait, multi-language FeedbackDetector, subgoal-aware compaction |
+| `zeph-core` | 4 | Agent loop, metrics, channel trait, multi-language FeedbackDetector, subgoal-aware compaction |
+| `zeph-commands` | 4 | Slash command handlers, `CommandHandler` registry, `AgentAccess` trait for subsystem access |
 | `zeph-channels` | 5 | Telegram, CLI, Discord, Slack channel adapters |
 | `zeph-index` | 5 | AST-based code indexing, hybrid retrieval, repo map generation |
 | `zeph-mcp` | 5 | MCP client for external tool servers (optional) |

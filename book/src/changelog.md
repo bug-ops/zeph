@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-04-13
+
+### Changed
+
+- **Slash command handler registry consolidation** — `/skill`, `/skills`, `/feedback`, `/compact`, `/mcp`, `/lsp`, `/scheduler`, `/experiment`, and `/log` commands are now dispatched through the `CommandHandler` registry. This improves consistency with the rest of the command palette and enables better discoverability. The legacy `dispatch_slash_command` function has been removed. No user-facing behavior changes — all commands work as before.
+- **Compaction internals refactoring** — the `compact_context` function has been restructured using owned types (`Vec<Message>`, `String`, `AnyProvider`) instead of references, eliminating borrows held across `.await` boundaries. This internal change improves code maintainability and resolves Rust HRTB (higher-ranked trait bound) constraints.
+
+### Security
+
+- **Path traversal hardening in `ImageCommand`** — the `/image` command now rejects absolute paths (e.g., `/etc/passwd`) in addition to traversal sequences like `../`. This mirrors the equivalent protection added to the CLI channel in v0.18.6. Images must be relative paths within the working directory.
+- **Upgraded `rand` to 0.10** — fixed RUSTSEC-2025-0097 by upgrading from the unsound `rand 0.8.5` to the safe `rand 0.10.1`. All call sites updated to use the new `RngExt::random_range()` API.
+
 ## [0.18.5] - 2026-04-07
 
 ### Added

@@ -22,7 +22,7 @@ ratatui.workspace = true
 regex.workspace = true
 thiserror.workspace = true
 similar.workspace = true
-throbber-widgets-tui = "0.11"
+throbber-widgets-tui.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 unicode-width.workspace = true
 tree-sitter.workspace = true
@@ -40,9 +40,9 @@ zeph-core.workspace = true
 zeph-subagent.workspace = true
 
 [dev-dependencies]
-expectrl = "0.8"
-insta = "1.42"
-proptest = "1.6"
+expectrl.workspace = true
+insta.workspace = true
+proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

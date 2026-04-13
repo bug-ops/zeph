@@ -4,8 +4,16 @@ Each workspace crate has a focused responsibility. All leaf crates are independe
 
 ## zeph (binary)
 
-Thin entry point (26 LOC `main.rs`) that delegates all work to focused submodules:
+Thin entry point that delegates all work to focused submodules and orchestrates the AppBuilder:
 
+- `bootstrap/` — `AppBuilder` orchestrator (moved from `zeph-core::bootstrap/` in v0.19.0) decomposed into:
+  - `mod.rs` — `AppBuilder` struct and orchestration entry points: `from_env()`, `build_provider()`, `build_memory()`, `build_skill_matcher()`, `build_registry()`, `build_tool_executor()`, `build_watchers()`, `build_shutdown()`, `build_summary_provider()`
+  - `config.rs` — config file resolution and vault argument parsing
+  - `health.rs` — health check and provider warmup logic
+  - `mcp.rs` — MCP manager and Qdrant tool registry creation
+  - `provider.rs` — provider factory functions
+  - `skills.rs` — skill matcher and embedding model helpers
+  - `tests.rs` — unit tests for bootstrap logic
 - `runner.rs` — top-level dispatch: reads CLI flags, selects mode (ACP, TUI, CLI, daemon), and drives the `AnyChannel` loop
 - `agent_setup.rs` — composes the `ToolExecutor` chain, initialises the MCP manager, and wires feature-gated extensions (code index, candle-stt, whisper-stt, response cache, cost tracker, summary provider)
 - `tracing_init.rs` — configures the `tracing-subscriber` stack (env filter, JSON/pretty format)
@@ -20,17 +28,9 @@ Thin entry point (26 LOC `main.rs`) that delegates all work to focused submodule
 
 ## zeph-core
 
-Agent loop, bootstrap orchestration, configuration loading, and context builder.
+Agent loop, context engineering, and messaging subsystems.
 
-- `AppBuilder` — bootstrap orchestrator in `zeph-core::bootstrap/`, decomposed into:
-  - `mod.rs` (278 LOC) — `AppBuilder` struct and orchestration entry points: `from_env()`, `build_provider()` with health check, `build_memory()`, `build_skill_matcher()`, `build_registry()`, `build_tool_executor()`, `build_watchers()`, `build_shutdown()`, `build_summary_provider()`
-  - `config.rs` — config file resolution and vault argument parsing
-  - `health.rs` — health check and provider warmup logic
-  - `mcp.rs` — MCP manager and Qdrant tool registry creation
-  - `provider.rs` — provider factory functions
-  - `skills.rs` — skill matcher and embedding model helpers
-  - `tests.rs` — unit tests for bootstrap logic
-- `Agent<C>` — main agent loop generic over channel only. Tool execution uses `Box<dyn ErasedToolExecutor>` for object-safe dynamic dispatch (no `T` generic). Provider is resolved at construction time (`AnyProvider` enum dispatch, no `P` generic). Streaming support, message queue drain. Internal state is grouped into domain sub-structs: `MessageState` (message buffer, image staging), `MemoryState` (semantic memory, graph, summaries), `SkillState` (registry, matcher, prompt), `RuntimeConfig` (security, hooks, persona), `McpState` (MCP tools, manager), `IndexState` (code retriever, indexer), `DebugState` (dumper, trace, anomaly detector), `SecurityState` (sanitizer, quarantine, exfiltration guard), and `ToolState` (schema filter, dependency graph, iteration bookkeeping). Logic is decomposed into `streaming.rs`, `persistence.rs`, and three dedicated subsystem structs described below. Each sub-struct has a dedicated `impl` block with domain-specific methods (`SecurityState::scrub_pii`, `SkillState::rebuild_prompt`, `McpState::sync_tools`, `IndexState::fetch_code_rag`, `DebugState::start_iteration_span`, etc.)
+- `Agent<C>` — main agent loop generic over channel only. Tool execution uses `Box<dyn ErasedToolExecutor>` for object-safe dynamic dispatch (no `T` generic). Provider is resolved at construction time (`AnyProvider` enum dispatch, no `P` generic). Continuous cycle: user message receipt, context building, LLM inference, tool execution, queue draining. Cancellation-safe via `select!` and `LoopEvent` handlers. Streaming support, message queue drain. Internal state is grouped into domain sub-structs: `MessageState` (message buffer, image staging), `MemoryState` (semantic memory, graph, summaries), `SkillState` (registry, matcher, prompt), `RuntimeConfig` (security, hooks, persona), `McpState` (MCP tools, manager), `IndexState` (code retriever, indexer), `DebugState` (dumper, trace, anomaly detector), `SecurityState` (sanitizer, quarantine, exfiltration guard), and `ToolState` (schema filter, dependency graph, iteration bookkeeping). Logic is decomposed into `streaming.rs`, `persistence.rs`, and three dedicated subsystem structs described below. Each sub-struct has a dedicated `impl` block with domain-specific methods (`SecurityState::scrub_pii`, `SkillState::rebuild_prompt`, `McpState::sync_tools`, `IndexState::fetch_code_rag`, `DebugState::start_iteration_span`, etc.)
 - `ContextManager` — owns context budget configuration, `token_counter` (`Arc<TokenCounter>`), compaction threshold (80%), compaction tail preservation, prune-protect token floor, and token safety margin. Exposes `should_compact()` used by the agent loop before each LLM call
 - `ToolOrchestrator` — owns `doom_loop_history` (rolling hash window), `max_iterations` (default 10), summarize-tool-output flag, and `OverflowConfig`. Exposes `push_doom_hash()`, `clear_doom_history()`, and `is_doom_loop()` (returns `true` when last `DOOM_LOOP_WINDOW` hashes are identical)
 - `LearningEngine` — owns `LearningConfig` and per-turn `reflection_used` flag. Exposes `is_enabled()`, `mark_reflection_used()`, `was_reflection_used()`, and `reset_reflection()` called at the start of each agent turn
@@ -49,6 +49,32 @@ Agent loop, bootstrap orchestration, configuration loading, and context builder.
 - `LoopbackHandle::cancel_signal` — `Arc<Notify>` shared between the ACP session and the agent loop; calling `notify_one()` interrupts the running agent turn
 - `hash::content_hash()` — BLAKE3-based utility returning a hex-encoded content hash for any byte slice; used for delta-sync checks and integrity verification across crates; available as `zeph_core::content_hash`
 - `DiffData` — re-exported from `zeph_tools::executor::DiffData` as `zeph_core::DiffData`; the `zeph-core::diff` module has been removed in favour of this direct re-export
+- `CommandRegistry<C>` — slash command dispatch registry with trait-based `CommandHandler<C>` objects. Enables independent handler unit testing and runtime command enumeration
+- `CommandContext<'_, C>` — lifetime-bound subsystem borrows provided to command handlers
+- `CommandOutput` enum — handler return type with variants: `Message` (send to user), `Silent`, `Exit`, `Continue`
+
+## zeph-context
+
+Context assembly pipeline, budget allocation, and message compaction (extracted from `zeph-core` in v0.19.0).
+
+- `ContextAssembler` — stateless struct with `gather(input: &ContextAssemblyInput<'_>) -> Result<PreparedContext, AgentError>`; encapsulates all context fetching and assembly logic
+- `ContextAssemblyInput<'a>` — borrows all fields needed for context assembly: memory, skills, index, LLM provider, etc.
+- `PreparedContext` — output from assembly carrying all fetched `Option<Message>` values, `memory_first` flag, and `recent_history_budget`
+- `ContextManager` — owns context budget configuration, `token_counter` (`Arc<TokenCounter>`), compaction thresholds (soft: 0.60, hard: 0.90), and prune-protect token floor
+- `ContextBudget` / `BudgetAllocation` — proportional budget allocation across skills, memory, summaries, and environment context
+- `CompactionStrategy` — pluggable compaction backends for message trimming and LLM-based summarization
+- Per-turn context tracing and metrics: token usage, message counts, compaction decisions
+
+## zeph-commands
+
+Slash command handlers and the CommandHandler registry (separated from `zeph-core` in v0.19.0).
+
+- `CommandRegistry<C>` — centralized registry mapping command names to handler objects; supports runtime enumeration
+- `CommandHandler<C>` — object-safe trait for command execution via `Pin<Box<dyn Future>>`
+- `AgentAccess` — fat trait bridging handlers to `zeph-core` subsystems requiring simultaneous access to multiple `Agent<C>` fields (memory, skills, tools, config, LLM, etc.)
+- Handler types — structs like `HelpCommand`, `SkillCommand`, `MemoryCommand`, `StatusCommand`, etc., each implementing the `CommandHandler` trait
+- Handler migration — commands migrated in phases: Phase 1 (`/exit`, `/quit`, `/clear`, `/reset`, `/debug-dump`), Phase 2–3 (`/memory`, `/graph`, `/guidelines`, `/model`, `/provider`, `/policy`, `/scheduler`, `/lsp`), Phase 4–5 (`/skill`, `/skills`, `/feedback`, `/compact`, `/mcp`, `/new`, `/experiment`, `/plan`)
+- `_as_string` variant pattern — separates `Send` and `!Send` handler logic; `_as_string` variants hold no `&self` references across `.await`, enabling registry dispatch
 
 ## zeph-llm
 

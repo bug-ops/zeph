@@ -7,7 +7,7 @@ Requires Rust 1.88+. Native async traits are used throughout. `async-trait` is r
 ## Workspace Layout
 
 ```text
-zeph (binary) — thin CLI/channel dispatch, delegates to AppBuilder
+zeph (binary) — thin CLI/channel dispatch, AppBuilder bootstrap, vault/skill/memory subcommands
 ├── Layer 0 — Primitives
 │   └── zeph-common         Shared primitives: Secret, VaultError, common types
 ├── Layer 1 — Configuration & Secrets
@@ -21,12 +21,14 @@ zeph (binary) — thin CLI/channel dispatch, delegates to AppBuilder
 │   ├── zeph-skills         SKILL.md parser, registry, embedding matcher, hot-reload
 │   └── zeph-index          AST-based code indexing, hybrid retrieval, repo map (always-on)
 ├── Layer 3 — Agent Subsystems
+│   ├── zeph-context        Context assembly, budget, compaction (extracted from zeph-core)
 │   ├── zeph-sanitizer      Content sanitization, PII filter, exfiltration guard
 │   ├── zeph-experiments    Autonomous experiment engine, LLM-as-judge evaluation
 │   ├── zeph-subagent       Subagent lifecycle, grants, transcripts, hooks
 │   └── zeph-orchestration  DAG-based task orchestration, planner, router, aggregator
-├── Layer 4 — Agent Core
-│   └── zeph-core           Agent loop, AppBuilder bootstrap, context builder, metrics
+├── Layer 4 — Agent Core & Commands
+│   ├── zeph-core           Agent loop, context builder, metrics
+│   └── zeph-commands       Slash command handlers, CommandHandler registry
 ├── Layer 5 — Protocol & I/O
 │   ├── zeph-channels       Telegram, Discord, Slack adapters
 │   ├── zeph-mcp            MCP client via rmcp, multi-server lifecycle (optional)
@@ -60,7 +62,7 @@ Queued messages are processed sequentially with full context rebuilding between 
 
 - **Generic Agent:** `Agent<C: Channel>` — generic over channel only. The provider is resolved at construction time (`AnyProvider` enum dispatch). Tool execution uses `Box<dyn ErasedToolExecutor>` for object-safe dynamic dispatch, eliminating the former `T: ToolExecutor` generic parameter. Internal state is grouped into domain sub-structs: `MessageState` (message buffer, image staging), `MemoryState` (semantic memory, graph, summaries), `SkillState` (registry, matcher, prompt), `RuntimeConfig` (security, hooks, persona config), `McpState` (MCP tools, manager), `IndexState` (code retriever, indexer), `DebugState` (dumper, trace, anomaly detector), `SecurityState` (sanitizer, quarantine, exfiltration guard), and `ToolState` (schema filter, dependency graph, iteration bookkeeping). Logic is decomposed into `streaming.rs`, `persistence.rs`, and three dedicated subsystems: `ContextManager` (budget / compaction), `ToolOrchestrator` (doom-loop detection / iteration limit), and `LearningEngine` (self-learning reflection state). Concurrency uses `parking_lot` locks throughout (no poison handling)
 - **TLS:** rustls everywhere (no openssl-sys)
-- **Bootstrap:** `AppBuilder` in `zeph-core::bootstrap/` (split into `mod.rs`, `config.rs`, `health.rs`, `mcp.rs`, `provider.rs`, `skills.rs`) handles config/vault resolution, provider creation, memory setup, skill matching, tool executor composition, and graceful shutdown wiring. `main.rs` (26 LOC) is a thin entry point delegating to `runner.rs` for channel/mode dispatch
+- **Bootstrap:** `AppBuilder` in the binary's `bootstrap/` module (split into `mod.rs`, `config.rs`, `health.rs`, `mcp.rs`, `provider.rs`, `skills.rs`) handles config/vault resolution, provider creation, memory setup, skill matching, tool executor composition, and graceful shutdown wiring. `main.rs` (thin entry point) delegates to `runner.rs` for channel/mode dispatch
 - **Binary structure:** `zeph` binary is decomposed into focused modules — `runner.rs` (dispatch), `agent_setup.rs` (tool executor + MCP + feature extensions), `tracing_init.rs`, `tui_bridge.rs`, `channel.rs`, `cli.rs` (clap args), `acp.rs`, `daemon.rs`, `scheduler.rs`, `commands/` (vault/skill/memory subcommands), `tests.rs`
 - **Errors:** `thiserror` for all crates with typed error enums (`ChannelError`, `AgentError`, `LlmError`, etc.); `anyhow` only for top-level orchestration in `runner.rs`
 - **Lints:** workspace-level `clippy::all` + `clippy::pedantic` + `clippy::nursery`; `unsafe_code = "deny"`

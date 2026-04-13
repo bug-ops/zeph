@@ -9,7 +9,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::post,
 };
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::Value;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;

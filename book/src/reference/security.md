@@ -128,6 +128,7 @@ Commands matching `confirm_patterns` trigger an interactive confirmation before 
 
 **Path validation:**
 - All paths are resolved to absolute form and canonicalized before access
+- Absolute paths are rejected when the operation is not explicitly authorized (e.g., the `/image` slash command rejects absolute paths like `/etc/passwd` and only permits relative paths)
 - Non-existing paths (e.g., for `write`) use ancestor-walk canonicalization: the resolver walks up the path tree to the nearest existing ancestor, canonicalizes it, then re-appends the remaining segments. This prevents symlink and `..` traversal on paths that do not yet exist on disk
 - If the resolved path does not fall under any entry in `allowed_paths`, the operation is rejected with a `SandboxViolation` error
 
