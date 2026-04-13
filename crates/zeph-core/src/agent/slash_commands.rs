@@ -33,7 +33,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// implementations hold non-Send futures (references across `.await` points):
     /// - `/skill`, `/skills`, `/feedback` — non-Send DB references
     /// - `/compact` — `AnyProvider::embed/chat` creates `&AnyProvider` across await (HRTB)
-    /// - `/mcp` — `McpManager` methods hold `RwLockWriteGuard` across await (HRTB)
+    /// - `/mcp` — `RwLockWriteGuard`, `&[McpTool]`, and `McpToolRef<'_>` across await (HRTB)
     ///
     /// All other slash commands are dispatched through `session_registry` or `agent_registry`
     /// in `Agent::run`.

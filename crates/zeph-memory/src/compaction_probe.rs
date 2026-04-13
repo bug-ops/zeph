@@ -500,9 +500,9 @@ impl Default for CompactionProbeConfig {
 /// Returns `MemoryError` if an LLM call fails. Callers should treat this as non-fatal
 /// and proceed with compaction.
 pub async fn validate_compaction(
-    provider: &AnyProvider,
-    messages: &[Message],
-    summary: &str,
+    provider: AnyProvider,
+    messages: Vec<Message>,
+    summary: String,
     config: &CompactionProbeConfig,
 ) -> Result<Option<CompactionProbeResult>, MemoryError> {
     if !config.enabled {
@@ -536,9 +536,9 @@ pub async fn validate_compaction(
 }
 
 async fn run_probe(
-    provider: &AnyProvider,
-    messages: &[Message],
-    summary: &str,
+    provider: AnyProvider,
+    messages: Vec<Message>,
+    summary: String,
     config: &CompactionProbeConfig,
 ) -> Result<Option<CompactionProbeResult>, MemoryError> {
     if summary.len() < 10 {
@@ -549,7 +549,7 @@ async fn run_probe(
         return Ok(None);
     }
 
-    let questions = generate_probe_questions(provider, messages, config.max_questions).await?;
+    let questions = generate_probe_questions(&provider, &messages, config.max_questions).await?;
 
     if questions.len() < 2 {
         tracing::debug!(
@@ -578,7 +578,7 @@ async fn run_probe(
         }
     }
 
-    let answers = answer_probe_questions(provider, summary, &questions).await?;
+    let answers = answer_probe_questions(&provider, &summary, &questions).await?;
 
     let (per_question_scores, _simple_avg) = score_answers(&questions, &answers);
 

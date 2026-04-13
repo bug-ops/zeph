@@ -561,10 +561,13 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     // ----- /compact -----
     //
-    // compact_context() is not Send because summarize_messages holds &self (via &AnyProvider
-    // in SummarizationDeps) across .await points — a fundamental HRTB limitation.
+    // compact_context() cannot be made Send because `Agent<C>` contains non-Sync fields
+    // (Channel, and internal async helpers with &str / &SemanticMemory across .await).
+    // The Rust HRTB checker requires `for<'a> &'a Agent<C>: Send` which cannot be inferred
+    // automatically for `async fn(&mut self)` bodies without unsafe.
+    //
     // The actual dispatch remains in dispatch_slash_command which calls compact_context()
-    // directly without the Send bound.
+    // directly as a non-Send async fn.
 
     fn compact_context<'a>(
         &'a mut self,
@@ -642,9 +645,12 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     // ----- /mcp -----
     //
-    // handle_mcp_command_as_string is not Send because McpManager::add_server/remove_server
-    // hold tokio::sync::RwLockWriteGuard across .await points — an HRTB limitation.
-    // The actual dispatch remains in dispatch_slash_command.
+    // handle_mcp_command is not Send: McpManager::add_server holds a
+    // tokio::sync::RwLockWriteGuard across .await (HRTB), rebuild_semantic_index holds
+    // &[McpTool] across .await, and sync_mcp_registry closures hold McpToolRef<'_> across
+    // .await.  All three fail the `for<'a> &'a Agent<C>: Send` bound required by
+    // `Box<dyn Future + Send>`.  /mcp is dispatched directly in dispatch_slash_command;
+    // McpCommand in zeph-commands is a stub for registry/help purposes only.
 
     fn handle_mcp<'a>(
         &'a mut self,

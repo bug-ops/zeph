@@ -910,13 +910,11 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(GuidelinesCommand);
                 agent_reg.register(ModelCommand);
                 agent_reg.register(ProviderCommand);
-                // Note: SkillCommand, SkillsCommand, FeedbackCommand are intentionally NOT
-                // registered here — their implementations hold non-Send references across .await
-                // points. They continue to be dispatched via dispatch_slash_command below.
-                // Note: /compact and /mcp remain in dispatch_slash_command below — their
-                // AgentAccess impls cannot be made Send due to HRTB limitations:
-                // - /compact: AnyProvider is !Sync, so &AnyProvider across .await fails
-                // - /mcp: RwLockWriteGuard held across .await in McpManager::add_server
+                // Note: SkillCommand, SkillsCommand, FeedbackCommand, McpCommand are intentionally
+                // NOT registered here — their implementations hold non-Send references across
+                // .await points. They continue to be dispatched via dispatch_slash_command below.
+                // McpCommand is NOT registered anywhere; /mcp remains in dispatch_slash_command
+                // until RwLockWriteGuard, &[McpTool], and McpToolRef<'_> HRTB blockers are fixed.
                 agent_reg.register(PolicyCommand);
                 agent_reg.register(SchedulerCommand);
                 agent_reg.register(LspCommand);

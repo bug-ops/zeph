@@ -21,13 +21,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Compaction internals: owned-type refactoring** (`#2935`, `#2936`): refactored
+  `validate_compaction`, `summarize_messages_with_deps`, and `archive_tool_outputs` to take owned
+  types (`Vec<Message>`, `String`, `AnyProvider`) instead of references, eliminating borrows held
+  across `.await` boundaries. Extracted `persist_compaction_result` helper. Added `CompactCommand`
+  and `McpCommand` stubs in `zeph-commands` with precise HRTB blocker documentation. `/compact`
+  and `/mcp` remain in `dispatch_slash_command`: async futures are `!Send` due to `&DbStore` and
+  `RwLockWriteGuard` across `.await` (Rust HRTB limitation, rust-lang #96865).
+
 - **Handler migration phase 5** (`#2928`): migrated `/new`, `/experiment`, and `/plan` from the
   legacy `dispatch_slash_command` to the `CommandHandler` registry using the extract-before-await
-  pattern. `/compact` and `/mcp` remain in `dispatch_slash_command` pending upstream fixes:
-  `AnyProvider: !Sync` blocks `/compact`, `RwLockWriteGuard`-across-await blocks `/mcp`. Added
+  pattern. `/compact` and `/mcp` remain in `dispatch_slash_command` pending HRTB resolution. Added
   `parse_new_flags()` helper and 5 unit tests for `--keep-plan`/`--no-digest` argument parsing.
-  Removed dead `CompactCommand` and `McpCommand` structs. Removed redundant `flush_chunks` call
-  from `dispatch_plan_command`.
+  Removed redundant `flush_chunks` call from `dispatch_plan_command`.
 
 - **Handler migration phase 4** (`#2924`): migrated 13 remaining slash commands from the legacy
   `dispatch_slash_command` fallback in `zeph-core` to typed handler structs in `zeph-commands`.

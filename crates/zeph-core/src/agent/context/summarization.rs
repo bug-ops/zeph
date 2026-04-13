@@ -188,17 +188,18 @@ impl<C: Channel> Agent<C> {
 
     /// Summarize `messages` using `deps` extracted from `&self` before any `.await`.
     ///
-    /// Equivalent to `summarize_messages` but takes `SummarizationDeps` by value so the
-    /// caller can extract deps synchronously, then call this without holding `&self` across
-    /// any `.await`, making the enclosing future `Send`.
+    /// Equivalent to `summarize_messages` but takes all inputs by value so the
+    /// caller can extract them synchronously, then call this without holding `&self`
+    /// or any borrowed slice across any `.await`, making the enclosing future `Send`.
     async fn summarize_messages_with_deps(
         deps: SummarizationDeps,
         structured_summaries: bool,
-        messages: &[Message],
-        guidelines: &str,
+        messages: Vec<Message>,
+        guidelines: String,
     ) -> Result<String, super::super::error::AgentError> {
         if structured_summaries {
-            match Self::try_summarize_structured_with_deps(deps.clone(), messages, guidelines).await
+            match Self::try_summarize_structured_with_deps(deps.clone(), &messages, &guidelines)
+                .await
             {
                 Ok(anchored) => {
                     if let Some(ref cb) = deps.on_anchored_summary {
@@ -222,7 +223,7 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        match Self::try_summarize_with_llm_with_deps(deps.clone(), messages, guidelines).await {
+        match Self::try_summarize_with_llm_with_deps(deps.clone(), &messages, &guidelines).await {
             Ok(summary) => return Ok(summary),
             Err(e) if !e.is_context_length_error() => return Err(e.into()),
             Err(e) => {
@@ -233,12 +234,13 @@ impl<C: Channel> Agent<C> {
         }
 
         for fraction in [0.10f32, 0.20, 0.50, 1.0] {
-            let reduced = Self::remove_tool_responses_middle_out(messages.to_vec(), fraction);
+            let reduced = Self::remove_tool_responses_middle_out(messages.clone(), fraction);
             tracing::debug!(
                 fraction,
                 "retrying summarization with reduced tool responses"
             );
-            match Self::try_summarize_with_llm_with_deps(deps.clone(), &reduced, guidelines).await {
+            match Self::try_summarize_with_llm_with_deps(deps.clone(), &reduced, &guidelines).await
+            {
                 Ok(summary) => {
                     tracing::info!(
                         fraction,
@@ -254,7 +256,7 @@ impl<C: Channel> Agent<C> {
         }
 
         tracing::warn!("all LLM summarization attempts failed, using metadata fallback");
-        Ok(Self::build_metadata_summary(messages))
+        Ok(Self::build_metadata_summary(&messages))
     }
 
     /// Load the current compression guidelines from `SQLite` if the feature is enabled.
@@ -314,7 +316,7 @@ impl<C: Channel> Agent<C> {
         archive_enabled: bool,
         memory: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
         cid: Option<zeph_memory::ConversationId>,
-        to_compact: &[Message],
+        to_compact: Vec<Message>,
     ) -> Vec<String> {
         if !archive_enabled {
             return Vec::new();
@@ -371,7 +373,7 @@ impl<C: Channel> Agent<C> {
         let archive_enabled = self.context_manager.compression.archive_tool_outputs;
         let memory = self.memory_state.persistence.memory.clone();
         let cid = self.memory_state.persistence.conversation_id;
-        Self::archive_tool_outputs(archive_enabled, memory, cid, to_compact).await
+        Self::archive_tool_outputs(archive_enabled, memory, cid, to_compact.to_vec()).await
     }
 
     #[allow(clippy::too_many_lines)]
@@ -486,14 +488,20 @@ impl<C: Channel> Agent<C> {
             let archive_enabled = self.context_manager.compression.archive_tool_outputs;
             let memory = self.memory_state.persistence.memory.clone();
             let cid = self.memory_state.persistence.conversation_id;
-            Self::archive_tool_outputs(archive_enabled, memory, cid, &to_compact).await
+            Self::archive_tool_outputs(archive_enabled, memory, cid, to_compact.clone()).await
         };
 
         // Extract deps before .await so &self is not held across the await boundary.
         let summary = {
             let deps = self.build_summarization_deps();
             let structured = self.memory_state.compaction.structured_summaries;
-            Self::summarize_messages_with_deps(deps, structured, &to_compact, &guidelines).await?
+            Self::summarize_messages_with_deps(
+                deps,
+                structured,
+                to_compact.clone(),
+                guidelines.clone(),
+            )
+            .await?
         };
 
         // Compaction probe: validate summary quality before committing it.
@@ -503,9 +511,9 @@ impl<C: Channel> Agent<C> {
                 .send_status("Validating compaction quality...")
                 .await;
             let probe_result = match zeph_memory::validate_compaction(
-                self.probe_or_summary_provider(),
-                &to_compact,
-                &summary,
+                self.probe_or_summary_provider().clone(),
+                to_compact.clone(),
+                summary.clone(),
                 &self.context_manager.compression.probe,
             )
             .await
@@ -645,65 +653,87 @@ impl<C: Channel> Agent<C> {
             m.context_compactions += 1;
         });
 
-        if let (Some(memory), Some(cid)) = (
-            &self.memory_state.persistence.memory,
-            self.memory_state.persistence.conversation_id,
-        ) {
-            // Persist compaction: mark originals as user_only, insert summary as agent_only.
-            // Assumption: the system prompt is always the first (oldest) row for this conversation
-            // in SQLite — i.e., ids[0] corresponds to self.msg.messages[0] (the system prompt).
-            // This holds for normal sessions but may not hold after cross-session restore if a
-            // non-system message was persisted first. MVP assumption; document if changed.
-            // oldest_message_ids returns ascending order; ids[1..=compacted_count] are the messages
-            // that were drained from self.msg.messages[1..compact_end].
-            let sqlite = memory.sqlite();
-            let ids = sqlite
-                .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))
+        // Extract memory params before .await so no &self is held across the persist boundary.
+        let persist_failed = {
+            let memory = self.memory_state.persistence.memory.clone();
+            let cid = self.memory_state.persistence.conversation_id;
+            Self::persist_compaction_result(
+                memory,
+                cid,
+                compacted_count,
+                summary_content.clone(),
+                summary.clone(),
+            )
+            .await
+        };
+        if persist_failed {
+            let _ = self
+                .channel
+                .send(
+                    "Context compaction failed — response quality may be affected in long \
+                     sessions.",
+                )
                 .await;
-            let mut persist_failed = false;
-            match ids {
-                Ok(ids) if ids.len() >= 2 => {
-                    // ids[0] is the system prompt; compact ids[1..=compacted_count]
-                    let start = ids[1];
-                    let end = ids[compacted_count.min(ids.len() - 1)];
-                    if let Err(e) = sqlite
-                        .replace_conversation(cid, start..=end, "system", &summary_content)
-                        .await
-                    {
-                        tracing::warn!("failed to persist compaction in sqlite: {e:#}");
-                        persist_failed = true;
-                    } else if let Err(e) = memory.store_session_summary(cid, &summary).await {
-                        tracing::warn!("failed to store session summary in Qdrant: {e:#}");
-                        persist_failed = true;
-                    }
-                }
-                Ok(_) => {
-                    // Not enough messages in DB — fall back to legacy summary storage
-                    if let Err(e) = memory.store_session_summary(cid, &summary).await {
-                        tracing::warn!("failed to store session summary: {e:#}");
-                        persist_failed = true;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("failed to get message ids for compaction: {e:#}");
-                    if let Err(e) = memory.store_session_summary(cid, &summary).await {
-                        tracing::warn!("failed to store session summary: {e:#}");
-                    }
-                    persist_failed = true;
-                }
-            }
-            if persist_failed {
-                let _ = self
-                    .channel
-                    .send(
-                        "Context compaction failed — response quality may be affected in long \
-                         sessions.",
-                    )
-                    .await;
-            }
         }
 
         Ok(CompactionOutcome::Compacted)
+    }
+
+    /// Persist a completed compaction to `SQLite` and Qdrant.
+    ///
+    /// Takes all parameters by value so the caller does not hold `&self` across any `.await`,
+    /// keeping the enclosing future `Send`.
+    async fn persist_compaction_result(
+        memory: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
+        cid: Option<zeph_memory::ConversationId>,
+        compacted_count: usize,
+        summary_content: String,
+        summary: String,
+    ) -> bool {
+        let (Some(memory), Some(cid)) = (memory, cid) else {
+            return false;
+        };
+        // Persist compaction: mark originals as user_only, insert summary as agent_only.
+        // Assumption: the system prompt is always the first (oldest) row for this conversation
+        // in SQLite — i.e., ids[0] corresponds to self.msg.messages[0] (the system prompt).
+        // This holds for normal sessions but may not hold after cross-session restore if a
+        // non-system message was persisted first. MVP assumption; document if changed.
+        // oldest_message_ids returns ascending order; ids[1..=compacted_count] are the messages
+        // that were drained from self.msg.messages[1..compact_end].
+        let sqlite = memory.sqlite();
+        let ids = sqlite
+            .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))
+            .await;
+        match ids {
+            Ok(ids) if ids.len() >= 2 => {
+                let start = ids[1];
+                let end = ids[compacted_count.min(ids.len() - 1)];
+                if let Err(e) = sqlite
+                    .replace_conversation(cid, start..=end, "system", &summary_content)
+                    .await
+                {
+                    tracing::warn!("failed to persist compaction in sqlite: {e:#}");
+                    return true;
+                } else if let Err(e) = memory.store_session_summary(cid, &summary).await {
+                    tracing::warn!("failed to store session summary in Qdrant: {e:#}");
+                    return true;
+                }
+            }
+            Ok(_) => {
+                if let Err(e) = memory.store_session_summary(cid, &summary).await {
+                    tracing::warn!("failed to store session summary: {e:#}");
+                    return true;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("failed to get message ids for compaction: {e:#}");
+                if let Err(e) = memory.store_session_summary(cid, &summary).await {
+                    tracing::warn!("failed to store session summary: {e:#}");
+                }
+                return true;
+            }
+        }
+        false
     }
 
     /// Prune tool output bodies.
