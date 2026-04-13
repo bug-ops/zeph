@@ -530,8 +530,7 @@ impl SemanticMemory {
             return false;
         }
         tasks.spawn(fut);
-        // embedding dispatched to background; metric not incremented
-        false
+        true
     }
 
     /// Embed content chunks and store each with an optional category payload field.
@@ -1412,5 +1411,68 @@ mod tests {
         };
         assert_eq!(ctx.exit_code, Some(1));
         assert!(ctx.timestamp.is_none());
+    }
+
+    async fn make_semantic_memory() -> crate::semantic::SemanticMemory {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let provider = AnyProvider::Mock(MockProvider::default());
+        let sqlite = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        crate::semantic::SemanticMemory {
+            sqlite,
+            qdrant: None,
+            provider,
+            embed_provider: None,
+            embedding_model: "test-model".into(),
+            vector_weight: 0.7,
+            keyword_weight: 0.3,
+            temporal_decay_enabled: false,
+            temporal_decay_half_life_days: 30,
+            mmr_enabled: false,
+            mmr_lambda: 0.7,
+            importance_enabled: false,
+            importance_weight: 0.15,
+            token_counter: Arc::new(crate::token_counter::TokenCounter::new()),
+            graph_store: None,
+            community_detection_failures: Arc::new(AtomicU64::new(0)),
+            graph_extraction_count: Arc::new(AtomicU64::new(0)),
+            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+            tier_boost_semantic: 1.3,
+            admission_control: None,
+            key_facts_dedup_threshold: 0.95,
+            embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_embed_bg_returns_true_when_capacity_available() {
+        let memory = make_semantic_memory().await;
+        let dispatched = memory.spawn_embed_bg(std::future::ready(()));
+        assert!(
+            dispatched,
+            "spawn_embed_bg must return true when a task was successfully spawned"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_embed_bg_returns_false_at_capacity() {
+        let memory = make_semantic_memory().await;
+
+        // Fill the JoinSet to the limit with never-completing futures.
+        {
+            let mut tasks = memory.embed_tasks.lock().unwrap();
+            for _ in 0..MAX_EMBED_BG_TASKS {
+                tasks.spawn(std::future::pending::<()>());
+            }
+        }
+
+        let dispatched = memory.spawn_embed_bg(std::future::ready(()));
+        assert!(
+            !dispatched,
+            "spawn_embed_bg must return false when the task limit is reached"
+        );
     }
 }
