@@ -376,7 +376,13 @@ impl FileIndexWorker {
         let source = tokio::fs::read_to_string(abs_path).await?;
         let lang = detect_language(abs_path).ok_or(IndexError::UnsupportedLanguage)?;
 
-        let chunks = chunk_file(&source, rel_path, lang, &self.config.chunker)?;
+        let rel_path_owned = rel_path.to_owned();
+        let chunker_config = self.config.chunker.clone();
+        let chunks = tokio::task::spawn_blocking(move || {
+            chunk_file(&source, &rel_path_owned, lang, &chunker_config)
+        })
+        .await
+        .map_err(|e| IndexError::Other(format!("chunk_file panicked: {e}")))??;
 
         // Batch-check which hashes already exist to avoid N individual queries.
         let all_hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
@@ -538,5 +544,89 @@ mod tests {
         let report = IndexReport::default();
         assert_eq!(report.files_scanned, 0);
         assert!(report.errors.is_empty());
+    }
+
+    /// Verify that `chunk_file` runs inside `spawn_blocking` and that the dedup path
+    /// (all hashes already in SQLite) reaches `Ok((0, N))` without touching Qdrant.
+    ///
+    /// Two assertions:
+    /// 1. First `index_file` call with pre-seeded hashes → `(0, N)` (all skipped).
+    /// 2. Second identical call → same `(0, N)` (dedup is idempotent).
+    ///
+    /// The test does not require a live Qdrant instance because `upsert_chunks_batch`
+    /// returns early when `new_chunks` is empty.
+    #[tokio::test]
+    async fn index_file_spawn_blocking_dedup_path() {
+        use std::sync::Arc;
+        use tempfile::TempDir;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_memory::QdrantOps;
+
+        let dir = TempDir::new().unwrap();
+        let rs_path = dir.path().join("sample.rs");
+        std::fs::write(
+            &rs_path,
+            "pub fn hello() -> &'static str { \"hello\" }\n\
+             pub fn world() -> &'static str { \"world\" }\n",
+        )
+        .unwrap();
+
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_string(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .unwrap();
+
+        // Pre-seed the chunk hashes into SQLite so `existing_hashes` returns them all
+        // and `new_chunks` is empty — Qdrant upsert is never called.
+        let source = std::fs::read_to_string(&rs_path).unwrap();
+        let lang = crate::languages::detect_language(&rs_path).unwrap();
+        let chunks =
+            crate::chunker::chunk_file(&source, "sample.rs", lang, &ChunkerConfig::default())
+                .unwrap();
+        let chunk_count = chunks.len();
+        assert!(chunk_count > 0, "test file must produce at least one chunk");
+
+        for (i, chunk) in chunks.iter().enumerate() {
+            zeph_db::query(zeph_db::sql!(
+                "INSERT INTO chunk_metadata \
+                 (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+            ))
+            .bind(format!("q{i}"))
+            .bind("sample.rs")
+            .bind(&chunk.content_hash)
+            .bind(chunk.line_range.0 as i64)
+            .bind(chunk.line_range.1 as i64)
+            .bind("rust")
+            .bind("function_item")
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let ops = QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let store = crate::store::CodeStore::with_ops(ops, pool);
+        let provider = Arc::new(AnyProvider::Mock(
+            MockProvider::default().with_embedding(vec![0.0_f32; 384]),
+        ));
+        let worker = FileIndexWorker {
+            store,
+            provider,
+            config: IndexerConfig::default(),
+        };
+
+        // First call: all hashes exist → (0, chunk_count).
+        let (created, skipped) = worker.index_file(&rs_path, "sample.rs").await.unwrap();
+        assert_eq!(created, 0);
+        assert_eq!(skipped, chunk_count);
+
+        // Second call: same result — dedup is idempotent.
+        let (created2, skipped2) = worker.index_file(&rs_path, "sample.rs").await.unwrap();
+        assert_eq!(created2, 0);
+        assert_eq!(skipped2, chunk_count);
     }
 }
