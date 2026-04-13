@@ -19,7 +19,7 @@ use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 ///
 /// Subcommands: `add`, `list`, `tools`, `remove`.
 ///
-/// Delegates to [`AgentAccess::handle_mcp`], which collects all output into
+/// Delegates to `AgentAccess::handle_mcp`, which collects all output into
 /// a `String` and returns it.  The registry sends the string to the channel
 /// as a `Message` output.
 pub struct McpCommand;
