@@ -1127,19 +1127,25 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             let policies: Vec<String> = if let Some(ref path) = adv_cfg.policy_file {
                 // SEC-01: canonicalize + boundary check matching load_policy_file() in policy.rs.
                 // Prevents symlink attacks that could exfiltrate arbitrary files via the policy LLM.
-                let load_result = (|| -> Result<Vec<String>, std::io::Error> {
-                    let p = std::path::Path::new(path);
-                    let canonical = std::fs::canonicalize(p)?;
-                    let canonical_base = std::env::current_dir().and_then(std::fs::canonicalize)?;
-                    if !canonical.starts_with(&canonical_base) {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::PermissionDenied,
-                            "adversarial policy file escapes project root",
-                        ));
-                    }
-                    let content = std::fs::read_to_string(&canonical)?;
-                    Ok(zeph_tools::parse_policy_lines(&content))
-                })();
+                // spawn_blocking: canonicalize and read_to_string are blocking fs calls.
+                let path_owned = path.clone();
+                let load_result =
+                    tokio::task::spawn_blocking(move || -> Result<Vec<String>, std::io::Error> {
+                        let p = std::path::Path::new(&path_owned);
+                        let canonical = std::fs::canonicalize(p)?;
+                        let canonical_base =
+                            std::env::current_dir().and_then(std::fs::canonicalize)?;
+                        if !canonical.starts_with(&canonical_base) {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::PermissionDenied,
+                                "adversarial policy file escapes project root",
+                            ));
+                        }
+                        let content = std::fs::read_to_string(&canonical)?;
+                        Ok(zeph_tools::parse_policy_lines(&content))
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(std::io::Error::other(e)));
                 match load_result {
                     Ok(lines) => lines,
                     Err(e) => {

@@ -672,32 +672,46 @@ impl McpManager {
 
         let mut all_tools = Vec::new();
         let mut outcomes: Vec<ServerConnectOutcome> = Vec::new();
-        {
+
+        // Collect all connection results first — no locks held during async work.
+        let mut connect_results = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            let Ok((server_id, connect_result)) = result else {
+                tracing::warn!("MCP connection task panicked");
+                continue;
+            };
+            connect_results.push((server_id, connect_result));
+        }
+
+        // Process results one at a time, acquiring locks per-result.
+        // NOTE: `clients` and `server_tools` write guards are acquired here and held
+        // across the `handle_connect_result(...).await` call, which may perform HTTP
+        // requests, probe execution, and additional lock acquisitions on other fields
+        // (server_instructions, server_trust). Other tasks needing clients/server_tools
+        // are blocked for the duration of each handle_connect_result call. This is
+        // strictly better than the previous code (which held both locks for ALL results),
+        // but the contention window per-result remains. A future optimization could pass
+        // owned data into handle_connect_result instead of mutable guard references.
+        for (server_id, connect_result) in connect_results {
             let mut clients = self.clients.write().await;
             let mut server_tools = self.server_tools.write().await;
 
-            while let Some(result) = join_set.join_next().await {
-                let Ok((server_id, connect_result)) = result else {
-                    tracing::warn!("MCP connection task panicked");
-                    continue;
-                };
-
-                self.handle_connect_result(
-                    server_id,
-                    connect_result,
-                    &mut ConnectState {
-                        all_tools: &mut all_tools,
-                        clients: &mut clients,
-                        server_tools: &mut server_tools,
-                        outcomes: &mut outcomes,
-                    },
-                    IngestLimits {
-                        description_bytes: self.max_description_bytes,
-                        instructions_bytes: self.max_instructions_bytes,
-                    },
-                )
-                .await;
-            }
+            self.handle_connect_result(
+                server_id,
+                connect_result,
+                &mut ConnectState {
+                    all_tools: &mut all_tools,
+                    clients: &mut clients,
+                    server_tools: &mut server_tools,
+                    outcomes: &mut outcomes,
+                },
+                IngestLimits {
+                    description_bytes: self.max_description_bytes,
+                    instructions_bytes: self.max_instructions_bytes,
+                },
+            )
+            .await;
+            // clients and server_tools write guards dropped here at end of each iteration.
         }
 
         // Detect sanitized_id collisions across the aggregated tool list (SF-6/MF-1).

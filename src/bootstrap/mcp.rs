@@ -172,7 +172,7 @@ fn resolve_vault_ref(value: &str, vault: Option<&Arc<RwLock<AgeVaultProvider>>>)
         return value.to_owned();
     };
 
-    let guard = vault_arc.blocking_read();
+    let guard = tokio::task::block_in_place(|| vault_arc.blocking_read());
     let mut result = value.to_owned();
     let mut search_from = 0;
 

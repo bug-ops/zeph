@@ -131,16 +131,6 @@ async fn tui_loop(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        app.poll_metrics();
-        app.poll_pending_file_index();
-        app.poll_pending_transcript();
-        terminal.draw(|frame| app.draw(frame))?;
-
-        let links = app.take_hyperlinks();
-        if !links.is_empty() {
-            hyperlink::write_osc8(terminal.backend_mut(), &links)?;
-        }
-
         tokio::select! {
             biased;
             Some(event) = event_rx.recv() => {
@@ -153,6 +143,16 @@ async fn tui_loop(
                 }
             }
             _ = tick.tick() => {}
+        }
+
+        app.poll_metrics();
+        app.poll_pending_file_index();
+        app.poll_pending_transcript();
+        terminal.draw(|frame| app.draw(frame))?;
+
+        let links = app.take_hyperlinks();
+        if !links.is_empty() {
+            hyperlink::write_osc8(terminal.backend_mut(), &links)?;
         }
 
         if app.should_quit {

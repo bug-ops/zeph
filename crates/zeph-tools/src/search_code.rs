@@ -279,11 +279,15 @@ impl SearchCodeExecutor {
         }
 
         if let Some(symbol) = symbol {
-            hits.extend(self.structural_search(
-                symbol,
-                params.file_pattern.as_deref(),
-                max_results,
-            )?);
+            let paths = self.allowed_paths.clone();
+            let sym = symbol.to_owned();
+            let pat = params.file_pattern.clone();
+            let structural_hits = tokio::task::spawn_blocking(move || {
+                collect_all_structural_hits(&paths, &sym, pat.as_deref(), max_results)
+            })
+            .await
+            .map_err(|e| ToolError::Execution(e.into()))??;
+            hits.extend(structural_hits);
 
             if let Some(backend) = &self.lsp_backend {
                 if let Ok(lsp_hits) = backend
@@ -349,31 +353,6 @@ impl SearchCodeExecutor {
         }))
     }
 
-    fn structural_search(
-        &self,
-        symbol: &str,
-        file_pattern: Option<&str>,
-        max_results: usize,
-    ) -> Result<Vec<SearchCodeHit>, ToolError> {
-        let matcher = file_pattern
-            .map(glob::Pattern::new)
-            .transpose()
-            .map_err(|e| ToolError::InvalidParams {
-                message: format!("invalid file_pattern: {e}"),
-            })?;
-        let mut hits = Vec::new();
-        let symbol_lower = symbol.to_lowercase();
-
-        for root in &self.allowed_paths {
-            collect_structural_hits(root, root, matcher.as_ref(), &symbol_lower, &mut hits)?;
-            if hits.len() >= max_results {
-                break;
-            }
-        }
-
-        Ok(hits)
-    }
-
     fn grep_fallback(
         &self,
         pattern: &str,
@@ -429,6 +408,33 @@ impl ToolExecutor for SearchCodeExecutor {
             invocation: InvocationHint::ToolCall,
         }]
     }
+}
+
+/// Traverse `allowed_paths` collecting structural symbol hits synchronously.
+///
+/// Extracted as a free function so callers can run it inside
+/// `tokio::task::spawn_blocking` without borrowing `self`.
+fn collect_all_structural_hits(
+    allowed_paths: &[PathBuf],
+    symbol: &str,
+    file_pattern: Option<&str>,
+    max_results: usize,
+) -> Result<Vec<SearchCodeHit>, ToolError> {
+    let matcher = file_pattern
+        .map(glob::Pattern::new)
+        .transpose()
+        .map_err(|e| ToolError::InvalidParams {
+            message: format!("invalid file_pattern: {e}"),
+        })?;
+    let mut hits = Vec::new();
+    let symbol_lower = symbol.to_lowercase();
+    for root in allowed_paths {
+        collect_structural_hits(root, root, matcher.as_ref(), &symbol_lower, &mut hits)?;
+        if hits.len() >= max_results {
+            break;
+        }
+    }
+    Ok(hits)
 }
 
 fn dedupe_hits(mut hits: Vec<SearchCodeHit>, max_results: usize) -> Vec<SearchCodeHit> {
