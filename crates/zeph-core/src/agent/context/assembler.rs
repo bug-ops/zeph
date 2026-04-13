@@ -180,7 +180,8 @@ pub(super) async fn fetch_semantic_recall(
 
     let top_score = recalled.first().map(|r| r.score);
 
-    let mut recall_text = String::with_capacity(token_budget * 3);
+    let initial_cap = (memory_state.persistence.recall_limit * 512).min(token_budget * 3);
+    let mut recall_text = String::with_capacity(initial_cap);
     recall_text.push_str(RECALL_PREFIX);
     let mut tokens_used = tc.count_tokens(&recall_text);
 

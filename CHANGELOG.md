@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **TUI: remove per-frame message list clone** (`#2955`): `visible_messages().into_owned()` in
+  `chat.rs` replaced with a borrowed reference; eliminates ~20,000 `ChatMessage` clones/sec at
+  2000-message history, reducing idle CPU usage proportional to message count.
+
+- **Context assembler: cap `String::with_capacity` for recall text** (`#2956`): allocation is now
+  `min(recall_limit * 512, token_budget * 3)` instead of `token_budget * 3`; reduces worst-case
+  pre-allocation from ~200KB to a few KB per context assembly pass when using large-context
+  providers (Claude, GPT-4).
+
 ## [0.19.0] - 2026-04-13
 
 ### Changed

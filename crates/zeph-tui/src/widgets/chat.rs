@@ -33,7 +33,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     let wrap_width = area.width.saturating_sub(4) as usize;
 
     // Use visible_messages() to support subagent transcript view.
-    let messages = app.visible_messages().into_owned();
+    let messages = app.visible_messages();
     let truncation_info = app.transcript_truncation_info();
     let title = if let Some(ref name) = app.view_target.subagent_name().map(str::to_owned) {
         format!(" Subagent: {name} ")
