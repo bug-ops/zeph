@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **TaskSupervisor: correct shutdown, restart, and blocking semantics** (`#2958`):
+  fixed reap driver / shutdown race (completions now drained before exit), unconditional
+  restart on normal task completion (only panics trigger restart), and `spawn_blocking`
+  incorrectly using green threads instead of the OS blocking pool. Added exponential
+  backoff for `RestartPolicy::Restart`, registry visibility for blocking and oneshot tasks,
+  `TaskStatus::Aborted` for force-aborted entries, and 6 regression tests.
+
 ### Fixed
 
 - **TUI: remove per-frame message list clone** (`#2955`): `visible_messages().into_owned()` in
