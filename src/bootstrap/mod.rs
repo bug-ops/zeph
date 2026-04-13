@@ -21,8 +21,6 @@ pub use provider::{
 pub use skills::{
     create_embedding_provider, create_skill_matcher, effective_embedding_model, managed_skills_dir,
 };
-#[cfg(feature = "candle")]
-pub use zeph_core::provider_factory::select_device;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

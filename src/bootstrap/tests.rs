@@ -209,6 +209,9 @@ fn create_provider_openai_missing_api_key_errors() {
 }
 
 #[cfg(feature = "candle")]
+use zeph_core::provider_factory::select_device;
+
+#[cfg(feature = "candle")]
 #[test]
 fn select_device_cpu_default() {
     let device = select_device("cpu").unwrap();

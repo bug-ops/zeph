@@ -105,9 +105,14 @@ async fn process_line(
             return Ok(None);
         }
         let path_owned = path.to_owned();
+        let p = std::path::Path::new(&path_owned);
+        if p.is_absolute() || p.components().any(|c| c == std::path::Component::ParentDir) {
+            println!("Zeph: Invalid image path: path traversal not allowed");
+            return Ok(None);
+        }
         match tokio::fs::read(&path_owned).await {
             Err(e) => {
-                println!("Zeph: File not found: {path_owned}: {e}");
+                println!("Zeph: Cannot read image {path_owned}: {e}");
             }
             Ok(data) => {
                 let filename = std::path::Path::new(&path_owned)
@@ -771,5 +776,35 @@ mod tests {
         let result = ch.recv().await.unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().text, "hello");
+    }
+
+    #[tokio::test]
+    async fn image_command_absolute_path_is_rejected() {
+        let mut pending: Vec<Attachment> = Vec::new();
+        let mut history = Some(InputHistory::new(vec![], Box::new(|_| {})));
+        let result = process_line(
+            "/image /etc/passwd".to_owned(),
+            false,
+            &mut history,
+            &mut pending,
+        )
+        .await;
+        assert!(matches!(result, Ok(None)));
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn image_command_parent_dir_traversal_is_rejected() {
+        let mut pending: Vec<Attachment> = Vec::new();
+        let mut history = Some(InputHistory::new(vec![], Box::new(|_| {})));
+        let result = process_line(
+            "/image ../../../etc/passwd".to_owned(),
+            false,
+            &mut history,
+            &mut pending,
+        )
+        .await;
+        assert!(matches!(result, Ok(None)));
+        assert!(pending.is_empty());
     }
 }

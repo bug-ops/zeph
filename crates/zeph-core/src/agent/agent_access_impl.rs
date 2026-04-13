@@ -660,6 +660,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     // ----- /plan -----
 
+    #[cfg(feature = "scheduler")]
     fn handle_plan<'a>(
         &'a mut self,
         input: &'a str,
@@ -670,6 +671,14 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                 .map(|()| String::new())
                 .map_err(|e| CommandError::new(e.to_string()))
         })
+    }
+
+    #[cfg(not(feature = "scheduler"))]
+    fn handle_plan<'a>(
+        &'a mut self,
+        _input: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async move { Ok(String::new()) })
     }
 
     // ----- /experiment -----

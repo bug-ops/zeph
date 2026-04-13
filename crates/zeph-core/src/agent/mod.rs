@@ -27,6 +27,7 @@ mod message_queue;
 mod microcompact;
 mod model_commands;
 mod persistence;
+#[cfg(feature = "scheduler")]
 mod plan;
 mod policy_commands;
 mod provider_cmd;
