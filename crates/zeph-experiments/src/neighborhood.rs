@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 
 use ordered_float::OrderedFloat;
-use rand::Rng as _;
+use rand::RngExt as _;
 use rand::SeedableRng as _;
 use rand::rngs::SmallRng;
 
@@ -94,14 +94,14 @@ impl VariationGenerator for Neighborhood {
             return None;
         }
         for _ in 0..MAX_RETRIES {
-            let idx = self.rng.gen_range(0..self.search_space.parameters.len());
+            let idx = self.rng.random_range(0..self.search_space.parameters.len());
             let range = &self.search_space.parameters[idx];
             let current = baseline.get(range.kind);
             // DEFAULT_STEPS is used when step is None (continuous parameter).
             let step = range
                 .step
                 .unwrap_or_else(|| (range.max - range.min) / DEFAULT_STEPS);
-            let delta = self.rng.gen_range(-self.radius..=self.radius) * step;
+            let delta = self.rng.random_range(-self.radius..=self.radius) * step;
             // Skip zero perturbations — they produce the baseline value, wasting an attempt.
             if delta.abs() < f64::EPSILON {
                 continue;

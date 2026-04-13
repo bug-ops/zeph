@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **Path traversal fix in `ImageCommand`** (`#2937`): `handle_image_as_string` in
+  `zeph-core` now rejects absolute paths (e.g. `/etc/passwd`) in addition to `../`
+  traversal sequences. Mirrors the equivalent fix applied to the CLI channel in `#2933`.
+
+- **Upgrade `zeph-experiments` to `rand 0.10`** (`#2929`): removed unsound `rand 0.8.5`
+  dependency (RUSTSEC-2026-0097). `rand` now resolves via `workspace = true` to the safe
+  `rand 0.10.1`. Updated call sites from `Rng::gen_range` to `RngExt::random_range` per
+  the rand 0.10 API. All other previously inline-versioned dependencies (`serde`,
+  `serde_json`, `thiserror`, `tracing`) in `zeph-experiments` also migrated to workspace
+  references.
+
 ### Changed
 
 - **Handler migration phase 5** (`#2928`): migrated `/new`, `/experiment`, and `/plan` from the

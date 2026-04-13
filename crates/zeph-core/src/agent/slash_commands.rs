@@ -381,10 +381,8 @@ impl<C: crate::channel::Channel> Agent<C> {
         use std::path::Component;
         use zeph_llm::provider::{ImageData, MessagePart};
 
-        let has_parent_dir = std::path::Path::new(path)
-            .components()
-            .any(|c| c == Component::ParentDir);
-        if has_parent_dir {
+        let p = std::path::Path::new(path);
+        if p.is_absolute() || p.components().any(|c| c == Component::ParentDir) {
             return "Invalid image path: path traversal not allowed".to_owned();
         }
 
