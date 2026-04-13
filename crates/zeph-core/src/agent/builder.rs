@@ -1134,7 +1134,7 @@ impl<C: Channel> Agent<C> {
     /// available for passing to the supervisor.
     #[must_use]
     pub fn with_supervisor_config(mut self, config: &crate::config::TaskSupervisorConfig) -> Self {
-        self.lifecycle.supervisor = crate::agent::supervisor::BackgroundSupervisor::new(
+        self.lifecycle.supervisor = crate::agent::agent_supervisor::BackgroundSupervisor::new(
             config,
             self.metrics.histogram_recorder.clone(),
         );

@@ -92,6 +92,7 @@ pub mod memory_tools;
 pub mod overflow_tools;
 pub mod runtime_layer;
 pub mod skill_loader;
+pub mod task_supervisor;
 pub use zeph_common::text;
 
 #[cfg(test)]
@@ -109,6 +110,10 @@ pub use channel::{
 };
 pub use config::{Config, ConfigError};
 pub use skill_loader::SkillLoaderExecutor;
+pub use task_supervisor::{
+    BlockingError, BlockingHandle, RestartPolicy, TaskDescriptor, TaskHandle, TaskSnapshot,
+    TaskStatus, TaskSupervisor,
+};
 pub use zeph_common::hash::blake3_hex as content_hash;
 pub use zeph_sanitizer::exfiltration::{
     ExfiltrationEvent, ExfiltrationGuard, ExfiltrationGuardConfig, extract_flagged_urls,

@@ -1277,7 +1277,7 @@ impl<C: Channel> Agent<C> {
                                 };
                                 let logger = std::sync::Arc::clone(logger);
                                 self.lifecycle.supervisor.spawn(
-                                    super::super::supervisor::TaskClass::Telemetry,
+                                    super::super::agent_supervisor::TaskClass::Telemetry,
                                     "audit-log",
                                     async move { logger.log(&entry).await },
                                 );

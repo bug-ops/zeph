@@ -120,7 +120,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             let classifier_metrics_bg = self.metrics.classifier_metrics.clone();
             let metrics_tx_bg = self.metrics.metrics_tx.clone();
             self.lifecycle.supervisor.spawn(
-                super::supervisor::TaskClass::Enrichment,
+                super::agent_supervisor::TaskClass::Enrichment,
                 "llm_classifier_correction",
                 async move {
                     match llm_classifier
@@ -171,7 +171,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             let user_msg = user_msg_owned.clone();
             let assistant = assistant_snippet.clone();
             self.lifecycle.supervisor.spawn(
-                super::supervisor::TaskClass::Enrichment,
+                super::agent_supervisor::TaskClass::Enrichment,
                 "judge_correction",
                 async move {
                     match feedback_detector::JudgeDetector::evaluate(

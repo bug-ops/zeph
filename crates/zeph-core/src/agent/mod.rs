@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod agent_access_impl;
+pub(crate) mod agent_supervisor;
 mod autodream;
 mod builder;
 mod command_context_impls;
@@ -42,7 +43,6 @@ pub(crate) mod sidequest;
 mod skill_management;
 pub mod slash_commands;
 pub(crate) mod state;
-pub(crate) mod supervisor;
 pub(crate) mod tool_execution;
 pub(crate) mod tool_orchestrator;
 mod trust_commands;
@@ -1233,7 +1233,7 @@ impl<C: Channel> Agent<C> {
         if self.runtime.supervisor_config.abort_enrichment_on_turn {
             self.lifecycle
                 .supervisor
-                .abort_class(supervisor::TaskClass::Enrichment);
+                .abort_class(agent_supervisor::TaskClass::Enrichment);
         }
 
         // Wire the per-turn cancellation token into the cancel bridge.

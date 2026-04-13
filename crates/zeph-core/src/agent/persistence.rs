@@ -743,7 +743,7 @@ impl<C: Channel> Agent<C> {
         let start_time = self.lifecycle.start_time;
 
         self.lifecycle.supervisor.spawn(
-            super::supervisor::TaskClass::Enrichment,
+            super::agent_supervisor::TaskClass::Enrichment,
             "graph_extraction",
             async move {
                 let extraction_handle = memory.spawn_graph_extraction(
@@ -789,7 +789,7 @@ impl<C: Channel> Agent<C> {
         let guidelines_enabled = self.memory_state.extraction.graph_config.enabled;
 
         self.lifecycle.supervisor.spawn(
-            super::supervisor::TaskClass::Telemetry,
+            super::agent_supervisor::TaskClass::Telemetry,
             "graph_count_sync",
             async move {
                 let Some(store) = graph_store_sync else {
@@ -889,7 +889,7 @@ impl<C: Channel> Agent<C> {
         let conversation_id = self.memory_state.persistence.conversation_id.map(|c| c.0);
 
         self.lifecycle.supervisor.spawn(
-            super::supervisor::TaskClass::Enrichment,
+            super::agent_supervisor::TaskClass::Enrichment,
             "persona_extraction",
             async move {
                 let user_message_refs: Vec<&str> =
@@ -951,7 +951,7 @@ impl<C: Channel> Agent<C> {
         let min_confidence = cfg.min_confidence;
 
         self.lifecycle.supervisor.spawn(
-            super::supervisor::TaskClass::Enrichment,
+            super::agent_supervisor::TaskClass::Enrichment,
             "trajectory_extraction",
             async move {
                 let entries =

@@ -327,7 +327,7 @@ pub(crate) struct LifecycleState {
     pub(crate) file_watcher: Option<crate::file_watcher::FileChangeWatcher>,
     /// Supervised background task manager. Owned by the agent; call `reap()` between turns
     /// and `abort_all()` on shutdown.
-    pub(crate) supervisor: super::supervisor::BackgroundSupervisor,
+    pub(crate) supervisor: super::agent_supervisor::BackgroundSupervisor,
 }
 
 /// Minimal config snapshot needed to reconstruct a provider at runtime via `/provider <name>`.
@@ -866,7 +866,7 @@ impl LifecycleState {
             last_known_cwd: std::env::current_dir().unwrap_or_default(),
             file_changed_rx: None,
             file_watcher: None,
-            supervisor: super::supervisor::BackgroundSupervisor::new(
+            supervisor: super::agent_supervisor::BackgroundSupervisor::new(
                 &crate::config::TaskSupervisorConfig::default(),
                 None,
             ),
