@@ -15,6 +15,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   backoff for `RestartPolicy::Restart`, registry visibility for blocking and oneshot tasks,
   `TaskStatus::Aborted` for force-aborted entries, and 6 regression tests.
 
+- **Bootstrap: migrate 7 memory loops + tree consolidation to TaskSupervisor** (`#2960`):
+  `runner.rs` no longer creates per-loop `CancellationToken` + cancel-bridge `tokio::spawn`
+  boilerplate for each of the 7 memory background tasks (eviction, tier promotion, scene
+  consolidation, consolidation, forgetting, compression guidelines, tree consolidation).
+  All loops are now registered via a single `Arc<TaskSupervisor>` with `RestartPolicy::RunOnce`.
+  A single `shutdown_rx → CancellationToken` bridge replaces 7 identical bridge tasks.
+  `with_tree_consolidation_loop` removed from `AgentBuilder`; tree consolidation is now
+  spawned in `runner.rs` alongside all other memory loops.
+  `supervisor.shutdown_all(10s)` added to the orderly shutdown sequence.
+  `start_*` functions in `zeph-memory` now return `impl Future` instead of `JoinHandle`.
+
 ### Fixed
 
 - **TUI: remove per-frame message list clone** (`#2955`): `visible_messages().into_owned()` in

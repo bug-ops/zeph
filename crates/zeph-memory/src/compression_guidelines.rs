@@ -289,62 +289,59 @@ mod updater {
     /// Wakes every `config.update_interval_secs` seconds. When the number of unused
     /// failure pairs reaches `config.update_threshold`, runs an update cycle.
     /// Uses exponential backoff on LLM failure (capped at 1 hour).
-    pub fn start_guidelines_updater(
+    pub async fn start_guidelines_updater(
         sqlite: Arc<SqliteStore>,
         provider: AnyProvider,
         token_counter: Arc<TokenCounter>,
         config: CompressionGuidelinesConfig,
         cancel: CancellationToken,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            let base_interval = Duration::from_secs(config.update_interval_secs);
-            let mut backoff = base_interval;
-            let max_backoff = Duration::from_secs(3600);
+    ) {
+        let base_interval = Duration::from_secs(config.update_interval_secs);
+        let mut backoff = base_interval;
+        let max_backoff = Duration::from_secs(3600);
 
-            let mut ticker = tokio::time::interval(base_interval);
-            // Skip first immediate tick so the loop doesn't fire at startup.
-            ticker.tick().await;
+        let mut ticker = tokio::time::interval(base_interval);
+        // Skip first immediate tick so the loop doesn't fire at startup.
+        ticker.tick().await;
 
-            loop {
-                tokio::select! {
-                    () = cancel.cancelled() => {
-                        tracing::debug!("compression guidelines updater shutting down");
-                        return;
-                    }
-                    _ = ticker.tick() => {}
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    tracing::debug!("compression guidelines updater shutting down");
+                    return;
                 }
+                _ = ticker.tick() => {}
+            }
 
-                let count = match sqlite.count_unused_failure_pairs().await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!("guidelines updater: count query failed: {e:#}");
-                        continue;
-                    }
-                };
-
-                if count < i64::from(config.update_threshold) {
-                    backoff = base_interval;
+            let count = match sqlite.count_unused_failure_pairs().await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("guidelines updater: count query failed: {e:#}");
                     continue;
                 }
+            };
 
-                match update_guidelines_once(&sqlite, &provider, &token_counter, &config, &cancel)
-                    .await
-                {
-                    Ok(()) => {
-                        backoff = base_interval;
-                    }
-                    Err(e) => {
-                        tracing::warn!("guidelines update failed (backoff={backoff:?}): {e:#}");
-                        backoff = (backoff * 2).min(max_backoff);
-                        // Sleep the backoff period before next attempt.
-                        tokio::select! {
-                            () = cancel.cancelled() => return,
-                            () = tokio::time::sleep(backoff) => {}
-                        }
+            if count < i64::from(config.update_threshold) {
+                backoff = base_interval;
+                continue;
+            }
+
+            match update_guidelines_once(&sqlite, &provider, &token_counter, &config, &cancel).await
+            {
+                Ok(()) => {
+                    backoff = base_interval;
+                }
+                Err(e) => {
+                    tracing::warn!("guidelines update failed (backoff={backoff:?}): {e:#}");
+                    backoff = (backoff * 2).min(max_backoff);
+                    // Sleep the backoff period before next attempt.
+                    tokio::select! {
+                        () = cancel.cancelled() => return,
+                        () = tokio::time::sleep(backoff) => {}
                     }
                 }
             }
-        })
+        }
     }
 }
 pub use updater::{

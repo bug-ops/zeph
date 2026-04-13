@@ -34,7 +34,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::MemoryError;
@@ -66,54 +65,51 @@ pub struct ForgettingResult {
 /// state, never an intermediate state.
 ///
 /// Database errors are logged but do not stop the loop.
-#[must_use]
-pub fn start_forgetting_loop(
+pub async fn start_forgetting_loop(
     store: Arc<SqliteStore>,
     config: ForgettingConfig,
     cancel: CancellationToken,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        if !config.enabled {
-            tracing::debug!("forgetting sweep disabled (forgetting.enabled = false)");
-            return;
+) {
+    if !config.enabled {
+        tracing::debug!("forgetting sweep disabled (forgetting.enabled = false)");
+        return;
+    }
+
+    let mut ticker = tokio::time::interval(Duration::from_secs(config.sweep_interval_secs));
+    // Skip the first immediate tick to avoid running at startup.
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => {
+                tracing::debug!("forgetting loop shutting down");
+                return;
+            }
+            _ = ticker.tick() => {}
         }
 
-        let mut ticker = tokio::time::interval(Duration::from_secs(config.sweep_interval_secs));
-        // Skip the first immediate tick to avoid running at startup.
-        ticker.tick().await;
+        tracing::debug!("forgetting: starting sweep");
+        let start = std::time::Instant::now();
 
-        loop {
-            tokio::select! {
-                () = cancel.cancelled() => {
-                    tracing::debug!("forgetting loop shutting down");
-                    return;
-                }
-                _ = ticker.tick() => {}
+        match run_forgetting_sweep(&store, &config).await {
+            Ok(r) => {
+                tracing::info!(
+                    downscaled = r.downscaled,
+                    replayed = r.replayed,
+                    pruned = r.pruned,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "forgetting: sweep complete"
+                );
             }
-
-            tracing::debug!("forgetting: starting sweep");
-            let start = std::time::Instant::now();
-
-            match run_forgetting_sweep(&store, &config).await {
-                Ok(r) => {
-                    tracing::info!(
-                        downscaled = r.downscaled,
-                        replayed = r.replayed,
-                        pruned = r.pruned,
-                        elapsed_ms = start.elapsed().as_millis(),
-                        "forgetting: sweep complete"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        elapsed_ms = start.elapsed().as_millis(),
-                        "forgetting: sweep failed, will retry"
-                    );
-                }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "forgetting: sweep failed, will retry"
+                );
             }
         }
-    })
+    }
 }
 
 // ── Sweep implementation ──────────────────────────────────────────────────────

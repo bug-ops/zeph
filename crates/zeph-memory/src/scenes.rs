@@ -9,7 +9,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
@@ -56,54 +55,52 @@ pub struct SceneConfig {
 ///
 /// Each sweep clusters unassigned semantic-tier messages into `MemScenes`.
 /// Runs independently from the tier promotion loop.
-pub fn start_scene_consolidation_loop(
+pub async fn start_scene_consolidation_loop(
     store: Arc<SqliteStore>,
     provider: AnyProvider,
     config: SceneConfig,
     cancel: CancellationToken,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        if !config.enabled {
-            tracing::debug!("scene consolidation disabled (tiers.scene_enabled = false)");
-            return;
+) {
+    if !config.enabled {
+        tracing::debug!("scene consolidation disabled (tiers.scene_enabled = false)");
+        return;
+    }
+
+    let mut ticker = tokio::time::interval(Duration::from_secs(config.sweep_interval_secs));
+    // Skip first tick to avoid running immediately at startup.
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => {
+                tracing::debug!("scene consolidation loop shutting down");
+                return;
+            }
+            _ = ticker.tick() => {}
         }
 
-        let mut ticker = tokio::time::interval(Duration::from_secs(config.sweep_interval_secs));
-        // Skip first tick to avoid running immediately at startup.
-        ticker.tick().await;
+        tracing::debug!("scene consolidation: starting sweep");
+        let start = std::time::Instant::now();
 
-        loop {
-            tokio::select! {
-                () = cancel.cancelled() => {
-                    tracing::debug!("scene consolidation loop shutting down");
-                    return;
-                }
-                _ = ticker.tick() => {}
+        match consolidate_scenes(&store, &provider, &config).await {
+            Ok(stats) => {
+                tracing::info!(
+                    candidates = stats.candidates,
+                    scenes_created = stats.scenes_created,
+                    messages_assigned = stats.messages_assigned,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "scene consolidation: sweep complete"
+                );
             }
-
-            tracing::debug!("scene consolidation: starting sweep");
-            let start = std::time::Instant::now();
-
-            match consolidate_scenes(&store, &provider, &config).await {
-                Ok(stats) => {
-                    tracing::info!(
-                        candidates = stats.candidates,
-                        scenes_created = stats.scenes_created,
-                        messages_assigned = stats.messages_assigned,
-                        elapsed_ms = start.elapsed().as_millis(),
-                        "scene consolidation: sweep complete"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        elapsed_ms = start.elapsed().as_millis(),
-                        "scene consolidation: sweep failed, will retry"
-                    );
-                }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "scene consolidation: sweep failed, will retry"
+                );
             }
         }
-    })
+    }
 }
 
 /// Stats collected during a single scene consolidation sweep.

@@ -14,7 +14,6 @@
 
 use std::sync::Arc;
 
-use tokio::task::JoinHandle;
 use tokio::time::{Duration, interval};
 use tokio_util::sync::CancellationToken;
 
@@ -194,60 +193,57 @@ fn parse_sqlite_timestamp_secs(s: &str) -> Option<u64> {
 /// # Errors (non-fatal)
 ///
 /// Database and Qdrant errors are logged but do not stop the loop.
-pub fn start_eviction_loop(
+pub async fn start_eviction_loop(
     store: Arc<SqliteStore>,
-    config: &EvictionConfig,
+    config: EvictionConfig,
     policy: Arc<dyn EvictionPolicy + 'static>,
     cancel: CancellationToken,
-) -> JoinHandle<()> {
-    let config = config.clone();
-    tokio::spawn(async move {
-        if config.max_entries == 0 {
-            tracing::debug!("eviction disabled (max_entries = 0)");
-            return;
+) {
+    if config.max_entries == 0 {
+        tracing::debug!("eviction disabled (max_entries = 0)");
+        return;
+    }
+
+    let mut ticker = interval(Duration::from_secs(config.sweep_interval_secs));
+    // Skip the first immediate tick so the loop doesn't run at startup.
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => {
+                tracing::debug!("eviction loop shutting down");
+                return;
+            }
+            _ = ticker.tick() => {}
         }
 
-        let mut ticker = interval(Duration::from_secs(config.sweep_interval_secs));
-        // Skip the first immediate tick so the loop doesn't run at startup.
-        ticker.tick().await;
+        tracing::debug!(max_entries = config.max_entries, "running eviction sweep");
 
-        loop {
-            tokio::select! {
-                () = cancel.cancelled() => {
-                    tracing::debug!("eviction loop shutting down");
-                    return;
-                }
-                _ = ticker.tick() => {}
-            }
-
-            tracing::debug!(max_entries = config.max_entries, "running eviction sweep");
-
-            // Phase 1: score and soft-delete excess entries.
-            match run_eviction_phase1(&store, &*policy, config.max_entries).await {
-                Ok(deleted) => {
-                    if deleted > 0 {
-                        tracing::info!(deleted, "eviction phase 1: soft-deleted entries");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "eviction phase 1 failed, will retry next sweep");
+        // Phase 1: score and soft-delete excess entries.
+        match run_eviction_phase1(&store, &*policy, config.max_entries).await {
+            Ok(deleted) => {
+                if deleted > 0 {
+                    tracing::info!(deleted, "eviction phase 1: soft-deleted entries");
                 }
             }
-
-            // Phase 2: clean up soft-deleted entries from Qdrant.
-            // On startup or after a crash, this also cleans up any orphaned vectors.
-            match run_eviction_phase2(&store).await {
-                Ok(cleaned) => {
-                    if cleaned > 0 {
-                        tracing::info!(cleaned, "eviction phase 2: removed Qdrant vectors");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "eviction phase 2 failed, will retry next sweep");
-                }
+            Err(e) => {
+                tracing::warn!(error = %e, "eviction phase 1 failed, will retry next sweep");
             }
         }
-    })
+
+        // Phase 2: clean up soft-deleted entries from Qdrant.
+        // On startup or after a crash, this also cleans up any orphaned vectors.
+        match run_eviction_phase2(&store).await {
+            Ok(cleaned) => {
+                if cleaned > 0 {
+                    tracing::info!(cleaned, "eviction phase 2: removed Qdrant vectors");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "eviction phase 2 failed, will retry next sweep");
+            }
+        }
+    }
 }
 
 async fn run_eviction_phase1(

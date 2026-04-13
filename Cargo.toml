@@ -252,6 +252,7 @@ similar.workspace = true
 tempfile.workspace = true
 zeph-db.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 tracing.workspace = true

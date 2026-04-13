@@ -24,7 +24,6 @@ use std::time::Duration;
 use zeph_db::sql;
 
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
@@ -79,62 +78,60 @@ pub use zeph_common::config::memory::ConsolidationConfig;
 /// The loop exits immediately if `config.enabled = false`.
 ///
 /// Database and LLM errors are logged but do not stop the loop.
-pub fn start_consolidation_loop(
+pub async fn start_consolidation_loop(
     store: Arc<SqliteStore>,
     provider: AnyProvider,
     config: ConsolidationConfig,
     cancel: CancellationToken,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        if !config.enabled {
-            tracing::debug!("consolidation disabled (consolidation.enabled = false)");
-            return;
+) {
+    if !config.enabled {
+        tracing::debug!("consolidation disabled (consolidation.enabled = false)");
+        return;
+    }
+
+    let mut ticker = tokio::time::interval(Duration::from_secs(config.sweep_interval_secs));
+    // Skip the first immediate tick to avoid running at startup.
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => {
+                tracing::debug!("consolidation loop shutting down");
+                return;
+            }
+            _ = ticker.tick() => {}
         }
 
-        let mut ticker = tokio::time::interval(Duration::from_secs(config.sweep_interval_secs));
-        // Skip the first immediate tick to avoid running at startup.
-        ticker.tick().await;
+        tracing::debug!("consolidation: starting sweep");
+        let start = std::time::Instant::now();
 
-        loop {
-            tokio::select! {
-                () = cancel.cancelled() => {
-                    tracing::debug!("consolidation loop shutting down");
-                    return;
-                }
-                _ = ticker.tick() => {}
-            }
+        let result = run_consolidation_sweep(&store, &provider, &config).await;
+        let elapsed_ms = start.elapsed().as_millis();
 
-            tracing::debug!("consolidation: starting sweep");
-            let start = std::time::Instant::now();
-
-            let result = run_consolidation_sweep(&store, &provider, &config).await;
-            let elapsed_ms = start.elapsed().as_millis();
-
-            match result {
-                Ok(r) => {
-                    if r.skipped > 0 && r.merges + r.updates == 0 {
-                        tracing::warn!(
-                            skipped = r.skipped,
-                            elapsed_ms,
-                            "consolidation: all proposed ops below confidence threshold — \
+        match result {
+            Ok(r) => {
+                if r.skipped > 0 && r.merges + r.updates == 0 {
+                    tracing::warn!(
+                        skipped = r.skipped,
+                        elapsed_ms,
+                        "consolidation: all proposed ops below confidence threshold — \
                              consider lowering confidence_threshold or checking provider quality"
-                        );
-                    } else {
-                        tracing::info!(
-                            merges = r.merges,
-                            updates = r.updates,
-                            skipped = r.skipped,
-                            elapsed_ms,
-                            "consolidation: sweep complete"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, elapsed_ms, "consolidation: sweep failed, will retry");
+                    );
+                } else {
+                    tracing::info!(
+                        merges = r.merges,
+                        updates = r.updates,
+                        skipped = r.skipped,
+                        elapsed_ms,
+                        "consolidation: sweep complete"
+                    );
                 }
             }
+            Err(e) => {
+                tracing::warn!(error = %e, elapsed_ms, "consolidation: sweep failed, will retry");
+            }
         }
-    })
+    }
 }
 
 /// Execute one full consolidation sweep cycle.

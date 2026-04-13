@@ -14,7 +14,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, Role};
@@ -31,6 +30,7 @@ Keep it to 2-4 sentences. Do not repeat details already captured in a single sen
 Return only the summary text — no JSON, no preamble.";
 
 /// Configuration for the tree consolidation loop.
+#[derive(Clone)]
 pub struct TreeConsolidationConfig {
     pub enabled: bool,
     pub sweep_interval_secs: u64,
@@ -50,52 +50,50 @@ pub struct TreeConsolidationResult {
 /// Start the background tree consolidation loop.
 ///
 /// The loop exits immediately when `config.enabled = false` or `cancel` fires.
-pub fn start_tree_consolidation_loop(
+pub async fn start_tree_consolidation_loop(
     store: Arc<SqliteStore>,
     provider: AnyProvider,
     config: TreeConsolidationConfig,
     cancel: CancellationToken,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        if !config.enabled {
-            tracing::debug!("tree consolidation disabled (tree.enabled = false)");
-            return;
+) {
+    if !config.enabled {
+        tracing::debug!("tree consolidation disabled (tree.enabled = false)");
+        return;
+    }
+
+    let mut ticker = tokio::time::interval(Duration::from_secs(config.sweep_interval_secs));
+    // Skip the first immediate tick to avoid running at startup.
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => {
+                tracing::debug!("tree consolidation loop shutting down");
+                return;
+            }
+            _ = ticker.tick() => {}
         }
 
-        let mut ticker = tokio::time::interval(Duration::from_secs(config.sweep_interval_secs));
-        // Skip the first immediate tick to avoid running at startup.
-        ticker.tick().await;
+        tracing::debug!("tree consolidation: starting sweep");
+        let start = std::time::Instant::now();
 
-        loop {
-            tokio::select! {
-                () = cancel.cancelled() => {
-                    tracing::debug!("tree consolidation loop shutting down");
-                    return;
-                }
-                _ = ticker.tick() => {}
-            }
+        let result = run_tree_consolidation_sweep(&store, &provider, &config).await;
+        let elapsed_ms = start.elapsed().as_millis();
 
-            tracing::debug!("tree consolidation: starting sweep");
-            let start = std::time::Instant::now();
-
-            let result = run_tree_consolidation_sweep(&store, &provider, &config).await;
-            let elapsed_ms = start.elapsed().as_millis();
-
-            match result {
-                Ok(r) => tracing::info!(
-                    clusters_merged = r.clusters_merged,
-                    nodes_created = r.nodes_created,
-                    elapsed_ms,
-                    "tree consolidation: sweep complete"
-                ),
-                Err(e) => tracing::warn!(
-                    error = %e,
-                    elapsed_ms,
-                    "tree consolidation: sweep failed, will retry"
-                ),
-            }
+        match result {
+            Ok(r) => tracing::info!(
+                clusters_merged = r.clusters_merged,
+                nodes_created = r.nodes_created,
+                elapsed_ms,
+                "tree consolidation: sweep complete"
+            ),
+            Err(e) => tracing::warn!(
+                error = %e,
+                elapsed_ms,
+                "tree consolidation: sweep failed, will retry"
+            ),
         }
-    })
+    }
 }
 
 /// Execute one full consolidation sweep: leaves → level 1, then level 1 → level 2, etc.

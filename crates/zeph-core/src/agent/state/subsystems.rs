@@ -5,8 +5,7 @@
 //!
 //! [`MemorySubsystemState`] groups configuration and runtime state for three advanced memory
 //! subsystems: `TiMem` (temporal-hierarchical memory tree), `autoDream` (background consolidation),
-//! and `MagicDocs` (document context injection). Also tracks the background tree consolidation
-//! task handle.
+//! and `MagicDocs` (document context injection).
 
 /// `TiMem` tree config, `autoDream`, `MagicDocs`, and microcompact subsystem state.
 ///
@@ -16,10 +15,6 @@
 pub(crate) struct MemorySubsystemState {
     /// `TiMem` temporal-hierarchical memory tree configuration (#2262).
     pub(crate) tree_config: zeph_config::TreeConfig,
-    /// Background tree consolidation loop handle — kept alive for the agent's lifetime (#2262).
-    ///
-    /// `None` when tree consolidation is disabled or memory is not initialized.
-    pub(crate) tree_consolidation_handle: Option<tokio::task::JoinHandle<()>>,
     /// Time-based microcompact configuration (#2699).
     pub(crate) microcompact_config: zeph_config::MicrocompactConfig,
     /// autoDream configuration (#2697).
@@ -36,7 +31,6 @@ impl Default for MemorySubsystemState {
     fn default() -> Self {
         Self {
             tree_config: zeph_config::TreeConfig::default(),
-            tree_consolidation_handle: None,
             microcompact_config: zeph_config::MicrocompactConfig::default(),
             autodream_config: zeph_config::AutoDreamConfig::default(),
             autodream: super::super::autodream::AutoDreamState::new(),

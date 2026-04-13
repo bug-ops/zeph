@@ -169,37 +169,6 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Start the `TiMem` tree consolidation background loop and store the handle.
-    ///
-    /// Call after memory and tree configuration have been applied so that both the `SQLite`
-    /// store and config are available. The loop runs until the agent cancel token fires.
-    /// The handle is kept in the memory state and is aborted when the agent is dropped.
-    ///
-    /// No-op if tree consolidation is disabled in the config or memory has not been set.
-    #[must_use]
-    pub fn with_tree_consolidation_loop(mut self, provider: zeph_llm::any::AnyProvider) -> Self {
-        let cfg = &self.memory_state.subsystems.tree_config;
-        if !cfg.enabled {
-            return self;
-        }
-        let Some(ref memory) = self.memory_state.persistence.memory else {
-            return self;
-        };
-        let sqlite = std::sync::Arc::new(memory.sqlite().clone());
-        let tree_cfg = zeph_memory::TreeConsolidationConfig {
-            enabled: cfg.enabled,
-            sweep_interval_secs: cfg.sweep_interval_secs,
-            batch_size: cfg.batch_size,
-            similarity_threshold: cfg.similarity_threshold,
-            max_level: cfg.max_level,
-            min_cluster_size: cfg.min_cluster_size,
-        };
-        let cancel = self.lifecycle.cancel_token.clone();
-        let handle = zeph_memory::start_tree_consolidation_loop(sqlite, provider, tree_cfg, cancel);
-        self.memory_state.subsystems.tree_consolidation_handle = Some(handle);
-        self
-    }
-
     // ---- Shutdown Summary ----
 
     /// Configure the shutdown summary: whether to produce one, message count bounds, and timeout.

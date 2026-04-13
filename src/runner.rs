@@ -26,6 +26,7 @@ use zeph_channels::AnyChannel;
 use zeph_core::agent::Agent;
 #[cfg(feature = "acp")]
 use zeph_core::config::AcpTransport;
+use zeph_core::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 use zeph_llm::{ThinkingConfig, ThinkingEffort};
 
 #[cfg(feature = "acp-http")]
@@ -925,6 +926,19 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
     let config = app.config();
 
+    // Create a TaskSupervisor for all memory background loops.
+    // A single bridge from shutdown_rx → cancel token replaces per-loop cancel bridges.
+    let mem_cancel = tokio_util::sync::CancellationToken::new();
+    let supervisor = std::sync::Arc::new(TaskSupervisor::new(mem_cancel.clone()));
+    {
+        let mut rx = shutdown_rx.clone();
+        let cancel = mem_cancel.clone();
+        tokio::spawn(async move {
+            let _ = rx.changed().await;
+            cancel.cancel();
+        });
+    }
+
     #[cfg(feature = "profiling")]
     let _sysinfo_handle = zeph_core::system_metrics::spawn_system_metrics_task(
         config.telemetry.system_metrics_interval_secs,
@@ -943,32 +957,27 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         });
     }
 
-    let _eviction_handle = {
-        let eviction_cancel = zeph_memory::CancellationToken::new();
-        let eviction_cancel_clone = eviction_cancel.clone();
-        let mut shutdown_for_eviction = shutdown_rx.clone();
-        tokio::spawn(async move {
-            let _ = shutdown_for_eviction.changed().await;
-            eviction_cancel_clone.cancel();
+    {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
+        let eviction_cfg = config.memory.eviction.clone();
+        let policy = std::sync::Arc::new(zeph_memory::EbbinghausPolicy::default());
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(TaskDescriptor {
+            name: "mem-eviction",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_eviction_loop(
+                    store.clone(),
+                    eviction_cfg.clone(),
+                    policy.clone(),
+                    cancel.clone(),
+                )
+            },
         });
-        let sqlite_store = std::sync::Arc::new(memory.sqlite().clone());
-        zeph_memory::start_eviction_loop(
-            sqlite_store,
-            &config.memory.eviction,
-            std::sync::Arc::new(zeph_memory::EbbinghausPolicy::default()),
-            eviction_cancel,
-        )
-    };
+    }
 
-    let _tier_promotion_handle = {
-        let tier_cancel = zeph_memory::CancellationToken::new();
-        let tier_cancel_clone = tier_cancel.clone();
-        let mut shutdown_for_tiers = shutdown_rx.clone();
-        tokio::spawn(async move {
-            let _ = shutdown_for_tiers.changed().await;
-            tier_cancel_clone.cancel();
-        });
-        let sqlite_store = std::sync::Arc::new(memory.sqlite().clone());
+    {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
         let tier_cfg = zeph_memory::TierPromotionConfig {
             enabled: config.memory.tiers.enabled,
             promotion_min_sessions: config.memory.tiers.promotion_min_sessions,
@@ -976,23 +985,24 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             sweep_interval_secs: config.memory.tiers.sweep_interval_secs,
             sweep_batch_size: config.memory.tiers.sweep_batch_size,
         };
-        zeph_memory::start_tier_promotion_loop(
-            sqlite_store,
-            provider.clone(),
-            tier_cfg,
-            tier_cancel,
-        )
-    };
-
-    let _scene_consolidation_handle = {
-        let scene_cancel = zeph_memory::CancellationToken::new();
-        let scene_cancel_clone = scene_cancel.clone();
-        let mut shutdown_for_scenes = shutdown_rx.clone();
-        tokio::spawn(async move {
-            let _ = shutdown_for_scenes.changed().await;
-            scene_cancel_clone.cancel();
+        let tier_provider = provider.clone();
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(TaskDescriptor {
+            name: "mem-tier-promotion",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_tier_promotion_loop(
+                    store.clone(),
+                    tier_provider.clone(),
+                    tier_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
         });
-        let sqlite_store = std::sync::Arc::new(memory.sqlite().clone());
+    }
+
+    {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
         let scene_provider = app
             .build_scene_provider()
             .unwrap_or_else(|| provider.clone());
@@ -1002,23 +1012,23 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             batch_size: config.memory.tiers.scene_batch_size,
             sweep_interval_secs: config.memory.tiers.scene_sweep_interval_secs,
         };
-        zeph_memory::start_scene_consolidation_loop(
-            sqlite_store,
-            scene_provider,
-            scene_cfg,
-            scene_cancel,
-        )
-    };
-
-    let _consolidation_handle = {
-        let consolidation_cancel = zeph_memory::CancellationToken::new();
-        let consolidation_cancel_clone = consolidation_cancel.clone();
-        let mut shutdown_for_consolidation = shutdown_rx.clone();
-        tokio::spawn(async move {
-            let _ = shutdown_for_consolidation.changed().await;
-            consolidation_cancel_clone.cancel();
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(TaskDescriptor {
+            name: "mem-scene-consolidation",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_scene_consolidation_loop(
+                    store.clone(),
+                    scene_provider.clone(),
+                    scene_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
         });
-        let sqlite_store = std::sync::Arc::new(memory.sqlite().clone());
+    }
+
+    {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
         let consolidation_cfg = zeph_memory::ConsolidationConfig {
             enabled: config.memory.consolidation.enabled,
             confidence_threshold: config.memory.consolidation.confidence_threshold,
@@ -1029,22 +1039,23 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         let consolidation_provider = app
             .build_consolidation_provider()
             .unwrap_or_else(|| provider.clone());
-        zeph_memory::start_consolidation_loop(
-            sqlite_store,
-            consolidation_provider,
-            consolidation_cfg,
-            consolidation_cancel,
-        )
-    };
-    let _forgetting_handle = {
-        let forgetting_cancel = zeph_memory::CancellationToken::new();
-        let forgetting_cancel_clone = forgetting_cancel.clone();
-        let mut shutdown_for_forgetting = shutdown_rx.clone();
-        tokio::spawn(async move {
-            let _ = shutdown_for_forgetting.changed().await;
-            forgetting_cancel_clone.cancel();
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(TaskDescriptor {
+            name: "mem-consolidation",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_consolidation_loop(
+                    store.clone(),
+                    consolidation_provider.clone(),
+                    consolidation_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
         });
-        let sqlite_store = std::sync::Arc::new(memory.sqlite().clone());
+    }
+
+    {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
         let forgetting_cfg = zeph_memory::ForgettingConfig {
             enabled: config.memory.forgetting.enabled,
             decay_rate: config.memory.forgetting.decay_rate,
@@ -1056,30 +1067,70 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             protect_recent_hours: config.memory.forgetting.protect_recent_hours,
             protect_min_access_count: config.memory.forgetting.protect_min_access_count,
         };
-        zeph_memory::start_forgetting_loop(sqlite_store, forgetting_cfg, forgetting_cancel)
-    };
-
-    let _guidelines_handle = if config.memory.compression_guidelines.enabled {
-        let guidelines_cancel = zeph_memory::CancellationToken::new();
-        let guidelines_cancel_clone = guidelines_cancel.clone();
-        let mut shutdown_for_guidelines = shutdown_rx.clone();
-        tokio::spawn(async move {
-            let _ = shutdown_for_guidelines.changed().await;
-            guidelines_cancel_clone.cancel();
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(TaskDescriptor {
+            name: "mem-forgetting",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_forgetting_loop(
+                    store.clone(),
+                    forgetting_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
         });
+    }
+
+    if config.memory.compression_guidelines.enabled {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
         let guidelines_provider = app
             .build_guidelines_provider()
             .unwrap_or_else(|| provider.clone());
-        Some(zeph_memory::start_guidelines_updater(
-            std::sync::Arc::new(memory.sqlite().clone()),
-            guidelines_provider,
-            std::sync::Arc::clone(&memory.token_counter),
-            config.memory.compression_guidelines.clone(),
-            guidelines_cancel,
-        ))
-    } else {
-        None
-    };
+        let token_counter = std::sync::Arc::clone(&memory.token_counter);
+        let guidelines_cfg = config.memory.compression_guidelines.clone();
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(TaskDescriptor {
+            name: "mem-guidelines",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_guidelines_updater(
+                    store.clone(),
+                    guidelines_provider.clone(),
+                    token_counter.clone(),
+                    guidelines_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+
+    if config.memory.tree.enabled {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
+        let tree_provider = app
+            .build_tree_consolidation_provider()
+            .unwrap_or_else(|| provider.clone());
+        let tree_cfg = zeph_memory::TreeConsolidationConfig {
+            enabled: config.memory.tree.enabled,
+            sweep_interval_secs: config.memory.tree.sweep_interval_secs,
+            batch_size: config.memory.tree.batch_size,
+            similarity_threshold: config.memory.tree.similarity_threshold,
+            max_level: config.memory.tree.max_level,
+            min_cluster_size: config.memory.tree.min_cluster_size,
+        };
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(TaskDescriptor {
+            name: "mem-tree-consolidation",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_tree_consolidation_loop(
+                    store.clone(),
+                    tree_provider.clone(),
+                    tree_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
 
     let skill_paths = app.skill_paths();
 
@@ -1418,10 +1469,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.category.clone(),
     )
     .with_embedding_provider(embedding_provider)
-    .with_tree_consolidation_loop(
-        app.build_tree_consolidation_provider()
-            .unwrap_or_else(|| provider.clone()),
-    )
     .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider)
     .await;
 
@@ -2157,6 +2204,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // are killed while the tokio runtime is still active (#2693).
     shutdown_mcp_manager.shutdown_all_shared().await;
     agent.shutdown().await;
+    supervisor
+        .shutdown_all(std::time::Duration::from_secs(10))
+        .await;
     Ok(result?)
 }
 

@@ -17,7 +17,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
@@ -63,55 +62,53 @@ pub struct TierPromotionConfig {
 /// The loop exits immediately if `config.enabled = false`.
 ///
 /// Database and LLM errors are logged but do not stop the loop.
-pub fn start_tier_promotion_loop(
+pub async fn start_tier_promotion_loop(
     store: Arc<SqliteStore>,
     provider: AnyProvider,
     config: TierPromotionConfig,
     cancel: CancellationToken,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        if !config.enabled {
-            tracing::debug!("tier promotion disabled (tiers.enabled = false)");
-            return;
+) {
+    if !config.enabled {
+        tracing::debug!("tier promotion disabled (tiers.enabled = false)");
+        return;
+    }
+
+    let mut ticker = tokio::time::interval(Duration::from_secs(config.sweep_interval_secs));
+    // Skip the first immediate tick so we don't run at startup.
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => {
+                tracing::debug!("tier promotion loop shutting down");
+                return;
+            }
+            _ = ticker.tick() => {}
         }
 
-        let mut ticker = tokio::time::interval(Duration::from_secs(config.sweep_interval_secs));
-        // Skip the first immediate tick so we don't run at startup.
-        ticker.tick().await;
+        tracing::debug!("tier promotion: starting sweep");
+        let start = std::time::Instant::now();
 
-        loop {
-            tokio::select! {
-                () = cancel.cancelled() => {
-                    tracing::debug!("tier promotion loop shutting down");
-                    return;
-                }
-                _ = ticker.tick() => {}
+        let result = run_promotion_sweep(&store, &provider, &config).await;
+
+        let elapsed_ms = start.elapsed().as_millis();
+
+        match result {
+            Ok(stats) => {
+                tracing::info!(
+                    candidates = stats.candidates_evaluated,
+                    clusters = stats.clusters_formed,
+                    promoted = stats.promotions_completed,
+                    merge_failures = stats.merge_failures,
+                    elapsed_ms,
+                    "tier promotion: sweep complete"
+                );
             }
-
-            tracing::debug!("tier promotion: starting sweep");
-            let start = std::time::Instant::now();
-
-            let result = run_promotion_sweep(&store, &provider, &config).await;
-
-            let elapsed_ms = start.elapsed().as_millis();
-
-            match result {
-                Ok(stats) => {
-                    tracing::info!(
-                        candidates = stats.candidates_evaluated,
-                        clusters = stats.clusters_formed,
-                        promoted = stats.promotions_completed,
-                        merge_failures = stats.merge_failures,
-                        elapsed_ms,
-                        "tier promotion: sweep complete"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, elapsed_ms, "tier promotion: sweep failed, will retry");
-                }
+            Err(e) => {
+                tracing::warn!(error = %e, elapsed_ms, "tier promotion: sweep failed, will retry");
             }
         }
-    })
+    }
 }
 
 /// Stats collected during a single promotion sweep.
