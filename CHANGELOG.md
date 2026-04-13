@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Remove old `channel.send` wrappers for `/lsp`, `/scheduler`, `/experiment`, `/log`** (`#2946`, `#2947`):
+  deleted `handle_lsp_status_command`, `handle_scheduler_command`, `handle_scheduler_list`,
+  `handle_experiment_command` and its private channel.send helpers, and `handle_log_command` from
+  `zeph-core`. The corresponding `_as_string` variants and `AgentAccess`/`DebugAccess` delegators
+  are the sole remaining code paths. Eight experiment tests rewritten to assert on returned `String`
+  instead of channel messages.
+
 - **`/skill`, `/skills`, `/feedback` migrated to `CommandHandler` registry** (`#2945`): resolved
   HRTB blockers by splitting each handler into a `_as_string` variant that holds no `&self`
   references across `.await` points. Key changes: `SemanticMemory` Arc cloned before every

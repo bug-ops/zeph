@@ -4,43 +4,7 @@
 use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Seek, SeekFrom};
 
-use super::{Agent, error::AgentError};
-use crate::channel::Channel;
 use crate::config::{LogRotation, LoggingConfig};
-use crate::redact::scrub_content;
-
-impl<C: Channel> Agent<C> {
-    /// Handle the `/log` slash command: show current log file path and recent entries.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the channel send fails.
-    pub async fn handle_log_command(&mut self) -> Result<(), AgentError> {
-        let logging = self.debug_state.logging_config.clone();
-
-        let mut out = String::new();
-        format_logging_status(&logging, &mut out);
-
-        if !logging.file.is_empty() {
-            let base_path = std::path::PathBuf::from(&logging.file);
-            let tail = tokio::task::spawn_blocking(move || {
-                let actual = resolve_current_log_file(&base_path);
-                actual.and_then(|p| read_log_tail(&p, 20))
-            })
-            .await
-            .unwrap_or(None);
-
-            if let Some(lines) = tail {
-                let _ = writeln!(out);
-                let _ = writeln!(out, "Recent entries:");
-                out.push_str(&scrub_content(&lines));
-            }
-        }
-
-        self.channel.send(out.trim_end()).await?;
-        Ok(())
-    }
-}
 
 pub(crate) fn format_logging_status(logging: &LoggingConfig, out: &mut String) {
     let _ = writeln!(
