@@ -1,18 +1,48 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Conversation reset handler: `/new`.
-//!
-//! Note: `/compact` is intentionally absent. `AgentAccess::compact_context` cannot be made
-//! `Send` due to HRTB constraints on `AnyProvider` (the provider is `!Sync`, so
-//! `&AnyProvider` across `.await` in a `Box<dyn Future + Send>` fails). `/compact` remains
-//! in `dispatch_slash_command` until `AnyProvider` is made `Sync` in `zeph-llm`.
+//! Conversation management handlers: `/new` and `/compact`.
 
 use std::future::Future;
 use std::pin::Pin;
 
 use crate::context::CommandContext;
 use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
+
+/// Compact context handler for `/compact`.
+///
+/// Delegates to `AgentAccess::compact_context`. The implementation extracts all
+/// non-`Send` borrows before `.await` points so the future satisfies `Send + 'a`.
+pub struct CompactCommand;
+
+impl CommandHandler<CommandContext<'_>> for CompactCommand {
+    fn name(&self) -> &'static str {
+        "/compact"
+    }
+
+    fn description(&self) -> &'static str {
+        "Compact the context window by summarizing older messages"
+    }
+
+    fn args_hint(&self) -> &'static str {
+        ""
+    }
+
+    fn category(&self) -> SlashCategory {
+        SlashCategory::Session
+    }
+
+    fn handle<'a>(
+        &'a self,
+        ctx: &'a mut CommandContext<'_>,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
+        Box::pin(async move {
+            let result = ctx.agent.compact_context().await?;
+            Ok(CommandOutput::Message(result))
+        })
+    }
+}
 
 /// New conversation handler for `/new`.
 ///

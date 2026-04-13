@@ -101,7 +101,12 @@ impl SemanticToolIndex {
         // Sanitize description before embedding: strip control chars, cap at 200 chars.
         // Mirrors the sanitization applied to the LLM pruning prompt to prevent
         // embedding poisoning via keyword-stuffed tool descriptions.
-        let results: Vec<(usize, Result<Vec<f32>, _>)> = stream::iter(tools.iter().enumerate())
+        //
+        // Pre-build owned embed texts to avoid holding &McpTool references across .await,
+        // which would fail the `for<'a>` Send bound required for Box<dyn Future + Send>.
+        let embed_texts: Vec<(usize, String)> = tools
+            .iter()
+            .enumerate()
             .map(|(idx, tool)| {
                 let sanitized_desc: String = tool
                     .description
@@ -109,7 +114,11 @@ impl SemanticToolIndex {
                     .filter(|c| !c.is_control())
                     .take(200)
                     .collect();
-                let text = format!("{}: {}", tool.name, sanitized_desc);
+                (idx, format!("{}: {}", tool.name, sanitized_desc))
+            })
+            .collect();
+        let results: Vec<(usize, Result<Vec<f32>, _>)> = stream::iter(embed_texts)
+            .map(|(idx, text)| {
                 let fut = embed_fn(&text);
                 async move { (idx, fut.await) }
             })

@@ -19,9 +19,9 @@ use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 ///
 /// Subcommands: `add`, `list`, `tools`, `remove`.
 ///
-/// Delegates to `AgentAccess::handle_mcp`; the actual MCP work and
-/// real-time status indicators run inside `Agent<C>` which has direct channel
-/// access.
+/// Delegates to [`AgentAccess::handle_mcp`], which collects all output into
+/// a `String` and returns it.  The registry sends the string to the channel
+/// as a `Message` output.
 pub struct McpCommand;
 
 impl CommandHandler<CommandContext<'_>> for McpCommand {
@@ -47,10 +47,8 @@ impl CommandHandler<CommandContext<'_>> for McpCommand {
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
         Box::pin(async move {
-            // All MCP output is sent directly via the channel inside handle_mcp.
-            // The returned string is empty — we use Silent to avoid double-sending.
-            let _ = ctx.agent.handle_mcp(args).await?;
-            Ok(CommandOutput::Silent)
+            let output = ctx.agent.handle_mcp(args).await?;
+            Ok(CommandOutput::Message(output))
         })
     }
 }

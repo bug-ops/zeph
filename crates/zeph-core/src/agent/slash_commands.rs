@@ -32,8 +32,6 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// Commands that remain here could not be migrated to the registry pattern because their
     /// implementations hold non-Send futures (references across `.await` points):
     /// - `/skill`, `/skills`, `/feedback` — non-Send DB references
-    /// - `/compact` — `AnyProvider::embed/chat` creates `&AnyProvider` across await (HRTB)
-    /// - `/mcp` — `RwLockWriteGuard`, `&[McpTool]`, and `McpToolRef<'_>` across await (HRTB)
     ///
     /// All other slash commands are dispatched through `session_registry` or `agent_registry`
     /// in `Agent::run`.
@@ -54,32 +52,6 @@ impl<C: crate::channel::Channel> Agent<C> {
         let slash_urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
         if !slash_urls.is_empty() {
             self.security.user_provided_urls.write().extend(slash_urls);
-        }
-
-        if trimmed == "/compact" {
-            let msg = if self.msg.messages.len() > self.context_manager.compaction_preserve_tail + 1
-            {
-                match self.compact_context().await {
-                    Ok(
-                        super::context::CompactionOutcome::Compacted
-                        | super::context::CompactionOutcome::NoChange,
-                    ) => "Context compacted successfully.".to_owned(),
-                    Ok(super::context::CompactionOutcome::ProbeRejected) => {
-                        "Compaction rejected: summary quality below threshold. \
-                         Original context preserved."
-                            .to_owned()
-                    }
-                    Err(e) => format!("Compaction failed: {e}"),
-                }
-            } else {
-                "Nothing to compact.".to_owned()
-            };
-            handled!(self.channel.send(&msg).await.map_err(Into::into));
-        }
-
-        if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
-            let args = trimmed.strip_prefix("/mcp").unwrap_or("").trim().to_owned();
-            handled!(self.handle_mcp_command(&args).await);
         }
 
         if trimmed == "/skills" || trimmed.starts_with("/skills ") {

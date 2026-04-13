@@ -892,9 +892,10 @@ impl<C: Channel> Agent<C> {
                 use zeph_commands::CommandRegistry;
                 use zeph_commands::handlers::{
                     agent_cmd::AgentCommand,
-                    compaction::NewConversationCommand,
+                    compaction::{CompactCommand, NewConversationCommand},
                     experiment::ExperimentCommand,
                     lsp::LspCommand,
+                    mcp::McpCommand,
                     memory::{GraphCommand, GuidelinesCommand, MemoryCommand},
                     misc::{CacheStatsCommand, ImageCommand},
                     model::{ModelCommand, ProviderCommand},
@@ -910,11 +911,10 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(GuidelinesCommand);
                 agent_reg.register(ModelCommand);
                 agent_reg.register(ProviderCommand);
-                // Note: SkillCommand, SkillsCommand, FeedbackCommand, McpCommand are intentionally
-                // NOT registered here — their implementations hold non-Send references across
-                // .await points. They continue to be dispatched via dispatch_slash_command below.
-                // McpCommand is NOT registered anywhere; /mcp remains in dispatch_slash_command
-                // until RwLockWriteGuard, &[McpTool], and McpToolRef<'_> HRTB blockers are fixed.
+                // Note: SkillCommand, SkillsCommand, FeedbackCommand are intentionally NOT
+                // registered here — their implementations hold non-Send DB references across
+                // .await points. They continue to be dispatched via dispatch_slash_command.
+                agent_reg.register(McpCommand);
                 agent_reg.register(PolicyCommand);
                 agent_reg.register(SchedulerCommand);
                 agent_reg.register(LspCommand);
@@ -927,6 +927,7 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(SideQuestCommand);
                 agent_reg.register(AgentCommand);
                 // Phase 5 migrations (Send-compatible):
+                agent_reg.register(CompactCommand);
                 agent_reg.register(NewConversationCommand);
                 agent_reg.register(ExperimentCommand);
                 agent_reg.register(PlanCommand);

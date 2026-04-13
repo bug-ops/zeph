@@ -153,8 +153,9 @@ pub async fn summarize_with_llm(
     let provider = deps.provider.clone();
     let guidelines_owned = guidelines.to_string();
     let timeout = deps.llm_timeout;
-    let results: Vec<_> = futures::stream::iter(chunks.iter().map(|chunk| {
-        let prompt = build_chunk_prompt(chunk, &guidelines_owned);
+    let results: Vec<_> = futures::stream::iter(chunks.into_iter().map(|chunk| {
+        let guidelines_ref = guidelines_owned.clone();
+        let prompt = build_chunk_prompt(&chunk, &guidelines_ref);
         let p = provider.clone();
         async move {
             tokio::time::timeout(

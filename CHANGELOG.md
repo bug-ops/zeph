@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`/compact` migrated to `CommandHandler` registry** (`#2942`): resolved HRTB blocker by
+  decomposing `compact_context` so no `&DbStore` is held across `.await` points. `CompactCommand`
+  is now registered in the agent registry; `/compact` removed from `dispatch_slash_command`.
+  Qdrant session-summary persistence dispatched via `BackgroundSupervisor::spawn_summarization`
+  instead of bare `tokio::spawn`.
+
+- **`/mcp` migrated to `CommandHandler` registry** (`#2943`): eliminated three `!Send` sources
+  in `McpManager` — `RwLockWriteGuard` in `add_server`/`remove_server` (plan/apply pattern),
+  `&[McpTool]` in `rebuild_semantic_index` (clone before await), `McpToolRef<'_>` in
+  `sync_mcp_registry` (replaced with owned `McpToolOwned`). `McpCommand` is now registered in
+  the agent registry; `/mcp` removed from `dispatch_slash_command`.
+
 ### Security
 
 - **Path traversal fix in `ImageCommand`** (`#2937`): `handle_image_as_string` in

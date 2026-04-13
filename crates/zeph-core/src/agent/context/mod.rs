@@ -21,6 +21,9 @@ pub(super) use zeph_context::slot::{cap_summary, chunk_messages};
 pub(super) enum CompactionOutcome {
     /// Messages were drained and replaced with a summary.
     Compacted,
+    /// Messages were drained and replaced with a summary, but persisting the result failed.
+    /// The in-memory state is correct; only persistence to storage failed.
+    CompactedWithPersistError,
     /// Probe rejected the summary — original messages are preserved.
     /// Caller must NOT check `freed_tokens` or transition to `Exhausted`.
     ProbeRejected,

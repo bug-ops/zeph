@@ -560,24 +560,11 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     }
 
     // ----- /compact -----
-    //
-    // compact_context() cannot be made Send because `Agent<C>` contains non-Sync fields
-    // (Channel, and internal async helpers with &str / &SemanticMemory across .await).
-    // The Rust HRTB checker requires `for<'a> &'a Agent<C>: Send` which cannot be inferred
-    // automatically for `async fn(&mut self)` bodies without unsafe.
-    //
-    // The actual dispatch remains in dispatch_slash_command which calls compact_context()
-    // directly as a non-Send async fn.
 
     fn compact_context<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(CommandError::new(
-                "/compact cannot be dispatched via AgentAccess (non-Send future); \
-                 handled directly in dispatch_slash_command",
-            ))
-        })
+        Box::pin(self.compact_context_command())
     }
 
     // ----- /new -----
@@ -644,24 +631,92 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     }
 
     // ----- /mcp -----
-    //
-    // handle_mcp_command is not Send: McpManager::add_server holds a
-    // tokio::sync::RwLockWriteGuard across .await (HRTB), rebuild_semantic_index holds
-    // &[McpTool] across .await, and sync_mcp_registry closures hold McpToolRef<'_> across
-    // .await.  All three fail the `for<'a> &'a Agent<C>: Send` bound required by
-    // `Box<dyn Future + Send>`.  /mcp is dispatched directly in dispatch_slash_command;
-    // McpCommand in zeph-commands is a stub for registry/help purposes only.
 
     fn handle_mcp<'a>(
         &'a mut self,
-        _args: &'a str,
+        args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(CommandError::new(
-                "/mcp cannot be dispatched via AgentAccess (non-Send future); \
-                 handled directly in dispatch_slash_command",
-            ))
-        })
+        // Extract all owned data before the async block so no &mut self reference is
+        // held across an .await point, satisfying the `for<'a>` Send bound.
+        let args_owned = args.to_owned();
+        let parts: Vec<String> = args_owned.split_whitespace().map(str::to_owned).collect();
+        let sub = parts.first().cloned().unwrap_or_default();
+
+        match sub.as_str() {
+            "list" => {
+                // Read-only: clone all data before async.
+                let manager = self.mcp.manager.clone();
+                let tools_snapshot: Vec<(String, String)> = self
+                    .mcp
+                    .tools
+                    .iter()
+                    .map(|t| (t.server_id.clone(), t.name.clone()))
+                    .collect();
+                Box::pin(async move {
+                    use std::fmt::Write;
+                    let Some(manager) = manager else {
+                        return Ok("MCP is not enabled.".to_owned());
+                    };
+                    let server_ids = manager.list_servers().await;
+                    if server_ids.is_empty() {
+                        return Ok("No MCP servers connected.".to_owned());
+                    }
+                    let mut output = String::from("Connected MCP servers:\n");
+                    let mut total = 0usize;
+                    for id in &server_ids {
+                        let count = tools_snapshot.iter().filter(|(sid, _)| sid == id).count();
+                        total += count;
+                        let _ = writeln!(output, "- {id} ({count} tools)");
+                    }
+                    let _ = write!(output, "Total: {total} tool(s)");
+                    Ok(output)
+                })
+            }
+            "tools" => {
+                // Read-only: collect tool info before async.
+                let server_id = parts.get(1).cloned();
+                let owned_tools: Vec<(String, String)> = if let Some(ref sid) = server_id {
+                    self.mcp
+                        .tools
+                        .iter()
+                        .filter(|t| &t.server_id == sid)
+                        .map(|t| (t.name.clone(), t.description.clone()))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                Box::pin(async move {
+                    use std::fmt::Write;
+                    let Some(server_id) = server_id else {
+                        return Ok("Usage: /mcp tools <server_id>".to_owned());
+                    };
+                    if owned_tools.is_empty() {
+                        return Ok(format!("No tools found for server '{server_id}'."));
+                    }
+                    let mut output =
+                        format!("Tools for '{server_id}' ({} total):\n", owned_tools.len());
+                    for (name, desc) in &owned_tools {
+                        if desc.is_empty() {
+                            let _ = writeln!(output, "- {name}");
+                        } else {
+                            let _ = writeln!(output, "- {name} — {desc}");
+                        }
+                    }
+                    Ok(output)
+                })
+            }
+            // add/remove require mutating self after async I/O.
+            // handle_mcp_command is structured so the only .await crossing a &mut self
+            // boundary goes through a cloned Arc<McpManager> — no &self fields are held
+            // across that .await.  The subsequent state-change methods (rebuild_semantic_index,
+            // sync_mcp_registry) are also async fn(&mut self), but they only hold owned locals
+            // across their own .await points (cloned tools Vec, cloned Arcs).
+            _ => Box::pin(async move {
+                self.handle_mcp_command(&args_owned)
+                    .await
+                    .map_err(|e| CommandError::new(e.to_string()))
+            }),
+        }
     }
 
     // ----- /plan -----

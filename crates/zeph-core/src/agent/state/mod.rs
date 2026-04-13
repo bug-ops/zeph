@@ -166,6 +166,14 @@ pub(crate) struct McpState {
     /// When `true`, show a security warning before prompting for fields whose names
     /// match sensitive patterns (password, token, secret, key, credential, etc.).
     pub(crate) elicitation_warn_sensitive_fields: bool,
+    /// When `true`, semantic index and registry need to be rebuilt at the next opportunity.
+    ///
+    /// Set after `/mcp add` or `/mcp remove` when called via `AgentAccess::handle_mcp`,
+    /// which cannot call `rebuild_semantic_index` and `sync_mcp_registry` directly because
+    /// those are `async fn(&mut self)` and their futures are `!Send` (they hold `&mut Agent<C>`
+    /// across `.await`). The rebuild is deferred to `check_tool_refresh`, which runs at the
+    /// start of each turn without the `Box<dyn Future + Send>` constraint.
+    pub(crate) pending_semantic_rebuild: bool,
 }
 
 pub(crate) struct IndexState {
@@ -404,6 +412,7 @@ pub(crate) struct OrchestrationState {
     pub(crate) orchestration_config: crate::config::OrchestrationConfig,
     /// Lazily initialized plan template cache. `None` until first use or when
     /// memory (`SQLite`) is unavailable.
+    #[allow(dead_code)]
     pub(crate) plan_cache: Option<zeph_orchestration::PlanCache>,
     /// Goal embedding from the most recent `plan_with_cache()` call. Consumed by
     /// `finalize_plan_execution()` to cache the completed plan template.
@@ -719,6 +728,7 @@ impl Default for McpState {
             discovery_params: zeph_mcp::DiscoveryParams::default(),
             discovery_provider: None,
             elicitation_warn_sensitive_fields: true,
+            pending_semantic_rebuild: false,
         }
     }
 }

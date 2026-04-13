@@ -277,7 +277,10 @@ impl<C: Channel> Agent<C> {
         let Some(memory) = memory else {
             return String::new();
         };
-        match memory.sqlite().load_compression_guidelines(conv_id).await {
+        // Clone DbStore before .await to avoid holding &SemanticMemory across the await
+        // boundary (SemanticMemory contains AnyProvider which is !Sync → &SM is !Send).
+        let sqlite = memory.sqlite().clone();
+        match sqlite.load_compression_guidelines(conv_id).await {
             Ok((_, text)) => text,
             Err(e) => {
                 tracing::warn!("failed to load compression guidelines: {e:#}");
@@ -326,7 +329,8 @@ impl<C: Channel> Agent<C> {
         };
 
         let mut refs = Vec::new();
-        let sqlite = memory.sqlite();
+        // Clone DbStore before the loop to avoid holding &SemanticMemory across .await points.
+        let sqlite = memory.sqlite().clone();
 
         for msg in to_compact {
             for part in &msg.parts {
@@ -505,16 +509,15 @@ impl<C: Channel> Agent<C> {
         };
 
         // Compaction probe: validate summary quality before committing it.
+        // Extract all &self references before .await so no &self is held across the boundary.
         if self.context_manager.compression.probe.enabled {
-            let _ = self
-                .channel
-                .send_status("Validating compaction quality...")
-                .await;
+            let probe_config = self.context_manager.compression.probe.clone();
+            let probe_provider = self.probe_or_summary_provider().clone();
             let probe_result = match zeph_memory::validate_compaction(
-                self.probe_or_summary_provider().clone(),
+                probe_provider,
                 to_compact.clone(),
                 summary.clone(),
-                &self.context_manager.compression.probe,
+                &probe_config,
             )
             .await
             {
@@ -654,7 +657,7 @@ impl<C: Channel> Agent<C> {
         });
 
         // Extract memory params before .await so no &self is held across the persist boundary.
-        let persist_failed = {
+        let (persist_failed, qdrant_fut) = {
             let memory = self.memory_state.persistence.memory.clone();
             let cid = self.memory_state.persistence.conversation_id;
             Self::persist_compaction_result(
@@ -666,32 +669,72 @@ impl<C: Channel> Agent<C> {
             )
             .await
         };
-        if persist_failed {
-            let _ = self
-                .channel
-                .send(
-                    "Context compaction failed — response quality may be affected in long \
-                     sessions.",
-                )
-                .await;
+        // Dispatch Qdrant session-summary write through the supervisor so the JoinHandle
+        // is tracked, bounded, and abortable at turn boundaries (Await Discipline rule 2).
+        if let Some(fut) = qdrant_fut {
+            self.lifecycle
+                .supervisor
+                .spawn_summarization("persist-session-summary", fut);
         }
-
-        Ok(CompactionOutcome::Compacted)
+        Ok(if persist_failed {
+            CompactionOutcome::CompactedWithPersistError
+        } else {
+            CompactionOutcome::Compacted
+        })
     }
 
-    /// Persist a completed compaction to `SQLite` and Qdrant.
+    /// Compact context and return a user-visible status string.
     ///
-    /// Takes all parameters by value so the caller does not hold `&self` across any `.await`,
-    /// keeping the enclosing future `Send`.
+    /// This wrapper exists to give `agent_access_impl` a single `async fn(&mut self)` call
+    /// point that the HRTB checker can verify as `Send`. The inner `compact_context()` method
+    /// uses only owned data and cloned `Arc`s across every `.await` point.
+    pub(in crate::agent) async fn compact_context_command(
+        &mut self,
+    ) -> Result<String, zeph_commands::CommandError> {
+        if self.msg.messages.len() <= self.context_manager.compaction_preserve_tail + 1 {
+            return Ok("Nothing to compact.".to_owned());
+        }
+        match self
+            .compact_context()
+            .await
+            .map_err(|e| zeph_commands::CommandError::new(e.to_string()))?
+        {
+            super::CompactionOutcome::Compacted | super::CompactionOutcome::NoChange => {
+                Ok("Context compacted successfully.".to_owned())
+            }
+            super::CompactionOutcome::CompactedWithPersistError => {
+                Ok("Context compacted, but persistence to storage failed (see logs).".to_owned())
+            }
+            super::CompactionOutcome::ProbeRejected => {
+                Ok("Compaction rejected: summary quality below threshold. \
+                 Original context preserved."
+                    .to_owned())
+            }
+        }
+    }
+
+    /// Persist a completed compaction to `SQLite`.
+    ///
+    /// Returns `true` when `SQLite` persistence failed (caller should set `CompactedWithPersistError`).
+    /// Also returns an optional future for the Qdrant session-summary write; the caller is
+    /// responsible for dispatching it through [`BackgroundSupervisor::spawn_summarization`]
+    /// so the `JoinHandle` is tracked and bounded per Await Discipline rule 2.
+    ///
+    /// All parameters are taken by value so the caller does not hold `&self` across any `.await`,
+    /// keeping the enclosing future `Send`. `DbStore: Clone` — cloning is synchronous so no
+    /// `&SemanticMemory` survives the clone call into any `.await` point.
     async fn persist_compaction_result(
         memory: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
         cid: Option<zeph_memory::ConversationId>,
         compacted_count: usize,
         summary_content: String,
         summary: String,
-    ) -> bool {
+    ) -> (
+        bool,
+        Option<std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'static>>>,
+    ) {
         let (Some(memory), Some(cid)) = (memory, cid) else {
-            return false;
+            return (false, None);
         };
         // Persist compaction: mark originals as user_only, insert summary as agent_only.
         // Assumption: the system prompt is always the first (oldest) row for this conversation
@@ -700,11 +743,15 @@ impl<C: Channel> Agent<C> {
         // non-system message was persisted first. MVP assumption; document if changed.
         // oldest_message_ids returns ascending order; ids[1..=compacted_count] are the messages
         // that were drained from self.msg.messages[1..compact_end].
-        let sqlite = memory.sqlite();
+        //
+        // Clone DbStore before any .await so no &SemanticMemory is held across await points.
+        // SemanticMemory contains AnyProvider which is !Sync, so &SemanticMemory is !Send.
+        // DbStore: Clone — cloning is synchronous, no borrow of memory survives .await.
+        let sqlite = memory.sqlite().clone();
         let ids = sqlite
             .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))
             .await;
-        match ids {
+        let sqlite_failed = match ids {
             Ok(ids) if ids.len() >= 2 => {
                 let start = ids[1];
                 let end = ids[compacted_count.min(ids.len() - 1)];
@@ -713,27 +760,32 @@ impl<C: Channel> Agent<C> {
                     .await
                 {
                     tracing::warn!("failed to persist compaction in sqlite: {e:#}");
-                    return true;
-                } else if let Err(e) = memory.store_session_summary(cid, &summary).await {
-                    tracing::warn!("failed to store session summary in Qdrant: {e:#}");
-                    return true;
+                    true
+                } else {
+                    false
                 }
             }
-            Ok(_) => {
-                if let Err(e) = memory.store_session_summary(cid, &summary).await {
-                    tracing::warn!("failed to store session summary: {e:#}");
-                    return true;
-                }
-            }
+            Ok(_) => false,
             Err(e) => {
                 tracing::warn!("failed to get message ids for compaction: {e:#}");
-                if let Err(e) = memory.store_session_summary(cid, &summary).await {
-                    tracing::warn!("failed to store session summary: {e:#}");
-                }
-                return true;
+                true
             }
-        }
-        false
+        };
+
+        // Return the Qdrant write as a future so the caller can dispatch it through
+        // BackgroundSupervisor::spawn_summarization — tracked, bounded, abort-on-turn-boundary.
+        // store_session_summary takes &self — the Arc clone here ensures 'static lifetime
+        // without holding &SemanticMemory across the await inside the future.
+        let qdrant_fut: std::pin::Pin<
+            Box<dyn std::future::Future<Output = bool> + Send + 'static>,
+        > = Box::pin(async move {
+            if let Err(e) = memory.store_session_summary(cid, &summary).await {
+                tracing::warn!("failed to store session summary: {e:#}");
+            }
+            false
+        });
+
+        (sqlite_failed, Some(qdrant_fut))
     }
 
     /// Prune tool output bodies.
@@ -1792,6 +1844,35 @@ impl<C: Channel> Agent<C> {
                             .channel
                             .send("Context compaction skipped this turn — will retry.")
                             .await;
+                    }
+                    CompactionOutcome::CompactedWithPersistError => {
+                        tracing::warn!(
+                            "compaction succeeded but persist failed — in-memory state is \
+                             correct, storage may be inconsistent"
+                        );
+                        // Fall through to the same handling as Compacted.
+                        let freed_tokens =
+                            tokens_before.saturating_sub(self.providers.cached_prompt_tokens);
+                        if freed_tokens == 0 {
+                            self.context_manager.compaction =
+                                crate::agent::context_manager::CompactionState::Exhausted {
+                                    warned: false,
+                                };
+                            let _ = self.channel.send_status("").await;
+                            return Ok(());
+                        }
+                        if matches!(self.compaction_tier(), CompactionTier::Hard) {
+                            self.context_manager.compaction =
+                                crate::agent::context_manager::CompactionState::Exhausted {
+                                    warned: false,
+                                };
+                            let _ = self.channel.send_status("").await;
+                            return Ok(());
+                        }
+                        self.context_manager.compaction =
+                            crate::agent::context_manager::CompactionState::CompactedThisTurn {
+                                cooldown: self.context_manager.compaction_cooldown_turns,
+                            };
                     }
                     CompactionOutcome::Compacted => {
                         // Guard 2 — Counterproductive: net freed tokens is zero (summary ate all

@@ -6,37 +6,34 @@ use rmcp::model::{CreateElicitationResult, ElicitationAction};
 use super::{Agent, Channel, LlmProvider};
 
 impl<C: Channel> Agent<C> {
+    /// Dispatch a `/mcp` subcommand, returning the output as a `String`.
+    ///
+    /// All output is collected into the returned string; no channel sends are
+    /// performed.  This makes the future `Send`-compatible for use in
+    /// `AgentAccess::handle_mcp`.
     pub(super) async fn handle_mcp_command(
         &mut self,
         args: &str,
-    ) -> Result<(), super::error::AgentError> {
+    ) -> Result<String, super::error::AgentError> {
         let parts: Vec<&str> = args.split_whitespace().collect();
         match parts.first().copied() {
             Some("add") => self.handle_mcp_add(&parts[1..]).await,
             Some("list") => self.handle_mcp_list().await,
-            Some("tools") => self.handle_mcp_tools(parts.get(1).copied()).await,
+            Some("tools") => Ok(self.handle_mcp_tools(parts.get(1).copied())),
             Some("remove") => self.handle_mcp_remove(parts.get(1).copied()).await,
-            _ => {
-                self.channel
-                    .send("Usage: /mcp add|list|tools|remove")
-                    .await?;
-                Ok(())
-            }
+            _ => Ok("Usage: /mcp add|list|tools|remove".to_owned()),
         }
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn handle_mcp_add(&mut self, args: &[&str]) -> Result<(), super::error::AgentError> {
+    async fn handle_mcp_add(&mut self, args: &[&str]) -> Result<String, super::error::AgentError> {
         if args.len() < 2 {
-            self.channel
-                .send("Usage: /mcp add <id> <command> [args...] | /mcp add <id> <url>")
-                .await?;
-            return Ok(());
+            return Ok("Usage: /mcp add <id> <command> [args...] | /mcp add <id> <url>".to_owned());
         }
 
-        let Some(ref manager) = self.mcp.manager else {
-            self.channel.send("MCP is not enabled.").await?;
-            return Ok(());
+        // Clone the Arc so no borrow of self.mcp.manager is held across .await.
+        let Some(manager) = self.mcp.manager.clone() else {
+            return Ok("MCP is not enabled.".to_owned());
         };
 
         let target = args[1];
@@ -47,25 +44,19 @@ impl<C: Channel> Agent<C> {
             && !self.mcp.allowed_commands.is_empty()
             && !self.mcp.allowed_commands.iter().any(|c| c == target)
         {
-            self.channel
-                .send(&format!(
-                    "Command '{target}' is not allowed. Permitted: {}",
-                    self.mcp.allowed_commands.join(", ")
-                ))
-                .await?;
-            return Ok(());
+            return Ok(format!(
+                "Command '{target}' is not allowed. Permitted: {}",
+                self.mcp.allowed_commands.join(", ")
+            ));
         }
 
         // SEC-MCP-03: enforce server limit
         let current_count = manager.list_servers().await.len();
         if current_count >= self.mcp.max_dynamic {
-            self.channel
-                .send(&format!(
-                    "Server limit reached ({}/{}).",
-                    current_count, self.mcp.max_dynamic
-                ))
-                .await?;
-            return Ok(());
+            return Ok(format!(
+                "Server limit reached ({}/{}).",
+                current_count, self.mcp.max_dynamic
+            ));
         }
 
         let transport = if is_url {
@@ -95,10 +86,8 @@ impl<C: Channel> Agent<C> {
             env_isolation: false,
         };
 
-        let _ = self.channel.send_status("connecting to mcp...").await;
         match manager.add_server(&entry).await {
             Ok(tools) => {
-                let _ = self.channel.send_status("").await;
                 let count = tools.len();
                 self.mcp
                     .server_outcomes
@@ -111,8 +100,9 @@ impl<C: Channel> Agent<C> {
                 self.mcp.tools.extend(tools);
                 self.mcp.sync_executor_tools();
                 self.mcp.pruning_cache.reset();
-                self.rebuild_semantic_index().await;
-                self.sync_mcp_registry().await;
+                // Defer rebuild to check_tool_refresh (next turn) so this method
+                // stays Send-compatible for use in AgentAccess::handle_mcp.
+                self.mcp.pending_semantic_rebuild = true;
                 let mcp_total = self.mcp.tools.len();
                 let mcp_server_count = self.mcp.server_outcomes.len();
                 let mcp_connected_count = self
@@ -142,37 +132,28 @@ impl<C: Channel> Agent<C> {
                     m.mcp_connected_count = mcp_connected_count;
                     m.mcp_servers = mcp_servers;
                 });
-                self.channel
-                    .send(&format!(
-                        "Connected MCP server '{}' ({count} tool(s))",
-                        entry.id
-                    ))
-                    .await?;
-                Ok(())
+                Ok(format!(
+                    "Connected MCP server '{}' ({count} tool(s))",
+                    entry.id
+                ))
             }
             Err(e) => {
-                let _ = self.channel.send_status("").await;
                 tracing::warn!(server_id = entry.id, "MCP add failed: {e:#}");
-                self.channel
-                    .send(&format!("Failed to connect server '{}': {e}", entry.id))
-                    .await?;
-                Ok(())
+                Ok(format!("Failed to connect server '{}': {e}", entry.id))
             }
         }
     }
 
-    async fn handle_mcp_list(&mut self) -> Result<(), super::error::AgentError> {
+    async fn handle_mcp_list(&mut self) -> Result<String, super::error::AgentError> {
         use std::fmt::Write;
 
-        let Some(ref manager) = self.mcp.manager else {
-            self.channel.send("MCP is not enabled.").await?;
-            return Ok(());
+        let Some(manager) = self.mcp.manager.clone() else {
+            return Ok("MCP is not enabled.".to_owned());
         };
 
         let server_ids = manager.list_servers().await;
         if server_ids.is_empty() {
-            self.channel.send("No MCP servers connected.").await?;
-            return Ok(());
+            return Ok("No MCP servers connected.".to_owned());
         }
 
         let mut output = String::from("Connected MCP servers:\n");
@@ -184,19 +165,14 @@ impl<C: Channel> Agent<C> {
         }
         let _ = write!(output, "Total: {total} tool(s)");
 
-        self.channel.send(&output).await?;
-        Ok(())
+        Ok(output)
     }
 
-    async fn handle_mcp_tools(
-        &mut self,
-        server_id: Option<&str>,
-    ) -> Result<(), super::error::AgentError> {
+    fn handle_mcp_tools(&mut self, server_id: Option<&str>) -> String {
         use std::fmt::Write;
 
         let Some(server_id) = server_id else {
-            self.channel.send("Usage: /mcp tools <server_id>").await?;
-            return Ok(());
+            return "Usage: /mcp tools <server_id>".to_owned();
         };
 
         let tools: Vec<_> = self
@@ -207,10 +183,7 @@ impl<C: Channel> Agent<C> {
             .collect();
 
         if tools.is_empty() {
-            self.channel
-                .send(&format!("No tools found for server '{server_id}'."))
-                .await?;
-            return Ok(());
+            return format!("No tools found for server '{server_id}'.");
         }
 
         let mut output = format!("Tools for '{server_id}' ({} total):\n", tools.len());
@@ -221,22 +194,20 @@ impl<C: Channel> Agent<C> {
                 let _ = writeln!(output, "- {} — {}", t.name, t.description);
             }
         }
-        self.channel.send(&output).await?;
-        Ok(())
+        output
     }
 
     async fn handle_mcp_remove(
         &mut self,
         server_id: Option<&str>,
-    ) -> Result<(), super::error::AgentError> {
+    ) -> Result<String, super::error::AgentError> {
         let Some(server_id) = server_id else {
-            self.channel.send("Usage: /mcp remove <id>").await?;
-            return Ok(());
+            return Ok("Usage: /mcp remove <id>".to_owned());
         };
 
-        let Some(ref manager) = self.mcp.manager else {
-            self.channel.send("MCP is not enabled.").await?;
-            return Ok(());
+        // Clone the Arc so no borrow of self.mcp.manager is held across .await.
+        let Some(manager) = self.mcp.manager.clone() else {
+            return Ok("MCP is not enabled.".to_owned());
         };
 
         match manager.remove_server(server_id).await {
@@ -247,8 +218,9 @@ impl<C: Channel> Agent<C> {
                 self.mcp.server_outcomes.retain(|o| o.id != server_id);
                 self.mcp.sync_executor_tools();
                 self.mcp.pruning_cache.reset();
-                self.rebuild_semantic_index().await;
-                self.sync_mcp_registry().await;
+                // Defer rebuild to check_tool_refresh (next turn) so this method
+                // stays Send-compatible for use in AgentAccess::handle_mcp.
+                self.mcp.pending_semantic_rebuild = true;
                 let mcp_total = self.mcp.tools.len();
                 let mcp_server_count = self.mcp.server_outcomes.len();
                 let mcp_connected_count = self
@@ -280,19 +252,13 @@ impl<C: Channel> Agent<C> {
                     m.active_mcp_tools
                         .retain(|name| !name.starts_with(&format!("{server_id}:")));
                 });
-                self.channel
-                    .send(&format!(
-                        "Disconnected MCP server '{server_id}' (removed {removed} tools)"
-                    ))
-                    .await?;
-                Ok(())
+                Ok(format!(
+                    "Disconnected MCP server '{server_id}' (removed {removed} tools)"
+                ))
             }
             Err(e) => {
                 tracing::warn!(server_id, "MCP remove failed: {e:#}");
-                self.channel
-                    .send(&format!("Failed to remove server '{server_id}': {e}"))
-                    .await?;
-                Ok(())
+                Ok(format!("Failed to remove server '{server_id}': {e}"))
             }
         }
     }
@@ -365,12 +331,36 @@ impl<C: Channel> Agent<C> {
             .await
     }
 
-    /// Poll the watch receiver for tool list updates from `tools/list_changed` notifications.
+    /// Poll the watch receiver for tool list updates from `tools/list_changed` notifications,
+    /// and process any deferred semantic index rebuild requests.
     ///
-    /// Called once per agent turn, before processing user input. When the tool list has changed,
-    /// updates `mcp.tools`, syncs the executor, and schedules a registry sync.
-    /// If no receiver is set (MCP disabled), or no change has occurred, this is a no-op.
+    /// Called once per agent turn, before processing user input.  Two triggers cause a rebuild:
+    /// - A `tools/list_changed` notification from an MCP server (via `tool_rx`).
+    /// - `pending_semantic_rebuild == true`, set by `/mcp add` or `/mcp remove` when dispatched
+    ///   via `AgentAccess::handle_mcp` (which cannot call `rebuild_semantic_index` directly
+    ///   because the future would be `!Send`).
+    ///
+    /// If neither trigger fires, this is a no-op.
     pub(super) async fn check_tool_refresh(&mut self) {
+        // Handle deferred rebuild from /mcp add|remove via AgentAccess.
+        if self.mcp.pending_semantic_rebuild {
+            self.mcp.pending_semantic_rebuild = false;
+            self.rebuild_semantic_index().await;
+            self.sync_mcp_registry().await;
+            let mcp_total = self.mcp.tools.len();
+            let mcp_servers = self
+                .mcp
+                .tools
+                .iter()
+                .map(|t| &t.server_id)
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            self.update_metrics(|m| {
+                m.mcp_tool_count = mcp_total;
+                m.mcp_server_count = mcp_servers;
+            });
+        }
+
         let Some(ref mut rx) = self.mcp.tool_rx else {
             return;
         };
@@ -407,13 +397,16 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) async fn sync_mcp_registry(&mut self) {
-        let Some(ref mut registry) = self.mcp.registry else {
+        if self.mcp.registry.is_none() {
             return;
-        };
+        }
         if !self.embedding_provider.supports_embeddings() {
             return;
         }
+        // Clone tools before .await to avoid holding &self.mcp.tools across an await point.
+        let tools = self.mcp.tools.clone();
         let provider = self.embedding_provider.clone();
+        let embedding_model = self.skill_state.embedding_model.clone();
         let embed_timeout = std::time::Duration::from_secs(self.runtime.timeouts.embedding_seconds);
         let embed_fn = move |text: &str| -> zeph_mcp::registry::EmbedFuture {
             let owned = text.to_owned();
@@ -430,12 +423,15 @@ impl<C: Channel> Agent<C> {
                 }
             })
         };
-        if let Err(e) = registry
-            .sync(&self.mcp.tools, &self.skill_state.embedding_model, embed_fn)
-            .await
-        {
+        // Take registry out of self to avoid holding &mut self.mcp.registry across .await.
+        // No early returns between take() and put-back — the await is the only yield point here.
+        let Some(mut registry) = self.mcp.registry.take() else {
+            return;
+        };
+        if let Err(e) = registry.sync(&tools, &embedding_model, embed_fn).await {
             tracing::warn!("failed to sync MCP tool registry: {e:#}");
         }
+        self.mcp.registry = Some(registry);
     }
 
     /// Build (or rebuild) the in-memory semantic tool index for embedding-based discovery.
@@ -614,7 +610,9 @@ impl<C: Channel> Agent<C> {
             })
         };
 
-        match zeph_mcp::SemanticToolIndex::build(&self.mcp.tools, &embed_fn).await {
+        // Clone tools before .await to avoid holding &self.mcp.tools across an await point.
+        let tools = self.mcp.tools.clone();
+        match zeph_mcp::SemanticToolIndex::build(&tools, &embed_fn).await {
             Ok(idx) => {
                 tracing::info!(
                     indexed = idx.len(),
@@ -736,12 +734,10 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.handle_mcp_command("unknown").await.unwrap();
-
-        let sent = agent.channel.sent_messages();
+        let result = agent.handle_mcp_command("unknown").await.unwrap();
         assert!(
-            sent.iter().any(|s| s.contains("Usage: /mcp")),
-            "expected usage message, got: {sent:?}"
+            result.contains("Usage: /mcp"),
+            "expected usage message, got: {result:?}"
         );
     }
 
@@ -753,12 +749,10 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.handle_mcp_command("list").await.unwrap();
-
-        let sent = agent.channel.sent_messages();
+        let result = agent.handle_mcp_command("list").await.unwrap();
         assert!(
-            sent.iter().any(|s| s.contains("MCP is not enabled")),
-            "expected not-enabled message, got: {sent:?}"
+            result.contains("MCP is not enabled"),
+            "expected not-enabled message, got: {result:?}"
         );
     }
 
@@ -770,12 +764,10 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.handle_mcp_command("tools").await.unwrap();
-
-        let sent = agent.channel.sent_messages();
+        let result = agent.handle_mcp_command("tools").await.unwrap();
         assert!(
-            sent.iter().any(|s| s.contains("Usage: /mcp tools")),
-            "expected tools usage message, got: {sent:?}"
+            result.contains("Usage: /mcp tools"),
+            "expected tools usage message, got: {result:?}"
         );
     }
 
@@ -787,12 +779,10 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.handle_mcp_command("remove").await.unwrap();
-
-        let sent = agent.channel.sent_messages();
+        let result = agent.handle_mcp_command("remove").await.unwrap();
         assert!(
-            sent.iter().any(|s| s.contains("Usage: /mcp remove")),
-            "expected remove usage message, got: {sent:?}"
+            result.contains("Usage: /mcp remove"),
+            "expected remove usage message, got: {result:?}"
         );
     }
 
@@ -804,13 +794,10 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        // "remove server-id" but no manager
-        agent.handle_mcp_command("remove my-server").await.unwrap();
-
-        let sent = agent.channel.sent_messages();
+        let result = agent.handle_mcp_command("remove my-server").await.unwrap();
         assert!(
-            sent.iter().any(|s| s.contains("MCP is not enabled")),
-            "expected not-enabled message, got: {sent:?}"
+            result.contains("MCP is not enabled"),
+            "expected not-enabled message, got: {result:?}"
         );
     }
 
@@ -822,13 +809,11 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        // "add" with only 1 arg (needs at least 2)
-        agent.handle_mcp_command("add server-id").await.unwrap();
-
-        let sent = agent.channel.sent_messages();
+        // "add" with only 1 arg (needs at least 2: id + command)
+        let result = agent.handle_mcp_command("add server-id").await.unwrap();
         assert!(
-            sent.iter().any(|s| s.contains("Usage: /mcp add")),
-            "expected add usage message, got: {sent:?}"
+            result.contains("Usage: /mcp add"),
+            "expected add usage message, got: {result:?}"
         );
     }
 
@@ -841,15 +826,13 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         // mcp.tools is empty, so any server will have no tools
-        agent
+        let result = agent
             .handle_mcp_command("tools nonexistent-server")
             .await
             .unwrap();
-
-        let sent = agent.channel.sent_messages();
         assert!(
-            sent.iter().any(|s| s.contains("No tools found")),
-            "expected no-tools message, got: {sent:?}"
+            result.contains("No tools found"),
+            "expected no-tools message, got: {result:?}"
         );
     }
 

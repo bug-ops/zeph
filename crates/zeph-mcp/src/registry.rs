@@ -27,26 +27,36 @@ const MCP_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x6c, 0x73, 0x00, 0x01, // "ls\0\x01"
 ]);
 
-/// Wrapper that caches the qualified name so [`Embeddable::key`] can return `&str`.
-struct McpToolRef<'a> {
-    tool: &'a McpTool,
+/// Owned wrapper that caches the qualified name so [`Embeddable::key`] can return `&str`.
+///
+/// Using owned fields (no lifetime parameter) makes this type `Send`, which is required
+/// for `EmbeddingRegistry::sync` to produce a `Send` future.
+struct McpToolOwned {
     qualified: String,
     hash: String,
+    description: String,
+    server_id: String,
+    tool_name: String,
+    embed_text: String,
 }
 
-impl<'a> McpToolRef<'a> {
-    fn new(tool: &'a McpTool) -> Self {
+impl McpToolOwned {
+    fn new(tool: &McpTool) -> Self {
         let qualified = tool.qualified_name();
         let hash = compute_hash(tool);
+        let embed_text = format!("{}: {}", tool.name, tool.description);
         Self {
-            tool,
             qualified,
             hash,
+            description: tool.description.clone(),
+            server_id: tool.server_id.clone(),
+            tool_name: tool.name.clone(),
+            embed_text,
         }
     }
 }
 
-impl Embeddable for McpToolRef<'_> {
+impl Embeddable for McpToolOwned {
     fn key(&self) -> &str {
         &self.qualified
     }
@@ -56,15 +66,15 @@ impl Embeddable for McpToolRef<'_> {
     }
 
     fn embed_text(&self) -> &str {
-        &self.tool.description
+        &self.embed_text
     }
 
     fn to_payload(&self) -> serde_json::Value {
         serde_json::json!({
             "key": self.qualified,
-            "server_id": self.tool.server_id,
-            "tool_name": self.tool.name,
-            "description": self.tool.description,
+            "server_id": self.server_id,
+            "tool_name": self.tool_name,
+            "description": self.description,
         })
     }
 }
@@ -136,7 +146,7 @@ impl McpToolRegistry {
     where
         F: Fn(&str) -> EmbedFuture,
     {
-        let refs: Vec<McpToolRef<'_>> = tools.iter().map(McpToolRef::new).collect();
+        let refs: Vec<McpToolOwned> = tools.iter().map(McpToolOwned::new).collect();
         let stats = self
             .registry
             .sync(
@@ -231,23 +241,23 @@ mod tests {
     }
 
     #[test]
-    fn mcp_tool_ref_key() {
+    fn mcp_tool_owned_key() {
         let tool = make_tool("github", "create_issue");
-        let r = McpToolRef::new(&tool);
+        let r = McpToolOwned::new(&tool);
         assert_eq!(r.key(), "github:create_issue");
     }
 
     #[test]
-    fn mcp_tool_ref_embed_text() {
+    fn mcp_tool_owned_embed_text() {
         let tool = make_tool("s", "t");
-        let r = McpToolRef::new(&tool);
-        assert_eq!(r.embed_text(), "test");
+        let r = McpToolOwned::new(&tool);
+        assert_eq!(r.embed_text(), "t: test");
     }
 
     #[test]
-    fn mcp_tool_ref_payload_has_key() {
+    fn mcp_tool_owned_payload_has_key() {
         let tool = make_tool("github", "create_issue");
-        let r = McpToolRef::new(&tool);
+        let r = McpToolOwned::new(&tool);
         let payload = r.to_payload();
         assert_eq!(payload["key"], "github:create_issue");
     }
