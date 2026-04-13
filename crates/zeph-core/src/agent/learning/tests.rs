@@ -159,7 +159,7 @@ fn is_learning_enabled_no_config_returns_false() {
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
-    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    let agent = Agent::new(provider, channel, registry, None, 5, executor);
     // No learning config set → false
     assert!(!agent.is_learning_enabled());
 }
