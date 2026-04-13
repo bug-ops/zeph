@@ -16,7 +16,7 @@ use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 
 /// New conversation handler for `/new`.
 ///
-/// Delegates to [`AgentAccess::reset_conversation`] which is now Send-compatible:
+/// Delegates to `AgentAccess::reset_conversation` which is now Send-compatible:
 /// `reset_conversation` clones the `Arc<SemanticMemory>` before `.await` so no
 /// `&mut self` borrow is held across the await boundary.
 pub struct NewConversationCommand;
