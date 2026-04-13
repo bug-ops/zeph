@@ -57,32 +57,6 @@ pub(super) fn collect_and_truncate_task_outputs(
 }
 
 impl<C: crate::channel::Channel> Agent<C> {
-    pub(super) async fn handle_plan_command(
-        &mut self,
-        cmd: zeph_orchestration::PlanCommand,
-    ) -> Result<(), error::AgentError> {
-        use zeph_orchestration::PlanCommand;
-
-        if !self.config_for_orchestration().enabled {
-            self.channel
-                .send(
-                    "Task orchestration is disabled. Set `orchestration.enabled = true` in config.",
-                )
-                .await?;
-            return Ok(());
-        }
-
-        match cmd {
-            PlanCommand::Goal(goal) => self.handle_plan_goal(&goal).await,
-            PlanCommand::Confirm => self.handle_plan_confirm().await,
-            PlanCommand::Status(id) => self.handle_plan_status(id.as_deref()).await,
-            PlanCommand::List => self.handle_plan_list().await,
-            PlanCommand::Cancel(id) => self.handle_plan_cancel(id.as_deref()).await,
-            PlanCommand::Resume(id) => self.handle_plan_resume(id.as_deref()).await,
-            PlanCommand::Retry(id) => self.handle_plan_retry(id.as_deref()).await,
-        }
-    }
-
     pub(super) fn config_for_orchestration(&self) -> &crate::config::OrchestrationConfig {
         &self.orchestration.orchestration_config
     }
@@ -126,105 +100,6 @@ impl<C: crate::channel::Channel> Agent<C> {
                 None
             }
         }
-    }
-
-    pub(super) async fn handle_plan_goal(&mut self, goal: &str) -> Result<(), error::AgentError> {
-        use zeph_orchestration::{LlmPlanner, plan_with_cache};
-
-        if self.orchestration.pending_graph.is_some() {
-            self.channel
-                .send(
-                    "A plan is already pending confirmation. \
-                     Use /plan confirm to execute it or /plan cancel to discard.",
-                )
-                .await?;
-            return Ok(());
-        }
-
-        self.channel.send("Planning task decomposition...").await?;
-
-        let available_agents = self
-            .orchestration
-            .subagent_manager
-            .as_ref()
-            .map(|m| m.definitions().to_vec())
-            .unwrap_or_default();
-
-        let confirm_before_execute = self
-            .orchestration
-            .orchestration_config
-            .confirm_before_execute;
-
-        self.init_plan_cache_if_needed().await;
-        let goal_embedding = self.goal_embedding_for_cache(goal).await;
-
-        tracing::debug!(
-            cache_enabled = self.orchestration.orchestration_config.plan_cache.enabled,
-            has_embedding = goal_embedding.is_some(),
-            "plan cache state for goal"
-        );
-
-        let planner_provider = self
-            .orchestration
-            .planner_provider
-            .as_ref()
-            .unwrap_or(&self.provider)
-            .clone();
-        let planner = LlmPlanner::new(planner_provider, &self.orchestration.orchestration_config);
-        let embed_model = self.skill_state.embedding_model.clone();
-        let (graph, planner_usage) = plan_with_cache(
-            &planner,
-            self.orchestration.plan_cache.as_ref(),
-            &self.provider,
-            goal_embedding.as_deref(),
-            &embed_model,
-            goal,
-            &available_agents,
-            self.orchestration.orchestration_config.max_tasks,
-        )
-        .await
-        .map_err(|e| error::AgentError::Other(e.to_string()))?;
-
-        // Store embedding for cache_plan() after execution completes.
-        self.orchestration.pending_goal_embedding = goal_embedding;
-
-        let task_count = graph.tasks.len() as u64;
-        let snapshot = crate::metrics::TaskGraphSnapshot::from(&graph);
-        let (planner_prompt, planner_completion) = planner_usage.unwrap_or((0, 0));
-        self.update_metrics(|m| {
-            m.api_calls += 1;
-            m.prompt_tokens += planner_prompt;
-            m.completion_tokens += planner_completion;
-            m.total_tokens = m.prompt_tokens + m.completion_tokens;
-            m.orchestration.plans_total += 1;
-            m.orchestration.tasks_total += task_count;
-            m.orchestration_graph = Some(snapshot);
-        });
-        self.record_cost_and_cache(planner_prompt, planner_completion);
-
-        if confirm_before_execute {
-            let summary = format_plan_summary(&graph);
-            self.channel.send(&summary).await?;
-            self.channel
-                .send("Type `/plan confirm` to execute, or `/plan cancel` to abort.")
-                .await?;
-            self.orchestration.pending_graph = Some(graph);
-        } else {
-            let summary = format_plan_summary(&graph);
-            self.channel.send(&summary).await?;
-            self.channel
-                .send("Plan ready. Full execution will be available in a future phase.")
-                .await?;
-            let now = std::time::Instant::now();
-            self.update_metrics(|m| {
-                if let Some(ref mut s) = m.orchestration_graph {
-                    "completed".clone_into(&mut s.status);
-                    s.completed_at = Some(now);
-                }
-            });
-        }
-
-        Ok(())
     }
 
     pub(super) async fn validate_pending_graph(
@@ -706,16 +581,104 @@ impl<C: crate::channel::Channel> Agent<C> {
         Ok(result_label)
     }
 
-    pub(super) async fn handle_plan_status(
+    // ----- _as_string variants (used by AgentAccess / CommandHandler) -----
+
+    pub(super) async fn handle_plan_goal_as_string(
         &mut self,
-        _graph_id: Option<&str>,
-    ) -> Result<(), error::AgentError> {
+        goal: &str,
+    ) -> Result<String, error::AgentError> {
+        use zeph_orchestration::{LlmPlanner, plan_with_cache};
+
+        if self.orchestration.pending_graph.is_some() {
+            return Ok("A plan is already pending confirmation. \
+                 Use /plan confirm to execute it or /plan cancel to discard."
+                .to_owned());
+        }
+
+        let available_agents = self
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .map(|m| m.definitions().to_vec())
+            .unwrap_or_default();
+
+        let confirm_before_execute = self
+            .orchestration
+            .orchestration_config
+            .confirm_before_execute;
+
+        self.init_plan_cache_if_needed().await;
+        let goal_embedding = self.goal_embedding_for_cache(goal).await;
+
+        tracing::debug!(
+            cache_enabled = self.orchestration.orchestration_config.plan_cache.enabled,
+            has_embedding = goal_embedding.is_some(),
+            "plan cache state for goal"
+        );
+
+        let planner_provider = self
+            .orchestration
+            .planner_provider
+            .as_ref()
+            .unwrap_or(&self.provider)
+            .clone();
+        let planner = LlmPlanner::new(planner_provider, &self.orchestration.orchestration_config);
+        let embed_model = self.skill_state.embedding_model.clone();
+        let (graph, planner_usage) = plan_with_cache(
+            &planner,
+            self.orchestration.plan_cache.as_ref(),
+            &self.provider,
+            goal_embedding.as_deref(),
+            &embed_model,
+            goal,
+            &available_agents,
+            self.orchestration.orchestration_config.max_tasks,
+        )
+        .await
+        .map_err(|e| error::AgentError::Other(e.to_string()))?;
+
+        self.orchestration.pending_goal_embedding = goal_embedding;
+
+        let task_count = graph.tasks.len() as u64;
+        let snapshot = crate::metrics::TaskGraphSnapshot::from(&graph);
+        let (planner_prompt, planner_completion) = planner_usage.unwrap_or((0, 0));
+        self.update_metrics(|m| {
+            m.api_calls += 1;
+            m.prompt_tokens += planner_prompt;
+            m.completion_tokens += planner_completion;
+            m.total_tokens = m.prompt_tokens + m.completion_tokens;
+            m.orchestration.plans_total += 1;
+            m.orchestration.tasks_total += task_count;
+            m.orchestration_graph = Some(snapshot);
+        });
+        self.record_cost_and_cache(planner_prompt, planner_completion);
+
+        let summary = format_plan_summary(&graph);
+        if confirm_before_execute {
+            self.orchestration.pending_graph = Some(graph);
+            Ok(format!(
+                "{summary}\nType `/plan confirm` to execute, or `/plan cancel` to abort."
+            ))
+        } else {
+            let now = std::time::Instant::now();
+            self.update_metrics(|m| {
+                if let Some(ref mut s) = m.orchestration_graph {
+                    "completed".clone_into(&mut s.status);
+                    s.completed_at = Some(now);
+                }
+            });
+            Ok(format!(
+                "{summary}\nPlan ready. Full execution will be available in a future phase."
+            ))
+        }
+    }
+
+    pub(super) fn handle_plan_status_as_string(&mut self, _graph_id: Option<&str>) -> String {
         use zeph_orchestration::GraphStatus;
         let Some(ref graph) = self.orchestration.pending_graph else {
-            self.channel.send("No active plan.").await?;
-            return Ok(());
+            return "No active plan.".to_owned();
         };
-        let msg = match graph.status {
+        match graph.status {
             GraphStatus::Created => {
                 "A plan is awaiting confirmation. Type `/plan confirm` to execute or `/plan cancel` to abort."
             }
@@ -728,12 +691,11 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
             GraphStatus::Completed => "Plan completed successfully.",
             GraphStatus::Canceled => "Plan was canceled.",
-        };
-        self.channel.send(msg).await?;
-        Ok(())
+        }
+        .to_owned()
     }
 
-    pub(super) async fn handle_plan_list(&mut self) -> Result<(), error::AgentError> {
+    pub(super) fn handle_plan_list_as_string(&mut self) -> String {
         if let Some(ref graph) = self.orchestration.pending_graph {
             let summary = format_plan_summary(graph);
             let status_label = match graph.status {
@@ -743,22 +705,16 @@ impl<C: crate::channel::Channel> Agent<C> {
                 zeph_orchestration::GraphStatus::Failed => "failed (retryable)",
                 _ => "unknown",
             };
-            self.channel
-                .send(&format!("{summary}\nStatus: {status_label}"))
-                .await?;
+            format!("{summary}\nStatus: {status_label}")
         } else {
-            self.channel.send("No recent plans.").await?;
+            "No recent plans.".to_owned()
         }
-        Ok(())
     }
 
-    pub(super) async fn handle_plan_cancel(
-        &mut self,
-        _graph_id: Option<&str>,
-    ) -> Result<(), error::AgentError> {
+    pub(super) fn handle_plan_cancel_as_string(&mut self, _graph_id: Option<&str>) -> String {
         if let Some(token) = self.orchestration.plan_cancel_token.take() {
             token.cancel();
-            self.channel.send("Canceling plan execution...").await?;
+            "Canceling plan execution...".to_owned()
         } else if self.orchestration.pending_graph.take().is_some() {
             let now = std::time::Instant::now();
             self.update_metrics(|m| {
@@ -768,48 +724,36 @@ impl<C: crate::channel::Channel> Agent<C> {
                 }
             });
             self.orchestration.pending_goal_embedding = None;
-            self.channel.send("Plan canceled.").await?;
+            "Plan canceled.".to_owned()
         } else {
-            self.channel.send("No active plan to cancel.").await?;
+            "No active plan to cancel.".to_owned()
         }
-        Ok(())
     }
 
-    pub(super) async fn handle_plan_resume(
-        &mut self,
-        graph_id: Option<&str>,
-    ) -> Result<(), error::AgentError> {
+    pub(super) fn handle_plan_resume_as_string(&mut self, graph_id: Option<&str>) -> String {
         use zeph_orchestration::GraphStatus;
 
         let Some(ref graph) = self.orchestration.pending_graph else {
-            self.channel
-                .send("No paused plan to resume. Use `/plan status` to check the current state.")
-                .await?;
-            return Ok(());
+            return "No paused plan to resume. Use `/plan status` to check the current state."
+                .to_owned();
         };
 
         if let Some(id) = graph_id
             && graph.id.to_string() != id
         {
-            self.channel
-                .send(&format!(
-                    "Graph id '{id}' does not match the active plan ({}). \
-                     Use `/plan status` to see the active plan id.",
-                    graph.id
-                ))
-                .await?;
-            return Ok(());
+            return format!(
+                "Graph id '{id}' does not match the active plan ({}). \
+                 Use `/plan status` to see the active plan id.",
+                graph.id
+            );
         }
 
         if graph.status != GraphStatus::Paused {
-            self.channel
-                .send(&format!(
-                    "The active plan is in '{}' status and cannot be resumed. \
-                     Only Paused plans can be resumed.",
-                    graph.status
-                ))
-                .await?;
-            return Ok(());
+            return format!(
+                "The active plan is in '{}' status and cannot be resumed. \
+                 Only Paused plans can be resumed.",
+                graph.status
+            );
         }
 
         let graph = self.orchestration.pending_graph.take().unwrap();
@@ -819,51 +763,42 @@ impl<C: crate::channel::Channel> Agent<C> {
             "resuming paused graph"
         );
 
-        self.channel
-            .send(&format!(
-                "Resuming plan: {}\nUse `/plan confirm` to continue execution.",
-                graph.goal
-            ))
-            .await?;
-
+        let msg = format!(
+            "Resuming plan: {}\nUse `/plan confirm` to continue execution.",
+            graph.goal
+        );
         self.orchestration.pending_graph = Some(graph);
-        Ok(())
+        msg
     }
 
-    pub(super) async fn handle_plan_retry(
+    pub(super) fn handle_plan_retry_as_string(
         &mut self,
         graph_id: Option<&str>,
-    ) -> Result<(), error::AgentError> {
+    ) -> Result<String, error::AgentError> {
         use zeph_orchestration::{GraphStatus, dag};
 
         let Some(ref graph) = self.orchestration.pending_graph else {
-            self.channel
-                .send("No active plan to retry. Use `/plan status` to check the current state.")
-                .await?;
-            return Ok(());
+            return Ok(
+                "No active plan to retry. Use `/plan status` to check the current state."
+                    .to_owned(),
+            );
         };
 
         if let Some(id) = graph_id
             && graph.id.to_string() != id
         {
-            self.channel
-                .send(&format!(
-                    "Graph id '{id}' does not match the active plan ({}). \
-                     Use `/plan status` to see the active plan id.",
-                    graph.id
-                ))
-                .await?;
-            return Ok(());
+            return Ok(format!(
+                "Graph id '{id}' does not match the active plan ({}). \
+                 Use `/plan status` to see the active plan id.",
+                graph.id
+            ));
         }
 
         if graph.status != GraphStatus::Failed && graph.status != GraphStatus::Paused {
-            self.channel
-                .send(&format!(
-                    "The active plan is in '{}' status. Only Failed or Paused plans can be retried.",
-                    graph.status
-                ))
-                .await?;
-            return Ok(());
+            return Ok(format!(
+                "The active plan is in '{}' status. Only Failed or Paused plans can be retried.",
+                graph.status
+            ));
         }
 
         let mut graph = self.orchestration.pending_graph.take().unwrap();
@@ -889,33 +824,52 @@ impl<C: crate::channel::Channel> Agent<C> {
             "retrying failed tasks in graph"
         );
 
-        self.channel
-            .send(&format!(
-                "Retrying {failed_count} failed task(s) in plan: {}\n\
-                 Use `/plan confirm` to execute.",
-                graph.goal
-            ))
-            .await?;
-
+        let msg = format!(
+            "Retrying {failed_count} failed task(s) in plan: {}\n\
+             Use `/plan confirm` to execute.",
+            graph.goal
+        );
         self.orchestration.pending_graph = Some(graph);
-        Ok(())
+        Ok(msg)
     }
 
-    pub(super) async fn dispatch_plan_command(
+    pub(super) async fn handle_plan_command_as_string(
+        &mut self,
+        cmd: zeph_orchestration::PlanCommand,
+    ) -> Result<String, error::AgentError> {
+        use zeph_orchestration::PlanCommand;
+
+        if !self.config_for_orchestration().enabled {
+            return Ok(
+                "Task orchestration is disabled. Set `orchestration.enabled = true` in config."
+                    .to_owned(),
+            );
+        }
+
+        match cmd {
+            PlanCommand::Goal(goal) => self.handle_plan_goal_as_string(&goal).await,
+            PlanCommand::Confirm => {
+                // handle_plan_confirm sends progress and result messages directly via
+                // self.channel (long-running, multi-message). Empty string signals
+                // CommandOutput::Silent to the registry — output is already delivered.
+                self.handle_plan_confirm().await?;
+                Ok(String::new())
+            }
+            PlanCommand::Status(id) => Ok(self.handle_plan_status_as_string(id.as_deref())),
+            PlanCommand::List => Ok(self.handle_plan_list_as_string()),
+            PlanCommand::Cancel(id) => Ok(self.handle_plan_cancel_as_string(id.as_deref())),
+            PlanCommand::Resume(id) => Ok(self.handle_plan_resume_as_string(id.as_deref())),
+            PlanCommand::Retry(id) => self.handle_plan_retry_as_string(id.as_deref()),
+        }
+    }
+
+    pub(super) async fn dispatch_plan_command_as_string(
         &mut self,
         trimmed: &str,
-    ) -> Result<(), error::AgentError> {
+    ) -> Result<String, error::AgentError> {
         match zeph_orchestration::PlanCommand::parse(trimmed) {
-            Ok(cmd) => {
-                self.handle_plan_command(cmd).await?;
-            }
-            Err(e) => {
-                self.channel
-                    .send(&e.to_string())
-                    .await
-                    .map_err(error::AgentError::from)?;
-            }
+            Ok(cmd) => self.handle_plan_command_as_string(cmd).await,
+            Err(e) => Ok(e.to_string()),
         }
-        Ok(())
     }
 }

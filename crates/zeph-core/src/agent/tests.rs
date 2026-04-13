@@ -2714,7 +2714,7 @@ mod compaction_e2e {
 
         // No subagent_manager set.
         agent
-            .handle_plan_command(PlanCommand::Confirm)
+            .handle_plan_command_as_string(PlanCommand::Confirm)
             .await
             .unwrap();
 
@@ -2737,7 +2737,7 @@ mod compaction_e2e {
 
         // No pending_graph.
         agent
-            .handle_plan_command(PlanCommand::Confirm)
+            .handle_plan_command_as_string(PlanCommand::Confirm)
             .await
             .unwrap();
 
@@ -2798,7 +2798,7 @@ mod compaction_e2e {
         agent.orchestration.pending_graph = Some(graph);
 
         agent
-            .handle_plan_command(PlanCommand::Confirm)
+            .handle_plan_command_as_string(PlanCommand::Confirm)
             .await
             .unwrap();
 
@@ -2845,7 +2845,7 @@ mod compaction_e2e {
         agent.orchestration.pending_graph = Some(graph);
 
         agent
-            .handle_plan_command(PlanCommand::Confirm)
+            .handle_plan_command_as_string(PlanCommand::Confirm)
             .await
             .unwrap();
 
@@ -2864,12 +2864,14 @@ mod compaction_e2e {
 
         agent.orchestration.pending_graph = Some(make_simple_graph(GraphStatus::Created));
 
-        agent.handle_plan_command(PlanCommand::List).await.unwrap();
+        let out = agent
+            .handle_plan_command_as_string(PlanCommand::List)
+            .await
+            .unwrap();
 
-        let msgs = agent.channel.sent_messages();
         assert!(
-            msgs.iter().any(|m| m.contains("awaiting confirmation")),
-            "must show 'awaiting confirmation' status; got: {msgs:?}"
+            out.contains("awaiting confirmation"),
+            "must show 'awaiting confirmation' status; got: {out:?}"
         );
     }
 
@@ -2878,12 +2880,14 @@ mod compaction_e2e {
     async fn plan_list_no_graph_shows_no_recent() {
         let mut agent = agent_with_orchestration();
 
-        agent.handle_plan_command(PlanCommand::List).await.unwrap();
+        let out = agent
+            .handle_plan_command_as_string(PlanCommand::List)
+            .await
+            .unwrap();
 
-        let msgs = agent.channel.sent_messages();
         assert!(
-            msgs.iter().any(|m| m.contains("No recent plans")),
-            "must show 'No recent plans'; got: {msgs:?}"
+            out.contains("No recent plans"),
+            "must show 'No recent plans'; got: {out:?}"
         );
     }
 
@@ -2904,7 +2908,7 @@ mod compaction_e2e {
         agent.orchestration.pending_graph = Some(graph);
 
         agent
-            .handle_plan_command(PlanCommand::Retry(None))
+            .handle_plan_command_as_string(PlanCommand::Retry(None))
             .await
             .unwrap();
 
@@ -2930,6 +2934,44 @@ mod compaction_e2e {
         assert!(
             g.tasks[1].assigned_agent.is_none(),
             "assigned_agent must be cleared for stale Running task"
+        );
+    }
+
+    /// GAP-A: `handle_plan_cancel_as_string` with no active plan returns "No active plan".
+    #[tokio::test]
+    async fn plan_cancel_as_string_no_active_plan() {
+        let mut agent = agent_with_orchestration();
+        let out = agent.handle_plan_cancel_as_string(None);
+        assert!(
+            out.contains("No active plan"),
+            "must return 'No active plan' message; got: {out:?}"
+        );
+    }
+
+    /// GAP-A: `handle_plan_resume_as_string` with no pending graph returns "No paused plan".
+    #[tokio::test]
+    async fn plan_resume_as_string_no_paused_plan() {
+        let mut agent = agent_with_orchestration();
+        let out = agent.handle_plan_resume_as_string(None);
+        assert!(
+            out.contains("No paused plan"),
+            "must return 'No paused plan' message; got: {out:?}"
+        );
+    }
+
+    /// GAP-B: `dispatch_plan_command_as_string` with a parse error returns `Ok(non-empty)`.
+    /// `/plan list extra_args` is rejected by the parser — the error must be returned as
+    /// `Ok(message)`, not propagated as `Err`.
+    #[tokio::test]
+    async fn dispatch_plan_command_as_string_invalid_subcommand() {
+        let mut agent = agent_with_orchestration();
+        let result = agent
+            .dispatch_plan_command_as_string("/plan list unexpected_arg")
+            .await
+            .unwrap();
+        assert!(
+            !result.is_empty(),
+            "parse error must be returned as Ok(non-empty string), not propagated; got: {result:?}"
         );
     }
 
@@ -3043,7 +3085,7 @@ mod compaction_e2e {
 
         // Run the plan loop — the fix adds a post-loop drain call.
         agent
-            .handle_plan_command(PlanCommand::Confirm)
+            .handle_plan_command_as_string(PlanCommand::Confirm)
             .await
             .unwrap();
 
@@ -3087,7 +3129,7 @@ mod compaction_e2e {
         agent.orchestration.pending_graph = Some(graph);
 
         agent
-            .handle_plan_command(PlanCommand::Confirm)
+            .handle_plan_command_as_string(PlanCommand::Confirm)
             .await
             .unwrap();
 
@@ -3457,27 +3499,25 @@ mod compaction_e2e {
     async fn plan_status_reflects_graph_status() {
         // No active plan → "No active plan."
         let mut agent = agent_with_orchestration();
-        agent
-            .handle_plan_command(PlanCommand::Status(None))
+        let out = agent
+            .handle_plan_command_as_string(PlanCommand::Status(None))
             .await
             .unwrap();
-        let msgs = agent.channel.sent_messages();
         assert!(
-            msgs.iter().any(|m| m.contains("No active plan")),
-            "no plan → 'No active plan'; got: {msgs:?}"
+            out.contains("No active plan"),
+            "no plan → 'No active plan'; got: {out:?}"
         );
 
         // GraphStatus::Created → awaiting confirmation.
         let mut agent = agent_with_orchestration();
         agent.orchestration.pending_graph = Some(make_simple_graph(GraphStatus::Created));
-        agent
-            .handle_plan_command(PlanCommand::Status(None))
+        let out = agent
+            .handle_plan_command_as_string(PlanCommand::Status(None))
             .await
             .unwrap();
-        let msgs = agent.channel.sent_messages();
         assert!(
-            msgs.iter().any(|m| m.contains("awaiting confirmation")),
-            "Created graph → 'awaiting confirmation'; got: {msgs:?}"
+            out.contains("awaiting confirmation"),
+            "Created graph → 'awaiting confirmation'; got: {out:?}"
         );
 
         // GraphStatus::Failed → retry message.
@@ -3485,15 +3525,13 @@ mod compaction_e2e {
         let mut failed_graph = make_simple_graph(GraphStatus::Created);
         failed_graph.status = GraphStatus::Failed;
         agent.orchestration.pending_graph = Some(failed_graph);
-        agent
-            .handle_plan_command(PlanCommand::Status(None))
+        let out = agent
+            .handle_plan_command_as_string(PlanCommand::Status(None))
             .await
             .unwrap();
-        let msgs = agent.channel.sent_messages();
         assert!(
-            msgs.iter()
-                .any(|m| m.contains("failed") || m.contains("Failed")),
-            "Failed graph → failure message; got: {msgs:?}"
+            out.contains("failed") || out.contains("Failed"),
+            "Failed graph → failure message; got: {out:?}"
         );
 
         // GraphStatus::Paused → resume message.
@@ -3501,15 +3539,13 @@ mod compaction_e2e {
         let mut paused_graph = make_simple_graph(GraphStatus::Created);
         paused_graph.status = GraphStatus::Paused;
         agent.orchestration.pending_graph = Some(paused_graph);
-        agent
-            .handle_plan_command(PlanCommand::Status(None))
+        let out = agent
+            .handle_plan_command_as_string(PlanCommand::Status(None))
             .await
             .unwrap();
-        let msgs = agent.channel.sent_messages();
         assert!(
-            msgs.iter()
-                .any(|m| m.contains("paused") || m.contains("Paused")),
-            "Paused graph → paused message; got: {msgs:?}"
+            out.contains("paused") || out.contains("Paused"),
+            "Paused graph → paused message; got: {out:?}"
         );
 
         // GraphStatus::Completed → completed message.
@@ -3517,15 +3553,13 @@ mod compaction_e2e {
         let mut completed_graph = make_simple_graph(GraphStatus::Created);
         completed_graph.status = GraphStatus::Completed;
         agent.orchestration.pending_graph = Some(completed_graph);
-        agent
-            .handle_plan_command(PlanCommand::Status(None))
+        let out = agent
+            .handle_plan_command_as_string(PlanCommand::Status(None))
             .await
             .unwrap();
-        let msgs = agent.channel.sent_messages();
         assert!(
-            msgs.iter()
-                .any(|m| m.contains("completed") || m.contains("Completed")),
-            "Completed graph → completed message; got: {msgs:?}"
+            out.contains("completed") || out.contains("Completed"),
+            "Completed graph → completed message; got: {out:?}"
         );
     }
 
@@ -3601,7 +3635,7 @@ mod compaction_e2e {
             .confirm_before_execute = true;
 
         agent
-            .handle_plan_command(PlanCommand::Goal("build something".to_owned()))
+            .handle_plan_command_as_string(PlanCommand::Goal("build something".to_owned()))
             .await
             .unwrap();
 

@@ -528,23 +528,24 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     // ----- /scheduler -----
 
+    #[cfg(feature = "scheduler")]
     fn list_scheduled_tasks<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
         Box::pin(async move {
-            #[cfg(feature = "scheduler")]
-            {
-                let result = self
-                    .handle_scheduler_list_as_string()
-                    .await
-                    .map_err(|e| CommandError::new(e.to_string()))?;
-                Ok(Some(result))
-            }
-            #[cfg(not(feature = "scheduler"))]
-            {
-                Ok(None)
-            }
+            let result = self
+                .handle_scheduler_list_as_string()
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))?;
+            Ok(Some(result))
         })
+    }
+
+    #[cfg(not(feature = "scheduler"))]
+    fn list_scheduled_tasks<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
+        Box::pin(async move { Ok(None) })
     }
 
     // ----- /lsp -----
@@ -769,9 +770,8 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         input: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async move {
-            self.dispatch_plan_command(input)
+            self.dispatch_plan_command_as_string(input)
                 .await
-                .map(|()| String::new())
                 .map_err(|e| CommandError::new(e.to_string()))
         })
     }
