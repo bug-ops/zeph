@@ -337,25 +337,40 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
-    // Retained for tests and the non-registry path (triggers generate_improved_skill side-effect).
-    #[allow(dead_code)]
-    pub(super) async fn handle_feedback(&mut self, input: &str) -> Result<(), error::AgentError> {
-        let output = self.handle_feedback_as_string(input).await?;
-        self.channel.send(&output).await?;
-        // Trigger learning side-effect: generate_improved_skill holds &self across .await and
-        // cannot run inside a Send future. It is triggered here on the non-registry path only.
-        if output.starts_with("Feedback recorded")
-            && let Some((name, rest)) = input.split_once(' ')
-        {
-            let feedback = rest.trim().trim_matches('"');
-            if self.is_learning_enabled() && self.feedback.detector.detect(feedback, &[]).is_some()
-            {
-                self.generate_improved_skill(name.trim(), feedback, "", Some(feedback))
-                    .await
-                    .ok();
-            }
+    /// Post-dispatch learning hook called from the agent loop after a registry command sends its
+    /// `Message` response. Triggers `generate_improved_skill` for `/skill reject` and `/feedback`
+    /// commands — these require `&mut self` and cannot run inside the `Send` future in
+    /// `agent_access_impl.rs`.
+    pub(super) async fn maybe_trigger_post_command_learning(&mut self, trimmed: &str) {
+        if !self.is_learning_enabled() {
+            return;
         }
-        Ok(())
+        let rest = if let Some(r) = trimmed.strip_prefix("/feedback ") {
+            // "/feedback <skill_name> <message>" — pass "<skill_name> <message>" to split
+            let r = r.trim();
+            if let Some((name, feedback_rest)) = r.split_once(' ') {
+                let feedback = feedback_rest.trim().trim_matches('"');
+                if self.feedback.detector.detect(feedback, &[]).is_some() {
+                    self.generate_improved_skill(name.trim(), feedback, "", Some(feedback))
+                        .await
+                        .ok();
+                }
+            }
+            return;
+        } else if let Some(r) = trimmed.strip_prefix("/skill reject ") {
+            r.trim()
+        } else {
+            return;
+        };
+        // "/skill reject <name> <reason>" path
+        let mut parts = rest.splitn(2, ' ');
+        let Some(name) = parts.next() else { return };
+        let reason = parts.next().unwrap_or("").trim();
+        if !reason.is_empty() {
+            self.generate_improved_skill(name, reason, "", Some(reason))
+                .await
+                .ok();
+        }
     }
 
     /// Return the `/feedback` command output as a `String` without sending via channel.
@@ -399,9 +414,6 @@ impl<C: crate::channel::Channel> Agent<C> {
                 Some(feedback),
             )
             .await?;
-
-        // Note: generate_improved_skill is not called here to keep this future Send-compatible.
-        // The original handle_feedback (non-_as_string) still triggers learning.
 
         Ok(format!("Feedback recorded for \"{skill_name}\"."))
     }

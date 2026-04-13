@@ -562,9 +562,11 @@ async fn handle_skill_command_unknown_subcommand() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent.handle_skill_command("unknown-cmd").await.unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(sent.iter().any(|s| s.contains("Unknown /skill subcommand")));
+    let out = agent
+        .handle_skill_command_as_string("unknown-cmd")
+        .await
+        .unwrap();
+    assert!(out.contains("Unknown /skill subcommand"));
 }
 
 #[tokio::test]
@@ -575,9 +577,8 @@ async fn handle_skill_command_stats_no_memory() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent.handle_skill_command("stats").await.unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(sent.iter().any(|s| s.contains("Memory not available")));
+    let out = agent.handle_skill_command_as_string("stats").await.unwrap();
+    assert!(out.contains("Memory not available"));
 }
 
 #[tokio::test]
@@ -588,9 +589,11 @@ async fn handle_skill_command_versions_no_name() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent.handle_skill_command("versions").await.unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(sent.iter().any(|s| s.contains("Usage: /skill versions")));
+    let out = agent
+        .handle_skill_command_as_string("versions")
+        .await
+        .unwrap();
+    assert!(out.contains("Usage: /skill versions"));
 }
 
 #[tokio::test]
@@ -601,9 +604,11 @@ async fn handle_skill_command_activate_no_args() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent.handle_skill_command("activate").await.unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(sent.iter().any(|s| s.contains("Usage: /skill activate")));
+    let out = agent
+        .handle_skill_command_as_string("activate")
+        .await
+        .unwrap();
+    assert!(out.contains("Usage: /skill activate"));
 }
 
 #[tokio::test]
@@ -614,9 +619,11 @@ async fn handle_skill_command_approve_no_name() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent.handle_skill_command("approve").await.unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(sent.iter().any(|s| s.contains("Usage: /skill approve")));
+    let out = agent
+        .handle_skill_command_as_string("approve")
+        .await
+        .unwrap();
+    assert!(out.contains("Usage: /skill approve"));
 }
 
 #[tokio::test]
@@ -627,9 +634,8 @@ async fn handle_skill_command_reset_no_name() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent.handle_skill_command("reset").await.unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(sent.iter().any(|s| s.contains("Usage: /skill reset")));
+    let out = agent.handle_skill_command_as_string("reset").await.unwrap();
+    assert!(out.contains("Usage: /skill reset"));
 }
 
 #[tokio::test]
@@ -640,12 +646,11 @@ async fn handle_skill_command_versions_no_memory() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent
-        .handle_skill_command("versions test-skill")
+    let out = agent
+        .handle_skill_command_as_string("versions test-skill")
         .await
         .unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(sent.iter().any(|s| s.contains("Memory not available")));
+    assert!(out.contains("Memory not available"));
 }
 
 #[tokio::test]
@@ -656,12 +661,11 @@ async fn handle_skill_command_activate_invalid_version() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent
-        .handle_skill_command("activate test-skill not-a-number")
+    let out = agent
+        .handle_skill_command_as_string("activate test-skill not-a-number")
         .await
         .unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(sent.iter().any(|s| s.contains("Invalid version number")));
+    assert!(out.contains("Invalid version number"));
 }
 
 #[tokio::test]
@@ -689,12 +693,11 @@ async fn handle_skill_command_install_no_source() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent.handle_skill_command("install").await.unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(
-        sent.iter().any(|s| s.contains("Usage: /skill install")),
-        "expected usage hint, got: {sent:?}"
-    );
+    let out = agent
+        .handle_skill_command_as_string("install")
+        .await
+        .unwrap();
+    assert!(out.contains("Usage: /skill install"));
 }
 
 #[tokio::test]
@@ -705,12 +708,11 @@ async fn handle_skill_command_remove_no_name() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent.handle_skill_command("remove").await.unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(
-        sent.iter().any(|s| s.contains("Usage: /skill remove")),
-        "expected usage hint, got: {sent:?}"
-    );
+    let out = agent
+        .handle_skill_command_as_string("remove")
+        .await
+        .unwrap();
+    assert!(out.contains("Usage: /skill remove"));
 }
 
 #[tokio::test]
@@ -722,15 +724,11 @@ async fn handle_skill_command_install_no_managed_dir() {
     // No managed_dir configured
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent
-        .handle_skill_command("install https://example.com/skill")
+    let out = agent
+        .handle_skill_command_as_string("install https://example.com/skill")
         .await
         .unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(
-        sent.iter().any(|s| s.contains("not configured")),
-        "expected not-configured message, got: {sent:?}"
-    );
+    assert!(out.contains("not configured"));
 }
 
 #[tokio::test]
@@ -742,12 +740,11 @@ async fn handle_skill_command_remove_no_managed_dir() {
     // No managed_dir configured
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent.handle_skill_command("remove my-skill").await.unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(
-        sent.iter().any(|s| s.contains("not configured")),
-        "expected not-configured message, got: {sent:?}"
-    );
+    let out = agent
+        .handle_skill_command_as_string("remove my-skill")
+        .await
+        .unwrap();
+    assert!(out.contains("not configured"));
 }
 
 #[tokio::test]
@@ -761,15 +758,11 @@ async fn handle_skill_command_install_from_path_not_found() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_managed_skills_dir(managed.path().to_path_buf());
 
-    agent
-        .handle_skill_command("install /nonexistent/path/to/skill")
+    let out = agent
+        .handle_skill_command_as_string("install /nonexistent/path/to/skill")
         .await
         .unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(
-        sent.iter().any(|s| s.contains("Install failed")),
-        "expected install failure message, got: {sent:?}"
-    );
+    assert!(out.contains("Install failed"));
 }
 
 #[tokio::test]
@@ -783,15 +776,11 @@ async fn handle_skill_command_remove_nonexistent_skill() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_managed_skills_dir(managed.path().to_path_buf());
 
-    agent
-        .handle_skill_command("remove nonexistent-skill")
+    let out = agent
+        .handle_skill_command_as_string("remove nonexistent-skill")
         .await
         .unwrap();
-    let sent = agent.channel.sent_messages();
-    assert!(
-        sent.iter().any(|s| s.contains("Remove failed")),
-        "expected remove failure message, got: {sent:?}"
-    );
+    assert!(out.contains("Remove failed"));
 }
 
 #[tokio::test]
@@ -812,16 +801,11 @@ async fn handle_skill_reject_records_outcome_and_replies() {
         50,
     );
 
-    agent
-        .handle_skill_command("reject test-skill the output was wrong")
+    let out = agent
+        .handle_skill_command_as_string("reject test-skill the output was wrong")
         .await
         .unwrap();
-
-    let sent = agent.channel.sent_messages();
-    assert!(
-        sent.iter().any(|s| s.contains("Rejection recorded")),
-        "expected rejection confirmation, got: {sent:?}"
-    );
+    assert!(out.contains("Rejection recorded"));
 
     let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
     let row: Option<(String,)> = zeph_db::query_as(
@@ -843,16 +827,11 @@ async fn handle_skill_reject_unknown_skill_returns_error_message() {
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent
-        .handle_skill_command("reject nonexistent-skill bad output")
+    let out = agent
+        .handle_skill_command_as_string("reject nonexistent-skill bad output")
         .await
         .unwrap();
-
-    let sent = agent.channel.sent_messages();
-    assert!(
-        sent.iter().any(|s| s.contains("Unknown skill")),
-        "expected unknown skill message, got: {sent:?}"
-    );
+    assert!(out.contains("Unknown skill"));
 }
 
 #[tokio::test]
@@ -864,13 +843,11 @@ async fn handle_skill_reject_missing_name_shows_usage() {
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent.handle_skill_command("reject").await.unwrap();
-
-    let sent = agent.channel.sent_messages();
-    assert!(
-        sent.iter().any(|s| s.contains("Usage")),
-        "expected usage message, got: {sent:?}"
-    );
+    let out = agent
+        .handle_skill_command_as_string("reject")
+        .await
+        .unwrap();
+    assert!(out.contains("Usage"));
 }
 
 #[tokio::test]
@@ -882,16 +859,11 @@ async fn handle_skill_reject_missing_reason_shows_usage() {
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    agent
-        .handle_skill_command("reject test-skill")
+    let out = agent
+        .handle_skill_command_as_string("reject test-skill")
         .await
         .unwrap();
-
-    let sent = agent.channel.sent_messages();
-    assert!(
-        sent.iter().any(|s| s.contains("Usage")),
-        "expected usage message, got: {sent:?}"
-    );
+    assert!(out.contains("Usage"));
 }
 
 // check_trust_transition: auto-promote and auto-demote

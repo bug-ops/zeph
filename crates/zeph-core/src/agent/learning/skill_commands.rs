@@ -277,37 +277,6 @@ impl<C: Channel> Agent<C> {
         Ok(format!("Rejection recorded for \"{name}\"."))
     }
 
-    /// Dispatch `/skill [subcommand]` and send the result via channel.
-    ///
-    /// Calls `handle_skill_command_as_string` for most subcommands, and additionally
-    /// triggers `generate_improved_skill` for the `reject` subcommand (learning side-effect
-    /// that cannot be included in `_as_string` due to `Send` constraints).
-    // Retained for tests and triggers generate_improved_skill side-effect for `reject`.
-    #[allow(dead_code)]
-    pub(crate) async fn handle_skill_command(
-        &mut self,
-        args: &str,
-    ) -> Result<(), super::super::error::AgentError> {
-        let output = self.handle_skill_command_as_string(args).await?;
-        self.channel.send(&output).await?;
-        // Trigger learning side-effect for reject: generate_improved_skill holds &self across
-        // .await and cannot be called inside a Send future (AgentAccess path). It is called
-        // here instead, on the non-registry dispatch path, for backward compatibility.
-        let parts: Vec<&str> = args.split_whitespace().collect();
-        if matches!(parts.first().copied(), Some("reject")) && self.is_learning_enabled() {
-            let tail = if parts.len() > 2 { &parts[2..] } else { &[] };
-            let reason = tail.join(" ");
-            if let Some(name) = parts.get(1).copied()
-                && !reason.is_empty()
-            {
-                self.generate_improved_skill(name, &reason, "", Some(&reason))
-                    .await
-                    .ok();
-            }
-        }
-        Ok(())
-    }
-
     async fn handle_skill_stats_as_string(
         &mut self,
     ) -> Result<String, super::super::error::AgentError> {

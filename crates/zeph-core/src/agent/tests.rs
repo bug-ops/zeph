@@ -2323,7 +2323,7 @@ pub mod agent_tests {
         );
 
         agent
-            .handle_feedback("git great job, works perfectly")
+            .handle_feedback_as_string("git great job, works perfectly")
             .await
             .unwrap();
 
@@ -2361,7 +2361,7 @@ pub mod agent_tests {
         );
 
         agent
-            .handle_feedback("git that was wrong, bad output")
+            .handle_feedback_as_string("git that was wrong, bad output")
             .await
             .unwrap();
 
@@ -2399,7 +2399,7 @@ pub mod agent_tests {
         );
 
         // Ambiguous/neutral feedback — FeedbackDetector returns None → user_approval
-        agent.handle_feedback("git ok").await.unwrap();
+        agent.handle_feedback_as_string("git ok").await.unwrap();
 
         let row: Option<(String,)> =
             sqlx::query_as("SELECT outcome FROM skill_outcomes WHERE skill_name = 'git' LIMIT 1")

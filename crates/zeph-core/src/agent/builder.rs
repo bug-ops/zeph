@@ -1677,14 +1677,13 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent_no_dir
-            .handle_skill_command("install /some/path")
+        let out_no_dir = agent_no_dir
+            .handle_skill_command_as_string("install /some/path")
             .await
             .unwrap();
-        let sent_no_dir = agent_no_dir.channel.sent_messages();
         assert!(
-            sent_no_dir.iter().any(|s| s.contains("not configured")),
-            "without managed dir: {sent_no_dir:?}"
+            out_no_dir.contains("not configured"),
+            "without managed dir: {out_no_dir:?}"
         );
 
         let _ = (provider, channel, registry, executor);
@@ -1698,18 +1697,17 @@ mod tests {
         )
         .with_managed_skills_dir(managed.path().to_path_buf());
 
-        agent_with_dir
-            .handle_skill_command("install /nonexistent/path")
+        let out_with_dir = agent_with_dir
+            .handle_skill_command_as_string("install /nonexistent/path")
             .await
             .unwrap();
-        let sent_with_dir = agent_with_dir.channel.sent_messages();
         assert!(
-            !sent_with_dir.iter().any(|s| s.contains("not configured")),
-            "with managed dir should not say not configured: {sent_with_dir:?}"
+            !out_with_dir.contains("not configured"),
+            "with managed dir should not say not configured: {out_with_dir:?}"
         );
         assert!(
-            sent_with_dir.iter().any(|s| s.contains("Install failed")),
-            "with managed dir should fail due to bad path: {sent_with_dir:?}"
+            out_with_dir.contains("Install failed"),
+            "with managed dir should fail due to bad path: {out_with_dir:?}"
         );
     }
 

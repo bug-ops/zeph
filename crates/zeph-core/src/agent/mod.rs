@@ -970,6 +970,10 @@ impl<C: Channel> Agent<C> {
                 Some(Ok(zeph_commands::CommandOutput::Message(msg))) => {
                     let _ = self.channel.send(&msg).await;
                     let _ = self.channel.flush_chunks().await;
+                    // Post-dispatch learning hook: trigger generate_improved_skill for
+                    // `/skill reject` and `/feedback` commands. These calls require &mut self
+                    // and cannot be placed inside the Send future in agent_access_impl.rs.
+                    self.maybe_trigger_post_command_learning(trimmed).await;
                     continue;
                 }
                 Some(Err(e)) => return Err(error::AgentError::Other(e.0)),
