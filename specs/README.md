@@ -25,16 +25,25 @@ See `[[constitution]]` for project-wide non-negotiable rules.
 
 ## Numbering Scheme
 
-Spec IDs (001–041) follow a logical grouping:
+Spec IDs (001–044) follow a logical grouping:
 
 - **001–010**: Foundational contracts and core systems (invariants, loop, providers, memory, skills, tools, channels, mcp, orchestration, security)
 - **011–020**: User-facing features and operational integration (TUI, graph memory, protocols, self-learning, filtering, indexing, scheduler, gateway, config loading)
-- **021**: Reserved for future core feature
+- **021**: `zeph-context` crate — context budget, compaction state machine, context assembler
 - **022–034**: Architectural extensions and specialized features (provider registry, complexity routing, multi-model design, classifiers, TUI enhancements, hooks, database abstraction, handoff, feature flags, subagent context, benchmark harness)
 - **035–037**: Observability and configuration (profiling/tracing instrumentation, Prometheus metrics export, config schema)
 - **038–041**: Infrastructure and security (vault, background task supervisor, content sanitizer, experiments)
+- **042–044**: Foundation crates (slash command registry, shared primitives, subagent lifecycle)
 
 ---
+
+## Business and Requirements Documentation
+
+| Doc | Contents |
+|---|---|
+| `BRD.md` | Business Requirements Document — what Zeph is, why it exists, target personas, business constraints, success criteria |
+| `SRS.md` | Software Requirements Specification (ISO/IEC/IEEE 29148:2018) — all functional requirements grouped by subsystem, EARS notation, traceability to BRD |
+| `NFR.md` | Non-Functional Requirements (ISO/IEC 25010:2011) — measurable quality targets for performance, reliability, security, maintainability, portability, usability, compatibility, and safety |
 
 ## System Invariants
 
@@ -66,6 +75,7 @@ Spec IDs (001–041) follow a logical grouping:
 | `018-scheduler/spec.md` | Cron scheduler, SQLite persistence, CLI subcommands (list/add/remove/show) | `zeph-scheduler` |
 | `019-gateway/spec.md` | HTTP webhook ingestion, bearer token authentication | `zeph-gateway` |
 | `020-config-loading/spec.md` | Config resolution order, mode-agnostic defaults, environment overrides | `zeph-core` |
+| `021-zeph-context/spec.md` | `zeph-context` crate: `ContextBudget` token arithmetic, `CompactionState` state machine, `ContextAssembler` parallel fetch, `PreparedContext` output; extracted from `zeph-core` | `zeph-context` |
 | `022-config-simplification/spec.md` | Provider Registry Architecture: canonical `[[llm.providers]]` format, ProviderEntry schema, routing strategies, LinUCB bandit routing, cost-weight dial, memory-augmented routing | `zeph-config`, `zeph-core` |
 | `023-complexity-triage-routing/spec.md` | Pre-inference complexity classification routing, ComplexityTier, TriageRouter, context escalation, metrics | `zeph-llm`, `zeph-config`, `zeph-core` |
 | `024-multi-model-design/spec.md` | Multi-model design principle: complexity tiers, `*_provider` subsystem reference pattern, STT unification | cross-cutting |
@@ -86,3 +96,6 @@ Spec IDs (001–041) follow a logical grouping:
 | `039-background-task-supervisor/spec.md` | (Proposed) Supervised Background Task Manager: AgentTaskSupervisor, task priority classes, queue depth limits, turn-boundary cleanup, metrics (`bg_inflight`, `bg_dropped`) | `zeph-core` |
 | `040-sanitizer/spec.md` | Content Sanitizer: spotlighting pipeline, regex injection detection, PII scrubber, guardrail filter, quarantined summarizer, response verification, exfiltration guards, memory validation, causal analysis (eight-layer defense-in-depth) | `zeph-sanitizer` |
 | `041-experiments/spec.md` | Experiments & Runtime Feature Gating: `[experiments]` config section, ExperimentConfig, rollout percentage, experiment results reporting, CLI subcommands; distinct from compile-time feature flags | `zeph-experiments` |
+| `042-zeph-commands/spec.md` | Slash command registry, `CommandHandler<Ctx>` object-safe trait, `CommandRegistry` with longest-word-boundary dispatch, `ChannelSink` abstraction, static `COMMANDS` list; no dependency on `zeph-core` | `zeph-commands` |
+| `043-zeph-common/spec.md` | Shared primitives: `Secret` (zeroize-on-drop), `ToolName` (Arc<str>), `SessionId` (UUID v4), `ToolDefinition`, `SkillTrustLevel`, `PolicyLlmClient`; no `zeph-*` peer dependencies | `zeph-common` |
+| `044-subagent-lifecycle/spec.md` | Full `zeph-subagent` crate: `SubAgentDef` parsing, `SubAgentManager` spawning and concurrency cap, `PermissionGrants` TTL, `FilteredToolExecutor` policy gate, transcript JSONL persistence, lifecycle hooks, memory injection | `zeph-subagent` |

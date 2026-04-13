@@ -19,6 +19,14 @@ status: moc
 
 ---
 
+## Business and Requirements Documentation
+
+- [[BRD]] — Business Requirements Document: executive summary, problem statement, target personas (CLI Developer, Power User/TUI, Remote User/Telegram, Team Operator), functional requirements, business constraints, success criteria, open questions
+- [[SRS]] — Software Requirements Specification (ISO/IEC/IEEE 29148:2018): system context diagram, full functional requirements in EARS notation for all 17 subsystems, traceability matrix to BRD, verification matrix
+- [[NFR]] — Non-Functional Requirements (ISO/IEC 25010:2011): measurable quality targets for all 8 ISO 25010 characteristics plus operational safety; verification matrix with methods and environments
+
+---
+
 ## Foundation & Architecture
 
 ### System Invariants
@@ -52,6 +60,15 @@ status: moc
 
 ### Background Task Management
 - [[039-background-task-supervisor/spec|Supervised Background Task Manager]] — (proposed) AgentTaskSupervisor with JoinSet, task priority classes (Critical/Enrichment/Telemetry), queue depth limits, turn-boundary cleanup, metrics integration (`bg_inflight`, `bg_dropped`, `bg_completed`); addresses GitHub issue #2816
+
+### Context Management
+- [[021-zeph-context/spec|Context Crate]] — `zeph-context` crate: `ContextBudget` token arithmetic, `CompactionState` state machine (Ready → CompactedThisTurn → Cooling → Exhausted), `ContextAssembler` parallel fetch via `FuturesUnordered`, `PreparedContext` output; extracted from `zeph-core` with no reverse dependency
+
+### Shared Primitives
+- [[043-zeph-common/spec|Shared Primitives]] — `zeph-common` crate: `Secret` (zeroize-on-drop, redacted Debug), `ToolName` (Arc<str>, O(1) clone), `SessionId` (UUID v4), `ToolDefinition`, `SkillTrustLevel`, `PolicyLlmClient`, sanitization helpers; no `zeph-*` peer dependencies
+
+### Slash Command Dispatch
+- [[042-zeph-commands/spec|Slash Command Registry]] — `zeph-commands` crate: `CommandRegistry` with longest-word-boundary dispatch, object-safe `CommandHandler<Ctx>` trait, `CommandOutput` enum, `ChannelSink` abstraction, static `COMMANDS` list for `/help` and TUI autocomplete; no dependency on `zeph-core`
 
 ---
 
@@ -153,6 +170,7 @@ status: moc
 
 ### Subagent Context
 - [[033-subagent-context-propagation/spec|Subagent Context Propagation]] — gap analysis of `/agent spawn` context vs Claude Code reference, 12 gaps (P1–P4), phase-based fix plan; documents GAP-07 (cwd) and GAP-08b (loop exits) resolution
+- [[044-subagent-lifecycle/spec|Subagent Lifecycle]] — full `zeph-subagent` crate spec: `SubAgentDef` parsing, `SubAgentManager` spawning and concurrency cap, `PermissionGrants` TTL, `FilteredToolExecutor` policy gate, transcript persistence, lifecycle hooks, and memory injection
 
 ---
 
@@ -201,6 +219,10 @@ status: moc
 | 039 | [[039-background-task-supervisor/spec\|Background Task Supervisor]] | specify | draft |
 | 040 | [[040-sanitizer/spec\|Content Sanitizer]] | specify | approved |
 | 041 | [[041-experiments/spec\|Experiments & Runtime Feature Gating]] | specify | approved |
+| 021 | [[021-zeph-context/spec\|Context Crate]] | specify | approved |
+| 042 | [[042-zeph-commands/spec\|Slash Command Registry]] | specify | approved |
+| 043 | [[043-zeph-common/spec\|Shared Primitives]] | specify | approved |
+| 044 | [[044-subagent-lifecycle/spec\|Subagent Lifecycle]] | specify | approved |
 
 ---
 
