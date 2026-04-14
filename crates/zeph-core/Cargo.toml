@@ -16,6 +16,7 @@ readme = "README.md"
 profiling = ["dep:tracing-subscriber"]
 profiling-alloc = ["profiling"]
 sysinfo = ["dep:sysinfo"]
+task-metrics = ["dep:cpu-time", "dep:metrics"]
 default = []
 candle = ["zeph-llm/candle"]
 classifiers = ["zeph-llm/classifiers", "zeph-sanitizer/classifiers"]
@@ -53,6 +54,8 @@ toml_edit.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["parking_lot", "registry"], optional = true }
 sysinfo = { workspace = true, optional = true }
+cpu-time = { workspace = true, optional = true }
+metrics = { workspace = true, optional = true }
 tree-sitter.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 zeph-commands.workspace = true
@@ -79,6 +82,7 @@ harness = false
 [dev-dependencies]
 age.workspace = true
 criterion.workspace = true
+metrics-util = { workspace = true, features = ["debugging"] }
 rmcp.workspace = true
 indoc.workspace = true
 insta.workspace = true

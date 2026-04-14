@@ -30,6 +30,7 @@ candle-nn = { version = "0.10", default-features = false }
 candle-transformers = { version = "0.10", default-features = false }
 chrono = { version = "0.4", default-features = false }
 clap = "4.6"
+cpu-time = "1.0"
 criterion = "0.8"
 cron = "0.16"
 crossterm = "0.29"
@@ -59,6 +60,8 @@ opentelemetry-otlp = { version = "0.31", default-features = false }
 opentelemetry_sdk = { version = "0.31", default-features = false }
 ordered-float = "5.3"
 pdf-extract = "0.10"
+metrics = "0.24"
+metrics-util = "0.20"
 parking_lot = "0.12"
 prometheus-client = "0.24"
 petgraph = "0.8"
@@ -183,7 +186,7 @@ ide     = ["acp", "acp-http"]
 server  = ["gateway", "a2a", "otel", "prometheus"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "task-metrics"]
 bench   = ["dep:zeph-bench"]
 
 # === Individual feature flags ===
@@ -218,6 +221,7 @@ profiling = [
 ]
 profiling-alloc = ["profiling", "zeph-core/profiling-alloc"]
 profiling-pyroscope = ["profiling", "otel", "dep:pprof"]
+task-metrics = ["zeph-core/task-metrics"]
 # Database backend selection — mutually exclusive. Default includes sqlite.
 # NOTE: --all-features activates both, triggering compile_error! in zeph-db.
 # Use --features full or --features full,postgres instead.

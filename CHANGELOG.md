@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **BlockingSpawner trait: per-chunk supervision in CodeIndexer** (`#2978`): introduced
+  `BlockingSpawner` trait in `zeph-common` to break the `zeph-core → zeph-index` crate
+  cycle. `TaskSupervisor` implements the trait, bridging through its existing
+  `spawn_blocking` method. `CodeIndexer` accepts `Option<Arc<dyn BlockingSpawner>>` via a
+  `with_spawner()` builder; each `chunk_file` invocation registers a unique task
+  `chunk_file_{N}` (AtomicU64 counter) so concurrent indexing with `embed_concurrency > 1`
+  is fully visible in `supervisor.list_tasks()` without name collisions.
+
+- **TaskSupervisor observability: CPU/wall-time metrics and tokio-console** (`#2963`):
+  new optional `task-metrics` feature in `zeph-core` (included in `full`) gates CPU-time
+  measurement and histogram emission. When enabled, `spawn_blocking` wraps each task with
+  `cpu-time::ThreadTime` + `Instant` measurements and emits
+  `metrics::histogram!("zeph.task.cpu_time_ms")` and
+  `metrics::histogram!("zeph.task.wall_time_ms")` on completion, plus `task.wall_time_ms`
+  and `task.cpu_time_ms` tracing span fields visible in Jaeger and tokio-console. Zero
+  overhead when the feature is disabled (identity `#[inline]` fn, no deps linked).
+  `TaskDescriptor` doc comment now documents the observability surface for each backend
+  (tokio-console / Jaeger / TUI / metrics).
+
 - **Leaf crate TaskSupervisor migration** (`#2961`): `TelegramChannel` gains a
   `with_supervisor()` builder that migrates the dispatcher loop from a bare `tokio::spawn`
   to `supervisor.spawn_restartable` with `RestartPolicy::Restart { max: 5, base_delay: 2s }`.

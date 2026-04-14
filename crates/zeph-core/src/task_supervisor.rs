@@ -53,6 +53,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
+use zeph_common::BlockingSpawner;
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -199,6 +200,18 @@ pub enum TaskStatus {
 
 /// Point-in-time snapshot of a supervised task, returned by [`TaskSupervisor::snapshot`].
 #[derive(Debug, Clone)]
+/// Observability surface per field:
+///
+/// | Field | tokio-console | Jaeger / OTLP | TUI | `metrics` histogram |
+/// |-------|--------------|--------------|-----|---------------------|
+/// | `name` | span name | span name | task list | label `"task"` |
+/// | `task.wall_time_ms` | — | span field (`task-metrics`) | — | `zeph.task.wall_time_ms` |
+/// | `task.cpu_time_ms` | — | span field (`task-metrics`) | — | `zeph.task.cpu_time_ms` |
+/// | `status` | — | — | task list | — |
+/// | `restart_count` | — | — | task list | — |
+///
+/// The `task.wall_time_ms` and `task.cpu_time_ms` fields are only populated when
+/// the crate is compiled with the `task-metrics` feature.
 pub struct TaskSnapshot {
     /// Task name.
     pub name: &'static str,
@@ -422,11 +435,19 @@ impl TaskSupervisor {
         R: Send + 'static,
     {
         let (tx, rx) = oneshot::channel::<Result<R, BlockingError>>();
+        #[cfg(feature = "task-metrics")]
+        let span = tracing::info_span!(
+            "supervised_blocking_task",
+            task.name = name,
+            task.wall_time_ms = tracing::field::Empty,
+            task.cpu_time_ms = tracing::field::Empty,
+        );
+        #[cfg(not(feature = "task-metrics"))]
         let span = tracing::info_span!("supervised_blocking_task", task.name = name);
 
         let join_handle = tokio::task::spawn_blocking(move || {
             let _enter = span.enter();
-            f()
+            measure_blocking(name, f)
         });
         let abort = join_handle.abort_handle();
 
@@ -861,6 +882,65 @@ impl TaskSupervisor {
         }
 
         Self::wire_completion_reporter(name, jh, completion_tx);
+    }
+}
+
+// ── Task metrics helpers ──────────────────────────────────────────────────────
+
+/// Run `f` and record wall-time and CPU-time metrics when `task-metrics` is enabled.
+///
+/// When the feature is disabled this is a zero-overhead identity wrapper —
+/// no `cpu-time` or `metrics` crates are linked.
+#[cfg(feature = "task-metrics")]
+#[inline]
+fn measure_blocking<F, R>(name: &'static str, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    use cpu_time::ThreadTime;
+    let wall_start = std::time::Instant::now();
+    let cpu_start = ThreadTime::now();
+    let result = f();
+    let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
+    let cpu_ms = cpu_start.elapsed().as_secs_f64() * 1000.0;
+    metrics::histogram!("zeph.task.wall_time_ms", "task" => name).record(wall_ms);
+    metrics::histogram!("zeph.task.cpu_time_ms", "task" => name).record(cpu_ms);
+    tracing::Span::current().record("task.wall_time_ms", wall_ms);
+    tracing::Span::current().record("task.cpu_time_ms", cpu_ms);
+    result
+}
+
+/// Identity wrapper when `task-metrics` feature is disabled.
+///
+/// Compiles to a direct call to `f()` with no overhead.
+#[cfg(not(feature = "task-metrics"))]
+#[inline]
+fn measure_blocking<F, R>(_name: &'static str, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    f()
+}
+
+// ── BlockingSpawner impl ──────────────────────────────────────────────────────
+
+impl BlockingSpawner for TaskSupervisor {
+    /// Spawn a named blocking closure through the supervisor.
+    ///
+    /// The task is registered in the supervisor registry (visible in
+    /// [`snapshot`][Self::snapshot] and subject to graceful shutdown) before
+    /// the closure begins executing.
+    fn spawn_blocking_named(
+        &self,
+        name: &'static str,
+        f: Box<dyn FnOnce() + Send + 'static>,
+    ) -> tokio::task::JoinHandle<()> {
+        let handle = self.spawn_blocking(name, f);
+        tokio::spawn(async move {
+            if let Err(e) = handle.join().await {
+                tracing::error!(task.name = name, error = %e, "supervised blocking task failed");
+            }
+        })
     }
 }
 
@@ -1369,6 +1449,78 @@ mod tests {
         assert!(
             sup.cancellation_token().is_cancelled(),
             "token must be cancelled after shutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_blocking_spawner_task_appears_in_snapshot() {
+        // Verify that tasks spawned via BlockingSpawner appear in supervisor.snapshot().
+        use zeph_common::BlockingSpawner;
+
+        let cancel = CancellationToken::new();
+        let sup = TaskSupervisor::new(cancel);
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let handle = sup.spawn_blocking_named(
+            "chunk_file",
+            Box::new(move || {
+                // Signal that the task has started.
+                let _ = ready_tx.send(());
+                // Block until test signals release.
+                let _ = release_rx.blocking_recv();
+            }),
+        );
+
+        // Wait until the blocking task has actually started.
+        ready_rx.await.expect("task should start");
+
+        let snapshot = sup.snapshot();
+        assert!(
+            snapshot.iter().any(|t| t.name == "chunk_file"),
+            "chunk_file task must appear in supervisor snapshot"
+        );
+
+        // Release the blocking task and await completion.
+        let _ = release_tx.send(());
+        handle.await.expect("task should complete");
+    }
+
+    /// Verify that `measure_blocking` emits wall-time and CPU-time histograms when
+    /// the `task-metrics` feature is enabled.
+    ///
+    /// `measure_blocking` calls `metrics::histogram!` on the current thread.
+    /// We test it directly using a `DebuggingRecorder` installed as the thread-local
+    /// recorder via `metrics::with_local_recorder`.
+    #[cfg(feature = "task-metrics")]
+    #[test]
+    fn test_measure_blocking_emits_metrics() {
+        use metrics_util::debugging::DebuggingRecorder;
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        // Call measure_blocking inside the local recorder scope so histogram! calls
+        // are captured. The closure runs synchronously on this thread.
+        metrics::with_local_recorder(&recorder, || {
+            measure_blocking("test_task", || std::hint::black_box(42_u64));
+        });
+
+        let snapshot = snapshotter.snapshot();
+        let metric_names: Vec<String> = snapshot
+            .into_vec()
+            .into_iter()
+            .map(|(k, _, _, _)| k.key().name().to_owned())
+            .collect();
+
+        assert!(
+            metric_names.iter().any(|n| n == "zeph.task.wall_time_ms"),
+            "expected zeph.task.wall_time_ms histogram; got: {metric_names:?}"
+        );
+        assert!(
+            metric_names.iter().any(|n| n == "zeph.task.cpu_time_ms"),
+            "expected zeph.task.cpu_time_ms histogram; got: {metric_names:?}"
         );
     }
 }

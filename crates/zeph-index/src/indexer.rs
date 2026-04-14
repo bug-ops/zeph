@@ -24,6 +24,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::StreamExt as _;
 use tokio::sync::watch;
@@ -33,8 +34,16 @@ use crate::context::contextualize_for_embedding;
 use crate::error::{IndexError, Result};
 use crate::languages::{detect_language, is_indexable};
 use crate::store::{ChunkInsert, CodeStore};
+use zeph_common::BlockingSpawner;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
+
+/// Monotonically increasing counter for generating unique `chunk_file` task names.
+///
+/// Multiple concurrent `index_file` calls use the same logical name `"chunk_file"`.
+/// The supervisor aborts any existing task with the same name on re-registration, so
+/// each spawn must get a unique name to avoid silently aborting in-flight tasks.
+static CHUNK_TASK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Configuration for [`CodeIndexer`].
 ///
@@ -175,6 +184,12 @@ pub struct CodeIndexer {
     store: CodeStore,
     provider: Arc<AnyProvider>,
     config: IndexerConfig,
+    /// Optional supervised spawner for `chunk_file` blocking tasks.
+    ///
+    /// When `Some`, each `chunk_file` call is routed through the spawner so it
+    /// appears in the supervisor registry (snapshot, graceful shutdown, metrics).
+    /// When `None`, falls back to `tokio::task::spawn_blocking`.
+    spawner: Option<Arc<dyn BlockingSpawner>>,
 }
 
 impl CodeIndexer {
@@ -188,7 +203,36 @@ impl CodeIndexer {
             store,
             provider,
             config,
+            spawner: None,
         }
+    }
+
+    /// Attach a supervised blocking spawner for `chunk_file` tasks.
+    ///
+    /// When set, each `chunk_file` call is routed through the spawner so it is
+    /// visible in supervisor snapshots and subject to graceful shutdown.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// use zeph_index::indexer::{CodeIndexer, IndexerConfig};
+    /// use zeph_index::store::CodeStore;
+    /// use zeph_common::BlockingSpawner;
+    ///
+    /// # fn example(
+    /// #     store: CodeStore,
+    /// #     provider: Arc<zeph_llm::any::AnyProvider>,
+    /// #     spawner: Arc<dyn BlockingSpawner>,
+    /// # ) {
+    /// let indexer = CodeIndexer::new(store, provider, IndexerConfig::default())
+    ///     .with_spawner(spawner);
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn with_spawner(mut self, spawner: Arc<dyn BlockingSpawner>) -> Self {
+        self.spawner = Some(spawner);
+        self
     }
 
     /// Full project indexing with incremental change detection.
@@ -210,6 +254,8 @@ impl CodeIndexer {
         self.store.ensure_collection(vector_size).await?;
 
         let root_buf = root.to_path_buf();
+        // TODO(#2978-walk): directory walk is left as raw spawn_blocking; routing it
+        // through BlockingSpawner is out of scope (single short-lived operation per run).
         let (entries, current_files) = tokio::task::spawn_blocking(move || {
             let entries: Vec<_> = ignore::WalkBuilder::new(&root_buf)
                 .hidden(true)
@@ -245,6 +291,7 @@ impl CodeIndexer {
             let store = self.store.clone();
             let provider = Arc::clone(&self.provider);
             let config = self.config.clone();
+            let spawner = self.spawner.clone();
 
             // Resolve paths eagerly so the async closures below have no lifetime dependency on
             // `entries` or `root`.
@@ -267,11 +314,13 @@ impl CodeIndexer {
                     let store = store.clone();
                     let provider = Arc::clone(&provider);
                     let config = config.clone();
+                    let spawner = spawner.clone();
                     async move {
                         let worker = FileIndexWorker {
                             store,
                             provider,
                             config,
+                            spawner,
                         };
                         let result = worker.index_file(&abs_path, &rel_path).await;
                         (rel_path, result)
@@ -345,6 +394,7 @@ impl CodeIndexer {
             store: self.store.clone(),
             provider: Arc::clone(&self.provider),
             config: self.config.clone(),
+            spawner: self.spawner.clone(),
         };
         let (created, _) = worker.index_file(abs_path, &rel_path).await?;
         Ok(created)
@@ -356,6 +406,7 @@ struct FileIndexWorker {
     store: CodeStore,
     provider: Arc<AnyProvider>,
     config: IndexerConfig,
+    spawner: Option<Arc<dyn BlockingSpawner>>,
 }
 
 impl FileIndexWorker {
@@ -378,11 +429,35 @@ impl FileIndexWorker {
 
         let rel_path_owned = rel_path.to_owned();
         let chunker_config = self.config.chunker.clone();
-        let chunks = tokio::task::spawn_blocking(move || {
-            chunk_file(&source, &rel_path_owned, lang, &chunker_config)
-        })
-        .await
-        .map_err(|e| IndexError::Other(format!("chunk_file panicked: {e}")))??;
+        let chunks = if let Some(ref spawner) = self.spawner {
+            // Route through the supervised spawner so the task appears in registry.
+            // BlockingSpawner::spawn_blocking_named is object-safe (returns JoinHandle<()>),
+            // so we communicate the typed result via a oneshot channel.
+            //
+            // Each spawn gets a unique name to prevent the supervisor's "abort if same
+            // name already exists" logic from silently aborting concurrent in-flight tasks
+            // when embed_concurrency > 1.
+            let task_id = CHUNK_TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let task_name: &'static str =
+                Box::leak(format!("chunk_file_{task_id}").into_boxed_str());
+            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+            let _join = spawner.spawn_blocking_named(
+                task_name,
+                Box::new(move || {
+                    let result = chunk_file(&source, &rel_path_owned, lang, &chunker_config);
+                    let _ = result_tx.send(result);
+                }),
+            );
+            result_rx
+                .await
+                .map_err(|_| IndexError::Other("chunk_file task dropped result".to_owned()))??
+        } else {
+            tokio::task::spawn_blocking(move || {
+                chunk_file(&source, &rel_path_owned, lang, &chunker_config)
+            })
+            .await
+            .map_err(|e| IndexError::Other(format!("chunk_file panicked: {e}")))??
+        };
 
         // Batch-check which hashes already exist to avoid N individual queries.
         let all_hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
@@ -617,6 +692,7 @@ mod tests {
             store,
             provider,
             config: IndexerConfig::default(),
+            spawner: None,
         };
 
         // First call: all hashes exist → (0, chunk_count).
@@ -628,5 +704,71 @@ mod tests {
         let (created2, skipped2) = worker.index_file(&rs_path, "sample.rs").await.unwrap();
         assert_eq!(created2, 0);
         assert_eq!(skipped2, chunk_count);
+    }
+
+    /// Verify that `index_file` works correctly when a `BlockingSpawner` is provided.
+    ///
+    /// Uses a minimal `MockBlockingSpawner` that delegates to `tokio::task::spawn_blocking`,
+    /// exercising the `spawner: Some(...)` branch in `FileIndexWorker::index_file`.
+    #[tokio::test]
+    async fn index_file_with_blocking_spawner() {
+        use std::sync::Arc;
+        use tempfile::TempDir;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_memory::QdrantOps;
+
+        struct MockBlockingSpawner;
+
+        impl BlockingSpawner for MockBlockingSpawner {
+            fn spawn_blocking_named(
+                &self,
+                _name: &'static str,
+                f: Box<dyn FnOnce() + Send + 'static>,
+            ) -> tokio::task::JoinHandle<()> {
+                tokio::task::spawn_blocking(move || f())
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let rs_path = dir.path().join("sample.rs");
+        tokio::fs::write(&rs_path, b"fn hello() {}\n")
+            .await
+            .unwrap();
+
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_string(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .unwrap();
+
+        let ops = QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let store = crate::store::CodeStore::with_ops(ops, pool);
+        let provider = Arc::new(AnyProvider::Mock(
+            MockProvider::default().with_embedding(vec![0.0_f32; 384]),
+        ));
+        let worker = FileIndexWorker {
+            store,
+            provider,
+            config: IndexerConfig::default(),
+            spawner: Some(Arc::new(MockBlockingSpawner)),
+        };
+
+        // With all hashes absent from SQLite the Qdrant upsert would be attempted, but
+        // our mock QdrantOps uses port 1 so it would fail. The test verifies that the
+        // spawner path is taken by confirming `chunk_file` runs (if it panicked or the
+        // oneshot was dropped, we'd get IndexError::Other, not IndexError::VectorStore).
+        let result = worker.index_file(&rs_path, "sample.rs").await;
+        // Qdrant is unavailable → we expect a VectorStore/Other error, NOT a panic.
+        // The important invariant is that we do NOT get "chunk_file task dropped result".
+        if let Err(ref e) = result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("chunk_file task dropped result"),
+                "spawner path must not drop the result channel; got: {msg}"
+            );
+        }
     }
 }

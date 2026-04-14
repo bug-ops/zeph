@@ -793,7 +793,7 @@ pub(crate) async fn apply_code_indexer(
         })?;
         let store = CodeStore::with_ops(ops, pool);
         let provider_arc = std::sync::Arc::new(provider);
-        let indexer = std::sync::Arc::new(CodeIndexer::new(
+        let base_indexer = CodeIndexer::new(
             store,
             provider_arc,
             IndexerConfig {
@@ -804,7 +804,14 @@ pub(crate) async fn apply_code_indexer(
                 embed_concurrency: config.embed_concurrency,
                 ..IndexerConfig::default()
             },
-        ));
+        );
+        let base_indexer = if let Some(ref sup) = supervisor {
+            base_indexer.with_spawner(std::sync::Arc::new(sup.clone())
+                as std::sync::Arc<dyn zeph_common::BlockingSpawner>)
+        } else {
+            base_indexer
+        };
+        let indexer = std::sync::Arc::new(base_indexer);
         anyhow::Ok(indexer)
     };
 
