@@ -90,6 +90,7 @@ pub mod http;
 pub mod lsp_hooks;
 pub mod memory_tools;
 pub mod overflow_tools;
+pub mod runtime_context;
 pub mod runtime_layer;
 pub mod skill_loader;
 pub mod task_supervisor;
@@ -109,6 +110,7 @@ pub use channel::{
     ToolStartEvent,
 };
 pub use config::{Config, ConfigError};
+pub use runtime_context::RuntimeContext;
 pub use skill_loader::SkillLoaderExecutor;
 pub use task_supervisor::{
     BlockingError, BlockingHandle, MAX_RESTART_DELAY, RestartPolicy, TaskDescriptor, TaskHandle,

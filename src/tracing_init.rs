@@ -95,7 +95,7 @@ fn resolve_log_path(
 #[allow(clippy::too_many_lines)]
 pub(crate) fn init_tracing(
     logging: &LoggingConfig,
-    tui_mode: bool,
+    runtime_ctx: zeph_core::RuntimeContext,
     telemetry: &TelemetryConfig,
     redact_secrets: bool,
     #[cfg(feature = "profiling")] metrics_collector: Option<
@@ -119,7 +119,7 @@ pub(crate) fn init_tracing(
     let otlp_active = false;
 
     // Stderr layer — omitted in TUI mode to avoid corrupting raw-mode rendering.
-    if !tui_mode {
+    if !runtime_ctx.tui_mode {
         let stderr_filter = tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
         layers.push(Box::new(
@@ -135,7 +135,7 @@ pub(crate) fn init_tracing(
     // In TUI mode the stderr layer is suppressed to avoid corrupting raw-mode rendering.
     // If logging.file was explicitly set to "" and no OTLP is configured the process would run
     // completely silent. Activate the platform default log path so traces are always reachable.
-    if tui_mode && logging.file.is_empty() && !otlp_active {
+    if runtime_ctx.tui_mode && logging.file.is_empty() && !otlp_active {
         let fallback_path = std::path::PathBuf::from(zeph_core::config::default_log_file_path());
         let log_dir = fallback_path.parent().map_or_else(
             || std::path::PathBuf::from("."),
@@ -182,7 +182,7 @@ pub(crate) fn init_tracing(
             .map_or_else(|| "log".to_owned(), |s| s.to_string_lossy().into_owned());
 
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            if !tui_mode {
+            if !runtime_ctx.tui_mode {
                 eprintln!("zeph: log directory creation failed, file logging disabled: {e}");
             }
         } else {
@@ -199,7 +199,7 @@ pub(crate) fn init_tracing(
                 .build(&dir)
             {
                 Err(e) => {
-                    if !tui_mode {
+                    if !runtime_ctx.tui_mode {
                         eprintln!(
                             "zeph: log file appender init failed, file logging disabled: {e}"
                         );

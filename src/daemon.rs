@@ -305,6 +305,11 @@ pub(crate) async fn run_daemon(
         });
     }
 
+    let daemon_runtime_ctx = zeph_core::RuntimeContext {
+        tui_mode: false,
+        daemon_mode: true,
+    };
+
     let filter_registry = if config.tools.filters.enabled {
         zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
     } else {
@@ -320,7 +325,9 @@ pub(crate) async fn run_daemon(
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
     let mut daemon_audit_logger: Option<std::sync::Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
-        && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit, false).await
+        && let Ok(logger) =
+            zeph_tools::AuditLogger::from_config(&config.tools.audit, daemon_runtime_ctx.tui_mode)
+                .await
     {
         let logger = std::sync::Arc::new(logger);
         shell_executor = shell_executor.with_audit(std::sync::Arc::clone(&logger));
@@ -336,9 +343,12 @@ pub(crate) async fn run_daemon(
             .map(PathBuf::from)
             .collect(),
     );
-    let mcp_manager_builder =
-        crate::bootstrap::create_mcp_manager_with_vault(config, false, app.age_vault_arc())
-            .with_status_tx(status_tx);
+    let mcp_manager_builder = crate::bootstrap::create_mcp_manager_with_vault(
+        config,
+        daemon_runtime_ctx.suppress_stderr(),
+        app.age_vault_arc(),
+    )
+    .with_status_tx(status_tx);
     let mcp_manager_builder = crate::bootstrap::wire_trust_calibration(
         mcp_manager_builder,
         config,

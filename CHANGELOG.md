@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **RuntimeContext struct** (`#3016`): introduced `zeph_core::RuntimeContext` (`Copy + Clone + Debug + Default + PartialEq + Eq`) carrying `tui_mode` and `daemon_mode` flags. All subsystem initializers in `runner.rs`, `tracing_init.rs`, and `daemon.rs` now receive a single `RuntimeContext` instead of individual `bool` parameters. The `suppress_stderr()` helper centralizes the TUI/daemon stderr suppression decision.
+
 ### Fixed
 
 - **CPU/RAM regression: graph community detection OOM** (`#3007`): `detect_communities` in

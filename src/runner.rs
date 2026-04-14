@@ -335,10 +335,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let logging_config = resolve_logging_config(base_config.logging, cli.log_file.as_deref());
     let telemetry_config = base_config.telemetry;
     let redact_secrets = base_config.security.redact_secrets;
-    #[cfg(feature = "tui")]
-    let tui_mode = cli.tui;
-    #[cfg(not(feature = "tui"))]
-    let tui_mode = false;
+    let runtime_ctx = zeph_core::RuntimeContext {
+        #[cfg(feature = "tui")]
+        tui_mode: cli.tui,
+        #[cfg(not(feature = "tui"))]
+        tui_mode: false,
+        #[cfg(feature = "a2a")]
+        daemon_mode: cli.daemon,
+        #[cfg(not(feature = "a2a"))]
+        daemon_mode: false,
+    };
 
     // Create MetricsCollector before init_tracing so the MetricsBridge layer
     // can be wired into the subscriber at startup (addresses critic finding S1).
@@ -350,7 +356,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let _tracing_guards = init_tracing(
         &logging_config,
-        tui_mode,
+        runtime_ctx,
         &telemetry_config,
         redact_secrets,
         #[cfg(feature = "profiling")]
@@ -646,10 +652,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(tokio::spawn(async move { warmup_provider(&p).await }))
     };
 
-    #[cfg(feature = "tui")]
-    let suppress_mcp_stderr = tui_active;
-    #[cfg(not(feature = "tui"))]
-    let suppress_mcp_stderr = false;
+    let suppress_mcp_stderr = runtime_ctx.suppress_stderr();
 
     // For TUI path: create the channel and start rendering immediately so the user
     // sees a spinner during the heavy init phases below. For non-TUI paths (or when
@@ -733,7 +736,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             Some(agent_status_tx.clone()),
             Some(memory.sqlite().pool()),
             &provider,
-            tui_mode,
+            runtime_ctx.tui_mode,
         )
         .await
     });
@@ -747,7 +750,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(agent_status_tx.clone()),
         Some(memory.sqlite().pool()),
         &provider,
-        tui_mode,
+        runtime_ctx.tui_mode,
     )
     .await;
 
