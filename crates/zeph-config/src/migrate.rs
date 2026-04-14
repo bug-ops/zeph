@@ -1820,9 +1820,10 @@ pub fn migrate_telemetry_config(toml_src: &str) -> Result<MigrationResult, Migra
          # enabled = false\n\
          # backend = \"local\"        # \"local\" (Chrome JSON), \"otlp\", or \"pyroscope\"\n\
          # trace_dir = \".local/traces\"\n\
-         # include_args = true\n\
+         # include_args = false\n\
          # service_name = \"zeph-agent\"\n\
-         # sample_rate = 1.0\n";
+         # sample_rate = 1.0\n\
+         # otel_filter = \"info\"     # base EnvFilter for OTLP layer; noisy-crate exclusions always appended\n";
 
     let raw = doc.to_string();
     let output = format!("{raw}{comment}");
@@ -1878,6 +1879,56 @@ pub fn migrate_supervisor_config(toml_src: &str) -> Result<MigrationResult, Migr
         output,
         added_count: 1,
         sections_added: vec!["agent.supervisor".to_owned()],
+    })
+}
+
+/// Add a commented-out `otel_filter` entry under `[telemetry]` if the key is absent (#2997).
+///
+/// When `[telemetry]` exists but lacks `otel_filter`, appends the key as a comment so users
+/// can discover it without manual hunting. Safe to call when the key is already present
+/// (real or commented-out).
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if `toml_src` is not valid TOML.
+pub fn migrate_otel_filter(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: skip if key already present (real or commented-out).
+    if toml_src.contains("otel_filter") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    // Only inject when [telemetry] section exists; otherwise the field will be added
+    // by migrate_telemetry_config which already includes it in the commented block.
+    if !doc.contains_key("telemetry") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let telemetry = doc
+        .get_mut("telemetry")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure("[telemetry] is not a table"))?;
+
+    // Insert within the [telemetry] section via suffix decor so the comment appears
+    // adjacent to its section even when other sections follow.
+    let comment = "# Base EnvFilter for the OTLP tracing layer. Noisy-crate exclusions \
+        (tonic=warn etc.) are always appended (#2997).\n\
+        # otel_filter = \"info\"\n";
+    append_comment_to_table_suffix(telemetry, comment);
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        added_count: 1,
+        sections_added: vec!["telemetry.otel_filter".to_owned()],
     })
 }
 
@@ -2768,5 +2819,57 @@ trust_level = "untrusted"
         let result = migrate_telemetry_config(src).expect("migrate");
         assert_eq!(result.added_count, 0);
         assert_eq!(result.output, src);
+    }
+
+    // ── migrate_otel_filter tests (#2997) ─────────────────────────────────────
+
+    #[test]
+    fn migrate_otel_filter_already_present_is_noop() {
+        // Real key present — must not modify.
+        let src = "[telemetry]\nenabled = true\notel_filter = \"debug\"\n";
+        let result = migrate_otel_filter(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_otel_filter_commented_key_is_noop() {
+        // Commented-out key already present — idempotent.
+        let src = "[telemetry]\nenabled = true\n# otel_filter = \"info\"\n";
+        let result = migrate_otel_filter(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_otel_filter_no_telemetry_section_is_noop() {
+        // [telemetry] absent — must not inject into wrong location.
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_otel_filter(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+        assert!(!result.output.contains("otel_filter"));
+    }
+
+    #[test]
+    fn migrate_otel_filter_injects_within_telemetry_section() {
+        let src = "[telemetry]\nenabled = true\n\n[agent]\nname = \"Zeph\"\n";
+        let result = migrate_otel_filter(src).expect("migrate");
+        assert_eq!(result.added_count, 1);
+        assert_eq!(result.sections_added, vec!["telemetry.otel_filter"]);
+        assert!(
+            result.output.contains("otel_filter"),
+            "otel_filter comment must appear"
+        );
+        // Comment must appear before [agent] — i.e., within the telemetry section.
+        let otel_pos = result
+            .output
+            .find("otel_filter")
+            .expect("otel_filter present");
+        let agent_pos = result.output.find("[agent]").expect("[agent] present");
+        assert!(
+            otel_pos < agent_pos,
+            "otel_filter comment should appear before [agent] section"
+        );
     }
 }

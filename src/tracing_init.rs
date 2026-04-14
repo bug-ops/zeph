@@ -89,11 +89,15 @@ fn resolve_log_path(
 /// stdout (alternate screen) and any text written to stderr bleeds through
 /// raw-mode, corrupting the TUI rendering. Logs still go to the file layer
 /// when a log file is configured.
+///
+/// When `tui_mode` is true and no file log sink is configured, a warning is printed to
+/// stderr before the TUI takes over, because the OTLP layer becomes the sole subscriber.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn init_tracing(
     logging: &LoggingConfig,
     tui_mode: bool,
     telemetry: &TelemetryConfig,
+    redact_secrets: bool,
     #[cfg(feature = "profiling")] metrics_collector: Option<
         std::sync::Arc<zeph_core::metrics::MetricsCollector>,
     >,
@@ -103,6 +107,16 @@ pub(crate) fn init_tracing(
         Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync + 'static>;
 
     let mut layers: Vec<BoxedLayer> = Vec::new();
+
+    // Warn early (before TUI takes over stderr) when there is no file log sink.
+    // In TUI mode the stderr layer is suppressed, so OTLP becomes the sole subscriber.
+    // #2998: users need to know this so they don't miss log output entirely.
+    if tui_mode && logging.file.is_empty() {
+        eprintln!(
+            "[zeph] warning: TUI mode active with no file log sink \
+             — OTLP is the sole tracing subscriber"
+        );
+    }
 
     // Stderr layer — omitted in TUI mode to avoid corrupting raw-mode rendering.
     if !tui_mode {
@@ -179,7 +193,11 @@ pub(crate) fn init_tracing(
     // `build_chrome_layer` returns None for non-Local backends; `build_otlp_layer` activates
     // only for Otlp. Both can coexist in the layer vec without conflict.
     #[cfg(feature = "otel")]
-    let otel_provider = build_otlp_layer(telemetry, &mut layers, true);
+    let otel_provider = build_otlp_layer(telemetry, &mut layers, true, redact_secrets);
+
+    // Suppress unused warning when otel feature is inactive.
+    #[cfg(not(feature = "otel"))]
+    let _ = redact_secrets;
 
     // Optional MetricsBridge layer — derives TurnTimings from span durations.
     #[cfg(feature = "profiling")]
@@ -285,6 +303,9 @@ fn build_chrome_layer(
 /// called. Pass `true` in production (`init_tracing`) and `false` in tests to avoid polluting
 /// the global state and leaking `BatchSpanProcessor` background tasks.
 ///
+/// The `redact_secrets` parameter controls whether a [`RedactingSpanProcessor`] wrapper is
+/// inserted between the BSP and the exporter to scrub string attribute values before export.
+///
 /// # Panics
 ///
 /// Does not panic. OTLP pipeline errors are logged via `tracing::warn!` and `None` is returned.
@@ -295,19 +316,26 @@ fn build_otlp_layer(
         Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync + 'static>,
     >,
     set_global: bool,
+    redact_secrets: bool,
 ) -> Option<opentelemetry_sdk::trace::SdkTracerProvider> {
     use opentelemetry::trace::TracerProvider as _;
     use opentelemetry_otlp::{SpanExporter, WithExportConfig as _};
-    use opentelemetry_sdk::trace::{BatchSpanProcessor, Sampler, SdkTracerProvider};
+    use opentelemetry_sdk::trace::{
+        BatchConfigBuilder, BatchSpanProcessor, Sampler, SdkTracerProvider,
+    };
+    use tracing_subscriber::EnvFilter;
     use zeph_core::config::TelemetryBackend;
 
     if !telemetry.enabled || telemetry.backend != TelemetryBackend::Otlp {
         return None;
     }
 
+    // All tracing::warn! calls inside this function fire before the subscriber is initialized
+    // (subscriber.init() is called in init_tracing after this function returns). Use eprintln!
+    // so diagnostic messages are not silently dropped.
     if telemetry.otlp_headers_vault_key.is_some() {
-        tracing::warn!(
-            "telemetry.otlp_headers_vault_key is set but not yet wired; \
+        eprintln!(
+            "[zeph] warning: telemetry.otlp_headers_vault_key is set but not yet wired; \
              OTLP exporter connects unauthenticated"
         );
     }
@@ -317,28 +345,46 @@ fn build_otlp_layer(
         .as_deref()
         .unwrap_or("http://localhost:4317");
 
+    // #3001: warn when OTLP endpoint uses plaintext HTTP on a non-local host.
+    if let Ok(url) = endpoint.parse::<url::Url>() {
+        let host = url.host_str();
+        // url::Url::host_str() returns IPv6 addresses with brackets: "[::1]".
+        let is_local = host.is_none()
+            || host == Some("localhost")
+            || host == Some("127.0.0.1")
+            || host == Some("[::1]");
+        if url.scheme() == "http" && !is_local {
+            eprintln!(
+                "[zeph] warning: OTLP endpoint {endpoint} uses plaintext HTTP on a non-local host; \
+                 consider using https:// to protect span data in transit"
+            );
+        }
+    }
+
     let sample_rate = {
         let r = telemetry.sample_rate;
         if (0.0..=1.0).contains(&r) {
             r
         } else {
-            tracing::warn!(
-                configured = r,
-                clamped = r.clamp(0.0, 1.0),
-                "telemetry.sample_rate is outside [0.0, 1.0]; clamping"
+            let clamped = r.clamp(0.0, 1.0);
+            eprintln!(
+                "[zeph] warning: telemetry.sample_rate {r} is outside [0.0, 1.0]; clamping to {clamped}"
             );
-            r.clamp(0.0, 1.0)
+            clamped
         }
     };
 
+    // #2996: set a 3-second export timeout so the process does not block indefinitely
+    // when the OTLP collector is unreachable.
     let exporter = match SpanExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
+        .with_timeout(std::time::Duration::from_secs(3))
         .build()
     {
         Ok(e) => e,
         Err(e) => {
-            tracing::warn!("OTLP exporter init failed, tracing disabled: {e}");
+            eprintln!("[zeph] warning: OTLP exporter init failed, tracing disabled: {e}");
             return None;
         }
     };
@@ -349,18 +395,56 @@ fn build_otlp_layer(
         .with_service_name(telemetry.service_name.clone())
         .build();
 
-    let provider = SdkTracerProvider::builder()
-        .with_span_processor(BatchSpanProcessor::builder(exporter).build())
-        .with_sampler(Sampler::TraceIdRatioBased(sample_rate))
-        .with_resource(resource)
+    // #2998: raise BSP queue size from the default 2048 to 4096 to absorb bursts during
+    // high-throughput agent turns without dropping spans. This directly addresses the
+    // CPU/RAM regression caused by unfiltered OTLP span creation (#2996).
+    let batch_config = BatchConfigBuilder::default()
+        .with_max_queue_size(4096)
         .build();
+    let bsp = BatchSpanProcessor::builder(exporter)
+        .with_batch_config(batch_config)
+        .build();
+
+    // #2999: optionally wrap BSP with a redacting processor to scrub string attributes.
+    // Two builder paths avoid the `Box<dyn SpanProcessor>` indirection since
+    // `SdkTracerProvider::with_span_processor` requires a concrete type bound.
+    let provider = if redact_secrets {
+        let redacting = crate::redacting_span_processor::RedactingSpanProcessor::new(bsp);
+        SdkTracerProvider::builder()
+            .with_span_processor(redacting)
+            .with_sampler(Sampler::TraceIdRatioBased(sample_rate))
+            .with_resource(resource)
+            .build()
+    } else {
+        SdkTracerProvider::builder()
+            .with_span_processor(bsp)
+            .with_sampler(Sampler::TraceIdRatioBased(sample_rate))
+            .with_resource(resource)
+            .build()
+    };
 
     if set_global {
         opentelemetry::global::set_tracer_provider(provider.clone());
     }
 
+    // #2996: attach an EnvFilter to the OTLP layer to suppress transport-layer spans
+    // (tonic, tower, hyper, h2, opentelemetry internal) from feeding back into the exporter,
+    // which was the root cause of the 100% CPU / 20 GB RAM regression in TUI mode.
+    let base = telemetry.otel_filter.as_deref().unwrap_or("info");
+    let filter_str = format!(
+        "{base},tonic=warn,tower=warn,hyper=warn,h2=warn,\
+         opentelemetry=warn,rmcp=warn,sqlx=warn,want=warn"
+    );
+    let otel_filter = EnvFilter::builder()
+        .with_default_directive(tracing::Level::INFO.into())
+        .parse_lossy(&filter_str);
+
     let tracer = provider.tracer(telemetry.service_name.clone());
-    layers.push(Box::new(tracing_opentelemetry::layer().with_tracer(tracer)));
+    layers.push(Box::new(
+        tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_filter(otel_filter),
+    ));
 
     Some(provider)
 }
@@ -416,7 +500,7 @@ mod tests {
         let mut layers: Vec<
             Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
         > = Vec::new();
-        let provider = build_otlp_layer(&telemetry, &mut layers, false);
+        let provider = build_otlp_layer(&telemetry, &mut layers, false, false);
         assert!(
             provider.is_none(),
             "expected None when telemetry is disabled"
@@ -440,12 +524,12 @@ mod tests {
         let mut layers: Vec<
             Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
         > = Vec::new();
-        let provider = build_otlp_layer(&telemetry, &mut layers, false);
+        let provider = build_otlp_layer(&telemetry, &mut layers, false, false);
         assert!(provider.is_none(), "expected None when backend is not Otlp");
         assert!(layers.is_empty(), "no layer should be appended");
     }
 
-    /// Verify that the sample_rate clamp expression correctly bounds values to `[0.0, 1.0]`.
+    /// Verify that the `sample_rate` clamp expression correctly bounds values to `[0.0, 1.0]`.
     /// The clamp logic runs before the network exporter is built — no live collector required.
     #[cfg(feature = "otel")]
     #[test]
@@ -469,6 +553,134 @@ mod tests {
         assert_eq!(clamp(1.0), 1.0, "boundary 1.0 must pass through unchanged");
     }
 
+    /// Verify that the OTLP `EnvFilter` string is constructed correctly and suppresses
+    /// transport-layer crates at `warn` level.
+    ///
+    /// Tests the filter construction logic from `build_otlp_layer` without requiring a live
+    /// OTLP collector. Both the absence of parse errors and the presence of every exclusion
+    /// directive are verified.
+    ///
+    /// Background: the absence of this filter was the root cause of the 100% CPU / 20 GB RAM
+    /// regression in TUI mode (issue #2996). The feedback loop occurred because tonic/tower/hyper
+    /// spans emitted during export were themselves captured by the OTLP layer.
+    #[test]
+    fn otlp_filter_suppresses_transport_crates() {
+        use tracing_subscriber::EnvFilter;
+
+        let base = "info";
+        let filter_str = format!(
+            "{base},tonic=warn,tower=warn,hyper=warn,h2=warn,\
+             opentelemetry=warn,rmcp=warn,sqlx=warn,want=warn"
+        );
+
+        // Filter must parse without error.
+        let filter = EnvFilter::builder()
+            .with_default_directive(tracing::Level::INFO.into())
+            .parse_lossy(&filter_str);
+
+        // Verify all required exclusions are present in the formatted filter.
+        let filter_repr = format!("{filter}");
+        for crate_name in &[
+            "tonic",
+            "tower",
+            "hyper",
+            "h2",
+            "opentelemetry",
+            "rmcp",
+            "sqlx",
+            "want",
+        ] {
+            assert!(
+                filter_repr.contains(crate_name),
+                "filter missing exclusion for '{crate_name}': {filter_repr}"
+            );
+        }
+    }
+
+    /// Verify that the OTLP filter correctly merges a custom base directive with the hardcoded
+    /// transport exclusions, and that the custom directive is preserved.
+    #[test]
+    fn otlp_filter_custom_base_preserved() {
+        use tracing_subscriber::EnvFilter;
+
+        let base = "debug,myapp=trace";
+        let filter_str = format!(
+            "{base},tonic=warn,tower=warn,hyper=warn,h2=warn,\
+             opentelemetry=warn,rmcp=warn,sqlx=warn,want=warn"
+        );
+
+        // Must parse without panic even with a complex base.
+        let filter = EnvFilter::builder()
+            .with_default_directive(tracing::Level::INFO.into())
+            .parse_lossy(&filter_str);
+
+        let filter_repr = format!("{filter}");
+        assert!(
+            filter_repr.contains("tonic"),
+            "tonic=warn must be present: {filter_repr}"
+        );
+        assert!(
+            filter_repr.contains("myapp"),
+            "custom base directive must be preserved: {filter_repr}"
+        );
+    }
+
+    /// Verify the plaintext HTTP endpoint warning predicate used in `build_otlp_layer`.
+    ///
+    /// Tests the URL classification logic (local vs non-local, http vs https) that determines
+    /// whether the `eprintln!` warning for unencrypted OTLP transport is emitted.
+    #[test]
+    fn plaintext_http_warning_predicate() {
+        // Helper that mirrors the classification logic in build_otlp_layer.
+        let should_warn = |endpoint: &str| -> bool {
+            if let Ok(url) = endpoint.parse::<url::Url>() {
+                let host = url.host_str();
+                // url::Url::host_str() returns IPv6 addresses with brackets: "[::1]".
+                let is_local = host.is_none()
+                    || host == Some("localhost")
+                    || host == Some("127.0.0.1")
+                    || host == Some("[::1]");
+                url.scheme() == "http" && !is_local
+            } else {
+                false
+            }
+        };
+
+        // Local addresses must not warn even with http.
+        assert!(
+            !should_warn("http://localhost:4317"),
+            "localhost http must not warn"
+        );
+        assert!(
+            !should_warn("http://127.0.0.1:4317"),
+            "loopback IPv4 http must not warn"
+        );
+        assert!(
+            !should_warn("http://[::1]:4317"),
+            "loopback IPv6 http must not warn"
+        );
+
+        // Non-local http must warn.
+        assert!(
+            should_warn("http://collector.internal:4317"),
+            "non-local http must warn"
+        );
+        assert!(
+            should_warn("http://10.0.0.5:4317"),
+            "private IP http must warn"
+        );
+
+        // https must never warn regardless of host.
+        assert!(
+            !should_warn("https://collector.internal:4317"),
+            "https must not warn"
+        );
+        assert!(
+            !should_warn("https://localhost:4317"),
+            "https localhost must not warn"
+        );
+    }
+
     /// Verify full `build_otlp_layer` pipeline with a live collector.
     /// Skipped in CI — run manually with Jaeger: `docker compose -f docker/docker-compose.tracing.yml up -d`
     #[cfg(feature = "otel")]
@@ -486,7 +698,7 @@ mod tests {
         let mut layers: Vec<
             Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
         > = Vec::new();
-        let provider = build_otlp_layer(&telemetry, &mut layers, false);
+        let provider = build_otlp_layer(&telemetry, &mut layers, false, false);
         assert!(provider.is_some(), "expected Some with valid endpoint");
         assert_eq!(layers.len(), 1, "one OTLP layer should be appended");
     }

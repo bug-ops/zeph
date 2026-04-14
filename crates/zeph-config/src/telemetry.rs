@@ -76,9 +76,13 @@ pub struct TelemetryConfig {
     /// Default: `".local/traces"`.
     #[serde(default = "default_trace_dir")]
     pub trace_dir: PathBuf,
-    /// Include function arguments in span attributes. Set to `true` for local debugging.
-    /// Keep `false` (the default) in production to avoid logging potentially sensitive data
-    /// such as user messages, LLM responses, or tool outputs with PII.
+    /// Include function arguments as span attributes in Chrome JSON traces.
+    ///
+    /// **Default: false.** Keep disabled in production — span field values are visible
+    /// to all subscriber layers including OTLP. LLM prompts, tool outputs, and user
+    /// messages may appear as span attributes if enabled.
+    ///
+    /// Note: this flag controls the Chrome JSON trace layer only, not OTLP span attributes.
     #[serde(default = "default_include_args")]
     pub include_args: bool,
     /// OTLP gRPC endpoint URL (used when `backend = "otlp"`).
@@ -99,8 +103,46 @@ pub struct TelemetryConfig {
     /// Fraction of traces to sample. `1.0` = record all, `0.1` = record 10%.
     /// Applies only to the `otlp` backend; the `local` backend always records all spans.
     /// Default: `1.0`.
+    ///
+    /// # Warning
+    ///
+    /// `sample_rate` controls the fraction of completed traces sent to the OTLP collector,
+    /// but the sampler runs **after** span creation. A low `sample_rate` reduces collector
+    /// storage but provides **no protection** against CPU or RAM spikes caused by high span
+    /// creation rates. Use [`otel_filter`][TelemetryConfig::otel_filter] (an `EnvFilter`
+    /// applied before spans are created) to prevent the OTLP feedback loop.
     #[serde(default = "default_sample_rate")]
     pub sample_rate: f64,
+    /// Optional base filter directive for the OTLP tracing layer.
+    ///
+    /// Accepts the same syntax as `RUST_LOG` / `EnvFilter` (e.g. `"info"`, `"debug,myapp=trace"`).
+    /// When unset, defaults to `"info"`.
+    ///
+    /// # Hardcoded transport exclusions
+    ///
+    /// The following exclusions are **always appended** after the user-supplied value, regardless
+    /// of what is set here:
+    ///
+    /// ```text
+    /// tonic=warn,tower=warn,hyper=warn,h2=warn,opentelemetry=warn,rmcp=warn,sqlx=warn,want=warn
+    /// ```
+    ///
+    /// `EnvFilter` uses last-directive-wins semantics, so these appended directives take
+    /// precedence over any conflicting directive in this field. For example, setting
+    /// `otel_filter = "tonic=debug"` will be silently overridden to `tonic=warn` because
+    /// the hardcoded exclusion appears later in the filter string. This is intentional:
+    /// allowing transport crates to emit `debug` spans would cause the OTLP exporter to
+    /// capture its own network activity, creating a feedback loop.
+    ///
+    /// # Note on `sample_rate`
+    ///
+    /// `sample_rate` controls the fraction of traces sent to the OTLP collector, but the sampler
+    /// runs **after** span creation. Setting `sample_rate < 1.0` reduces Jaeger storage but
+    /// provides **no protection** against CPU or RAM spikes caused by high span creation rate.
+    /// Only this `otel_filter` (an `EnvFilter` applied upstream of span creation) prevents
+    /// the feedback loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otel_filter: Option<String>,
     /// Interval in seconds between system-metrics snapshots (Phase 3). Default: `5`.
     #[serde(default = "default_system_metrics_interval_secs")]
     pub system_metrics_interval_secs: u64,
@@ -118,6 +160,7 @@ impl Default for TelemetryConfig {
             pyroscope_endpoint: None,
             service_name: default_service_name(),
             sample_rate: default_sample_rate(),
+            otel_filter: None,
             system_metrics_interval_secs: default_system_metrics_interval_secs(),
         }
     }

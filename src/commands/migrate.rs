@@ -8,8 +8,9 @@ use zeph_core::config::migrate::{
     ConfigMigrator, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
     migrate_autodream_config, migrate_compression_predictor_config, migrate_database_url,
     migrate_forgetting_config, migrate_magic_docs_config, migrate_mcp_trust_levels,
-    migrate_microcompact_config, migrate_planner_model_to_provider, migrate_shell_transactional,
-    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
+    migrate_microcompact_config, migrate_otel_filter, migrate_planner_model_to_provider,
+    migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
+    migrate_telemetry_config,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -87,9 +88,13 @@ pub(crate) fn handle_migrate_config(
     let supervisor_result = migrate_supervisor_config(&after_telemetry)?;
     let after_supervisor = supervisor_result.output;
 
-    // Step 15: add missing default keys as commented-out entries.
+    // Step 15: add commented-out otel_filter key under [telemetry] if absent (#2997).
+    let otel_filter_result = migrate_otel_filter(&after_supervisor)?;
+    let after_otel_filter = otel_filter_result.output;
+
+    // Step 16: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_supervisor)?;
+    let result = migrator.migrate(&after_otel_filter)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -143,6 +148,11 @@ pub(crate) fn handle_migrate_config(
         }
         if supervisor_result.added_count > 0 {
             eprintln!("Supervisor migration: added commented-out [agent.supervisor] block.");
+        }
+        if otel_filter_result.added_count > 0 {
+            eprintln!(
+                "OTLP filter migration: added commented-out otel_filter key under [telemetry]."
+            );
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

@@ -111,6 +111,8 @@ mod init;
 mod metrics_export;
 #[cfg(feature = "profiling-pyroscope")]
 mod pyroscope_push;
+#[cfg(feature = "otel")]
+mod redacting_span_processor;
 mod runner;
 mod scheduler;
 #[cfg(feature = "scheduler")]

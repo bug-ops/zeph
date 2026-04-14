@@ -334,6 +334,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let base_config = zeph_core::config::Config::load(&config_path).unwrap_or_default();
     let logging_config = resolve_logging_config(base_config.logging, cli.log_file.as_deref());
     let telemetry_config = base_config.telemetry;
+    let redact_secrets = base_config.security.redact_secrets;
     #[cfg(feature = "tui")]
     let tui_mode = cli.tui;
     #[cfg(not(feature = "tui"))]
@@ -351,6 +352,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         &logging_config,
         tui_mode,
         &telemetry_config,
+        redact_secrets,
         #[cfg(feature = "profiling")]
         Some(std::sync::Arc::clone(&metrics_collector_arc)),
     );
