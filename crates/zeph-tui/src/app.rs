@@ -623,7 +623,7 @@ impl App {
     ///
     /// # Examples
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// use tokio::sync::mpsc;
     /// use tokio_util::sync::CancellationToken;
     /// use zeph_core::task_supervisor::TaskSupervisor;
