@@ -303,7 +303,7 @@ fn build_chrome_layer(
 /// called. Pass `true` in production (`init_tracing`) and `false` in tests to avoid polluting
 /// the global state and leaking `BatchSpanProcessor` background tasks.
 ///
-/// The `redact_secrets` parameter controls whether a [`RedactingSpanProcessor`] wrapper is
+/// The `redact_secrets` parameter controls whether a `RedactingSpanProcessor` wrapper is
 /// inserted between the BSP and the exporter to scrub string attribute values before export.
 ///
 /// # Panics
