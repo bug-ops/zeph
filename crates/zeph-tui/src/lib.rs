@@ -122,6 +122,21 @@ pub async fn run_tui(mut app: App, mut event_rx: mpsc::Receiver<AppEvent>) -> Re
     result
 }
 
+/// Tracks how much of the UI needs to be redrawn after each event.
+///
+/// The render loop inspects this after every `select!` arm to decide whether
+/// to call `terminal.draw()` and, if so, how eagerly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirtyState {
+    /// Nothing changed — skip `terminal.draw()` entirely.
+    Clean,
+    /// Only the spinner / progress indicator may have advanced (tick event).
+    /// Draw only when the agent is actively running so the spinner animates.
+    AnimationOnly,
+    /// Layout, content, or input changed — always redraw.
+    Full,
+}
+
 async fn tui_loop(
     app: &mut App,
     event_rx: &mut mpsc::Receiver<AppEvent>,
@@ -129,39 +144,55 @@ async fn tui_loop(
 ) -> Result<(), TuiError> {
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut dirty = DirtyState::Clean;
 
     loop {
         tokio::select! {
             biased;
             Some(event) = event_rx.recv() => {
                 app.handle_event(event);
+                dirty = DirtyState::Full;
             }
             agent_poll = app.poll_agent_event() => {
-                match agent_poll {
-                    Some(agent_event) => {
-                        app.handle_agent_event(agent_event);
-                        while let Ok(ev) = app.try_recv_agent_event() {
-                            app.handle_agent_event(ev);
-                        }
+                if let Some(agent_event) = agent_poll {
+                    app.handle_agent_event(agent_event);
+                    while let Ok(ev) = app.try_recv_agent_event() {
+                        app.handle_agent_event(ev);
                     }
+                } else {
                     // Agent channel closed: agent exited. Quit the TUI.
-                    None => {
-                        app.should_quit = true;
-                    }
+                    app.should_quit = true;
+                }
+                dirty = DirtyState::Full;
+            }
+            _ = tick.tick() => {
+                // Tick: only upgrade to AnimationOnly if no full redraw is
+                // already scheduled, so a burst of agent events is not
+                // downgraded.
+                if dirty == DirtyState::Clean {
+                    dirty = DirtyState::AnimationOnly;
                 }
             }
-            _ = tick.tick() => {}
         }
 
         app.poll_metrics();
         app.poll_pending_file_index();
         app.poll_pending_transcript();
         app.refresh_task_snapshots();
-        terminal.draw(|frame| app.draw(frame))?;
 
-        let links = app.take_hyperlinks();
-        if !links.is_empty() {
-            hyperlink::write_osc8(terminal.backend_mut(), &links)?;
+        let should_draw = match dirty {
+            DirtyState::Clean => false,
+            DirtyState::AnimationOnly => app.is_agent_busy(),
+            DirtyState::Full => true,
+        };
+
+        if should_draw {
+            terminal.draw(|frame| app.draw(frame))?;
+            let links = app.take_hyperlinks();
+            if !links.is_empty() {
+                hyperlink::write_osc8(terminal.backend_mut(), &links)?;
+            }
+            dirty = DirtyState::Clean;
         }
 
         if app.should_quit {

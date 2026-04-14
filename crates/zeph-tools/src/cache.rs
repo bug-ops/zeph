@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
@@ -66,17 +66,27 @@ impl CacheEntry {
     }
 }
 
+/// Maximum number of entries retained in the cache at any time.
+///
+/// Long sessions accumulate tool results indefinitely without a cap, leading to unbounded memory
+/// growth. 512 entries covers typical session breadth with negligible overhead while bounding
+/// worst-case memory for long-running TUI sessions.
+const MAX_CACHE_ENTRIES: usize = 512;
+
 /// In-memory, session-scoped cache for tool results.
 ///
 /// # Design
 /// - `ttl = None` means entries never expire (useful for batch/scripted sessions).
 /// - `ttl = Some(d)` means entries expire after duration `d`.
 /// - Lazy eviction: expired entries are removed on `get()`.
-/// - No max-size cap: a session cache is bounded by session duration and interaction rate.
+/// - LRU eviction: when the entry count reaches [`MAX_CACHE_ENTRIES`], the least-recently-inserted
+///   entry is evicted to bound memory growth in long sessions.
 /// - Not `Send + Sync` by design — accessed only from the agent's single-threaded loop.
 #[derive(Debug)]
 pub struct ToolResultCache {
     entries: HashMap<CacheKey, CacheEntry>,
+    /// Insertion-order key list for LRU eviction (front = oldest).
+    insertion_order: VecDeque<CacheKey>,
     /// `None` = never expire. `Some(d)` = expire after `d`.
     ttl: Option<Duration>,
     enabled: bool,
@@ -92,6 +102,7 @@ impl ToolResultCache {
     pub fn new(enabled: bool, ttl: Option<Duration>) -> Self {
         Self {
             entries: HashMap::new(),
+            insertion_order: VecDeque::new(),
             ttl,
             enabled,
             hits: 0,
@@ -120,10 +131,25 @@ impl ToolResultCache {
     }
 
     /// Store a tool result in the cache.
+    ///
+    /// When the cache is at capacity ([`MAX_CACHE_ENTRIES`]), the oldest entry is evicted
+    /// before inserting the new one to prevent unbounded memory growth in long sessions.
     pub fn put(&mut self, key: CacheKey, output: ToolOutput) {
         if !self.enabled {
             return;
         }
+        if self.entries.len() >= MAX_CACHE_ENTRIES
+            && let Some(oldest_key) = self.insertion_order.pop_front()
+        {
+            self.entries.remove(&oldest_key);
+            tracing::debug!(
+                tool = %oldest_key.tool_name,
+                args_hash = oldest_key.args_hash,
+                "tool cache: evicted oldest entry (LRU cap {})",
+                MAX_CACHE_ENTRIES
+            );
+        }
+        self.insertion_order.push_back(key.clone());
         self.entries.insert(
             key,
             CacheEntry {
@@ -136,6 +162,7 @@ impl ToolResultCache {
     /// Remove all entries and reset hit/miss counters.
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.insertion_order.clear();
         self.hits = 0;
         self.misses = 0;
     }
@@ -347,5 +374,26 @@ mod tests {
     fn ttl_secs_returns_seconds_for_some() {
         let cache = ToolResultCache::new(true, Some(Duration::from_secs(300)));
         assert_eq!(cache.ttl_secs(), 300);
+    }
+
+    #[test]
+    fn lru_eviction_at_capacity() {
+        let mut cache = ToolResultCache::new(true, None);
+        // Fill to capacity.
+        for i in 0..MAX_CACHE_ENTRIES {
+            cache.put(key("read", i as u64), make_output("v"));
+        }
+        assert_eq!(cache.len(), MAX_CACHE_ENTRIES);
+        // Inserting one more should evict the oldest (hash=0).
+        cache.put(key("read", MAX_CACHE_ENTRIES as u64), make_output("new"));
+        assert_eq!(cache.len(), MAX_CACHE_ENTRIES, "size must stay at cap");
+        assert!(
+            cache.get(&key("read", 0)).is_none(),
+            "oldest entry must be evicted"
+        );
+        assert!(
+            cache.get(&key("read", MAX_CACHE_ENTRIES as u64)).is_some(),
+            "new entry must be present"
+        );
     }
 }

@@ -677,6 +677,7 @@ impl App {
                         | zeph_core::task_supervisor::TaskStatus::Restarting { .. }
                 )
             })
+            .filter(|t| !t.name.starts_with("mem-"))
             .peekable();
         let first = active.next()?;
         let label = if active.peek().is_none() {
@@ -1107,8 +1108,8 @@ impl App {
                         .push(ChatMessage::new(MessageRole::Assistant, text).streaming());
                     self.trim_messages();
                 }
-                let last_idx = self.messages.len().saturating_sub(1);
-                self.render_cache.invalidate(last_idx);
+                // No explicit cache invalidation needed: the cache key includes
+                // content_hash, so new chunk content causes a natural cache miss.
                 self.auto_scroll();
             }
             AgentEvent::FullMessage(text) => {

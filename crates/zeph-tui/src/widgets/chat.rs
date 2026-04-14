@@ -150,32 +150,30 @@ fn collect_message_lines_from(
             show_labels,
         };
 
-        // Streaming messages are never cached.
-        let (msg_lines, msg_md_links) = if msg.streaming {
-            render_message_lines(
-                msg,
-                tool_expanded,
-                compact_tools,
-                throbber_idx,
-                theme,
-                wrap_width,
-                show_labels,
-            )
-        } else if let Some((cached_lines, cached_links)) = cache.get(idx, &cache_key) {
-            (cached_lines.to_vec(), cached_links.to_vec())
-        } else {
-            let (rendered, extracted) = render_message_lines(
-                msg,
-                tool_expanded,
-                compact_tools,
-                throbber_idx,
-                theme,
-                wrap_width,
-                show_labels,
-            );
-            cache.put(idx, cache_key, rendered.clone(), extracted.clone());
-            (rendered, extracted)
-        };
+        // All messages (including streaming) use the render cache. For streaming
+        // messages the cache key includes content_hash, so a new chunk causes a
+        // cache miss and triggers re-render; unchanged content reuses the cached
+        // result, eliminating redundant pulldown-cmark + tree-sitter work every frame.
+        //
+        // Note: tool messages with streaming=true use throbber_idx for the braille
+        // spinner. Between content chunks the spinner freezes, but tool output
+        // typically arrives in one batch, making this trade-off acceptable.
+        let (msg_lines, msg_md_links) =
+            if let Some((cached_lines, cached_links)) = cache.get(idx, &cache_key) {
+                (cached_lines.to_vec(), cached_links.to_vec())
+            } else {
+                let (rendered, extracted) = render_message_lines(
+                    msg,
+                    tool_expanded,
+                    compact_tools,
+                    throbber_idx,
+                    theme,
+                    wrap_width,
+                    show_labels,
+                );
+                cache.put(idx, cache_key, rendered.clone(), extracted.clone());
+                (rendered, extracted)
+            };
 
         all_md_links.extend(msg_md_links);
 

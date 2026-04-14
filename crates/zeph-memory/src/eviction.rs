@@ -246,6 +246,10 @@ pub async fn start_eviction_loop(
     }
 }
 
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "memory.eviction_phase1", skip_all)
+)]
 async fn run_eviction_phase1(
     store: &SqliteStore,
     policy: &dyn EvictionPolicy,
@@ -273,6 +277,10 @@ async fn run_eviction_phase1(
     Ok(ids_to_delete.len())
 }
 
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "memory.eviction_phase2", skip_all)
+)]
 async fn run_eviction_phase2(store: &SqliteStore) -> Result<usize, MemoryError> {
     // Find all soft-deleted entries that haven't been cleaned from Qdrant yet.
     let ids = store.get_soft_deleted_message_ids().await?;

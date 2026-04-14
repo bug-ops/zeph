@@ -121,6 +121,10 @@ struct SweepStats {
 }
 
 /// Execute one full promotion sweep cycle.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "memory.tier_promotion", skip_all)
+)]
 async fn run_promotion_sweep(
     store: &SqliteStore,
     provider: &AnyProvider,

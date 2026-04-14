@@ -686,6 +686,18 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         };
     }
 
+    // Macro to set a TUI status for the duration of an async block, clearing it on completion.
+    // Status is cleared even if the block returns an error.
+    #[cfg(feature = "tui")]
+    macro_rules! tui_status_scope {
+        ($msg:expr, $body:expr) => {{
+            tui_status!($msg);
+            let __result = $body;
+            tui_status!("");
+            __result
+        }};
+    }
+
     // Early Ctrl+C: terminate during init before the full handler is wired.
     let early_ctrlc = tokio::spawn(async {
         let _ = tokio::signal::ctrl_c().await;
@@ -709,7 +721,20 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         let _backfill_handle = crate::bootstrap::spawn_embed_backfill(memory_arc, 300, None);
     }
     #[cfg(feature = "tui")]
-    tui_status!("Connecting tools...");
+    let tool_setup = tui_status_scope!("Connecting tools...", {
+        agent_setup::build_tool_setup(
+            config,
+            permission_policy.clone(),
+            with_tool_events,
+            suppress_mcp_stderr,
+            app.age_vault_arc(),
+            Some(agent_status_tx.clone()),
+            Some(memory.sqlite().pool()),
+            &provider,
+        )
+        .await
+    });
+    #[cfg(not(feature = "tui"))]
     let tool_setup = agent_setup::build_tool_setup(
         config,
         permission_policy.clone(),
