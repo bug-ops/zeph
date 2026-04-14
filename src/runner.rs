@@ -652,8 +652,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(tokio::spawn(async move { warmup_provider(&p).await }))
     };
 
-    let suppress_mcp_stderr = runtime_ctx.suppress_stderr();
-
     // For TUI path: create the channel and start rendering immediately so the user
     // sees a spinner during the heavy init phases below. For non-TUI paths (or when
     // --tui is not passed), channel creation is deferred until after the tokio::join!
@@ -756,12 +754,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             config,
             permission_policy.clone(),
             with_tool_events,
-            suppress_mcp_stderr,
+            runtime_ctx,
             app.age_vault_arc(),
             Some(agent_status_tx.clone()),
             Some(memory.sqlite().pool()),
             &provider,
-            runtime_ctx.tui_mode,
         )
         .await
     });
@@ -770,12 +767,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config,
         permission_policy.clone(),
         with_tool_events,
-        suppress_mcp_stderr,
+        runtime_ctx,
         app.age_vault_arc(),
         Some(agent_status_tx.clone()),
         Some(memory.sqlite().pool()),
         &provider,
-        runtime_ctx.tui_mode,
     )
     .await;
 

@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+use zeph_core::RuntimeContext;
 use zeph_core::channel::Channel;
 use zeph_core::config::Config;
 use zeph_tools::{
@@ -342,12 +343,11 @@ pub(crate) async fn build_tool_setup(
     config: &Config,
     permission_policy: zeph_tools::PermissionPolicy,
     with_tool_events: bool,
-    suppress_stderr: bool,
+    runtime_ctx: RuntimeContext,
     age_vault: Option<&Arc<tokio::sync::RwLock<zeph_core::vault::AgeVaultProvider>>>,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pool: Option<&zeph_db::DbPool>,
     provider: &zeph_llm::any::AnyProvider,
-    tui_mode: bool,
 ) -> ToolSetup {
     let filter_registry = if config.tools.filters.enabled {
         zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
@@ -361,7 +361,7 @@ pub(crate) async fn build_tool_setup(
     let mut audit_logger: Option<Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
         && let Ok(logger) =
-            zeph_tools::AuditLogger::from_config(&config.tools.audit, tui_mode).await
+            zeph_tools::AuditLogger::from_config(&config.tools.audit, runtime_ctx.tui_mode).await
     {
         let logger = Arc::new(logger);
         shell_executor = shell_executor.with_audit(Arc::clone(&logger));
@@ -395,8 +395,11 @@ pub(crate) async fn build_tool_setup(
             .collect(),
     );
 
-    let mut mcp_manager_builder =
-        crate::bootstrap::create_mcp_manager_with_vault(config, suppress_stderr, age_vault);
+    let mut mcp_manager_builder = crate::bootstrap::create_mcp_manager_with_vault(
+        config,
+        runtime_ctx.suppress_stderr(),
+        age_vault,
+    );
     if let Some(tx) = status_tx {
         mcp_manager_builder = mcp_manager_builder.with_status_tx(tx);
     }
