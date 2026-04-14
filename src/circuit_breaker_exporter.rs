@@ -121,25 +121,21 @@ mod tests {
 
     #[derive(Debug)]
     struct MockExporter {
-        /// Number of calls that return `Ok`.
-        ok_after: usize,
         call_count: Arc<AtomicUsize>,
-        /// Returns `Err` until `call_count >= fail_until`.
+        /// Returns `Err` for the first `fail_until` calls, then `Ok`.
         fail_until: usize,
     }
 
     impl MockExporter {
         fn new_always_fail() -> Self {
             Self {
-                ok_after: usize::MAX,
                 call_count: Arc::new(AtomicUsize::new(0)),
-                fail_until: 0,
+                fail_until: usize::MAX,
             }
         }
 
         fn new_always_ok() -> Self {
             Self {
-                ok_after: 0,
                 call_count: Arc::new(AtomicUsize::new(0)),
                 fail_until: 0,
             }
@@ -147,7 +143,6 @@ mod tests {
 
         fn new_fail_then_ok(fail_until: usize) -> Self {
             Self {
-                ok_after: fail_until,
                 call_count: Arc::new(AtomicUsize::new(0)),
                 fail_until,
             }
