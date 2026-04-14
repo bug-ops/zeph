@@ -413,6 +413,11 @@ pub struct App {
     task_supervisor: Option<TaskSupervisor>,
     /// Whether the task registry panel is currently visible (toggled by `/tasks`).
     show_task_panel: bool,
+    /// Snapshot of supervisor tasks cached once per render tick before `terminal.draw()`.
+    ///
+    /// Avoids acquiring `TaskSupervisor`'s inner mutex inside the draw closure, which
+    /// can block the render loop when the reap driver holds the lock concurrently.
+    cached_task_snapshots: Vec<zeph_core::task_supervisor::TaskSnapshot>,
 }
 
 impl App {
@@ -487,6 +492,7 @@ impl App {
             pending_transcript: None,
             task_supervisor: None,
             show_task_panel: false,
+            cached_task_snapshots: Vec::new(),
         }
     }
 
@@ -617,9 +623,9 @@ impl App {
 
     /// Wire a [`TaskSupervisor`] into the `App` for the task registry panel.
     ///
-    /// The supervisor's `snapshot()` is called each render tick (cheap
-    /// `parking_lot::Mutex` lock over O(10-20) entries). Toggle the panel
-    /// visibility with `/tasks`.
+    /// The supervisor's task list is snapshotted once per render tick before
+    /// `terminal.draw()`, keeping the draw closure free of mutex contention.
+    /// Toggle the panel visibility with `/tasks`.
     ///
     /// # Examples
     ///
@@ -641,6 +647,18 @@ impl App {
         self
     }
 
+    /// Refresh the cached task snapshot from the supervisor.
+    ///
+    /// Must be called once per render tick **before** `terminal.draw()` to avoid
+    /// acquiring the supervisor's inner mutex inside the draw closure.
+    pub(crate) fn refresh_task_snapshots(&mut self) {
+        self.cached_task_snapshots = self
+            .task_supervisor
+            .as_ref()
+            .map(TaskSupervisor::snapshot)
+            .unwrap_or_default();
+    }
+
     /// Return a truncated label for active `TaskSupervisor` tasks, or `None` when idle.
     ///
     /// Used by [`widgets::chat::render_activity`] to show a braille spinner with
@@ -648,9 +666,9 @@ impl App {
     /// is being displayed.
     #[must_use]
     pub fn supervisor_activity_label(&self) -> Option<String> {
-        let sup = self.task_supervisor.as_ref()?;
-        let snapshots = sup.snapshot();
-        let mut active = snapshots
+        self.task_supervisor.as_ref()?;
+        let mut active = self
+            .cached_task_snapshots
             .iter()
             .filter(|t| {
                 matches!(
@@ -1366,9 +1384,13 @@ impl App {
 
         // Overlay task registry over the subagents slot when `/tasks` is toggled.
         if self.show_task_panel {
-            if let Some(ref sup) = self.task_supervisor {
-                let snapshots = sup.snapshot();
-                widgets::task_registry::render(&snapshots, tick, layout.subagents, frame);
+            if self.task_supervisor.is_some() {
+                widgets::task_registry::render(
+                    &self.cached_task_snapshots,
+                    tick,
+                    layout.subagents,
+                    frame,
+                );
             } else {
                 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
                 let theme = Theme::default();
@@ -5039,6 +5061,7 @@ mod tests {
 
         let (mut app, _rx, _tx) = make_app();
         app = app.with_task_supervisor(sup);
+        app.refresh_task_snapshots();
 
         let label = app.supervisor_activity_label();
         assert!(label.is_some(), "expected Some label for active task");
@@ -5068,6 +5091,7 @@ mod tests {
 
         let (mut app, _rx, _tx) = make_app();
         app = app.with_task_supervisor(sup);
+        app.refresh_task_snapshots();
 
         let label = app
             .supervisor_activity_label()

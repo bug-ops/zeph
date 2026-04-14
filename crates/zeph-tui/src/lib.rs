@@ -156,6 +156,7 @@ async fn tui_loop(
         app.poll_metrics();
         app.poll_pending_file_index();
         app.poll_pending_transcript();
+        app.refresh_task_snapshots();
         terminal.draw(|frame| app.draw(frame))?;
 
         let links = app.take_hyperlinks();
