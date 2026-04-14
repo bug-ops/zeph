@@ -781,6 +781,7 @@ pub(crate) async fn apply_code_indexer(
     pool: zeph_db::DbPool,
     cli_mode: bool,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    supervisor: Option<zeph_core::TaskSupervisor>,
 ) -> CodeIndexerSetup {
     if !config.enabled {
         return (None, None);
@@ -823,6 +824,7 @@ pub(crate) async fn apply_code_indexer(
                 workspace_root.clone(),
                 progress_tx,
                 cli_mode,
+                supervisor,
             );
             tracing::info!("code indexer started");
             let watcher = start_index_watcher(config.watch, &workspace_root, indexer, status_tx);
@@ -850,13 +852,25 @@ fn spawn_index_progress_printer(mut rx: tokio::sync::watch::Receiver<zeph_index:
     });
 }
 
+/// Spawn the background indexing task, optionally through the workspace `TaskSupervisor`.
+///
+/// # Scope note (AC1 partial — #2961)
+///
+/// The indexer launcher (`index_project`) is registered as a single `RunOnce` supervisor task
+/// named `"index_project"`. Individual per-file chunk tasks inside `CodeIndexer` are **not**
+/// registered with the supervisor because `zeph-core` depends on `zeph-index` (creating a cycle
+/// if `zeph-index` were to import `zeph-core`). AC1 is therefore narrowed to
+/// "indexer launch is visible in the supervisor registry" rather than
+/// "per-file chunk tasks are visible". A follow-up issue should track full chunk-level
+/// visibility once the dependency cycle is resolved upstream.
 fn spawn_background_indexer(
     indexer: std::sync::Arc<CodeIndexer>,
     root: std::path::PathBuf,
     progress_tx: tokio::sync::watch::Sender<zeph_index::IndexProgress>,
     cli_mode: bool,
+    supervisor: Option<zeph_core::TaskSupervisor>,
 ) {
-    tokio::spawn(async move {
+    let fut = async move {
         match indexer.index_project(&root, Some(&progress_tx)).await {
             Ok(report) => {
                 tracing::info!(
@@ -876,7 +890,32 @@ fn spawn_background_indexer(
             }
             Err(e) => tracing::warn!("background indexing failed: {e:#}"),
         }
-    });
+    };
+    if let Some(sup) = supervisor {
+        // Wrap the one-shot future in Arc<parking_lot::Mutex<Option<_>>> so the Fn factory
+        // can hand it off on the first (and only) call. RunOnce tasks are never restarted,
+        // so take() will be Some exactly once.
+        let fut_cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        sup.spawn(zeph_core::TaskDescriptor {
+            name: "index_project",
+            restart: zeph_core::RestartPolicy::RunOnce,
+            factory: move || {
+                let f = fut_cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    } else {
+                        tracing::warn!(
+                            "index_project RunOnce factory called after handoff — \
+                             task will not restart; this indicates a policy misconfiguration"
+                        );
+                    }
+                }
+            },
+        });
+    } else {
+        tokio::spawn(fut);
+    }
 }
 
 fn start_index_watcher(
@@ -1221,7 +1260,7 @@ mod tests {
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
 
         let (watcher, progress_rx) =
-            apply_code_indexer(&config, None, offline_provider(), pool, false, None).await;
+            apply_code_indexer(&config, None, offline_provider(), pool, false, None, None).await;
         assert!(watcher.is_none());
         assert!(progress_rx.is_none());
     }
@@ -1238,8 +1277,16 @@ mod tests {
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let qdrant = QdrantOps::new("http://127.0.0.1:1").unwrap();
 
-        let (watcher, _progress_rx) =
-            apply_code_indexer(&config, Some(qdrant), offline_provider(), pool, false, None).await;
+        let (watcher, _progress_rx) = apply_code_indexer(
+            &config,
+            Some(qdrant),
+            offline_provider(),
+            pool,
+            false,
+            None,
+            None,
+        )
+        .await;
         assert!(watcher.is_none());
     }
 
@@ -1255,7 +1302,7 @@ mod tests {
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
 
         let (watcher, _) =
-            apply_code_indexer(&config, None, offline_provider(), pool, false, None).await;
+            apply_code_indexer(&config, None, offline_provider(), pool, false, None, None).await;
         assert!(watcher.is_none());
     }
 
@@ -1273,8 +1320,16 @@ mod tests {
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let qdrant = QdrantOps::new("http://127.0.0.1:1").unwrap();
 
-        let (watcher, _) =
-            apply_code_indexer(&config, Some(qdrant), offline_provider(), pool, false, None).await;
+        let (watcher, _) = apply_code_indexer(
+            &config,
+            Some(qdrant),
+            offline_provider(),
+            pool,
+            false,
+            None,
+            None,
+        )
+        .await;
         assert!(watcher.is_none()); // watch = false
     }
 

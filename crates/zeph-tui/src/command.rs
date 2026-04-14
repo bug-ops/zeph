@@ -96,6 +96,8 @@ pub enum TuiCommand {
     TrajectoryStats,
     // TiMem memory tree (#2262)
     MemoryTreeStats,
+    // Task registry panel (#2962)
+    TaskPanel,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -226,6 +228,13 @@ pub fn command_registry() -> &'static [CommandEntry] {
             category: "app",
             shortcut: None,
             command: TuiCommand::ToggleTheme,
+        },
+        CommandEntry {
+            id: "tasks",
+            label: "Toggle task registry panel",
+            category: "view",
+            shortcut: None,
+            command: TuiCommand::TaskPanel,
         },
     ];
     COMMANDS
@@ -680,7 +689,7 @@ mod tests {
 
     #[test]
     fn registry_has_twelve_commands() {
-        assert_eq!(command_registry().len(), 12);
+        assert_eq!(command_registry().len(), 13);
     }
 
     #[test]

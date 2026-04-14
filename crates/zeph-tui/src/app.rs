@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::debug;
+use zeph_core::task_supervisor::TaskSupervisor;
 
 use crate::command::TuiCommand;
 use crate::event::{AgentEvent, AppEvent};
@@ -52,6 +53,8 @@ pub enum Panel {
     Resources,
     /// The sub-agents mini-panel (side column).
     SubAgents,
+    /// The supervised task registry panel (side column).
+    Tasks,
 }
 
 /// Discriminates what the main chat area is currently displaying.
@@ -406,6 +409,10 @@ pub struct App {
     pub transcript_cache: Option<TranscriptCache>,
     /// Pending transcript load result from background task.
     pending_transcript: Option<oneshot::Receiver<(Vec<TuiTranscriptEntry>, usize)>>,
+    /// Optional handle to the `TaskSupervisor` for the task registry panel.
+    task_supervisor: Option<TaskSupervisor>,
+    /// Whether the task registry panel is currently visible (toggled by `/tasks`).
+    show_task_panel: bool,
 }
 
 impl App {
@@ -478,6 +485,8 @@ impl App {
             subagent_sidebar: SubAgentSidebarState::new(),
             transcript_cache: None,
             pending_transcript: None,
+            task_supervisor: None,
+            show_task_panel: false,
         }
     }
 
@@ -603,6 +612,32 @@ impl App {
     #[must_use]
     pub fn with_command_tx(mut self, tx: mpsc::Sender<TuiCommand>) -> Self {
         self.command_tx = Some(tx);
+        self
+    }
+
+    /// Wire a [`TaskSupervisor`] into the `App` for the task registry panel.
+    ///
+    /// The supervisor's `snapshot()` is called each render tick (cheap
+    /// `parking_lot::Mutex` lock over O(10-20) entries). Toggle the panel
+    /// visibility with `/tasks`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use tokio::sync::mpsc;
+    /// use tokio_util::sync::CancellationToken;
+    /// use zeph_core::task_supervisor::TaskSupervisor;
+    /// use zeph_tui::App;
+    ///
+    /// let (user_tx, _) = mpsc::channel(64);
+    /// let (_, agent_rx) = mpsc::channel(64);
+    /// let cancel = CancellationToken::new();
+    /// let supervisor = TaskSupervisor::new(cancel);
+    /// let _app = App::new(user_tx, agent_rx).with_task_supervisor(supervisor);
+    /// ```
+    #[must_use]
+    pub fn with_task_supervisor(mut self, supervisor: TaskSupervisor) -> Self {
+        self.task_supervisor = Some(supervisor);
         self
     }
 
@@ -1297,6 +1332,25 @@ impl App {
         } else {
             widgets::subagents::render(&self.metrics, frame, layout.subagents);
         }
+
+        // Overlay task registry over the subagents slot when `/tasks` is toggled.
+        if self.show_task_panel {
+            if let Some(ref sup) = self.task_supervisor {
+                let snapshots = sup.snapshot();
+                widgets::task_registry::render(&snapshots, tick, layout.subagents, frame);
+            } else {
+                use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+                let theme = Theme::default();
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme.panel_border)
+                    .title(" Tasks ");
+                let paragraph = Paragraph::new(" Task supervisor not available.")
+                    .block(block)
+                    .wrap(Wrap { trim: true });
+                frame.render_widget(paragraph, layout.subagents);
+            }
+        }
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -1514,6 +1568,9 @@ impl App {
             TuiCommand::RouterStats => self.push_system_message(self.format_router_stats()),
             TuiCommand::SecurityEvents => {
                 self.push_system_message(format_security_report(&self.metrics));
+            }
+            TuiCommand::TaskPanel => {
+                self.show_task_panel = !self.show_task_panel;
             }
             cmd => self.execute_plan_graph_command(cmd),
         }
@@ -1893,7 +1950,7 @@ impl App {
                     Panel::Skills => Panel::Memory,
                     Panel::Memory => Panel::Resources,
                     Panel::Resources => Panel::SubAgents,
-                    Panel::SubAgents => Panel::Chat,
+                    Panel::SubAgents | Panel::Tasks => Panel::Chat,
                 };
             }
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {

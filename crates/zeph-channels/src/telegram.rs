@@ -27,6 +27,7 @@ use crate::markdown::markdown_to_telegram;
 use teloxide::prelude::*;
 use teloxide::types::{BotCommand, ChatAction, MessageId, ParseMode};
 use tokio::sync::mpsc;
+use zeph_core::TaskSupervisor;
 use zeph_core::channel::{
     Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationField,
     ElicitationFieldType, ElicitationRequest, ElicitationResponse,
@@ -81,7 +82,6 @@ const MAX_IMAGE_BYTES: u32 = 20 * 1024 * 1024;
 /// [`recv`]: TelegramChannel::recv
 /// [`flush_chunks`]: TelegramChannel::flush_chunks
 /// [`start`]: TelegramChannel::start
-#[derive(Debug)]
 pub struct TelegramChannel {
     bot: Bot,
     chat_id: Option<ChatId>,
@@ -90,6 +90,20 @@ pub struct TelegramChannel {
     accumulated: String,
     last_edit: Option<Instant>,
     message_id: Option<MessageId>,
+    /// Optional supervisor used to register the Telegram listener task in the
+    /// workspace-wide task registry with automatic restart on panic.
+    supervisor: Option<TaskSupervisor>,
+}
+
+impl std::fmt::Debug for TelegramChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TelegramChannel")
+            .field("chat_id", &self.chat_id)
+            .field("allowed_users", &self.allowed_users)
+            .field("accumulated_len", &self.accumulated.len())
+            .field("supervisor", &self.supervisor.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
@@ -124,7 +138,19 @@ impl TelegramChannel {
             accumulated: String::new(),
             last_edit: None,
             message_id: None,
+            supervisor: None,
         }
+    }
+
+    /// Attach a [`TaskSupervisor`] so the Telegram listener task is registered
+    /// in the workspace-wide task registry with automatic restart on panic.
+    ///
+    /// The listener is spawned with
+    /// `RestartPolicy::Restart { max: 5, base_delay: 2s }`.
+    #[must_use]
+    pub fn with_supervisor(mut self, supervisor: TaskSupervisor) -> Self {
+        self.supervisor = Some(supervisor);
+        self
     }
 
     /// Spawn a task that registers bot commands in the Telegram menu.
@@ -147,6 +173,7 @@ impl TelegramChannel {
     /// # Errors
     ///
     /// Returns an error if the bot cannot be initialized.
+    #[allow(clippy::too_many_lines)]
     pub fn start(mut self) -> Result<Self, ChannelError> {
         if self.allowed_users.is_empty() {
             tracing::error!("telegram.allowed_users is empty; refusing to start an open bot");
@@ -163,99 +190,120 @@ impl TelegramChannel {
 
         Self::register_commands(bot.clone());
 
-        tokio::spawn(async move {
-            let handler = Update::filter_message().endpoint(move |msg: Message, bot: Bot| {
-                let tx = tx.clone();
-                let allowed = allowed.clone();
-                async move {
-                    let username = msg.from.as_ref().and_then(|u| u.username.clone());
+        let bot_for_factory = bot.clone();
+        let allowed_for_factory = allowed.clone();
+        let tx_for_factory = tx.clone();
+        let listener_factory = move || {
+            let bot = bot_for_factory.clone();
+            let allowed = allowed_for_factory.clone();
+            let tx = tx_for_factory.clone();
+            async move {
+                let handler = Update::filter_message().endpoint(move |msg: Message, bot: Bot| {
+                    let tx = tx.clone();
+                    let allowed = allowed.clone();
+                    async move {
+                        let username = msg.from.as_ref().and_then(|u| u.username.clone());
 
-                    if !allowed.is_empty() {
-                        let is_allowed = username
-                            .as_deref()
-                            .is_some_and(|u| allowed.iter().any(|a| a == u));
-                        if !is_allowed {
-                            tracing::warn!(
-                                "rejected message from unauthorized user: {:?}",
-                                username
-                            );
-                            return respond(());
-                        }
-                    }
-
-                    let text = msg.text().unwrap_or_default().to_string();
-                    let mut attachments = Vec::new();
-
-                    let audio_file_id = msg
-                        .voice()
-                        .map(|v| (v.file.id.0.clone(), v.file.size))
-                        .or_else(|| msg.audio().map(|a| (a.file.id.0.clone(), a.file.size)));
-
-                    if let Some((file_id, file_size)) = audio_file_id {
-                        match download_file(&bot, file_id, file_size).await {
-                            Ok(data) => {
-                                attachments.push(Attachment {
-                                    kind: AttachmentKind::Audio,
-                                    data,
-                                    filename: msg.audio().and_then(|a| a.file_name.clone()),
-                                });
-                            }
-                            Err(e) => {
-                                tracing::warn!("failed to download audio attachment: {e}");
+                        if !allowed.is_empty() {
+                            let is_allowed = username
+                                .as_deref()
+                                .is_some_and(|u| allowed.iter().any(|a| a == u));
+                            if !is_allowed {
+                                tracing::warn!(
+                                    "rejected message from unauthorized user: {:?}",
+                                    username
+                                );
+                                return respond(());
                             }
                         }
-                    }
 
-                    // Handle photo attachments (pick the largest available size)
-                    if let Some(photos) = msg.photo()
-                        && let Some(photo) = photos.iter().max_by_key(|p| p.file.size)
-                    {
-                        if photo.file.size > MAX_IMAGE_BYTES {
-                            tracing::warn!(
-                                size = photo.file.size,
-                                max = MAX_IMAGE_BYTES,
-                                "photo exceeds size limit, skipping"
-                            );
-                        } else {
-                            match download_file(&bot, photo.file.id.0.clone(), photo.file.size)
-                                .await
-                            {
+                        let text = msg.text().unwrap_or_default().to_string();
+                        let mut attachments = Vec::new();
+
+                        let audio_file_id = msg
+                            .voice()
+                            .map(|v| (v.file.id.0.clone(), v.file.size))
+                            .or_else(|| msg.audio().map(|a| (a.file.id.0.clone(), a.file.size)));
+
+                        if let Some((file_id, file_size)) = audio_file_id {
+                            match download_file(&bot, file_id, file_size).await {
                                 Ok(data) => {
                                     attachments.push(Attachment {
-                                        kind: AttachmentKind::Image,
+                                        kind: AttachmentKind::Audio,
                                         data,
-                                        filename: None,
+                                        filename: msg.audio().and_then(|a| a.file_name.clone()),
                                     });
                                 }
                                 Err(e) => {
-                                    tracing::warn!("failed to download photo attachment: {e}");
+                                    tracing::warn!("failed to download audio attachment: {e}");
                                 }
                             }
                         }
+
+                        // Handle photo attachments (pick the largest available size)
+                        if let Some(photos) = msg.photo()
+                            && let Some(photo) = photos.iter().max_by_key(|p| p.file.size)
+                        {
+                            if photo.file.size > MAX_IMAGE_BYTES {
+                                tracing::warn!(
+                                    size = photo.file.size,
+                                    max = MAX_IMAGE_BYTES,
+                                    "photo exceeds size limit, skipping"
+                                );
+                            } else {
+                                match download_file(&bot, photo.file.id.0.clone(), photo.file.size)
+                                    .await
+                                {
+                                    Ok(data) => {
+                                        attachments.push(Attachment {
+                                            kind: AttachmentKind::Image,
+                                            data,
+                                            filename: None,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("failed to download photo attachment: {e}");
+                                    }
+                                }
+                            }
+                        }
+
+                        if text.is_empty() && attachments.is_empty() {
+                            return respond(());
+                        }
+
+                        let _ = tx
+                            .send(IncomingMessage {
+                                chat_id: msg.chat.id,
+                                text,
+                                attachments,
+                            })
+                            .await;
+
+                        respond(())
                     }
+                });
 
-                    if text.is_empty() && attachments.is_empty() {
-                        return respond(());
-                    }
+                Dispatcher::builder(bot, handler)
+                    .enable_ctrlc_handler()
+                    .build()
+                    .dispatch()
+                    .await;
+            }
+        };
 
-                    let _ = tx
-                        .send(IncomingMessage {
-                            chat_id: msg.chat.id,
-                            text,
-                            attachments,
-                        })
-                        .await;
-
-                    respond(())
-                }
+        if let Some(sup) = &self.supervisor {
+            sup.spawn(zeph_core::TaskDescriptor {
+                name: "telegram_listener",
+                restart: zeph_core::RestartPolicy::Restart {
+                    max: 5,
+                    base_delay: Duration::from_secs(2),
+                },
+                factory: listener_factory,
             });
-
-            Dispatcher::builder(bot, handler)
-                .enable_ctrlc_handler()
-                .build()
-                .dispatch()
-                .await;
-        });
+        } else {
+            tokio::spawn(listener_factory());
+        }
 
         tracing::info!("telegram bot listener started");
         Ok(self)
@@ -280,6 +328,7 @@ impl TelegramChannel {
             accumulated: String::new(),
             last_edit: None,
             message_id: None,
+            supervisor: None,
         };
         (channel, tx)
     }
@@ -897,6 +946,7 @@ mod tests {
             accumulated: String::new(),
             last_edit: None,
             message_id: None,
+            supervisor: None,
         };
         (channel, tx)
     }
@@ -1280,5 +1330,49 @@ mod tests {
         assert_eq!(sanitize_field_key("a.b.c"), "abc");
         // Alphanumeric chars and underscores are kept; everything else stripped.
         assert_eq!(sanitize_field_key("key!@#val"), "keyval");
+    }
+
+    // ---------------------------------------------------------------------------
+    // with_supervisor — verifies that the Telegram listener task is registered
+    // ---------------------------------------------------------------------------
+
+    /// Confirm that `with_supervisor()` stores the supervisor so that after
+    /// `start()` the listener task appears in the supervisor registry.
+    ///
+    /// The test uses `new_test()` (no real bot token / network) combined with
+    /// a real `TaskSupervisor` running under tokio. Because `start()` spawns a
+    /// task that calls `bot.set_my_commands()` (register_commands) and then
+    /// runs the teloxide dispatcher, we point the bot at a wiremock server
+    /// that accepts all requests with HTTP 200 so the task does not immediately
+    /// panic due to a network error.
+    #[tokio::test]
+    async fn with_supervisor_registers_listener_task() {
+        use tokio_util::sync::CancellationToken;
+
+        let cancel = CancellationToken::new();
+        let sup = zeph_core::TaskSupervisor::new(cancel.clone());
+
+        // new_test creates a channel with a real Bot pointed at a dummy URL.
+        // The bot won't be called because we immediately check the registry
+        // before the spawned dispatcher has time to make a request.
+        let (channel, _tx) = TelegramChannel::new_test(vec!["user".to_string()]);
+        let channel = channel.with_supervisor(sup.clone());
+
+        // start() spawns the telegram_listener task via supervisor.
+        channel
+            .start()
+            .expect("start() must succeed with non-empty allowed_users");
+
+        // Give the tokio runtime one yield so the supervisor's state is updated.
+        tokio::task::yield_now().await;
+
+        let snapshot = sup.snapshot();
+        let names: Vec<&str> = snapshot.iter().map(|s| s.name).collect();
+        assert!(
+            names.contains(&"telegram_listener"),
+            "expected 'telegram_listener' in supervisor snapshot, got: {names:?}"
+        );
+
+        cancel.cancel();
     }
 }

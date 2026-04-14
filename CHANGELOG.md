@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Leaf crate TaskSupervisor migration** (`#2961`): `TelegramChannel` gains a
+  `with_supervisor()` builder that migrates the dispatcher loop from a bare `tokio::spawn`
+  to `supervisor.spawn_restartable` with `RestartPolicy::Restart { max: 5, base_delay: 2s }`.
+  `spawn_a2a_server` in `daemon.rs` wraps `A2aServer::serve()` via supervisor with
+  `RestartPolicy::RunOnce`. `spawn_background_indexer` in `agent_setup.rs` routes the
+  indexer launch through supervisor when present. Per-chunk supervision in `zeph-index`
+  deferred to `#2978` due to a `zeph-core → zeph-index` crate cycle.
+
+- **TUI task registry panel** (`#2962`): new `TaskRegistryWidget` in
+  `crates/zeph-tui/src/widgets/task_registry.rs` renders a live table of all supervised
+  tasks with columns: spinner (Running state), task name, origin crate, state, uptime
+  (since last restart), and restart count. Toggled via `/tasks` command in the TUI command
+  palette. Shows a placeholder when `TaskSupervisor` is unavailable. Refreshes at the
+  existing 10 fps render interval with no additional timer.
+
 - **TaskSupervisor: correct shutdown, restart, and blocking semantics** (`#2958`):
   fixed reap driver / shutdown race (completions now drained before exit), unconditional
   restart on normal task completion (only panics trigger restart), and `spawn_blocking`

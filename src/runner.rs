@@ -1669,6 +1669,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         index_pool,
         is_cli,
         Some(agent_status_tx.clone()),
+        Some((*supervisor).clone()),
     )
     .await;
     // Wire index progress to TUI immediately after the indexer is created.
@@ -2187,6 +2188,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 cli_tafc: cli.tafc,
                 early_tui,
                 backfill_rx,
+                task_supervisor: Some((*supervisor).clone()),
             },
         ))
         .await;

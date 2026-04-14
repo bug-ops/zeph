@@ -32,6 +32,8 @@ pub(crate) struct TuiRunParams<'a> {
     /// `None` = idle/done; `Some(p)` = backfill running with progress `p`.
     pub(crate) backfill_rx:
         tokio::sync::watch::Receiver<Option<zeph_memory::semantic::BackfillProgress>>,
+    /// Optional supervisor passed to the TUI task registry panel (#2962).
+    pub(crate) task_supervisor: Option<zeph_core::task_supervisor::TaskSupervisor>,
 }
 
 /// Phase-1 TUI handle: TUI is rendering but the agent hasn't started yet.
@@ -177,6 +179,10 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
 
         if let Some(metrics_rx) = params.metrics_rx {
             tui_app = tui_app.with_metrics_rx(metrics_rx);
+        }
+
+        if let Some(supervisor) = params.task_supervisor {
+            tui_app = tui_app.with_task_supervisor(supervisor);
         }
 
         if let Some(progress_rx) = params.index_progress_rx {

@@ -1,0 +1,13 @@
+---
+source: crates/zeph-tui/src/widgets/task_registry.rs
+assertion_line: 210
+expression: output
+---
+┌ Tasks (3) ─────────────────────────────────────────────────────────┐
+│ ⠹ config-watcher      Running       00:00:00  ↺0                   │
+│    memory-loop         Completed     00:00:00  ↺1                  │
+│    scheduler           Failed        00:00:00  ↺3                  │
+│                                                                    │
+│                                                                    │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘

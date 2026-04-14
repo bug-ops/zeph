@@ -44,6 +44,7 @@ harness = false
 criterion.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tokio-util.workspace = true
 wiremock.workspace = true
 
 [lints]

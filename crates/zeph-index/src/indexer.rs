@@ -232,7 +232,7 @@ impl CodeIndexer {
             (entries, current_files)
         })
         .await
-        .map_err(|e| IndexError::Other(format!("directory walk panicked: {e}")))?;
+        .map_err(|e| IndexError::Other(format!("directory walk panicked: {e:#}")))?;
 
         let total = entries.len();
         tracing::info!(total, "indexing started");

@@ -18,3 +18,4 @@ pub mod slash_autocomplete;
 pub mod splash;
 pub mod status;
 pub mod subagents;
+pub mod task_registry;

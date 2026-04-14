@@ -20,6 +20,12 @@ fn spawn_a2a_server(
     shutdown_rx: watch::Receiver<bool>,
     loopback_handle: zeph_core::LoopbackHandle,
     sanitizer: zeph_core::ContentSanitizer,
+    // Intentionally not injected into the per-request handler tasks (those are
+    // short-lived OneShot spawns managed by the A2A server internally).
+    // The overflow cleanup, signal handler, and sentinel tasks in run_daemon
+    // are also excluded — they are either fire-and-forget one-shots or
+    // lifecycle-managed by DaemonSupervisor.
+    supervisor: Option<zeph_core::TaskSupervisor>,
 ) {
     let public_url = if config.a2a.public_url.is_empty() {
         format!("http://{}:{}", config.a2a.host, config.a2a.port)
@@ -57,11 +63,37 @@ fn spawn_a2a_server(
         config.a2a.port
     );
 
-    tokio::spawn(async move {
-        if let Err(e) = a2a_server.serve().await {
-            tracing::error!("A2A server error: {e:#}");
-        }
-    });
+    if let Some(sup) = supervisor {
+        // Wrap the one-shot server in Arc<parking_lot::Mutex<Option<_>>> so the Fn factory
+        // can hand it off on the first (and only) call. RunOnce tasks are never restarted,
+        // so take() will be Some exactly once.
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(a2a_server)));
+        sup.spawn(zeph_core::TaskDescriptor {
+            name: "a2a_server",
+            restart: zeph_core::RestartPolicy::RunOnce,
+            factory: move || {
+                let server = cell.lock().take();
+                async move {
+                    if let Some(s) = server {
+                        if let Err(e) = s.serve().await {
+                            tracing::error!("A2A server error: {e:#}");
+                        }
+                    } else {
+                        tracing::warn!(
+                            "a2a_server RunOnce factory called after handoff — \
+                             task will not restart; this indicates a policy misconfiguration"
+                        );
+                    }
+                }
+            },
+        });
+    } else {
+        tokio::spawn(async move {
+            if let Err(e) = a2a_server.serve().await {
+                tracing::error!("A2A server error: {e:#}");
+            }
+        });
+    }
 }
 
 pub(crate) struct AgentTaskProcessor {
@@ -261,6 +293,17 @@ pub(crate) async fn run_daemon(
     }
 
     let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
+
+    let daemon_cancel = tokio_util::sync::CancellationToken::new();
+    let task_supervisor = zeph_core::TaskSupervisor::new(daemon_cancel.clone());
+    {
+        let mut rx = shutdown_rx.clone();
+        let cancel = daemon_cancel;
+        tokio::spawn(async move {
+            let _ = rx.changed().await;
+            cancel.cancel();
+        });
+    }
 
     let filter_registry = if config.tools.filters.enabled {
         zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
@@ -540,7 +583,13 @@ pub(crate) async fn run_daemon(
         .await;
 
     let a2a_sanitizer = zeph_core::ContentSanitizer::new(&config.security.content_isolation);
-    spawn_a2a_server(config, shutdown_rx.clone(), loopback_handle, a2a_sanitizer);
+    spawn_a2a_server(
+        config,
+        shutdown_rx.clone(),
+        loopback_handle,
+        a2a_sanitizer,
+        Some(task_supervisor),
+    );
 
     #[cfg(feature = "gateway")]
     if config.gateway.enabled {
