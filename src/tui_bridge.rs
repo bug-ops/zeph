@@ -39,8 +39,8 @@ pub(crate) struct TuiRunParams<'a> {
 /// Phase-1 TUI handle: TUI is rendering but the agent hasn't started yet.
 #[cfg(feature = "tui")]
 pub(crate) struct EarlyTuiHandle {
-    /// Join handle for the TUI rendering task.
-    pub(crate) tui_task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    /// Oneshot receiver that fires when the TUI thread finishes.
+    pub(crate) tui_done: tokio::sync::oneshot::Receiver<anyhow::Result<()>>,
     /// Send status/event updates to the TUI during setup.
     pub(crate) agent_tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 }
@@ -79,12 +79,26 @@ pub(crate) fn start_tui_early(
     // Send initial loading status directly — channel is empty at this point (capacity 256).
     let _ = agent_tx.try_send(zeph_tui::AgentEvent::Status("Starting up...".into()));
 
-    let tui_task = tokio::spawn(async move {
-        zeph_tui::run_tui(tui_app, event_rx).await?;
-        Ok(())
-    });
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<anyhow::Result<()>>();
+    std::thread::Builder::new()
+        .name("zeph-tui".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tui runtime");
+            let result = rt.block_on(async move {
+                zeph_tui::run_tui(tui_app, event_rx).await?;
+                Ok(())
+            });
+            let _ = done_tx.send(result);
+        })
+        .expect("spawn tui thread");
 
-    EarlyTuiHandle { tui_task, agent_tx }
+    EarlyTuiHandle {
+        tui_done: done_rx,
+        agent_tx,
+    }
 }
 
 /// Warms up the provider, signals readiness, then shows embed backfill status until done.
@@ -135,10 +149,72 @@ async fn spawn_warmup_with_backfill_status(
     }
 }
 
+/// Spawn the TUI render thread (legacy path: no `EarlyTuiHandle`).
+///
+/// Creates the [`zeph_tui::App`], wires optional receivers, and spawns the TUI on a
+/// dedicated OS thread with its own `current_thread` tokio runtime so that
+/// `terminal.draw()` never blocks a shared tokio worker.
+///
+/// Returns a oneshot receiver that fires when the thread exits.
+#[cfg(feature = "tui")]
+// Cannot split: all arguments configure the App before the thread is spawned and there is
+// no natural grouping that would not create an ad-hoc builder used only here.
+#[allow(clippy::too_many_arguments)]
+fn spawn_tui_thread(
+    user_tx: tokio::sync::mpsc::Sender<String>,
+    agent_rx: tokio::sync::mpsc::Receiver<zeph_tui::AgentEvent>,
+    command_tx: tokio::sync::mpsc::Sender<zeph_tui::TuiCommand>,
+    cancel_signal: std::sync::Arc<tokio::sync::Notify>,
+    show_source_labels: bool,
+    metrics_rx: Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
+    task_supervisor: Option<zeph_core::task_supervisor::TaskSupervisor>,
+    index_progress_rx: Option<tokio::sync::watch::Receiver<zeph_index::IndexProgress>>,
+    agent_tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
+) -> tokio::sync::oneshot::Receiver<anyhow::Result<()>> {
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
+    let reader = zeph_tui::EventReader::new(event_tx, Duration::from_millis(100));
+    std::thread::spawn(move || reader.run());
+
+    let mut tui_app = zeph_tui::App::new(user_tx, agent_rx)
+        .with_cancel_signal(cancel_signal)
+        .with_command_tx(command_tx);
+    tui_app.set_show_source_labels(show_source_labels);
+
+    if let Some(rx) = metrics_rx {
+        tui_app = tui_app.with_metrics_rx(rx);
+    }
+
+    if let Some(supervisor) = task_supervisor {
+        tui_app = tui_app.with_task_supervisor(supervisor);
+    }
+
+    if let Some(progress_rx) = index_progress_rx {
+        tokio::spawn(forward_index_progress_to_tui(progress_rx, agent_tx));
+    }
+
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<anyhow::Result<()>>();
+    std::thread::Builder::new()
+        .name("zeph-tui".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tui runtime");
+            let result = rt.block_on(async move {
+                zeph_tui::run_tui(tui_app, event_rx)
+                    .await
+                    .map_err(anyhow::Error::from)
+            });
+            let _ = done_tx.send(result);
+        })
+        .expect("spawn tui thread");
+    done_rx
+}
+
 #[cfg(feature = "tui")]
 pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     agent: zeph_core::agent::Agent<C>,
-    params: TuiRunParams<'_>,
+    mut params: TuiRunParams<'_>,
 ) -> anyhow::Result<()> {
     // Destructure handle fields needed regardless of path.
     let TuiHandle {
@@ -149,8 +225,8 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
         command_rx,
     } = params.tui_handle;
 
-    // Determine TUI task: reuse early-started task or create new one.
-    let (tui_task, agent_tx) = if let Some(early) = params.early_tui {
+    // Determine TUI done-signal: reuse early-started thread or spawn a new one.
+    let (tui_done, agent_tx) = if let Some(early) = params.early_tui {
         // Phase-2 path: TUI is already rendering. Wire cancel signal and metrics
         // into the running App via AgentEvent so Ctrl+C and metrics panel work correctly.
         drop(user_tx);
@@ -164,48 +240,29 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
                 .agent_tx
                 .try_send(zeph_tui::AgentEvent::SetMetricsRx(metrics_rx));
         }
-        (early.tui_task, early.agent_tx)
+        (early.tui_done, early.agent_tx)
     } else {
-        // Legacy path: TUI hasn't started yet, create App and task now.
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
-        let reader = zeph_tui::EventReader::new(event_tx, Duration::from_millis(100));
-        std::thread::spawn(move || reader.run());
-
-        let rx = agent_rx.expect("agent_rx not set in TuiHandle");
-        let mut tui_app = zeph_tui::App::new(user_tx, rx)
-            .with_cancel_signal(agent.cancel_signal())
-            .with_command_tx(command_tx);
-        tui_app.set_show_source_labels(params.config.tui.show_source_labels);
-
-        if let Some(metrics_rx) = params.metrics_rx {
-            tui_app = tui_app.with_metrics_rx(metrics_rx);
-        }
-
-        if let Some(supervisor) = params.task_supervisor {
-            tui_app = tui_app.with_task_supervisor(supervisor);
-        }
-
-        if let Some(progress_rx) = params.index_progress_rx {
-            tokio::spawn(forward_index_progress_to_tui(
-                progress_rx,
-                handle_agent_tx.clone(),
-            ));
-        }
-
-        let task = tokio::spawn(async move {
-            zeph_tui::run_tui(tui_app, event_rx)
-                .await
-                .map_err(anyhow::Error::from)
-        });
-        (task, handle_agent_tx)
+        // Legacy path: TUI hasn't started yet, create App and spawn its thread now.
+        let done_rx = spawn_tui_thread(
+            user_tx,
+            agent_rx.expect("agent_rx not set in TuiHandle"),
+            command_tx,
+            agent.cancel_signal(),
+            params.config.tui.show_source_labels,
+            params.metrics_rx.take(),
+            params.task_supervisor.take(),
+            params.index_progress_rx.take(),
+            handle_agent_tx.clone(),
+        );
+        (done_rx, handle_agent_tx)
     };
 
-    // Note: when early_tui path is used, history is not pre-loaded into the TUI.
-    // The chat view starts empty and fills as new messages arrive. This is an
-    // accepted limitation — history replay is a separate enhancement.
+    // Track all forwarding tasks so we can abort them when the agent exits,
+    // ensuring the agent_event channel closes and the TUI thread quits.
+    let mut forwarders = tokio::task::JoinSet::new();
 
-    tokio::spawn(forward_status_to_tui(params.status_rx, agent_tx.clone()));
-    tokio::spawn(forward_tui_commands(
+    forwarders.spawn(forward_status_to_tui(params.status_rx, agent_tx.clone()));
+    forwarders.spawn(forward_tui_commands(
         command_rx,
         agent_tx.clone(),
         TuiCommandContext {
@@ -221,11 +278,11 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     ));
 
     if let Some(tool_rx) = params.tool_rx {
-        tokio::spawn(forward_tool_events_to_tui(tool_rx, agent_tx.clone()));
+        forwarders.spawn(forward_tool_events_to_tui(tool_rx, agent_tx.clone()));
     }
 
     let (warmup_tx, warmup_rx) = tokio::sync::watch::channel(false);
-    tokio::spawn(spawn_warmup_with_backfill_status(
+    forwarders.spawn(spawn_warmup_with_backfill_status(
         params.warmup_provider,
         params.backfill_rx,
         warmup_tx,
@@ -236,11 +293,17 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     let agent_future = agent.run();
 
     tokio::select! {
-        result = tui_task => {
+        result = tui_done => {
+            forwarders.abort_all();
             agent.shutdown().await;
-            result??;
+            result.map_err(|_| anyhow::anyhow!("TUI thread exited without sending result"))??;
         }
         result = agent_future => {
+            // Abort all forwarding tasks first, then drop our agent_tx clone.
+            // Once all senders are gone the agent_event_rx channel closes, which
+            // causes poll_agent_event to return None and the TUI thread to quit.
+            forwarders.abort_all();
+            drop(agent_tx);
             agent.shutdown().await;
             result?;
         }

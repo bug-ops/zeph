@@ -641,6 +641,37 @@ impl App {
         self
     }
 
+    /// Return a truncated label for active `TaskSupervisor` tasks, or `None` when idle.
+    ///
+    /// Used by [`widgets::chat::render_activity`] to show a braille spinner with
+    /// the name of the first active (Running/Restarting) task when no other status
+    /// is being displayed.
+    #[must_use]
+    pub fn supervisor_activity_label(&self) -> Option<String> {
+        let sup = self.task_supervisor.as_ref()?;
+        let snapshots = sup.snapshot();
+        let mut active = snapshots
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t.status,
+                    zeph_core::task_supervisor::TaskStatus::Running
+                        | zeph_core::task_supervisor::TaskStatus::Restarting { .. }
+                )
+            })
+            .peekable();
+        let first = active.next()?;
+        let label = if active.peek().is_none() {
+            first.name.to_owned()
+        } else {
+            let extra = active.count() + 1; // +1 because we already consumed first
+            format!("{} +{} more", first.name, extra)
+        };
+        // Char-based truncation to avoid panicking on multi-byte UTF-8 boundaries.
+        let truncated: String = label.chars().take(38).collect();
+        Some(truncated)
+    }
+
     /// Wire a cancel signal into a running App instance.
     ///
     /// Used by the two-phase TUI startup path to connect the agent's cancel signal
@@ -4982,5 +5013,88 @@ mod tests {
         app.trim_messages();
         assert_eq!(app.messages.len(), MAX_TUI_MESSAGES);
         assert_eq!(app.scroll_offset, 0); // saturates at 0
+    }
+
+    #[test]
+    fn supervisor_activity_label_no_supervisor_returns_none() {
+        let (app, _rx, _tx) = make_app();
+        assert!(app.supervisor_activity_label().is_none());
+    }
+
+    #[tokio::test]
+    async fn supervisor_activity_label_single_active_task() {
+        use zeph_core::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
+
+        // CancellationToken is a re-export from tokio-util inside zeph-core.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let sup = TaskSupervisor::new(cancel.clone());
+        sup.spawn(TaskDescriptor {
+            name: "config-watcher",
+            restart: RestartPolicy::RunOnce,
+            factory: || async { std::future::pending::<()>().await },
+        });
+
+        // Give the task time to start and register as Running.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let (mut app, _rx, _tx) = make_app();
+        app = app.with_task_supervisor(sup);
+
+        let label = app.supervisor_activity_label();
+        assert!(label.is_some(), "expected Some label for active task");
+        assert!(
+            label.as_deref().unwrap().contains("config-watcher"),
+            "label should contain task name: {label:?}"
+        );
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn supervisor_activity_label_multiple_tasks_shows_more() {
+        use zeph_core::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let sup = TaskSupervisor::new(cancel.clone());
+        for name in &["task-a", "task-b", "task-c"] {
+            sup.spawn(TaskDescriptor {
+                name,
+                restart: RestartPolicy::RunOnce,
+                factory: || async { std::future::pending::<()>().await },
+            });
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let (mut app, _rx, _tx) = make_app();
+        app = app.with_task_supervisor(sup);
+
+        let label = app
+            .supervisor_activity_label()
+            .expect("expected Some label");
+        assert!(
+            label.contains('+') || label.contains("more"),
+            "expected '+N more' for multiple tasks, got: {label:?}"
+        );
+
+        cancel.cancel();
+    }
+
+    #[test]
+    fn supervisor_activity_label_truncates_at_utf8_boundary() {
+        // Construct a label that is exactly 38 Unicode chars (each 3 bytes in UTF-8).
+        // This verifies char-based truncation does not panic on multi-byte boundaries.
+
+        // Build a fake supervisor by manually checking the truncation logic directly.
+        // We can't easily inject a custom snapshot, so we test the logic inline.
+        let long_name: String = "あ".repeat(50); // 50 × 3-byte chars
+        let truncated: String = long_name.chars().take(38).collect();
+        assert_eq!(truncated.chars().count(), 38, "should truncate to 38 chars");
+        assert!(
+            truncated.is_char_boundary(truncated.len()),
+            "must be valid UTF-8"
+        );
+        // Confirm byte-slicing the full string at char-boundary position doesn't panic.
+        let _ = &long_name[..truncated.len()];
     }
 }

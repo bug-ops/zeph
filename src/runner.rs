@@ -311,9 +311,11 @@ impl EarlyTuiGuard {
 #[cfg(feature = "tui")]
 impl Drop for EarlyTuiGuard {
     fn drop(&mut self) {
-        if let Some(ref handle) = self.0 {
-            handle.tui_task.abort();
-        }
+        // Dropping EarlyTuiHandle drops the oneshot Receiver, which is fine. The actual TUI
+        // thread shutdown is driven by the agent-exit branch in run_tui_agent: it calls
+        // forwarders.abort_all() (which kills all agent_tx clones) and then drop(agent_tx),
+        // closing agent_event_rx inside the TUI thread and causing tui_loop to exit.
+        let _ = self.0.take();
     }
 }
 

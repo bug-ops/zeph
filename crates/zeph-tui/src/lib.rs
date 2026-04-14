@@ -136,10 +136,18 @@ async fn tui_loop(
             Some(event) = event_rx.recv() => {
                 app.handle_event(event);
             }
-            Some(agent_event) = app.poll_agent_event() => {
-                app.handle_agent_event(agent_event);
-                while let Ok(ev) = app.try_recv_agent_event() {
-                    app.handle_agent_event(ev);
+            agent_poll = app.poll_agent_event() => {
+                match agent_poll {
+                    Some(agent_event) => {
+                        app.handle_agent_event(agent_event);
+                        while let Ok(ev) = app.try_recv_agent_event() {
+                            app.handle_agent_event(ev);
+                        }
+                    }
+                    // Agent channel closed: agent exited. Quit the TUI.
+                    None => {
+                        app.should_quit = true;
+                    }
                 }
             }
             _ = tick.tick() => {}

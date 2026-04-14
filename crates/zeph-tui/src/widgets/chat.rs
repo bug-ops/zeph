@@ -206,21 +206,35 @@ fn collect_message_lines_from(
 }
 
 pub fn render_activity(app: &mut App, frame: &mut Frame, area: Rect) {
-    let Some(label) = app.status_label() else {
-        return;
-    };
     if area.height == 0 || area.width == 0 {
         return;
     }
     let theme = Theme::default();
-    let label = format!(" {label}");
-    let throbber = Throbber::default()
-        .label(label)
-        .style(theme.assistant_message)
-        .throbber_style(theme.highlight)
-        .throbber_set(BRAILLE_SIX)
-        .use_type(WhichUse::Spin);
-    frame.render_stateful_widget(throbber, area, app.throbber_state_mut());
+
+    // Primary status label (tool running, status update, etc.).
+    if let Some(label) = app.status_label() {
+        let label = format!(" {label}");
+        let throbber = Throbber::default()
+            .label(label)
+            .style(theme.assistant_message)
+            .throbber_style(theme.highlight)
+            .throbber_set(BRAILLE_SIX)
+            .use_type(WhichUse::Spin);
+        frame.render_stateful_widget(throbber, area, app.throbber_state_mut());
+        return;
+    }
+
+    // Fallback: show active TaskSupervisor tasks with a braille spinner.
+    if let Some(task_label) = app.supervisor_activity_label() {
+        let label = format!(" {task_label}");
+        let throbber = Throbber::default()
+            .label(label)
+            .style(theme.assistant_message)
+            .throbber_style(theme.highlight)
+            .throbber_set(BRAILLE_SIX)
+            .use_type(WhichUse::Spin);
+        frame.render_stateful_widget(throbber, area, app.throbber_state_mut());
+    }
 }
 
 fn render_message_lines(

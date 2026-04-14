@@ -145,59 +145,75 @@ impl Channel for TuiChannel {
     }
 
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
-        self.agent_event_tx
-            .send(AgentEvent::FullMessage(text.to_owned()))
-            .await
-            .map_err(|_| ChannelError::ChannelClosed)?;
+        // Full message is the final rendered response for a turn; losing it leaves the chat
+        // panel blank. Use a bounded timeout rather than try_send.
+        let event = AgentEvent::FullMessage(text.to_owned());
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            self.agent_event_tx.send(event),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err(ChannelError::ChannelClosed),
+            Err(_elapsed) => {
+                tracing::warn!("TuiChannel::send timed out after 100ms, dropping full message");
+            }
+        }
         Ok(())
     }
 
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.accumulated.push_str(chunk);
-        self.agent_event_tx
-            .send(AgentEvent::Chunk(chunk.to_owned()))
-            .await
-            .map_err(|_| ChannelError::ChannelClosed)?;
+        // Non-critical: dropping a chunk loses partial streaming output but agent continues.
+        let _ = self
+            .agent_event_tx
+            .try_send(AgentEvent::Chunk(chunk.to_owned()));
         Ok(())
     }
 
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        self.agent_event_tx
-            .send(AgentEvent::Flush)
-            .await
-            .map_err(|_| ChannelError::ChannelClosed)?;
+        // Non-critical: visual signal that streaming ended.
+        let _ = self.agent_event_tx.try_send(AgentEvent::Flush);
         Ok(())
     }
 
     async fn send_typing(&mut self) -> Result<(), ChannelError> {
-        self.agent_event_tx
-            .send(AgentEvent::Typing)
-            .await
-            .map_err(|_| ChannelError::ChannelClosed)?;
+        // Non-critical: throbber hint only.
+        let _ = self.agent_event_tx.try_send(AgentEvent::Typing);
         Ok(())
     }
 
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
-        self.agent_event_tx
-            .send(AgentEvent::Status(text.to_owned()))
-            .await
-            .map_err(|_| ChannelError::ChannelClosed)?;
+        // Non-critical: informational status text.
+        let _ = self
+            .agent_event_tx
+            .try_send(AgentEvent::Status(text.to_owned()));
         Ok(())
     }
 
     async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
-        self.agent_event_tx
-            .send(AgentEvent::QueueCount(count))
-            .await
-            .map_err(|_| ChannelError::ChannelClosed)?;
+        // Non-critical: display-only counter.
+        let _ = self.agent_event_tx.try_send(AgentEvent::QueueCount(count));
         Ok(())
     }
 
     async fn send_diff(&mut self, diff: zeph_core::DiffData) -> Result<(), ChannelError> {
-        self.agent_event_tx
-            .send(AgentEvent::DiffReady(diff))
-            .await
-            .map_err(|_| ChannelError::ChannelClosed)?;
+        // Substantive user-facing content: bounded send so the diff is displayed unless
+        // the TUI is severely stalled (>100ms). On timeout, drop silently; on channel
+        // close, propagate the error.
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            self.agent_event_tx.send(AgentEvent::DiffReady(diff)),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err(ChannelError::ChannelClosed),
+            Err(_elapsed) => {
+                tracing::warn!("TuiChannel::send_diff timed out after 100ms, dropping diff");
+            }
+        }
         Ok(())
     }
 
@@ -213,13 +229,11 @@ impl Channel for TuiChannel {
             .and_then(|v| v.as_str())
             .unwrap_or(event.tool_name.as_str())
             .to_owned();
-        self.agent_event_tx
-            .send(AgentEvent::ToolStart {
-                tool_name: event.tool_name,
-                command,
-            })
-            .await
-            .map_err(|_| ChannelError::ChannelClosed)?;
+        // Non-critical: visual indicator only.
+        let _ = self.agent_event_tx.try_send(AgentEvent::ToolStart {
+            tool_name: event.tool_name,
+            command,
+        });
         Ok(())
     }
 
@@ -229,18 +243,32 @@ impl Channel for TuiChannel {
             has_diff = event.diff.is_some(),
             "TuiChannel::send_tool_output called"
         );
-        self.agent_event_tx
-            .send(AgentEvent::ToolOutput {
-                tool_name: event.tool_name,
-                command: event.display.clone(),
-                output: event.display.clone(),
-                success: !event.is_error,
-                diff: event.diff,
-                filter_stats: event.filter_stats,
-                kept_lines: event.kept_lines,
-            })
-            .await
-            .map_err(|_| ChannelError::ChannelClosed)?;
+        // Substantive user-facing content: bounded send so the output is displayed unless
+        // the TUI is severely stalled (>100ms). On timeout, drop silently; on channel
+        // close, propagate the error.
+        let agent_event = AgentEvent::ToolOutput {
+            tool_name: event.tool_name,
+            command: event.display.clone(),
+            output: event.display.clone(),
+            success: !event.is_error,
+            diff: event.diff,
+            filter_stats: event.filter_stats,
+            kept_lines: event.kept_lines,
+        };
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            self.agent_event_tx.send(agent_event),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err(ChannelError::ChannelClosed),
+            Err(_elapsed) => {
+                tracing::warn!(
+                    "TuiChannel::send_tool_output timed out after 100ms, dropping output"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -561,6 +589,49 @@ mod tests {
         assert!(
             matches!(evt, AgentEvent::ToolOutput { ref tool_name, .. } if tool_name == "read"),
             "expected ToolOutput"
+        );
+    }
+
+    /// Verify that non-critical send methods return `Ok(())` without blocking
+    /// when the channel is full (backpressure test).
+    #[tokio::test]
+    async fn non_critical_send_returns_ok_when_channel_full() {
+        // Capacity 1 — fill it, then try to send non-critical events.
+        let (user_tx, user_rx) = mpsc::channel(16);
+        let (agent_tx, _agent_rx) = mpsc::channel::<AgentEvent>(1);
+        let mut ch = TuiChannel::new(user_rx, agent_tx.clone());
+        // Drop user_rx handle we kept only to satisfy make_channel API.
+        drop(user_tx);
+
+        // Fill channel to capacity.
+        agent_tx
+            .try_send(AgentEvent::Typing)
+            .expect("channel has capacity 1");
+
+        // All non-critical methods must return Ok(()) immediately even though the channel is full.
+        assert!(
+            ch.send("hello").await.is_ok(),
+            "send should not block or error"
+        );
+        assert!(
+            ch.send_chunk("chunk").await.is_ok(),
+            "send_chunk should not block or error"
+        );
+        assert!(
+            ch.flush_chunks().await.is_ok(),
+            "flush_chunks should not block or error"
+        );
+        assert!(
+            ch.send_typing().await.is_ok(),
+            "send_typing should not block or error"
+        );
+        assert!(
+            ch.send_status("status").await.is_ok(),
+            "send_status should not block or error"
+        );
+        assert!(
+            ch.send_queue_count(3).await.is_ok(),
+            "send_queue_count should not block or error"
         );
     }
 }
