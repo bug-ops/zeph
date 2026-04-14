@@ -17,7 +17,7 @@ use zeph_llm::any::AnyProvider;
 pub(crate) struct TuiRunParams<'a> {
     pub(crate) tui_handle: TuiHandle,
     pub(crate) config: &'a zeph_core::config::Config,
-    pub(crate) status_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    pub(crate) status_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
     pub(crate) tool_rx: Option<tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>>,
     pub(crate) metrics_rx:
         Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
@@ -261,7 +261,10 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     // ensuring the agent_event channel closes and the TUI thread quits.
     let mut forwarders = tokio::task::JoinSet::new();
 
-    forwarders.spawn(forward_status_to_tui(params.status_rx, agent_tx.clone()));
+    if let Some(rx) = params.status_rx {
+        forwarders.spawn(forward_status_to_tui(rx, agent_tx.clone()));
+    }
+    // else: early forwarder already owns status_rx and is draining it
     forwarders.spawn(forward_tui_commands(
         command_rx,
         agent_tx.clone(),
@@ -431,6 +434,44 @@ pub(crate) async fn forward_tool_events_to_tui(
 #[cfg(all(test, feature = "tui"))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn forward_status_to_tui_delivers_messages() {
+        let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(16);
+
+        tokio::spawn(forward_status_to_tui(status_rx, agent_tx));
+
+        status_tx.send("Connecting tools...".into()).unwrap();
+        status_tx.send("Memory ready".into()).unwrap();
+        drop(status_tx);
+
+        let mut received = Vec::new();
+        while let Some(ev) = agent_rx.recv().await {
+            received.push(ev);
+        }
+
+        assert_eq!(received.len(), 2);
+        assert!(
+            matches!(&received[0], zeph_tui::AgentEvent::Status(s) if s == "Connecting tools...")
+        );
+        assert!(matches!(&received[1], zeph_tui::AgentEvent::Status(s) if s == "Memory ready"));
+    }
+
+    #[tokio::test]
+    async fn forward_status_to_tui_stops_when_agent_rx_dropped() {
+        let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (agent_tx, agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(1);
+
+        let handle = tokio::spawn(forward_status_to_tui(status_rx, agent_tx));
+
+        // Drop receiver — forwarder must exit cleanly when send fails.
+        drop(agent_rx);
+
+        status_tx.send("some status".into()).unwrap();
+        // Give the forwarder a chance to detect the closed channel.
+        handle.await.expect("forwarder panicked");
+    }
 
     #[tokio::test]
     async fn forward_tool_events_skips_started_and_completed() {

@@ -678,6 +678,31 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         early_tui_guard = EarlyTuiGuard::new(None);
     }
 
+    // Drain status messages that arrive during init into the already-running TUI.
+    // Without this forwarder, messages sent via `agent_status_tx` before `run_tui_agent`
+    // is called (e.g. from MCP connect_all) accumulate in the unbounded channel and are
+    // never displayed — causing the TUI to appear frozen on "Connecting tools…".
+    // `status_rx` is consumed here; `tui_status_rx_for_params` is None when the early
+    // forwarder owns the receiver, so `run_tui_agent` skips the duplicate spawn.
+    #[cfg(feature = "tui")]
+    let tui_status_rx_for_params: Option<tokio::sync::mpsc::UnboundedReceiver<String>>;
+    #[cfg(feature = "tui")]
+    {
+        if let Some(ref early) = early_tui_guard.0 {
+            // The forwarder task terminates naturally when all `agent_status_tx` senders are
+            // dropped at the end of bootstrap. The TUI thread observes the channel close and
+            // shuts down independently, so explicit abort is not needed. Dropping the handle
+            // is intentional — we have no cleanup to do on the bootstrap error path here.
+            let _early_status_forwarder = tokio::spawn(crate::tui_bridge::forward_status_to_tui(
+                status_rx,
+                early.agent_tx.clone(),
+            ));
+            tui_status_rx_for_params = None;
+        } else {
+            tui_status_rx_for_params = Some(status_rx);
+        }
+    }
+
     // Macro to send a status update to TUI during setup (no-op if no early TUI).
     #[cfg(feature = "tui")]
     macro_rules! tui_status {
@@ -2214,7 +2239,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             TuiRunParams {
                 tui_handle,
                 config,
-                status_rx,
+                status_rx: tui_status_rx_for_params,
                 tool_rx: shell_executor_for_tui,
                 metrics_rx: tui_metrics_rx,
                 warmup_provider: warmup_provider_clone,
@@ -2234,6 +2259,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     if let Some(handle) = warmup_handle {
         let _ = handle.await;
     }
+    // When the tui feature is compiled in but running in CLI mode, status_rx was moved
+    // into tui_status_rx_for_params above. Recover it here; it is always Some in CLI mode
+    // because the early forwarder is only spawned when early_tui_guard.0 is Some (TUI path).
+    #[cfg(feature = "tui")]
+    let status_rx = tui_status_rx_for_params
+        .expect("status_rx must be Some in CLI mode: early forwarder only runs on TUI path");
     tokio::spawn(forward_status_to_stderr(status_rx));
     let result = Box::pin(agent.run()).await;
     // Explicitly shut down MCP connections before agent.shutdown() so that child processes

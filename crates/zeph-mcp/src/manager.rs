@@ -658,6 +658,7 @@ impl McpManager {
             .cloned()
             .collect();
 
+        let cloned_status_tx = self.status_tx.clone();
         let mut join_set = JoinSet::new();
         for config in non_oauth {
             let allowed = allowed.clone();
@@ -672,7 +673,12 @@ impl McpManager {
             if self.lock_tool_list {
                 self.tool_list_locked.insert(config.id.clone(), ());
             }
+            let status_tx = cloned_status_tx.clone();
             join_set.spawn(async move {
+                // SECURITY: only config.id is included — never transport URL, headers, or tokens.
+                if let Some(ref stx) = status_tx {
+                    let _ = stx.send(format!("Connecting to {}...", config.id));
+                }
                 let result =
                     connect_entry(&config, &allowed, suppress, tx, last_refresh, handler_cfg).await;
                 (config.id, result)
@@ -1814,6 +1820,30 @@ mod tests {
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes.iter().all(|o| !o.connected));
         assert!(mgr.list_servers().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn connect_all_emits_status_messages() {
+        let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let mgr = McpManager::new(
+            vec![make_entry("my-mcp")],
+            vec![],
+            PolicyEnforcer::new(vec![]),
+        )
+        .with_status_tx(status_tx);
+
+        mgr.connect_all().await;
+
+        // The "Connecting to my-mcp..." message must have been emitted before
+        // the connection attempt (which will fail — no real server).
+        let mut messages = Vec::new();
+        while let Ok(msg) = status_rx.try_recv() {
+            messages.push(msg);
+        }
+        assert!(
+            messages.iter().any(|m| m.contains("my-mcp")),
+            "expected status message for my-mcp, got: {messages:?}"
+        );
     }
 
     #[tokio::test]
