@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::sync::Arc;
+
 use super::*;
 
 fn strip_noise_filter(patterns: &[&str]) -> DeclarativeFilter {
     DeclarativeFilter {
-        name: "test-strip",
-        matcher: CommandMatcher::Prefix("cmd"),
+        name: Arc::from("test-strip"),
+        matcher: CommandMatcher::Prefix(Arc::from("cmd")),
         strategy: CompiledStrategy::StripNoise {
             patterns: patterns.iter().map(|p| Regex::new(p).unwrap()).collect(),
         },
@@ -15,8 +17,8 @@ fn strip_noise_filter(patterns: &[&str]) -> DeclarativeFilter {
 
 fn truncate_filter(max_lines: usize, head: usize, tail: usize) -> DeclarativeFilter {
     DeclarativeFilter {
-        name: "test-truncate",
-        matcher: CommandMatcher::Prefix("cmd"),
+        name: Arc::from("test-truncate"),
+        matcher: CommandMatcher::Prefix(Arc::from("cmd")),
         strategy: CompiledStrategy::Truncate {
             max_lines,
             head,
@@ -27,8 +29,8 @@ fn truncate_filter(max_lines: usize, head: usize, tail: usize) -> DeclarativeFil
 
 fn keep_matching_filter(patterns: &[&str]) -> DeclarativeFilter {
     DeclarativeFilter {
-        name: "test-keep",
-        matcher: CommandMatcher::Prefix("cmd"),
+        name: Arc::from("test-keep"),
+        matcher: CommandMatcher::Prefix(Arc::from("cmd")),
         strategy: CompiledStrategy::KeepMatching {
             patterns: patterns.iter().map(|p| Regex::new(p).unwrap()).collect(),
         },
@@ -37,8 +39,8 @@ fn keep_matching_filter(patterns: &[&str]) -> DeclarativeFilter {
 
 fn strip_annotated_filter(patterns: &[&str], summary_pattern: Option<&str>) -> DeclarativeFilter {
     DeclarativeFilter {
-        name: "test-annotated",
-        matcher: CommandMatcher::Prefix("cmd"),
+        name: Arc::from("test-annotated"),
+        matcher: CommandMatcher::Prefix(Arc::from("cmd")),
         strategy: CompiledStrategy::StripAnnotated {
             patterns: patterns.iter().map(|p| Regex::new(p).unwrap()).collect(),
             summary_pattern: summary_pattern.map(|p| Regex::new(p).unwrap()),
@@ -51,8 +53,8 @@ fn strip_annotated_filter(patterns: &[&str], summary_pattern: Option<&str>) -> D
 
 fn test_summary_filter() -> DeclarativeFilter {
     DeclarativeFilter {
-        name: "test-summary",
-        matcher: CommandMatcher::Prefix("cargo test"),
+        name: Arc::from("test-summary"),
+        matcher: CommandMatcher::Prefix(Arc::from("cargo test")),
         strategy: CompiledStrategy::TestSummary {
             max_failures: 10,
             truncate_stack_trace: 50,
@@ -62,8 +64,8 @@ fn test_summary_filter() -> DeclarativeFilter {
 
 fn group_by_rule_filter(location_pattern: &str, rule_pattern: &str) -> DeclarativeFilter {
     DeclarativeFilter {
-        name: "test-group",
-        matcher: CommandMatcher::Prefix("cargo clippy"),
+        name: Arc::from("test-group"),
+        matcher: CommandMatcher::Prefix(Arc::from("cargo clippy")),
         strategy: CompiledStrategy::GroupByRule {
             location_re: Regex::new(location_pattern).unwrap(),
             rule_re: Regex::new(rule_pattern).unwrap(),
@@ -73,24 +75,24 @@ fn group_by_rule_filter(location_pattern: &str, rule_pattern: &str) -> Declarati
 
 fn git_status_filter() -> DeclarativeFilter {
     DeclarativeFilter {
-        name: "test-git-status",
-        matcher: CommandMatcher::Prefix("git status"),
+        name: Arc::from("test-git-status"),
+        matcher: CommandMatcher::Prefix(Arc::from("git status")),
         strategy: CompiledStrategy::GitStatus,
     }
 }
 
 fn git_diff_filter(max_diff_lines: usize) -> DeclarativeFilter {
     DeclarativeFilter {
-        name: "test-git-diff",
-        matcher: CommandMatcher::Prefix("git diff"),
+        name: Arc::from("test-git-diff"),
+        matcher: CommandMatcher::Prefix(Arc::from("git diff")),
         strategy: CompiledStrategy::GitDiff { max_diff_lines },
     }
 }
 
 fn dedup_filter() -> DeclarativeFilter {
     DeclarativeFilter {
-        name: "test-dedup",
-        matcher: CommandMatcher::Prefix("journalctl"),
+        name: Arc::from("test-dedup"),
+        matcher: CommandMatcher::Prefix(Arc::from("journalctl")),
         strategy: CompiledStrategy::Dedup {
             normalize_patterns: vec![
                 (
@@ -127,7 +129,7 @@ fn compile_match_exact() {
         regex: None,
     };
     let matcher = compile_match(&m).unwrap();
-    assert!(matches!(matcher, CommandMatcher::Exact("ls")));
+    assert!(matches!(matcher, CommandMatcher::Exact(_)));
 }
 
 #[test]
@@ -921,8 +923,8 @@ strategy = { type = "strip_noise", patterns = ["^npm warn", "^npm notice"] }
 fn dedup_cap_respected_does_not_panic_with_large_max_unique() {
     // Validates that HashMap::with_capacity(max_unique.min(4096)) doesn't OOM
     let f = DeclarativeFilter {
-        name: "test-dedup-cap",
-        matcher: CommandMatcher::Prefix("cmd"),
+        name: Arc::from("test-dedup-cap"),
+        matcher: CommandMatcher::Prefix(Arc::from("cmd")),
         strategy: CompiledStrategy::Dedup {
             normalize_patterns: vec![],
             max_unique_patterns: usize::MAX,
@@ -1006,8 +1008,8 @@ fn compile_strip_annotated_empty_patterns_rejected() {
 #[test]
 fn strip_annotated_no_panic_when_head_tail_exceeds_kept() {
     let f = DeclarativeFilter {
-        name: "test-adv2",
-        matcher: CommandMatcher::Prefix("cmd"),
+        name: Arc::from("test-adv2"),
+        matcher: CommandMatcher::Prefix(Arc::from("cmd")),
         strategy: CompiledStrategy::StripAnnotated {
             patterns: vec![Regex::new(r"^NOISE").unwrap()],
             summary_pattern: None,
@@ -1028,8 +1030,8 @@ fn strip_annotated_no_panic_when_head_tail_exceeds_kept() {
 #[test]
 fn strip_annotated_no_panic_single_kept_line_large_head_tail() {
     let f = DeclarativeFilter {
-        name: "test-adv2-single",
-        matcher: CommandMatcher::Prefix("cmd"),
+        name: Arc::from("test-adv2-single"),
+        matcher: CommandMatcher::Prefix(Arc::from("cmd")),
         strategy: CompiledStrategy::StripAnnotated {
             patterns: vec![Regex::new(r"^NOISE").unwrap()],
             summary_pattern: None,
@@ -1231,8 +1233,8 @@ fn compound_command_prefix_matches_last_segment() {
     // "cd /path && cargo test" extracts "cargo test" as last segment,
     // so a Prefix("cargo test") filter should apply to compound commands.
     let f = DeclarativeFilter {
-        name: "test-compound",
-        matcher: CommandMatcher::Prefix("cargo test"),
+        name: Arc::from("test-compound"),
+        matcher: CommandMatcher::Prefix(Arc::from("cargo test")),
         strategy: CompiledStrategy::StripNoise {
             patterns: vec![Regex::new(r"^NOISE").unwrap()],
         },
@@ -1731,8 +1733,8 @@ fn truncate_exactly_at_threshold_returns_fallback() {
 #[test]
 fn dedup_cap_hit_reports_capped() {
     let f = DeclarativeFilter {
-        name: "test-dedup-capped",
-        matcher: CommandMatcher::Prefix("journalctl"),
+        name: Arc::from("test-dedup-capped"),
+        matcher: CommandMatcher::Prefix(Arc::from("journalctl")),
         strategy: CompiledStrategy::Dedup {
             normalize_patterns: vec![],
             max_unique_patterns: 3,

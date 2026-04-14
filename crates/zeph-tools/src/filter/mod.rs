@@ -7,7 +7,7 @@ pub(crate) mod declarative;
 pub mod security;
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use parking_lot::Mutex;
 
@@ -57,8 +57,8 @@ impl FilterResult {
 // ---------------------------------------------------------------------------
 
 pub enum CommandMatcher {
-    Exact(&'static str),
-    Prefix(&'static str),
+    Exact(Arc<str>),
+    Prefix(Arc<str>),
     Regex(regex::Regex),
     #[cfg(test)]
     Custom(Box<dyn Fn(&str) -> bool + Send + Sync>),
@@ -73,8 +73,8 @@ impl CommandMatcher {
 
     fn matches_single(&self, command: &str) -> bool {
         match self {
-            Self::Exact(s) => command == *s,
-            Self::Prefix(s) => command.starts_with(s),
+            Self::Exact(s) => command == s.as_ref(),
+            Self::Prefix(s) => command.starts_with(s.as_ref()),
             Self::Regex(re) => re.is_match(command),
             #[cfg(test)]
             Self::Custom(f) => f(command),
@@ -123,7 +123,7 @@ impl std::fmt::Debug for CommandMatcher {
 
 /// Command-aware output filter.
 pub trait OutputFilter: Send + Sync {
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     fn matcher(&self) -> &CommandMatcher;
     fn filter(&self, command: &str, raw_output: &str, exit_code: i32) -> FilterResult;
 }
@@ -613,14 +613,14 @@ extra_patterns = ["TODO: security review"]
     // CommandMatcher tests
     #[test]
     fn command_matcher_exact() {
-        let m = CommandMatcher::Exact("ls");
+        let m = CommandMatcher::Exact(Arc::from("ls"));
         assert!(m.matches("ls"));
         assert!(!m.matches("ls -la"));
     }
 
     #[test]
     fn command_matcher_prefix() {
-        let m = CommandMatcher::Prefix("git ");
+        let m = CommandMatcher::Prefix(Arc::from("git "));
         assert!(m.matches("git status"));
         assert!(!m.matches("github"));
     }
@@ -642,7 +642,7 @@ extra_patterns = ["TODO: security review"]
 
     #[test]
     fn command_matcher_compound_cd_and() {
-        let m = CommandMatcher::Prefix("cargo ");
+        let m = CommandMatcher::Prefix(Arc::from("cargo "));
         assert!(m.matches("cd /some/path && cargo test --workspace --lib"));
         assert!(m.matches("cd /path && cargo clippy --workspace -- -D warnings 2>&1"));
     }
@@ -655,7 +655,7 @@ extra_patterns = ["TODO: security review"]
 
     #[test]
     fn command_matcher_compound_no_false_positive() {
-        let m = CommandMatcher::Exact("ls");
+        let m = CommandMatcher::Exact(Arc::from("ls"));
         assert!(!m.matches("cd /path && cargo test"));
     }
 

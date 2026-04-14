@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::Path;
+use std::sync::Arc;
 
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
@@ -200,14 +201,14 @@ pub(crate) enum CompiledStrategy {
 }
 
 pub(crate) struct DeclarativeFilter {
-    name: &'static str,
+    name: Arc<str>,
     matcher: CommandMatcher,
     strategy: CompiledStrategy,
 }
 
 impl DeclarativeFilter {
     pub fn compile(rule: RuleConfig) -> Result<Self, String> {
-        let name: &'static str = Box::leak(rule.name.into_boxed_str());
+        let name: Arc<str> = Arc::from(rule.name.as_str());
         let matcher = compile_match(&rule.match_config)?;
         let strategy = compile_strategy(rule.strategy)?;
         Ok(Self {
@@ -230,11 +231,9 @@ fn compile_regex(pattern: &str) -> Result<Regex, String> {
 
 fn compile_match(m: &MatchConfig) -> Result<CommandMatcher, String> {
     if let Some(ref exact) = m.exact {
-        let s: &'static str = Box::leak(exact.clone().into_boxed_str());
-        Ok(CommandMatcher::Exact(s))
+        Ok(CommandMatcher::Exact(Arc::from(exact.as_str())))
     } else if let Some(ref prefix) = m.prefix {
-        let s: &'static str = Box::leak(prefix.clone().into_boxed_str());
-        Ok(CommandMatcher::Prefix(s))
+        Ok(CommandMatcher::Prefix(Arc::from(prefix.as_str())))
     } else if let Some(ref regex) = m.regex {
         if regex.len() > 512 {
             return Err("regex pattern exceeds 512 character limit".into());
@@ -889,8 +888,8 @@ fn apply_truncate(
 // ---------------------------------------------------------------------------
 
 impl OutputFilter for DeclarativeFilter {
-    fn name(&self) -> &'static str {
-        self.name
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn matcher(&self) -> &CommandMatcher {
