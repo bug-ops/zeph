@@ -1762,6 +1762,134 @@ error: build failed";
     assert!(result.output.contains("error: build failed"));
 }
 
+// ---------------------------------------------------------------------------
+// Hot-reload regression tests (issue #3020)
+//
+// These are compile-consistency guards: they verify that repeated compile()
+// calls produce deterministic output. Leak detection requires dhat/Miri.
+// ---------------------------------------------------------------------------
+
+fn make_strip_noise_rule() -> RuleConfig {
+    RuleConfig {
+        name: "hot-reload-test".to_owned(),
+        match_config: MatchConfig {
+            prefix: Some("cargo".to_owned()),
+            exact: None,
+            regex: None,
+        },
+        strategy: StrategyConfig::StripNoise {
+            patterns: vec![r"^Compiling\s".to_owned()],
+        },
+        enabled: true,
+    }
+}
+
+fn make_truncate_rule() -> RuleConfig {
+    RuleConfig {
+        name: "hot-reload-truncate".to_owned(),
+        match_config: MatchConfig {
+            exact: Some("ls".to_owned()),
+            prefix: None,
+            regex: None,
+        },
+        strategy: StrategyConfig::Truncate {
+            max_lines: 10,
+            head: 3,
+            tail: 3,
+        },
+        enabled: true,
+    }
+}
+
+#[test]
+fn compile_repeated_produces_consistent_filters() {
+    let sample =
+        "Compiling foo v0.1.0\nwarning: unused variable\nCompiling bar v0.2.0\nerror: something";
+    let mut results = Vec::new();
+    for _ in 0..5 {
+        let filter =
+            DeclarativeFilter::compile(make_strip_noise_rule()).expect("compile must succeed");
+        assert_eq!(filter.name(), "hot-reload-test");
+        let result = filter.filter("cargo build", sample, 1);
+        results.push(result.output);
+    }
+    for (i, r) in results.iter().enumerate().skip(1) {
+        assert_eq!(
+            &results[0], r,
+            "compile() call {i} produced different output"
+        );
+    }
+}
+
+#[test]
+fn compile_repeated_truncate_consistent() {
+    let long_output = (0..20)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut results = Vec::new();
+    for _ in 0..3 {
+        let filter =
+            DeclarativeFilter::compile(make_truncate_rule()).expect("compile must succeed");
+        assert_eq!(filter.name(), "hot-reload-truncate");
+        let result = filter.filter("ls", &long_output, 0);
+        results.push(result.output);
+    }
+    for (i, r) in results.iter().enumerate().skip(1) {
+        assert_eq!(&results[0], r, "truncate compile() call {i} diverged");
+    }
+}
+
+#[test]
+fn compile_drop_then_recompile() {
+    // Models the actual hot-reload lifecycle: compile → use → drop → compile again.
+    let sample = "Compiling foo v0.1.0\nwarning: unused variable";
+    let first = DeclarativeFilter::compile(make_strip_noise_rule()).expect("first compile");
+    let first_name = first.name().to_owned();
+    let first_output = first.filter("cargo build", sample, 0).output;
+    drop(first);
+
+    // After dropping the first filter, recompile with identical config.
+    let second = DeclarativeFilter::compile(make_strip_noise_rule()).expect("recompile after drop");
+    assert_eq!(second.name(), first_name);
+    let second_output = second.filter("cargo build", sample, 0).output;
+    assert_eq!(
+        first_output, second_output,
+        "recompile after drop produced different output"
+    );
+}
+
+#[test]
+fn compile_strategy_change_consistent() {
+    // Models config-file-change hot-reload: first StripNoise, then Truncate.
+    // Verifies each strategy produces correct output without contaminating the other.
+    let sample = "Compiling foo v0.1.0\nwarning: unused variable\nCompiling bar v0.2.0";
+
+    let strip = DeclarativeFilter::compile(make_strip_noise_rule()).expect("compile strip_noise");
+    assert_eq!(strip.name(), "hot-reload-test");
+    let strip_out = strip.filter("cargo build", sample, 0);
+
+    let long_output = (0..20)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let truncate = DeclarativeFilter::compile(make_truncate_rule()).expect("compile truncate");
+    assert_eq!(truncate.name(), "hot-reload-truncate");
+    let truncate_out = truncate.filter("ls", &long_output, 0);
+
+    // Strip noise filter must have removed Compiling lines.
+    assert!(
+        !strip_out.output.contains("Compiling"),
+        "strip_noise did not remove Compiling lines"
+    );
+    // Truncate filter must have reduced line count below max_lines.
+    let truncated_lines = truncate_out.output.lines().count();
+    assert!(
+        truncated_lines <= 10,
+        "truncate produced {truncated_lines} lines, expected <= 10"
+    );
+}
+
 use proptest::prelude::*;
 
 proptest! {
