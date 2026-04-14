@@ -24,7 +24,8 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 use futures::StreamExt as _;
 use tokio::sync::watch;
@@ -56,8 +57,8 @@ static CHUNK_TASK_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// use zeph_index::indexer::IndexerConfig;
 ///
 /// let config = IndexerConfig::default();
-/// assert_eq!(config.concurrency, 4);
-/// assert_eq!(config.embed_concurrency, 2);
+/// assert_eq!(config.concurrency, 2);
+/// assert_eq!(config.embed_concurrency, 1);
 ///
 /// // High-throughput mode for a fast local embedding server.
 /// let fast = IndexerConfig {
@@ -70,13 +71,13 @@ static CHUNK_TASK_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub struct IndexerConfig {
     /// Chunker configuration controlling chunk size thresholds.
     pub chunker: ChunkerConfig,
-    /// Number of files to process concurrently within each memory batch. Default: 4.
+    /// Number of files to process concurrently within each memory batch. Default: 2.
     pub concurrency: usize,
-    /// Maximum number of new chunks to upsert per Qdrant call. Default: 32.
+    /// Maximum number of new chunks to upsert per Qdrant call. Default: 16.
     ///
     /// Larger values reduce round-trips but increase per-call memory.
     pub batch_size: usize,
-    /// Number of files per outer memory batch during initial indexing. Default: 32.
+    /// Number of files per outer memory batch during initial indexing. Default: 16.
     ///
     /// Lowering this reduces peak heap usage at the cost of more `yield_now` calls.
     pub memory_batch_size: usize,
@@ -85,7 +86,7 @@ pub struct IndexerConfig {
     /// Large files (e.g. generated code, vendored libraries) rarely provide useful
     /// retrieval signal and are expensive to embed.
     pub max_file_bytes: usize,
-    /// Maximum parallel `embed_batch` calls per memory batch. Default: 2.
+    /// Maximum parallel `embed_batch` calls per memory batch. Default: 1.
     ///
     /// Keep this low when using hosted embedding APIs with strict TPM rate limits.
     pub embed_concurrency: usize,
@@ -95,11 +96,11 @@ impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
             chunker: ChunkerConfig::default(),
-            concurrency: 4,
-            batch_size: 32,
-            memory_batch_size: 32,
+            concurrency: 2,
+            batch_size: 16,
+            memory_batch_size: 16,
             max_file_bytes: 512 * 1024,
-            embed_concurrency: 2,
+            embed_concurrency: 1,
         }
     }
 }
@@ -190,6 +191,8 @@ pub struct CodeIndexer {
     /// appears in the supervisor registry (snapshot, graceful shutdown, metrics).
     /// When `None`, falls back to `tokio::task::spawn_blocking`.
     spawner: Option<Arc<dyn BlockingSpawner>>,
+    /// Re-entrancy guard: prevents concurrent `index_project` runs on the same indexer.
+    indexing: Arc<AtomicBool>,
 }
 
 impl CodeIndexer {
@@ -204,6 +207,7 @@ impl CodeIndexer {
             provider,
             config,
             spawner: None,
+            indexing: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -246,6 +250,16 @@ impl CodeIndexer {
         root: &Path,
         progress_tx: Option<&watch::Sender<IndexProgress>>,
     ) -> Result<IndexReport> {
+        if self
+            .indexing
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            tracing::info!("index_project already running, skipping concurrent request");
+            return Ok(IndexReport::default());
+        }
+        let _guard = IndexingGuard(Arc::clone(&self.indexing));
+
         let start = std::time::Instant::now();
         let mut report = IndexReport::default();
 
@@ -438,8 +452,8 @@ impl FileIndexWorker {
             // name already exists" logic from silently aborting concurrent in-flight tasks
             // when embed_concurrency > 1.
             let task_id = CHUNK_TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let task_name: &'static str =
-                Box::leak(format!("chunk_file_{task_id}").into_boxed_str());
+            let task_name: std::sync::Arc<str> =
+                std::sync::Arc::from(format!("chunk_file_{task_id}").as_str());
             let (result_tx, result_rx) = tokio::sync::oneshot::channel();
             let _join = spawner.spawn_blocking_named(
                 task_name,
@@ -490,7 +504,25 @@ impl FileIndexWorker {
             .map(|(chunk, vector)| (chunk_to_insert(chunk), vector))
             .collect();
 
-        let created = self.store.upsert_chunks_batch(batch).await?.len();
+        let created = match tokio::time::timeout(
+            Duration::from_secs(30),
+            self.store.upsert_chunks_batch(batch),
+        )
+        .await
+        {
+            Ok(Ok(inserted)) => inserted.len(),
+            Ok(Err(e)) => {
+                tracing::warn!("upsert_chunks_batch failed, skipping batch: {e}");
+                0
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    "upsert_chunks_batch timed out after 30s, skipping batch of {} chunks",
+                    new_chunks.len()
+                );
+                0
+            }
+        };
 
         if created > 0 {
             tracing::debug!("{rel_path}: {created} chunks indexed, {skipped} unchanged");
@@ -598,9 +630,9 @@ mod tests {
     fn default_config() {
         let config = IndexerConfig::default();
         assert_eq!(config.chunker.target_size, 600);
-        assert_eq!(config.concurrency, 4);
-        assert_eq!(config.batch_size, 32);
-        assert_eq!(config.embed_concurrency, 2);
+        assert_eq!(config.concurrency, 2);
+        assert_eq!(config.batch_size, 16);
+        assert_eq!(config.embed_concurrency, 1);
     }
 
     #[test]
@@ -723,7 +755,7 @@ mod tests {
         impl BlockingSpawner for MockBlockingSpawner {
             fn spawn_blocking_named(
                 &self,
-                _name: &'static str,
+                _name: std::sync::Arc<str>,
                 f: Box<dyn FnOnce() + Send + 'static>,
             ) -> tokio::task::JoinHandle<()> {
                 tokio::task::spawn_blocking(move || f())
@@ -770,5 +802,57 @@ mod tests {
                 "spawner path must not drop the result channel; got: {msg}"
             );
         }
+    }
+
+    /// Verify that the re-entrancy guard resets correctly after a normal run.
+    #[test]
+    fn indexing_guard_resets_flag_on_drop() {
+        let flag = Arc::new(AtomicBool::new(false));
+        {
+            // Simulate acquiring the guard.
+            flag.store(true, Ordering::Relaxed);
+            let _guard = IndexingGuard(Arc::clone(&flag));
+            assert!(flag.load(Ordering::Relaxed));
+        }
+        // Guard dropped — flag must be false.
+        assert!(!flag.load(Ordering::Relaxed));
+    }
+
+    /// Verify that compare_exchange rejects a second caller while the flag is set.
+    #[test]
+    fn indexing_guard_compare_exchange_skips_concurrent() {
+        let flag = Arc::new(AtomicBool::new(false));
+
+        // First caller acquires.
+        assert!(
+            flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok(),
+            "first caller should succeed"
+        );
+        // Second caller must be rejected.
+        assert!(
+            flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err(),
+            "second caller should be rejected while flag is true"
+        );
+
+        // Reset.
+        flag.store(false, Ordering::Release);
+
+        // Third caller can acquire again.
+        assert!(
+            flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok(),
+            "third caller should succeed after reset"
+        );
+    }
+}
+
+/// RAII guard that resets the re-entrancy flag when dropped.
+struct IndexingGuard(Arc<AtomicBool>);
+
+impl Drop for IndexingGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }

@@ -108,15 +108,15 @@ pub(crate) fn init_tracing(
 
     let mut layers: Vec<BoxedLayer> = Vec::new();
 
-    // Warn early (before TUI takes over stderr) when there is no file log sink.
-    // In TUI mode the stderr layer is suppressed, so OTLP becomes the sole subscriber.
-    // #2998: users need to know this so they don't miss log output entirely.
-    if tui_mode && logging.file.is_empty() {
-        eprintln!(
-            "[zeph] warning: TUI mode active with no file log sink \
-             — OTLP is the sole tracing subscriber"
-        );
-    }
+    // Determine whether OTLP will be the active trace sink.
+    // When the `otel` feature is absent, OTLP is never active.
+    #[cfg(feature = "otel")]
+    let otlp_active = {
+        use zeph_core::config::TelemetryBackend;
+        telemetry.enabled && telemetry.backend == TelemetryBackend::Otlp
+    };
+    #[cfg(not(feature = "otel"))]
+    let otlp_active = false;
 
     // Stderr layer — omitted in TUI mode to avoid corrupting raw-mode rendering.
     if !tui_mode {
@@ -131,6 +131,43 @@ pub(crate) fn init_tracing(
 
     // Optional file layer.
     let mut log_guard: Option<WorkerGuard> = None;
+
+    // In TUI mode the stderr layer is suppressed to avoid corrupting raw-mode rendering.
+    // If logging.file was explicitly set to "" and no OTLP is configured the process would run
+    // completely silent. Activate the platform default log path so traces are always reachable.
+    if tui_mode && logging.file.is_empty() && !otlp_active {
+        let fallback_path = std::path::PathBuf::from(zeph_core::config::default_log_file_path());
+        let log_dir = fallback_path.parent().map_or_else(
+            || std::path::PathBuf::from("."),
+            std::path::Path::to_path_buf,
+        );
+        let filename = fallback_path.file_name().map_or_else(
+            || "zeph.log".to_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        if let Err(e) = std::fs::create_dir_all(&log_dir) {
+            eprintln!(
+                "[zeph] warning: could not create fallback log directory {}: {e}",
+                log_dir.display()
+            );
+        } else {
+            let file_appender = tracing_appender::rolling::never(&log_dir, &filename);
+            let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+            let fallback_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+            layers.push(Box::new(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(non_blocking)
+                    .with_ansi(false)
+                    .with_filter(fallback_filter),
+            ));
+            log_guard = Some(guard);
+            eprintln!(
+                "[zeph] info: TUI mode: no log sink configured, falling back to {}",
+                fallback_path.display()
+            );
+        }
+    }
     if !logging.file.is_empty() {
         let path = std::path::PathBuf::from(&logging.file);
         let dir = path.parent().map_or_else(
@@ -401,6 +438,10 @@ fn build_otlp_layer(
     let batch_config = BatchConfigBuilder::default()
         .with_max_queue_size(4096)
         .build();
+    // #3011: wrap with a circuit breaker to prevent CPU burn when the OTLP collector
+    // is unavailable. After 3 consecutive export failures the circuit opens and spans
+    // are silently dropped until the back-off window expires.
+    let exporter = crate::circuit_breaker_exporter::CircuitBreakerExporter::new(exporter);
     let bsp = BatchSpanProcessor::builder(exporter)
         .with_batch_config(batch_config)
         .build();

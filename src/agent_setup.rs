@@ -347,6 +347,7 @@ pub(crate) async fn build_tool_setup(
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pool: Option<&zeph_db::DbPool>,
     provider: &zeph_llm::any::AnyProvider,
+    tui_mode: bool,
 ) -> ToolSetup {
     let filter_registry = if config.tools.filters.enabled {
         zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
@@ -359,7 +360,8 @@ pub(crate) async fn build_tool_setup(
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
     let mut audit_logger: Option<Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
-        && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
+        && let Ok(logger) =
+            zeph_tools::AuditLogger::from_config(&config.tools.audit, tui_mode).await
     {
         let logger = Arc::new(logger);
         shell_executor = shell_executor.with_audit(Arc::clone(&logger));

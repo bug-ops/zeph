@@ -5029,7 +5029,7 @@ mod pre_execution_audit_tests {
             ..Default::default()
         };
         let logger = Arc::new(
-            zeph_tools::AuditLogger::from_config(&audit_config)
+            zeph_tools::AuditLogger::from_config(&audit_config, false)
                 .await
                 .unwrap(),
         );

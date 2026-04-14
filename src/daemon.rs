@@ -320,7 +320,7 @@ pub(crate) async fn run_daemon(
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
     let mut daemon_audit_logger: Option<std::sync::Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
-        && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
+        && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit, false).await
     {
         let logger = std::sync::Arc::new(logger);
         shell_executor = shell_executor.with_audit(std::sync::Arc::clone(&logger));

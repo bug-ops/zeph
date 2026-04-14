@@ -9,8 +9,10 @@
 //!
 //! ## Debouncing
 //!
-//! Events are debounced with a 1-second window. Rapid successive saves to the same
-//! file (e.g. auto-format on save) produce a single reindex call.
+//! Events pass through two debounce stages. The `notify-debouncer-mini` layer
+//! coalesces OS-level inotify/kqueue/FSEvents bursts with a 1-second window.
+//! A second 500 ms Tokio-side debounce batches any remaining rapid events into a
+//! single reindex pass, further reducing redundant work on bursty saves.
 //!
 //! ## Gitignore filtering
 //!
@@ -97,6 +99,11 @@ impl IndexWatcher {
         indexer: Arc<CodeIndexer>,
         status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     ) -> Result<Self> {
+        const DEBOUNCE: Duration = Duration::from_millis(500);
+        // Under sustained FS writes the deadline resets on every event. MAX_DEBOUNCE
+        // caps the total wait so reindexing is never starved indefinitely.
+        const MAX_DEBOUNCE: Duration = Duration::from_secs(5);
+
         let (notify_tx, mut notify_rx) = mpsc::channel::<PathBuf>(64);
 
         let mut debouncer = new_debouncer(
@@ -134,23 +141,44 @@ impl IndexWatcher {
 
         let handle = tokio::spawn(async move {
             let _debouncer = debouncer;
-            while let Some(path) = notify_rx.recv().await {
-                if is_gitignored(&gitignore, &root, &path) {
-                    tracing::trace!(path = %path.display(), "skipping gitignored path");
-                    continue;
-                }
-                if let Some(ref tx) = status_tx {
-                    let name = path.file_name().map_or_else(
-                        || path.display().to_string(),
-                        |n| n.to_string_lossy().into_owned(),
-                    );
-                    let _ = tx.send(format!("Re-indexing {name}..."));
-                }
-                if let Err(e) = indexer.reindex_file(&root, &path).await {
-                    tracing::warn!(path = %path.display(), "reindex failed: {e:#}");
-                }
-                if let Some(ref tx) = status_tx {
-                    let _ = tx.send(String::new());
+            let mut pending: HashSet<PathBuf> = HashSet::new();
+            let mut deadline = tokio::time::Instant::now() + DEBOUNCE;
+            let mut batch_start: Option<tokio::time::Instant> = None;
+
+            loop {
+                tokio::select! {
+                    msg = notify_rx.recv() => {
+                        let Some(path) = msg else { break };
+                        if is_gitignored(&gitignore, &root, &path) {
+                            tracing::trace!(path = %path.display(), "skipping gitignored path");
+                            continue;
+                        }
+                        let now = tokio::time::Instant::now();
+                        let start = *batch_start.get_or_insert(now);
+                        pending.insert(path);
+                        // Cap deadline so sustained writes cannot starve reindexing indefinitely.
+                        deadline = (start + MAX_DEBOUNCE).min(now + DEBOUNCE);
+                    }
+                    () = tokio::time::sleep_until(deadline), if !pending.is_empty() => {
+                        let paths: Vec<PathBuf> = pending.drain().collect();
+                        batch_start = None;
+                        tracing::trace!("debounce fired, reindexing {} paths", paths.len());
+                        for path in paths {
+                            if let Some(ref tx) = status_tx {
+                                let name = path.file_name().map_or_else(
+                                    || path.display().to_string(),
+                                    |n| n.to_string_lossy().into_owned(),
+                                );
+                                let _ = tx.send(format!("Re-indexing {name}..."));
+                            }
+                            if let Err(e) = indexer.reindex_file(&root, &path).await {
+                                tracing::warn!(path = %path.display(), "reindex failed: {e:#}");
+                            }
+                            if let Some(ref tx) = status_tx {
+                                let _ = tx.send(String::new());
+                            }
+                        }
+                    }
                 }
             }
         });

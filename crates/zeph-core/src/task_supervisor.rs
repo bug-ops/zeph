@@ -214,7 +214,7 @@ pub enum TaskStatus {
 /// the crate is compiled with the `task-metrics` feature.
 pub struct TaskSnapshot {
     /// Task name.
-    pub name: &'static str,
+    pub name: Arc<str>,
     /// Current status.
     pub status: TaskStatus,
     /// Instant the task was first spawned.
@@ -229,7 +229,7 @@ type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 type BoxFactory = Box<dyn Fn() -> BoxFuture + Send + Sync>;
 
 struct TaskEntry {
-    name: &'static str,
+    name: Arc<str>,
     status: TaskStatus,
     started_at: Instant,
     restart_count: u32,
@@ -251,12 +251,12 @@ enum CompletionKind {
 }
 
 struct Completion {
-    name: &'static str,
+    name: Arc<str>,
     kind: CompletionKind,
 }
 
 struct SupervisorState {
-    tasks: HashMap<&'static str, TaskEntry>,
+    tasks: HashMap<Arc<str>, TaskEntry>,
 }
 
 struct Inner {
@@ -266,6 +266,9 @@ struct Inner {
     /// — callers clone it once during spawn without re-locking state.
     completion_tx: mpsc::UnboundedSender<Completion>,
     cancel: CancellationToken,
+    /// Limits the number of concurrently running `spawn_blocking` tasks to prevent
+    /// runaway thread-pool growth under burst load.
+    blocking_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 // ── Main type ────────────────────────────────────────────────────────────────
@@ -327,6 +330,7 @@ impl TaskSupervisor {
             }),
             completion_tx,
             cancel: cancel.clone(),
+            blocking_semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
         });
 
         Self::start_reap_driver(Arc::clone(&inner), completion_rx, cancel);
@@ -366,12 +370,13 @@ impl TaskSupervisor {
         let factory: BoxFactory = Box::new(move || Box::pin((desc.factory)()));
         let cancel = self.inner.cancel.clone();
         let completion_tx = self.inner.completion_tx.clone();
+        let name: Arc<str> = Arc::from(desc.name);
 
         let (abort_handle, jh) = Self::do_spawn(desc.name, &factory, cancel);
-        Self::wire_completion_reporter(desc.name, jh, completion_tx);
+        Self::wire_completion_reporter(Arc::clone(&name), jh, completion_tx);
 
         let entry = TaskEntry {
-            name: desc.name,
+            name: Arc::clone(&name),
             status: TaskStatus::Running,
             started_at: Instant::now(),
             restart_count: 0,
@@ -385,10 +390,10 @@ impl TaskSupervisor {
 
         {
             let mut state = self.inner.state.lock();
-            if let Some(old) = state.tasks.remove(desc.name) {
+            if let Some(old) = state.tasks.remove(&name) {
                 old.abort_handle.abort();
             }
-            state.tasks.insert(desc.name, entry);
+            state.tasks.insert(Arc::clone(&name), entry);
         }
 
         TaskHandle {
@@ -413,6 +418,7 @@ impl TaskSupervisor {
     /// # Examples
     ///
     /// ```rust,no_run
+    /// use std::sync::Arc;
     /// use tokio_util::sync::CancellationToken;
     /// use zeph_core::task_supervisor::{BlockingHandle, TaskSupervisor};
     ///
@@ -421,7 +427,7 @@ impl TaskSupervisor {
     /// let cancel = CancellationToken::new();
     /// let sup = TaskSupervisor::new(cancel);
     ///
-    /// let handle: BlockingHandle<u32> = sup.spawn_blocking("compute", || {
+    /// let handle: BlockingHandle<u32> = sup.spawn_blocking(Arc::from("compute"), || {
     ///     // CPU-bound work — safe to block here
     ///     42_u32
     /// });
@@ -429,7 +435,18 @@ impl TaskSupervisor {
     /// assert_eq!(result, 42);
     /// # }
     /// ```
-    pub fn spawn_blocking<F, R>(&self, name: &'static str, f: F) -> BlockingHandle<R>
+    ///
+    /// # Capacity limit
+    ///
+    /// At most 8 `spawn_blocking` tasks run concurrently. Additional tasks wait for a
+    /// semaphore permit, bounding thread-pool growth under burst load.
+    ///
+    /// # Panics
+    ///
+    /// Panics inside `f` are captured and returned as [`BlockingError::Panicked`] — they
+    /// do not propagate to the caller.
+    #[allow(clippy::needless_pass_by_value)] // `name` is cloned into async task and registry
+    pub fn spawn_blocking<F, R>(&self, name: Arc<str>, f: F) -> BlockingHandle<R>
     where
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
@@ -438,41 +455,41 @@ impl TaskSupervisor {
         #[cfg(feature = "task-metrics")]
         let span = tracing::info_span!(
             "supervised_blocking_task",
-            task.name = name,
+            task.name = %name,
             task.wall_time_ms = tracing::field::Empty,
             task.cpu_time_ms = tracing::field::Empty,
         );
         #[cfg(not(feature = "task-metrics"))]
-        let span = tracing::info_span!("supervised_blocking_task", task.name = name);
+        let span = tracing::info_span!("supervised_blocking_task", task.name = %name);
 
-        let join_handle = tokio::task::spawn_blocking(move || {
-            let _enter = span.enter();
-            measure_blocking(name, f)
-        });
-        let abort = join_handle.abort_handle();
-
-        // Register in registry for snapshot/shutdown visibility.
-        {
-            let mut state = self.inner.state.lock();
-            if let Some(old) = state.tasks.remove(name) {
-                old.abort_handle.abort();
-            }
-            state.tasks.insert(
-                name,
-                TaskEntry {
-                    name,
-                    status: TaskStatus::Running,
-                    started_at: Instant::now(),
-                    restart_count: 0,
-                    restart_policy: RestartPolicy::RunOnce,
-                    abort_handle: abort.clone(),
-                    factory: None,
-                },
-            );
-        }
-
+        let semaphore = Arc::clone(&self.inner.blocking_semaphore);
+        let inner = Arc::clone(&self.inner);
+        let name_clone = Arc::clone(&name);
         let completion_tx = self.inner.completion_tx.clone();
-        tokio::spawn(async move {
+
+        // Wrap the blocking spawn in an async task that first acquires a semaphore
+        // permit, bounding the number of concurrently running blocking tasks to 8.
+        let outer = tokio::spawn(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .expect("blocking semaphore closed");
+
+            let name_for_measure = Arc::clone(&name_clone);
+            let join_handle = tokio::task::spawn_blocking(move || {
+                let _enter = span.enter();
+                measure_blocking(&name_for_measure, f)
+            });
+            let abort = join_handle.abort_handle();
+
+            // Update registry with the real abort handle now that spawn_blocking is live.
+            {
+                let mut state = inner.state.lock();
+                if let Some(entry) = state.tasks.get_mut(&name_clone) {
+                    entry.abort_handle = abort;
+                }
+            }
+
             let kind = match join_handle.await {
                 Ok(val) => {
                     let _ = tx.send(Ok(val));
@@ -487,8 +504,33 @@ impl TaskSupervisor {
                     CompletionKind::Cancelled
                 }
             };
-            let _ = completion_tx.send(Completion { name, kind });
+            // _permit released here, freeing the semaphore slot.
+            let _ = completion_tx.send(Completion {
+                name: name_clone,
+                kind,
+            });
         });
+        let abort = outer.abort_handle();
+
+        // Register in registry so snapshot/shutdown sees the task.
+        {
+            let mut state = self.inner.state.lock();
+            if let Some(old) = state.tasks.remove(&name) {
+                old.abort_handle.abort();
+            }
+            state.tasks.insert(
+                Arc::clone(&name),
+                TaskEntry {
+                    name: Arc::clone(&name),
+                    status: TaskStatus::Running,
+                    started_at: Instant::now(),
+                    restart_count: 0,
+                    restart_policy: RestartPolicy::RunOnce,
+                    abort_handle: abort.clone(),
+                    factory: None,
+                },
+            );
+        }
 
         BlockingHandle { rx, abort }
     }
@@ -506,6 +548,7 @@ impl TaskSupervisor {
     /// # Examples
     ///
     /// ```rust,no_run
+    /// use std::sync::Arc;
     /// use tokio_util::sync::CancellationToken;
     /// use zeph_core::task_supervisor::{BlockingHandle, TaskSupervisor};
     ///
@@ -514,12 +557,12 @@ impl TaskSupervisor {
     /// let cancel = CancellationToken::new();
     /// let sup = TaskSupervisor::new(cancel.clone());
     ///
-    /// let handle: BlockingHandle<u32> = sup.spawn_oneshot("compute", || async { 42_u32 });
+    /// let handle: BlockingHandle<u32> = sup.spawn_oneshot(Arc::from("compute"), || async { 42_u32 });
     /// let result = handle.join().await.unwrap();
     /// assert_eq!(result, 42);
     /// # }
     /// ```
-    pub fn spawn_oneshot<F, Fut, R>(&self, name: &'static str, factory: F) -> BlockingHandle<R>
+    pub fn spawn_oneshot<F, Fut, R>(&self, name: Arc<str>, factory: F) -> BlockingHandle<R>
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = R> + Send + 'static,
@@ -527,7 +570,7 @@ impl TaskSupervisor {
     {
         let (tx, rx) = oneshot::channel::<Result<R, BlockingError>>();
         let cancel = self.inner.cancel.clone();
-        let span = tracing::info_span!("supervised_task", task.name = name);
+        let span = tracing::info_span!("supervised_task", task.name = %name);
         let join_handle: tokio::task::JoinHandle<Option<R>> = tokio::spawn(
             async move {
                 let fut = factory();
@@ -542,13 +585,13 @@ impl TaskSupervisor {
 
         {
             let mut state = self.inner.state.lock();
-            if let Some(old) = state.tasks.remove(name) {
+            if let Some(old) = state.tasks.remove(&name) {
                 old.abort_handle.abort();
             }
             state.tasks.insert(
-                name,
+                Arc::clone(&name),
                 TaskEntry {
-                    name,
+                    name: Arc::clone(&name),
                     status: TaskStatus::Running,
                     started_at: Instant::now(),
                     restart_count: 0,
@@ -580,7 +623,8 @@ impl TaskSupervisor {
     /// Abort a task by name. No-op if no task with that name is registered.
     pub fn abort(&self, name: &'static str) {
         let state = self.inner.state.lock();
-        if let Some(entry) = state.tasks.get(name) {
+        let key: Arc<str> = Arc::from(name);
+        if let Some(entry) = state.tasks.get(&key) {
             entry.abort_handle.abort();
             tracing::debug!(task.name = name, "task aborted via supervisor");
         }
@@ -638,7 +682,7 @@ impl TaskSupervisor {
             .tasks
             .values()
             .map(|e| TaskSnapshot {
-                name: e.name,
+                name: Arc::clone(&e.name),
                 status: e.status.clone(),
                 started_at: e.started_at,
                 restart_count: e.restart_count,
@@ -697,7 +741,7 @@ impl TaskSupervisor {
 
     /// Wire a completion reporter: drives `jh` and sends the result to `completion_tx`.
     fn wire_completion_reporter(
-        name: &'static str,
+        name: Arc<str>,
         jh: tokio::task::JoinHandle<()>,
         completion_tx: mpsc::UnboundedSender<Completion>,
     ) {
@@ -752,7 +796,7 @@ impl TaskSupervisor {
         };
 
         tracing::warn!(
-            task.name = completion.name,
+            task.name = %completion.name,
             attempt,
             max,
             delay_ms = delay.as_millis(),
@@ -763,7 +807,7 @@ impl TaskSupervisor {
             tokio::time::sleep(delay).await;
         }
 
-        Self::do_restart(inner, completion.name, attempt);
+        Self::do_restart(inner, &completion.name, attempt);
     }
 
     /// Phase 1: classify the completion under lock and return restart parameters if needed.
@@ -774,37 +818,37 @@ impl TaskSupervisor {
         completion: &Completion,
     ) -> Option<(u32, u32, Duration)> {
         let mut state = inner.state.lock();
-        let entry = state.tasks.get_mut(completion.name)?;
+        let entry = state.tasks.get_mut(&completion.name)?;
 
         match completion.kind {
             CompletionKind::Panicked => {
-                tracing::warn!(task.name = completion.name, "supervised task panicked");
+                tracing::warn!(task.name = %completion.name, "supervised task panicked");
             }
             CompletionKind::Normal => {
-                tracing::info!(task.name = completion.name, "supervised task completed");
+                tracing::info!(task.name = %completion.name, "supervised task completed");
             }
             CompletionKind::Cancelled => {
-                tracing::debug!(task.name = completion.name, "supervised task cancelled");
+                tracing::debug!(task.name = %completion.name, "supervised task cancelled");
             }
         }
 
         match entry.restart_policy {
             RestartPolicy::RunOnce => {
                 entry.status = TaskStatus::Completed;
-                state.tasks.remove(completion.name);
+                state.tasks.remove(&completion.name);
                 None
             }
             RestartPolicy::Restart { max, base_delay } => {
                 // Only restart on panic — normal exit and cancellation are not errors.
                 if completion.kind != CompletionKind::Panicked {
                     entry.status = TaskStatus::Completed;
-                    state.tasks.remove(completion.name);
+                    state.tasks.remove(&completion.name);
                     return None;
                 }
                 if entry.restart_count >= max {
                     let reason = format!("panicked after {max} restart(s)");
                     tracing::error!(
-                        task.name = completion.name,
+                        task.name = %completion.name,
                         attempts = max,
                         "task failed permanently"
                     );
@@ -826,12 +870,12 @@ impl TaskSupervisor {
     }
 
     /// Phase 3: TOCTOU check, collect spawn params under lock, then spawn outside.
-    fn do_restart(inner: &Arc<Inner>, name: &'static str, attempt: u32) {
+    fn do_restart(inner: &Arc<Inner>, name: &Arc<str>, attempt: u32) {
         let spawn_params = {
             let mut state = inner.state.lock();
-            let Some(entry) = state.tasks.get_mut(name) else {
+            let Some(entry) = state.tasks.get_mut(name.as_ref()) else {
                 tracing::debug!(
-                    task.name = name,
+                    task.name = %name,
                     "task removed during restart delay — skipping"
                 );
                 return;
@@ -847,11 +891,16 @@ impl TaskSupervisor {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(factory)) {
                 Err(_) => {
                     let reason = format!("factory panicked on restart attempt {attempt}");
-                    tracing::error!(task.name = name, attempt, "factory panicked during restart");
+                    tracing::error!(task.name = %name, attempt, "factory panicked during restart");
                     entry.status = TaskStatus::Failed { reason };
                     None
                 }
-                Ok(fut) => Some((fut, inner.cancel.clone(), inner.completion_tx.clone(), name)),
+                Ok(fut) => Some((
+                    fut,
+                    inner.cancel.clone(),
+                    inner.completion_tx.clone(),
+                    name.clone(),
+                )),
             }
             // lock released here
         };
@@ -860,7 +909,7 @@ impl TaskSupervisor {
             return;
         };
 
-        let span = tracing::info_span!("supervised_task", task.name = name);
+        let span = tracing::info_span!("supervised_task", task.name = %name);
         let jh = tokio::spawn(
             async move {
                 tokio::select! {
@@ -874,14 +923,14 @@ impl TaskSupervisor {
 
         {
             let mut state = inner.state.lock();
-            if let Some(entry) = state.tasks.get_mut(name) {
+            if let Some(entry) = state.tasks.get_mut(name.as_ref()) {
                 entry.restart_count = attempt;
                 entry.status = TaskStatus::Running;
                 entry.abort_handle = new_abort;
             }
         }
 
-        Self::wire_completion_reporter(name, jh, completion_tx);
+        Self::wire_completion_reporter(name.clone(), jh, completion_tx);
     }
 }
 
@@ -893,7 +942,7 @@ impl TaskSupervisor {
 /// no `cpu-time` or `metrics` crates are linked.
 #[cfg(feature = "task-metrics")]
 #[inline]
-fn measure_blocking<F, R>(name: &'static str, f: F) -> R
+fn measure_blocking<F, R>(name: &str, f: F) -> R
 where
     F: FnOnce() -> R,
 {
@@ -903,8 +952,8 @@ where
     let result = f();
     let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
     let cpu_ms = cpu_start.elapsed().as_secs_f64() * 1000.0;
-    metrics::histogram!("zeph.task.wall_time_ms", "task" => name).record(wall_ms);
-    metrics::histogram!("zeph.task.cpu_time_ms", "task" => name).record(cpu_ms);
+    metrics::histogram!("zeph.task.wall_time_ms", "task" => name.to_owned()).record(wall_ms);
+    metrics::histogram!("zeph.task.cpu_time_ms", "task" => name.to_owned()).record(cpu_ms);
     tracing::Span::current().record("task.wall_time_ms", wall_ms);
     tracing::Span::current().record("task.cpu_time_ms", cpu_ms);
     result
@@ -915,7 +964,7 @@ where
 /// Compiles to a direct call to `f()` with no overhead.
 #[cfg(not(feature = "task-metrics"))]
 #[inline]
-fn measure_blocking<F, R>(_name: &'static str, f: F) -> R
+fn measure_blocking<F, R>(_name: &str, f: F) -> R
 where
     F: FnOnce() -> R,
 {
@@ -932,13 +981,13 @@ impl BlockingSpawner for TaskSupervisor {
     /// the closure begins executing.
     fn spawn_blocking_named(
         &self,
-        name: &'static str,
+        name: Arc<str>,
         f: Box<dyn FnOnce() + Send + 'static>,
     ) -> tokio::task::JoinHandle<()> {
-        let handle = self.spawn_blocking(name, f);
+        let handle = self.spawn_blocking(Arc::clone(&name), f);
         tokio::spawn(async move {
             if let Err(e) = handle.join().await {
-                tracing::error!(task.name = name, error = %e, "supervised blocking task failed");
+                tracing::error!(task.name = %name, error = %e, "supervised blocking task failed");
             }
         })
     }
@@ -1006,7 +1055,7 @@ mod tests {
 
         let snaps = sup.snapshot();
         assert!(
-            snaps.iter().all(|s| s.name != "panicking"),
+            snaps.iter().all(|s| s.name.as_ref() != "panicking"),
             "entry should be reaped"
         );
         assert_eq!(
@@ -1047,7 +1096,9 @@ mod tests {
             "normal exit must not restart"
         );
         assert!(
-            sup.snapshot().iter().all(|s| s.name != "normal-exit"),
+            sup.snapshot()
+                .iter()
+                .all(|s| s.name.as_ref() != "normal-exit"),
             "entry removed after normal exit"
         );
 
@@ -1075,7 +1126,10 @@ mod tests {
             panic_counter.load(Ordering::SeqCst) >= 3,
             "panicking task must restart max times"
         );
-        let snap = sup.snapshot().into_iter().find(|s| s.name == "panic-exit");
+        let snap = sup
+            .snapshot()
+            .into_iter()
+            .find(|s| s.name.as_ref() == "panic-exit");
         assert!(
             matches!(snap.unwrap().status, TaskStatus::Failed { .. }),
             "task must be Failed after exhausting restarts"
@@ -1113,7 +1167,7 @@ mod tests {
         );
 
         let snaps = sup.snapshot();
-        let snap = snaps.iter().find(|s| s.name == "restartable");
+        let snap = snaps.iter().find(|s| s.name.as_ref() == "restartable");
         assert!(snap.is_some(), "failed task should remain in registry");
         assert!(
             matches!(snap.unwrap().status, TaskStatus::Failed { .. }),
@@ -1210,7 +1264,10 @@ mod tests {
 
         // Entry should be Aborted, not Running.
         let snaps = sup.snapshot();
-        if let Some(snap) = snaps.iter().find(|s| s.name == "stubborn-for-abort") {
+        if let Some(snap) = snaps
+            .iter()
+            .find(|s| s.name.as_ref() == "stubborn-for-abort")
+        {
             assert_eq!(
                 snap.status,
                 TaskStatus::Aborted,
@@ -1236,7 +1293,7 @@ mod tests {
 
         let snaps = sup.snapshot();
         assert_eq!(snaps.len(), 2);
-        let names: Vec<_> = snaps.iter().map(|s| s.name).collect();
+        let names: Vec<&str> = snaps.iter().map(|s| s.name.as_ref()).collect();
         assert!(names.contains(&"alpha"));
         assert!(names.contains(&"beta"));
         assert!(snaps.iter().all(|s| s.status == TaskStatus::Running));
@@ -1246,7 +1303,7 @@ mod tests {
     async fn test_blocking_returns_value() {
         let (sup, cancel) = make_supervisor();
 
-        let handle: BlockingHandle<u32> = sup.spawn_blocking("compute", || 42_u32);
+        let handle: BlockingHandle<u32> = sup.spawn_blocking(Arc::from("compute"), || 42_u32);
         let result = handle.join().await.expect("should return value");
         assert_eq!(result, 42);
         cancel.cancel();
@@ -1257,7 +1314,7 @@ mod tests {
         let (sup, _cancel) = make_supervisor();
 
         let handle: BlockingHandle<u32> =
-            sup.spawn_blocking("panicking-compute", || panic!("intentional"));
+            sup.spawn_blocking(Arc::from("panicking-compute"), || panic!("intentional"));
         let err = handle
             .join()
             .await
@@ -1271,10 +1328,11 @@ mod tests {
         let (sup, cancel) = make_supervisor();
 
         let (tx, rx) = std::sync::mpsc::channel::<()>();
-        let _handle: BlockingHandle<()> = sup.spawn_blocking("blocking-task", move || {
-            // Block until signalled.
-            let _ = rx.recv();
-        });
+        let _handle: BlockingHandle<()> =
+            sup.spawn_blocking(Arc::from("blocking-task"), move || {
+                // Block until signalled.
+                let _ = rx.recv();
+            });
 
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert_eq!(
@@ -1300,9 +1358,10 @@ mod tests {
         let (sup, cancel) = make_supervisor();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        let _handle: BlockingHandle<()> = sup.spawn_oneshot("oneshot-task", move || async move {
-            let _ = rx.await;
-        });
+        let _handle: BlockingHandle<()> =
+            sup.spawn_oneshot(Arc::from("oneshot-task"), move || async move {
+                let _ = rx.await;
+            });
 
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert_eq!(
@@ -1353,7 +1412,7 @@ mod tests {
         );
 
         let snaps = sup.snapshot();
-        let snap = snaps.iter().find(|s| s.name == "zero-max");
+        let snap = snaps.iter().find(|s| s.name.as_ref() == "zero-max");
         assert!(snap.is_some(), "entry should remain as Failed");
         assert!(
             matches!(snap.unwrap().status, TaskStatus::Failed { .. }),
@@ -1464,7 +1523,7 @@ mod tests {
         let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
 
         let handle = sup.spawn_blocking_named(
-            "chunk_file",
+            Arc::from("chunk_file"),
             Box::new(move || {
                 // Signal that the task has started.
                 let _ = ready_tx.send(());
@@ -1478,7 +1537,7 @@ mod tests {
 
         let snapshot = sup.snapshot();
         assert!(
-            snapshot.iter().any(|t| t.name == "chunk_file"),
+            snapshot.iter().any(|t| t.name.as_ref() == "chunk_file"),
             "chunk_file task must appear in supervisor snapshot"
         );
 
@@ -1521,6 +1580,53 @@ mod tests {
         assert!(
             metric_names.iter().any(|n| n == "zeph.task.cpu_time_ms"),
             "expected zeph.task.cpu_time_ms histogram; got: {metric_names:?}"
+        );
+    }
+
+    /// Verify that `spawn_blocking` semaphore limits concurrent OS-thread tasks to 8.
+    ///
+    /// Spawns 16 tasks. Each holds a barrier until 8 are waiting; then releases in order.
+    /// If more than 8 run concurrently the test would either deadlock (waiting for 9+ to reach
+    /// the barrier) or the counter would exceed 8 — both are caught.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_spawn_blocking_semaphore_cap() {
+        let (sup, _cancel) = make_supervisor();
+        let concurrent = Arc::new(AtomicU32::new(0));
+        let max_concurrent = Arc::new(AtomicU32::new(0));
+        let barrier = Arc::new(std::sync::Barrier::new(1)); // just a sync point
+
+        let mut handles = Vec::new();
+        for i in 0u32..16 {
+            let c = Arc::clone(&concurrent);
+            let m = Arc::clone(&max_concurrent);
+            let name: Arc<str> = Arc::from(format!("blocking-{i}").as_str());
+            let h = sup.spawn_blocking(name, move || {
+                let prev = c.fetch_add(1, Ordering::SeqCst);
+                // Update observed maximum.
+                let mut cur_max = m.load(Ordering::SeqCst);
+                while prev + 1 > cur_max {
+                    match m.compare_exchange(cur_max, prev + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    {
+                        Ok(_) => break,
+                        Err(x) => cur_max = x,
+                    }
+                }
+                // Simulate work.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                c.fetch_sub(1, Ordering::SeqCst);
+            });
+            handles.push(h);
+        }
+
+        for h in handles {
+            h.join().await.expect("blocking task should succeed");
+        }
+        drop(barrier);
+
+        let observed = max_concurrent.load(Ordering::SeqCst);
+        assert!(
+            observed <= 8,
+            "observed {observed} concurrent blocking tasks; expected ≤ 8 (semaphore cap)"
         );
     }
 }

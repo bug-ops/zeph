@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **CPU/RAM regression: graph community detection OOM** (`#3007`): `detect_communities` in
+  `zeph-memory` now guards `edge_chunk_size = 0` by falling back to `10_000` with a `WARN`
+  log, preventing full edge table load into a single `HashMap` that caused 12 GB RAM spikes.
+
+- **CPU/RAM regression: Qdrant upsert indefinite block** (`#3004`): `upsert_chunks_batch`
+  in `zeph-index` is now wrapped with a 30-second `tokio::time::timeout`. On expiry, the
+  batch is skipped with a `WARN` log and indexing continues instead of stalling indefinitely.
+
+- **CPU/RAM regression: `Box::leak` per indexed file** (`#3005`): `BlockingSpawner::spawn_blocking_named`
+  signature changed from `&'static str` to `Arc<str>` — eliminating the `Box::leak` call in
+  `CodeIndexer::index_file` that accumulated one heap allocation per file watcher event.
+  `TaskEntry`, `TaskSnapshot`, and `Completion` name fields are all `Arc<str>`.
+
+- **CPU regression: file watcher debounce** (`#3006`): `zeph-index` watcher now collects
+  FS events in a 500 ms debounce window (max 5 s cap) and reindexes each changed path
+  at most once per window, preventing CPU saturation during git operations or editor saves.
+
+- **TUI log silence: fallback to platform log directory** (`#3008`): when TUI mode is
+  active with no `logging.file` configured and OTLP is disabled, `tracing_init` now
+  automatically adds a file appender using `default_log_file_path()` (`~/Library/Application Support/Zeph/logs/zeph.log` on macOS) so logs are never silently discarded.
+
+- **`TaskSupervisor` blocking task capacity limit** (`#3009`): a configurable
+  `tokio::sync::Semaphore` (default capacity 8) now gates `spawn_blocking`, preventing
+  uncontrolled thread pool saturation when multiple subsystems index concurrently.
+
+- **Concurrent `index_project` re-entry guard** (`#3010`): `CodeIndexer` tracks an
+  `AtomicBool` flag; a second concurrent call to `index_project` returns
+  `Ok(IndexReport::default())` immediately with an `INFO` log rather than running a
+  redundant full-index pass.
+
+- **OTLP circuit breaker on export failure** (`#3011`): a `CircuitBreakerExporter` wrapper
+  (`src/circuit_breaker_exporter.rs`) opens the circuit after 3 consecutive BSP export
+  failures and applies exponential backoff (5 s → 30 s → 300 s). `open_count` resets on
+  successful export after recovery, preventing permanent 300 s stalls.
+
+- **Audit log silently dropped in TUI mode** (`#3012`): `AuditLogger::from_config` now
+  accepts `tui_mode: bool`; when `destination = stdout` and TUI mode is active, output is
+  redirected to the configured audit file path with a startup `WARN`.
+
+- **`IndexerConfig` safe defaults** (`#3013`): reduced defaults to prevent resource
+  saturation on typical developer machines: `memory_batch_size` 32→16,
+  `embed_concurrency` 2→1, `concurrency` 4→2, `batch_size` (Qdrant) 32→16. All values
+  remain user-configurable.
+
 ### Added
 
 - **BlockingSpawner trait: per-chunk supervision in CodeIndexer** (`#2978`): introduced

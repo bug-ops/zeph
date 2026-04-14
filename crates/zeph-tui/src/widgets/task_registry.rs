@@ -133,7 +133,7 @@ mod tests {
 
     fn running_snapshot(name: &'static str) -> TaskSnapshot {
         TaskSnapshot {
-            name,
+            name: std::sync::Arc::from(name),
             status: TaskStatus::Running,
             started_at: Instant::now(),
             restart_count: 0,
@@ -142,7 +142,7 @@ mod tests {
 
     fn completed_snapshot(name: &'static str) -> TaskSnapshot {
         TaskSnapshot {
-            name,
+            name: std::sync::Arc::from(name),
             status: TaskStatus::Completed,
             started_at: Instant::now(),
             restart_count: 1,
@@ -151,7 +151,7 @@ mod tests {
 
     fn failed_snapshot(name: &'static str) -> TaskSnapshot {
         TaskSnapshot {
-            name,
+            name: std::sync::Arc::from(name),
             status: TaskStatus::Failed {
                 reason: "oops".into(),
             },

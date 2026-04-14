@@ -158,7 +158,11 @@ async fn timeout_logged_as_audit_timeout_not_error() {
         destination: log_path.display().to_string(),
         tool_risk_summary: false,
     };
-    let logger = std::sync::Arc::new(AuditLogger::from_config(&audit_config).await.unwrap());
+    let logger = std::sync::Arc::new(
+        AuditLogger::from_config(&audit_config, false)
+            .await
+            .unwrap(),
+    );
     let config = ShellConfig {
         timeout: 1,
         ..default_config()
@@ -188,7 +192,11 @@ async fn stderr_output_logged_as_audit_error() {
         destination: log_path.display().to_string(),
         tool_risk_summary: false,
     };
-    let logger = std::sync::Arc::new(AuditLogger::from_config(&audit_config).await.unwrap());
+    let logger = std::sync::Arc::new(
+        AuditLogger::from_config(&audit_config, false)
+            .await
+            .unwrap(),
+    );
     let executor = ShellExecutor::new(&default_config()).with_audit(logger);
     let _ = executor.execute("```bash\necho err >&2\n```").await;
     let content = tokio::fs::read_to_string(&log_path).await.unwrap();
@@ -895,7 +903,11 @@ async fn with_audit_attaches_logger() {
         destination: "stdout".into(),
         tool_risk_summary: false,
     };
-    let logger = std::sync::Arc::new(AuditLogger::from_config(&audit_config).await.unwrap());
+    let logger = std::sync::Arc::new(
+        AuditLogger::from_config(&audit_config, false)
+            .await
+            .unwrap(),
+    );
     let executor = executor.with_audit(logger);
     assert!(executor.audit_logger.is_some());
 }
@@ -1071,7 +1083,11 @@ async fn blocked_command_logged_to_audit() {
         destination: "stdout".into(),
         tool_risk_summary: false,
     };
-    let logger = std::sync::Arc::new(AuditLogger::from_config(&audit_config).await.unwrap());
+    let logger = std::sync::Arc::new(
+        AuditLogger::from_config(&audit_config, false)
+            .await
+            .unwrap(),
+    );
     let executor = ShellExecutor::new(&config).with_audit(logger);
     let response = "```bash\ndangerous command\n```";
     let result = executor.execute(response).await;

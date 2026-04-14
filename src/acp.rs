@@ -282,7 +282,7 @@ async fn build_acp_deps(
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
     let mut acp_audit_logger: Option<std::sync::Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
-        && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit).await
+        && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit, false).await
     {
         let logger = std::sync::Arc::new(logger);
         shell_executor = shell_executor.with_audit(std::sync::Arc::clone(&logger));

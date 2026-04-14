@@ -1921,7 +1921,7 @@ mod tests {
             destination: path.display().to_string(),
             ..Default::default()
         };
-        let logger = std::sync::Arc::new(AuditLogger::from_config(&config).await.unwrap());
+        let logger = std::sync::Arc::new(AuditLogger::from_config(&config, false).await.unwrap());
         (logger, path)
     }
 

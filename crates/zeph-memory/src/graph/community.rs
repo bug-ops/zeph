@@ -368,6 +368,16 @@ pub async fn detect_communities(
     concurrency: usize,
     edge_chunk_size: usize,
 ) -> Result<usize, MemoryError> {
+    let edge_chunk_size = if edge_chunk_size == 0 {
+        tracing::warn!(
+            "edge_chunk_size is 0, which would load all edges into memory; \
+             using safe default of 10_000"
+        );
+        10_000_usize
+    } else {
+        edge_chunk_size
+    };
+
     let entities = store.all_entities().await?;
     if entities.len() < 2 {
         return Ok(0);

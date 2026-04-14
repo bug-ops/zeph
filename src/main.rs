@@ -101,6 +101,8 @@ mod acp;
 mod agent_setup;
 mod bootstrap;
 mod channel;
+#[cfg(feature = "otel")]
+mod circuit_breaker_exporter;
 mod cli;
 mod commands;
 mod daemon;

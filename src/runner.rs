@@ -733,6 +733,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             Some(agent_status_tx.clone()),
             Some(memory.sqlite().pool()),
             &provider,
+            tui_mode,
         )
         .await
     });
@@ -746,6 +747,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(agent_status_tx.clone()),
         Some(memory.sqlite().pool()),
         &provider,
+        tui_mode,
     )
     .await;
 

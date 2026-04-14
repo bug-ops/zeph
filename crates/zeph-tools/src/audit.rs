@@ -163,17 +163,28 @@ pub enum AuditResult {
 impl AuditLogger {
     /// Create a new `AuditLogger` from config.
     ///
+    /// When `tui_mode` is `true` and `config.destination` is `"stdout"`, the
+    /// destination is redirected to a file (`audit.jsonl` in the current directory)
+    /// to avoid corrupting the TUI output with raw JSON lines.
+    ///
     /// # Errors
     ///
     /// Returns an error if a file destination cannot be opened.
-    pub async fn from_config(config: &AuditConfig) -> Result<Self, std::io::Error> {
-        let destination = if config.destination == "stdout" {
+    pub async fn from_config(config: &AuditConfig, tui_mode: bool) -> Result<Self, std::io::Error> {
+        let effective_dest = if tui_mode && config.destination == "stdout" {
+            tracing::warn!("TUI mode: audit stdout redirected to file audit.jsonl");
+            "audit.jsonl".to_owned()
+        } else {
+            config.destination.clone()
+        };
+
+        let destination = if effective_dest == "stdout" {
             AuditDestination::Stdout
         } else {
             let file = tokio::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(Path::new(&config.destination))
+                .open(Path::new(&effective_dest))
                 .await?;
             AuditDestination::File(tokio::sync::Mutex::new(file))
         };
@@ -383,7 +394,7 @@ mod tests {
             destination: "stdout".into(),
             ..Default::default()
         };
-        let logger = AuditLogger::from_config(&config).await.unwrap();
+        let logger = AuditLogger::from_config(&config, false).await.unwrap();
         let entry = AuditEntry {
             timestamp: "0".into(),
             tool: "shell".into(),
@@ -416,7 +427,7 @@ mod tests {
             destination: path.display().to_string(),
             ..Default::default()
         };
-        let logger = AuditLogger::from_config(&config).await.unwrap();
+        let logger = AuditLogger::from_config(&config, false).await.unwrap();
         let entry = AuditEntry {
             timestamp: "0".into(),
             tool: "shell".into(),
@@ -450,7 +461,7 @@ mod tests {
             destination: "/nonexistent/dir/audit.log".into(),
             ..Default::default()
         };
-        let result = AuditLogger::from_config(&config).await;
+        let result = AuditLogger::from_config(&config, false).await;
         assert!(result.is_err());
     }
 
@@ -543,7 +554,7 @@ mod tests {
             destination: path.display().to_string(),
             ..Default::default()
         };
-        let logger = AuditLogger::from_config(&config).await.unwrap();
+        let logger = AuditLogger::from_config(&config, false).await.unwrap();
 
         for i in 0..5 {
             let entry = AuditEntry {

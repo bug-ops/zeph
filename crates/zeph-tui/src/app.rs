@@ -681,7 +681,7 @@ impl App {
             .peekable();
         let first = active.next()?;
         let label = if active.peek().is_none() {
-            first.name.to_owned()
+            first.name.to_string()
         } else {
             let extra = active.count() + 1; // +1 because we already consumed first
             format!("{} +{} more", first.name, extra)

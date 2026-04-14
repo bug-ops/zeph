@@ -27,7 +27,7 @@
 /// use zeph_common::BlockingSpawner;
 ///
 /// fn do_work(spawner: Arc<dyn BlockingSpawner>) {
-///     let handle = spawner.spawn_blocking_named("my_task", Box::new(|| {
+///     let handle = spawner.spawn_blocking_named(Arc::from("my_task"), Box::new(|| {
 ///         // CPU-bound work
 ///     }));
 ///     // Caller can `.await` the handle.
@@ -36,6 +36,10 @@
 /// ```
 pub trait BlockingSpawner: Send + Sync + 'static {
     /// Spawn a named blocking closure and return a `JoinHandle<()>` for completion.
+    ///
+    /// Pass an `Arc<str>` for the task name — this avoids the need to leak memory
+    /// when constructing dynamic task names. Static literals can be converted with
+    /// `Arc::from("my_task")`.
     ///
     /// The implementation registers the task in its supervision layer before
     /// the closure begins executing. Results must be communicated via channels
@@ -48,7 +52,7 @@ pub trait BlockingSpawner: Send + Sync + 'static {
     #[must_use]
     fn spawn_blocking_named(
         &self,
-        name: &'static str,
+        name: std::sync::Arc<str>,
         f: Box<dyn FnOnce() + Send + 'static>,
     ) -> tokio::task::JoinHandle<()>;
 }

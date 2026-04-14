@@ -1367,7 +1367,7 @@ mod tests {
         tokio::task::yield_now().await;
 
         let snapshot = sup.snapshot();
-        let names: Vec<&str> = snapshot.iter().map(|s| s.name).collect();
+        let names: Vec<&str> = snapshot.iter().map(|s| s.name.as_ref()).collect();
         assert!(
             names.contains(&"telegram_listener"),
             "expected 'telegram_listener' in supervisor snapshot, got: {names:?}"

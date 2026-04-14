@@ -516,7 +516,7 @@ mod tests {
             ..Default::default()
         };
         let audit_logger = Arc::new(
-            crate::audit::AuditLogger::from_config(&audit_config)
+            crate::audit::AuditLogger::from_config(&audit_config, false)
                 .await
                 .unwrap(),
         );
@@ -551,7 +551,7 @@ mod tests {
             ..Default::default()
         };
         let audit_logger = Arc::new(
-            crate::audit::AuditLogger::from_config(&audit_config)
+            crate::audit::AuditLogger::from_config(&audit_config, false)
                 .await
                 .unwrap(),
         );
@@ -609,7 +609,7 @@ mod tests {
             ..Default::default()
         };
         let audit_logger = Arc::new(
-            crate::audit::AuditLogger::from_config(&audit_config)
+            crate::audit::AuditLogger::from_config(&audit_config, false)
                 .await
                 .unwrap(),
         );
