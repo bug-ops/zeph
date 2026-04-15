@@ -28,6 +28,31 @@ use tracing::{debug, info, warn};
 
 static BUNDLED_SKILLS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/skills");
 
+/// Returns the names of all compile-time bundled skills.
+///
+/// Names are derived from the embedded skill directory entries that contain
+/// a `SKILL.md` file. This list is authoritative — it cannot be influenced
+/// by on-disk state.
+#[must_use]
+pub fn bundled_skill_names() -> Vec<String> {
+    BUNDLED_SKILLS_DIR
+        .entries()
+        .iter()
+        .filter_map(|entry| {
+            let include_dir::DirEntry::Dir(d) = entry else {
+                return None;
+            };
+            let name = d.path().to_string_lossy().into_owned();
+            let skill_md = format!("{name}/SKILL.md");
+            if BUNDLED_SKILLS_DIR.get_file(&skill_md).is_some() {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Summary of a single provisioning run.
 #[derive(Debug, Default)]
 pub struct ProvisionReport {

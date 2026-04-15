@@ -1915,6 +1915,34 @@ impl<C: Channel> Agent<C> {
             .collect()
     }
 
+    /// Classify a skill directory's source kind using on-disk markers and the bundled allowlist.
+    ///
+    /// Must be called from a blocking context (uses synchronous FS I/O).
+    fn classify_source_kind(
+        skill_dir: &std::path::Path,
+        managed_dir: Option<&std::path::PathBuf>,
+        bundled_names: &std::collections::HashSet<String>,
+    ) -> zeph_memory::store::SourceKind {
+        if managed_dir.is_some_and(|d| skill_dir.starts_with(d)) {
+            let skill_name = skill_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let has_marker = skill_dir.join(".bundled").exists();
+            if has_marker && bundled_names.contains(skill_name) {
+                zeph_memory::store::SourceKind::Bundled
+            } else {
+                if has_marker {
+                    tracing::warn!(
+                        skill = %skill_name,
+                        "skill has .bundled marker but is not in the bundled skill \
+                         allowlist — classifying as Hub"
+                    );
+                }
+                zeph_memory::store::SourceKind::Hub
+            }
+        } else {
+            zeph_memory::store::SourceKind::Local
+        }
+    }
+
     /// Update trust DB records for all reloaded skills.
     async fn update_trust_for_reloaded_skills(
         &mut self,
@@ -1927,27 +1955,22 @@ impl<C: Channel> Agent<C> {
         };
         let trust_cfg = self.skill_state.trust_config.clone();
         let managed_dir = self.skill_state.managed_dir.clone();
+        let bundled_names: std::collections::HashSet<String> =
+            zeph_skills::bundled_skill_names().into_iter().collect();
         for meta in all_meta {
             // Compute hash and classify source_kind in spawn_blocking — both are blocking FS calls
             // (.bundled marker .exists() and compute_skill_hash both do std::fs I/O).
             let skill_dir = meta.skill_dir.clone();
             let managed_dir_ref = managed_dir.clone();
+            let bundled_names_ref = bundled_names.clone();
             let fs_result: Option<(String, zeph_memory::store::SourceKind)> =
                 tokio::task::spawn_blocking(move || {
                     let hash = zeph_skills::compute_skill_hash(&skill_dir).ok()?;
-                    // .bundled marker is written by bundled.rs for skills shipped with the binary.
-                    let source_kind = if managed_dir_ref
-                        .as_ref()
-                        .is_some_and(|d| skill_dir.starts_with(d))
-                    {
-                        if skill_dir.join(".bundled").exists() {
-                            zeph_memory::store::SourceKind::Bundled
-                        } else {
-                            zeph_memory::store::SourceKind::Hub
-                        }
-                    } else {
-                        zeph_memory::store::SourceKind::Local
-                    };
+                    let source_kind = Self::classify_source_kind(
+                        &skill_dir,
+                        managed_dir_ref.as_ref(),
+                        &bundled_names_ref,
+                    );
                     Some((hash, source_kind))
                 })
                 .await
@@ -1975,7 +1998,8 @@ impl<C: Channel> Agent<C> {
                     trust_cfg.hash_mismatch_level.to_string()
                 } else if row.source_kind != source_kind {
                     // source_kind changed (e.g., hub → bundled on upgrade).
-                    // Never override an explicit operator block, and preserve operator-promoted trust.
+                    // Never override an explicit operator block. For active trust levels,
+                    // adopt the source-kind initial level when it grants more trust.
                     let stored = row
                         .trust_level
                         .parse::<zeph_tools::SkillTrustLevel>()
@@ -2083,12 +2107,15 @@ impl<C: Channel> Agent<C> {
         tracing::instrument(name = "skill.hot_reload", skip_all)
     )]
     async fn reload_skills(&mut self) {
-        let new_registry = SkillRegistry::load(&self.skill_state.skill_paths);
-        if new_registry.fingerprint() == self.skill_state.fingerprint() {
+        let old_fp = self.skill_state.fingerprint();
+        self.skill_state
+            .registry
+            .write()
+            .reload(&self.skill_state.skill_paths);
+        if self.skill_state.fingerprint() == old_fp {
             return;
         }
         let _ = self.channel.send_status("reloading skills...").await;
-        *self.skill_state.registry.write() = new_registry;
 
         let all_meta = self
             .skill_state

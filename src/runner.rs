@@ -790,16 +790,29 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         // Both compute_skill_hash (std::fs::read) and .bundled marker .exists() are blocking FS calls.
         let dirs: Vec<_> = all_meta_owned.iter().map(|m| m.skill_dir.clone()).collect();
         let managed_dir_clone = managed_dir.clone();
+        let bundled_names: std::collections::HashSet<String> =
+            zeph_skills::bundled_skill_names().into_iter().collect();
         let per_skill: Vec<(Option<String>, zeph_memory::store::SourceKind)> =
             tokio::task::spawn_blocking(move || {
                 dirs.iter()
                     .map(|dir| {
                         let hash = zeph_skills::compute_skill_hash(dir).ok();
                         // .bundled marker is written by bundled.rs for skills shipped with the binary.
+                        // The allowlist check prevents a hub-installed skill with a forged .bundled
+                        // marker from receiving elevated bundled trust.
                         let source_kind = if dir.starts_with(&managed_dir_clone) {
-                            if dir.join(".bundled").exists() {
+                            let skill_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            let has_marker = dir.join(".bundled").exists();
+                            if has_marker && bundled_names.contains(skill_name) {
                                 zeph_memory::store::SourceKind::Bundled
                             } else {
+                                if has_marker {
+                                    tracing::warn!(
+                                        skill = %skill_name,
+                                        "skill has .bundled marker but is not in the bundled \
+                                         skill allowlist — classifying as Hub"
+                                    );
+                                }
                                 zeph_memory::store::SourceKind::Hub
                             }
                         } else {
@@ -843,7 +856,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                     trust_cfg.hash_mismatch_level.to_string()
                 } else if row.source_kind != source_kind {
                     // source_kind changed (e.g., hub → bundled on upgrade).
-                    // Never override an explicit operator block, and preserve operator-promoted trust.
+                    // Never override an explicit operator block. For active trust levels,
+                    // adopt the source-kind initial level when it grants more trust.
                     let stored = row
                         .trust_level
                         .parse::<zeph_tools::SkillTrustLevel>()

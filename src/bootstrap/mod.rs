@@ -522,8 +522,8 @@ impl AppBuilder {
     }
 
     pub fn build_registry(&self) -> SkillRegistry {
+        let managed = managed_skills_dir();
         {
-            let managed = managed_skills_dir();
             match zeph_skills::bundled::provision_bundled_skills(&managed) {
                 Ok(report) => {
                     if !report.installed.is_empty() {
@@ -549,7 +549,7 @@ impl AppBuilder {
         }
 
         let skill_paths = self.skill_paths();
-        let registry = SkillRegistry::load(&skill_paths);
+        let registry = SkillRegistry::load(&skill_paths).with_hub_dirs(std::iter::once(managed));
 
         if self.config.skills.trust.scan_on_load {
             let findings = registry.scan_loaded();

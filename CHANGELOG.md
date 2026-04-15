@@ -21,6 +21,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **skills: bundled skill trust scanner bypass** (`#3045`, `#3046`, `#3049`, `#3050`): three
+  defense-in-depth fixes closing a trust elevation bypass where a hub-installed skill with a
+  forged `.bundled` marker could receive `bundled_level` trust. (1) `build_registry()` in
+  bootstrap now calls `.with_hub_dirs()` before `scan_loaded()`, activating the injection
+  scanner for all hub-managed skills. (2) `reload_skills()` in the agent hot-reload path now
+  calls `registry.reload()` instead of creating a fresh registry, so `hub_dirs` is preserved
+  across hot-reload cycles. (3) Startup and hot-reload trust classification now require both
+  a `.bundled` marker *and* presence in the compile-time `bundled_skill_names()` allowlist
+  (derived from embedded `BUNDLED_SKILLS_DIR`); skills with a forged marker that fail the
+  allowlist check are classified as `SourceKind::Hub` and emit a `WARN` log. Adds public
+  `bundled_skill_names()` API to `zeph-skills`.
+
+- **skills: stale comment in trust elevation path** (`#3047`): corrected misleading comment
+  in `runner.rs` and `agent/mod.rs` trust classification blocks — "preserve operator-promoted
+  trust" replaced with accurate description of the source-kind initial-level adoption logic.
+
+- **skills: os-automation SKILL.md version bump** (`#3048`): version field updated from
+  `"1.0"` to `"1.1"` to trigger re-provisioning and pick up latest skill content.
+
 - **skills: bundled skill trust level not distinguished from hub** (`#3041`): add
   `SourceKind::Bundled` variant to the trust store and a `bundled_level` config field
   (`[skills.trust] bundled_level = "trusted"`). Startup and hot-reload now detect the `.bundled`

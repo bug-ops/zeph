@@ -14,7 +14,7 @@ license: MIT
 compatibility: Uses built-in OS utilities; some features require specific tools (see per-platform references)
 metadata:
   author: zeph
-  version: "1.0"
+  version: "1.1"
 ---
 
 # OS Automation

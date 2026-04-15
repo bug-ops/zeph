@@ -73,6 +73,7 @@ pub mod trust;
 pub mod trust_score;
 pub mod watcher;
 
+pub use bundled::bundled_skill_names;
 pub use error::SkillError;
 pub use generator::{GeneratedSkill, SkillGenerationRequest, SkillGenerator};
 pub use matcher::{IntentClassification, MatchResult, ScoredMatch};
