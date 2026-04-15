@@ -206,7 +206,7 @@ pub struct TurnTimings {
 ///
 /// Fields are updated at different rates: some once at startup (static), others every turn
 /// (dynamic). For fields that are known at agent startup and do not change during the session,
-/// use [`StaticMetricsInit`] and [`crate::agent::AgentBuilder::with_static_metrics`] instead of
+/// use [`StaticMetricsInit`] and `AgentBuilder::with_static_metrics` instead of
 /// adding a raw `send_modify` call in the runner.
 #[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_excessive_bools)]
@@ -396,8 +396,8 @@ pub struct MetricsSnapshot {
 /// Configuration-derived fields of [`MetricsSnapshot`] that are known at agent startup and do
 /// not change during the session.
 ///
-/// Pass this struct to [`AgentBuilder::with_static_metrics`] immediately after
-/// [`AgentBuilder::with_metrics`] to initialize all static fields in one place rather than
+/// Pass this struct to `AgentBuilder::with_static_metrics` immediately after
+/// `AgentBuilder::with_metrics` to initialize all static fields in one place rather than
 /// through scattered `send_modify` calls in the runner.
 ///
 /// # Examples
