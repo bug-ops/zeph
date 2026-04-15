@@ -136,6 +136,7 @@ The background extraction must **not block the agent loop**.
 - `EntityResolver` checks embedding similarity before LLM disambiguation (LLM is expensive)
 - FTS5 prefix search is mandatory — pure embedding search is not sufficient fallback
 - Community fingerprint (BLAKE3) must be recomputed when membership or edges change
+- `detect_communities`: `edge_chunk_size = 0` is invalid — fall back to `10_000` with a `WARN` log; never load the full edge table into a single `HashMap`
 
 ---
 

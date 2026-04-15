@@ -60,6 +60,7 @@ TuiApp
 | Plan View | `p` | DAG task graph, task states |
 | Security | `s` | Content sanitizer status, quarantine events |
 | SubAgents | `a` | Interactive subagent sidebar with j/k navigation and transcript viewer |
+| Task Registry | `/tasks` | Live table of all supervised tasks (see below) |
 | Status Bar | always | Current operation spinner + short status text |
 
 Tab cycling order includes SubAgents. See `026-tui-subagent-management/spec.md` for full SubAgents panel spec.
@@ -109,7 +110,26 @@ All `/commands` are parsed from chat input:
 /skills            — list active skills
 /models            — list available models
 /sec               — show security panel
+/tasks             — toggle TaskRegistryWidget (supervised task list)
 ```
+
+## TaskRegistryWidget
+
+`crates/zeph-tui/src/widgets/task_registry.rs` renders a live table of all tasks registered in `TaskSupervisor`:
+
+| Column | Content |
+|--------|---------|
+| Spinner | Animated spinner when state is `Running` |
+| Name | Task name (`Arc<str>`) |
+| Origin | Crate that spawned the task |
+| State | `Running`, `Aborted`, `Completed`, `Failed` |
+| Uptime | Duration since last restart |
+| Restarts | Restart count |
+
+- Toggled via `/tasks` command
+- Shows a placeholder row when `TaskSupervisor` is unavailable
+- Refreshes at the existing 10 fps render interval — no additional timer
+- Calls `supervisor.list_tasks()` each frame to populate the table
 
 ## RenderCache
 
@@ -129,6 +149,22 @@ Backfilling embeddings: {done}/{total} ({pct}%)
 
 This is driven by a `tokio::sync::watch` channel from `spawn_embed_backfill()`. The status clears automatically when the channel signals `None` (completion or timeout). No spinner is used — the fraction display is the progress indicator.
 
+## Log Fallback to Platform Log Directory
+
+When TUI mode is active with no `logging.file` configured and OTLP is disabled, `tracing_init` automatically adds a file appender using `default_log_file_path()`:
+
+- macOS: `~/Library/Application Support/Zeph/logs/zeph.log`
+
+This prevents logs from being silently discarded when stdout/stderr are suppressed by the TUI renderer.
+
+## Audit Log Redirect in TUI Mode
+
+`AuditLogger::from_config` accepts `tui_mode: bool`. When `destination = stdout` and TUI mode is active, audit output is redirected to the configured audit file path with a startup `WARN`. Audit logs are never silently dropped.
+
+## Per-Frame Clone Elimination
+
+`visible_messages()` returns a borrowed reference (`Cow::Borrowed`) instead of cloning the message list. This eliminates ~20,000 `ChatMessage` clones/sec at 2000-message history, reducing idle CPU usage proportional to history depth.
+
 ## Key Invariants
 
 - Metrics updated every turn — not only when a specific event fires
@@ -138,3 +174,5 @@ This is driven by a `tokio::sync::watch` channel from `spawn_embed_backfill()`. 
 - No blocking I/O on the TUI render thread — all heavy work offloaded to tokio tasks
 - `RenderCache::clear()` must release memory — never retain stale entries after `/clear`
 - `RenderCache::shift()` must be used (not `clear()`) when only leading messages are evicted
+- When `destination = stdout` audit log conflicts with TUI, redirect to file — never drop silently
+- When TUI suppresses stderr with no log file configured, use platform log dir — never discard logs

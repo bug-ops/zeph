@@ -254,6 +254,17 @@ Every new feature MUST be wired at all applicable integration points:
 
 **NEVER**: block the agent loop in a hook; store `Box<dyn RuntimeLayer>` in the agent (use `Arc<dyn RuntimeLayer>`).
 
+## 16. RuntimeContext Contract
+
+`RuntimeContext` (`zeph_core::RuntimeContext`, `Copy + Clone + Debug + Default + PartialEq + Eq`) is the single carrier for process-scoped runtime mode flags:
+
+- Fields: `tui_mode: bool`, `daemon_mode: bool`
+- Passed as a single parameter to all subsystem initializers in `runner.rs`, `tracing_init.rs`, and `daemon.rs` — never passed as individual `bool` parameters
+- `suppress_stderr()` helper method centralizes the TUI/daemon stderr suppression decision — never inline it
+- `Default` = `RuntimeContext { tui_mode: false, daemon_mode: false }` (CLI mode)
+
+**NEVER**: add `tui_mode: bool` or `daemon_mode: bool` as separate parameters to subsystem init functions; always pass `RuntimeContext`.
+
 ---
 
 ## Agent Boundaries
@@ -287,3 +298,4 @@ Every new feature MUST be wired at all applicable integration points:
 - Enable `sqlite` and `postgres` features simultaneously
 - Use `sqlx::Any` backend
 - Block the agent loop in a `RuntimeLayer` hook
+- Pass `tui_mode` or `daemon_mode` as individual `bool` parameters to subsystem initializers (use `RuntimeContext`)

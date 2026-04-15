@@ -9,25 +9,27 @@ tags:
   - concurrency
   - background-work
 created: 2026-04-11
-status: partial
+status: approved
 related:
   - "[[MOC-specs]]"
   - "[[002-agent-loop/spec]]"
   - "[[036-prometheus-metrics/spec]]"
   - "[[001-system-invariants/spec#5. Concurrency Contract]]"
+  - "[[043-zeph-common/spec]]"
 ---
 
 # Spec: Supervised Background Task Manager
 
 > [!info]
-> **Phase 1 (core supervisor, JoinSet, per-class limits, drop policy, metrics)** is implemented as of PR #2816 (commit 81f2d28a).
-> This spec documents the Phase 1 implementation and tracks Phase 2 enhancements in GitHub Epic #2883.
+> **v0.19.1**: `TaskSupervisor` is the unified lifecycle manager for all supervised background
+> work. Phase 2 enhancements are complete. Leaf crates (`TelegramChannel`, `A2aServer`,
+> background indexer) are migrated. Bootstrap memory loops use `TaskSupervisor`. CPU/wall-time
+> metrics, blocking semaphore, `BlockingSpawner` trait, and TUI task registry are shipped.
 
-**Issue**: #2816  
-**Epic**: #2883  
-**Status**: Phase 1 complete, Phase 2 in design  
-**Crate**: `zeph-core::agent::supervisor`  
-**Dependencies**: spec [[002-agent-loop/spec]], [[036-prometheus-metrics/spec]]
+**Issues**: #2816 (Phase 1), #2958 #2960 #2961 #2963 #2978 (Phase 2 / v0.19.1)  
+**Status**: Complete  
+**Crate**: `zeph-core::agent::supervisor`, `zeph-common` (BlockingSpawner trait)  
+**Dependencies**: spec [[002-agent-loop/spec]], [[036-prometheus-metrics/spec]], [[043-zeph-common/spec]]
 
 ---
 
@@ -79,27 +81,40 @@ A lightweight supervisor that:
 4. Exports per-class metrics for observability
 5. Cleans up all tasks at agent shutdown with `abort_all()`
 
-### 2.1 Phase 1 Implementation
+### 2.1 Implementation (Complete)
 
-**Struct**: `BackgroundSupervisor` at `crates/zeph-core/src/agent/supervisor.rs`
+**Struct**: `TaskSupervisor` at `crates/zeph-core/src/agent/supervisor.rs`
 
 **Key design**:
-- Owned by `LifecycleState` (single agent per session), accessed via `&mut self` — no locks needed
+- Shared via `Arc<TaskSupervisor>` — usable by leaf crates without `zeph-core` ownership
 - Per-class inflight counter using `Arc<AtomicUsize>` (read-only from spawned tasks)
-- RAII `InflightGuard` decrements inflight immediately on task completion (not at `reap()` time)
+- RAII `InflightGuard` decrements inflight immediately on task completion
 - `reap()` called non-blocking at turn boundary to drain completed tasks
-- `abort_all()` called on agent shutdown (no graceful drain — tasks are lossy by design)
+- `shutdown_all(timeout)` called on agent shutdown — drains completions before exiting, then aborts remaining tasks
+- Task names are `Arc<str>` — no `Box::leak` or `&'static str` required
+- `spawn_blocking` routes through a `tokio::sync::Semaphore` (default capacity 8) to bound OS thread pool usage
+- `spawn_restartable` supports `RestartPolicy::Restart { max, base_delay }` with exponential backoff
+- All tasks visible in `list_tasks()` / `TaskSnapshot` for TUI and observability
 
 **Location in agent loop**:
 ```
 persistence.rs:
-  - spawn_summarization()        [line 602]
-  - spawn() for enrichment tasks [lines 734, 780, 880, 942]
+  - spawn_summarization()        — summarization signal
+  - spawn() for enrichment tasks — graph/persona/trajectory/audit
 corrections.rs:
-  - spawn() for audit tasks     [lines 122, 173]
+  - spawn() for audit tasks
 mod.rs:
-  - reap() at turn boundary     [line 1047]
-  - abort_all() on shutdown     [line 646]
+  - reap() at turn boundary
+  - supervisor.shutdown_all(10s) on orderly shutdown
+runner.rs:
+  - 7 memory background loops registered via supervisor (RestartPolicy::RunOnce)
+  - Single shutdown_rx → CancellationToken bridge (replaces 7 per-loop bridges)
+daemon.rs:
+  - A2aServer registered via supervisor (RestartPolicy::RunOnce)
+agent_setup.rs:
+  - Background indexer routed through supervisor when present
+zeph-channels:
+  - TelegramChannel dispatcher via supervisor (RestartPolicy::Restart { max: 5, base_delay: 2s })
 ```
 
 ### 2.2 Architecture
@@ -176,57 +191,93 @@ telemetry_limit = 8
 
 ### 4.3 Turn-Boundary Cleanup
 
-**Phase 1 status**: Turn-boundary abort does NOT happen automatically. Tasks continue across turn boundaries.
-
-**Phase 2D (#2887)**: Explicit `abort_class(TaskClass::Enrichment)` call to be added at turn boundary in agent loop to prevent backlog buildup.
+`abort_class(TaskClass::Enrichment)` is available and called at turn boundary (if configured via `abort_enrichment_on_turn`). See `TaskSupervisorConfig` in Section 5.1.
 
 ---
 
-## 5. Integration with Agent Loop (Phase 1)
+## 5. Integration
 
 ### 5.1 API
 
 ```rust
-pub(crate) struct BackgroundSupervisor {
-    tasks: JoinSet<TaskResult>,
-    class_inflight: [Arc<AtomicUsize>; NUM_CLASSES],
-    class_metrics: [ClassMetrics; NUM_CLASSES],
+pub struct TaskSupervisor {
+    // internal JoinSet + per-class state + blocking semaphore
 }
 
-impl BackgroundSupervisor {
-    /// Create a new supervisor for the agent session.
-    pub(crate) fn new() -> Self { ... }
-    
-    /// Spawn a background task under `class`.
-    /// Returns `true` when accepted, `false` when dropped due to class limit.
-    pub(crate) fn spawn(
-        &mut self,
+impl TaskSupervisor {
+    pub fn new(config: &TaskSupervisorConfig) -> Arc<Self>;
+
+    /// Spawn an async background task under `class`.
+    /// Returns true when accepted, false when dropped due to class limit.
+    pub fn spawn(
+        &self,
         class: TaskClass,
-        name: &'static str,
+        name: Arc<str>,
         fut: impl Future<Output = ()> + Send + 'static,
-    ) -> bool { ... }
-    
-    /// Variant for summarization tasks that signal completion via `SummarizationSignal`.
-    pub(crate) fn spawn_summarization(
-        &mut self,
-        name: &'static str,
+    ) -> bool;
+
+    /// Spawn a restartable task with the given restart policy.
+    pub fn spawn_restartable(
+        &self,
+        name: Arc<str>,
+        policy: RestartPolicy,
+        fut: impl Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static,
+    );
+
+    /// Spawn a CPU-bound blocking task via OS thread pool (gated by semaphore).
+    pub fn spawn_blocking(
+        &self,
+        name: Arc<str>,
+        f: impl FnOnce() + Send + 'static,
+    );
+
+    /// Variant for summarization tasks that signal completion via SummarizationSignal.
+    pub fn spawn_summarization(
+        &self,
+        name: Arc<str>,
         fut: impl Future<Output = bool> + Send + 'static,
-    ) -> bool { ... }
-    
+    ) -> bool;
+
     /// Poll all completed tasks without blocking.
-    /// Returns `SummarizationSignal` if background summarization completed.
-    pub(crate) fn reap(&mut self) -> SummarizationSignal { ... }
-    
-    /// Abort all inflight tasks immediately (called at agent shutdown).
-    pub(crate) fn abort_all(&mut self) { ... }
-    
-    /// Get total inflight task count across all classes.
-    pub(crate) fn inflight(&self) -> usize { ... }
-    
-    /// Snapshot of current metrics (spawned / dropped / completed per class).
-    pub(crate) fn metrics_snapshot(&self) -> SupervisorMetrics { ... }
+    pub fn reap(&self) -> SummarizationSignal;
+
+    /// Gracefully drain completions, then abort remaining tasks after `timeout`.
+    pub async fn shutdown_all(&self, timeout: Duration);
+
+    /// Abort all tasks in a class immediately.
+    pub fn abort_class(&self, class: TaskClass);
+
+    /// Snapshot all registered tasks (name, state, uptime, restart count).
+    pub fn list_tasks(&self) -> Vec<TaskSnapshot>;
+
+    /// Per-class metrics snapshot.
+    pub fn metrics_snapshot(&self) -> SupervisorMetrics;
+}
+
+/// Config struct (nested in AgentConfig as `agent.supervisor`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TaskSupervisorConfig {
+    pub enrichment_limit: usize,          // default: 4
+    pub telemetry_limit: usize,           // default: 8
+    pub blocking_semaphore_capacity: u32, // default: 8
+    pub abort_enrichment_on_turn: bool,   // default: false
 }
 ```
+
+### 5.2 BlockingSpawner Trait
+
+`BlockingSpawner` is defined in `zeph-common` to break the `zeph-core → zeph-index` crate cycle:
+
+```rust
+// zeph-common::blocking_spawner
+pub trait BlockingSpawner: Send + Sync + 'static {
+    fn spawn_blocking_named(&self, name: Arc<str>, f: Box<dyn FnOnce() + Send + 'static>);
+}
+```
+
+`TaskSupervisor` in `zeph-core` implements `BlockingSpawner` by delegating to its `spawn_blocking` method. `CodeIndexer` in `zeph-index` accepts `Option<Arc<dyn BlockingSpawner>>` via a `with_spawner()` builder. Each `chunk_file` invocation uses a unique task name `chunk_file_{N}` (AtomicU64 counter) so concurrent indexing sessions are fully visible in `list_tasks()`.
+
+See [[043-zeph-common/spec]] for the `BlockingSpawner` trait definition.
 
 ### 5.2 Usage Pattern
 
@@ -268,7 +319,7 @@ self.lifecycle.supervisor.abort_all();
 
 ## 6. Observability & Metrics (Phase 1 & Phase 2)
 
-### 6.1 Phase 1 Metrics (Implemented)
+### 6.1 Metrics (Implemented)
 
 The supervisor tracks per-class counters in `ClassMetrics`:
 
@@ -281,25 +332,20 @@ The supervisor tracks per-class counters in `ClassMetrics`:
 
 Metrics are snapshottable via `metrics_snapshot()` for logging and TUI display.
 
-### 6.2 Phase 2B: Per-Class Latency Histogram (#2885)
+### 6.2 CPU/Wall-Time Metrics (task-metrics feature)
 
-**Not yet implemented**. Future enhancement to track task completion time:
+When the `task-metrics` feature is enabled (included in `full`), `spawn_blocking` wraps each task with `cpu-time::ThreadTime` + `Instant` measurements and emits:
 
-```
-bg_latency_seconds histogram
-  labels: class (enrichment | telemetry)
-  buckets: [0.001, 0.01, 0.1, 0.5, 1.0, 5.0]
-```
+- `metrics::histogram!("zeph.task.cpu_time_ms")` — CPU time per blocking task
+- `metrics::histogram!("zeph.task.wall_time_ms")` — wall time per blocking task
 
-### 6.3 Phase 2C: TUI Status Display (#2886)
+Both histogram values are also recorded as tracing span fields `task.cpu_time_ms` and `task.wall_time_ms`, visible in Jaeger and tokio-console.
 
-**Not yet implemented**. Future enhancement to show background task counts in TUI status bar:
+Zero overhead when the feature is disabled (`#[inline]` identity fn, no deps linked).
 
-```
-bg: 2 enrich, 1 telem | ↻ summarizing...
-```
+### 6.3 TUI Task Registry Panel
 
-Meaning: 2 enrichment tasks inflight, 1 telemetry task, with current operation being summarization.
+See [[011-tui/spec]] for `TaskRegistryWidget` and `/tasks` command. The widget calls `supervisor.list_tasks()` each render cycle to populate its table.
 
 ---
 
@@ -334,23 +380,26 @@ TRACE: background task dropped class=enrichment task=graph-extract limit=4
 ## 8. Key Invariants
 
 ### Always
-- All spawned tasks are tracked in a `JoinSet<TaskResult>` (never dropped, never orphaned)
+- All supervised tasks are tracked in the internal `JoinSet` + task registry (never orphaned)
 - Per-class inflight counters are updated atomically via `Arc<AtomicUsize>`
 - When a task completes, its inflight slot is freed immediately (via `InflightGuard` drop)
 - `reap()` is non-blocking and idempotent — safe to call every turn
-- Enrichment class tasks can be dropped at concurrency limit without data loss
-- Telemetry class tasks are dropped when limit is exceeded
-- At agent shutdown, `abort_all()` cancels all inflight tasks gracefully
+- `shutdown_all(timeout)` drains completions before timeout, then aborts remaining tasks
+- Task names are `Arc<str>` — never `&'static str` or `Box::leak`
+- `spawn_blocking` is gated by the blocking semaphore (default capacity 8)
+- `spawn_restartable` uses exponential backoff for `RestartPolicy::Restart`
+- `list_tasks()` includes blocking tasks and oneshot tasks — fully observable
 - Metrics snapshots are consistent (spawned ≥ dropped + completed at any point in time)
 
 ### Ask First
-- Adding new background task spawn sites outside the supervisor (escalate to team lead for decision)
+- Adding new background task spawn sites outside the supervisor
 - Changing per-class concurrency limits without testing load behavior
+- Increasing blocking semaphore capacity above 8
 
 ### Never
-- Spawn a task with `tokio::spawn()` directly — always use `supervisor.spawn()` or `spawn_summarization()`
+- Spawn a task with `tokio::spawn()` directly — always use `supervisor.spawn()`, `spawn_restartable()`, `spawn_blocking()`, or `spawn_summarization()`
 - Hold a lock across `supervisor.spawn()` call (deadlock risk with the inflight atomic)
-- Allow background tasks to panic — all spawned futures must be wrapped in proper error handling
+- Allow background tasks to panic — all spawned futures must use proper error handling
 - Assume a background task completed successfully without checking metrics
 
 ---
@@ -405,9 +454,10 @@ Benefits:
 
 The following systems are **explicitly excluded** from the supervisor's purview:
 
-- **Infrastructure loops** (~18 process-scoped `tokio::spawn` calls): Memory sweeps, channel watchers, session digest threads, scheduler loops. These have their own `CancellationToken` lifecycle, are NOT turn-scoped, and belong to their own subsystem lifecycle managers. Do NOT wrap these in `BackgroundSupervisor`.
+- **Scheduler cron loops**: The `zeph-scheduler` cron loop has its own `CancellationToken` lifecycle and is not turn-scoped. Do not wrap it in `TaskSupervisor`.
 - **Critical path tasks**: LLM calls, tool execution, message persistence. These run on the foreground `await` path with timeout guards and are not background work.
-- **Task coalescing and kind tracking**: Deduplication of identical task kinds is a Phase 2 enhancement and not part of Phase 1.
+- **Session digest on shutdown**: `spawn_outgoing_digest()` uses a plain `tokio::spawn` at shutdown because it requires access to fields that would create a borrow conflict with `supervisor.spawn()` at the session-close boundary.
+- **Task coalescing and deduplication**: Multiple spawns of the same task kind are not coalesced — each spawn gets a unique entry in the registry.
 - **Turn-boundary abort**: Automatic cleanup of enrichment tasks at turn boundaries is Phase 2D (#2887).
 
 ---
@@ -431,263 +481,21 @@ The following systems are **explicitly excluded** from the supervisor's purview:
 
 ## 12. Success Criteria
 
-### Phase 1 (Completed)
-
-- [x] `BackgroundSupervisor` struct compiles and integrates with agent loop (PR #2816)
-- [x] Five Enrichment task sites use the supervisor: summarization, graph/persona/trajectory extraction, audit logging (persistence.rs, corrections.rs)
-- [x] Per-class inflight limits enforced: Enrichment 4, Telemetry 8
+- [x] `TaskSupervisor` struct compiles and integrates with agent loop (PR #2816)
+- [x] Enrichment task sites use the supervisor: summarization, graph/persona/trajectory extraction, audit logging
+- [x] Per-class inflight limits enforced and configurable via `[agent.supervisor]` config
 - [x] Metrics (`spawned`, `dropped`, `completed`, `inflight`) exported per class
-- [x] All background tasks cleaned up on agent shutdown via `abort_all()`
-- [x] Five unit tests covering: spawn/reap, drop on overflow, summarization signal, abort all, inflight decrement timing
-- [x] `SummarizationSignal` enables foreground reset of `unsummarized_count` without shared state
-
-### Phase 2 (Planned)
-
-- [ ] Phase 2A (#2884): Route remaining fire-and-forget spawns through supervisor
-- [ ] Phase 2B (#2885): Per-class `bg_latency` histogram exported
-- [ ] Phase 2C (#2886): TUI status bar displays background task counts
-- [ ] Phase 2D (#2887): Explicit turn-boundary `abort_class(TaskClass::Enrichment)` call
-- [ ] Phase 2E (#2888): Queue depths configurable via `config.toml`
-- [ ] Phase 2F (#2889): Tracing span propagation into supervised tasks
-
----
-
-## 13. Phase 2 Implementation Plan
-
-Roadmap for Phase 2 enhancements coordinated under Epic #2883. **All 6 sub-phases are implemented in a single PR.**
-
-### 13.1 Implementation Order
-
-1. **2E** (config) — add `TaskSupervisorConfig` to `zeph-config`, wire through builder (dependency for 2B, 2D)
-2. **2B** (latency histogram) — extend `TaskResult`, `HistogramRecorder` trait, add `spawned_at` tracking
-3. **2D** (abort_class) — add `class_handles` tracking and `abort_class()` method
-4. **2F** (tracing spans) — small change to `spawn()`/`spawn_summarization()` (no dependencies)
-5. **2A** (route spawns) — replace 2 `tokio::spawn()` calls with supervisor (depends on 2E)
-6. **2C** (TUI status) — extend `MetricsSnapshot`, update TUI (depends on 2B/2D)
-
-### 13.2 Details by Sub-Phase
-
-#### Phase 2A: Route Remaining Fire-and-Forget Spawns (#2884)
-
-**Truly fire-and-forget spawns** (route through supervisor):
-
-| File | Line | Current Code | Class | Task Name |
-|------|------|-------------|-------|-----------|
-| `agent/tool_execution/native.rs` | 1261 | `tokio::spawn(async move { logger.log(&entry).await })` | Telemetry | `"audit-log"` |
-| `agent/tool_execution/sanitize.rs` | 161 | `tokio::spawn(async move { logger.log(&entry).await })` | Telemetry | `"audit-log-sanitize"` |
-
-**Explicitly excluded from supervisor routing:**
-
-| File | Line | Reason |
-|------|------|--------|
-| `context/assembly.rs` | 536 | `spawn_outgoing_digest(&self, ...)` — requires `&mut self` for supervisor.spawn(), cannot change signature at shutdown |
-| `experiment_cmd.rs` | 157 | Infrastructure loop with own `CancellationToken` lifecycle, not turn-scoped |
-| `scheduler_loop.rs` | 87 | Infrastructure loop with own lifecycle, tied to scheduler subsystem |
-
-**Success Criteria for 2A:**
-- Two audit log spawns replaced with `supervisor.spawn(TaskClass::Telemetry, ...)`
-- All three spawns previously listed in scope are now explicitly addressed (two routed, one documented as excluded)
-- Metrics verify the two audit spawns appear in `bg_spawned` counter
-
-#### Phase 2B: Per-Class Latency Histogram (#2885)
-
-Extend `TaskResult` to carry elapsed time since spawn:
-
-```rust
-enum TaskResult {
-    Done(TaskClass, Duration),           // class + elapsed since spawn
-    SummarizationDone(Duration),         // elapsed since spawn
-}
-```
-
-**Data model changes:**
-- Capture `Instant::now()` at spawn time in `spawn()` and `spawn_summarization()`
-- Compute `spawned_at.elapsed()` inside async block before returning `TaskResult`
-
-**Metric recording in `reap()`:**
-- Add method to `HistogramRecorder` trait:
-  ```rust
-  fn observe_bg_task(&self, class_label: &str, duration: Duration);
-  ```
-  where `class_label` is `"enrichment"` or `"telemetry"` (from `TaskClass::name()`)
-
-**Prometheus histogram** (in `src/metrics_export.rs`):
-```
-zeph_bg_task_duration_seconds{class="enrichment|telemetry"}
-buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 30.0]
-```
-
-**Important:** All existing match arms on `TaskResult` in tests and `join_all_for_test()` must be updated to handle the new `Duration` field.
-
-#### Phase 2C: TUI Status Bar (#2886)
-
-Extend `MetricsSnapshot` with per-class inflight counts:
-
-```rust
-pub bg_enrichment_inflight: u64,  // NEW
-pub bg_telemetry_inflight: u64,   // NEW
-```
-
-Update TUI status bar segment when either count > 0:
-```
-bg: 2 enrich, 1 telem
-```
-
-#### Phase 2D: Turn-Boundary Abort (#2887)
-
-New method on `BackgroundSupervisor`:
-
-```rust
-pub(crate) fn abort_class(&mut self, class: TaskClass) {
-    for handle in self.class_handles[class.index()].drain(..) {
-        handle.abort();
-    }
-}
-```
-
-**Data model changes:**
-- Add `class_handles: [Vec<AbortHandle>; NUM_CLASSES]` to supervisor struct
-- Capture `AbortHandle` from `self.tasks.spawn()` and store per-class (tokio ≥ 1.36 required)
-- Clean up stale handles in `reap()` via `handles.retain(|h| !h.is_finished())`
-
-**Config flag** (gated by 2E):
-```toml
-[agent.supervisor]
-abort_enrichment_on_turn = true   # default: false
-```
-
-**Call site** (in `process_user_message_inner`, after `reap()`):
-```rust
-if self.supervisor_config.abort_enrichment_on_turn {
-    self.lifecycle.supervisor.abort_class(TaskClass::Enrichment);
-}
-```
-
-**Important Note:** `AbortHandle::is_finished()` requires tokio ≥ 1.36.0 — verify in `Cargo.toml` before implementation.
-
-#### Phase 2E: Configurable Queue Depths (#2888)
-
-New config struct in `crates/zeph-config/src/agent.rs`:
-
-```rust
-/// Background task supervisor configuration.
-///
-/// # Example (TOML)
-///
-/// ```toml
-/// [agent.supervisor]
-/// enrichment_limit = 4
-/// telemetry_limit = 8
-/// abort_enrichment_on_turn = false
-/// ```
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TaskSupervisorConfig {
-    #[serde(default = "default_enrichment_limit")]
-    pub enrichment_limit: usize,  // Default: 4
-    
-    #[serde(default = "default_telemetry_limit")]
-    pub telemetry_limit: usize,   // Default: 8
-    
-    #[serde(default)]
-    pub abort_enrichment_on_turn: bool,  // Default: false
-}
-```
-
-Nest in `AgentConfig`:
-```rust
-pub struct AgentConfig {
-    // ... existing fields ...
-    #[serde(default)]
-    pub supervisor: TaskSupervisorConfig,
-}
-```
-
-**BackgroundSupervisor constructor** (passes config):
-```rust
-pub(crate) fn new(
-    config: &TaskSupervisorConfig,
-    recorder: Option<Arc<dyn HistogramRecorder>>,
-) -> Self
-```
-
-**Config migration** (`--migrate-config`): Insert default `[agent.supervisor]` section when missing.
-
-#### Phase 2F: Tracing Span Propagation (#2889)
-
-Wrap spawned future with `instrument()` call:
-
-```rust
-pub(crate) fn spawn(
-    &mut self,
-    class: TaskClass,
-    name: &'static str,
-    fut: impl Future<Output = ()> + Send + 'static,
-) -> bool {
-    // ...
-    let span = tracing::info_span!("bg_task", class = class.name(), task = name);
-    
-    self.tasks.spawn(
-        async move {
-            let _guard = guard;
-            fut.await;
-            TaskResult::Done(class, spawned_at.elapsed())
-        }
-        .instrument(span),
-    );
-    // ...
-}
-```
-
-Requires `use tracing::Instrument;` import.
-
-### 13.3 Integration Points
-
-| Point | Files | Change |
-|-------|-------|--------|
-| Config | `crates/zeph-config/src/agent.rs` | Add `TaskSupervisorConfig` struct, nest in `AgentConfig` |
-| Config defaults | `crates/zeph-core/config/default.toml`, root `config/default.toml` | Add commented `[agent.supervisor]` section |
-| Config migration | `src/config_migration.rs` | Insert default `[agent.supervisor]` if missing |
-| Supervisor struct | `crates/zeph-core/src/agent/supervisor.rs` | Add `class_handles`, `class_limits`, `histogram_recorder`; change `TaskResult` enum |
-| HistogramRecorder | `crates/zeph-core/src/metrics.rs` | Add `observe_bg_task(&str, Duration)` method to trait |
-| Prometheus impl | `src/metrics_export.rs` | Implement new trait method, add `bg_task_duration_seconds` histogram vec |
-| Agent build | `crates/zeph-core/src/agent/builder.rs` | Pass config + recorder to `BackgroundSupervisor::new()` |
-| Agent turn | `crates/zeph-core/src/agent/mod.rs` | Call `abort_class(Enrichment)` after `reap()` if config flag set |
-| Spawn sites | `native.rs:1261`, `sanitize.rs:161` | Replace `tokio::spawn()` with `supervisor.spawn()` |
-| MetricsSnapshot | `crates/zeph-core/src/metrics.rs` | Add `bg_enrichment_inflight`, `bg_telemetry_inflight` fields |
-| TUI status | `crates/zeph-tui/src/widgets/status.rs` | Append background task segment when counts > 0 |
-| Interactive wizard | `--init` handler | Add supervisor config options to wizard |
-
-### 13.4 Test Plan
-
-| Sub-phase | Test |
-|-----------|------|
-| 2A | Verify two audit log spawns appear in supervisor metrics (check `spawned` counter) |
-| 2B | Unit test: spawn task, join, verify `reap()` produces `TaskResult::Done(_, duration)` with non-zero duration |
-| 2C | Unit test: verify `metrics_snapshot().class_inflight` reports correct per-class counts; TUI test is visual (manual) |
-| 2D | Unit test: spawn N enrichment tasks, call `abort_class(Enrichment)`, verify inflight drops to 0 and telemetry unaffected |
-| 2E | Unit test: construct supervisor with custom limits, verify spawn/drop behavior matches config |
-| 2F | Unit test: spawn task with tracing subscriber, verify span fields `class` and `task` are recorded |
-
-### 13.5 Known Constraints
-
-- **tokio ≥ 1.36.0 required** for `AbortHandle::is_finished()` (Phase 2D)
-- **Signature changes:** `BackgroundSupervisor::new()` signature changes; callers in `AgentBuilder::build()` must pass config + recorder
-- **Borrow conflict resolved:** `spawn_outgoing_digest()` at `assembly.rs:536` is explicitly excluded; session digest stays as plain `tokio::spawn()` (one-shot shutdown operation)
-
----
-
-## 14. Phase 2 Roadmap (by issue)
-
-| Issue | Phase | Title |
-|-------|-------|-------|
-| #2884 | 2A | Route remaining fire-and-forget spawns |
-| #2885 | 2B | Add per-class latency histogram |
-| #2886 | 2C | TUI background task display |
-| #2887 | 2D | Turn-boundary abort for Enrichment |
-| #2888 | 2E | Configurable concurrency limits |
-| #2889 | 2F | Span propagation (optional) |
-
----
+- [x] `shutdown_all(10s)` drains completions before aborting remaining tasks
+- [x] `spawn_restartable` with `RestartPolicy::Restart` applies exponential backoff
+- [x] `TaskStatus::Aborted` state for force-aborted entries; `list_tasks()` reflects all states
+- [x] 6 regression tests for shutdown/restart/blocking semantics (PR #2958)
+- [x] 7 bootstrap memory loops migrated to supervisor (PR #2960)
+- [x] `TelegramChannel`, `A2aServer`, background indexer migrated (PR #2961)
+- [x] TUI `/tasks` panel shows live task registry (PR #2962)
+- [x] CPU/wall-time metrics via `task-metrics` feature (PR #2963)
+- [x] `BlockingSpawner` trait in `zeph-common` breaks `zeph-core → zeph-index` cycle (PR #2978)
+- [x] Blocking semaphore (capacity 8) prevents OS thread pool saturation (PR #3009)
+- [x] Task names are `Arc<str>` — no `Box::leak` per indexed file (PR #3005)
 
 ---
 

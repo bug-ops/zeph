@@ -136,6 +136,7 @@ THEN the same hex string is returned (deterministic)
 | FR-008 | WHEN `policy::PolicyLlmClient` is used THEN the system SHALL provide a minimal LLM interface for policy checks that does not depend on `zeph-llm` | must |
 | FR-009 | WHEN `trust_level::SkillTrustLevel` is evaluated THEN the system SHALL express the Untrusted/Provisional/Trusted trust gradient | must |
 | FR-010 | WHEN `sanitize` utilities are called THEN the system SHALL provide content sanitization helpers usable by any crate without depending on `zeph-sanitizer` | should |
+| FR-011 | WHEN `BlockingSpawner::spawn_blocking_named` is called THEN the system SHALL dispatch the closure to the OS blocking thread pool with the given `Arc<str>` task name | must |
 
 ---
 
@@ -164,6 +165,7 @@ THEN the same hex string is returned (deterministic)
 | `PolicyLlmClient` | Minimal LLM interface for policy | Trait for content-policy checking without `zeph-llm` dependency |
 | `PolicyMessage` | Message for policy evaluation | Role + content |
 | `PolicyRole` | Role in policy context | `User`, `Assistant` |
+| `BlockingSpawner` | Trait for dispatching blocking tasks by name | `spawn_blocking_named(name: Arc<str>, f: Box<dyn FnOnce() + Send + 'static>)` |
 
 ---
 
@@ -175,6 +177,7 @@ THEN the same hex string is returned (deterministic)
 | `ToolName` constructed from empty string | Allowed; represents a degenerate tool name (validation is caller's responsibility) |
 | `blake3_hex()` called with empty input | Returns deterministic BLAKE3 hash of empty bytes |
 | `treesitter` feature disabled | Module is excluded from compilation; no dead-code warnings |
+| `BlockingSpawner::spawn_blocking_named` with `Arc<str>` name | Name is forwarded to the implementation; no heap leak per call |
 
 ---
 
@@ -203,6 +206,7 @@ THEN the same hex string is returned (deterministic)
 - Add a dependency on any `zeph-*` crate
 - Derive `Clone` on `Secret`
 - Use `unsafe` blocks
+- Use `&'static str` or `Box::leak` for task names — always `Arc<str>`
 
 ---
 
@@ -218,4 +222,6 @@ None.
 - [[001-system-invariants/spec]] — system-wide invariants
 - [[010-security/spec]] — security model that `zeph-common` primitives enforce
 - [[038-vault/spec]] — vault crate that uses `Secret` from this crate
+- [[039-background-task-supervisor/spec]] — `TaskSupervisor` implements `BlockingSpawner`
+- [[017-index/spec]] — `CodeIndexer` consumes `BlockingSpawner` via `with_spawner()`
 - [[MOC-specs]] — all specifications

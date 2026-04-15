@@ -91,10 +91,39 @@ CodeSymbol {
 
 ## Background Indexing
 
-- Runs in `tokio::spawn` at startup — **never blocks agent loop**
+- Runs via `TaskSupervisor::spawn_restartable` (or plain `tokio::spawn` if supervisor absent) — **never blocks agent loop**
 - Progress broadcasted via `tokio::watch` channel: `IndexProgress { files_done, files_total, chunks_created }`
 - TUI status bar shows: `Indexing repository… (N/M files)` with spinner during indexing
 - File watcher (`notify` crate) triggers incremental re-index on file changes
+
+### File Watcher Debounce
+
+FS events are collected in a **500 ms debounce window** (max 5 s cap). Each changed path is reindexed at most once per window. This prevents CPU saturation during git operations or editor saves that generate rapid bursts of events.
+
+### Qdrant Upsert Timeout
+
+`upsert_chunks_batch` is wrapped with a **30-second `tokio::time::timeout`**. On expiry the batch is skipped with a `WARN` log and indexing continues. This prevents indefinite stalls when Qdrant is slow or unavailable.
+
+### Re-entry Guard
+
+`CodeIndexer` tracks an `AtomicBool` flag. A second concurrent call to `index_project` returns `Ok(IndexReport::default())` immediately with an `INFO` log rather than running a redundant full-index pass.
+
+### BlockingSpawner Integration
+
+`CodeIndexer` accepts `Option<Arc<dyn BlockingSpawner>>` via a `with_spawner()` builder method. When a spawner is present, each `chunk_file` invocation is dispatched as a named blocking task (`chunk_file_{N}`, unique AtomicU64 counter) so concurrent indexing passes are fully visible in `TaskSupervisor::list_tasks()`. When absent, chunking runs inline. See [[039-background-task-supervisor/spec]] and [[043-zeph-common/spec]] for the `BlockingSpawner` trait.
+
+### IndexerConfig Safe Defaults
+
+Default values are tuned for developer machines to prevent resource saturation:
+
+| Field | Old Default | New Default |
+|-------|------------|-------------|
+| `memory_batch_size` | 32 | 16 |
+| `embed_concurrency` | 2 | 1 |
+| `concurrency` | 4 | 2 |
+| `batch_size` (Qdrant) | 32 | 16 |
+
+All values remain user-configurable via `[index]` config section.
 
 ## Repo Map
 
@@ -122,3 +151,7 @@ crates/zeph-core/src/agent/mod.rs
 - TUI must show indexing progress with spinner while background indexing runs
 - Invalid syntax files → log error in `IndexReport.errors`, skip — never panic
 - One collection per project root hash — cross-project mixing is forbidden
+- File watcher debounce window is 500 ms — reindex each path at most once per window
+- Qdrant upsert has a 30s timeout — on expiry, skip batch with WARN, never stall indefinitely
+- `index_project` re-entry is guarded by `AtomicBool` — second concurrent call returns immediately
+- Task names are `Arc<str>` — never `&'static str` or `Box::leak` in `BlockingSpawner` calls
