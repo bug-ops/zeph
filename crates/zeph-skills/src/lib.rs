@@ -75,5 +75,5 @@ pub mod watcher;
 
 pub use error::SkillError;
 pub use generator::{GeneratedSkill, SkillGenerationRequest, SkillGenerator};
-pub use matcher::{IntentClassification, ScoredMatch};
+pub use matcher::{IntentClassification, MatchResult, ScoredMatch};
 pub use trust::{SkillSource, SkillTrust, SkillTrustLevel, compute_skill_hash};

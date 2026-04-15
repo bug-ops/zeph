@@ -8,7 +8,7 @@ use zeph_memory::{Embeddable, EmbeddingRegistry, QdrantOps};
 
 use crate::error::SkillError;
 use crate::loader::SkillMeta;
-use crate::matcher::{EmbedFuture, ScoredMatch};
+use crate::matcher::{EmbedFuture, MatchResult, ScoredMatch};
 
 const COLLECTION_NAME: &str = "zeph_skills";
 
@@ -125,7 +125,7 @@ impl QdrantSkillMatcher {
         query: &str,
         limit: usize,
         embed_fn: F,
-    ) -> Vec<ScoredMatch>
+    ) -> MatchResult
     where
         F: Fn(&str) -> EmbedFuture,
     {
@@ -143,11 +143,11 @@ impl QdrantSkillMatcher {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("Qdrant skill search failed: {e:#}");
-                return Vec::new();
+                return MatchResult::InfraError;
             }
         };
 
-        results
+        let scored = results
             .into_iter()
             .filter_map(|point| {
                 let name = point.payload.get("key")?.as_str()?;
@@ -157,7 +157,8 @@ impl QdrantSkillMatcher {
                     score: point.score,
                 })
             })
-            .collect()
+            .collect();
+        MatchResult::Scored(scored)
     }
 }
 
@@ -260,6 +261,6 @@ mod tests {
             Box::pin(async { Err(zeph_llm::LlmError::Other("embed failed".into())) })
         };
         let results = matcher.match_skills(&refs, "query", 5, embed_fn).await;
-        assert!(results.is_empty());
+        assert!(matches!(results, crate::matcher::MatchResult::InfraError));
     }
 }

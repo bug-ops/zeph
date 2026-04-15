@@ -154,9 +154,13 @@ impl<C: Channel> Agent<C> {
                 let p = embed_provider.clone();
                 Box::pin(async move { p.embed(&owned).await })
             };
-            let matches = matcher
+            let matches = match matcher
                 .match_skills(&all_meta_refs, &skill_text, 1, false, embed_fn)
-                .await;
+                .await
+            {
+                zeph_skills::MatchResult::Scored(v) => v,
+                zeph_skills::MatchResult::InfraError => Vec::new(),
+            };
             if let Some(best) = matches.first()
                 && best.score > 0.85
                 && let Some(meta) = all_meta_refs.get(best.index)

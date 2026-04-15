@@ -25,7 +25,7 @@
 //! # Examples
 //!
 //! ```rust,no_run
-//! use zeph_skills::matcher::{SkillMatcher, ScoredMatch};
+//! use zeph_skills::matcher::{MatchResult, SkillMatcher, ScoredMatch};
 //! use zeph_skills::loader::SkillMeta;
 //!
 //! async fn example(skills: &[&SkillMeta]) {
@@ -34,9 +34,11 @@
 //!     };
 //!
 //!     if let Some(matcher) = SkillMatcher::new(skills, embed_fn).await {
-//!         let matches = matcher.match_skills(skills.len(), "search the web", 3, true, embed_fn).await;
-//!         for m in &matches {
-//!             println!("skill index {} score {:.3}", m.index, m.score);
+//!         let result = matcher.match_skills(skills.len(), "search the web", 3, true, embed_fn).await;
+//!         if let MatchResult::Scored(matches) = result {
+//!             for m in &matches {
+//!                 println!("skill index {} score {:.3}", m.index, m.score);
+//!             }
 //!         }
 //!     }
 //! }
@@ -64,6 +66,24 @@ pub struct ScoredMatch {
     pub index: usize,
     /// Cosine similarity score in the range `[-1.0, 1.0]`.
     pub score: f32,
+}
+
+/// Result of a skill matching attempt, distinguishing infrastructure failures from scored results.
+///
+/// This type allows callers to apply different policies depending on the outcome:
+/// - [`MatchResult::InfraError`] — embedding or backend unavailable; caller may apply a
+///   degraded-mode fallback (e.g. inject all skills so the agent remains functional).
+/// - [`MatchResult::Scored`] — matcher produced candidates (the vec may be empty when no skills
+///   are loaded or all fall below the caller's threshold); the `min_injection_score` gate must be
+///   respected.
+#[must_use]
+pub enum MatchResult {
+    /// Infrastructure failure — embedding call timed out or backend returned an error.
+    /// Score information is unavailable; apply degraded-mode fallback.
+    InfraError,
+    /// Matcher ran successfully and produced scored candidates.
+    /// The inner `Vec` may be empty (no skills loaded or none scored above any threshold).
+    Scored(Vec<ScoredMatch>),
 }
 
 /// LLM-produced structured classification of a user query into a skill name with confidence.
@@ -326,7 +346,7 @@ impl SkillMatcher {
     /// When `two_stage` is true and a `CategoryMatcher` is available, uses category-first
     /// filtering before fine-grained matching. Falls back to flat matching otherwise.
     ///
-    /// Returns an empty vec if the query embedding fails.
+    /// Returns [`MatchResult::InfraError`] if the query embedding fails or times out.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "skill.match", skip_all, fields(query_len = %query.len(), candidates = tracing::field::Empty, top_score = tracing::field::Empty))
@@ -338,7 +358,7 @@ impl SkillMatcher {
         limit: usize,
         two_stage: bool,
         embed_fn: F,
-    ) -> Vec<ScoredMatch>
+    ) -> MatchResult
     where
         F: Fn(&str) -> EmbedFuture,
     {
@@ -347,11 +367,11 @@ impl SkillMatcher {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
                 tracing::warn!("failed to embed query: {e:#}");
-                return Vec::new();
+                return MatchResult::InfraError;
             }
             Err(_) => {
                 tracing::warn!("embedding timed out for query");
-                return Vec::new();
+                return MatchResult::InfraError;
             }
         };
 
@@ -389,7 +409,7 @@ impl SkillMatcher {
         });
         scored.truncate(limit);
 
-        scored
+        MatchResult::Scored(scored)
     }
 
     /// Compute pairwise cosine similarity for all skill pairs with successful embeddings.
@@ -489,7 +509,7 @@ impl SkillMatcherBackend {
         limit: usize,
         two_stage: bool,
         embed_fn: F,
-    ) -> Vec<ScoredMatch>
+    ) -> MatchResult
     where
         F: Fn(&str) -> EmbedFuture,
     {
@@ -613,6 +633,13 @@ mod tests {
         }
     }
 
+    fn scored(r: MatchResult) -> Vec<ScoredMatch> {
+        match r {
+            MatchResult::Scored(v) => v,
+            MatchResult::InfraError => panic!("expected Scored, got InfraError"),
+        }
+    }
+
     fn embed_fn_mapping(text: &str) -> EmbedFuture {
         let vec = match text {
             "alpha" => vec![1.0, 0.0, 0.0],
@@ -644,9 +671,11 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
-        let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 2, false, embed_fn_mapping)
-            .await;
+        let match_results = scored(
+            skill_matcher
+                .match_skills(refs.len(), "query", 2, false, embed_fn_mapping)
+                .await,
+        );
 
         assert_eq!(match_results.len(), 2);
         assert_eq!(match_results[0].index, 0); // "a" / "alpha"
@@ -667,9 +696,11 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
-        let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 5, false, embed_fn_constant)
-            .await;
+        let match_results = scored(
+            skill_matcher
+                .match_skills(refs.len(), "query", 5, false, embed_fn_constant)
+                .await,
+        );
 
         assert_eq!(match_results.len(), 1);
         assert_eq!(match_results[0].index, 0);
@@ -778,9 +809,11 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
-        let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 100, false, embed_fn_constant)
-            .await;
+        let match_results = scored(
+            skill_matcher
+                .match_skills(refs.len(), "query", 100, false, embed_fn_constant)
+                .await,
+        );
 
         assert_eq!(match_results.len(), 2);
     }
@@ -791,11 +824,11 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
-        let match_results = skill_matcher
+        let result = skill_matcher
             .match_skills(refs.len(), "query", 5, false, embed_fn_fail)
             .await;
 
-        assert!(match_results.is_empty());
+        assert!(matches!(result, MatchResult::InfraError));
     }
 
     #[test]
@@ -833,9 +866,11 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
-        let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 0, false, embed_fn_constant)
-            .await;
+        let match_results = scored(
+            skill_matcher
+                .match_skills(refs.len(), "query", 0, false, embed_fn_constant)
+                .await,
+        );
 
         assert!(match_results.is_empty());
     }
@@ -850,9 +885,11 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
-        let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 3, false, embed_fn_mapping)
-            .await;
+        let match_results = scored(
+            skill_matcher
+                .match_skills(refs.len(), "query", 3, false, embed_fn_mapping)
+                .await,
+        );
 
         assert_eq!(match_results.len(), 3);
         assert_eq!(match_results[0].index, 1); // "close" / "alpha" is closest to "query"
@@ -887,9 +924,11 @@ mod tests {
 
         let inner = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
         let backend = SkillMatcherBackend::InMemory(inner);
-        let matches = backend
-            .match_skills(&refs, "query", 5, false, embed_fn_constant)
-            .await;
+        let matches = scored(
+            backend
+                .match_skills(&refs, "query", 5, false, embed_fn_constant)
+                .await,
+        );
         assert_eq!(matches.len(), 2);
     }
 
@@ -1015,9 +1054,11 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
 
         let skill_matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
-        let match_results = skill_matcher
-            .match_skills(refs.len(), "query", 2, false, embed_fn_mapping)
-            .await;
+        let match_results = scored(
+            skill_matcher
+                .match_skills(refs.len(), "query", 2, false, embed_fn_mapping)
+                .await,
+        );
 
         assert_eq!(match_results.len(), 2);
         assert!(match_results[0].score > 0.0);
@@ -1060,9 +1101,11 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
         let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
         // Two-stage should still return results (not crash or empty).
-        let results = matcher
-            .match_skills(refs.len(), "query", 4, true, embed_fn_mapping)
-            .await;
+        let results = scored(
+            matcher
+                .match_skills(refs.len(), "query", 4, true, embed_fn_mapping)
+                .await,
+        );
         assert!(!results.is_empty());
     }
 
@@ -1074,9 +1117,11 @@ mod tests {
         let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
         // category_matcher is None when <2 multi-skill categories.
         assert!(matcher.category_matcher.is_none());
-        let results = matcher
-            .match_skills(refs.len(), "query", 2, true, embed_fn_mapping)
-            .await;
+        let results = scored(
+            matcher
+                .match_skills(refs.len(), "query", 2, true, embed_fn_mapping)
+                .await,
+        );
         assert_eq!(results.len(), 2);
     }
 
@@ -1235,16 +1280,85 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
         let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
 
-        let flat = matcher
-            .match_skills(refs.len(), "alpha", 4, false, embed_fn_mapping)
-            .await;
-        let two = matcher
-            .match_skills(refs.len(), "alpha", 4, true, embed_fn_mapping)
-            .await;
+        let flat = scored(
+            matcher
+                .match_skills(refs.len(), "alpha", 4, false, embed_fn_mapping)
+                .await,
+        );
+        let two = scored(
+            matcher
+                .match_skills(refs.len(), "alpha", 4, true, embed_fn_mapping)
+                .await,
+        );
 
         // Top result must be the same regardless of strategy.
         assert_eq!(flat[0].index, two[0].index);
         // Two-stage must not return more results than flat.
         assert!(two.len() <= flat.len());
+    }
+
+    // ── MatchResult contract tests (issue #3034) ─────────────────────────────
+    // These tests verify the three cases that assembly.rs depends on:
+    //   InfraError  → caller applies all-skills fallback
+    //   Scored([])  → caller must NOT apply fallback (gate respected)
+    //   Scored([…]) → caller filters by min_injection_score normally
+
+    #[tokio::test]
+    async fn match_result_infra_error_on_embed_failure() {
+        // Embedding the query fails → MatchResult::InfraError must be returned,
+        // signalling assembly.rs to apply the degraded-mode all-skills fallback.
+        let metas = [make_meta("a", "alpha")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
+
+        let result = matcher
+            .match_skills(refs.len(), "query", 5, false, embed_fn_fail)
+            .await;
+
+        assert!(
+            matches!(result, MatchResult::InfraError),
+            "embed failure must produce InfraError"
+        );
+    }
+
+    #[tokio::test]
+    async fn match_result_scored_empty_is_not_infra_error() {
+        // Matcher succeeds but limit=0 produces an empty candidate list.
+        // assembly.rs must treat this as Scored([]) — no fallback, gate respected.
+        let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
+
+        let result = matcher
+            .match_skills(refs.len(), "query", 0, false, embed_fn_constant)
+            .await;
+
+        // Must be Scored, not InfraError — empty list is a valid scorer outcome.
+        assert!(
+            matches!(result, MatchResult::Scored(ref v) if v.is_empty()),
+            "successful match with limit=0 must produce Scored([])"
+        );
+    }
+
+    #[tokio::test]
+    async fn match_result_scored_nonempty_carries_candidates() {
+        // Normal path: matcher succeeds and returns non-empty candidates.
+        // assembly.rs must apply min_injection_score filter to these results.
+        let metas = [
+            make_meta("a", "alpha"),
+            make_meta("b", "beta"),
+            make_meta("c", "gamma"),
+        ];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+
+        let result = matcher
+            .match_skills(refs.len(), "query", 2, false, embed_fn_mapping)
+            .await;
+
+        assert!(
+            matches!(result, MatchResult::Scored(ref v) if !v.is_empty()),
+            "successful match with results must produce Scored([…])"
+        );
     }
 }

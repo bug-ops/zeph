@@ -834,7 +834,7 @@ impl<C: Channel> Agent<C> {
         let matched_indices: Vec<usize> = if let Some(matcher) = &self.skill_state.matcher {
             let provider = self.embedding_provider.clone();
             let _ = self.channel.send_status("matching skills...").await;
-            let mut scored = matcher
+            let match_result = matcher
                 .match_skills(
                     &all_meta,
                     query,
@@ -847,6 +847,10 @@ impl<C: Channel> Agent<C> {
                     },
                 )
                 .await;
+            let (mut scored, infra_error) = match match_result {
+                zeph_skills::MatchResult::InfraError => (Vec::new(), true),
+                zeph_skills::MatchResult::Scored(v) => (v, false),
+            };
 
             if !scored.is_empty() {
                 if self.skill_state.hybrid_search
@@ -957,10 +961,10 @@ impl<C: Channel> Agent<C> {
                 }
             }
 
-            let indices: Vec<usize> = if scored.is_empty() {
-                // Embed or Qdrant failure: fall back to all skills so the agent
+            let indices: Vec<usize> = if infra_error {
+                // Embed or Qdrant infrastructure failure: fall back to all skills so the agent
                 // remains functional rather than running with an empty skill set.
-                tracing::warn!("skill matcher returned no results, falling back to all skills");
+                tracing::warn!("skill matcher infrastructure error, falling back to all skills");
                 (0..all_meta.len()).collect()
             } else {
                 // Drop skills whose score falls below the minimum injection floor.
