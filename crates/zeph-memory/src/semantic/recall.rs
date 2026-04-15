@@ -49,12 +49,12 @@ fn chunk_text(text: &str) -> Vec<&str> {
         if end >= text.len() {
             break;
         }
-        // Next chunk starts with overlap.
+        // Next chunk starts with overlap, but must always advance past the
+        // current position to prevent infinite loops when rfind finds a match
+        // very early in the slice (end barely advances, overlap rewinds start).
         let next = end.saturating_sub(CHUNK_OVERLAP_CHARS);
-        start = text.ceil_char_boundary(next);
-        if start >= end {
-            start = end; // safeguard against infinite loop
-        }
+        let new_start = text.ceil_char_boundary(next);
+        start = if new_start > start { new_start } else { end };
     }
 
     chunks
