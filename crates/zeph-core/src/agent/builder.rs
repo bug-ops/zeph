@@ -22,7 +22,7 @@ use crate::config_watcher::ConfigEvent;
 use crate::context::ContextBudget;
 use crate::cost::CostTracker;
 use crate::instructions::{InstructionEvent, InstructionReloadState};
-use crate::metrics::MetricsSnapshot;
+use crate::metrics::{MetricsSnapshot, StaticMetricsInit};
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::watcher::SkillEvent;
 
@@ -1217,6 +1217,44 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Apply static, configuration-derived fields to the metrics snapshot.
+    ///
+    /// Call this immediately after [`with_metrics`][Self::with_metrics] with values resolved from
+    /// the application config. This consolidates all one-time metric initialization into the
+    /// builder phase instead of requiring a separate `send_modify` call in the runner.
+    ///
+    /// `cache_enabled` is treated as an alias for `semantic_cache_enabled` and is set to the same
+    /// value automatically.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called before [`with_metrics`][Self::with_metrics] (no sender is wired yet).
+    #[must_use]
+    pub fn with_static_metrics(self, init: StaticMetricsInit) -> Self {
+        let tx = self
+            .metrics
+            .metrics_tx
+            .as_ref()
+            .expect("with_static_metrics must be called after with_metrics");
+        tx.send_modify(|m| {
+            m.stt_model = init.stt_model;
+            m.compaction_model = init.compaction_model;
+            m.semantic_cache_enabled = init.semantic_cache_enabled;
+            m.cache_enabled = init.semantic_cache_enabled;
+            m.embedding_model = init.embedding_model;
+            m.self_learning_enabled = init.self_learning_enabled;
+            m.active_channel = init.active_channel;
+            m.token_budget = init.token_budget;
+            m.compaction_threshold = init.compaction_threshold;
+            m.vault_backend = init.vault_backend;
+            m.autosave_enabled = init.autosave_enabled;
+            if let Some(name) = init.model_name_override {
+                m.model_name = name;
+            }
+        });
+        self
+    }
+
     /// Attach a cost tracker for per-session token budget accounting.
     #[must_use]
     pub fn with_cost_tracker(mut self, tracker: CostTracker) -> Self {
@@ -1881,5 +1919,76 @@ mod tests {
             matches!(agent, Err(BuildError::MissingProviders)),
             "build must return MissingProviders when pool is empty and model_name is unset"
         );
+    }
+
+    #[test]
+    fn with_static_metrics_applies_all_fields() {
+        let (tx, rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let init = StaticMetricsInit {
+            stt_model: Some("whisper-1".to_owned()),
+            compaction_model: Some("haiku".to_owned()),
+            semantic_cache_enabled: true,
+            embedding_model: "nomic-embed-text".to_owned(),
+            self_learning_enabled: true,
+            active_channel: "cli".to_owned(),
+            token_budget: Some(100_000),
+            compaction_threshold: Some(80_000),
+            vault_backend: "age".to_owned(),
+            autosave_enabled: true,
+            model_name_override: Some("gpt-4o".to_owned()),
+        };
+        let _ = make_agent().with_metrics(tx).with_static_metrics(init);
+        let s = rx.borrow();
+        assert_eq!(s.stt_model.as_deref(), Some("whisper-1"));
+        assert_eq!(s.compaction_model.as_deref(), Some("haiku"));
+        assert!(s.semantic_cache_enabled);
+        assert!(
+            s.cache_enabled,
+            "cache_enabled must mirror semantic_cache_enabled"
+        );
+        assert_eq!(s.embedding_model, "nomic-embed-text");
+        assert!(s.self_learning_enabled);
+        assert_eq!(s.active_channel, "cli");
+        assert_eq!(s.token_budget, Some(100_000));
+        assert_eq!(s.compaction_threshold, Some(80_000));
+        assert_eq!(s.vault_backend, "age");
+        assert!(s.autosave_enabled);
+        assert_eq!(
+            s.model_name, "gpt-4o",
+            "model_name_override must replace model_name"
+        );
+    }
+
+    #[test]
+    fn with_static_metrics_cache_enabled_alias() {
+        let (tx, rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let init_true = StaticMetricsInit {
+            semantic_cache_enabled: true,
+            ..StaticMetricsInit::default()
+        };
+        let _ = make_agent().with_metrics(tx).with_static_metrics(init_true);
+        {
+            let s = rx.borrow();
+            assert_eq!(
+                s.cache_enabled, s.semantic_cache_enabled,
+                "cache_enabled must equal semantic_cache_enabled when true"
+            );
+        }
+
+        let (tx2, rx2) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let init_false = StaticMetricsInit {
+            semantic_cache_enabled: false,
+            ..StaticMetricsInit::default()
+        };
+        let _ = make_agent()
+            .with_metrics(tx2)
+            .with_static_metrics(init_false);
+        {
+            let s = rx2.borrow();
+            assert_eq!(
+                s.cache_enabled, s.semantic_cache_enabled,
+                "cache_enabled must equal semantic_cache_enabled when false"
+            );
+        }
     }
 }

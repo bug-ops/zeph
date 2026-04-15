@@ -202,6 +202,12 @@ pub struct TurnTimings {
     pub persist_message_ms: u64,
 }
 
+/// Live snapshot of agent metrics broadcast via a [`tokio::sync::watch`] channel.
+///
+/// Fields are updated at different rates: some once at startup (static), others every turn
+/// (dynamic). For fields that are known at agent startup and do not change during the session,
+/// use [`StaticMetricsInit`] and [`crate::agent::AgentBuilder::with_static_metrics`] instead of
+/// adding a raw `send_modify` call in the runner.
 #[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MetricsSnapshot {
@@ -385,6 +391,54 @@ pub struct MetricsSnapshot {
     pub max_turn_timings: TurnTimings,
     /// Number of turns included in `avg_turn_timings` and `max_turn_timings` (capped at 10).
     pub timing_sample_count: u64,
+}
+
+/// Configuration-derived fields of [`MetricsSnapshot`] that are known at agent startup and do
+/// not change during the session.
+///
+/// Pass this struct to [`AgentBuilder::with_static_metrics`] immediately after
+/// [`AgentBuilder::with_metrics`] to initialize all static fields in one place rather than
+/// through scattered `send_modify` calls in the runner.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_core::metrics::StaticMetricsInit;
+///
+/// let init = StaticMetricsInit {
+///     active_channel: "cli".to_owned(),
+///     ..StaticMetricsInit::default()
+/// };
+/// ```
+#[derive(Debug, Default)]
+pub struct StaticMetricsInit {
+    /// STT model name (e.g. `"whisper-1"`). `None` when STT is not configured.
+    pub stt_model: Option<String>,
+    /// Model used for context compaction/summarization. `None` when no summary provider is set.
+    pub compaction_model: Option<String>,
+    /// Whether the semantic response cache is enabled.
+    ///
+    /// This value is also written to [`MetricsSnapshot::cache_enabled`] which is an alias for the
+    /// same concept.
+    pub semantic_cache_enabled: bool,
+    /// Embedding model name (e.g. `"nomic-embed-text"`). Empty when embeddings are disabled.
+    pub embedding_model: String,
+    /// Whether self-learning (skill evolution) is enabled.
+    pub self_learning_enabled: bool,
+    /// Active I/O channel name: `"cli"`, `"telegram"`, `"tui"`, `"discord"`, `"slack"`.
+    pub active_channel: String,
+    /// Token budget for context window. `None` when not configured.
+    pub token_budget: Option<u64>,
+    /// Token threshold that triggers soft compaction. `None` when not configured.
+    pub compaction_threshold: Option<u32>,
+    /// Vault backend identifier: `"age"`, `"env"`, or `"none"`.
+    pub vault_backend: String,
+    /// Whether assistant messages are auto-saved to memory.
+    pub autosave_enabled: bool,
+    /// Override for the active model name. When `Some`, replaces the model name set by the
+    /// builder from `runtime.model_name` (which may be a placeholder) with the effective model
+    /// resolved from the LLM provider configuration.
+    pub model_name_override: Option<String>,
 }
 
 /// Strip ASCII control characters and ANSI escape sequences from a string for safe TUI display.

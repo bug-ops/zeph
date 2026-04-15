@@ -1981,7 +1981,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(not(feature = "profiling"))]
     let (metrics_tx, metrics_rx) =
         tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
-    {
+    let static_metrics_init = {
         let stt_model = config
             .llm
             .stt_provider_entry()
@@ -1997,21 +1997,20 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 (f64::from(b) * f64::from(config.memory.soft_compaction_threshold)) as u32;
             threshold
         });
-        metrics_tx.send_modify(|m| {
-            config.llm.effective_model().clone_into(&mut m.model_name);
-            m.stt_model = stt_model;
-            m.compaction_model = compaction_model;
-            m.semantic_cache_enabled = semantic_cache_enabled;
-            m.cache_enabled = semantic_cache_enabled;
-            m.embedding_model = embedding_model;
-            m.self_learning_enabled = self_learning_enabled;
-            active_channel_name.clone_into(&mut m.active_channel);
-            m.token_budget = token_budget;
-            m.compaction_threshold = compaction_threshold;
-            config.vault.backend.clone_into(&mut m.vault_backend);
-            m.autosave_enabled = config.memory.autosave_assistant;
-        });
-    }
+        zeph_core::metrics::StaticMetricsInit {
+            stt_model,
+            compaction_model,
+            semantic_cache_enabled,
+            embedding_model,
+            self_learning_enabled,
+            active_channel: active_channel_name.clone(),
+            token_budget,
+            compaction_threshold,
+            vault_backend: config.vault.backend.clone(),
+            autosave_enabled: config.memory.autosave_assistant,
+            model_name_override: Some(config.llm.effective_model().to_owned()),
+        }
+    };
     // Clone metrics_rx for Prometheus sync task before it is consumed by TUI or dropped.
     #[cfg(feature = "prometheus")]
     let prometheus_metrics_rx = metrics_rx.clone();
@@ -2073,6 +2072,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent
         .with_extended_context(extended_context)
         .with_metrics(metrics_tx)
+        .with_static_metrics(static_metrics_init)
         .with_status_tx(agent_status_tx)
         .with_provider_pool(config.llm.providers.clone(), provider_config_snapshot);
 
