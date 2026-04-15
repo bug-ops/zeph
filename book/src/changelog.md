@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-04-15
+
+### Added
+
+- **TaskSupervisor observability** — CPU and wall-time metrics for supervised tasks, visible in Jaeger traces and tokio-console. Optional `task-metrics` feature (included in `full`). See [Observability & Cost](advanced/observability.md#task-supervisor-metrics).
+- **TUI task registry panel** — new `/tasks` command displays live table of all supervised tasks (name, state, uptime, restart count). See [TUI Dashboard](advanced/tui.md#command-palette).
+- **Per-chunk code indexing supervision** — `CodeIndexer` now integrates with `TaskSupervisor` for fine-grained visibility of concurrent embedding tasks. Each chunk operation is registered as a separate task (`chunk_file_{N}`) in the supervisor registry.
+- **Bootstrap TaskSupervisor migration** — 7 memory background loops (eviction, tier promotion, consolidation, forgetting, compression, tree consolidation) migrated to `TaskSupervisor` with restart policies.
+
+### Changed
+
+- **RuntimeContext consolidation** — new `RuntimeContext` struct carries runtime mode flags (`tui_mode`, `daemon_mode`). All subsystem initializers now accept a single `RuntimeContext` instead of individual `bool` parameters.
+
+### Fixed
+
+- **CPU/RAM regressions** — graph community detection OOM guard, Qdrant upsert timeout (30s), `Box::leak` eliminated via `Arc<str>`, file watcher debounce (500ms), TUI log fallback to platform log directory, blocking task capacity limits, concurrent `index_project` re-entry guard, OTLP circuit breaker, audit log TUI redirect, and safe `IndexerConfig` defaults.
+- **TUI performance** — eliminated per-frame message list clones (20K clones/sec), reduced context assembler pre-allocation for large-context providers.
+
+For full details, see the [GitHub release](https://github.com/rabstolowski/zeph/releases/tag/v0.19.1).
+
 ## [0.19.0] - 2026-04-13
 
 ### Changed

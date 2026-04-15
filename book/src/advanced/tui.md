@@ -153,6 +153,7 @@ Available commands:
 | `plan:cancel` | Cancel the active plan | |
 | `plan:list` | List recent plans from persistence | |
 | `plan:toggle` | Toggle Plan View on/off in the side panel | `p` |
+| `tasks:list` | Show task registry with live metrics (name, state, uptime, restart count) | |
 
 View commands are read-only. Action commands (`session:new`, `app:quit`, `app:theme`) modify application state. Daemon commands manage the remote connection (see [Daemon Mode](../guides/daemon-mode.md)). The palette supports fuzzy matching on both command IDs and labels.
 

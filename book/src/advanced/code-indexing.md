@@ -135,7 +135,7 @@ On subsequent runs, the indexer skips unchanged chunks by checking BLAKE3 conten
 
 ## File Watcher
 
-When `watch = true` (default), an `IndexWatcher` monitors project files for changes during the session. On file modification, the changed file is automatically re-indexed via `reindex_file()` without rebuilding the entire index. The watcher uses 1-second debounce to batch rapid changes and only processes files with indexable extensions.
+When `watch = true` (default), an `IndexWatcher` monitors project files for changes during the session. On file modification, the changed file is automatically re-indexed via `reindex_file()` without rebuilding the entire index. The watcher uses 500ms debounce to batch rapid changes and only processes files with indexable extensions.
 
 Disable with:
 
@@ -143,6 +143,24 @@ Disable with:
 [index]
 watch = false
 ```
+
+## Task Supervision
+
+Code indexing integrates with the `TaskSupervisor` for observability of concurrent embedding operations. When `embed_concurrency > 1`, each chunk embedding is registered as a separate supervised task (`chunk_file_{N}`), making individual embedding progress visible in the TUI task registry and tracing systems.
+
+Access the task registry via the TUI command palette:
+
+```
+Ctrl+P -> /tasks
+```
+
+This displays a live table of all supervised tasks, including:
+
+- **Chunk embeddings**: Individual file chunks being embedded
+- **Background indexers**: Automatic re-indexing of modified files
+- **Refresh cycles**: Periodic re-index operations
+
+Each task shows: name, state (Running/Waiting), uptime since last restart, and restart count. This enables fine-grained debugging of indexing performance bottlenecks.
 
 ## Repo Map
 
