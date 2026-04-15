@@ -687,9 +687,9 @@ impl SemanticMemory {
         };
 
         let vector_results = if let Some(qdrant) = &self.qdrant
-            && self.provider.supports_embeddings()
+            && self.effective_embed_provider().supports_embeddings()
         {
-            let query_vector = self.provider.embed(query).await?;
+            let query_vector = self.effective_embed_provider().embed(query).await?;
             let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
             qdrant.ensure_collection(vector_size).await?;
             qdrant.search(&query_vector, limit * 2, filter).await?
@@ -731,10 +731,10 @@ impl SemanticMemory {
         let Some(qdrant) = &self.qdrant else {
             return Ok(Vec::new());
         };
-        if !self.provider.supports_embeddings() {
+        if !self.effective_embed_provider().supports_embeddings() {
             return Ok(Vec::new());
         }
-        let query_vector = self.provider.embed(query).await?;
+        let query_vector = self.effective_embed_provider().embed(query).await?;
         let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
         qdrant.ensure_collection(vector_size).await?;
         qdrant.search(&query_vector, limit * 2, filter).await

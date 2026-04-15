@@ -94,11 +94,11 @@ impl SemanticMemory {
         let Some(qdrant) = &self.qdrant else {
             return Ok(());
         };
-        if !self.provider.supports_embeddings() {
+        if !self.effective_embed_provider().supports_embeddings() {
             return Ok(());
         }
 
-        let vector = self.provider.embed(summary_text).await?;
+        let vector = self.effective_embed_provider().embed(summary_text).await?;
         let vector_size = u64::try_from(vector.len()).unwrap_or(896);
         qdrant
             .ensure_named_collection(SESSION_SUMMARIES_COLLECTION, vector_size)
@@ -143,12 +143,12 @@ impl SemanticMemory {
             tracing::debug!("session-summaries: skipped, no vector store");
             return Ok(Vec::new());
         };
-        if !self.provider.supports_embeddings() {
+        if !self.effective_embed_provider().supports_embeddings() {
             tracing::debug!("session-summaries: skipped, no embedding support");
             return Ok(Vec::new());
         }
 
-        let vector = self.provider.embed(query).await?;
+        let vector = self.effective_embed_provider().embed(query).await?;
         let vector_size = u64::try_from(vector.len()).unwrap_or(896);
         qdrant
             .ensure_named_collection(SESSION_SUMMARIES_COLLECTION, vector_size)

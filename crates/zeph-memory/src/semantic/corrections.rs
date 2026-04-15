@@ -23,11 +23,11 @@ impl SemanticMemory {
         let Some(ref store) = self.qdrant else {
             return Ok(());
         };
-        if !self.provider.supports_embeddings() {
+        if !self.effective_embed_provider().supports_embeddings() {
             return Ok(());
         }
         let embedding = self
-            .provider
+            .effective_embed_provider()
             .embed(correction_text)
             .await
             .map_err(|e| MemoryError::Other(e.to_string()))?;
@@ -60,12 +60,12 @@ impl SemanticMemory {
             tracing::debug!("corrections: skipped, no vector store");
             return Ok(vec![]);
         };
-        if !self.provider.supports_embeddings() {
+        if !self.effective_embed_provider().supports_embeddings() {
             tracing::debug!("corrections: skipped, no embedding support");
             return Ok(vec![]);
         }
         let embedding = self
-            .provider
+            .effective_embed_provider()
             .embed(query)
             .await
             .map_err(|e| MemoryError::Other(e.to_string()))?;

@@ -9,6 +9,7 @@ mod summarization;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+use zeph_llm::LlmProvider;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
 use zeph_llm::provider::Role;
@@ -101,6 +102,49 @@ async fn remember_with_parts_saves_parts_json() {
     let history = memory.sqlite.load_history(cid, 50).await.unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].content, "tool output");
+}
+
+#[tokio::test]
+async fn effective_embed_provider_routes_to_dedicated_embed_provider() {
+    // main_provider has embeddings disabled
+    let main_provider = AnyProvider::Mock(MockProvider::default());
+    // embed_provider has embeddings enabled
+    let embed_provider = AnyProvider::Mock(MockProvider::default().with_embedding(vec![0.1]));
+
+    let sqlite = SqliteStore::new(":memory:").await.unwrap();
+    let memory = SemanticMemory {
+        sqlite,
+        qdrant: None,
+        provider: main_provider,
+        embed_provider: Some(embed_provider),
+        embedding_model: "test-model".into(),
+        vector_weight: 0.7,
+        keyword_weight: 0.3,
+        temporal_decay_enabled: false,
+        temporal_decay_half_life_days: 30,
+        mmr_enabled: false,
+        mmr_lambda: 0.7,
+        importance_enabled: false,
+        importance_weight: 0.15,
+        token_counter: Arc::new(TokenCounter::new()),
+        graph_store: None,
+        community_detection_failures: Arc::new(AtomicU64::new(0)),
+        graph_extraction_count: Arc::new(AtomicU64::new(0)),
+        graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        tier_boost_semantic: 1.3,
+        admission_control: None,
+        key_facts_dedup_threshold: 0.95,
+        embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+    };
+
+    assert!(
+        memory.effective_embed_provider().supports_embeddings(),
+        "effective_embed_provider() must return the dedicated embed provider"
+    );
+    assert!(
+        !memory.provider.supports_embeddings(),
+        "main provider must not support embeddings, proving the two providers are distinct"
+    );
 }
 
 #[tokio::test]

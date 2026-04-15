@@ -163,9 +163,9 @@ impl SemanticMemory {
             .await?;
 
         if let Some(qdrant) = &self.qdrant
-            && self.provider.supports_embeddings()
+            && self.effective_embed_provider().supports_embeddings()
         {
-            match self.provider.embed(summary_text).await {
+            match self.effective_embed_provider().embed(summary_text).await {
                 Ok(vector) => {
                     let vector_size = u64::try_from(vector.len()).unwrap_or(896);
                     if let Err(e) = qdrant.ensure_collection(vector_size).await {
@@ -208,7 +208,7 @@ impl SemanticMemory {
         let Some(qdrant) = &self.qdrant else {
             return;
         };
-        if !self.provider.supports_embeddings() {
+        if !self.effective_embed_provider().supports_embeddings() {
             return;
         }
 
@@ -224,7 +224,7 @@ impl SemanticMemory {
         let Some(first_fact) = filtered.first().copied() else {
             return;
         };
-        let first_vector = match self.provider.embed(first_fact).await {
+        let first_vector = match self.effective_embed_provider().embed(first_fact).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("Failed to embed key fact: {e:#}");
@@ -252,7 +252,7 @@ impl SemanticMemory {
         .await;
 
         for fact in filtered[1..].iter().copied() {
-            match self.provider.embed(fact).await {
+            match self.effective_embed_provider().embed(fact).await {
                 Ok(vector) => {
                     self.store_key_fact_if_unique(
                         qdrant,
@@ -325,12 +325,12 @@ impl SemanticMemory {
             tracing::debug!("key-facts: skipped, no vector store");
             return Ok(Vec::new());
         };
-        if !self.provider.supports_embeddings() {
+        if !self.effective_embed_provider().supports_embeddings() {
             tracing::debug!("key-facts: skipped, no embedding support");
             return Ok(Vec::new());
         }
 
-        let vector = self.provider.embed(query).await?;
+        let vector = self.effective_embed_provider().embed(query).await?;
         let vector_size = u64::try_from(vector.len()).unwrap_or(896);
         qdrant
             .ensure_named_collection(KEY_FACTS_COLLECTION, vector_size)
@@ -368,13 +368,13 @@ impl SemanticMemory {
         let Some(qdrant) = &self.qdrant else {
             return Ok(Vec::new());
         };
-        if !self.provider.supports_embeddings() {
+        if !self.effective_embed_provider().supports_embeddings() {
             return Ok(Vec::new());
         }
         if !qdrant.collection_exists(collection).await? {
             return Ok(Vec::new());
         }
-        let vector = self.provider.embed(query).await?;
+        let vector = self.effective_embed_provider().embed(query).await?;
         let results = qdrant
             .search_collection(collection, &vector, limit, None)
             .await?;

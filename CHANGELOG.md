@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix embedding dimension mismatch that silently wiped Qdrant memory collections (`zeph_conversations`, `zeph_key_facts`, `zeph_session_summaries`) on every session startup when `embedding_provider` differs from the main LLM provider. All 18 `self.provider` embedding call sites in `zeph-memory` semantic submodules (`recall.rs`, `cross_session.rs`, `summarization.rs`, `corrections.rs`) now use `self.effective_embed_provider()` consistently. Adds a regression test for embed provider routing. Fixes #3029.
+
 ## [0.19.1] - 2026-04-15
 
 ### Added
