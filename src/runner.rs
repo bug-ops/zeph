@@ -785,28 +785,47 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         let trust_cfg = config.skills.trust.clone();
         let managed_dir = crate::bootstrap::managed_skills_dir();
 
-        // Step 1: collect all hashes in a single spawn_blocking to avoid blocking the async
-        // executor with synchronous FS reads (compute_skill_hash does std::fs::read).
+        // Step 1: collect all hashes and source classifications in a single spawn_blocking
+        // to avoid blocking the async executor with synchronous FS reads.
+        // Both compute_skill_hash (std::fs::read) and .bundled marker .exists() are blocking FS calls.
         let dirs: Vec<_> = all_meta_owned.iter().map(|m| m.skill_dir.clone()).collect();
-        let hashes: Vec<Option<String>> = tokio::task::spawn_blocking(move || {
-            dirs.iter()
-                .map(|dir| zeph_skills::compute_skill_hash(dir).ok())
-                .collect()
-        })
-        .await
-        .unwrap_or_else(|_| vec![None; all_meta_owned.len()]);
+        let managed_dir_clone = managed_dir.clone();
+        let per_skill: Vec<(Option<String>, zeph_memory::store::SourceKind)> =
+            tokio::task::spawn_blocking(move || {
+                dirs.iter()
+                    .map(|dir| {
+                        let hash = zeph_skills::compute_skill_hash(dir).ok();
+                        // .bundled marker is written by bundled.rs for skills shipped with the binary.
+                        let source_kind = if dir.starts_with(&managed_dir_clone) {
+                            if dir.join(".bundled").exists() {
+                                zeph_memory::store::SourceKind::Bundled
+                            } else {
+                                zeph_memory::store::SourceKind::Hub
+                            }
+                        } else {
+                            zeph_memory::store::SourceKind::Local
+                        };
+                        (hash, source_kind)
+                    })
+                    .collect()
+            })
+            .await
+            .unwrap_or_else(|_| {
+                all_meta_owned
+                    .iter()
+                    .map(|_| (None, zeph_memory::store::SourceKind::Local))
+                    .collect()
+            });
 
-        // Step 2: async DB calls using pre-computed hashes.
-        for (meta, maybe_hash) in all_meta_owned.iter().zip(hashes.iter()) {
-            let source_kind = if meta.skill_dir.starts_with(&managed_dir) {
-                zeph_memory::store::SourceKind::Hub
-            } else {
-                zeph_memory::store::SourceKind::Local
-            };
-            let initial_level = if matches!(source_kind, zeph_memory::store::SourceKind::Hub) {
-                &trust_cfg.default_level
-            } else {
-                &trust_cfg.local_level
+        // Step 2: async DB calls using pre-computed hashes and source classifications.
+        for (meta, (maybe_hash, source_kind)) in all_meta_owned.iter().zip(per_skill.iter()) {
+            let source_kind = source_kind.clone();
+            let initial_level = match source_kind {
+                zeph_memory::store::SourceKind::Bundled => &trust_cfg.bundled_level,
+                zeph_memory::store::SourceKind::Hub => &trust_cfg.default_level,
+                zeph_memory::store::SourceKind::Local | zeph_memory::store::SourceKind::File => {
+                    &trust_cfg.local_level
+                }
             };
             let Some(current_hash) = maybe_hash else {
                 tracing::warn!("failed to compute hash for '{}'", meta.name);
@@ -820,10 +839,29 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 .ok()
                 .flatten();
             let trust_level_str = if let Some(ref row) = existing {
-                if row.blake3_hash == *current_hash {
-                    row.trust_level.clone()
-                } else {
+                if row.blake3_hash != *current_hash {
                     trust_cfg.hash_mismatch_level.to_string()
+                } else if row.source_kind != source_kind {
+                    // source_kind changed (e.g., hub → bundled on upgrade).
+                    // Never override an explicit operator block, and preserve operator-promoted trust.
+                    let stored = row
+                        .trust_level
+                        .parse::<zeph_tools::SkillTrustLevel>()
+                        .unwrap_or_else(|_| {
+                            tracing::warn!(
+                                skill = %meta.name,
+                                raw = %row.trust_level,
+                                "unrecognised trust_level in DB, treating as quarantined"
+                            );
+                            zeph_tools::SkillTrustLevel::Quarantined
+                        });
+                    if !stored.is_active() || stored.severity() <= initial_level.severity() {
+                        row.trust_level.clone()
+                    } else {
+                        initial_level.to_string()
+                    }
+                } else {
+                    row.trust_level.clone()
                 }
             } else {
                 initial_level.to_string()

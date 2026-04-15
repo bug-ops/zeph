@@ -55,6 +55,10 @@ fn default_trust_hash_mismatch_level() -> SkillTrustLevel {
     SkillTrustLevel::Quarantined
 }
 
+fn default_trust_bundled_level() -> SkillTrustLevel {
+    SkillTrustLevel::Trusted
+}
+
 fn default_llm_timeout() -> u64 {
     120
 }
@@ -100,6 +104,9 @@ pub struct TrustConfig {
     /// Default: `quarantined`.
     #[serde(default = "default_trust_hash_mismatch_level")]
     pub hash_mismatch_level: SkillTrustLevel,
+    /// Trust level assigned to bundled (built-in) skills shipped with the binary. Default: `trusted`.
+    #[serde(default = "default_trust_bundled_level")]
+    pub bundled_level: SkillTrustLevel,
     /// Scan skill body content for injection patterns at load time.
     ///
     /// When `true`, `SkillRegistry::scan_loaded()` is called at agent startup.
@@ -120,6 +127,7 @@ impl Default for TrustConfig {
             default_level: default_trust_default_level(),
             local_level: default_trust_local_level(),
             hash_mismatch_level: default_trust_hash_mismatch_level(),
+            bundled_level: default_trust_bundled_level(),
             scan_on_load: true,
             scanner: ScannerConfig::default(),
         }
@@ -259,12 +267,14 @@ mod tests {
             default_level: SkillTrustLevel::Quarantined,
             local_level: SkillTrustLevel::Trusted,
             hash_mismatch_level: SkillTrustLevel::Quarantined,
+            bundled_level: SkillTrustLevel::Trusted,
             scan_on_load: false,
             scanner: ScannerConfig::default(),
         };
         let toml = toml::to_string(&config).expect("serialize");
         let deserialized: TrustConfig = toml::from_str(&toml).expect("deserialize");
         assert!(!deserialized.scan_on_load);
+        assert_eq!(deserialized.bundled_level, SkillTrustLevel::Trusted);
     }
 
     #[test]
@@ -278,6 +288,27 @@ hash_mismatch_level = "quarantined"
         assert!(
             config.scan_on_load,
             "missing scan_on_load must default to true"
+        );
+    }
+
+    #[test]
+    fn trust_config_default_has_bundled_level_trusted() {
+        let config = TrustConfig::default();
+        assert_eq!(config.bundled_level, SkillTrustLevel::Trusted);
+    }
+
+    #[test]
+    fn trust_config_missing_bundled_level_defaults_to_trusted() {
+        let toml = r#"
+default_level = "quarantined"
+local_level = "trusted"
+hash_mismatch_level = "quarantined"
+"#;
+        let config: TrustConfig = toml::from_str(toml).expect("deserialize");
+        assert_eq!(
+            config.bundled_level,
+            SkillTrustLevel::Trusted,
+            "missing bundled_level must default to trusted"
         );
     }
 

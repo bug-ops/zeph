@@ -15,6 +15,8 @@ pub enum SourceKind {
     Local,
     Hub,
     File,
+    /// Skills shipped with the binary and provisioned at startup via `bundled.rs`.
+    Bundled,
 }
 
 impl SourceKind {
@@ -23,6 +25,7 @@ impl SourceKind {
             Self::Local => "local",
             Self::Hub => "hub",
             Self::File => "file",
+            Self::Bundled => "bundled",
         }
     }
 }
@@ -41,6 +44,7 @@ impl std::str::FromStr for SourceKind {
             "local" => Ok(Self::Local),
             "hub" => Ok(Self::Hub),
             "file" => Ok(Self::File),
+            "bundled" => Ok(Self::Bundled),
             other => Err(format!("unknown source_kind: {other}")),
         }
     }
@@ -554,6 +558,7 @@ mod tests {
             ("skill-local", SourceKind::Local),
             ("skill-hub", SourceKind::Hub),
             ("skill-file", SourceKind::File),
+            ("skill-bundled", SourceKind::Bundled),
         ];
         for (name, kind) in &variants {
             store
@@ -563,5 +568,162 @@ mod tests {
             let row = store.load_skill_trust(name).await.unwrap().unwrap();
             assert_eq!(&row.source_kind, kind);
         }
+    }
+
+    #[test]
+    fn source_kind_display_bundled() {
+        assert_eq!(SourceKind::Bundled.to_string(), "bundled");
+    }
+
+    #[test]
+    fn source_kind_from_str_bundled() {
+        let kind: SourceKind = "bundled".parse().unwrap();
+        assert_eq!(kind, SourceKind::Bundled);
+    }
+
+    #[test]
+    fn source_kind_serde_json_roundtrip_bundled() {
+        let original = SourceKind::Bundled;
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, r#""bundled""#);
+        let back: SourceKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn source_kind_from_str_unknown_falls_back_to_local_in_row_from_tuple() {
+        // Verify that unknown DB values (e.g., from a future version downgrade)
+        // deserialize gracefully via the unwrap_or(Local) in row_from_tuple.
+        let result: Result<SourceKind, _> = "future_variant".parse();
+        assert!(result.is_err());
+        // row_from_tuple uses unwrap_or(SourceKind::Local) — simulate that here.
+        let fallback = result.unwrap_or(SourceKind::Local);
+        assert_eq!(fallback, SourceKind::Local);
+    }
+
+    // Scenario 2: Bundled trust level is preserved when re-upserted with the same source_kind.
+    // This covers the hot-reload path where hash matches and source_kind is unchanged.
+    #[tokio::test]
+    async fn bundled_trust_preserved_on_same_source_kind_upsert() {
+        let store = test_store().await;
+
+        store
+            .upsert_skill_trust(
+                "web-search",
+                "trusted",
+                SourceKind::Bundled,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+
+        // Simulate a second startup (hash unchanged, source_kind unchanged) — trust must be preserved.
+        store
+            .upsert_skill_trust(
+                "web-search",
+                "trusted",
+                SourceKind::Bundled,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+
+        let row = store.load_skill_trust("web-search").await.unwrap().unwrap();
+        assert_eq!(row.source_kind, SourceKind::Bundled);
+        assert_eq!(row.trust_level, "trusted");
+    }
+
+    // Scenario 3: Migration from hub/quarantined to bundled/trusted when .bundled marker appears.
+    // The store upsert always overwrites source_kind and trust_level when called with new values.
+    #[tokio::test]
+    async fn migration_hub_quarantined_to_bundled_trusted() {
+        let store = test_store().await;
+
+        // Initial state: existing install has hub/quarantined.
+        store
+            .upsert_skill_trust("git", "quarantined", SourceKind::Hub, None, None, "hash1")
+            .await
+            .unwrap();
+
+        let row = store.load_skill_trust("git").await.unwrap().unwrap();
+        assert_eq!(row.source_kind, SourceKind::Hub);
+        assert_eq!(row.trust_level, "quarantined");
+
+        // After runner detects .bundled marker: upsert with Bundled/trusted (initial_level from bundled_level).
+        store
+            .upsert_skill_trust("git", "trusted", SourceKind::Bundled, None, None, "hash1")
+            .await
+            .unwrap();
+
+        let row = store.load_skill_trust("git").await.unwrap().unwrap();
+        assert_eq!(row.source_kind, SourceKind::Bundled);
+        assert_eq!(row.trust_level, "trusted");
+    }
+
+    // Regression test for C1: operator-blocked bundled skills must not be unblocked by migration.
+    // The store layer always overwrites; caller logic (runner/mod) must pass "blocked" through.
+    #[tokio::test]
+    async fn operator_blocked_bundled_skill_stays_blocked_when_upserted_with_blocked() {
+        let store = test_store().await;
+
+        // Existing install: hub/blocked (operator explicitly blocked this skill).
+        store
+            .upsert_skill_trust(
+                "web-search",
+                "blocked",
+                SourceKind::Hub,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+
+        // Migration: runner detects .bundled marker but preserves "blocked" (caller responsibility).
+        store
+            .upsert_skill_trust(
+                "web-search",
+                "blocked",
+                SourceKind::Bundled,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+
+        let row = store.load_skill_trust("web-search").await.unwrap().unwrap();
+        assert_eq!(row.source_kind, SourceKind::Bundled);
+        assert_eq!(
+            row.trust_level, "blocked",
+            "operator block must survive source_kind migration"
+        );
+    }
+
+    // Scenario 4: Configurable bundled_level (e.g., "supervised") is applied during classification.
+    // This tests that the store persists any trust level string correctly for non-default configs.
+    #[tokio::test]
+    async fn bundled_skill_with_configured_supervised_level() {
+        let store = test_store().await;
+
+        store
+            .upsert_skill_trust(
+                "git",
+                "supervised",
+                SourceKind::Bundled,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+
+        let row = store.load_skill_trust("git").await.unwrap().unwrap();
+        assert_eq!(row.source_kind, SourceKind::Bundled);
+        assert_eq!(row.trust_level, "supervised");
     }
 }

@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **skills: bundled skill trust level not distinguished from hub** (`#3041`): add
+  `SourceKind::Bundled` variant to the trust store and a `bundled_level` config field
+  (`[skills.trust] bundled_level = "trusted"`). Startup and hot-reload now detect the `.bundled`
+  marker file and classify bundled skills with `bundled_level` instead of `default_level`
+  (Quarantined). Migration upgrades existing hub-registered bundled skill rows without overwriting
+  operator-promoted trust levels. Operator-blocked skills (`Blocked`) are never unblocked by
+  source_kind migration.
+
 - Fix embedding dimension mismatch that silently wiped Qdrant memory collections (`zeph_conversations`, `zeph_key_facts`, `zeph_session_summaries`) on every session startup when `embedding_provider` differs from the main LLM provider. All 18 `self.provider` embedding call sites in `zeph-memory` semantic submodules (`recall.rs`, `cross_session.rs`, `summarization.rs`, `corrections.rs`) now use `self.effective_embed_provider()` consistently. Adds a regression test for embed provider routing. Fixes #3029.
 
 - **skills: all candidates silently dropped below min_injection_score** (`#3030`): after

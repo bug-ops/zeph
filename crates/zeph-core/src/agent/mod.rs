@@ -1928,55 +1928,90 @@ impl<C: Channel> Agent<C> {
         let trust_cfg = self.skill_state.trust_config.clone();
         let managed_dir = self.skill_state.managed_dir.clone();
         for meta in all_meta {
-            let source_kind = if managed_dir
-                .as_ref()
-                .is_some_and(|d| meta.skill_dir.starts_with(d))
-            {
-                zeph_memory::store::SourceKind::Hub
-            } else {
-                zeph_memory::store::SourceKind::Local
-            };
-            let initial_level = if matches!(source_kind, zeph_memory::store::SourceKind::Hub) {
-                &trust_cfg.default_level
-            } else {
-                &trust_cfg.local_level
-            };
-            match zeph_skills::compute_skill_hash(&meta.skill_dir) {
-                Ok(current_hash) => {
-                    let existing = memory
-                        .sqlite()
-                        .load_skill_trust(&meta.name)
-                        .await
-                        .ok()
-                        .flatten();
-                    let trust_level_str = if let Some(ref row) = existing {
-                        if row.blake3_hash == current_hash {
-                            row.trust_level.clone()
+            // Compute hash and classify source_kind in spawn_blocking — both are blocking FS calls
+            // (.bundled marker .exists() and compute_skill_hash both do std::fs I/O).
+            let skill_dir = meta.skill_dir.clone();
+            let managed_dir_ref = managed_dir.clone();
+            let fs_result: Option<(String, zeph_memory::store::SourceKind)> =
+                tokio::task::spawn_blocking(move || {
+                    let hash = zeph_skills::compute_skill_hash(&skill_dir).ok()?;
+                    // .bundled marker is written by bundled.rs for skills shipped with the binary.
+                    let source_kind = if managed_dir_ref
+                        .as_ref()
+                        .is_some_and(|d| skill_dir.starts_with(d))
+                    {
+                        if skill_dir.join(".bundled").exists() {
+                            zeph_memory::store::SourceKind::Bundled
                         } else {
-                            trust_cfg.hash_mismatch_level.to_string()
+                            zeph_memory::store::SourceKind::Hub
                         }
                     } else {
-                        initial_level.to_string()
+                        zeph_memory::store::SourceKind::Local
                     };
-                    let source_path = meta.skill_dir.to_str();
-                    if let Err(e) = memory
-                        .sqlite()
-                        .upsert_skill_trust(
-                            &meta.name,
-                            &trust_level_str,
-                            source_kind,
-                            None,
-                            source_path,
-                            &current_hash,
-                        )
-                        .await
-                    {
-                        tracing::warn!("failed to record trust for '{}': {e:#}", meta.name);
+                    Some((hash, source_kind))
+                })
+                .await
+                .unwrap_or(None);
+
+            let Some((current_hash, source_kind)) = fs_result else {
+                tracing::warn!("failed to compute hash for '{}'", meta.name);
+                continue;
+            };
+            let initial_level = match source_kind {
+                zeph_memory::store::SourceKind::Bundled => &trust_cfg.bundled_level,
+                zeph_memory::store::SourceKind::Hub => &trust_cfg.default_level,
+                zeph_memory::store::SourceKind::Local | zeph_memory::store::SourceKind::File => {
+                    &trust_cfg.local_level
+                }
+            };
+            let existing = memory
+                .sqlite()
+                .load_skill_trust(&meta.name)
+                .await
+                .ok()
+                .flatten();
+            let trust_level_str = if let Some(ref row) = existing {
+                if row.blake3_hash != current_hash {
+                    trust_cfg.hash_mismatch_level.to_string()
+                } else if row.source_kind != source_kind {
+                    // source_kind changed (e.g., hub → bundled on upgrade).
+                    // Never override an explicit operator block, and preserve operator-promoted trust.
+                    let stored = row
+                        .trust_level
+                        .parse::<zeph_tools::SkillTrustLevel>()
+                        .unwrap_or_else(|_| {
+                            tracing::warn!(
+                                skill = %meta.name,
+                                raw = %row.trust_level,
+                                "unrecognised trust_level in DB, treating as quarantined"
+                            );
+                            zeph_tools::SkillTrustLevel::Quarantined
+                        });
+                    if !stored.is_active() || stored.severity() <= initial_level.severity() {
+                        row.trust_level.clone()
+                    } else {
+                        initial_level.to_string()
                     }
+                } else {
+                    row.trust_level.clone()
                 }
-                Err(e) => {
-                    tracing::warn!("failed to compute hash for '{}': {e:#}", meta.name);
-                }
+            } else {
+                initial_level.to_string()
+            };
+            let source_path = meta.skill_dir.to_str();
+            if let Err(e) = memory
+                .sqlite()
+                .upsert_skill_trust(
+                    &meta.name,
+                    &trust_level_str,
+                    source_kind,
+                    None,
+                    source_path,
+                    &current_hash,
+                )
+                .await
+            {
+                tracing::warn!("failed to record trust for '{}': {e:#}", meta.name);
             }
         }
     }
