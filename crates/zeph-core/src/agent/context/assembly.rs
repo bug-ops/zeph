@@ -947,6 +947,12 @@ impl<C: Channel> Agent<C> {
                             let pos_b = reranked.iter().position(|(i, _)| *i == b.index);
                             pos_a.cmp(&pos_b)
                         });
+                    } else {
+                        tracing::debug!(
+                            total = scored.len(),
+                            with_embeddings = candidates.len(),
+                            "RL re-rank skipped: skill embeddings unavailable (Qdrant backend does not expose in-process vectors)"
+                        );
                     }
                 }
             }
@@ -959,7 +965,20 @@ impl<C: Channel> Agent<C> {
             } else {
                 // Drop skills whose score falls below the minimum injection floor.
                 let min_score = self.skill_state.min_injection_score;
+                let pre_retain_count = scored.len();
+                let max_score_before_retain = scored
+                    .iter()
+                    .map(|s| s.score)
+                    .fold(f32::NEG_INFINITY, f32::max);
                 scored.retain(|s| s.score >= min_score);
+                if scored.is_empty() {
+                    tracing::warn!(
+                        candidate_count = pre_retain_count,
+                        threshold = min_score,
+                        max_score = max_score_before_retain,
+                        "all skill candidates dropped below min_injection_score threshold; running without skills this turn"
+                    );
+                }
 
                 // Capture the names of skills that had real embedding scores for
                 // usage stats — before disambiguation may reorder indices.

@@ -1130,7 +1130,17 @@ impl<C: Channel> Agent<C> {
             self.runtime.active_provider_name.clone()
         };
         let model_name = self.runtime.model_name.clone();
-        let total_skills = self.skill_state.registry.read().all_meta().len();
+        let registry_guard = self.skill_state.registry.read();
+        let total_skills = registry_guard.all_meta().len();
+        // Initialize active_skills with all loaded skills as a baseline.
+        // This is a placeholder representing "loaded" skills — the list is refined
+        // per-turn by rebuild_system_prompt once the first query is processed.
+        let all_skill_names: Vec<String> = registry_guard
+            .all_meta()
+            .iter()
+            .map(|m| m.name.clone())
+            .collect();
+        drop(registry_guard);
         let qdrant_available = false;
         let conversation_id = self.memory_state.persistence.conversation_id;
         let prompt_estimate = self
@@ -1179,6 +1189,7 @@ impl<C: Channel> Agent<C> {
             m.provider_name = provider_name;
             m.model_name = model_name;
             m.total_skills = total_skills;
+            m.active_skills = all_skill_names;
             m.qdrant_available = qdrant_available;
             m.sqlite_conversation_id = conversation_id;
             m.context_tokens = prompt_estimate;
@@ -1190,6 +1201,18 @@ impl<C: Channel> Agent<C> {
             m.mcp_servers = mcp_servers;
             m.extended_context = extended_context;
         });
+        if self.skill_state.rl_head.is_some()
+            && self
+                .skill_state
+                .matcher
+                .as_ref()
+                .is_some_and(zeph_skills::matcher::SkillMatcherBackend::is_qdrant)
+        {
+            tracing::info!(
+                "RL re-rank is configured but the Qdrant backend does not expose in-process skill \
+                 vectors; RL will be inactive until vector retrieval from Qdrant is implemented"
+            );
+        }
         self.metrics.metrics_tx = Some(tx);
         self
     }

@@ -967,6 +967,52 @@ pub mod agent_tests {
             "initial prompt estimate should be non-zero"
         );
         assert_eq!(snapshot.total_tokens, snapshot.prompt_tokens);
+        assert!(
+            !snapshot.active_skills.is_empty(),
+            "active_skills should be pre-populated at startup"
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_all_candidates_dropped_below_threshold_active_skills_empty() {
+        // When min_injection_score = f32::MAX, every scored candidate fails the retain
+        // gate. The agent must not panic and must report zero active skills for the turn.
+        use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
+
+        // Use an embedding-capable provider so SkillMatcher::new succeeds and
+        // match_skills can embed the query — exercising the retain gate instead of
+        // the empty-matcher fallback.
+        let provider = AnyProvider::Mock(
+            MockProvider::with_responses(vec!["response".to_string()])
+                .with_embedding(vec![1.0, 0.0]),
+        );
+        let channel = MockChannel::new(vec!["hello".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+
+        // Build an in-memory matcher so the retain gate is exercised rather than
+        // falling through the empty-matcher fallback path.
+        let registry_guard = agent.skill_state.registry.read();
+        let all_meta: Vec<&zeph_skills::loader::SkillMeta> = registry_guard.all_meta();
+        let embed_fn = |_text: &str| -> zeph_skills::matcher::EmbedFuture {
+            Box::pin(async { Ok(vec![1.0_f32, 0.0]) })
+        };
+        let matcher = SkillMatcher::new(&all_meta, embed_fn).await;
+        drop(registry_guard);
+        agent.skill_state.matcher = matcher.map(SkillMatcherBackend::InMemory);
+        // Set an impossibly high threshold so every candidate is dropped.
+        agent.skill_state.min_injection_score = f32::MAX;
+
+        agent.run().await.unwrap();
+
+        let snapshot = rx.borrow().clone();
+        assert!(
+            snapshot.active_skills.is_empty(),
+            "no skills should be active when all candidates fail the score gate"
+        );
     }
 
     #[tokio::test]

@@ -10,6 +10,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Fix embedding dimension mismatch that silently wiped Qdrant memory collections (`zeph_conversations`, `zeph_key_facts`, `zeph_session_summaries`) on every session startup when `embedding_provider` differs from the main LLM provider. All 18 `self.provider` embedding call sites in `zeph-memory` semantic submodules (`recall.rs`, `cross_session.rs`, `summarization.rs`, `corrections.rs`) now use `self.effective_embed_provider()` consistently. Adds a regression test for embed provider routing. Fixes #3029.
 
+- **skills: all candidates silently dropped below min_injection_score** (`#3030`): after
+  `scored.retain()`, if all candidates are filtered out, a structured `warn!` is now emitted
+  with `candidate_count`, `threshold`, and `max_score` fields. The agent correctly runs
+  without skill injection for that turn. Fallback-to-all-skills is not applied (spec
+  prohibits it).
+
+- **skills: RL re-rank silently disabled when Qdrant backend is active** (`#3032`): added a
+  startup `info!` log when both RL head and Qdrant matcher are configured, documenting that
+  in-process vector embeddings are unavailable with the Qdrant backend so RL re-ranking is
+  skipped. Per-turn skip is logged at `debug!` level to avoid log noise.
+
+- **tui: skills panel shows 0/N until first user message** (`#3031`): `with_metrics()` in
+  `AgentBuilder` now initializes `active_skills` with all loaded skill names as a baseline
+  so the TUI panel shows the correct count at startup. The list is refined per-turn by
+  `rebuild_system_prompt` as usual.
+
 ## [0.19.1] - 2026-04-15
 
 ### Added
