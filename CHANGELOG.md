@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **skills: hub skill install pipeline** (`#2806`, `#3040`): `SkillManager` now exposes
+  `install_from_path` and `install_from_url` that copy a skill package into `managed_dir`
+  with `TrustLevel::Quarantined` as the default. During install, `.bundled` marker files are
+  recursively stripped from the package to prevent trust escalation (a forged `.bundled`
+  would otherwise suppress the injection-pattern scanner for the installed skill). Symlinks
+  in the source package are skipped rather than copied. If stripping fails, the partially
+  installed directory is cleaned up before the error is propagated. `SkillRegistry` gains a
+  `with_hub_dirs` builder method and a `reload`-safe `hub_dirs` field: hub-managed skills
+  ignore any `.bundled` marker even if one reappears post-install (defense-in-depth). Hub
+  dirs are preserved across hot-reloads via `std::mem::take`.
+
 ### Fixed
 
 - **skills: bundled skill trust level not distinguished from hub** (`#3041`): add

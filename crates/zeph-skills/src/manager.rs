@@ -146,6 +146,11 @@ impl SkillManager {
 
         validate_path_within(&dest_dir, &self.managed_dir)?;
 
+        strip_bundled_markers(&dest_dir).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&dest_dir);
+            SkillError::Io(e)
+        })?;
+
         let hash = compute_skill_hash(&dest_dir)?;
 
         Ok(InstallResult {
@@ -190,6 +195,11 @@ impl SkillManager {
 
         // Secondary check after copy to catch symlink-based escapes.
         validate_path_within(&dest_dir, &self.managed_dir)?;
+
+        strip_bundled_markers(&dest_dir).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&dest_dir);
+            SkillError::Io(e)
+        })?;
 
         let hash = compute_skill_hash(&dest_dir)?;
 
@@ -317,13 +327,59 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         let entry = entry?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
+        // M2: skip symlinks — symlink targets may point outside the skill tree.
+        // validate_path_within after copy catches escapes, but skipping is cleaner.
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            tracing::warn!(
+                path = %src_path.display(),
+                "skipping symlink in skill source directory"
+            );
+            continue;
+        }
+        if file_type.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
             std::fs::copy(&src_path, &dst_path)?;
         }
     }
     Ok(())
+}
+
+/// Remove `.bundled` marker files from `dir` recursively.
+///
+/// Hub-installed packages must not contain `.bundled` markers because
+/// their presence bypasses the content security scanner in [`crate::registry`] (see
+/// [#3040](https://github.com/example/zeph/issues/3040)).
+///
+/// Each removal is logged at `WARN` level as a security event. Returns the
+/// number of markers removed.
+///
+/// # Errors
+///
+/// Returns an error if any removal fails (e.g. permission denied).
+fn strip_bundled_markers(dir: &Path) -> std::io::Result<u64> {
+    strip_bundled_markers_recursive(dir)
+}
+
+fn strip_bundled_markers_recursive(dir: &Path) -> std::io::Result<u64> {
+    let mut removed = 0u64;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            removed += strip_bundled_markers_recursive(&path)?;
+        } else if file_type.is_file() && entry.file_name() == ".bundled" {
+            tracing::warn!(
+                path = %path.display(),
+                "stripped forged .bundled marker from installed skill package"
+            );
+            std::fs::remove_file(&path)?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 #[cfg(test)]
@@ -676,5 +732,146 @@ mod tests {
         // on nonexistent path returns Ok([])
         let result = mgr.list_installed();
         assert!(result.is_ok());
+    }
+
+    // --- security: .bundled marker stripping ---
+
+    #[test]
+    fn install_from_path_strips_bundled_marker() {
+        let src = tempfile::tempdir().unwrap();
+        let managed = tempfile::tempdir().unwrap();
+
+        let skill_src = src.path().join("sec-skill");
+        std::fs::create_dir_all(&skill_src).unwrap();
+        std::fs::write(
+            skill_src.join("SKILL.md"),
+            "---\nname: sec-skill\ndescription: Security test.\n---\n# Body\nHello",
+        )
+        .unwrap();
+        // Forge the .bundled marker
+        std::fs::write(skill_src.join(".bundled"), "0.1.0").unwrap();
+
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+        let result = mgr.install_from_path(&skill_src).unwrap();
+
+        assert_eq!(result.name, "sec-skill");
+        let installed = managed.path().join("sec-skill");
+        assert!(
+            installed.join("SKILL.md").exists(),
+            "SKILL.md must be present"
+        );
+        assert!(
+            !installed.join(".bundled").exists(),
+            ".bundled must be stripped after install"
+        );
+    }
+
+    #[test]
+    fn install_from_path_strips_nested_bundled_marker() {
+        let src = tempfile::tempdir().unwrap();
+        let managed = tempfile::tempdir().unwrap();
+
+        let skill_src = src.path().join("nested-skill");
+        let subdir = skill_src.join("scripts");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(
+            skill_src.join("SKILL.md"),
+            "---\nname: nested-skill\ndescription: Nested test.\n---\n# Body\nHello",
+        )
+        .unwrap();
+        // Forge .bundled at root and in a subdirectory
+        std::fs::write(skill_src.join(".bundled"), "0.1.0").unwrap();
+        std::fs::write(subdir.join(".bundled"), "0.1.0").unwrap();
+
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+        mgr.install_from_path(&skill_src).unwrap();
+
+        let installed = managed.path().join("nested-skill");
+        assert!(
+            !installed.join(".bundled").exists(),
+            "root .bundled must be stripped"
+        );
+        assert!(
+            !installed.join("scripts").join(".bundled").exists(),
+            "nested .bundled must be stripped"
+        );
+    }
+
+    #[test]
+    fn install_from_path_forged_bundled_stays_quarantined() {
+        // Trust level is determined by managed_dir membership, not .bundled.
+        // After stripping, the result must still be SkillSource::File (path install).
+        // The actual Quarantined trust assignment happens in the caller (agent), but
+        // we verify install returns SkillSource::File and .bundled is gone.
+        let src = tempfile::tempdir().unwrap();
+        let managed = tempfile::tempdir().unwrap();
+
+        let skill_src = src.path().join("q-skill");
+        std::fs::create_dir_all(&skill_src).unwrap();
+        std::fs::write(
+            skill_src.join("SKILL.md"),
+            "---\nname: q-skill\ndescription: Quarantine test.\n---\n# Body\nHello",
+        )
+        .unwrap();
+        std::fs::write(skill_src.join(".bundled"), "forged").unwrap();
+
+        let mgr = SkillManager::new(managed.path().to_path_buf());
+        let result = mgr.install_from_path(&skill_src).unwrap();
+
+        assert!(
+            matches!(result.source, SkillSource::File { .. }),
+            "source must be File for path install"
+        );
+        assert!(
+            !managed.path().join("q-skill").join(".bundled").exists(),
+            ".bundled must not exist after install"
+        );
+    }
+
+    #[test]
+    fn strip_bundled_markers_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let count = strip_bundled_markers(dir.path()).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn strip_bundled_markers_preserves_other_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("SKILL.md"), "content").unwrap();
+        std::fs::write(dir.path().join("script.sh"), "#!/bin/sh").unwrap();
+        std::fs::write(dir.path().join(".bundled"), "0.1.0").unwrap();
+
+        strip_bundled_markers(dir.path()).unwrap();
+
+        assert!(
+            dir.path().join("SKILL.md").exists(),
+            "SKILL.md must be preserved"
+        );
+        assert!(
+            dir.path().join("script.sh").exists(),
+            "script.sh must be preserved"
+        );
+        assert!(
+            !dir.path().join(".bundled").exists(),
+            ".bundled must be removed"
+        );
+    }
+
+    #[test]
+    fn strip_bundled_markers_removes_at_multiple_levels() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(dir.path().join(".bundled"), "0.1.0").unwrap();
+        std::fs::write(sub.join(".bundled"), "0.1.0").unwrap();
+        std::fs::write(sub.join("keep.txt"), "data").unwrap();
+
+        let count = strip_bundled_markers(dir.path()).unwrap();
+
+        assert_eq!(count, 2, "both .bundled files must be removed");
+        assert!(!dir.path().join(".bundled").exists());
+        assert!(!sub.join(".bundled").exists());
+        assert!(sub.join("keep.txt").exists(), "keep.txt must survive");
     }
 }
