@@ -25,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Wire `with_managed_skills_dir` to populate `hub_dirs` in `SkillRegistry`, activating M1 defense-in-depth for builder-constructed agents (closes #3044)
+
 - **tui: multiline composer now expands up to three visible lines**: the TUI input box now
   grows with explicit newline-based drafts up to 3 visible rows, keeps the cursor-scrolled
   portion of the draft in view, and adds `Ctrl+J` as a portable newline chord alongside
