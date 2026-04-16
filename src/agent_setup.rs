@@ -1185,7 +1185,7 @@ pub(crate) fn apply_mcp_discovery<C: Channel>(
     agent.with_mcp_discovery(strategy, params, discovery_provider)
 }
 
-/// Build a [`SandboxPolicy`] from the TOML `[tools.sandbox]` config section.
+/// Build a `SandboxPolicy` from the TOML `[tools.sandbox]` config section.
 pub(crate) fn sandbox_policy_from_config(
     cfg: &zeph_tools::config::SandboxConfig,
 ) -> zeph_tools::sandbox::SandboxPolicy {
