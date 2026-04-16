@@ -5,7 +5,7 @@
 //!
 //! This module provides a portable [`Sandbox`] trait and platform-specific backends that
 //! restrict filesystem, network, and syscall access for shell commands spawned by
-//! [`ShellExecutor`].
+//! `ShellExecutor`.
 //!
 //! # Scope (NFR-SB-1)
 //!
@@ -207,8 +207,8 @@ pub trait Sandbox: Send + Sync + std::fmt::Debug {
 /// Construct the best available [`Sandbox`] backend for the current platform.
 ///
 /// Selection order:
-/// 1. macOS → [`MacosSandbox`]
-/// 2. Linux + `sandbox` feature → [`LinuxSandbox`]
+/// 1. macOS → `MacosSandbox`
+/// 2. Linux + `sandbox` feature → `LinuxSandbox`
 /// 3. Fallback → [`NoopSandbox`]
 ///
 /// # Errors
