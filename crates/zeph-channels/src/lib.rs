@@ -62,4 +62,4 @@ pub const CONFIRM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 ///
 /// [`Channel::elicit`]: zeph_core::channel::Channel::elicit
 /// [`ElicitationResponse::Cancelled`]: zeph_core::channel::ElicitationResponse::Cancelled
-pub const ELICITATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+pub const ELICITATION_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(2);

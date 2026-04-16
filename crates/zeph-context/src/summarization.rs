@@ -493,24 +493,20 @@ pub fn remove_tool_responses_middle_out(mut messages: Vec<Message>, fraction: f3
                 }
                 MessagePart::ToolOutput {
                     body, compacted_at, ..
-                } => {
-                    if compacted_at.is_none() {
-                        let ref_notice = extract_overflow_ref(body)
-                            .map(|uuid| {
-                                format!(
-                                    "[tool output pruned; use read_overflow {uuid} to retrieve]"
-                                )
-                            })
-                            .unwrap_or_default();
-                        *body = ref_notice;
-                        *compacted_at = Some(
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs()
-                                .cast_signed(),
-                        );
-                    }
+                } if compacted_at.is_none() => {
+                    let ref_notice = extract_overflow_ref(body)
+                        .map(|uuid| {
+                            format!("[tool output pruned; use read_overflow {uuid} to retrieve]")
+                        })
+                        .unwrap_or_default();
+                    *body = ref_notice;
+                    *compacted_at = Some(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs()
+                            .cast_signed(),
+                    );
                 }
                 _ => {}
             }

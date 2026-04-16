@@ -129,11 +129,9 @@ impl GuardrailStats {
     /// ```
     #[must_use]
     pub fn avg_latency_ms(&self) -> u64 {
-        if self.total_checks == 0 {
-            0
-        } else {
-            self.total_latency_ms / self.total_checks
-        }
+        self.total_latency_ms
+            .checked_div(self.total_checks)
+            .unwrap_or(0)
     }
 }
 

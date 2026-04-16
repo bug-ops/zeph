@@ -22,7 +22,7 @@ use opentelemetry_sdk::trace::SpanExporter;
 const BACKOFFS: [Duration; 3] = [
     Duration::from_secs(5),
     Duration::from_secs(30),
-    Duration::from_secs(300),
+    Duration::from_mins(5),
 ];
 
 /// Circuit-breaker wrapping an inner [`SpanExporter`].

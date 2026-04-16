@@ -1512,7 +1512,7 @@ impl<C: Channel> Agent<C> {
         }
 
         // Phase 2: sort descending by resp_idx so insertions do not invalidate lower indices.
-        targets.sort_by(|a, b| b.0.cmp(&a.0));
+        targets.sort_by_key(|target| std::cmp::Reverse(target.0));
 
         let count = targets.len();
         for (resp_idx, req_idx, summary) in targets {

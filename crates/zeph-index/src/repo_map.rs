@@ -215,7 +215,7 @@ pub fn generate_repo_map(root: &Path, token_budget: usize, tc: &TokenCounter) ->
         entries.push((rel, formatted));
     }
 
-    entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.1.len()));
 
     let header = "<repo_map>\n";
     let footer = "</repo_map>";

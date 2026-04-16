@@ -188,8 +188,7 @@ pub(crate) fn verify_signature(
     if let Ok(ts) = timestamp.parse::<i64>() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs().cast_signed())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs().cast_signed());
         if (now - ts).abs() > 300 {
             return Err(StatusCode::UNAUTHORIZED);
         }

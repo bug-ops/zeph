@@ -882,7 +882,7 @@ impl McpManager {
                     // we don't need to wait for the browser to open.
                     let _ = open::that_in_background(pending.auth_url.clone());
 
-                    let callback_timeout = std::time::Duration::from_secs(300);
+                    let callback_timeout = std::time::Duration::from_mins(5);
                     let listener = pending
                         .listener
                         .take()

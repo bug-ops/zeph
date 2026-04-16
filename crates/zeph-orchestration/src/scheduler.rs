@@ -285,7 +285,7 @@ impl DagScheduler {
         let task_timeout = if config.task_timeout_secs > 0 {
             Duration::from_secs(config.task_timeout_secs)
         } else {
-            Duration::from_secs(600)
+            Duration::from_mins(10)
         };
 
         let topology = TopologyClassifier::analyze(&graph, config);
@@ -405,7 +405,7 @@ impl DagScheduler {
         let task_timeout = if config.task_timeout_secs > 0 {
             Duration::from_secs(config.task_timeout_secs)
         } else {
-            Duration::from_secs(600)
+            Duration::from_mins(10)
         };
 
         let topology = TopologyClassifier::analyze(&graph, config);

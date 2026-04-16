@@ -493,7 +493,7 @@ const JUDGE_ASSISTANT_MAX_CHARS: usize = 500;
 /// Rate limiter: max judge calls per window.
 const JUDGE_RATE_LIMIT: usize = 5;
 /// Rate limiter: sliding window duration.
-const JUDGE_RATE_WINDOW: Duration = Duration::from_secs(60);
+const JUDGE_RATE_WINDOW: Duration = Duration::from_mins(1);
 
 const JUDGE_SYSTEM_PROMPT: &str = "\
 You are a user satisfaction classifier for an AI assistant.

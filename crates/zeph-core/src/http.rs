@@ -17,7 +17,7 @@ use std::time::Duration;
 pub fn default_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_mins(1))
         .user_agent(concat!("zeph/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()

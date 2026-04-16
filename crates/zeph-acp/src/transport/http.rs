@@ -267,7 +267,7 @@ impl AcpHttpState {
     pub fn start_reaper(&self) {
         let connections = Arc::clone(&self.connections);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            let mut interval = tokio::time::interval(Duration::from_mins(1));
             loop {
                 interval.tick().await;
                 connections.retain(|_, handle| !handle.is_expired());

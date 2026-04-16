@@ -189,7 +189,7 @@ impl FilePickerState {
             })
             .collect();
 
-        scored.sort_unstable_by(|a, b| b.score.cmp(&a.score));
+        scored.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.score));
         scored.truncate(MAX_RESULTS);
         self.matches = scored;
     }

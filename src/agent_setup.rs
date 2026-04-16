@@ -511,7 +511,7 @@ pub(crate) fn apply_response_cache<C: Channel>(
     let cache = std::sync::Arc::new(zeph_memory::ResponseCache::new(pool, ttl_secs));
     let cache_clone = std::sync::Arc::clone(&cache);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        let mut interval = tokio::time::interval(std::time::Duration::from_hours(1));
         interval.tick().await; // skip immediate first tick
         loop {
             interval.tick().await;

@@ -679,7 +679,7 @@ pub fn filter_commands(query: &str) -> Vec<&'static CommandEntry> {
         })
         .collect();
 
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     scored.into_iter().map(|(e, _)| e).collect()
 }
 

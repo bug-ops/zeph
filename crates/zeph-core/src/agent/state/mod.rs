@@ -739,7 +739,7 @@ impl Default for IndexState {
             retriever: None,
             repo_map_tokens: 0,
             cached_repo_map: None,
-            repo_map_ttl: std::time::Duration::from_secs(300),
+            repo_map_ttl: std::time::Duration::from_mins(5),
         }
     }
 }

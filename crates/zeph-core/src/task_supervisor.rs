@@ -89,7 +89,7 @@ pub enum RestartPolicy {
 }
 
 /// Maximum delay between restart attempts (caps exponential backoff).
-pub const MAX_RESTART_DELAY: Duration = Duration::from_secs(60);
+pub const MAX_RESTART_DELAY: Duration = Duration::from_mins(1);
 
 /// Configuration passed to [`TaskSupervisor::spawn`] to describe a supervised task.
 ///

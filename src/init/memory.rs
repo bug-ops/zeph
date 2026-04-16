@@ -97,7 +97,7 @@ pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
             state.hard_compaction_threshold = val;
             break;
         }
-        eprintln!("error: hard threshold must be greater than soft threshold ({soft}), got {val}",);
+        eprintln!("error: hard threshold must be greater than soft threshold ({soft}), got {val}");
     }
 
     state.graph_memory_enabled = Confirm::new()

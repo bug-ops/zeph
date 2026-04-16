@@ -126,12 +126,10 @@ pub fn read_line(prompt: &str, history: &[String]) -> io::Result<ReadLineResult>
                 stdout().flush()?;
                 return Ok(ReadLineResult::Interrupted);
             }
-            (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
-                if input.is_empty() {
-                    write!(stdout(), "\r\n")?;
-                    stdout().flush()?;
-                    return Ok(ReadLineResult::Eof);
-                }
+            (KeyModifiers::CONTROL, KeyCode::Char('d')) if input.is_empty() => {
+                write!(stdout(), "\r\n")?;
+                stdout().flush()?;
+                return Ok(ReadLineResult::Eof);
             }
             (_, KeyCode::Enter) => {
                 write!(stdout(), "\r\n")?;
@@ -155,26 +153,20 @@ pub fn read_line(prompt: &str, history: &[String]) -> io::Result<ReadLineResult>
                 input.drain(start..end);
                 cursor_pos = boundary;
             }
-            (_, KeyCode::Backspace) => {
-                if cursor_pos > 0 {
-                    let off = byte_offset(&input, cursor_pos - 1);
-                    input.remove(off);
-                    cursor_pos -= 1;
-                }
+            (_, KeyCode::Backspace) if cursor_pos > 0 => {
+                let off = byte_offset(&input, cursor_pos - 1);
+                input.remove(off);
+                cursor_pos -= 1;
             }
-            (_, KeyCode::Delete) => {
-                if cursor_pos < char_count(&input) {
-                    let off = byte_offset(&input, cursor_pos);
-                    input.remove(off);
-                }
+            (_, KeyCode::Delete) if cursor_pos < char_count(&input) => {
+                let off = byte_offset(&input, cursor_pos);
+                input.remove(off);
             }
             (_, KeyCode::Left) => {
                 cursor_pos = cursor_pos.saturating_sub(1);
             }
-            (_, KeyCode::Right) => {
-                if cursor_pos < char_count(&input) {
-                    cursor_pos += 1;
-                }
+            (_, KeyCode::Right) if cursor_pos < char_count(&input) => {
+                cursor_pos += 1;
             }
             (_, KeyCode::Up) => {
                 navigate_history_up(

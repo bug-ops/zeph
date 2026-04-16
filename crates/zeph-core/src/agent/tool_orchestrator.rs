@@ -93,7 +93,7 @@ impl ToolOrchestrator {
             pre_execution_verifiers: Vec::new(),
             audit_logger: None,
             tafc: TafcConfig::default(),
-            result_cache: ToolResultCache::new(true, Some(Duration::from_secs(300))),
+            result_cache: ToolResultCache::new(true, Some(Duration::from_mins(5))),
             parameter_reformat_provider: String::new(),
             utility_scorer: UtilityScorer::new(UtilityScoringConfig::default()),
             session_tool_call_count: 0,

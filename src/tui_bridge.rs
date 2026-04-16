@@ -128,11 +128,7 @@ async fn spawn_warmup_with_backfill_status(
     loop {
         let progress = *backfill_rx.borrow_and_update();
         if let Some(p) = progress {
-            let pct = if p.total > 0 {
-                p.done * 100 / p.total
-            } else {
-                0
-            };
+            let pct = (p.done * 100).checked_div(p.total).unwrap_or(0);
             let _ = tx
                 .send(zeph_tui::AgentEvent::Status(format!(
                     "Backfilling embeddings: {}/{} ({}%)",

@@ -2451,10 +2451,8 @@ impl App {
             KeyCode::Char(c) => {
                 state.push_char(c);
             }
-            KeyCode::Backspace => {
-                if !state.pop_char() {
-                    self.file_picker_state = None;
-                }
+            KeyCode::Backspace if !state.pop_char() => {
+                self.file_picker_state = None;
             }
             _ => {}
         }
@@ -2675,10 +2673,7 @@ fn is_tool_use_only(content: &str) -> bool {
         return false;
     }
     let mut rest = trimmed;
-    loop {
-        let Some(start) = rest.find("[tool_use: ") else {
-            break;
-        };
+    while let Some(start) = rest.find("[tool_use: ") {
         if !rest[..start].trim().is_empty() {
             return false;
         }

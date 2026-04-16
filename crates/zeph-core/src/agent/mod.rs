@@ -1535,7 +1535,7 @@ impl<C: Channel> Agent<C> {
                 let approved = self.channel.confirm(&confirm_prompt).await.unwrap_or(false);
                 if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                     if approved {
-                        let ttl = std::time::Duration::from_secs(300);
+                        let ttl = std::time::Duration::from_mins(5);
                         let key = req.secret_key.clone();
                         if mgr.approve_secret(&req_task_id, &key, ttl).is_ok() {
                             let _ = mgr.deliver_secret(&req_task_id, key);
@@ -1672,7 +1672,7 @@ impl<C: Channel> Agent<C> {
             && tid == full_id
         {
             let key = req.secret_key.clone();
-            let ttl = std::time::Duration::from_secs(300);
+            let ttl = std::time::Duration::from_mins(5);
             if let Err(e) = mgr.approve_secret(&full_id, &key, ttl) {
                 return Some(format!("Approve failed: {e}"));
             }

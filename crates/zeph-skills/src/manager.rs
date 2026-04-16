@@ -108,8 +108,7 @@ impl SkillManager {
         // REV-006: combine nanos with pid to reduce predictability.
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         let tmp_name = format!("__tmp_{}_{}", nanos, std::process::id());
         let tmp_dir = self.managed_dir.join(&tmp_name);
 

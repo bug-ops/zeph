@@ -228,7 +228,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     gc.spreading_activation.decay_lambda, gc.spreading_activation.max_hops,
                 );
             } else {
-                let _ = writeln!(out, "Graph recall: BFS (hops={})", gc.max_hops,);
+                let _ = writeln!(out, "Graph recall: BFS (hops={})", gc.max_hops);
             }
         }
 

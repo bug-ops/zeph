@@ -506,7 +506,7 @@ impl ZephAcpAgent {
         let sessions = Rc::clone(&self.sessions);
         let idle_timeout = self.idle_timeout;
         tokio::task::spawn_local(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            let mut interval = tokio::time::interval(std::time::Duration::from_mins(1));
             interval.tick().await; // skip first tick
             loop {
                 interval.tick().await;

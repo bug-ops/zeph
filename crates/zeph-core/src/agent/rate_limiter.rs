@@ -108,7 +108,7 @@ impl SlidingWindow {
     /// Prune entries older than 60 seconds and return the current count.
     fn count(&mut self) -> usize {
         let cutoff = Instant::now()
-            .checked_sub(std::time::Duration::from_secs(60))
+            .checked_sub(std::time::Duration::from_mins(1))
             .unwrap_or(Instant::now());
         while self.timestamps.front().is_some_and(|&t| t <= cutoff) {
             self.timestamps.pop_front();

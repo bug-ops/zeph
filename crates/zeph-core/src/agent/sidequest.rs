@@ -152,7 +152,7 @@ impl SidequestState {
 
         // Sort by token count descending, keep only the largest max_cursors
         self.tool_output_cursors
-            .sort_unstable_by(|a, b| b.token_count.cmp(&a.token_count));
+            .sort_unstable_by_key(|cursor| std::cmp::Reverse(cursor.token_count));
         self.tool_output_cursors.truncate(self.config.max_cursors);
     }
 

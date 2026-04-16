@@ -588,14 +588,14 @@ impl<C: crate::channel::Channel> Agent<C> {
             );
             let approved = tokio::select! {
                 result = self.channel.confirm(&prompt) => result.unwrap_or(false),
-                () = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
+                () = tokio::time::sleep(std::time::Duration::from_mins(2)) => {
                     let _ = self.channel.send("Secret request timed out.").await;
                     false
                 }
             };
             if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                 if approved {
-                    let ttl = std::time::Duration::from_secs(300);
+                    let ttl = std::time::Duration::from_mins(5);
                     let key = req.secret_key.clone();
                     if mgr.approve_secret(&req_handle_id, &key, ttl).is_ok() {
                         let _ = mgr.deliver_secret(&req_handle_id, key);

@@ -205,7 +205,7 @@ impl PolicyEnforcer {
         let mut window = window_entry.lock().expect("rate limit mutex not poisoned");
         let now = Instant::now();
         let cutoff = now
-            .checked_sub(std::time::Duration::from_secs(60))
+            .checked_sub(std::time::Duration::from_mins(1))
             .unwrap_or(now);
 
         // Drain calls older than 60 seconds.
