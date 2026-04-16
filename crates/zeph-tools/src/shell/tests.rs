@@ -66,8 +66,16 @@ fn unclosed_block_ignored() {
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
 async fn execute_simple_command() {
-    let (envelope, result) =
-        execute_bash("echo hello", Duration::from_secs(30), None, None, None, &[]).await;
+    let (envelope, result) = execute_bash(
+        "echo hello",
+        Duration::from_secs(30),
+        None,
+        None,
+        None,
+        &[],
+        None,
+    )
+    .await;
     assert!(result.contains("hello"));
     assert_eq!(envelope.exit_code, 0);
 }
@@ -82,6 +90,7 @@ async fn execute_stderr_output() {
         None,
         None,
         &[],
+        None,
     )
     .await;
     assert!(result.contains("[stderr]"));
@@ -99,6 +108,7 @@ async fn execute_stdout_and_stderr_combined() {
         None,
         None,
         &[],
+        None,
     )
     .await;
     assert!(result.contains("out"));
@@ -113,7 +123,7 @@ async fn execute_stdout_and_stderr_combined() {
 #[cfg(not(target_os = "windows"))]
 async fn execute_empty_output() {
     let (envelope, result) =
-        execute_bash("true", Duration::from_secs(30), None, None, None, &[]).await;
+        execute_bash("true", Duration::from_secs(30), None, None, None, &[], None).await;
     assert_eq!(result, "(no output)");
     assert_eq!(envelope.exit_code, 0);
 }
@@ -935,6 +945,7 @@ async fn execute_bash_injects_extra_env() {
         None,
         Some(&env),
         &[],
+        None,
     )
     .await;
     assert_eq!(envelope.exit_code, 0);
@@ -969,7 +980,7 @@ async fn shell_executor_set_skill_env_injects_vars() {
 #[tokio::test]
 async fn execute_bash_error_handling() {
     let (envelope, result) =
-        execute_bash("false", Duration::from_secs(5), None, None, None, &[]).await;
+        execute_bash("false", Duration::from_secs(5), None, None, None, &[], None).await;
     assert_eq!(result, "(no output)");
     assert_eq!(envelope.exit_code, 1);
 }
@@ -984,6 +995,7 @@ async fn execute_bash_command_not_found() {
         None,
         None,
         &[],
+        None,
     )
     .await;
     assert!(result.contains("[stderr]") || result.contains("[error]"));
@@ -1133,6 +1145,7 @@ async fn cancel_token_kills_child_process() {
         Some(&token),
         None,
         &[],
+        None,
     )
     .await;
     assert_eq!(envelope.exit_code, 130);
@@ -1142,8 +1155,16 @@ async fn cancel_token_kills_child_process() {
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
 async fn cancel_token_none_does_not_cancel() {
-    let (envelope, result) =
-        execute_bash("echo ok", Duration::from_secs(5), None, None, None, &[]).await;
+    let (envelope, result) = execute_bash(
+        "echo ok",
+        Duration::from_secs(5),
+        None,
+        None,
+        None,
+        &[],
+        None,
+    )
+    .await;
     assert_eq!(envelope.exit_code, 0);
     assert!(result.contains("ok"));
 }
@@ -1167,6 +1188,7 @@ async fn cancel_kills_child_process_group() {
         Some(&token),
         None,
         &[],
+        None,
     )
     .await;
     assert_eq!(envelope.exit_code, 130);
@@ -1655,6 +1677,7 @@ async fn env_blocklist_strips_sensitive_vars() {
         None,
         None,
         &blocklist,
+        None,
     )
     .await;
     unsafe { std::env::remove_var("ZEPH_SECRET_TEST_VAR") };
@@ -1677,6 +1700,7 @@ async fn env_blocklist_preserves_safe_vars() {
         None,
         None,
         &blocklist,
+        None,
     )
     .await;
     assert_eq!(envelope.exit_code, 0);
@@ -1700,6 +1724,7 @@ async fn env_blocklist_extra_env_still_injected() {
         None,
         Some(&extra),
         &blocklist,
+        None,
     )
     .await;
     assert_eq!(envelope.exit_code, 0);
@@ -1725,6 +1750,7 @@ async fn env_blocklist_multiple_prefixes() {
         None,
         None,
         &blocklist,
+        None,
     )
     .await;
     unsafe {
@@ -1754,6 +1780,7 @@ async fn empty_env_blocklist_passes_all_vars() {
         None,
         None,
         &[],
+        None,
     )
     .await;
     unsafe { std::env::remove_var("ZEPH_EMPTY_BLOCKLIST_TEST") };
@@ -2304,6 +2331,7 @@ async fn shell_output_envelope_separates_streams() {
         None,
         None,
         &[],
+        None,
     )
     .await;
     assert!(
@@ -2356,8 +2384,16 @@ async fn shell_output_envelope_in_tool_output_raw_response() {
 #[cfg(unix)]
 #[tokio::test]
 async fn shell_output_envelope_nonzero_exit_code() {
-    let (envelope, _combined) =
-        execute_bash("exit 42", Duration::from_secs(5), None, None, None, &[]).await;
+    let (envelope, _combined) = execute_bash(
+        "exit 42",
+        Duration::from_secs(5),
+        None,
+        None,
+        None,
+        &[],
+        None,
+    )
+    .await;
     assert_eq!(
         envelope.exit_code, 42,
         "exit_code should reflect the actual exit status"

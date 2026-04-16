@@ -279,6 +279,22 @@ async fn build_acp_deps(
                 .permission_policy(config.security.autonomy_level),
         )
         .with_output_filters(filter_registry);
+    if config.tools.sandbox.enabled {
+        match zeph_tools::sandbox::build_sandbox(config.tools.sandbox.strict) {
+            Ok(backend) => {
+                let name = backend.name();
+                let policy = crate::agent_setup::sandbox_policy_from_config(&config.tools.sandbox);
+                shell_executor = shell_executor.with_sandbox(std::sync::Arc::from(backend), policy);
+                tracing::info!(backend = name, "OS sandbox enabled (acp)");
+            }
+            Err(e) if config.tools.sandbox.strict => {
+                panic!("sandbox initialization failed (strict=true): {e}");
+            }
+            Err(e) => {
+                tracing::warn!("OS sandbox unavailable, running without isolation: {e}");
+            }
+        }
+    }
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
     let mut acp_audit_logger: Option<std::sync::Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled

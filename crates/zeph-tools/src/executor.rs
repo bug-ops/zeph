@@ -285,6 +285,8 @@ pub enum ToolEvent {
     Started {
         tool_name: ToolName,
         command: String,
+        /// Active sandbox profile, if any. `None` when sandbox is disabled.
+        sandbox_profile: Option<String>,
     },
     /// A chunk of streaming output was produced (e.g. from a long-running command).
     OutputChunk {
@@ -583,6 +585,36 @@ pub trait ToolExecutor: Send + Sync {
     fn is_tool_retryable(&self, _tool_id: &str) -> bool {
         false
     }
+
+    /// Whether a tool call can be safely dispatched speculatively (before the LLM finishes).
+    ///
+    /// Speculative execution requires the tool to be:
+    /// 1. Idempotent — repeated execution with the same args produces the same result.
+    /// 2. Side-effect-free or cheaply reversible.
+    /// 3. Not subject to user confirmation (`needs_confirmation` must be false at call time).
+    ///
+    /// Default: `false` (safe). Override to `true` only for tools that satisfy all three
+    /// properties. The engine additionally gates on trust level and confirmation status
+    /// regardless of this flag.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tools::ToolExecutor;
+    ///
+    /// struct ReadOnlyExecutor;
+    /// impl ToolExecutor for ReadOnlyExecutor {
+    ///     async fn execute(&self, _: &str) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> {
+    ///         Ok(None)
+    ///     }
+    ///     fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+    ///         true // read-only, idempotent
+    ///     }
+    /// }
+    /// ```
+    fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+        false
+    }
 }
 
 /// Object-safe erased version of [`ToolExecutor`] using boxed futures.
@@ -630,6 +662,24 @@ pub trait ErasedToolExecutor: Send + Sync {
 
     /// Whether the executor can safely retry this tool call on a transient error.
     fn is_tool_retryable_erased(&self, tool_id: &str) -> bool;
+
+    /// Whether a tool call can be safely dispatched speculatively.
+    ///
+    /// Default: `false`. Override to `true` in read-only executors.
+    fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
+        false
+    }
+
+    /// Return `true` when `call` would require user confirmation before execution.
+    ///
+    /// This is a pure metadata/policy query — implementations must **not** execute the tool.
+    /// Used by the speculative engine to gate dispatch without causing double side-effects.
+    ///
+    /// Default: `false` (no confirmation required). Override in executors that enforce a
+    /// confirmation policy (e.g. `TrustGateExecutor`).
+    fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+        false
+    }
 }
 
 impl<T: ToolExecutor> ErasedToolExecutor for T {
@@ -679,6 +729,10 @@ impl<T: ToolExecutor> ErasedToolExecutor for T {
 
     fn is_tool_retryable_erased(&self, tool_id: &str) -> bool {
         ToolExecutor::is_tool_retryable(self, tool_id)
+    }
+
+    fn is_tool_speculatable_erased(&self, tool_id: &str) -> bool {
+        ToolExecutor::is_tool_speculatable(self, tool_id)
     }
 }
 
@@ -739,6 +793,10 @@ impl ToolExecutor for DynExecutor {
 
     fn is_tool_retryable(&self, tool_id: &str) -> bool {
         self.0.is_tool_retryable_erased(tool_id)
+    }
+
+    fn is_tool_speculatable(&self, tool_id: &str) -> bool {
+        self.0.is_tool_speculatable_erased(tool_id)
     }
 }
 

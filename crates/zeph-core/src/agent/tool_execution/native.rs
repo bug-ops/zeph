@@ -553,6 +553,8 @@ impl<C: Channel> Agent<C> {
                 params: None,
                 parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                 started_at: std::time::Instant::now(),
+                speculative: false,
+                sandbox_profile: None,
             })
             .await?;
         if let Some(ref d) = self.debug_state.debug_dumper {
@@ -644,6 +646,8 @@ impl<C: Channel> Agent<C> {
                         params: None,
                         parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                         started_at: std::time::Instant::now(),
+                        speculative: false,
+                        sandbox_profile: None,
                     })
                     .await?;
                 if let Some(ref d) = self.debug_state.debug_dumper {
@@ -1580,6 +1584,8 @@ impl<C: Channel> Agent<C> {
                         params: Some(tc.input.clone()),
                         parent_tool_use_id: self.session.parent_tool_use_id.clone(),
                         started_at: std::time::Instant::now(),
+                        speculative: false,
+                        sandbox_profile: None,
                     })
                     .await?;
             }

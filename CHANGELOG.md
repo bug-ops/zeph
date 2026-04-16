@@ -58,6 +58,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Wire `with_managed_skills_dir` to populate `hub_dirs` in `SkillRegistry`, activating M1 defense-in-depth for builder-constructed agents (closes #3044)
+- **tools: sandbox security hardening** (`#2808`): fixed six critical security defects
+  identified in review — macOS Seatbelt profile no longer grants unconditional write access
+  to `/private/tmp` and `/var/folders` or read access to `/private/etc`; Linux seccomp BPF
+  now includes a real privilege-escalation denylist (ptrace, kexec_load, mount, bpf,
+  perf_event_open, etc.) compiled once at startup and reused per invocation; `SandboxPolicy`
+  paths are now canonicalized at construction to prevent symlink bypass; macOS `NamedTempFile`
+  leak is resolved by storing handles in `MacosSandbox` until drop; `LinuxSandbox` seccomp
+  BPF supports both x86_64 and aarch64 arch selectors.
+- **tools: speculative engine correctness** (`#2290`, `#2409`): eliminated double tool
+  execution — the erroneous synchronous dry-run is replaced by a pure
+  `requires_confirmation_erased` policy query; sweeper now operates on the same cache
+  instance via `SpeculativeCache::shared_inner()` (TTL cleanup was previously a no-op on an
+  empty shadow cache); `cancel_for` now actually cancels and removes the in-flight handle
+  instead of just incrementing a counter; `PartialJsonParser::read_string` now decodes the
+  full byte slice as UTF-8 (fixes Cyrillic/CJK/emoji corruption caused by `b as char` Latin-1
+  cast); `PatternStore::observe` computes exponential decay in Rust instead of using SQLite
+  `pow()` which requires `SQLITE_ENABLE_MATH_FUNCTIONS` (absent in bundled `libsqlite3-sys`);
+  Postgres migration 074 added for PASTE tables.
 
 - **tui: multiline composer now expands up to three visible lines**: the TUI input box now
   grows with explicit newline-based drafts up to 3 visible rows, keeps the cursor-scrolled

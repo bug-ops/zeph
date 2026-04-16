@@ -480,6 +480,7 @@ mod tests {
             .send(zeph_tools::ToolEvent::Started {
                 tool_name: "shell".into(),
                 command: "ls".into(),
+                sandbox_profile: None,
             })
             .unwrap();
         tool_tx

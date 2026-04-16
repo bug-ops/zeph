@@ -338,7 +338,7 @@ async fn drain_embedding_guard_events(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn build_tool_setup(
     config: &Config,
     permission_policy: zeph_tools::PermissionPolicy,
@@ -357,6 +357,22 @@ pub(crate) async fn build_tool_setup(
     let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
         .with_permissions(permission_policy)
         .with_output_filters(filter_registry);
+    if config.tools.sandbox.enabled {
+        match zeph_tools::sandbox::build_sandbox(config.tools.sandbox.strict) {
+            Ok(backend) => {
+                let name = backend.name();
+                let policy = sandbox_policy_from_config(&config.tools.sandbox);
+                shell_executor = shell_executor.with_sandbox(std::sync::Arc::from(backend), policy);
+                tracing::info!(backend = name, "OS sandbox enabled");
+            }
+            Err(e) if config.tools.sandbox.strict => {
+                panic!("sandbox initialization failed (strict=true): {e}");
+            }
+            Err(e) => {
+                tracing::warn!("OS sandbox unavailable, running without isolation: {e}");
+            }
+        }
+    }
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
     let mut audit_logger: Option<Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
@@ -1167,6 +1183,22 @@ pub(crate) fn apply_mcp_discovery<C: Channel>(
     };
 
     agent.with_mcp_discovery(strategy, params, discovery_provider)
+}
+
+/// Build a [`SandboxPolicy`] from the TOML `[tools.sandbox]` config section.
+pub(crate) fn sandbox_policy_from_config(
+    cfg: &zeph_tools::config::SandboxConfig,
+) -> zeph_tools::sandbox::SandboxPolicy {
+    use zeph_tools::sandbox::SandboxPolicy;
+    SandboxPolicy {
+        profile: cfg.profile,
+        allow_read: cfg.allow_read.clone(),
+        allow_write: cfg.allow_write.clone(),
+        allow_network: cfg.profile == zeph_tools::sandbox::SandboxProfile::NetworkAllowAll,
+        allow_exec: vec![],
+        env_inherit: vec![],
+    }
+    .canonicalized()
 }
 
 #[cfg(test)]

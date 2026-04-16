@@ -42,6 +42,7 @@ use crate::executor::{
 };
 use crate::filter::{OutputFilterRegistry, sanitize_output};
 use crate::permissions::{PermissionAction, PermissionPolicy};
+use crate::sandbox::{Sandbox, SandboxPolicy};
 
 mod transaction;
 use transaction::{TransactionSnapshot, affected_paths, build_scope_matchers, is_write_command};
@@ -166,6 +167,8 @@ pub struct ShellExecutor {
     snapshot_required: bool,
     max_snapshot_bytes: u64,
     transaction_scope_matchers: Vec<globset::GlobMatcher>,
+    sandbox: Option<Arc<dyn Sandbox>>,
+    sandbox_policy: Option<SandboxPolicy>,
 }
 
 impl ShellExecutor {
@@ -225,7 +228,20 @@ impl ShellExecutor {
             snapshot_required: config.snapshot_required,
             max_snapshot_bytes: config.max_snapshot_bytes,
             transaction_scope_matchers: build_scope_matchers(&config.transaction_scope),
+            sandbox: None,
+            sandbox_policy: None,
         }
+    }
+
+    /// Attach an OS-level sandbox backend and a pre-snapshotted policy.
+    ///
+    /// The policy is snapshotted at construction and never re-resolved per call (no TOCTOU).
+    /// If a different policy is needed, create a new `ShellExecutor` via the builder chain.
+    #[must_use]
+    pub fn with_sandbox(mut self, sandbox: Arc<dyn Sandbox>, policy: SandboxPolicy) -> Self {
+        self.sandbox = Some(sandbox);
+        self.sandbox_policy = Some(policy);
+        self
     }
 
     /// Set environment variables to inject when executing the active skill's bash blocks.
@@ -392,15 +408,25 @@ impl ShellExecutor {
         };
 
         if let Some(ref tx) = self.tool_event_tx {
+            let sandbox_profile = self
+                .sandbox_policy
+                .as_ref()
+                .map(|p| format!("{:?}", p.profile));
             let _ = tx.send(ToolEvent::Started {
                 tool_name: ToolName::new("bash"),
                 command: block.to_owned(),
+                sandbox_profile,
             });
         }
 
         let start = Instant::now();
         let skill_env_snapshot: Option<std::collections::HashMap<String, String>> =
             self.skill_env.read().clone();
+        let sandbox_pair = self
+            .sandbox
+            .as_ref()
+            .zip(self.sandbox_policy.as_ref())
+            .map(|(sb, pol)| (sb.as_ref(), pol));
         let (mut envelope, out) = execute_bash(
             block,
             self.timeout,
@@ -408,6 +434,7 @@ impl ShellExecutor {
             self.cancel_token.as_ref(),
             skill_env_snapshot.as_ref(),
             &self.env_blocklist,
+            sandbox_pair,
         )
         .await;
         let exit_code = envelope.exit_code;
@@ -1194,6 +1221,7 @@ async fn execute_bash(
     cancel_token: Option<&CancellationToken>,
     extra_env: Option<&std::collections::HashMap<String, String>>,
     env_blocklist: &[String],
+    sandbox: Option<(&dyn Sandbox, &SandboxPolicy)>,
 ) -> (ShellOutputEnvelope, String) {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1201,10 +1229,7 @@ async fn execute_bash(
     let timeout_secs = timeout.as_secs();
 
     let mut cmd = Command::new("bash");
-    cmd.arg("-c")
-        .arg(code)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.arg("-c").arg(code);
 
     for (key, _) in std::env::vars() {
         if env_blocklist
@@ -1218,6 +1243,25 @@ async fn execute_bash(
     if let Some(env) = extra_env {
         cmd.envs(env);
     }
+
+    // Apply OS sandbox before setting stdio so the rewritten program is sandboxed.
+    if let Some((sb, policy)) = sandbox
+        && let Err(err) = sb.wrap(&mut cmd, policy)
+    {
+        let msg = format!("[error] sandbox setup failed: {err}");
+        return (
+            ShellOutputEnvelope {
+                stdout: String::new(),
+                stderr: msg.clone(),
+                exit_code: 1,
+                truncated: false,
+            },
+            msg,
+        );
+    }
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
     let child_result = cmd.spawn();
 
     let mut child = match child_result {

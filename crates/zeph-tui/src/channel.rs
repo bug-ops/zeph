@@ -497,6 +497,8 @@ mod tests {
             params: Some(serde_json::json!({"command": "ls -la"})),
             parent_tool_use_id: None,
             started_at: std::time::Instant::now(),
+            speculative: false,
+            sandbox_profile: None,
         })
         .await
         .unwrap();
@@ -518,6 +520,8 @@ mod tests {
             params: None,
             parent_tool_use_id: None,
             started_at: std::time::Instant::now(),
+            speculative: false,
+            sandbox_profile: None,
         })
         .await
         .unwrap();

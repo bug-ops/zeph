@@ -71,6 +71,7 @@ pub mod permissions;
 pub mod policy;
 pub mod policy_gate;
 pub mod registry;
+pub mod sandbox;
 pub mod schema_filter;
 pub mod scrape;
 pub mod search_code;
@@ -92,8 +93,8 @@ pub use composite::CompositeExecutor;
 pub use config::AdversarialPolicyConfig;
 pub use config::{
     AnomalyConfig, AuditConfig, AuthorizationConfig, DependencyConfig, FileConfig, OverflowConfig,
-    ResultCacheConfig, RetryConfig, ScrapeConfig, ShellConfig, TafcConfig, ToolDependency,
-    ToolsConfig, UtilityScoringConfig,
+    ResultCacheConfig, RetryConfig, SandboxConfig, ScrapeConfig, ShellConfig, TafcConfig,
+    ToolDependency, ToolsConfig, UtilityScoringConfig,
 };
 pub use cwd::SetCwdExecutor;
 pub use diagnostics::DiagnosticsExecutor;
@@ -121,6 +122,11 @@ pub use policy::{
 };
 pub use policy_gate::PolicyGateExecutor;
 pub use registry::ToolRegistry;
+#[cfg(target_os = "macos")]
+pub use sandbox::MacosSandbox;
+pub use sandbox::{
+    NoopSandbox, Sandbox, SandboxError, SandboxPolicy, SandboxProfile, build_sandbox,
+};
 pub use schema_filter::{
     DependencyExclusion, InclusionReason, ToolDependencyGraph, ToolEmbedding, ToolFilterResult,
     ToolSchemaFilter,

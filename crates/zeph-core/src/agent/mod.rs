@@ -42,6 +42,7 @@ mod session_digest;
 pub(crate) mod sidequest;
 mod skill_management;
 pub mod slash_commands;
+pub(crate) mod speculative;
 pub(crate) mod state;
 pub(crate) mod tool_execution;
 pub(crate) mod tool_orchestrator;

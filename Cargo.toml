@@ -186,7 +186,8 @@ ide     = ["acp", "acp-http"]
 server  = ["gateway", "a2a", "otel", "prometheus"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "task-metrics"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "task-metrics", "sandbox"]
+sandbox = ["zeph-tools/sandbox"]
 bench   = ["dep:zeph-bench"]
 
 # === Individual feature flags ===

@@ -485,6 +485,17 @@ pub struct ToolsConfig {
     /// Counted on the first attempt only — retries do not consume additional quota slots.
     #[serde(default)]
     pub max_tool_calls_per_session: Option<u32>,
+    /// Speculative tool execution configuration.
+    ///
+    /// Runtime-only; no cargo feature gate. Default mode is `off`.
+    #[serde(default)]
+    pub speculative: SpeculativeConfig,
+    /// OS-level subprocess sandbox configuration (`[tools.sandbox]` TOML section).
+    ///
+    /// When `enabled = true`, all shell commands are wrapped in an OS-native sandbox
+    /// (macOS Seatbelt or Linux bwrap + Landlock). Default: disabled.
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
 }
 
 impl ToolsConfig {
@@ -604,6 +615,152 @@ impl Default for ToolsConfig {
             file: FileConfig::default(),
             authorization: AuthorizationConfig::default(),
             max_tool_calls_per_session: None,
+            speculative: SpeculativeConfig::default(),
+            sandbox: SandboxConfig::default(),
+        }
+    }
+}
+
+fn default_max_in_flight() -> usize {
+    4
+}
+
+fn default_confidence_threshold() -> f32 {
+    0.55
+}
+
+fn default_max_wasted_per_minute() -> u64 {
+    100
+}
+
+fn default_ttl_seconds() -> u64 {
+    30
+}
+
+fn default_min_observations() -> u32 {
+    5
+}
+
+fn default_half_life_days() -> f64 {
+    14.0
+}
+
+/// Speculative tool execution mode.
+///
+/// Controls whether and how the agent pre-dispatches tool calls before the LLM
+/// finishes decoding the full tool-use block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SpeculationMode {
+    /// No speculation; uses existing synchronous path.
+    #[default]
+    Off,
+    /// LLM-decoding level: fires tools when streaming partial JSON has all required fields.
+    Decoding,
+    /// Application-level pattern (PASTE): predicts top-K calls from `SQLite` history.
+    Pattern,
+    /// Both decoding and pattern speculation active.
+    Both,
+}
+
+/// Pattern-based (PASTE) speculative execution config.
+///
+/// Controls the SQLite-backed tool sequence learning subsystem. Disabled by default for
+/// privacy and performance reasons; opt-in per deployment.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SpeculativePatternConfig {
+    /// Enable PASTE pattern learning and prediction. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Minimum observed occurrences before a prediction is issued.
+    #[serde(default = "default_min_observations")]
+    pub min_observations: u32,
+    /// Exponential decay half-life in days for pattern scoring.
+    #[serde(default = "default_half_life_days")]
+    pub half_life_days: f64,
+    /// LLM provider name (from `[[llm.providers]]`) for optional reranking.
+    /// Empty string disables LLM reranking; scoring-only path is used.
+    #[serde(default)]
+    pub rerank_provider: String,
+}
+
+impl Default for SpeculativePatternConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_observations: default_min_observations(),
+            half_life_days: default_half_life_days(),
+            rerank_provider: String::new(),
+        }
+    }
+}
+
+/// Shell command regex allowlist for speculative execution.
+///
+/// Only commands matching at least one regex in this list are eligible for speculation.
+/// Default: empty (speculation disabled for shell by default).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SpeculativeAllowlistConfig {
+    /// Regexes matched against the full `bash` command string. Empty = no shell speculation.
+    #[serde(default)]
+    pub shell: Vec<String>,
+}
+
+/// Top-level configuration for speculative tool execution.
+///
+/// All settings here are runtime-only: no cargo feature gates this section.
+/// The module always compiles; branches are never taken when `mode = "off"`.
+///
+/// # Examples
+///
+/// ```toml
+/// [tools.speculative]
+/// mode = "both"
+/// max_in_flight = 4
+/// ttl_seconds = 30
+///
+/// [tools.speculative.pattern]
+/// enabled = false
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SpeculativeConfig {
+    /// Speculation mode. Default: `off`.
+    #[serde(default)]
+    pub mode: SpeculationMode,
+    /// Maximum concurrent in-flight speculative tasks. Bounded to `[1, 16]`.
+    #[serde(default = "default_max_in_flight")]
+    pub max_in_flight: usize,
+    /// Minimum confidence score `[0, 1]` to dispatch a speculative task.
+    #[serde(default = "default_confidence_threshold")]
+    pub confidence_threshold: f32,
+    /// Circuit-breaker: disable speculation for 60 s when wasted ms exceeds this per minute.
+    #[serde(default = "default_max_wasted_per_minute")]
+    pub max_wasted_per_minute: u64,
+    /// Per-handle wall-clock TTL in seconds before the handle is cancelled.
+    #[serde(default = "default_ttl_seconds")]
+    pub ttl_seconds: u64,
+    /// Emit `AuditEntry` for speculative dispatches (with `result: speculative_discarded`).
+    #[serde(default = "default_true")]
+    pub audit: bool,
+    /// PASTE pattern learning config.
+    #[serde(default)]
+    pub pattern: SpeculativePatternConfig,
+    /// Per-executor command allowlists.
+    #[serde(default)]
+    pub allowlist: SpeculativeAllowlistConfig,
+}
+
+impl Default for SpeculativeConfig {
+    fn default() -> Self {
+        Self {
+            mode: SpeculationMode::Off,
+            max_in_flight: default_max_in_flight(),
+            confidence_threshold: default_confidence_threshold(),
+            max_wasted_per_minute: default_max_wasted_per_minute(),
+            ttl_seconds: default_ttl_seconds(),
+            audit: true,
+            pattern: SpeculativePatternConfig::default(),
+            allowlist: SpeculativeAllowlistConfig::default(),
         }
     }
 }
@@ -691,6 +848,80 @@ impl Default for ScrapeConfig {
             max_body_bytes: default_max_body_bytes(),
             allowed_domains: Vec::new(),
             denied_domains: Vec::new(),
+        }
+    }
+}
+
+fn default_sandbox_profile() -> crate::sandbox::SandboxProfile {
+    crate::sandbox::SandboxProfile::Workspace
+}
+
+fn default_sandbox_backend() -> String {
+    "auto".into()
+}
+
+/// OS-level subprocess sandbox configuration (`[tools.sandbox]` TOML section).
+///
+/// When `enabled = true`, all shell commands are wrapped in an OS-native sandbox:
+/// - **macOS**: `sandbox-exec` (Seatbelt) with a generated `TinyScheme` profile.
+/// - **Linux** (requires `sandbox` cargo feature): `bwrap` + Landlock + seccomp BPF.
+///
+/// This sandbox applies **only to subprocess executors** (shell). In-process executors
+/// (`WebScrapeExecutor`, `FileExecutor`) are not covered — see `NFR-SB-1`.
+///
+/// # Examples
+///
+/// ```toml
+/// [tools.sandbox]
+/// enabled = true
+/// profile = "workspace"
+/// allow_read  = ["$HOME/.cache/zeph"]
+/// allow_write = ["./.local"]
+/// strict = true
+/// backend = "auto"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SandboxConfig {
+    /// Enable OS-level sandbox. Default: `false`.
+    ///
+    /// On Linux requires the `sandbox` cargo feature. When `true` but the feature is absent,
+    /// startup emits `WARN` and degrades to noop (fail-open). Use `strict = true` to
+    /// make the feature absence an error instead.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Enforcement profile controlling the baseline restrictions.
+    #[serde(default = "default_sandbox_profile")]
+    pub profile: crate::sandbox::SandboxProfile,
+
+    /// Additional paths granted read access. Resolved to absolute paths at startup.
+    #[serde(default)]
+    pub allow_read: Vec<std::path::PathBuf>,
+
+    /// Additional paths granted write access. Resolved to absolute paths at startup.
+    #[serde(default)]
+    pub allow_write: Vec<std::path::PathBuf>,
+
+    /// When `true`, sandbox initialization failure aborts startup (fail-closed). Default: `true`.
+    #[serde(default = "default_true")]
+    pub strict: bool,
+
+    /// OS backend hint: `"auto"` / `"seatbelt"` / `"landlock-bwrap"` / `"noop"`.
+    ///
+    /// `"auto"` selects the best available backend for the current platform.
+    #[serde(default = "default_sandbox_backend")]
+    pub backend: String,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            profile: default_sandbox_profile(),
+            allow_read: Vec::new(),
+            allow_write: Vec::new(),
+            strict: true,
+            backend: default_sandbox_backend(),
         }
     }
 }

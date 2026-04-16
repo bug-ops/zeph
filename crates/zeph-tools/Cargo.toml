@@ -54,6 +54,12 @@ wiremock.workspace = true
 [features]
 profiling = []
 default = []
+# Gates Linux-only landlock + seccompiler deps. macOS backend compiles unconditionally.
+sandbox = ["dep:landlock", "dep:seccompiler"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock    = { version = "0.4", optional = true }
+seccompiler = { version = "0.4", optional = true }
 
 [lints]
 workspace = true

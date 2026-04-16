@@ -250,6 +250,8 @@ mod tests {
                 params: None,
                 parent_tool_use_id: None,
                 started_at: std::time::Instant::now(),
+                speculative: false,
+                sandbox_profile: None,
             })
             .await
             .is_ok()
@@ -302,6 +304,8 @@ mod tests {
             params: None,
             parent_tool_use_id: None,
             started_at: std::time::Instant::now(),
+            speculative: false,
+            sandbox_profile: None,
         })
         .await
         .unwrap();

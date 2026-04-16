@@ -488,6 +488,8 @@ fn loopback_tool_start_parent_tool_use_id_injected_into_meta() {
         params: None,
         parent_tool_use_id: Some("parent-uuid".to_owned()),
         started_at: std::time::Instant::now(),
+        speculative: false,
+        sandbox_profile: None,
     }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
@@ -556,6 +558,8 @@ fn loopback_tool_start_maps_to_tool_call_in_progress() {
         params: None,
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
+        speculative: false,
+        sandbox_profile: None,
     }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
@@ -578,6 +582,8 @@ fn loopback_tool_start_uses_command_as_title() {
         params: Some(params),
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
+        speculative: false,
+        sandbox_profile: None,
     }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
@@ -600,6 +606,8 @@ fn loopback_tool_start_truncates_long_command() {
         params: Some(params),
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
+        speculative: false,
+        sandbox_profile: None,
     }));
     let updates = loopback_event_to_updates(event);
     match &updates[0] {
@@ -673,6 +681,8 @@ fn tool_start_always_includes_tool_name_in_claude_code() {
         params: None,
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
+        speculative: false,
+        sandbox_profile: None,
     }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
@@ -702,6 +712,8 @@ fn tool_start_tool_name_and_parent_merged_in_claude_code() {
         params: None,
         parent_tool_use_id: Some("parent-abc".to_owned()),
         started_at: std::time::Instant::now(),
+        speculative: false,
+        sandbox_profile: None,
     }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
@@ -773,6 +785,8 @@ fn tool_start_read_kind_sets_location_from_file_path_param() {
         params: Some(params),
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
+        speculative: false,
+        sandbox_profile: None,
     }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
@@ -795,6 +809,8 @@ fn tool_start_read_kind_sets_location_from_path_param() {
         params: Some(params),
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
+        speculative: false,
+        sandbox_profile: None,
     }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
@@ -817,6 +833,8 @@ fn tool_start_execute_kind_does_not_set_locations() {
         params: Some(params),
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
+        speculative: false,
+        sandbox_profile: None,
     }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
@@ -1332,6 +1350,8 @@ fn loopback_tool_start_execute_sets_terminal_info() {
         params: Some(serde_json::json!({ "command": "ls" })),
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
+        speculative: false,
+        sandbox_profile: None,
     }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
@@ -2380,6 +2400,8 @@ fn tool_start_includes_started_at_in_meta() {
         params: None,
         parent_tool_use_id: None,
         started_at: std::time::Instant::now(),
+        speculative: false,
+        sandbox_profile: None,
     }));
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);

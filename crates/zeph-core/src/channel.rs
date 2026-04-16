@@ -318,6 +318,14 @@ pub struct ToolStartEvent {
     pub parent_tool_use_id: Option<String>,
     /// Wall-clock instant when the tool call was initiated; used to compute elapsed time.
     pub started_at: std::time::Instant,
+    /// True when this tool call was speculatively dispatched before LLM finished decoding.
+    ///
+    /// TUI renders a `[spec]` prefix; Telegram suppresses unless `chat_visibility = verbose`.
+    pub speculative: bool,
+    /// OS sandbox profile applied to this tool call, if any.
+    ///
+    /// `None` means no sandbox was applied (not configured or not a subprocess executor).
+    pub sandbox_profile: Option<zeph_tools::SandboxProfile>,
 }
 
 /// Event carrying data for a completed tool output, emitted after execution.
@@ -935,6 +943,8 @@ mod tests {
                 params: Some(serde_json::json!({"command": "ls"})),
                 parent_tool_use_id: None,
                 started_at: std::time::Instant::now(),
+                speculative: false,
+                sandbox_profile: None,
             })
             .await
             .unwrap();
@@ -960,6 +970,8 @@ mod tests {
                 params: None,
                 parent_tool_use_id: Some("parent-123".into()),
                 started_at: std::time::Instant::now(),
+                speculative: false,
+                sandbox_profile: None,
             })
             .await
             .unwrap();
@@ -981,6 +993,8 @@ mod tests {
                 params: None,
                 parent_tool_use_id: None,
                 started_at: std::time::Instant::now(),
+                speculative: false,
+                sandbox_profile: None,
             })
             .await;
         assert!(matches!(result, Err(ChannelError::ChannelClosed)));
