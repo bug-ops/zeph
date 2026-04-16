@@ -243,7 +243,7 @@ impl Scheduler {
     /// This is a convenience wrapper around [`Scheduler::run_with_interval`] with a
     /// 60-second tick. It runs until `true` is sent on the shutdown channel.
     pub async fn run(&mut self) {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        let mut interval = tokio::time::interval(Duration::from_mins(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
