@@ -33,13 +33,16 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     }
 
     let visible_lines = area.height.saturating_sub(2);
-    let cursor_line = app.input()[..app
-        .input()
-        .char_indices()
-        .nth(app.cursor_position())
-        .map_or(app.input().len(), |(idx, _)| idx)]
-        .matches('\n')
-        .count() as u16;
+    let cursor_line = u16::try_from(
+        app.input()[..app
+            .input()
+            .char_indices()
+            .nth(app.cursor_position())
+            .map_or(app.input().len(), |(idx, _)| idx)]
+            .matches('\n')
+            .count(),
+    )
+    .unwrap_or(u16::MAX);
     let scroll = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
 
     let paragraph = if let Some(ps) = app.paste_state() {
@@ -82,7 +85,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         let last_line = prefix.rsplit('\n').next().unwrap_or(&prefix);
         #[allow(clippy::cast_possible_truncation)]
         let cursor_x = area.x + last_line.width() as u16 + 1;
-        let line_count = prefix.matches('\n').count() as u16;
+        let line_count = u16::try_from(prefix.matches('\n').count()).unwrap_or(u16::MAX);
         #[allow(clippy::cast_possible_truncation)]
         let cursor_y = area.y + 1 + line_count.saturating_sub(scroll);
         frame.set_cursor_position((cursor_x, cursor_y));
