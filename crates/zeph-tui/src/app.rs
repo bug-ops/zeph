@@ -1064,6 +1064,7 @@ impl App {
                 }
             }
             AppEvent::Agent(agent_event) => self.handle_agent_event(agent_event),
+            AppEvent::Paste(text) => self.handle_paste(&text),
         }
     }
 
@@ -2067,6 +2068,16 @@ impl App {
             pos += 1;
         }
         pos
+    }
+
+    fn handle_paste(&mut self, text: &str) {
+        if self.input_mode != InputMode::Insert {
+            return;
+        }
+        self.slash_autocomplete = None;
+        let byte_offset = self.byte_offset_of_char(self.cursor_position);
+        self.input.insert_str(byte_offset, text);
+        self.cursor_position += text.chars().count();
     }
 
     fn handle_insert_key(&mut self, key: KeyEvent) {
@@ -5103,6 +5114,52 @@ mod tests {
         );
 
         cancel.cancel();
+    }
+
+    #[test]
+    fn paste_inserts_text_in_insert_mode() {
+        let (mut app, _rx, _tx) = make_app();
+        app.handle_event(AppEvent::Paste("hello".to_owned()));
+        assert_eq!(app.input(), "hello");
+        assert_eq!(app.cursor_position(), 5);
+    }
+
+    #[test]
+    fn paste_at_mid_cursor_inserts_at_position() {
+        let (mut app, _rx, _tx) = make_app();
+        app.handle_event(AppEvent::Paste("ac".to_owned()));
+        // Move cursor to position 1 (between 'a' and 'c') via Left key
+        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(left));
+        app.handle_event(AppEvent::Paste("b".to_owned()));
+        assert_eq!(app.input(), "abc");
+        assert_eq!(app.cursor_position(), 2);
+    }
+
+    #[test]
+    fn paste_multiline_inserts_newlines() {
+        let (mut app, _rx, _tx) = make_app();
+        app.handle_event(AppEvent::Paste("line1\nline2".to_owned()));
+        assert_eq!(app.input(), "line1\nline2");
+        assert_eq!(app.cursor_position(), 11);
+    }
+
+    #[test]
+    fn paste_in_normal_mode_ignored() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Normal;
+        app.handle_event(AppEvent::Paste("should not appear".to_owned()));
+        assert!(app.input().is_empty());
+    }
+
+    #[test]
+    fn paste_clears_slash_autocomplete() {
+        let (mut app, _rx, _tx) = make_app();
+        app.slash_autocomplete =
+            Some(crate::widgets::slash_autocomplete::SlashAutocompleteState::new());
+        app.handle_event(AppEvent::Paste("text".to_owned()));
+        assert!(app.slash_autocomplete.is_none());
+        assert_eq!(app.input(), "text");
     }
 
     #[test]

@@ -105,7 +105,8 @@ pub async fn run_tui(mut app: App, mut event_rx: mpsc::Receiver<AppEvent>) -> Re
         let _ = crossterm::execute!(
             io::stdout(),
             crossterm::terminal::LeaveAlternateScreen,
-            crossterm::event::DisableMouseCapture
+            crossterm::event::DisableMouseCapture,
+            crossterm::event::DisableBracketedPaste,
         );
         original_hook(info);
     }));
@@ -209,6 +210,7 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>, TuiError> {
         stdout,
         crossterm::terminal::EnterAlternateScreen,
         crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableBracketedPaste,
     )?;
     let backend = CrosstermBackend::new(stdout);
     Ok(Terminal::new(backend)?)
@@ -220,6 +222,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
         terminal.backend_mut(),
         crossterm::terminal::LeaveAlternateScreen,
         crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableBracketedPaste,
     )?;
     terminal.show_cursor()?;
     Ok(())

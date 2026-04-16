@@ -80,6 +80,7 @@ impl EventSource for CrosstermEventSource {
                     MouseEventKind::ScrollDown => Some(AppEvent::MouseScroll(-1)),
                     _ => Some(AppEvent::Tick),
                 },
+                Ok(CrosstermEvent::Paste(text)) => Some(AppEvent::Paste(text)),
                 _ => Some(AppEvent::Tick),
             }
         } else {
@@ -114,6 +115,12 @@ pub enum AppEvent {
     MouseScroll(i8),
     /// An event forwarded from the agent event channel.
     Agent(AgentEvent),
+    /// Text pasted via bracketed paste mode.
+    ///
+    /// The string may contain `\n` characters (multiline paste). The app
+    /// inserts it verbatim into the input buffer; Enter is still required
+    /// to submit (matching vim/neovim behaviour).
+    Paste(String),
 }
 
 /// Events produced by the agent and forwarded to the TUI via [`crate::TuiChannel`].
@@ -313,5 +320,10 @@ mod tests {
 
         let scroll_down = AppEvent::MouseScroll(-1);
         assert!(matches!(scroll_down, AppEvent::MouseScroll(-1)));
+    }
+
+    #[test]
+    fn app_event_paste_variant() {
+        assert!(matches!(AppEvent::Paste("x".into()), AppEvent::Paste(_)));
     }
 }
