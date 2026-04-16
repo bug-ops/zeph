@@ -655,6 +655,6 @@ mod tests {
             http: reqwest::Client::new(),
         };
         // rpm=0 → max(1) → delay = 60_000ms (1 per minute)
-        assert_eq!(miner.request_delay(), Duration::from_millis(60_000));
+        assert_eq!(miner.request_delay(), Duration::from_mins(1));
     }
 }

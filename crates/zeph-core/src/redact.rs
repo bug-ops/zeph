@@ -9,18 +9,24 @@ use std::sync::LazyLock;
 /// Returns `Cow::Borrowed` when no changes are needed (zero-allocation fast path).
 #[must_use]
 pub fn scrub_content(text: &str) -> Cow<'_, str> {
-    let after_secrets = match redact_secrets(text) {
+    // Strip URL-embedded credentials first (https://user:pass@host → https://[REDACTED]@host).
+    let after_url = match URL_CREDS_REGEX.replace_all(text, "${scheme}[REDACTED]@") {
+        Cow::Borrowed(_) => Cow::Borrowed(text),
+        Cow::Owned(s) => Cow::Owned(s),
+    };
+    let after_url_str: &str = &after_url;
+
+    let after_secrets = match redact_secrets(after_url_str) {
         Cow::Borrowed(_) => {
-            // No secrets found: only run path scan on original text
-            return match sanitize_paths(text) {
+            return match sanitize_paths(after_url_str) {
                 Cow::Owned(s) => Cow::Owned(s),
-                Cow::Borrowed(_) => Cow::Borrowed(text),
+                Cow::Borrowed(_) => after_url,
             };
         }
         Cow::Owned(s) => s,
     };
 
-    // Second pass: path sanitization on already-modified string
+    // Third pass: path sanitization on already-modified string
     match sanitize_paths(&after_secrets) {
         Cow::Owned(s) => Cow::Owned(s),
         Cow::Borrowed(_) => Cow::Owned(after_secrets),
@@ -58,6 +64,12 @@ static SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static PATH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?:/home/|/Users/|/root/|/tmp/|/var/)[^\s"'`,;{}\[\]]*"#)
         .expect("path redaction regex is valid")
+});
+
+// Matches basic-auth credentials embedded in URLs: https://user:pass@host
+static URL_CREDS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?P<scheme>[a-z][a-z0-9+\-.]*://)(?P<creds>[^@/\s]+:[^@/\s]+@)")
+        .expect("url credential redaction regex is valid")
 });
 
 /// Replace tokens containing known secret patterns with `[REDACTED]`.

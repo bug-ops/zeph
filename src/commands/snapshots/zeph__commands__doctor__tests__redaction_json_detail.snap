@@ -1,0 +1,5 @@
+---
+source: src/commands/doctor.rs
+expression: detail
+---
+api_key=[REDACTED] aws=[REDACTED]

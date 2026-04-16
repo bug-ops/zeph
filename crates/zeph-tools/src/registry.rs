@@ -18,6 +18,10 @@ pub struct ToolDef {
     pub description: Cow<'static, str>,
     pub schema: schemars::Schema,
     pub invocation: InvocationHint,
+    /// Raw output schema from an MCP server, if present.
+    ///
+    /// DO NOT convert to `schemars::Schema` — lossy; see #2931 critique P0-1.
+    pub output_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Default)]
@@ -145,12 +149,14 @@ mod tests {
                 description: "Execute a shell command".into(),
                 schema: schemars::schema_for!(BashParams),
                 invocation: InvocationHint::FencedBlock("bash"),
+                output_schema: None,
             },
             ToolDef {
                 id: "read".into(),
                 description: "Read file contents".into(),
                 schema: schemars::schema_for!(ReadParams),
                 invocation: InvocationHint::ToolCall,
+                output_schema: None,
             },
         ]
     }

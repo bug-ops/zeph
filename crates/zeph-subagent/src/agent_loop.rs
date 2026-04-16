@@ -88,6 +88,7 @@ fn tool_def_to_definition(
         name: def.id.to_string().into(),
         description: def.description.to_string(),
         parameters: params,
+        output_schema: def.output_schema.clone(),
     }
 }
 

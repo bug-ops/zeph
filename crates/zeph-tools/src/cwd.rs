@@ -76,6 +76,7 @@ impl ToolExecutor for SetCwdExecutor {
             description: TOOL_DESCRIPTION.into(),
             schema: schemars::schema_for!(SetCwdParams),
             invocation: InvocationHint::ToolCall,
+            output_schema: None,
         }]
     }
 

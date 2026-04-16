@@ -91,6 +91,7 @@ pub struct ToolSecurityMeta {
 ///     name: "create_issue".to_owned(),
 ///     description: "Create a new GitHub issue".to_owned(),
 ///     input_schema: serde_json::json!({"type": "object"}),
+///     output_schema: None,
 ///     security_meta: ToolSecurityMeta::default(),
 /// };
 ///
@@ -103,6 +104,15 @@ pub struct McpTool {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
+    /// Raw output schema advertised by the MCP server.
+    ///
+    /// Stored as-is from the wire format (`outputSchema` field in the MCP tool definition).
+    /// Flows through the pipeline to `ToolDefinition` and may be appended to the tool
+    /// description as a hint when `mcp.forward_output_schema = true`.
+    ///
+    /// DO NOT convert to `schemars::Schema` — lossy; see #2931 critique P0-1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
     /// Per-tool security metadata. Populated from config or heuristics at registration time.
     #[serde(default)]
     pub security_meta: ToolSecurityMeta,
@@ -267,6 +277,7 @@ impl McpTool {
     ///     name: "read_file".to_owned(),
     ///     description: "Read a file".to_owned(),
     ///     input_schema: serde_json::json!({}),
+    ///     output_schema: None,
     ///     security_meta: ToolSecurityMeta::default(),
     /// };
     /// assert_eq!(tool.qualified_name(), "fs:read_file");
@@ -322,6 +333,7 @@ mod tests {
             name: name.into(),
             description: "test tool".into(),
             input_schema: serde_json::json!({}),
+            output_schema: None,
             security_meta: ToolSecurityMeta::default(),
         }
     }
@@ -438,6 +450,7 @@ mod tests {
             name: "write_file".into(),
             description: "Write a file".into(),
             input_schema: serde_json::json!({}),
+            output_schema: None,
             security_meta: ToolSecurityMeta {
                 data_sensitivity: DataSensitivity::Medium,
                 capabilities: vec![CapabilityClass::FilesystemWrite],
@@ -711,5 +724,26 @@ mod tests {
         assert_eq!(cols.len(), 1);
         assert_eq!(cols[0].trust_a, crate::manager::McpTrustLevel::Untrusted);
         assert_eq!(cols[0].trust_b, crate::manager::McpTrustLevel::Untrusted);
+    }
+
+    #[test]
+    fn output_schema_roundtrip_json() {
+        let schema =
+            serde_json::json!({"type": "object", "properties": {"result": {"type": "string"}}});
+        let mut tool = make_tool("srv", "tool");
+        tool.output_schema = Some(schema.clone());
+        let json = serde_json::to_string(&tool).unwrap();
+        let parsed: McpTool = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.output_schema, Some(schema));
+    }
+
+    #[test]
+    fn output_schema_absent_serde_skipped() {
+        let tool = make_tool("srv", "tool");
+        let json = serde_json::to_string(&tool).unwrap();
+        assert!(
+            !json.contains("output_schema"),
+            "output_schema must not appear in JSON when None"
+        );
     }
 }

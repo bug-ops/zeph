@@ -49,6 +49,7 @@ impl ToolExecutor for OverflowToolExecutor {
                 .into(),
             schema: schemars::schema_for!(ReadOverflowParams),
             invocation: InvocationHint::ToolCall,
+            output_schema: None,
         }]
     }
 

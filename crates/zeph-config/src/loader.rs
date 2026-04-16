@@ -271,6 +271,14 @@ impl Config {
 
         self.validate_provider_names()?;
 
+        if self.mcp.output_schema_hint_bytes < 64 {
+            return Err(ConfigError::Validation(format!(
+                "mcp.output_schema_hint_bytes must be >= 64, got {}; \
+                 use forward_output_schema = false to disable forwarding",
+                self.mcp.output_schema_hint_bytes
+            )));
+        }
+
         Ok(())
     }
 

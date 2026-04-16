@@ -625,6 +625,7 @@ pub(crate) fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> Too
         name: zeph_common::ToolName::new(def.id.as_ref()),
         description: def.description.to_string(),
         parameters: params,
+        output_schema: def.output_schema.clone(),
     }
 }
 

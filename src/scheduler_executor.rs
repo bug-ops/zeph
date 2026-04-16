@@ -473,24 +473,28 @@ impl ToolExecutor for SchedulerExecutor {
                 description: "Schedule a recurring background task using a cron expression. Use for daily cleanups, weekly refreshes, health checks, etc.".into(),
                 schema: schemars::schema_for!(PeriodicParams),
                 invocation: InvocationHint::FencedBlock("schedule_periodic"),
+                output_schema: None,
             },
             ToolDef {
                 id: "schedule_deferred".into(),
                 description: "Schedule a one-shot task at a future time. Accepts ISO 8601 UTC, relative offsets (+2h, +30m, +1h30m), or natural expressions (in 5 minutes, tomorrow 10:00).".into(),
                 schema: schemars::schema_for!(DeferredParams),
                 invocation: InvocationHint::FencedBlock("schedule_deferred"),
+                output_schema: None,
             },
             ToolDef {
                 id: "cancel_task".into(),
                 description: "Cancel a scheduled task by name. Works for both periodic and deferred tasks.".into(),
                 schema: schemars::schema_for!(CancelParams),
                 invocation: InvocationHint::FencedBlock("cancel_task"),
+                output_schema: None,
             },
             ToolDef {
                 id: "list_tasks".into(),
                 description: "List all active scheduled tasks with their name, mode, kind, cron expression, and next run time.".into(),
                 schema: schemars::schema_for!(ListTasksParams),
                 invocation: InvocationHint::FencedBlock("list_tasks"),
+                output_schema: None,
             },
         ]
     }

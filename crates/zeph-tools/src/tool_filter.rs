@@ -65,18 +65,21 @@ mod tests {
                     description: "read a file".into(),
                     schema: schemars::schema_for!(String),
                     invocation: crate::registry::InvocationHint::ToolCall,
+                    output_schema: None,
                 },
                 ToolDef {
                     id: "glob".into(),
                     description: "find files".into(),
                     schema: schemars::schema_for!(String),
                     invocation: crate::registry::InvocationHint::ToolCall,
+                    output_schema: None,
                 },
                 ToolDef {
                     id: "edit".into(),
                     description: "edit a file".into(),
                     schema: schemars::schema_for!(String),
                     invocation: crate::registry::InvocationHint::ToolCall,
+                    output_schema: None,
                 },
             ]
         }

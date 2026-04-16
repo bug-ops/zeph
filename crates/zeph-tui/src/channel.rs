@@ -545,7 +545,7 @@ mod tests {
             filter_stats: None,
             kept_lines: None,
             locations: None,
-            tool_call_id: "".into(),
+            tool_call_id: String::new(),
 
             terminal_id: None,
             is_error: false,
@@ -574,7 +574,7 @@ mod tests {
             filter_stats: None,
             kept_lines: None,
             locations: None,
-            tool_call_id: "".into(),
+            tool_call_id: String::new(),
 
             terminal_id: None,
             is_error: false,

@@ -995,13 +995,14 @@ pub mod agent_tests {
 
         // Build an in-memory matcher so the retain gate is exercised rather than
         // falling through the empty-matcher fallback path.
-        let registry_guard = agent.skill_state.registry.read();
-        let all_meta: Vec<&zeph_skills::loader::SkillMeta> = registry_guard.all_meta();
+        let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = {
+            let registry_guard = agent.skill_state.registry.read();
+            registry_guard.all_meta().into_iter().cloned().collect()
+        };
         let embed_fn = |_text: &str| -> zeph_skills::matcher::EmbedFuture {
             Box::pin(async { Ok(vec![1.0_f32, 0.0]) })
         };
-        let matcher = SkillMatcher::new(&all_meta, embed_fn).await;
-        drop(registry_guard);
+        let matcher = SkillMatcher::new(&all_meta_owned.iter().collect::<Vec<_>>(), embed_fn).await;
         agent.skill_state.matcher = matcher.map(SkillMatcherBackend::InMemory);
         // Set an impossibly high threshold so every candidate is dropped.
         agent.skill_state.min_injection_score = f32::MAX;
@@ -4310,18 +4311,21 @@ mod confirmation_propagation_tests {
                     description: "tool a".into(),
                     schema: schemars::Schema::default(),
                     invocation: InvocationHint::ToolCall,
+                    output_schema: None,
                 },
                 ToolDef {
                     id: "tool_b".into(),
                     description: "tool b".into(),
                     schema: schemars::Schema::default(),
                     invocation: InvocationHint::ToolCall,
+                    output_schema: None,
                 },
                 ToolDef {
                     id: "tool_c".into(),
                     description: "tool c".into(),
                     schema: schemars::Schema::default(),
                     invocation: InvocationHint::ToolCall,
+                    output_schema: None,
                 },
             ]
         }
@@ -5045,6 +5049,7 @@ mod pre_execution_audit_tests {
                 description: "run shell command".into(),
                 schema: schemars::Schema::default(),
                 invocation: InvocationHint::ToolCall,
+                output_schema: None,
             }]
         }
 

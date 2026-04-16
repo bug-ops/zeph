@@ -65,7 +65,7 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.index.repo_map_ttl = Duration::from_secs(300);
+        agent.index.repo_map_ttl = Duration::from_mins(5);
 
         let now = Instant::now();
         agent.index.cached_repo_map = Some(("cached map".into(), now));

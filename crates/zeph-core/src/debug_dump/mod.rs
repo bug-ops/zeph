@@ -623,6 +623,7 @@ mod tests {
                 "type": "object",
                 "properties": { "path": { "type": "string" } },
             }),
+            output_schema: None,
         }]
     }
 

@@ -310,6 +310,7 @@ mod tests {
             name: name.into(),
             description: desc.into(),
             input_schema: serde_json::Value::Null,
+            output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
         }
     }

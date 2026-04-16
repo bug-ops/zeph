@@ -375,10 +375,11 @@ impl PartialEq<SessionId> for String {
 ///         },
 ///         "required": ["city"]
 ///     }),
+///     output_schema: None,
 /// };
 /// assert_eq!(tool.name, "get_weather");
 /// ```
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ToolDefinition {
     /// Tool name — must match the name used in the response `ToolUseRequest`.
     pub name: ToolName,
@@ -386,6 +387,15 @@ pub struct ToolDefinition {
     pub description: String,
     /// JSON Schema object describing parameters.
     pub parameters: serde_json::Value,
+    /// Raw output schema advertised by the MCP server, if present.
+    ///
+    /// When `mcp.forward_output_schema = true`, LLM provider assemblers append a compact JSON
+    /// hint to the tool description rather than adding a new top-level field (unsupported by
+    /// the Anthropic and `OpenAI` APIs).
+    ///
+    /// DO NOT convert to `schemars::Schema` — lossy; see #2931 critique P0-1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
 }
 
 #[cfg(test)]

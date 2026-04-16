@@ -34,6 +34,7 @@ fn tool_def_strips_schema_and_title() {
         description: "run a shell command".into(),
         schema,
         invocation: InvocationHint::ToolCall,
+        output_schema: None,
     };
 
     let result = tool_def_to_definition(&def);
@@ -3919,6 +3920,7 @@ fn augment_with_tafc_injects_think_field() {
         name: "file_op".to_owned().into(),
         description: "file operation".to_owned(),
         parameters: make_complex_schema(),
+        output_schema: None,
     };
     let augmented = augment_with_tafc(def, 0.6);
     let props = augmented.parameters["properties"]
@@ -3938,6 +3940,7 @@ fn augment_with_tafc_skips_simple_schema() {
         name: "bash".to_owned().into(),
         description: "run shell".to_owned(),
         parameters: make_simple_schema(),
+        output_schema: None,
     };
     let augmented = augment_with_tafc(def, 0.6);
     let props = augmented.parameters["properties"]
@@ -4029,6 +4032,7 @@ fn tool_def_to_definition_with_tafc_augments_when_enabled() {
         description: "complex file operation tool".into(),
         schema,
         invocation: InvocationHint::ToolCall,
+        output_schema: None,
     };
     let tafc = TafcConfig {
         enabled: true,
@@ -4054,6 +4058,7 @@ fn tool_def_to_definition_with_tafc_skips_when_disabled() {
         description: "complex file operation tool".into(),
         schema,
         invocation: InvocationHint::ToolCall,
+        output_schema: None,
     };
     let tafc = TafcConfig {
         enabled: false,
@@ -4074,6 +4079,7 @@ fn tafc_complexity_threshold_boundary() {
         name: "op".to_owned().into(),
         description: "op".to_owned(),
         parameters: make_complex_schema(),
+        output_schema: None,
     };
     let c = schema_complexity(&def.parameters);
     // At threshold == complexity, augmentation should fire (complexity >= threshold)
@@ -5005,32 +5011,32 @@ mod histogram_recorder_wiring {
     use zeph_llm::provider::ToolUseRequest;
 
     struct CountingRecorder {
-        llm_count: AtomicU64,
-        turn_count: AtomicU64,
-        tool_count: AtomicU64,
+        llm_hits: AtomicU64,
+        turn_ticks: AtomicU64,
+        tool_invocations: AtomicU64,
     }
 
     impl CountingRecorder {
         fn new() -> Self {
             Self {
-                llm_count: AtomicU64::new(0),
-                turn_count: AtomicU64::new(0),
-                tool_count: AtomicU64::new(0),
+                llm_hits: AtomicU64::new(0),
+                turn_ticks: AtomicU64::new(0),
+                tool_invocations: AtomicU64::new(0),
             }
         }
     }
 
     impl HistogramRecorder for CountingRecorder {
         fn observe_llm_latency(&self, _: Duration) {
-            self.llm_count.fetch_add(1, Ordering::Relaxed);
+            self.llm_hits.fetch_add(1, Ordering::Relaxed);
         }
 
         fn observe_turn_duration(&self, _: Duration) {
-            self.turn_count.fetch_add(1, Ordering::Relaxed);
+            self.turn_ticks.fetch_add(1, Ordering::Relaxed);
         }
 
         fn observe_tool_execution(&self, _: Duration) {
-            self.tool_count.fetch_add(1, Ordering::Relaxed);
+            self.tool_invocations.fetch_add(1, Ordering::Relaxed);
         }
 
         fn observe_bg_task(&self, _: &str, _: Duration) {}
@@ -5076,7 +5082,7 @@ mod histogram_recorder_wiring {
         agent.flush_turn_timings();
 
         assert_eq!(
-            recorder.turn_count.load(Ordering::Relaxed),
+            recorder.turn_ticks.load(Ordering::Relaxed),
             1,
             "flush_turn_timings must call observe_turn_duration once"
         );
@@ -5117,7 +5123,7 @@ mod histogram_recorder_wiring {
             .unwrap();
 
         assert_eq!(
-            recorder.tool_count.load(Ordering::Relaxed),
+            recorder.tool_invocations.load(Ordering::Relaxed),
             2,
             "observe_tool_execution must fire once per tool call (2 calls → count = 2)"
         );

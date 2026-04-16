@@ -1228,6 +1228,7 @@ mod tests {
             name: "test_tool".into(),
             description: "A test tool".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
         }];
         let result: Result<_, _> = provider.chat_with_tools(&messages, &tools).await;
         assert!(result.is_err());

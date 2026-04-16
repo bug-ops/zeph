@@ -1351,6 +1351,7 @@ mod tests {
             name: "bash".into(),
             description: "Execute a shell command".into(),
             parameters: serde_json::json!({"type": "object"}),
+            output_schema: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         let deserialized: ToolDefinition = serde_json::from_str(&json).unwrap();

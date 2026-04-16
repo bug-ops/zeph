@@ -1229,7 +1229,7 @@ mod tests {
                 name,
                 restart: RestartPolicy::RunOnce,
                 factory: || async {
-                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    tokio::time::sleep(Duration::from_mins(1)).await;
                 },
             });
         }
@@ -1244,7 +1244,7 @@ mod tests {
         .expect("shutdown should complete within timeout");
     }
 
-    /// Verify that force-aborted tasks get TaskStatus::Aborted in the registry (A2 fix).
+    /// Verify that force-aborted tasks get `TaskStatus::Aborted` in the registry (A2 fix).
     #[tokio::test]
     async fn test_force_abort_marks_aborted() {
         let cancel = CancellationToken::new();
@@ -1322,7 +1322,7 @@ mod tests {
         assert_eq!(err, BlockingError::Panicked);
     }
 
-    /// Verify spawn_blocking tasks appear in registry (M3 fix).
+    /// Verify `spawn_blocking` tasks appear in registry (M3 fix).
     #[tokio::test]
     async fn test_blocking_registered_in_registry() {
         let (sup, cancel) = make_supervisor();
@@ -1352,7 +1352,7 @@ mod tests {
         cancel.cancel();
     }
 
-    /// Verify spawn_oneshot tasks appear in registry (M3 fix).
+    /// Verify `spawn_oneshot` tasks appear in registry (M3 fix).
     #[tokio::test]
     async fn test_oneshot_registered_in_registry() {
         let (sup, cancel) = make_supervisor();
@@ -1423,9 +1423,7 @@ mod tests {
     /// Stress test: spawn 50 tasks concurrently, all must complete and registry must be accurate.
     #[tokio::test]
     async fn test_concurrent_spawns() {
-        let (sup, cancel) = make_supervisor();
-
-        // All task names must be 'static — use a pre-defined slice.
+        // All task names must be 'static — pre-defined before any let statements.
         static NAMES: [&str; 50] = [
             "t00", "t01", "t02", "t03", "t04", "t05", "t06", "t07", "t08", "t09", "t10", "t11",
             "t12", "t13", "t14", "t15", "t16", "t17", "t18", "t19", "t20", "t21", "t22", "t23",
@@ -1433,6 +1431,7 @@ mod tests {
             "t36", "t37", "t38", "t39", "t40", "t41", "t42", "t43", "t44", "t45", "t46", "t47",
             "t48", "t49",
         ];
+        let (sup, cancel) = make_supervisor();
 
         let completed = Arc::new(AtomicU32::new(0));
         for name in &NAMES {
@@ -1477,7 +1476,7 @@ mod tests {
             name: "stubborn",
             restart: RestartPolicy::RunOnce,
             factory: || async {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                tokio::time::sleep(Duration::from_mins(1)).await;
             },
         });
 

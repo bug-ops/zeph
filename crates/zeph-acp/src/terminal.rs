@@ -336,6 +336,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
             description: "Execute a shell command in the IDE terminal.\n\nParameters: command (string, required) - shell command to run\nReturns: stdout/stderr combined with exit code\nErrors: Timeout; permission denied by IDE; command blocked by policy\nExample: {\"command\": \"cargo build\"}".into(),
             schema: schemars::schema_for!(BashParams),
             invocation: InvocationHint::ToolCall,
+            output_schema: None,
         }];
         // REQ-P23-2: bash_stdin only available when a permission gate is present.
         if self.permission_gate.is_some() {
@@ -344,6 +345,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
                 description: "Write data to stdin of a running terminal process.\n\nParameters: terminal_id (string, required) - terminal to write to; data (string, required) - stdin data\nReturns: confirmation\nErrors: terminal not found; terminal process exited\nExample: {\"terminal_id\": \"term-1\", \"data\": \"yes\\n\"}".into(),
                 schema: schemars::schema_for!(BashStdinParams),
                 invocation: InvocationHint::ToolCall,
+                output_schema: None,
             });
         }
         defs
@@ -863,7 +865,7 @@ mod tests {
             session_id: acp::SessionId::new("s"),
             request_tx: tx,
             permission_gate: None,
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_mins(2),
         };
         let defs = exec.tool_definitions();
         assert_eq!(defs.len(), 1);
@@ -1272,7 +1274,7 @@ mod tests {
             session_id: acp::SessionId::new("s"),
             request_tx: tx,
             permission_gate: None,
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_mins(2),
         };
         let defs = exec.tool_definitions();
         assert!(!defs.iter().any(|d| d.id == "bash_stdin"));
@@ -1371,7 +1373,7 @@ mod tests {
             session_id: acp::SessionId::new("s"),
             request_tx: tx,
             permission_gate: Some(gate),
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_mins(2),
         };
         let defs = exec.tool_definitions();
         assert!(defs.iter().any(|d| d.id == "bash_stdin"));

@@ -276,6 +276,18 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: DbCommand,
     },
+    /// Run preflight connectivity and configuration checks
+    Doctor {
+        /// Emit results as JSON (`schema_version` = 1)
+        #[arg(long)]
+        json: bool,
+        /// Timeout in seconds for LLM provider probes and SQLite/Qdrant checks
+        #[arg(long, default_value = "10")]
+        llm_timeout_secs: u64,
+        /// Timeout in seconds for MCP server connection probes
+        #[arg(long, default_value = "5")]
+        mcp_timeout_secs: u64,
+    },
     /// Run agent benchmarks against standardized datasets
     #[cfg(feature = "bench")]
     Bench {

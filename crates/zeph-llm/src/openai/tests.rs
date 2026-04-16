@@ -1186,6 +1186,7 @@ async fn chat_with_tools_handles_null_assistant_content() {
             "properties": {"command": {"type": "string"}},
             "required": ["command"]
         }),
+        output_schema: None,
     }];
 
     let result = p.chat_with_tools(&messages, &tools).await.unwrap();
@@ -1475,4 +1476,58 @@ async fn embed_batch_empty_returns_empty_without_network() {
     );
     let result = p.embed_batch(&[]).await.unwrap();
     assert!(result.is_empty());
+}
+
+#[test]
+fn output_schema_forwarding_enabled_appends_hint_openai() {
+    let schema = serde_json::json!({"type": "object", "properties": {"temp": {"type": "number"}}});
+    let desc = build_tool_description(
+        "Get the weather",
+        Some(&schema),
+        true,
+        512,
+        usize::MAX,
+        "get_weather",
+    );
+    assert!(
+        desc.contains("Expected output schema"),
+        "hint must appear in description when forward_output_schema=true"
+    );
+}
+
+#[test]
+fn output_schema_forwarding_disabled_no_hint_openai() {
+    let schema = serde_json::json!({"type": "string"});
+    let desc = build_tool_description(
+        "Get the weather",
+        Some(&schema),
+        false,
+        512,
+        usize::MAX,
+        "get_weather",
+    );
+    assert!(
+        !desc.contains("Expected output schema"),
+        "hint must NOT appear when forward_output_schema=false"
+    );
+}
+
+#[test]
+fn output_schema_forwarding_truncates_large_schema_openai() {
+    let large_value = "x".repeat(600);
+    let schema = serde_json::json!({"description": large_value});
+    let desc = build_tool_description("Base", Some(&schema), true, 64, usize::MAX, "big_tool");
+    assert!(
+        desc.contains("too large"),
+        "oversized schema must use stub message"
+    );
+}
+
+#[test]
+fn output_schema_forwarding_none_schema_unchanged_description_openai() {
+    let desc = build_tool_description("Clean description", None, true, 512, usize::MAX, "my_tool");
+    assert_eq!(
+        desc, "Clean description",
+        "description must be unchanged when output_schema is None even if forwarding is enabled"
+    );
 }

@@ -43,6 +43,7 @@ impl ToolExecutor for SkillLoaderExecutor {
             description: "Load the full body of a skill by name when you see a relevant entry in the <other_skills> catalog.\n\nParameters: name (string, required) - exact skill name from the <other_skills> catalog\nReturns: complete skill instructions (SKILL.md body), or error if skill not found\nErrors: InvalidParams if name is empty; Execution if skill not found in registry\nExample: {\"name\": \"code-review\"}".into(),
             schema: schemars::schema_for!(LoadSkillParams),
             invocation: InvocationHint::ToolCall,
+            output_schema: None,
         }]
     }
 

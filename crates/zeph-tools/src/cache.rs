@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn miss_on_empty_cache() {
-        let mut cache = ToolResultCache::new(true, Some(Duration::from_secs(300)));
+        let mut cache = ToolResultCache::new(true, Some(Duration::from_mins(5)));
         assert!(cache.get(&key("read", 1)).is_none());
         assert_eq!(cache.misses(), 1);
         assert_eq!(cache.hits(), 0);
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn put_then_get_returns_cached() {
-        let mut cache = ToolResultCache::new(true, Some(Duration::from_secs(300)));
+        let mut cache = ToolResultCache::new(true, Some(Duration::from_mins(5)));
         let out = make_output("file contents");
         cache.put(key("read", 42), out.clone());
         let result = cache.get(&key("read", 42));
@@ -250,14 +250,14 @@ mod tests {
 
     #[test]
     fn different_hash_is_miss() {
-        let mut cache = ToolResultCache::new(true, Some(Duration::from_secs(300)));
+        let mut cache = ToolResultCache::new(true, Some(Duration::from_mins(5)));
         cache.put(key("read", 1), make_output("a"));
         assert!(cache.get(&key("read", 2)).is_none());
     }
 
     #[test]
     fn different_tool_name_is_miss() {
-        let mut cache = ToolResultCache::new(true, Some(Duration::from_secs(300)));
+        let mut cache = ToolResultCache::new(true, Some(Duration::from_mins(5)));
         cache.put(key("read", 1), make_output("a"));
         assert!(cache.get(&key("write", 1)).is_none());
     }
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn clear_removes_all_and_resets_counters() {
-        let mut cache = ToolResultCache::new(true, Some(Duration::from_secs(300)));
+        let mut cache = ToolResultCache::new(true, Some(Duration::from_mins(5)));
         cache.put(key("read", 1), make_output("a"));
         cache.put(key("web_scrape", 2), make_output("b"));
         // generate some hits/misses
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn disabled_cache_always_misses() {
-        let mut cache = ToolResultCache::new(false, Some(Duration::from_secs(300)));
+        let mut cache = ToolResultCache::new(false, Some(Duration::from_mins(5)));
         cache.put(key("read", 1), make_output("content"));
         // put is a no-op when disabled
         assert!(cache.get(&key("read", 1)).is_none());
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn counter_increments_correctly() {
-        let mut cache = ToolResultCache::new(true, Some(Duration::from_secs(300)));
+        let mut cache = ToolResultCache::new(true, Some(Duration::from_mins(5)));
         cache.put(key("read", 1), make_output("a"));
         cache.put(key("read", 2), make_output("b"));
 
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn ttl_secs_returns_seconds_for_some() {
-        let cache = ToolResultCache::new(true, Some(Duration::from_secs(300)));
+        let cache = ToolResultCache::new(true, Some(Duration::from_mins(5)));
         assert_eq!(cache.ttl_secs(), 300);
     }
 

@@ -1033,7 +1033,7 @@ mod tests {
             let session_dir = std::fs::read_dir(tmp.path())
                 .unwrap()
                 .filter_map(std::result::Result::ok)
-                .find(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                .find(|e| e.file_type().is_ok_and(|t| t.is_dir()))
                 .unwrap()
                 .path();
             assert!(

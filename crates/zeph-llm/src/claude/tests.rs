@@ -1110,6 +1110,7 @@ fn tool_cache_returns_same_values_on_second_call() {
         name: "bash".into(),
         description: "Run shell commands".into(),
         parameters: serde_json::json!({"type": "object", "properties": {}}),
+        output_schema: None,
     }];
     let first = provider.get_or_build_api_tools(&tools);
     let second = provider.get_or_build_api_tools(&tools);
@@ -1126,11 +1127,13 @@ fn tool_cache_invalidates_when_tools_change() {
         name: "bash".into(),
         description: "Run shell commands".into(),
         parameters: serde_json::json!({}),
+        output_schema: None,
     }];
     let tools_b = vec![ToolDefinition {
         name: "read".into(),
         description: "Read files".into(),
         parameters: serde_json::json!({}),
+        output_schema: None,
     }];
     let first = provider.get_or_build_api_tools(&tools_a);
     let second = provider.get_or_build_api_tools(&tools_b);
@@ -1152,6 +1155,7 @@ fn tool_cache_serialized_shape_snapshot() {
             },
             "required": ["command"]
         }),
+        output_schema: None,
     }];
     let cached = provider.get_or_build_api_tools(&tools);
     let pretty = serde_json::to_string_pretty(&cached).unwrap();
@@ -1240,6 +1244,7 @@ async fn chat_with_tools_sends_correct_tool_fields() {
         name: "read_file".into(),
         description: "Read a file from disk".into(),
         parameters: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
+        output_schema: None,
     }];
     let messages = vec![Message::from_legacy(Role::User, "read /tmp/f")];
 
@@ -1266,11 +1271,13 @@ async fn chat_with_tools_cache_hit_does_not_re_serialize() {
             name: "tool_a".into(),
             description: "First tool".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
         },
         ToolDefinition {
             name: "tool_b".into(),
             description: "Second tool".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
         },
     ];
 
@@ -1301,17 +1308,20 @@ async fn chat_with_tools_cache_partial_tool_set_change_invalidates() {
         name: "search".into(),
         description: "Search the web".into(),
         parameters: serde_json::json!({"type": "object", "properties": {}}),
+        output_schema: None,
     }];
     let tools_v2 = vec![
         ToolDefinition {
             name: "search".into(),
             description: "Search the web".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
         },
         ToolDefinition {
             name: "browse".into(),
             description: "Browse a URL".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
         },
     ];
 
@@ -2093,16 +2103,19 @@ fn get_or_build_api_tools_only_last_tool_has_cache_control() {
             name: "alpha".into(),
             description: "First".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
         },
         ToolDefinition {
             name: "beta".into(),
             description: "Second".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
         },
         ToolDefinition {
             name: "gamma".into(),
             description: "Third".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
         },
     ];
     let result = provider.get_or_build_api_tools(&tools);
@@ -2130,6 +2143,7 @@ fn get_or_build_api_tools_single_tool_has_cache_control() {
         name: "only".into(),
         description: "Only tool".into(),
         parameters: serde_json::json!({"type": "object", "properties": {}}),
+        output_schema: None,
     }];
     let result = provider.get_or_build_api_tools(&tools);
     assert_eq!(result.len(), 1);
@@ -2371,6 +2385,7 @@ fn debug_tool_request_caps_block_cache_controls_at_four() {
             },
             "required": ["command"]
         }),
+        output_schema: None,
     }];
 
     let body = provider.debug_request_json(&messages, &tools, false);
@@ -2462,11 +2477,13 @@ fn tool_cache_invalidates_on_schema_change() {
         name: "tool".into(),
         description: "desc".into(),
         parameters: serde_json::json!({"type": "object", "properties": {"a": {"type": "string"}}}),
+        output_schema: None,
     }];
     let tools_v2 = vec![ToolDefinition {
         name: "tool".into(),
         description: "desc".into(),
         parameters: serde_json::json!({"type": "object", "properties": {"b": {"type": "number"}}}),
+        output_schema: None,
     }];
     let first = provider.get_or_build_api_tools(&tools_v1);
     let second = provider.get_or_build_api_tools(&tools_v2);
@@ -2491,6 +2508,7 @@ fn tool_cache_hits_on_same_tools() {
         name: "bash".into(),
         description: "Run".into(),
         parameters: serde_json::json!({"type": "object"}),
+        output_schema: None,
     }];
     let first = provider.get_or_build_api_tools(&tools);
     let second = provider.get_or_build_api_tools(&tools);
@@ -2935,5 +2953,111 @@ fn split_messages_structured_compaction_round_trip() {
     assert!(
         !user_json.contains("compaction"),
         "Compaction in user message must be dropped"
+    );
+}
+
+#[test]
+fn output_schema_forwarding_enabled_appends_hint() {
+    use zeph_common::types::ToolDefinition;
+    let tool = ToolDefinition {
+        name: "my_tool".into(),
+        description: "Base description".into(),
+        parameters: serde_json::json!({"type": "object"}),
+        output_schema: Some(serde_json::json!({"type": "string"})),
+    };
+    let provider =
+        crate::claude::ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1000)
+            .with_output_schema_forwarding(true, 512, usize::MAX);
+    let api_tools = provider.get_or_build_api_tools(&[tool]);
+    let desc = api_tools[0]["description"].as_str().unwrap();
+    assert!(
+        desc.contains("Expected output schema (JSON):"),
+        "hint must appear in description when forward_output_schema=true"
+    );
+    assert!(
+        !desc.contains("too large"),
+        "small schema must not trigger stub"
+    );
+}
+
+#[test]
+fn output_schema_forwarding_disabled_no_hint() {
+    use zeph_common::types::ToolDefinition;
+    let tool = ToolDefinition {
+        name: "my_tool".into(),
+        description: "Base description".into(),
+        parameters: serde_json::json!({"type": "object"}),
+        output_schema: Some(serde_json::json!({"type": "string"})),
+    };
+    let provider =
+        crate::claude::ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1000);
+    let api_tools = provider.get_or_build_api_tools(&[tool]);
+    let desc = api_tools[0]["description"].as_str().unwrap();
+    assert!(
+        !desc.contains("Expected output schema"),
+        "hint must NOT appear when forward_output_schema=false"
+    );
+}
+
+#[test]
+fn output_schema_forwarding_truncates_large_schema() {
+    use zeph_common::types::ToolDefinition;
+    let large_schema = serde_json::json!({"description": "x".repeat(600)});
+    let tool = ToolDefinition {
+        name: "big_tool".into(),
+        description: "Base".into(),
+        parameters: serde_json::json!({"type": "object"}),
+        output_schema: Some(large_schema),
+    };
+    let provider =
+        crate::claude::ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1000)
+            .with_output_schema_forwarding(true, 64, usize::MAX);
+    let api_tools = provider.get_or_build_api_tools(&[tool]);
+    let desc = api_tools[0]["description"].as_str().unwrap();
+    assert!(
+        desc.contains("too large"),
+        "oversized schema must use stub message"
+    );
+}
+
+#[test]
+fn tool_cache_key_sensitive_to_output_schema() {
+    use crate::claude::cache::tool_cache_key;
+    use zeph_common::types::ToolDefinition;
+    let base = ToolDefinition {
+        name: "t".into(),
+        description: "d".into(),
+        parameters: serde_json::json!({}),
+        output_schema: None,
+    };
+    let with_schema = ToolDefinition {
+        output_schema: Some(serde_json::json!({"type": "string"})),
+        ..base.clone()
+    };
+    assert_ne!(
+        tool_cache_key(&[base]),
+        tool_cache_key(&[with_schema]),
+        "cache key must differ when output_schema changes"
+    );
+}
+
+#[test]
+fn tool_cache_key_sensitive_to_description() {
+    use crate::claude::cache::tool_cache_key;
+    use zeph_common::types::ToolDefinition;
+    let base = ToolDefinition {
+        name: "t".into(),
+        description: "original".into(),
+        parameters: serde_json::json!({}),
+        output_schema: None,
+    };
+    let changed = ToolDefinition {
+        description: "changed".into(),
+        ..base.clone()
+    };
+    assert_ne!(
+        tool_cache_key(&[base]),
+        tool_cache_key(&[changed]),
+        "cache key must differ when description changes"
     );
 }

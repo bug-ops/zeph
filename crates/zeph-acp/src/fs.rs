@@ -286,18 +286,21 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                 description: "Read a file from the IDE workspace with line numbers.\n\nParameters: path (string, required) - file path relative to workspace root; offset (integer, optional) - start line; limit (integer, optional) - max lines\nReturns: file content with line numbers, structured for IDE display\nErrors: file not found; path outside workspace; I/O failure\nExample: {\"path\": \"src/main.rs\", \"offset\": 0, \"limit\": 100}".into(),
                 schema: schemars::schema_for!(ReadFileParams),
                 invocation: InvocationHint::ToolCall,
+                output_schema: None,
             });
             defs.push(ToolDef {
                 id: "list_directory".into(),
                 description: "List files and directories at the given path in the IDE workspace.\n\nParameters: path (string, required) - directory path relative to workspace root\nReturns: sorted listing with type indicators\nErrors: path not found; path outside workspace\nExample: {\"path\": \"src/\"}".into(),
                 schema: schemars::schema_for!(ListDirectoryParams),
                 invocation: InvocationHint::ToolCall,
+                output_schema: None,
             });
             defs.push(ToolDef {
                 id: "find_path".into(),
                 description: "Find files matching a glob pattern in the IDE workspace.\n\nParameters: pattern (string, required) - glob pattern\nReturns: matching file paths relative to workspace root\nErrors: path outside workspace\nExample: {\"pattern\": \"**/*.rs\"}".into(),
                 schema: schemars::schema_for!(FindPathParams),
                 invocation: InvocationHint::ToolCall,
+                output_schema: None,
             });
         }
         // REQ-P31-1: write_file requires a permission gate (diff preview must have an approver).
@@ -307,6 +310,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                 description: "Create or overwrite a file in the IDE workspace.\n\nParameters: path (string, required) - file path; content (string, required) - file content\nReturns: confirmation with bytes written\nErrors: permission denied; path outside workspace; I/O failure\nExample: {\"path\": \"output.txt\", \"content\": \"Hello\"}".into(),
                 schema: schemars::schema_for!(WriteFileParams),
                 invocation: InvocationHint::ToolCall,
+                output_schema: None,
             });
         }
         defs

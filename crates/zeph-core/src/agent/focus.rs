@@ -40,6 +40,7 @@ pub(crate) fn focus_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["scope"]
             }),
+            output_schema: None,
         },
         ToolDefinition {
             name: "complete_focus".into(),
@@ -61,6 +62,7 @@ pub(crate) fn focus_tool_definitions() -> Vec<ToolDefinition> {
                 },
                 "required": ["summary"]
             }),
+            output_schema: None,
         },
     ]
 }
@@ -84,6 +86,7 @@ pub(crate) fn compress_context_tool_definition() -> ToolDefinition {
             "properties": {},
             "required": []
         }),
+        output_schema: None,
     }
 }
 

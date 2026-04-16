@@ -83,6 +83,7 @@ impl ToolExecutor for McpToolExecutor {
                 schema: serde_json::from_value(t.input_schema.clone())
                     .unwrap_or_else(|_| schemars::Schema::default()),
                 invocation: InvocationHint::ToolCall,
+                output_schema: t.output_schema.clone(),
             })
             .collect()
     }
@@ -358,6 +359,7 @@ mod tests {
             name: "create_issue".into(),
             description: "Create a GitHub issue".into(),
             input_schema: serde_json::json!({}),
+            output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
         }]));
         let executor = McpToolExecutor::new(mgr, tools);
@@ -376,6 +378,7 @@ mod tests {
             name: "list_dir".into(),
             description: "List directory".into(),
             input_schema: serde_json::json!({}),
+            output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
         }]);
         let defs = executor.tool_definitions();
@@ -424,6 +427,7 @@ mod tests {
             name: "tool".into(),
             description: "d".into(),
             input_schema: serde_json::json!({}),
+            output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
         }]);
         let text = "```mcp\n{\"server\":\"srv\",\"tool\":\"tool\"}\n```";
@@ -468,6 +472,7 @@ mod tests {
             name: "create_issue".into(),
             description: "desc".into(),
             input_schema: serde_json::json!({}),
+            output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
         }]));
         let executor = McpToolExecutor::new(mgr, tools);
@@ -492,6 +497,7 @@ mod tests {
             name: "some_tool".into(),
             description: "desc".into(),
             input_schema: serde_json::json!({}),
+            output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
         }]));
         let executor = McpToolExecutor::new(mgr, tools);
@@ -516,6 +522,7 @@ mod tests {
                 name: "tool:with:colons".into(),
                 description: "d".into(),
                 input_schema: serde_json::json!({}),
+                output_schema: None,
                 security_meta: crate::tool::ToolSecurityMeta::default(),
             },
             McpTool {
@@ -523,6 +530,7 @@ mod tests {
                 name: "normal_tool".into(),
                 description: "d".into(),
                 input_schema: serde_json::json!({}),
+                output_schema: None,
                 security_meta: crate::tool::ToolSecurityMeta::default(),
             },
         ]));
@@ -547,6 +555,7 @@ mod tests {
             name: "tool name!".into(),
             description: "d".into(),
             input_schema: serde_json::json!({}),
+            output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
         }]));
         let executor = McpToolExecutor::new(mgr, tools);

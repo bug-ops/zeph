@@ -236,6 +236,7 @@ fn tool_symbol_definition() -> ToolDef {
         description: "Look up a symbol by name. Returns file path, line number, kind, and visibility. Returns null if not found.".into(),
         schema: schemars::schema_for!(SymbolDefinitionParams),
         invocation: InvocationHint::ToolCall,
+        output_schema: None,
     }
 }
 
@@ -245,6 +246,7 @@ fn tool_find_text_references() -> ToolDef {
         description: "Find all files where a symbol name appears (textual search, not semantic). May include false positives from comments and strings.".into(),
         schema: schemars::schema_for!(FindTextReferencesParams),
         invocation: InvocationHint::ToolCall,
+        output_schema: None,
     }
 }
 
@@ -258,6 +260,7 @@ fn tool_call_graph() -> ToolDef {
             .into(),
         schema: schemars::schema_for!(CallGraphParams),
         invocation: InvocationHint::ToolCall,
+        output_schema: None,
     }
 }
 
@@ -269,6 +272,7 @@ fn tool_module_summary() -> ToolDef {
                 .into(),
         schema: schemars::schema_for!(ModuleSummaryParams),
         invocation: InvocationHint::ToolCall,
+        output_schema: None,
     }
 }
 

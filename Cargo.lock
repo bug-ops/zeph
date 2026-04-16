@@ -9881,6 +9881,7 @@ dependencies = [
  "dirs",
  "futures",
  "glob",
+ "insta",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

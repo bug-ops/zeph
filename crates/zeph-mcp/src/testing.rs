@@ -61,6 +61,7 @@ impl MockMcpServer {
             name: name.into(),
             description: description.into(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
         });
         self
@@ -124,6 +125,7 @@ impl ToolExecutor for MockMcpServer {
                 schema: serde_json::from_value(t.input_schema.clone())
                     .unwrap_or_else(|_| schemars::Schema::default()),
                 invocation: InvocationHint::ToolCall,
+                output_schema: None,
             })
             .collect()
     }

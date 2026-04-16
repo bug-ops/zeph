@@ -2054,6 +2054,7 @@ mod tests {
             name: name.into(),
             description: "A test tool".into(),
             input_schema: serde_json::json!({}),
+            output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
         }
     }
@@ -2678,6 +2679,7 @@ mod tests {
             flagged_tools: vec![],
             flagged_patterns: vec![],
             cross_references: vec![],
+            output_schemas_dropped: 0,
         }
     }
 
@@ -2687,6 +2689,7 @@ mod tests {
             flagged_tools: vec!["tool".to_owned()],
             flagged_patterns: vec![("tool".to_owned(), "pattern".to_owned()); n.min(3)],
             cross_references: vec![],
+            output_schemas_dropped: 0,
         }
     }
 

@@ -34,7 +34,12 @@ pub(super) fn tool_cache_key(tools: &[ToolDefinition]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for t in tools {
         t.name.hash(&mut hasher);
+        t.description.hash(&mut hasher);
         t.parameters.to_string().hash(&mut hasher);
+        t.output_schema
+            .as_ref()
+            .map(std::string::ToString::to_string)
+            .hash(&mut hasher);
     }
     hasher.finish()
 }

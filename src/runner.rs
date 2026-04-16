@@ -436,6 +436,21 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Bench { command: bench_cmd }) => {
             return crate::commands::bench::handle_bench_command(&bench_cmd, cli.config.as_deref());
         }
+        Some(Command::Doctor {
+            json,
+            llm_timeout_secs,
+            mcp_timeout_secs,
+        }) => {
+            let config_path = resolve_config_path(cli.config.as_deref());
+            let exit_code = crate::commands::doctor::run_doctor(
+                &config_path,
+                json,
+                llm_timeout_secs,
+                mcp_timeout_secs,
+            )
+            .await?;
+            std::process::exit(exit_code);
+        }
         None => {}
     }
 

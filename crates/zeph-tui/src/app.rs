@@ -3180,7 +3180,10 @@ mod tests {
         assert_eq!(app.messages()[1].role, MessageRole::Assistant);
         assert_eq!(app.messages()[2].role, MessageRole::Tool);
         assert_eq!(
-            app.messages()[2].tool_name.as_ref().map(|t| t.as_str()),
+            app.messages()[2]
+                .tool_name
+                .as_ref()
+                .map(zeph_common::ToolName::as_str),
             Some("bash")
         );
         assert_eq!(app.messages()[2].content, "$ echo hello\nhello");
@@ -3194,7 +3197,10 @@ mod tests {
         assert_eq!(app.messages().len(), 1);
         assert_eq!(app.messages()[0].role, MessageRole::Tool);
         assert_eq!(
-            app.messages()[0].tool_name.as_ref().map(|t| t.as_str()),
+            app.messages()[0]
+                .tool_name
+                .as_ref()
+                .map(zeph_common::ToolName::as_str),
             Some("bash")
         );
         assert_eq!(app.messages()[0].content, "$ ls\nfile.txt");
@@ -3210,7 +3216,10 @@ mod tests {
         assert_eq!(app.messages().len(), 1);
         assert_eq!(app.messages()[0].role, MessageRole::Tool);
         assert_eq!(
-            app.messages()[0].tool_name.as_ref().map(|t| t.as_str()),
+            app.messages()[0]
+                .tool_name
+                .as_ref()
+                .map(zeph_common::ToolName::as_str),
             Some("tool")
         );
     }
@@ -3222,7 +3231,10 @@ mod tests {
         assert_eq!(app.messages().len(), 1);
         assert_eq!(app.messages()[0].role, MessageRole::Tool);
         assert_eq!(
-            app.messages()[0].tool_name.as_ref().map(|t| t.as_str()),
+            app.messages()[0]
+                .tool_name
+                .as_ref()
+                .map(zeph_common::ToolName::as_str),
             Some("bash")
         );
         assert_eq!(app.messages()[0].content, "$ echo hello\nhello");
@@ -4756,7 +4768,10 @@ mod tests {
             timestamp: Some("12:34".into()),
         };
         let msg = entry.to_chat_message();
-        assert_eq!(msg.tool_name.as_ref().map(|t| t.as_str()), Some("bash"));
+        assert_eq!(
+            msg.tool_name.as_ref().map(zeph_common::ToolName::as_str),
+            Some("bash")
+        );
         assert_eq!(msg.timestamp, "12:34");
         assert_eq!(msg.content, "result");
     }
@@ -4869,7 +4884,10 @@ mod tests {
         let (entries, _total) = load_transcript_file(tmp.path(), false);
         assert_eq!(entries.len(), 1);
         assert_eq!(
-            entries[0].tool_name.as_ref().map(|t| t.as_str()),
+            entries[0]
+                .tool_name
+                .as_ref()
+                .map(zeph_common::ToolName::as_str),
             Some("bash")
         );
     }

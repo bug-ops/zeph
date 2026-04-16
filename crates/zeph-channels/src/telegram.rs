@@ -1341,7 +1341,7 @@ mod tests {
     ///
     /// The test uses `new_test()` (no real bot token / network) combined with
     /// a real `TaskSupervisor` running under tokio. Because `start()` spawns a
-    /// task that calls `bot.set_my_commands()` (register_commands) and then
+    /// task that calls `bot.set_my_commands()` (`register_commands`) and then
     /// runs the teloxide dispatcher, we point the bot at a wiremock server
     /// that accepts all requests with HTTP 200 so the task does not immediately
     /// panic due to a network error.

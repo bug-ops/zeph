@@ -323,6 +323,7 @@ mod tests {
             name: name.into(),
             description: "test".into(),
             input_schema: serde_json::json!({}),
+            output_schema: None,
             security_meta: ToolSecurityMeta {
                 data_sensitivity: sensitivity,
                 capabilities: vec![],

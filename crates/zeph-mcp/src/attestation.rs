@@ -134,6 +134,7 @@ mod tests {
             name: name.into(),
             description: "desc".into(),
             input_schema: serde_json::json!({}),
+            output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
         }
     }

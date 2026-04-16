@@ -1,0 +1,5 @@
+---
+source: src/commands/doctor.rs
+expression: "rendered.lines().next().unwrap_or(\"\")"
+---
+[FAIL] test.check                               (5 ms)  error: api_key=[REDACTED] aws=[REDACTED]

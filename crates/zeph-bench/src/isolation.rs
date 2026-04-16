@@ -122,7 +122,7 @@ mod tests {
 
     /// Integration test: verifies the NFR-007 reset time budget.
     #[tokio::test]
-    #[ignore]
+    #[ignore = "slow integration test: verifies NFR-007 reset time budget"]
     async fn reset_completes_under_2_seconds() {
         let dir = tempfile::tempdir().unwrap();
         let iso = BenchIsolation::new("test", "timing", dir.path());

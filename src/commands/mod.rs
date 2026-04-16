@@ -6,6 +6,7 @@ pub(crate) mod agents;
 pub(crate) mod bench;
 pub(crate) mod classifiers;
 pub(crate) mod db;
+pub(crate) mod doctor;
 pub(crate) mod ingest;
 pub(crate) mod memory;
 pub(crate) mod migrate;

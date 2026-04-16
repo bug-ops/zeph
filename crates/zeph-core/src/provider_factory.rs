@@ -130,7 +130,16 @@ pub fn build_provider_from_entry(
                 .with_extended_context(entry.enable_extended_context)
                 .with_thinking_opt(entry.thinking.clone())
                 .map_err(|e| BootstrapError::Provider(format!("invalid thinking config: {e}")))?
-                .with_server_compaction(entry.server_compaction);
+                .with_server_compaction(entry.server_compaction)
+                .with_output_schema_forwarding(
+                    config.mcp.forward_output_schema,
+                    config.mcp.output_schema_hint_bytes,
+                    config.mcp.max_description_bytes,
+                );
+            tracing::info!(
+                forward = config.mcp.forward_output_schema,
+                "mcp.output_schema.forwarding_configured"
+            );
             Ok(AnyProvider::Claude(provider))
         }
         ProviderKind::OpenAi => {
@@ -161,7 +170,12 @@ pub fn build_provider_from_entry(
                     entry.embedding_model.clone(),
                     entry.reasoning_effort.clone(),
                 )
-                .with_client(llm_client(config.timeouts.llm_request_timeout_secs)),
+                .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
+                .with_output_schema_forwarding(
+                    config.mcp.forward_output_schema,
+                    config.mcp.output_schema_hint_bytes,
+                    config.mcp.max_description_bytes,
+                ),
             ))
         }
         ProviderKind::Gemini => {

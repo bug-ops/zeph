@@ -89,6 +89,7 @@ use self::types::MIN_MAX_TOKENS_WITH_THINKING;
 /// - [`with_cache_user_messages`](Self::with_cache_user_messages) — prompt caching
 /// - [`with_status_tx`](Self::with_status_tx) — real-time status events for the UI
 /// - [`with_generation_overrides`](Self::with_generation_overrides) — temperature / top-p
+#[allow(clippy::struct_excessive_bools)]
 pub struct ClaudeProvider {
     client: reqwest::Client,
     api_key: String,
@@ -102,6 +103,12 @@ pub struct ClaudeProvider {
     /// Cached pre-serialized tool definitions. Keyed by hash of names+schemas; invalidated when the set changes.
     tool_cache: Mutex<Option<(u64, Vec<serde_json::Value>)>>,
     generation_overrides: Option<GenerationOverrides>,
+    /// When `true`, append a compact JSON hint of the tool's output schema to its description.
+    forward_output_schema: bool,
+    /// Maximum bytes of the compact JSON appended as the output schema hint.
+    output_schema_hint_bytes: usize,
+    /// Maximum bytes of the combined description (base + hint). `usize::MAX` means no cap.
+    max_tool_description_bytes: usize,
     /// Enable Claude server-side context compaction (compact-2026-01-12 beta).
     server_compaction: bool,
     /// Set to `true` at runtime when the API rejects the `compact-2026-01-12` beta header
@@ -138,6 +145,12 @@ impl fmt::Debug for ClaudeProvider {
                 &self.last_compaction.lock().as_ref().map(String::len),
             )
             .field("enable_extended_context", &self.enable_extended_context)
+            .field("forward_output_schema", &self.forward_output_schema)
+            .field("output_schema_hint_bytes", &self.output_schema_hint_bytes)
+            .field(
+                "max_tool_description_bytes",
+                &self.max_tool_description_bytes,
+            )
             .finish()
     }
 }
@@ -159,6 +172,9 @@ impl Clone for ClaudeProvider {
             server_compaction_rejected: Arc::clone(&self.server_compaction_rejected),
             last_compaction: Mutex::new(None),
             enable_extended_context: self.enable_extended_context,
+            forward_output_schema: self.forward_output_schema,
+            output_schema_hint_bytes: self.output_schema_hint_bytes,
+            max_tool_description_bytes: self.max_tool_description_bytes,
         }
     }
 }
@@ -190,6 +206,9 @@ impl ClaudeProvider {
             usage: UsageTracker::default(),
             tool_cache: Mutex::new(None),
             generation_overrides: None,
+            forward_output_schema: false,
+            output_schema_hint_bytes: 512,
+            max_tool_description_bytes: usize::MAX,
             server_compaction: false,
             server_compaction_rejected: Arc::new(AtomicBool::new(false)),
             last_compaction: Mutex::new(None),
@@ -201,6 +220,25 @@ impl ClaudeProvider {
     #[must_use]
     pub fn with_generation_overrides(mut self, overrides: GenerationOverrides) -> Self {
         self.generation_overrides = Some(overrides);
+        self
+    }
+
+    /// Enable forwarding of MCP tool output schemas as a description hint.
+    ///
+    /// When enabled, appends a compact JSON hint of the tool's `output_schema` to its description
+    /// (capped at `hint_bytes`). Disabled by default to preserve Anthropic prompt-cache hit rates.
+    ///
+    /// `max_description_bytes` caps the combined `base + hint` string. Pass `usize::MAX` for no cap.
+    #[must_use]
+    pub fn with_output_schema_forwarding(
+        mut self,
+        enabled: bool,
+        hint_bytes: usize,
+        max_description_bytes: usize,
+    ) -> Self {
+        self.forward_output_schema = enabled;
+        self.output_schema_hint_bytes = hint_bytes;
+        self.max_tool_description_bytes = max_description_bytes;
         self
     }
 
@@ -525,7 +563,10 @@ impl ClaudeProvider {
         })
     }
 
-    fn get_or_build_api_tools(&self, tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
+    pub(crate) fn get_or_build_api_tools(
+        &self,
+        tools: &[ToolDefinition],
+    ) -> Vec<serde_json::Value> {
         let key = tool_cache_key(tools);
         let mut guard = self.tool_cache.lock();
         if let Some((cached_key, ref cached_values)) = *guard
@@ -536,9 +577,17 @@ impl ClaudeProvider {
         let mut serialized: Vec<serde_json::Value> = tools
             .iter()
             .map(|t| {
+                let description = build_tool_description(
+                    &t.description,
+                    t.output_schema.as_ref(),
+                    self.forward_output_schema,
+                    self.output_schema_hint_bytes,
+                    self.max_tool_description_bytes,
+                    t.name.as_str(),
+                );
                 serde_json::json!({
                     "name": t.name,
-                    "description": t.description,
+                    "description": description,
                     "input_schema": t.parameters,
                 })
             })
@@ -902,6 +951,7 @@ impl LlmProvider for ClaudeProvider {
             name: tool_name.clone().into(),
             description: format!("Submit the structured {type_name} result"),
             parameters: schema_value,
+            output_schema: None,
         };
 
         let (system, mut chat_messages) =
@@ -1168,5 +1218,62 @@ impl LlmProvider for ClaudeProvider {
         }
         tracing::debug!(?parsed, "parsed ChatResponse");
         Ok(parsed)
+    }
+}
+
+/// Build the tool description string, optionally appending an output schema hint.
+///
+/// When `forward` is `true` and `output_schema` is `Some`, appends a compact JSON hint
+/// capped at `hint_bytes`. If the schema exceeds the budget, a stub is used and a WARN
+/// is emitted once per session per tool (guarded by a global `OnceLock<Mutex<HashSet>>`).
+pub(crate) fn build_tool_description(
+    base: &str,
+    output_schema: Option<&serde_json::Value>,
+    forward: bool,
+    hint_bytes: usize,
+    max_combined_bytes: usize,
+    tool_name: &str,
+) -> String {
+    if !forward {
+        return base.to_owned();
+    }
+    let Some(schema) = output_schema else {
+        return base.to_owned();
+    };
+    let compact = serde_json::to_string(schema).unwrap_or_default();
+    let hint = if compact.len() > hint_bytes {
+        use std::collections::HashSet;
+        use std::sync::{Mutex, OnceLock};
+        static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+        let guard = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
+        let mut warned = guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if warned.insert(tool_name.to_owned()) {
+            tracing::warn!(
+                tool = tool_name,
+                schema_bytes = compact.len(),
+                cap = hint_bytes,
+                event = "mcp.output_schema.forwarded_to_llm",
+                "MCP output_schema hint exceeds budget — using stub"
+            );
+        }
+        format!(
+            "Output schema too large ({} bytes); details omitted.",
+            compact.len()
+        )
+    } else {
+        tracing::debug!(
+            tool = tool_name,
+            event = "mcp.output_schema.forwarded_to_llm",
+            "MCP tool output schema forwarded to LLM description"
+        );
+        compact
+    };
+    let combined = format!("{base}\n\nExpected output schema (JSON):\n{hint}");
+    if max_combined_bytes < usize::MAX && combined.len() > max_combined_bytes {
+        zeph_common::text::truncate_to_bytes(&combined, max_combined_bytes).clone()
+    } else {
+        combined
     }
 }

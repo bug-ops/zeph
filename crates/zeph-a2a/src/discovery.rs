@@ -36,7 +36,7 @@ struct CachedCard {
 /// use std::time::Duration;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(300));
+/// let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(5));
 ///
 /// // Discover and cache a peer agent.
 /// let card = registry.discover("http://peer.example.com").await?;
@@ -174,7 +174,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_and_retrieve() {
-        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(300));
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(5));
         let card = test_card("agent-1");
         registry
             .register("http://localhost:8080".into(), card.clone())
@@ -187,7 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_or_discover_returns_cached() {
-        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(300));
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(5));
         let card = test_card("cached");
         registry.register("http://example.com".into(), card).await;
 
@@ -227,14 +227,14 @@ mod tests {
 
     #[tokio::test]
     async fn discover_invalid_url_returns_error() {
-        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(60));
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(1));
         let result = registry.discover("http://no-server.invalid").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn multiple_registrations() {
-        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(300));
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(5));
         registry
             .register("http://a.example.com".into(), test_card("a"))
             .await;
@@ -248,7 +248,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_overwrites_existing() {
-        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(300));
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(5));
         registry
             .register("http://a.example.com".into(), test_card("v1"))
             .await;
@@ -282,7 +282,7 @@ mod wiremock_tests {
             .mount(&server)
             .await;
 
-        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(60));
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(1));
         let card = registry.discover(&base_url).await.unwrap();
         assert_eq!(card.name, "mock-agent");
     }
@@ -296,7 +296,7 @@ mod wiremock_tests {
             .mount(&server)
             .await;
 
-        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(60));
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(1));
         let result = registry.discover(&server.uri()).await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), A2aError::Discovery { .. }));
@@ -311,7 +311,7 @@ mod wiremock_tests {
             .mount(&server)
             .await;
 
-        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(60));
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(1));
         let result = registry.discover(&server.uri()).await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), A2aError::Discovery { .. }));

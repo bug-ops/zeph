@@ -24,6 +24,7 @@ use crate::tool::McpTool;
 ///     name: "create_issue".to_owned(),
 ///     description: "Create a GitHub issue".to_owned(),
 ///     input_schema: serde_json::json!({"type": "object"}),
+///     output_schema: None,
 ///     security_meta: ToolSecurityMeta::default(),
 /// }];
 ///
@@ -71,6 +72,7 @@ mod tests {
             name: name.into(),
             description: desc.into(),
             input_schema: serde_json::json!({"type": "object"}),
+            output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
         }
     }

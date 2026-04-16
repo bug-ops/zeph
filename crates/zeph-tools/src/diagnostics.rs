@@ -155,6 +155,7 @@ impl ToolExecutor for DiagnosticsExecutor {
             description: "Run cargo check or cargo clippy on a Rust workspace and return compiler diagnostics.\n\nParameters: path (string, optional) - workspace directory (default: cwd); level (string, optional) - \"check\" or \"clippy\" (default: \"check\")\nReturns: structured diagnostics with file paths, line numbers, severity, and messages; capped at 50 results\nErrors: SandboxViolation if path outside allowed dirs; Execution if cargo is not found\nExample: {\"path\": \".\", \"level\": \"clippy\"}".into(),
             schema: schemars::schema_for!(DiagnosticsParams),
             invocation: InvocationHint::ToolCall,
+            output_schema: None,
         }]
     }
 }

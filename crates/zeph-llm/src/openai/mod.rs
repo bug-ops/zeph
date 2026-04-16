@@ -64,6 +64,12 @@ pub struct OpenAiProvider {
     pub(crate) status_tx: Option<StatusTx>,
     usage: UsageTracker,
     generation_overrides: Option<GenerationOverrides>,
+    /// When `true`, append a compact JSON hint of the tool's output schema to its description.
+    forward_output_schema: bool,
+    /// Maximum bytes of the compact JSON appended as the output schema hint.
+    output_schema_hint_bytes: usize,
+    /// Maximum bytes of the combined description (base + hint). `usize::MAX` means no cap.
+    max_tool_description_bytes: usize,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -79,6 +85,12 @@ impl fmt::Debug for OpenAiProvider {
             .field("status_tx", &self.status_tx.is_some())
             .field("usage", &self.usage)
             .field("generation_overrides", &self.generation_overrides)
+            .field("forward_output_schema", &self.forward_output_schema)
+            .field("output_schema_hint_bytes", &self.output_schema_hint_bytes)
+            .field(
+                "max_tool_description_bytes",
+                &self.max_tool_description_bytes,
+            )
             .finish()
     }
 }
@@ -96,6 +108,9 @@ impl Clone for OpenAiProvider {
             status_tx: self.status_tx.clone(),
             usage: UsageTracker::default(),
             generation_overrides: self.generation_overrides.clone(),
+            forward_output_schema: self.forward_output_schema,
+            output_schema_hint_bytes: self.output_schema_hint_bytes,
+            max_tool_description_bytes: self.max_tool_description_bytes,
         }
     }
 }
@@ -130,6 +145,9 @@ impl OpenAiProvider {
             status_tx: None,
             usage: UsageTracker::default(),
             generation_overrides: None,
+            forward_output_schema: false,
+            output_schema_hint_bytes: 512,
+            max_tool_description_bytes: usize::MAX,
         }
     }
 
@@ -137,6 +155,22 @@ impl OpenAiProvider {
     #[must_use]
     pub fn with_generation_overrides(mut self, overrides: GenerationOverrides) -> Self {
         self.generation_overrides = Some(overrides);
+        self
+    }
+
+    /// Enable forwarding of MCP tool output schemas as a description hint.
+    ///
+    /// `max_description_bytes` caps the combined `base + hint` string. Pass `usize::MAX` for no cap.
+    #[must_use]
+    pub fn with_output_schema_forwarding(
+        mut self,
+        enabled: bool,
+        hint_bytes: usize,
+        max_description_bytes: usize,
+    ) -> Self {
+        self.forward_output_schema = enabled;
+        self.output_schema_hint_bytes = hint_bytes;
+        self.max_tool_description_bytes = max_description_bytes;
         self
     }
 
@@ -610,13 +644,27 @@ impl LlmProvider for OpenAiProvider {
 
         if !tools.is_empty() {
             let api_messages = convert_messages_structured(messages);
+            let descriptions: Vec<String> = tools
+                .iter()
+                .map(|t| {
+                    build_tool_description(
+                        &t.description,
+                        t.output_schema.as_ref(),
+                        self.forward_output_schema,
+                        self.output_schema_hint_bytes,
+                        self.max_tool_description_bytes,
+                        t.name.as_str(),
+                    )
+                })
+                .collect();
             let api_tools: Vec<OpenAiTool<'_>> = tools
                 .iter()
-                .map(|t| OpenAiTool {
+                .zip(descriptions.iter())
+                .map(|(t, desc)| OpenAiTool {
                     r#type: "function",
                     function: OpenAiFunction {
                         name: t.name.as_str(),
-                        description: &t.description,
+                        description: desc.as_str(),
                         parameters: prepare_tool_params(&t.parameters),
                     },
                 })
@@ -749,13 +797,27 @@ impl LlmProvider for OpenAiProvider {
             .as_deref()
             .map(|effort| Reasoning { effort });
 
+        let descriptions: Vec<String> = tools
+            .iter()
+            .map(|t| {
+                build_tool_description(
+                    &t.description,
+                    t.output_schema.as_ref(),
+                    self.forward_output_schema,
+                    self.output_schema_hint_bytes,
+                    self.max_tool_description_bytes,
+                    t.name.as_str(),
+                )
+            })
+            .collect();
         let api_tools: Vec<OpenAiTool> = tools
             .iter()
-            .map(|t| OpenAiTool {
+            .zip(descriptions.iter())
+            .map(|(t, desc)| OpenAiTool {
                 r#type: "function",
                 function: OpenAiFunction {
                     name: t.name.as_str(),
-                    description: &t.description,
+                    description: desc.as_str(),
                     parameters: prepare_tool_params(&t.parameters),
                 },
             })
@@ -1441,3 +1503,60 @@ fn normalize_for_openai_strict(schema: &mut serde_json::Value, depth: u8) {
 
 #[cfg(test)]
 mod tests;
+
+/// Build the tool description string, optionally appending an output schema hint.
+///
+/// When `forward` is `true` and `output_schema` is `Some`, appends a compact JSON hint
+/// capped at `hint_bytes`. If the schema exceeds the budget, a stub is used and a WARN
+/// is emitted once per session per tool.
+pub(crate) fn build_tool_description(
+    base: &str,
+    output_schema: Option<&serde_json::Value>,
+    forward: bool,
+    hint_bytes: usize,
+    max_combined_bytes: usize,
+    tool_name: &str,
+) -> String {
+    if !forward {
+        return base.to_owned();
+    }
+    let Some(schema) = output_schema else {
+        return base.to_owned();
+    };
+    let compact = serde_json::to_string(schema).unwrap_or_default();
+    let hint = if compact.len() > hint_bytes {
+        use std::collections::HashSet;
+        use std::sync::{Mutex, OnceLock};
+        static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+        let guard = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
+        let mut warned = guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if warned.insert(tool_name.to_owned()) {
+            tracing::warn!(
+                tool = tool_name,
+                schema_bytes = compact.len(),
+                cap = hint_bytes,
+                event = "mcp.output_schema.forwarded_to_llm",
+                "MCP output_schema hint exceeds budget — using stub"
+            );
+        }
+        format!(
+            "Output schema too large ({} bytes); details omitted.",
+            compact.len()
+        )
+    } else {
+        tracing::debug!(
+            tool = tool_name,
+            event = "mcp.output_schema.forwarded_to_llm",
+            "MCP tool output schema forwarded to LLM description"
+        );
+        compact
+    };
+    let combined = format!("{base}\n\nExpected output schema (JSON):\n{hint}");
+    if max_combined_bytes < usize::MAX && combined.len() > max_combined_bytes {
+        zeph_common::text::truncate_to_bytes(&combined, max_combined_bytes).clone()
+    } else {
+        combined
+    }
+}

@@ -24,6 +24,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **mcp: forward MCP tool `outputSchema` to LLM tool declarations** (`#2931`): When
+  `mcp.forward_output_schema = true` (default: `false`), Zeph appends a bounded
+  "Expected output schema" hint to the tool description sent to the LLM, enabling
+  more accurate tool-result parsing and typed tool chaining. Schema content is sanitized
+  through the existing injection pipeline (drop-on-injection policy); the hint is capped
+  at `mcp.output_schema_hint_bytes` (default: 512). The tool-cache key now covers
+  `description` and `output_schema` to prevent stale cache hits on server reconnects.
+
+- **cli: `zeph doctor` startup diagnostic subcommand** (`#2930`): `zeph doctor
+  [--config <path>] [--json]` runs 15 preflight checks — config parse, vault
+  accessibility and key permissions, LLM provider reachability (read-only HTTP probe),
+  SQLite availability, Qdrant health (when configured), skills registry, filesystem
+  writability, and MCP server connectivity — and prints `[OK]` / `[WARN]` / `[FAIL]`
+  per check. Exits 0 if no failures, 1 if any `FAIL`. All output is redacted through
+  `scrub_content` (secrets, paths, URL-embedded credentials).
+
+- **core: URL-credential redaction in `scrub_content`**: `redact.rs::scrub_content` now
+  strips `scheme://user:pass@host` patterns before secret and path redaction, preventing
+  basic-auth credentials from leaking through error messages.
+
 - **skills: hub skill install pipeline** (`#2806`, `#3040`): `SkillManager` now exposes
   `install_from_path` and `install_from_url` that copy a skill package into `managed_dir`
   with `TrustLevel::Quarantined` as the default. During install, `.bundled` marker files are

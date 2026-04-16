@@ -474,6 +474,7 @@ fn test_convert_tool_definitions_single() {
             "required": ["location"],
             "additionalProperties": false
         }),
+        output_schema: None,
     };
     let decls = convert_tool_definitions(&[tool]);
     assert_eq!(decls.len(), 1);
@@ -498,11 +499,13 @@ fn test_convert_tool_definitions_multiple() {
             name: "tool_a".to_owned().into(),
             description: "Tool A".to_owned(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
         },
         ToolDefinition {
             name: "tool_b".to_owned().into(),
             description: "Tool B".to_owned(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
         },
     ];
     let decls = convert_tool_definitions(&tools);
@@ -519,6 +522,7 @@ fn test_convert_tool_no_parameters() {
         name: "no_params".to_owned().into(),
         description: "A tool with no parameters".to_owned(),
         parameters: serde_json::json!({"type": "object", "properties": {}}),
+        output_schema: None,
     };
     let decls = convert_tool_definitions(&[tool]);
     assert_eq!(decls.len(), 1);
@@ -638,11 +642,13 @@ fn test_build_tool_request_parameterless_tools_still_includes_tools_field() {
             name: "ping".to_owned().into(),
             description: "Ping".to_owned(),
             parameters: serde_json::json!({"type": "object"}),
+            output_schema: None,
         },
         ToolDefinition {
             name: "pong".to_owned().into(),
             description: "Pong".to_owned(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
         },
     ];
     let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
@@ -1027,6 +1033,7 @@ fn test_debug_request_json_with_tools_includes_function_declarations() {
             "properties": {"location": {"type": "string"}},
             "required": ["location"]
         }),
+        output_schema: None,
     }];
     let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
     let json = p.debug_request_json(&messages, &tools, false);
@@ -1190,6 +1197,7 @@ async fn test_chat_with_tools_returns_tool_use() {
         name: "get_weather".to_owned().into(),
         description: "Get weather".to_owned(),
         parameters: serde_json::json!({"type": "object", "properties": {"location": {"type": "string"}}}),
+        output_schema: None,
     }];
 
     let result = p.chat_with_tools(&messages, &tools).await.unwrap();

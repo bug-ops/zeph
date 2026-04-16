@@ -15,7 +15,7 @@
 //! struct TrimStage;
 //!
 //! impl Stage for TrimStage {
-//!     fn name(&self) -> &str { "trim" }
+//!     fn name(&self) -> &'static str { "trim" }
 //!     fn process(&self, mut ctx: SanitizeContext) -> Result<SanitizeContext, StageError> {
 //!         ctx.content = ctx.content.trim().to_owned();
 //!         Ok(ctx)
@@ -107,7 +107,7 @@ impl SanitizeContext {
 ///
 /// struct Noop;
 /// impl Stage for Noop {
-///     fn name(&self) -> &str { "noop" }
+///     fn name(&self) -> &'static str { "noop" }
 ///     fn process(&self, ctx: SanitizeContext) -> Result<SanitizeContext, StageError> {
 ///         Ok(ctx)
 ///     }
@@ -115,7 +115,7 @@ impl SanitizeContext {
 /// ```
 pub trait Stage: Send + Sync {
     /// Human-readable name used in logs and [`StageError`] messages.
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
 
     /// Process the context, returning the (possibly modified) context or an error.
     ///
@@ -137,7 +137,7 @@ pub trait Stage: Send + Sync {
 ///
 /// struct UpperStage;
 /// impl Stage for UpperStage {
-///     fn name(&self) -> &str { "upper" }
+///     fn name(&self) -> &'static str { "upper" }
 ///     fn process(&self, mut ctx: SanitizeContext) -> Result<SanitizeContext, StageError> {
 ///         ctx.content = ctx.content.to_uppercase();
 ///         Ok(ctx)
@@ -177,7 +177,7 @@ impl Pipeline {
     ///
     /// struct Noop;
     /// impl Stage for Noop {
-    ///     fn name(&self) -> &str { "noop" }
+    ///     fn name(&self) -> &'static str { "noop" }
     ///     fn process(&self, ctx: SanitizeContext) -> Result<SanitizeContext, StageError> {
     ///         Ok(ctx)
     ///     }
@@ -230,7 +230,7 @@ mod tests {
     struct AppendStage(&'static str);
 
     impl Stage for AppendStage {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "append"
         }
 
@@ -243,7 +243,7 @@ mod tests {
     struct FailStage;
 
     impl Stage for FailStage {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "fail"
         }
 
@@ -290,7 +290,7 @@ mod tests {
     fn truncated_flag_propagates() {
         struct TruncateStage;
         impl Stage for TruncateStage {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "truncate"
             }
 

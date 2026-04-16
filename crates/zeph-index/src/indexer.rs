@@ -546,6 +546,15 @@ fn chunk_to_insert(chunk: &CodeChunk) -> ChunkInsert<'_> {
     }
 }
 
+/// RAII guard that resets the re-entrancy flag when dropped.
+struct IndexingGuard(Arc<AtomicBool>);
+
+impl Drop for IndexingGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -654,7 +663,7 @@ mod tests {
     }
 
     /// Verify that `chunk_file` runs inside `spawn_blocking` and that the dedup path
-    /// (all hashes already in SQLite) reaches `Ok((0, N))` without touching Qdrant.
+    /// (all hashes already in `SQLite`) reaches `Ok((0, N))` without touching Qdrant.
     ///
     /// Two assertions:
     /// 1. First `index_file` call with pre-seeded hashes → `(0, N)` (all skipped).
@@ -706,8 +715,8 @@ mod tests {
             .bind(format!("q{i}"))
             .bind("sample.rs")
             .bind(&chunk.content_hash)
-            .bind(chunk.line_range.0 as i64)
-            .bind(chunk.line_range.1 as i64)
+            .bind(i64::try_from(chunk.line_range.0).unwrap_or(i64::MAX))
+            .bind(i64::try_from(chunk.line_range.1).unwrap_or(i64::MAX))
             .bind("rust")
             .bind("function_item")
             .execute(&pool)
@@ -758,7 +767,7 @@ mod tests {
                 _name: std::sync::Arc<str>,
                 f: Box<dyn FnOnce() + Send + 'static>,
             ) -> tokio::task::JoinHandle<()> {
-                tokio::task::spawn_blocking(move || f())
+                tokio::task::spawn_blocking(f)
             }
         }
 
@@ -818,7 +827,7 @@ mod tests {
         assert!(!flag.load(Ordering::Relaxed));
     }
 
-    /// Verify that compare_exchange rejects a second caller while the flag is set.
+    /// Verify that `compare_exchange` rejects a second caller while the flag is set.
     #[test]
     fn indexing_guard_compare_exchange_skips_concurrent() {
         let flag = Arc::new(AtomicBool::new(false));
@@ -845,14 +854,5 @@ mod tests {
                 .is_ok(),
             "third caller should succeed after reset"
         );
-    }
-}
-
-/// RAII guard that resets the re-entrancy flag when dropped.
-struct IndexingGuard(Arc<AtomicBool>);
-
-impl Drop for IndexingGuard {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
     }
 }

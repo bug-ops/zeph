@@ -459,7 +459,7 @@ mod tests {
     async fn abort_all_does_not_panic() {
         let mut sv = default_supervisor();
         sv.spawn(TaskClass::Telemetry, "long-running", async {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            tokio::time::sleep(std::time::Duration::from_mins(1)).await;
         });
         sv.abort_all();
         // abort_all signals cancellation but doesn't await — drop the supervisor to verify

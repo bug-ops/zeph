@@ -406,6 +406,7 @@ impl ToolExecutor for SearchCodeExecutor {
             description: "Search the codebase using semantic, structural, and LSP sources. Use only to search source code files — not for user-provided facts, preferences, or statements made in conversation.\n\nParameters: query (string, optional) - natural language description to find semantically similar code; symbol (string, optional) - exact or partial symbol name for definition search; file_pattern (string, optional) - glob restricting files; include_references (boolean, optional) - also return symbol references when LSP is available; max_results (integer, optional) - cap results 1-50, default 10\nReturns: ranked code locations with file path, line range, snippet, source label, and score\nErrors: InvalidParams when both query and symbol are empty\nExample: {\"query\": \"where is retry backoff calculated\", \"symbol\": \"retry_backoff_ms\", \"include_references\": true}".into(),
             schema: schemars::schema_for!(SearchCodeParams),
             invocation: InvocationHint::ToolCall,
+            output_schema: None,
         }]
     }
 }

@@ -509,6 +509,7 @@ impl<C: Channel> Agent<C> {
     }
 
     #[cfg(test)]
+    #[allow(clippy::too_many_lines)]
     async fn process_successful_tool_output(
         &mut self,
         output: zeph_tools::executor::ToolOutput,

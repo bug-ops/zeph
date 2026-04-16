@@ -1014,7 +1014,7 @@ mod tests {
         // Verify the trait can be used as a trait object (object-safe).
         let recorder: Arc<dyn HistogramRecorder> = Arc::new(NoOpRecorder);
         recorder.observe_llm_latency(Duration::from_millis(500));
-        recorder.observe_turn_duration(Duration::from_millis(3000));
+        recorder.observe_turn_duration(Duration::from_secs(3));
         recorder.observe_tool_execution(Duration::from_millis(100));
     }
 }
