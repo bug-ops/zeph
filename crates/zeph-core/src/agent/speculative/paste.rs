@@ -94,6 +94,7 @@ impl PatternStore {
     }
 
     /// Set the minimum number of raw observations required before predicting.
+    #[must_use]
     pub fn with_min_observations(mut self, n: u32) -> Self {
         self.min_observations = n;
         self

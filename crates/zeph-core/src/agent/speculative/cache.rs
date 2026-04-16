@@ -57,6 +57,10 @@ impl SpeculativeHandle {
     }
 
     /// Await the result; blocks until the task finishes or is cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolError::Execution`] if the task was cancelled or panicked.
     pub async fn commit(self) -> Result<Option<ToolOutput>, ToolError> {
         match self.join.await {
             Ok(r) => r,
@@ -68,7 +72,7 @@ impl SpeculativeHandle {
     }
 }
 
-pub(crate) struct CacheInner {
+pub struct CacheInner {
     pub handles: HashMap<HandleKey, SpeculativeHandle>,
 }
 
@@ -147,6 +151,7 @@ impl SpeculativeCache {
     }
 
     /// Find and remove a handle matching `tool_id` + `args_hash`.
+    #[must_use]
     pub fn take_match(
         &self,
         tool_id: &ToolName,

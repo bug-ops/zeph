@@ -11,7 +11,7 @@
 //! 2. `executor.is_tool_speculatable(tool_id)` returns `true`.
 //! 3. `trust_level == TrustLevel::Trusted` (forwarded from the agent's current state).
 //! 4. Calling `executor.execute_tool_call(call)` would NOT return `ConfirmationRequired`
-//!    — checked by attempting a dry-run classification (see [`is_confirmation_required`]).
+//!    — checked by attempting a dry-run classification (see `is_confirmation_required`).
 
 #![allow(dead_code)]
 
