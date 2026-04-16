@@ -148,6 +148,9 @@ pub(crate) struct WizardState {
     pub(crate) classifiers_enabled: bool,
     #[cfg(feature = "classifiers")]
     pub(crate) pii_enabled: bool,
+    pub(crate) egress_logging_enabled: bool,
+    pub(crate) vigil_enabled: bool,
+    pub(crate) vigil_strict_mode: bool,
     // Logging
     pub(crate) log_file: String,
     pub(crate) log_level: String,
@@ -312,6 +315,9 @@ impl Default for WizardState {
             classifiers_enabled: false,
             #[cfg(feature = "classifiers")]
             pii_enabled: false,
+            egress_logging_enabled: true,
+            vigil_enabled: true,
+            vigil_strict_mode: false,
             log_file: String::new(),
             log_level: String::new(),
             log_rotation: String::new(),
@@ -778,6 +784,9 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             .allowed_paths
             .clone_from(&state.pre_execution_verify_allowed_paths);
     }
+    config.tools.egress.enabled = state.egress_logging_enabled;
+    config.security.vigil.enabled = state.vigil_enabled;
+    config.security.vigil.strict_mode = state.vigil_strict_mode;
     config.tools.shell.transactional = state.shell_transactional;
     config.tools.shell.auto_rollback = state.shell_auto_rollback;
     config

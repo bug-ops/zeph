@@ -48,6 +48,11 @@ pub enum FailureKind {
     SyntaxError,
     /// Failure cause could not be classified.
     Unknown,
+    /// Tool output was blocked by the VIGIL pre-sanitizer gate (security sentinel returned).
+    ///
+    /// Does not count as a skill quality failure — the block is a security enforcement action,
+    /// not an indication that the skill chose the wrong approach.
+    SecurityBlocked,
 }
 
 impl FailureKind {
@@ -61,6 +66,7 @@ impl FailureKind {
             Self::Partial => "partial",
             Self::SyntaxError => "syntax_error",
             Self::Unknown => "unknown",
+            Self::SecurityBlocked => "security_blocked",
         }
     }
 

@@ -18,6 +18,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   into the `ci-status` gate. The `docker/Dockerfile.dev` base image is
   bumped from `rust:1.88-slim` to `rust:1.94-slim`.
 
+- feat(security): add egress network logging to `zeph-tools` — `EgressEvent` struct with
+  per-hop emission (success, non-2xx, connection failure, body-too-large, redirect-blocked,
+  domain/scheme/SSRF blocked), bounded `mpsc::channel(256)` + `Arc<AtomicU64>` drop counter,
+  `EgressConfig` (enable/disable logging categories), `correlation_id` field on `AuditEntry`,
+  and `AuditLogger::log_egress()` for JSONL egress records
+
+- feat(security): add VIGIL verify-before-commit gate to `zeph-core` — `VigilGate` regex
+  tripwire that runs before `ContentSanitizer` on every tool output; `VigilConfig` in
+  `zeph-config` (`[security.vigil]`) with `enabled`, `strict_mode`, `sanitize_max_chars`,
+  `extra_patterns`, `exempt_tools`; `VigilRiskLevel` on `AuditEntry`; `VigilFlag` in
+  `SecurityEventCategory`; `vigil_flags_total` / `vigil_blocks_total` counters in
+  `MetricsSnapshot`; `FailureKind::SecurityBlocked` for skill outcome tracking; subagent
+  sessions exempt via `SecurityState::vigil = None` (FR-009); fail-open on invalid config
+
 - fix(profiling): emit periodic system resource metrics on `TRACE` instead of `INFO` to keep
   routine RSS/CPU/thread/fd snapshots out of normal logs; `target = "system.metrics"` is
   unchanged

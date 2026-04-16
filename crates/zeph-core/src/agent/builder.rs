@@ -1069,6 +1069,31 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure the VIGIL pre-sanitizer gate from config.
+    ///
+    /// Initialises [`VigilGate`] for top-level agent sessions. Subagent sessions must NOT
+    /// call this — they inherit `vigil: None` from the default [`SecurityState`], which
+    /// satisfies the subagent exemption invariant (spec FR-009).
+    ///
+    /// Invalid `extra_patterns` are logged as warnings and VIGIL is disabled rather than
+    /// failing the entire agent build (fail-open for this advisory layer; `ContentSanitizer`
+    /// remains the primary defense).
+    #[must_use]
+    pub fn with_vigil_config(mut self, config: zeph_config::VigilConfig) -> Self {
+        match crate::agent::vigil::VigilGate::try_new(config) {
+            Ok(gate) => {
+                self.security.vigil = Some(gate);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "VIGIL config invalid — gate disabled; ContentSanitizer remains active"
+                );
+            }
+        }
+        self
+    }
+
     /// Set the parent tool call ID for subagent sessions.
     ///
     /// When set, every `LoopbackEvent::ToolStart` and `LoopbackEvent::ToolOutput` emitted

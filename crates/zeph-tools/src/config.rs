@@ -496,6 +496,9 @@ pub struct ToolsConfig {
     /// (macOS Seatbelt or Linux bwrap + Landlock). Default: disabled.
     #[serde(default)]
     pub sandbox: SandboxConfig,
+    /// Egress network event logging configuration.
+    #[serde(default)]
+    pub egress: EgressConfig,
 }
 
 impl ToolsConfig {
@@ -617,6 +620,7 @@ impl Default for ToolsConfig {
             max_tool_calls_per_session: None,
             speculative: SpeculativeConfig::default(),
             sandbox: SandboxConfig::default(),
+            egress: EgressConfig::default(),
         }
     }
 }
@@ -808,6 +812,38 @@ pub struct AuthorizationConfig {
     /// Per-tool authorization rules. Appended after `[tools.policy]` rules at startup.
     #[serde(default)]
     pub rules: Vec<PolicyRuleConfig>,
+}
+
+/// Configuration for egress network event logging.
+///
+/// Controls what outbound HTTP events are emitted to the audit JSONL stream and
+/// surfaced in the TUI Security panel. Domain allow/deny policy is NOT duplicated
+/// here — it remains solely in [`ScrapeConfig`].
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct EgressConfig {
+    /// Master switch for egress event emission. Default: `true`.
+    pub enabled: bool,
+    /// Emit [`EgressEvent`](crate::audit::EgressEvent)s for requests blocked by
+    /// SSRF/domain/scheme checks. Default: `true`.
+    pub log_blocked: bool,
+    /// Include `response_bytes` in the JSONL record. Default: `true`.
+    pub log_response_bytes: bool,
+    /// Show real hostname in `MetricsSnapshot::egress_recent` (TUI). When `false`,
+    /// `"***"` is stored instead. JSONL always keeps the real host. Default: `true`.
+    pub log_hosts_to_tui: bool,
+}
+
+impl Default for EgressConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            log_blocked: true,
+            log_response_bytes: true,
+            log_hosts_to_tui: true,
+        }
+    }
 }
 
 fn default_scrape_timeout() -> u64 {

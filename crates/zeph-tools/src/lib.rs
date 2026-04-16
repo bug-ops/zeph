@@ -87,13 +87,17 @@ pub use adversarial_policy::{
     PolicyValidator, parse_policy_lines,
 };
 pub use anomaly::{AnomalyDetector, AnomalySeverity, is_reasoning_model};
-pub use audit::{AuditEntry, AuditLogger, AuditResult, chrono_now, log_tool_risk_summary};
+pub use audit::{
+    AuditEntry, AuditLogger, AuditResult, EgressEvent, VigilRiskLevel, chrono_now,
+    log_tool_risk_summary,
+};
 pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
 pub use config::AdversarialPolicyConfig;
 pub use config::{
-    AnomalyConfig, AuditConfig, AuthorizationConfig, DependencyConfig, FileConfig, OverflowConfig,
-    ResultCacheConfig, RetryConfig, SandboxConfig, ScrapeConfig, ShellConfig, TafcConfig,
+    AnomalyConfig, AuditConfig, AuthorizationConfig, DependencyConfig, EgressConfig, FileConfig,
+    OverflowConfig, ResultCacheConfig, RetryConfig, SandboxConfig, ScrapeConfig, ShellConfig,
+    TafcConfig,
     ToolDependency, ToolsConfig, UtilityScoringConfig,
 };
 pub use cwd::SetCwdExecutor;

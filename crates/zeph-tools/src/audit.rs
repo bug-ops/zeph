@@ -23,6 +23,72 @@ use zeph_common::ToolName;
 
 use crate::config::AuditConfig;
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
+/// Outbound network call record emitted by HTTP-capable executors.
+///
+/// Serialized as a JSON Lines record onto the shared audit sink. Consumers
+/// distinguish this record from [`AuditEntry`] by the presence of the `kind`
+/// field (always `"egress"`).
+///
+/// # Example JSON output
+///
+/// ```json
+/// {"timestamp":"1712345678","kind":"egress","correlation_id":"a1b2c3d4-...","tool":"fetch",
+///  "url":"https://example.com","host":"example.com","method":"GET","status":200,
+///  "duration_ms":120,"response_bytes":4096}
+/// ```
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EgressEvent {
+    /// Unix timestamp (seconds) when the request was issued.
+    pub timestamp: String,
+    /// Record-type discriminator — always `"egress"`. Consumers distinguish
+    /// `EgressEvent` from `AuditEntry` by the presence of this field.
+    pub kind: &'static str,
+    /// Correlation id shared with the parent [`AuditEntry`] (`UUIDv4`, lowercased).
+    pub correlation_id: String,
+    /// Tool that issued the call (`"web_scrape"`, `"fetch"`, …).
+    pub tool: ToolName,
+    /// Destination URL (after SSRF/domain validation).
+    pub url: String,
+    /// Hostname, denormalized for TUI aggregation.
+    pub host: String,
+    /// HTTP method (`"GET"`, `"POST"`, …).
+    pub method: String,
+    /// HTTP response status. `None` when the request failed pre-response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// Wall-clock duration from send to end-of-body, in milliseconds.
+    pub duration_ms: u64,
+    /// Bytes of response body received. Zero on pre-response failure or
+    /// when `log_response_bytes = false`.
+    pub response_bytes: usize,
+    /// Whether the request was blocked before connection.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub blocked: bool,
+    /// Block reason: `"allowlist"` | `"blocklist"` | `"ssrf"` | `"scheme"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_reason: Option<&'static str>,
+    /// Caller identity propagated from `ToolCall::caller_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_id: Option<String>,
+    /// Redirect hop index (0 for the initial request). Distinguishes per-hop events
+    /// sharing the same `correlation_id`.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub hop: u8,
+}
+
+impl EgressEvent {
+    /// Generate a new `UUIDv4` correlation id for use across a tool call's egress events.
+    #[must_use]
+    pub fn new_correlation_id() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+}
+
 /// Async writer that appends [`AuditEntry`] records to a structured JSONL log.
 ///
 /// Create via [`AuditLogger::from_config`] and share behind an `Arc`. Each executor
@@ -113,6 +179,30 @@ pub struct AuditEntry {
     /// `None` when policy is disabled or this entry is not from a policy check.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_match: Option<String>,
+    /// Correlation id shared with any associated [`EgressEvent`] emitted during this
+    /// tool call. Generated at `execute_tool_call` entry. `None` for policy-only or
+    /// rollback entries that do not map to a network-capable tool call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    /// VIGIL risk level when the pre-sanitizer gate flagged this tool output.
+    /// `None` when VIGIL did not fire (output was clean or tool was exempt).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vigil_risk: Option<VigilRiskLevel>,
+}
+
+/// Risk level assigned by the VIGIL pre-sanitizer gate to a flagged tool output.
+///
+/// Emitted in [`AuditEntry::vigil_risk`] when VIGIL fires.
+/// Colocated with `AuditEntry` so the audit JSONL schema is self-contained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VigilRiskLevel {
+    /// Reserved for future use: heuristic match below the primary threshold.
+    Low,
+    /// Single-pattern match in non-strict mode.
+    Medium,
+    /// ≥2 distinct pattern categories OR `strict_mode = true`.
+    High,
 }
 
 /// Outcome of a tool invocation, serialized as a tagged JSON object.
@@ -221,6 +311,39 @@ impl AuditLogger {
             }
         }
     }
+
+    /// Serialize an [`EgressEvent`] onto the same JSONL destination as [`AuditEntry`].
+    ///
+    /// Ordering with respect to [`AuditLogger::log`] is preserved by the shared
+    /// `tokio::sync::Mutex<File>` that serializes all writes on the same destination.
+    ///
+    /// Serialization errors are logged via `tracing::error!` and silently swallowed
+    /// so that egress logging failures never interrupt tool execution.
+    pub async fn log_egress(&self, event: &EgressEvent) {
+        let json = match serde_json::to_string(event) {
+            Ok(j) => j,
+            Err(err) => {
+                tracing::error!("egress event serialization failed: {err}");
+                return;
+            }
+        };
+
+        match &self.destination {
+            AuditDestination::Stdout => {
+                tracing::info!(target: "audit", "{json}");
+            }
+            AuditDestination::File(file) => {
+                use tokio::io::AsyncWriteExt;
+                let mut f = file.lock().await;
+                let line = format!("{json}\n");
+                if let Err(e) = f.write_all(line.as_bytes()).await {
+                    tracing::error!("failed to write egress log: {e}");
+                } else if let Err(e) = f.flush().await {
+                    tracing::error!("failed to flush egress log: {e}");
+                }
+            }
+        }
+    }
 }
 
 /// Log a per-tool risk summary at startup when `audit.tool_risk_summary = true`.
@@ -296,7 +419,9 @@ mod tests {
             exit_code: None,
             truncated: false,
             policy_match: None,
+            correlation_id: None,
             caller_id: None,
+            vigil_risk: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"success\""));
@@ -326,7 +451,9 @@ mod tests {
             exit_code: None,
             truncated: false,
             policy_match: None,
+            correlation_id: None,
             caller_id: None,
+            vigil_risk: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"blocked\""));
@@ -355,7 +482,9 @@ mod tests {
             exit_code: None,
             truncated: false,
             policy_match: None,
+            correlation_id: None,
             caller_id: None,
+            vigil_risk: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -381,7 +510,9 @@ mod tests {
             exit_code: None,
             truncated: false,
             policy_match: None,
+            correlation_id: None,
             caller_id: None,
+            vigil_risk: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"timeout\""));
@@ -413,7 +544,9 @@ mod tests {
             exit_code: None,
             truncated: false,
             policy_match: None,
+            correlation_id: None,
             caller_id: None,
+            vigil_risk: None,
         };
         logger.log(&entry).await;
     }
@@ -446,7 +579,9 @@ mod tests {
             exit_code: None,
             truncated: false,
             policy_match: None,
+            correlation_id: None,
             caller_id: None,
+            vigil_risk: None,
         };
         logger.log(&entry).await;
 
@@ -506,7 +641,9 @@ mod tests {
             exit_code: None,
             truncated: false,
             policy_match: None,
+            correlation_id: None,
             caller_id: None,
+            vigil_risk: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -536,7 +673,9 @@ mod tests {
             exit_code: None,
             truncated: false,
             policy_match: None,
+            correlation_id: None,
             caller_id: None,
+            vigil_risk: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -575,7 +714,9 @@ mod tests {
                 exit_code: None,
                 truncated: false,
                 policy_match: None,
+                correlation_id: None,
                 caller_id: None,
+                vigil_risk: None,
             };
             logger.log(&entry).await;
         }
@@ -604,7 +745,9 @@ mod tests {
             exit_code: Some(0),
             truncated: false,
             policy_match: None,
+            correlation_id: None,
             caller_id: None,
+            vigil_risk: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -633,7 +776,9 @@ mod tests {
             exit_code: None,
             truncated: false,
             policy_match: None,
+            correlation_id: None,
             caller_id: None,
+            vigil_risk: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(

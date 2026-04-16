@@ -798,6 +798,8 @@ impl ShellExecutor {
                 truncated,
                 caller_id: None,
                 policy_match: None,
+                correlation_id: None,
+                vigil_risk: None,
             };
             logger.log(&entry).await;
         }

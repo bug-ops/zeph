@@ -40,6 +40,8 @@ specific areas, refer to the child specs below.
 | [[010-2-injection-defense]] | IPI Defense | Regex + DeBERTa detection, AlignSentinel scoring, PII NER redaction |
 | [[010-3-authorization]] | Access Control | Capability-based RBAC, shell sandbox, SSRF protection |
 | [[010-4-audit]] | Audit Trail | Immutable logging, correlation analysis, environment scrubbing |
+| [[010-5-egress-logging]] | Egress Logging | `EgressEvent` per outbound HTTP call, correlation_id, bounded telemetry |
+| [[010-6-vigil-intent-anchoring]] | Verify-Before-Commit | Pre-sanitizer regex tripwire with Block/Sanitize + per-turn intent |
 
 ---
 

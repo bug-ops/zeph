@@ -103,6 +103,8 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         caller_id: call.caller_id.clone(),
                         // M1: use trace field directly as policy_match
                         policy_match: Some(trace.clone()),
+                        correlation_id: None,
+                        vigil_risk: None,
                     };
                     audit.log(&entry).await;
                 }
@@ -133,6 +135,8 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         caller_id: call.caller_id.clone(),
                         // M1: use trace field directly as policy_match
                         policy_match: Some(trace.clone()),
+                        correlation_id: None,
+                        vigil_risk: None,
                     };
                     audit.log(&entry).await;
                 }
@@ -197,6 +201,8 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
                     truncated: false,
                     caller_id: call.caller_id.clone(),
                     policy_match: None,
+                    correlation_id: None,
+                    vigil_risk: None,
                 };
                 audit.log(&entry).await;
             }

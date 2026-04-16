@@ -160,6 +160,8 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
             truncated: false,
             caller_id: call.caller_id.clone(),
             policy_match: None,
+            correlation_id: None,
+            vigil_risk: None,
         };
         audit.log(&entry).await;
     }

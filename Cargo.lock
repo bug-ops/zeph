@@ -10118,6 +10118,7 @@ dependencies = [
  "dirs",
  "insta",
  "ordered-float 5.3.0",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -10561,6 +10562,7 @@ dependencies = [
  "tree-sitter-typescript",
  "unicode-normalization",
  "url",
+ "uuid",
  "wiremock",
  "zeph-common",
 ]

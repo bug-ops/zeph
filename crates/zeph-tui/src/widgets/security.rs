@@ -34,6 +34,8 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         && metrics.exfiltration_memory_guards == 0
         && metrics.pre_execution_blocks == 0
         && metrics.pre_execution_warnings == 0
+        && metrics.egress_requests_total == 0
+        && metrics.egress_blocked_total == 0
         && metrics.security_events.is_empty();
 
     if all_zero {
@@ -55,6 +57,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     frame.render_widget(list, inner);
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_metric_items<'a>(
     metrics: &MetricsSnapshot,
     base: Style,
@@ -137,6 +140,32 @@ fn build_metric_items<'a>(
                 },
             ),
         ])),
+        ListItem::new(Line::from(Span::styled(
+            format!("Egress requests:   {}", metrics.egress_requests_total),
+            base,
+        ))),
+        ListItem::new(Line::from(vec![
+            Span::styled("Egress blocked:    ", base),
+            Span::styled(
+                metrics.egress_blocked_total.to_string(),
+                if metrics.egress_blocked_total > 0 {
+                    block_style
+                } else {
+                    base
+                },
+            ),
+        ])),
+        ListItem::new(Line::from(vec![
+            Span::styled("Egress dropped:    ", base),
+            Span::styled(
+                metrics.egress_dropped_total.to_string(),
+                if metrics.egress_dropped_total > 0 {
+                    flag_style
+                } else {
+                    base
+                },
+            ),
+        ])),
     ]
 }
 
@@ -177,6 +206,7 @@ fn append_event_items<'a>(
             SecurityEventCategory::CrossBoundaryMcpToAcp => {
                 ("[xbnd] ", Style::default().fg(Color::Red))
             }
+            SecurityEventCategory::VigilFlag => ("[vigi] ", block_style),
         };
         let hm = format_hm(ev.timestamp);
         items.push(ListItem::new(Line::from(vec![
@@ -242,7 +272,7 @@ mod tests {
             security_events: events,
             ..MetricsSnapshot::default()
         };
-        let output = render_to_string(50, 15, |frame, area| {
+        let output = render_to_string(50, 25, |frame, area| {
             render(&metrics, frame, area);
         });
         assert!(output.contains("web_scrape") || output.contains("inj"));
@@ -261,10 +291,12 @@ mod tests {
             security_events: events,
             ..MetricsSnapshot::default()
         };
-        let output = render_to_string(50, 15, |frame, area| {
+        let output = render_to_string(50, 25, |frame, area| {
             render(&metrics, frame, area);
         });
-        assert!(output.contains("exfil") || output.contains("llm_output"));
+        assert!(
+            output.contains("Exfil") || output.contains("exfil") || output.contains("llm_output")
+        );
     }
 
     #[test]
@@ -280,7 +312,7 @@ mod tests {
             security_events: events,
             ..MetricsSnapshot::default()
         };
-        let output = render_to_string(50, 15, |frame, area| {
+        let output = render_to_string(50, 25, |frame, area| {
             render(&metrics, frame, area);
         });
         assert!(output.contains("quar") || output.contains("web_scrape"));

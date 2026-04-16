@@ -64,6 +64,8 @@ Spec IDs (001–044) follow a logical grouping:
 | `008-mcp/spec.md` | MCP client, server lifecycle, semantic tool discovery, per-message pruning cache, injection detection, tool collision detection, caller identity propagation, tool quota, structured error codes, OAP authorization | `zeph-mcp` |
 | `009-orchestration/spec.md` | DAG planner, DagScheduler, AgentRouter, /plan command, plan template cache, VMAO adaptive replanning, cascade-aware DAG routing | `zeph-orchestration` |
 | `010-security/spec.md` | Vault, shell sandbox, content isolation, SSRF protection, IPI defense, PII NER circuit breaker, cross-tool injection correlation, AgentRFC protocol audit, MCP→ACP boundary enforcement, credential env-var scrubbing | cross-cutting |
+| `010-security/010-5-egress-logging.md` | Egress logging sub-spec: `EgressEvent` per outbound HTTP call, `AuditEntry.correlation_id`, bounded mpsc telemetry (256 + drop counter), TUI Security panel surface | `zeph-tools`, `zeph-core`, `zeph-tui` |
+| `010-security/010-6-vigil-intent-anchoring.md` | VIGIL verify-before-commit sub-spec: pre-sanitizer regex tripwire with Block/Sanitize action, per-turn `current_turn_intent`, subagent exemption, non-retryable blocks via `error_category="vigil_blocked"` | `zeph-core`, `zeph-tools`, `zeph-config` |
 | `011-tui/spec.md` | ratatui dashboard, spinner rule for background operations, TuiChannel, RenderCache, embed backfill progress | `zeph-tui` |
 | `012-graph-memory/spec.md` | Entity graph, BFS recall, community detection, MAGMA typed edges, SYNAPSE spreading activation | `zeph-memory` |
 | `004-memory/004-6-graph-memory.md` | Graph memory sub-spec (concise reference within 004-memory): MAGMA typed edges, SYNAPSE config, A-MEM link weights, key invariants | `zeph-memory` |

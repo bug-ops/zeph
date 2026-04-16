@@ -7,6 +7,7 @@ use zeph_tools::PreExecutionVerifierConfig;
 use zeph_tools::SkillTrustLevel;
 
 use crate::defaults::default_true;
+use crate::vigil::VigilConfig;
 
 /// Fine-grained controls for the skill body scanner.
 ///
@@ -185,6 +186,12 @@ pub struct SecurityConfig {
     /// Temporal causal IPI analysis at tool-return boundaries (opt-in, disabled by default).
     #[serde(default)]
     pub causal_ipi: CausalIpiConfig,
+    /// VIGIL verify-before-commit intent anchoring gate (enabled by default).
+    ///
+    /// Runs a regex tripwire before `sanitize_tool_output` to intercept low-effort injection
+    /// patterns. See `[[security.vigil]]` in TOML and spec `010-6-vigil-intent-anchoring`.
+    #[serde(default)]
+    pub vigil: VigilConfig,
 }
 
 impl Default for SecurityConfig {
@@ -201,6 +208,7 @@ impl Default for SecurityConfig {
             guardrail: GuardrailConfig::default(),
             response_verification: ResponseVerificationConfig::default(),
             causal_ipi: CausalIpiConfig::default(),
+            vigil: VigilConfig::default(),
         }
     }
 }

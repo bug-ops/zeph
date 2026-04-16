@@ -1932,6 +1932,69 @@ pub fn migrate_otel_filter(toml_src: &str) -> Result<MigrationResult, MigrateErr
     })
 }
 
+/// Adds a commented-out `[tools.egress]` section to configs that predate egress logging (#3058).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the TOML source cannot be parsed.
+pub fn migrate_egress_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("[tools.egress]") || toml_src.contains("tools.egress") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Egress network logging — records outbound HTTP requests to the audit log\n\
+        # with per-hop correlation IDs, response metadata, and block reasons (#3058).\n\
+        # [tools.egress]\n\
+        # enabled = true           # set to false to disable all egress event recording\n\
+        # log_blocked = true       # record scheme/domain/SSRF-blocked requests\n\
+        # log_response_bytes = true\n\
+        # log_hosts_to_tui = true\n";
+
+    let mut output = toml_src.to_owned();
+    output.push_str(comment);
+    Ok(MigrationResult {
+        output,
+        added_count: 1,
+        sections_added: vec!["tools.egress".to_owned()],
+    })
+}
+
+/// Adds a commented-out `[security.vigil]` section to configs that predate VIGIL (#3058).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the TOML source cannot be parsed.
+pub fn migrate_vigil_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("[security.vigil]") || toml_src.contains("security.vigil") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "\n# VIGIL verify-before-commit intent-anchoring gate (#3058).\n\
+        # Runs a regex tripwire on every tool output before it enters LLM context.\n\
+        # [security.vigil]\n\
+        # enabled = true          # master switch; false bypasses VIGIL entirely\n\
+        # strict_mode = false     # true: block (replace with sentinel); false: truncate+annotate\n\
+        # sanitize_max_chars = 2048\n\
+        # extra_patterns = []     # operator-supplied additional injection patterns (max 64)\n\
+        # exempt_tools = [\"memory_search\", \"read_overflow\", \"load_skill\", \"schedule_deferred\"]\n";
+
+    let mut output = toml_src.to_owned();
+    output.push_str(comment);
+    Ok(MigrationResult {
+        output,
+        added_count: 1,
+        sections_added: vec!["security.vigil".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {

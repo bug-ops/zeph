@@ -338,7 +338,14 @@ pub(crate) async fn run_daemon(
             }
         }
     }
-    let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+    let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape)
+        .with_egress_config(config.tools.egress.clone());
+    if config.tools.egress.enabled {
+        let (egress_tx, egress_rx) = tokio::sync::mpsc::channel(256);
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        scrape_executor = scrape_executor.with_egress_tx(egress_tx, dropped);
+        tokio::spawn(agent_setup::drain_egress_events(egress_rx, None));
+    }
     let mut daemon_audit_logger: Option<std::sync::Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
         && let Ok(logger) =
@@ -567,6 +574,7 @@ pub(crate) async fn run_daemon(
     #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_pii_classifier(agent, config);
     let agent = agent_setup::apply_causal_analyzer(agent, provider.clone(), config);
+    let agent = agent_setup::apply_vigil(agent, config);
 
     let judge_provider = app.build_judge_provider();
     let agent = if let Some(jp) = judge_provider {

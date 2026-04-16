@@ -253,6 +253,8 @@ The following large specs have been broken into atomic child specs for focused s
 | [[010-2-injection-defense]] | IPI detection (regex + DeBERTa), PII NER redaction |
 | [[010-3-authorization]] | Capability-based RBAC, shell sandbox, SSRF protection |
 | [[010-4-audit]] | Immutable audit trail, correlation analysis, env scrubbing |
+| [[010-5-egress-logging]] | `EgressEvent` per outbound HTTP call, correlation_id, bounded telemetry, TUI surface |
+| [[010-6-vigil-intent-anchoring]] | Verify-before-commit regex tripwire with Block/Sanitize + per-turn intent, subagent exemption |
 
 ---
 

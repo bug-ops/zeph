@@ -18,6 +18,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
@@ -26,12 +27,47 @@ use url::Url;
 
 use zeph_common::ToolName;
 
-use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
-use crate::config::ScrapeConfig;
+use crate::audit::{AuditEntry, AuditLogger, AuditResult, EgressEvent, chrono_now};
+use crate::config::{EgressConfig, ScrapeConfig};
 use crate::executor::{
     ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
 };
 use crate::net::is_private_ip;
+
+/// Strips userinfo (`user:pass@`) and sensitive query params from a URL for safe logging.
+///
+/// Returns the sanitized URL string; falls back to the original if parsing fails.
+fn redact_url_for_log(url: &str) -> String {
+    let Ok(mut parsed) = Url::parse(url) else {
+        return url.to_owned();
+    };
+    // Remove userinfo.
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    // Strip query params whose names suggest secrets (token, key, secret, password, auth, sig).
+    let sensitive = [
+        "token", "key", "secret", "password", "auth", "sig", "api_key", "apikey",
+    ];
+    let filtered: Vec<(String, String)> = parsed
+        .query_pairs()
+        .filter(|(k, _)| {
+            let lower = k.to_lowercase();
+            !sensitive.iter().any(|s| lower.contains(s))
+        })
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    if filtered.is_empty() {
+        parsed.set_query(None);
+    } else {
+        let q: String = filtered
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        parsed.set_query(Some(&q));
+    }
+    parsed.to_string()
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct FetchParams {
@@ -121,6 +157,9 @@ pub struct WebScrapeExecutor {
     allowed_domains: Vec<String>,
     denied_domains: Vec<String>,
     audit_logger: Option<Arc<AuditLogger>>,
+    egress_config: EgressConfig,
+    egress_tx: Option<tokio::sync::mpsc::Sender<EgressEvent>>,
+    egress_dropped: Arc<AtomicU64>,
 }
 
 impl WebScrapeExecutor {
@@ -135,6 +174,9 @@ impl WebScrapeExecutor {
             allowed_domains: config.allowed_domains.clone(),
             denied_domains: config.denied_domains.clone(),
             audit_logger: None,
+            egress_config: EgressConfig::default(),
+            egress_tx: None,
+            egress_dropped: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -143,6 +185,34 @@ impl WebScrapeExecutor {
     pub fn with_audit(mut self, logger: Arc<AuditLogger>) -> Self {
         self.audit_logger = Some(logger);
         self
+    }
+
+    /// Configure egress event logging.
+    #[must_use]
+    pub fn with_egress_config(mut self, config: EgressConfig) -> Self {
+        self.egress_config = config;
+        self
+    }
+
+    /// Attach the egress telemetry channel sender and drop counter.
+    ///
+    /// Events are sent via [`tokio::sync::mpsc::Sender::try_send`] — the executor
+    /// never blocks waiting for capacity.
+    #[must_use]
+    pub fn with_egress_tx(
+        mut self,
+        tx: tokio::sync::mpsc::Sender<EgressEvent>,
+        dropped: Arc<AtomicU64>,
+    ) -> Self {
+        self.egress_tx = Some(tx);
+        self.egress_dropped = dropped;
+        self
+    }
+
+    /// Returns a clone of the egress drop counter, for use in the drain task.
+    #[must_use]
+    pub fn egress_dropped(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.egress_dropped)
     }
 
     fn build_client(&self, host: &str, addrs: &[SocketAddr]) -> reqwest::Client {
@@ -192,8 +262,11 @@ impl ToolExecutor for WebScrapeExecutor {
                     e.to_string(),
                 ))
             })?;
+            let correlation_id = EgressEvent::new_correlation_id();
             let start = Instant::now();
-            let scrape_result = self.scrape_instruction(&instruction).await;
+            let scrape_result = self
+                .scrape_instruction(&instruction, &correlation_id, None)
+                .await;
             #[allow(clippy::cast_possible_truncation)]
             let duration_ms = start.elapsed().as_millis() as u64;
             match scrape_result {
@@ -204,6 +277,8 @@ impl ToolExecutor for WebScrapeExecutor {
                         AuditResult::Success,
                         duration_ms,
                         None,
+                        None,
+                        Some(correlation_id),
                     )
                     .await;
                     outputs.push(output);
@@ -216,6 +291,8 @@ impl ToolExecutor for WebScrapeExecutor {
                         audit_result,
                         duration_ms,
                         Some(&e),
+                        None,
+                        Some(correlation_id),
                     )
                     .await;
                     return Err(e);
@@ -241,12 +318,16 @@ impl ToolExecutor for WebScrapeExecutor {
         feature = "profiling",
         tracing::instrument(name = "tool.web_scrape", skip_all)
     )]
+    #[allow(clippy::too_many_lines)]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         match call.tool_id.as_str() {
             "web_scrape" => {
                 let instruction: ScrapeInstruction = deserialize_params(&call.params)?;
+                let correlation_id = EgressEvent::new_correlation_id();
                 let start = Instant::now();
-                let result = self.scrape_instruction(&instruction).await;
+                let result = self
+                    .scrape_instruction(&instruction, &correlation_id, call.caller_id.clone())
+                    .await;
                 #[allow(clippy::cast_possible_truncation)]
                 let duration_ms = start.elapsed().as_millis() as u64;
                 match result {
@@ -257,6 +338,8 @@ impl ToolExecutor for WebScrapeExecutor {
                             AuditResult::Success,
                             duration_ms,
                             None,
+                            call.caller_id.clone(),
+                            Some(correlation_id),
                         )
                         .await;
                         Ok(Some(ToolOutput {
@@ -280,6 +363,8 @@ impl ToolExecutor for WebScrapeExecutor {
                             audit_result,
                             duration_ms,
                             Some(&e),
+                            call.caller_id.clone(),
+                            Some(correlation_id),
                         )
                         .await;
                         Err(e)
@@ -288,14 +373,25 @@ impl ToolExecutor for WebScrapeExecutor {
             }
             "fetch" => {
                 let p: FetchParams = deserialize_params(&call.params)?;
+                let correlation_id = EgressEvent::new_correlation_id();
                 let start = Instant::now();
-                let result = self.handle_fetch(&p).await;
+                let result = self
+                    .handle_fetch(&p, &correlation_id, call.caller_id.clone())
+                    .await;
                 #[allow(clippy::cast_possible_truncation)]
                 let duration_ms = start.elapsed().as_millis() as u64;
                 match result {
                     Ok(output) => {
-                        self.log_audit("fetch", &p.url, AuditResult::Success, duration_ms, None)
-                            .await;
+                        self.log_audit(
+                            "fetch",
+                            &p.url,
+                            AuditResult::Success,
+                            duration_ms,
+                            None,
+                            call.caller_id.clone(),
+                            Some(correlation_id),
+                        )
+                        .await;
                         Ok(Some(ToolOutput {
                             tool_name: ToolName::new("fetch"),
                             summary: output,
@@ -311,8 +407,16 @@ impl ToolExecutor for WebScrapeExecutor {
                     }
                     Err(e) => {
                         let audit_result = tool_error_to_audit_result(&e);
-                        self.log_audit("fetch", &p.url, audit_result, duration_ms, Some(&e))
-                            .await;
+                        self.log_audit(
+                            "fetch",
+                            &p.url,
+                            audit_result,
+                            duration_ms,
+                            Some(&e),
+                            call.caller_id.clone(),
+                            Some(correlation_id),
+                        )
+                        .await;
                         Err(e)
                     }
                 }
@@ -339,6 +443,7 @@ fn tool_error_to_audit_result(e: &ToolError) -> AuditResult {
 }
 
 impl WebScrapeExecutor {
+    #[allow(clippy::too_many_arguments)]
     async fn log_audit(
         &self,
         tool: &str,
@@ -346,6 +451,8 @@ impl WebScrapeExecutor {
         result: AuditResult,
         duration_ms: u64,
         error: Option<&ToolError>,
+        caller_id: Option<String>,
+        correlation_id: Option<String>,
     ) {
         if let Some(ref logger) = self.audit_logger {
             let (error_category, error_domain, error_phase) =
@@ -374,36 +481,187 @@ impl WebScrapeExecutor {
                 adversarial_policy_decision: None,
                 exit_code: None,
                 truncated: false,
-                caller_id: None,
+                caller_id,
                 policy_match: None,
+                correlation_id,
+                vigil_risk: None,
             };
             logger.log(&entry).await;
         }
     }
 
-    async fn handle_fetch(&self, params: &FetchParams) -> Result<String, ToolError> {
-        let parsed = validate_url(&params.url)?;
-        check_domain_policy(
+    fn send_egress_event(&self, event: EgressEvent) {
+        if let Some(ref tx) = self.egress_tx {
+            match tx.try_send(event) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    self.egress_dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    tracing::debug!("egress channel closed; executor continuing without telemetry");
+                }
+            }
+        }
+    }
+
+    async fn log_egress_event(&self, event: &EgressEvent) {
+        if let Some(ref logger) = self.audit_logger {
+            logger.log_egress(event).await;
+        }
+        self.send_egress_event(event.clone());
+    }
+
+    async fn handle_fetch(
+        &self,
+        params: &FetchParams,
+        correlation_id: &str,
+        caller_id: Option<String>,
+    ) -> Result<String, ToolError> {
+        let parsed = validate_url(&params.url);
+        let host_str = parsed
+            .as_ref()
+            .map(|u| u.host_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+
+        if let Err(ref _e) = parsed {
+            if self.egress_config.enabled && self.egress_config.log_blocked {
+                let event = Self::make_blocked_event(
+                    "fetch",
+                    &params.url,
+                    &host_str,
+                    correlation_id,
+                    caller_id.clone(),
+                    "scheme",
+                );
+                self.log_egress_event(&event).await;
+            }
+            return Err(parsed.unwrap_err());
+        }
+        let parsed = parsed.unwrap();
+
+        if let Err(e) = check_domain_policy(
             parsed.host_str().unwrap_or(""),
             &self.allowed_domains,
             &self.denied_domains,
-        )?;
-        let (host, addrs) = resolve_and_validate(&parsed).await?;
-        self.fetch_html(&params.url, &host, &addrs).await
+        ) {
+            if self.egress_config.enabled && self.egress_config.log_blocked {
+                let event = Self::make_blocked_event(
+                    "fetch",
+                    &params.url,
+                    parsed.host_str().unwrap_or(""),
+                    correlation_id,
+                    caller_id.clone(),
+                    "blocklist",
+                );
+                self.log_egress_event(&event).await;
+            }
+            return Err(e);
+        }
+
+        let (host, addrs) = match resolve_and_validate(&parsed).await {
+            Ok(v) => v,
+            Err(e) => {
+                if self.egress_config.enabled && self.egress_config.log_blocked {
+                    let event = Self::make_blocked_event(
+                        "fetch",
+                        &params.url,
+                        parsed.host_str().unwrap_or(""),
+                        correlation_id,
+                        caller_id.clone(),
+                        "ssrf",
+                    );
+                    self.log_egress_event(&event).await;
+                }
+                return Err(e);
+            }
+        };
+
+        self.fetch_html(
+            &params.url,
+            &host,
+            &addrs,
+            "fetch",
+            correlation_id,
+            caller_id,
+        )
+        .await
     }
 
     async fn scrape_instruction(
         &self,
         instruction: &ScrapeInstruction,
+        correlation_id: &str,
+        caller_id: Option<String>,
     ) -> Result<String, ToolError> {
-        let parsed = validate_url(&instruction.url)?;
-        check_domain_policy(
+        let parsed = validate_url(&instruction.url);
+        let host_str = parsed
+            .as_ref()
+            .map(|u| u.host_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+
+        if let Err(ref _e) = parsed {
+            if self.egress_config.enabled && self.egress_config.log_blocked {
+                let event = Self::make_blocked_event(
+                    "web_scrape",
+                    &instruction.url,
+                    &host_str,
+                    correlation_id,
+                    caller_id.clone(),
+                    "scheme",
+                );
+                self.log_egress_event(&event).await;
+            }
+            return Err(parsed.unwrap_err());
+        }
+        let parsed = parsed.unwrap();
+
+        if let Err(e) = check_domain_policy(
             parsed.host_str().unwrap_or(""),
             &self.allowed_domains,
             &self.denied_domains,
-        )?;
-        let (host, addrs) = resolve_and_validate(&parsed).await?;
-        let html = self.fetch_html(&instruction.url, &host, &addrs).await?;
+        ) {
+            if self.egress_config.enabled && self.egress_config.log_blocked {
+                let event = Self::make_blocked_event(
+                    "web_scrape",
+                    &instruction.url,
+                    parsed.host_str().unwrap_or(""),
+                    correlation_id,
+                    caller_id.clone(),
+                    "blocklist",
+                );
+                self.log_egress_event(&event).await;
+            }
+            return Err(e);
+        }
+
+        let (host, addrs) = match resolve_and_validate(&parsed).await {
+            Ok(v) => v,
+            Err(e) => {
+                if self.egress_config.enabled && self.egress_config.log_blocked {
+                    let event = Self::make_blocked_event(
+                        "web_scrape",
+                        &instruction.url,
+                        parsed.host_str().unwrap_or(""),
+                        correlation_id,
+                        caller_id.clone(),
+                        "ssrf",
+                    );
+                    self.log_egress_event(&event).await;
+                }
+                return Err(e);
+            }
+        };
+
+        let html = self
+            .fetch_html(
+                &instruction.url,
+                &host,
+                &addrs,
+                "web_scrape",
+                correlation_id,
+                caller_id,
+            )
+            .await?;
         let selector = instruction.select.clone();
         let extract = ExtractMode::parse(&instruction.extract);
         let limit = instruction.limit.unwrap_or(10);
@@ -412,20 +670,51 @@ impl WebScrapeExecutor {
             .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?
     }
 
+    fn make_blocked_event(
+        tool: &str,
+        url: &str,
+        host: &str,
+        correlation_id: &str,
+        caller_id: Option<String>,
+        block_reason: &'static str,
+    ) -> EgressEvent {
+        EgressEvent {
+            timestamp: chrono_now(),
+            kind: "egress",
+            correlation_id: correlation_id.to_owned(),
+            tool: tool.into(),
+            url: redact_url_for_log(url),
+            host: host.to_owned(),
+            method: "GET".to_owned(),
+            status: None,
+            duration_ms: 0,
+            response_bytes: 0,
+            blocked: true,
+            block_reason: Some(block_reason),
+            caller_id,
+            hop: 0,
+        }
+    }
+
     /// Fetches the HTML at `url`, manually following up to 3 redirects.
     ///
     /// Each redirect target is validated with `validate_url` and `resolve_and_validate`
-    /// before following, preventing SSRF via redirect chains.
+    /// before following, preventing SSRF via redirect chains. When egress logging is
+    /// enabled, one [`EgressEvent`] is emitted per hop.
     ///
     /// # Errors
     ///
     /// Returns `ToolError::Blocked` if any redirect target resolves to a private IP.
     /// Returns `ToolError::Execution` on HTTP errors, too-large bodies, or too many redirects.
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     async fn fetch_html(
         &self,
         url: &str,
         host: &str,
         addrs: &[SocketAddr],
+        tool: &str,
+        correlation_id: &str,
+        caller_id: Option<String>,
     ) -> Result<String, ToolError> {
         const MAX_REDIRECTS: usize = 3;
 
@@ -434,13 +723,43 @@ impl WebScrapeExecutor {
         let mut current_addrs = addrs.to_vec();
 
         for hop in 0..=MAX_REDIRECTS {
+            let hop_start = Instant::now();
             // Build a per-hop client pinned to the current hop's validated addresses.
             let client = self.build_client(&current_host, &current_addrs);
             let resp = client
                 .get(&current_url)
                 .send()
                 .await
-                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())));
+
+            let resp = match resp {
+                Ok(r) => r,
+                Err(e) => {
+                    if self.egress_config.enabled {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let duration_ms = hop_start.elapsed().as_millis() as u64;
+                        let event = EgressEvent {
+                            timestamp: chrono_now(),
+                            kind: "egress",
+                            correlation_id: correlation_id.to_owned(),
+                            tool: tool.into(),
+                            url: redact_url_for_log(&current_url),
+                            host: current_host.clone(),
+                            method: "GET".to_owned(),
+                            status: None,
+                            duration_ms,
+                            response_bytes: 0,
+                            blocked: false,
+                            block_reason: None,
+                            caller_id: caller_id.clone(),
+                            #[allow(clippy::cast_possible_truncation)]
+                            hop: hop as u8,
+                        };
+                        self.log_egress_event(&event).await;
+                    }
+                    return Err(e);
+                }
+            };
 
             let status = resp.status();
 
@@ -466,8 +785,62 @@ impl WebScrapeExecutor {
                     .join(location)
                     .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 
-                let validated = validate_url(next_url.as_str())?;
-                let (next_host, next_addrs) = resolve_and_validate(&validated).await?;
+                let validated = validate_url(next_url.as_str());
+                if let Err(ref _e) = validated {
+                    if self.egress_config.enabled && self.egress_config.log_blocked {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let duration_ms = hop_start.elapsed().as_millis() as u64;
+                        let next_host = next_url.host_str().unwrap_or("").to_owned();
+                        let event = EgressEvent {
+                            timestamp: chrono_now(),
+                            kind: "egress",
+                            correlation_id: correlation_id.to_owned(),
+                            tool: tool.into(),
+                            url: redact_url_for_log(next_url.as_str()),
+                            host: next_host,
+                            method: "GET".to_owned(),
+                            status: None,
+                            duration_ms,
+                            response_bytes: 0,
+                            blocked: true,
+                            block_reason: Some("ssrf"),
+                            caller_id: caller_id.clone(),
+                            #[allow(clippy::cast_possible_truncation)]
+                            hop: (hop + 1) as u8,
+                        };
+                        self.log_egress_event(&event).await;
+                    }
+                    return Err(validated.unwrap_err());
+                }
+                let validated = validated.unwrap();
+                let resolve_result = resolve_and_validate(&validated).await;
+                if let Err(ref _e) = resolve_result {
+                    if self.egress_config.enabled && self.egress_config.log_blocked {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let duration_ms = hop_start.elapsed().as_millis() as u64;
+                        let next_host = next_url.host_str().unwrap_or("").to_owned();
+                        let event = EgressEvent {
+                            timestamp: chrono_now(),
+                            kind: "egress",
+                            correlation_id: correlation_id.to_owned(),
+                            tool: tool.into(),
+                            url: redact_url_for_log(next_url.as_str()),
+                            host: next_host,
+                            method: "GET".to_owned(),
+                            status: None,
+                            duration_ms,
+                            response_bytes: 0,
+                            blocked: true,
+                            block_reason: Some("ssrf"),
+                            caller_id: caller_id.clone(),
+                            #[allow(clippy::cast_possible_truncation)]
+                            hop: (hop + 1) as u8,
+                        };
+                        self.log_egress_event(&event).await;
+                    }
+                    return Err(resolve_result.unwrap_err());
+                }
+                let (next_host, next_addrs) = resolve_result.unwrap();
 
                 current_url = next_url.to_string();
                 current_host = next_host;
@@ -476,6 +849,28 @@ impl WebScrapeExecutor {
             }
 
             if !status.is_success() {
+                if self.egress_config.enabled {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let duration_ms = hop_start.elapsed().as_millis() as u64;
+                    let event = EgressEvent {
+                        timestamp: chrono_now(),
+                        kind: "egress",
+                        correlation_id: correlation_id.to_owned(),
+                        tool: tool.into(),
+                        url: current_url.clone(),
+                        host: current_host.clone(),
+                        method: "GET".to_owned(),
+                        status: Some(status.as_u16()),
+                        duration_ms,
+                        response_bytes: 0,
+                        blocked: false,
+                        block_reason: None,
+                        caller_id: caller_id.clone(),
+                        #[allow(clippy::cast_possible_truncation)]
+                        hop: hop as u8,
+                    };
+                    self.log_egress_event(&event).await;
+                }
                 return Err(ToolError::Http {
                     status: status.as_u16(),
                     message: status.canonical_reason().unwrap_or("unknown").to_owned(),
@@ -488,11 +883,62 @@ impl WebScrapeExecutor {
                 .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 
             if bytes.len() > self.max_body_bytes {
+                if self.egress_config.enabled {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let duration_ms = hop_start.elapsed().as_millis() as u64;
+                    let event = EgressEvent {
+                        timestamp: chrono_now(),
+                        kind: "egress",
+                        correlation_id: correlation_id.to_owned(),
+                        tool: tool.into(),
+                        url: current_url.clone(),
+                        host: current_host.clone(),
+                        method: "GET".to_owned(),
+                        status: Some(status.as_u16()),
+                        duration_ms,
+                        response_bytes: bytes.len(),
+                        blocked: false,
+                        block_reason: None,
+                        caller_id: caller_id.clone(),
+                        #[allow(clippy::cast_possible_truncation)]
+                        hop: hop as u8,
+                    };
+                    self.log_egress_event(&event).await;
+                }
                 return Err(ToolError::Execution(std::io::Error::other(format!(
                     "response too large: {} bytes (max: {})",
                     bytes.len(),
                     self.max_body_bytes,
                 ))));
+            }
+
+            // Success — emit egress event.
+            if self.egress_config.enabled {
+                #[allow(clippy::cast_possible_truncation)]
+                let duration_ms = hop_start.elapsed().as_millis() as u64;
+                let response_bytes = if self.egress_config.log_response_bytes {
+                    bytes.len()
+                } else {
+                    0
+                };
+                let event = EgressEvent {
+                    timestamp: chrono_now(),
+                    kind: "egress",
+                    correlation_id: correlation_id.to_owned(),
+                    tool: tool.into(),
+                    url: current_url.clone(),
+                    host: current_host.clone(),
+                    method: "GET".to_owned(),
+                    status: Some(status.as_u16()),
+                    duration_ms,
+                    response_bytes,
+                    blocked: false,
+                    block_reason: None,
+                    caller_id: caller_id.clone(),
+                    #[allow(clippy::cast_possible_truncation)]
+                    hop: hop as u8,
+                };
+                self.log_egress_event(&event).await;
             }
 
             return String::from_utf8(bytes.to_vec())
@@ -1141,6 +1587,9 @@ mod tests {
             allowed_domains: vec![],
             denied_domains: vec![],
             audit_logger: None,
+            egress_config: EgressConfig::default(),
+            egress_tx: None,
+            egress_dropped: Arc::new(AtomicU64::new(0)),
         };
         (executor, server)
     }
@@ -1250,7 +1699,9 @@ mod tests {
 
         let (host, addrs) = server_host_and_addr(&server);
         let url = format!("{}/page", server.uri());
-        let result = executor.fetch_html(&url, &host, &addrs).await;
+        let result = executor
+            .fetch_html(&url, &host, &addrs, "fetch", "test-cid", None)
+            .await;
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
         assert_eq!(result.unwrap(), "<h1>OK</h1>");
     }
@@ -1269,7 +1720,9 @@ mod tests {
 
         let (host, addrs) = server_host_and_addr(&server);
         let url = format!("{}/forbidden", server.uri());
-        let result = executor.fetch_html(&url, &host, &addrs).await;
+        let result = executor
+            .fetch_html(&url, &host, &addrs, "fetch", "test-cid", None)
+            .await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("403"), "expected 403 in error: {msg}");
@@ -1289,7 +1742,9 @@ mod tests {
 
         let (host, addrs) = server_host_and_addr(&server);
         let url = format!("{}/missing", server.uri());
-        let result = executor.fetch_html(&url, &host, &addrs).await;
+        let result = executor
+            .fetch_html(&url, &host, &addrs, "fetch", "test-cid", None)
+            .await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("404"), "expected 404 in error: {msg}");
@@ -1310,7 +1765,9 @@ mod tests {
 
         let (host, addrs) = server_host_and_addr(&server);
         let url = format!("{}/redirect-no-loc", server.uri());
-        let result = executor.fetch_html(&url, &host, &addrs).await;
+        let result = executor
+            .fetch_html(&url, &host, &addrs, "fetch", "test-cid", None)
+            .await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -1430,6 +1887,9 @@ mod tests {
             allowed_domains: vec![],
             denied_domains: vec![],
             audit_logger: None,
+            egress_config: EgressConfig::default(),
+            egress_tx: None,
+            egress_dropped: Arc::new(AtomicU64::new(0)),
         };
         let server = wiremock::MockServer::start().await;
         Mock::given(method("GET"))
@@ -1443,7 +1903,9 @@ mod tests {
 
         let (host, addrs) = server_host_and_addr(&server);
         let url = format!("{}/big", server.uri());
-        let result = small_limit_executor.fetch_html(&url, &host, &addrs).await;
+        let result = small_limit_executor
+            .fetch_html(&url, &host, &addrs, "fetch", "test-cid", None)
+            .await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("too large"), "expected too-large error: {msg}");
@@ -1775,7 +2237,9 @@ mod tests {
 
         let (host, addrs) = server_host_and_addr(&server);
         let url = format!("{}/content", server.uri());
-        let result = executor.fetch_html(&url, &host, &addrs).await;
+        let result = executor
+            .fetch_html(&url, &host, &addrs, "fetch", "test-cid", None)
+            .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "plain text content");
     }
@@ -2016,6 +2480,8 @@ mod tests {
                 AuditResult::Success,
                 42,
                 None,
+                None,
+                None,
             )
             .await;
 
@@ -2054,6 +2520,8 @@ mod tests {
                     reason: "scheme not allowed: http".into(),
                 },
                 0,
+                None,
+                None,
                 None,
             )
             .await;
@@ -2141,7 +2609,14 @@ mod tests {
         let (host, addrs) = server_host_and_addr(&server);
         // Call fetch_html directly (bypassing SSRF guard for loopback mock server)
         let result = executor
-            .fetch_html(&format!("{}/e2e", server.uri()), &host, &addrs)
+            .fetch_html(
+                &format!("{}/e2e", server.uri()),
+                &host,
+                &addrs,
+                "fetch",
+                "test-cid",
+                None,
+            )
             .await;
         assert!(result.is_ok());
         assert!(result.unwrap().contains("end-to-end"));

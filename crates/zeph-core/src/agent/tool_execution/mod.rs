@@ -25,6 +25,28 @@ enum AnomalyOutcome {
     },
 }
 
+/// Internal outcome of `run_vigil_gate` — not exposed outside `tool_execution`.
+pub(crate) enum VigilOutcome {
+    Clean,
+    /// Advisory: body was truncated+annotated; `ContentSanitizer` continues downstream.
+    Sanitized {
+        #[allow(dead_code)]
+        risk: zeph_tools::VigilRiskLevel,
+    },
+    /// Hard-block: sentinel replaces the body; `ContentSanitizer` is skipped.
+    Blocked {
+        #[allow(dead_code)]
+        risk: zeph_tools::VigilRiskLevel,
+        sentinel: String,
+    },
+}
+
+impl VigilOutcome {
+    pub(crate) fn is_blocked(&self) -> bool {
+        matches!(self, Self::Blocked { .. })
+    }
+}
+
 /// Result of a response cache lookup.
 ///
 /// On `Hit`, the caller should return the cached response.
@@ -788,6 +810,72 @@ pub(crate) fn tool_def_to_definition_with_tafc(
         augment_with_tafc(base, tafc.complexity_threshold)
     } else {
         base
+    }
+}
+
+/// VIGIL pre-sanitizer gate integration for the agent tool-execution pipeline.
+impl<C: Channel> Agent<C> {
+    /// Run the VIGIL gate on `body` and return `(body_after, outcome)`.
+    ///
+    /// Returns `(body, None)` immediately for subagent sessions or when the gate is absent.
+    /// On `Sanitize`: emits `VigilFlag` event, bumps `vigil_flags_total`.
+    /// On `Block`: emits `VigilFlag` event, bumps both counters; caller skips `ContentSanitizer`.
+    pub(super) fn run_vigil_gate(
+        &mut self,
+        tool_name: &str,
+        body: String,
+    ) -> (String, Option<VigilOutcome>) {
+        // Subagent exemption (FR-009): skip VIGIL entirely.
+        if self.session.parent_tool_use_id.is_some() {
+            return (body, None);
+        }
+        let Some(ref gate) = self.security.vigil else {
+            return (body, None);
+        };
+
+        let intent = self
+            .session
+            .current_turn_intent
+            .as_deref()
+            .unwrap_or_default();
+
+        let verdict = gate.verify(intent, tool_name, &body);
+
+        let crate::agent::vigil::VigilVerdict::Flagged {
+            ref reason, action, ..
+        } = verdict
+        else {
+            return (body, Some(VigilOutcome::Clean));
+        };
+
+        let (body_after, risk) = gate.apply(body, &verdict);
+
+        self.push_security_event(
+            crate::metrics::SecurityEventCategory::VigilFlag,
+            tool_name,
+            reason,
+        );
+
+        let is_block = matches!(action, crate::agent::vigil::VigilAction::Block);
+        self.update_metrics(|m| {
+            m.vigil_flags_total += 1;
+            if is_block {
+                m.vigil_blocks_total += 1;
+            }
+        });
+
+        let outcome = if is_block {
+            tracing::warn!(tool = %tool_name, reason = %reason, "VIGIL blocked tool output");
+            VigilOutcome::Blocked {
+                risk,
+                sentinel: body_after.clone(),
+            }
+        } else {
+            tracing::debug!(tool = %tool_name, reason = %reason, "VIGIL sanitized tool output");
+            VigilOutcome::Sanitized { risk }
+        };
+
+        (body_after, Some(outcome))
     }
 }
 

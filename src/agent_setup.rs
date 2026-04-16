@@ -41,6 +41,8 @@ pub(crate) struct ToolSetup {
     pub(crate) mcp_elicitation_rx: Option<tokio::sync::mpsc::Receiver<zeph_mcp::ElicitationEvent>>,
     /// Audit logger to pass to the agent for pre-execution block recording. `None` when audit is disabled.
     pub(crate) audit_logger: Option<Arc<zeph_tools::AuditLogger>>,
+    /// Egress event receiver. `None` when egress logging is disabled.
+    pub(crate) egress_rx: Option<tokio::sync::mpsc::Receiver<zeph_tools::EgressEvent>>,
 }
 
 #[derive(Clone)]
@@ -307,6 +309,46 @@ fn uri_to_path(uri: &str) -> String {
         .to_string()
 }
 
+/// Drains egress events from the bounded channel, updates metrics, and traces each hop.
+///
+/// Spawned as a background task per session when `tools.egress.enabled = true`.
+/// Exits when the sender side is dropped (session ends).
+pub(crate) async fn drain_egress_events(
+    mut rx: tokio::sync::mpsc::Receiver<zeph_tools::EgressEvent>,
+    metrics_tx: Option<tokio::sync::watch::Sender<zeph_core::metrics::MetricsSnapshot>>,
+) {
+    while let Some(ev) = rx.recv().await {
+        if let Some(ref tx) = metrics_tx {
+            tx.send_modify(|m| {
+                m.egress_requests_total += 1;
+                if ev.blocked {
+                    m.egress_blocked_total += 1;
+                }
+            });
+        }
+        if ev.blocked {
+            tracing::debug!(
+                url = %ev.url,
+                host = %ev.host,
+                tool = %ev.tool,
+                block_reason = ?ev.block_reason,
+                correlation_id = %ev.correlation_id,
+                "egress blocked"
+            );
+        } else {
+            tracing::trace!(
+                url = %ev.url,
+                host = %ev.host,
+                tool = %ev.tool,
+                status = ?ev.status,
+                duration_ms = ev.duration_ms,
+                correlation_id = %ev.correlation_id,
+                "egress request"
+            );
+        }
+    }
+}
+
 async fn drain_embedding_guard_events(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<zeph_mcp::EmbeddingGuardEvent>,
 ) {
@@ -373,7 +415,15 @@ pub(crate) async fn build_tool_setup(
             }
         }
     }
-    let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+    let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape)
+        .with_egress_config(config.tools.egress.clone());
+    let mut egress_rx: Option<tokio::sync::mpsc::Receiver<zeph_tools::EgressEvent>> = None;
+    if config.tools.egress.enabled {
+        let (egress_tx, rx) = tokio::sync::mpsc::channel(256);
+        let dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        scrape_executor = scrape_executor.with_egress_tx(egress_tx, Arc::clone(&dropped));
+        egress_rx = Some(rx);
+    }
     let mut audit_logger: Option<Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
         && let Ok(logger) =
@@ -467,6 +517,7 @@ pub(crate) async fn build_tool_setup(
         mcp_tool_rx,
         mcp_elicitation_rx,
         audit_logger,
+        egress_rx,
     }
 }
 
@@ -769,6 +820,25 @@ pub(crate) fn apply_three_class_classifier_with_cfg<C: Channel>(
 /// Wire the `TurnCausalAnalyzer` into the agent's security config.
 ///
 /// Only active when `security.causal_ipi.enabled = true`.
+/// Wire the VIGIL pre-sanitizer gate into the agent from the full config.
+///
+/// This must NOT be called for subagent sessions — subagent builders omit this call,
+/// leaving `SecurityState::vigil = None` (the subagent exemption invariant, spec FR-009).
+pub(crate) fn apply_vigil<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    config: &Config,
+) -> zeph_core::agent::Agent<C> {
+    if !config.security.vigil.enabled {
+        return agent;
+    }
+    tracing::info!(
+        strict_mode = config.security.vigil.strict_mode,
+        extra_patterns = config.security.vigil.extra_patterns.len(),
+        "VIGIL pre-sanitizer gate enabled"
+    );
+    agent.with_vigil_config(config.security.vigil.clone())
+}
+
 pub(crate) fn apply_causal_analyzer<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
     provider: zeph_llm::any::AnyProvider,

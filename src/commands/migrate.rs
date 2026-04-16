@@ -7,10 +7,10 @@ use similar::{ChangeTag, TextDiff};
 use zeph_core::config::migrate::{
     ConfigMigrator, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
     migrate_autodream_config, migrate_compression_predictor_config, migrate_database_url,
-    migrate_forgetting_config, migrate_magic_docs_config, migrate_mcp_trust_levels,
-    migrate_microcompact_config, migrate_otel_filter, migrate_planner_model_to_provider,
-    migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
-    migrate_telemetry_config,
+    migrate_egress_config, migrate_forgetting_config, migrate_magic_docs_config,
+    migrate_mcp_trust_levels, migrate_microcompact_config, migrate_otel_filter,
+    migrate_planner_model_to_provider, migrate_shell_transactional, migrate_stt_to_provider,
+    migrate_supervisor_config, migrate_telemetry_config, migrate_vigil_config,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -92,9 +92,17 @@ pub(crate) fn handle_migrate_config(
     let otel_filter_result = migrate_otel_filter(&after_supervisor)?;
     let after_otel_filter = otel_filter_result.output;
 
-    // Step 16: add missing default keys as commented-out entries.
+    // Step 16: add commented-out [tools.egress] block if absent (#3058).
+    let egress_result = migrate_egress_config(&after_otel_filter)?;
+    let after_egress = egress_result.output;
+
+    // Step 17: add commented-out [security.vigil] block if absent (#3058).
+    let vigil_result = migrate_vigil_config(&after_egress)?;
+    let after_vigil = vigil_result.output;
+
+    // Step 18: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_otel_filter)?;
+    let result = migrator.migrate(&after_vigil)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -153,6 +161,12 @@ pub(crate) fn handle_migrate_config(
             eprintln!(
                 "OTLP filter migration: added commented-out otel_filter key under [telemetry]."
             );
+        }
+        if egress_result.added_count > 0 {
+            eprintln!("Egress migration: added commented-out [tools.egress] block.");
+        }
+        if vigil_result.added_count > 0 {
+            eprintln!("VIGIL migration: added commented-out [security.vigil] block.");
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

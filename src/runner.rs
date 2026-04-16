@@ -1433,7 +1433,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let shell_executor_for_tui = tool_setup.tool_event_rx;
     #[cfg(not(feature = "tui"))]
     let _tool_event_rx = tool_setup.tool_event_rx;
-
+    let egress_rx = tool_setup.egress_rx;
     let _skill_watcher = watchers.skill_watcher;
     // Receivers arrive as InstrumentedReceiver<T> from build_watchers().
     // Agent builder expects mpsc::Receiver<T>, so unwrap the instrumented wrapper.
@@ -1779,6 +1779,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_pii_ner_classifier(agent, config);
     let agent = agent_setup::apply_causal_analyzer(agent, provider.clone(), config);
+    let agent = agent_setup::apply_vigil(agent, config);
 
     #[cfg(feature = "tui")]
     if config.index.enabled {
@@ -2078,6 +2079,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             model_name_override: Some(config.llm.effective_model().to_owned()),
         }
     };
+    // Spawn egress telemetry drain now that metrics_tx is available.
+    if let Some(rx) = egress_rx {
+        tokio::spawn(agent_setup::drain_egress_events(
+            rx,
+            Some(metrics_tx.clone()),
+        ));
+    }
     // Clone metrics_rx for Prometheus sync task before it is consumed by TUI or dropped.
     #[cfg(feature = "prometheus")]
     let prometheus_metrics_rx = metrics_rx.clone();

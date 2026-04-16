@@ -153,6 +153,29 @@ pub(super) fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
         }
     }
 
+    state.egress_logging_enabled = Confirm::new()
+        .with_prompt(
+            "Enable egress network logging? (records outbound HTTP requests to audit log with correlation IDs; default: on)",
+        )
+        .default(true)
+        .interact()?;
+
+    state.vigil_enabled = Confirm::new()
+        .with_prompt(
+            "Enable VIGIL intent-anchoring gate? (regex tripwire that checks tool outputs for injection patterns before LLM context; recommended)",
+        )
+        .default(true)
+        .interact()?;
+
+    if state.vigil_enabled {
+        state.vigil_strict_mode = Confirm::new()
+            .with_prompt(
+                "VIGIL strict mode? (true: block and replace with sentinel; false: truncate and annotate, then continue to ContentSanitizer)",
+            )
+            .default(false)
+            .interact()?;
+    }
+
     println!();
     Ok(())
 }

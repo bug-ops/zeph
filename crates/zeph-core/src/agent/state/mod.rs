@@ -279,6 +279,9 @@ pub(crate) struct SecurityState {
     pub(crate) response_verifier: zeph_sanitizer::response_verifier::ResponseVerifier,
     /// Temporal causal IPI analyzer (opt-in, disabled when `None`).
     pub(crate) causal_analyzer: Option<zeph_sanitizer::causal_ipi::TurnCausalAnalyzer>,
+    /// VIGIL pre-sanitizer gate. `None` for subagent sessions (subagents are exempt).
+    /// Set at agent build time for top-level agents; skipped for subagents (high FP rate).
+    pub(crate) vigil: Option<crate::agent::vigil::VigilGate>,
 }
 
 /// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).
@@ -503,6 +506,12 @@ pub(crate) struct SessionState {
     /// Propagated into every `LoopbackEvent::ToolStart` / `ToolOutput` so the IDE can build
     /// a subagent hierarchy.
     pub(crate) parent_tool_use_id: Option<String>,
+    /// Current-turn intent snapshot for VIGIL. `None` between turns.
+    ///
+    /// Set at the top of `process_user_message` (before any tool call) to the first 1024 chars
+    /// of the user message. Cleared at `end_turn`, on `/clear`, and on any turn-abort path.
+    /// Never shared across turns or propagated into subagents.
+    pub(crate) current_turn_intent: Option<String>,
     /// Optional status channel for sending spinner/status messages to TUI or stderr.
     pub(crate) status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     /// LSP context injection hooks. Fires after native tool execution, injects
@@ -805,6 +814,7 @@ impl SessionState {
             last_assistant_at: None,
             response_cache: None,
             parent_tool_use_id: None,
+            current_turn_intent: None,
             status_tx: None,
             lsp_hooks: None,
             policy_config: None,

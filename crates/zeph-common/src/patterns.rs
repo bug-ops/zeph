@@ -29,7 +29,7 @@
 pub const RAW_INJECTION_PATTERNS: &[(&str, &str)] = &[
     (
         "ignore_instructions",
-        r"(?i)ignore\s+(all\s+|any\s+|previous\s+|prior\s+)?instructions",
+        r"(?i)ignore\s+(all\s+)?(any\s+)?(previous\s+)?(prior\s+)?instructions",
     ),
     ("role_override", r"(?i)you\s+are\s+now"),
     (

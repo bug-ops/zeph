@@ -26,6 +26,8 @@ pub enum SecurityEventCategory {
     CausalIpiFlag,
     /// MCP tool result crossing into an ACP-serving session boundary.
     CrossBoundaryMcpToAcp,
+    /// VIGIL pre-sanitizer gate flagged a tool output.
+    VigilFlag,
 }
 
 impl SecurityEventCategory {
@@ -44,6 +46,7 @@ impl SecurityEventCategory {
             Self::ResponseVerification => "response_verify",
             Self::CausalIpiFlag => "causal_ipi",
             Self::CrossBoundaryMcpToAcp => "cross_boundary_mcp_to_acp",
+            Self::VigilFlag => "vigil",
         }
     }
 }
@@ -298,6 +301,10 @@ pub struct MetricsSnapshot {
     pub classifier_tool_suspicious: u64,
     /// `TurnCausalAnalyzer` flags: behavioral deviation detected at tool-return boundary.
     pub causal_ipi_flags: u64,
+    /// VIGIL pre-sanitizer flags: tool outputs matched injection patterns (any action).
+    pub vigil_flags_total: u64,
+    /// VIGIL pre-sanitizer blocks: tool outputs replaced with sentinel (`strict_mode=true`).
+    pub vigil_blocks_total: u64,
     pub exfiltration_images_blocked: u64,
     pub exfiltration_tool_urls_flagged: u64,
     pub exfiltration_memory_guards: u64,
@@ -391,6 +398,12 @@ pub struct MetricsSnapshot {
     pub max_turn_timings: TurnTimings,
     /// Number of turns included in `avg_turn_timings` and `max_turn_timings` (capped at 10).
     pub timing_sample_count: u64,
+    /// Total egress (outbound HTTP) requests attempted this session.
+    pub egress_requests_total: u64,
+    /// Egress events dropped due to bounded channel backpressure.
+    pub egress_dropped_total: u64,
+    /// Egress requests blocked by scheme/domain/SSRF policy.
+    pub egress_blocked_total: u64,
 }
 
 /// Configuration-derived fields of [`MetricsSnapshot`] that are known at agent startup and do

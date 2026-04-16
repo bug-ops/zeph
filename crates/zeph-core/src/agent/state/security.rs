@@ -48,6 +48,7 @@ impl Default for SecurityState {
                 zeph_config::ResponseVerificationConfig::default(),
             ),
             causal_analyzer: None,
+            vigil: None,
         }
     }
 }

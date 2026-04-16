@@ -75,6 +75,7 @@ pub mod security;
 pub mod subagent;
 pub mod telemetry;
 pub mod ui;
+pub mod vigil;
 
 pub use agent::{
     AgentConfig, ContextInjectionMode, FocusConfig, ModelSpec, SubAgentConfig,
@@ -133,6 +134,7 @@ pub use subagent::{
 pub use telemetry::{TelemetryBackend, TelemetryConfig};
 pub use ui::{AcpConfig, AcpLspConfig, AcpTransport, TuiConfig};
 pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
+pub use vigil::VigilConfig;
 
 // Top-level config struct, error type, and resolved secrets — moved from zeph-core.
 pub use classifiers::{ClassifiersConfig, InjectionEnforcementMode};

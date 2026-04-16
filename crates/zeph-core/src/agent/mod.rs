@@ -49,6 +49,7 @@ pub(crate) mod tool_orchestrator;
 mod trust_commands;
 pub mod turn;
 mod utils;
+pub(crate) mod vigil;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -1169,6 +1170,8 @@ impl<C: Channel> Agent<C> {
     fn end_turn(&mut self, turn: turn::Turn) {
         self.metrics.pending_timings = turn.metrics.timings;
         self.flush_turn_timings();
+        // Clear per-turn intent (FR-008): must not persist across turns.
+        self.session.current_turn_intent = None;
     }
 
     #[cfg_attr(
@@ -1256,6 +1259,13 @@ impl<C: Channel> Agent<C> {
         let text = turn.input.text.clone();
         let trimmed_owned = text.trim().to_owned();
         let trimmed = trimmed_owned.as_str();
+
+        // Capture current-turn intent for VIGIL gate (FR-007). Truncated to 1024 chars.
+        // Must be set BEFORE any tool call; cleared at end_turn (FR-008).
+        if self.security.vigil.is_some() {
+            let intent_len = trimmed.floor_char_boundary(1024.min(trimmed.len()));
+            self.session.current_turn_intent = Some(trimmed[..intent_len].to_owned());
+        }
 
         if let Some(result) = self.dispatch_slash_command(trimmed).await {
             return result;

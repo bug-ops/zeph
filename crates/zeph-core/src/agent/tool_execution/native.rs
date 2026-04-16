@@ -1279,6 +1279,8 @@ impl<C: Channel> Agent<C> {
                                     truncated: false,
                                     caller_id: call.caller_id.clone(),
                                     policy_match: None,
+                                    correlation_id: None,
+                                    vigil_risk: None,
                                 };
                                 let logger = std::sync::Arc::clone(logger);
                                 self.lifecycle.supervisor.spawn(
@@ -2291,103 +2293,106 @@ impl<C: Channel> Agent<C> {
             // True only for InvalidParams errors — semantic failures attributable to model quality.
             // Network, transient, timeout, and policy errors are excluded.
             let is_quality_failure;
+            // Set to true when tool completes without error; deferred past VIGIL gate so that
+            // a VIGIL block suppresses the success outcome (CR-5: no double skill-outcome).
+            let mut tool_succeeded = false;
             let mut tool_err_category: Option<zeph_tools::error_taxonomy::ToolErrorCategory> = None;
-            let (output, is_error, diff, inline_stats, _, kept_lines, locations) = match tool_result
-            {
-                Ok(Some(out)) => {
-                    is_quality_failure = false;
-                    anomaly_outcome =
-                        if out.summary.contains("[error]") || out.summary.contains("[stderr]") {
+            let (output, mut is_error, diff, inline_stats, _, kept_lines, locations) =
+                match tool_result {
+                    Ok(Some(out)) => {
+                        is_quality_failure = false;
+                        anomaly_outcome = if out.summary.contains("[error]")
+                            || out.summary.contains("[stderr]")
+                        {
                             AnomalyOutcome::Error
                         } else {
                             AnomalyOutcome::Success
                         };
-                    if let Some(ref fs) = out.filter_stats {
-                        self.record_filter_metrics(fs);
-                    }
-                    let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
-                        (fs.filtered_chars < fs.raw_chars)
-                            .then(|| fs.format_inline(tc.name.as_str()))
-                    });
-                    let kept = out
-                        .filter_stats
-                        .as_ref()
-                        .and_then(|fs| (!fs.kept_lines.is_empty()).then(|| fs.kept_lines.clone()));
-                    let streamed = out.streamed;
-                    let locations = out.locations;
-                    (
-                        out.summary,
-                        false,
-                        out.diff,
-                        inline_stats,
-                        streamed,
-                        kept,
-                        locations,
-                    )
-                }
-                Ok(None) => {
-                    is_quality_failure = false;
-                    anomaly_outcome = AnomalyOutcome::Success;
-                    (
-                        "(no output)".to_owned(),
-                        false,
-                        None,
-                        None,
-                        false,
-                        None,
-                        None,
-                    )
-                }
-                Err(ref e) => {
-                    let category = e.category();
-                    // Quality failures are errors attributable to LLM output (invalid params,
-                    // type mismatch, tool not found). Infrastructure errors (network, timeout,
-                    // server, rate limit) are not the model's fault.
-                    is_quality_failure = category.is_quality_failure();
-                    tool_err_category = Some(category);
-                    anomaly_outcome = if matches!(e, zeph_tools::ToolError::Blocked { .. }) {
-                        AnomalyOutcome::Blocked
-                    } else if is_quality_failure
-                        && zeph_tools::is_reasoning_model(self.provider.name())
-                    {
-                        AnomalyOutcome::ReasoningQualityFailure {
-                            model: self.provider.name().to_owned(),
-                            tool: tc.name.to_string(),
+                        if let Some(ref fs) = out.filter_stats {
+                            self.record_filter_metrics(fs);
                         }
-                    } else {
-                        AnomalyOutcome::Error
-                    };
-                    if let Some(ref d) = self.debug_state.debug_dumper {
-                        d.dump_tool_error(tc.name.as_str(), e);
+                        let inline_stats = out.filter_stats.as_ref().and_then(|fs| {
+                            (fs.filtered_chars < fs.raw_chars)
+                                .then(|| fs.format_inline(tc.name.as_str()))
+                        });
+                        let kept = out.filter_stats.as_ref().and_then(|fs| {
+                            (!fs.kept_lines.is_empty()).then(|| fs.kept_lines.clone())
+                        });
+                        let streamed = out.streamed;
+                        let locations = out.locations;
+                        (
+                            out.summary,
+                            false,
+                            out.diff,
+                            inline_stats,
+                            streamed,
+                            kept,
+                            locations,
+                        )
                     }
-                    // Count memory write validation rejections.
-                    if tc.name == "memory_save"
-                        && matches!(e, zeph_tools::ToolError::InvalidParams { .. })
-                        && e.to_string().contains("memory write rejected")
-                    {
-                        self.update_metrics(|m| m.memory_validation_failures += 1);
-                        self.push_security_event(
-                            crate::metrics::SecurityEventCategory::MemoryValidation,
-                            "memory_save",
-                            e.to_string(),
-                        );
+                    Ok(None) => {
+                        is_quality_failure = false;
+                        anomaly_outcome = AnomalyOutcome::Success;
+                        (
+                            "(no output)".to_owned(),
+                            false,
+                            None,
+                            None,
+                            false,
+                            None,
+                            None,
+                        )
                     }
-                    let feedback = zeph_tools::ToolErrorFeedback {
-                        category,
-                        message: e.to_string(),
-                        retryable: category.is_retryable(),
-                    };
-                    (
-                        feedback.format_for_llm(),
-                        true,
-                        None,
-                        None,
-                        false,
-                        None,
-                        None,
-                    )
-                }
-            };
+                    Err(ref e) => {
+                        let category = e.category();
+                        // Quality failures are errors attributable to LLM output (invalid params,
+                        // type mismatch, tool not found). Infrastructure errors (network, timeout,
+                        // server, rate limit) are not the model's fault.
+                        is_quality_failure = category.is_quality_failure();
+                        tool_err_category = Some(category);
+                        anomaly_outcome = if matches!(e, zeph_tools::ToolError::Blocked { .. }) {
+                            AnomalyOutcome::Blocked
+                        } else if is_quality_failure
+                            && zeph_tools::is_reasoning_model(self.provider.name())
+                        {
+                            AnomalyOutcome::ReasoningQualityFailure {
+                                model: self.provider.name().to_owned(),
+                                tool: tc.name.to_string(),
+                            }
+                        } else {
+                            AnomalyOutcome::Error
+                        };
+                        if let Some(ref d) = self.debug_state.debug_dumper {
+                            d.dump_tool_error(tc.name.as_str(), e);
+                        }
+                        // Count memory write validation rejections.
+                        if tc.name == "memory_save"
+                            && matches!(e, zeph_tools::ToolError::InvalidParams { .. })
+                            && e.to_string().contains("memory write rejected")
+                        {
+                            self.update_metrics(|m| m.memory_validation_failures += 1);
+                            self.push_security_event(
+                                crate::metrics::SecurityEventCategory::MemoryValidation,
+                                "memory_save",
+                                e.to_string(),
+                            );
+                        }
+                        let feedback = zeph_tools::ToolErrorFeedback {
+                            category,
+                            message: e.to_string(),
+                            retryable: category.is_retryable(),
+                        };
+                        (
+                            feedback.format_for_llm(),
+                            true,
+                            None,
+                            None,
+                            false,
+                            None,
+                            None,
+                        )
+                    }
+                };
 
             if let Some(ref recorder) = self.metrics.histogram_recorder {
                 recorder.observe_tool_execution(started_at.elapsed());
@@ -2454,14 +2459,7 @@ impl<C: Channel> Agent<C> {
                     pending_reflection = Some(sanitized_out);
                 }
             } else {
-                pending_outcomes.push(crate::agent::learning::PendingSkillOutcome {
-                    outcome: "success".into(),
-                    error_context: None,
-                    outcome_detail: None,
-                });
-                // Record quality success for reputation scoring.
-                self.provider
-                    .record_quality_outcome(self.provider.name(), true);
+                tool_succeeded = true;
             }
             // Ignore channel errors so ToolResult assembly is never abandoned (#2197 secondary).
             let _ = self.record_anomaly_outcome(anomaly_outcome).await;
@@ -2495,17 +2493,107 @@ impl<C: Channel> Agent<C> {
                 })
                 .await?;
 
+            // VIGIL pre-sanitizer gate: check tool output for injection patterns before
+            // inserting into LLM context. Subagents (parent_tool_use_id.is_some()) are
+            // exempt — the gate is also absent for subagents (SecurityState::vigil = None).
+            let (processed, vigil_outcome) = self.run_vigil_gate(tc.name.as_str(), processed);
+
+            // Emit audit entry for VIGIL block/sanitize so the operator has a correlated
+            // record in the JSONL trail (CR-4). error_category = "vigil_blocked" is
+            // intentionally non-retryable — the retry gate skips non-transient errors.
+            if let (Some(vo), Some(logger)) = (
+                vigil_outcome
+                    .as_ref()
+                    .filter(|v| !matches!(v, super::VigilOutcome::Clean)),
+                self.tool_orchestrator.audit_logger.as_ref(),
+            ) {
+                let (vigil_risk, audit_result, err_cat) = if vo.is_blocked() {
+                    (
+                        Some(zeph_tools::VigilRiskLevel::High),
+                        zeph_tools::AuditResult::Blocked {
+                            reason: "vigil_blocked".into(),
+                        },
+                        "vigil_blocked",
+                    )
+                } else {
+                    (
+                        Some(zeph_tools::VigilRiskLevel::Medium),
+                        zeph_tools::AuditResult::Success,
+                        "vigil_sanitized",
+                    )
+                };
+                let entry = zeph_tools::AuditEntry {
+                    timestamp: zeph_tools::chrono_now(),
+                    tool: tc.name.clone(),
+                    command: String::new(),
+                    result: audit_result,
+                    duration_ms: 0,
+                    error_category: Some(err_cat.to_owned()),
+                    error_domain: Some("security".to_owned()),
+                    error_phase: None,
+                    claim_source: None,
+                    mcp_server_id: None,
+                    injection_flagged: false,
+                    embedding_anomalous: false,
+                    cross_boundary_mcp_to_acp: false,
+                    adversarial_policy_decision: None,
+                    exit_code: None,
+                    truncated: false,
+                    caller_id: None,
+                    policy_match: None,
+                    correlation_id: None,
+                    vigil_risk,
+                };
+                let logger = std::sync::Arc::clone(logger);
+                self.lifecycle.supervisor.spawn(
+                    super::super::agent_supervisor::TaskClass::Telemetry,
+                    "vigil-audit-log",
+                    async move { logger.log(&entry).await },
+                );
+            }
+
             // Sanitize tool output before inserting into LLM message history (Bug #1490 fix).
             // sanitize_tool_output is the sole sanitization point for tool output data flows.
             // channel send above uses body_display (redacted for privacy); LLM sees sanitize_tool_output output.
-            let (llm_content, tool_had_injection_flags) = self
-                .sanitize_tool_output(&processed, tc.name.as_str())
-                .await;
+            let (llm_content, tool_had_injection_flags) = match &vigil_outcome {
+                Some(super::VigilOutcome::Blocked { sentinel, .. }) => {
+                    // Block path: early return — ContentSanitizer is bypassed (injection_flags
+                    // counter NOT incremented; VIGIL already emitted VigilFlag event).
+                    is_error = true;
+                    (sentinel.clone(), false)
+                }
+                _ => {
+                    self.sanitize_tool_output(&processed, tc.name.as_str())
+                        .await
+                }
+            };
             has_any_injection_flags |= tool_had_injection_flags;
 
             // Capture tool call details for LSP hooks before building result part.
-            if !is_error {
+            // Blocked outputs are excluded (FR-012: skip LSP, skill self-learning, response cache).
+            let vigil_blocked = vigil_outcome
+                .as_ref()
+                .is_some_and(super::VigilOutcome::is_blocked);
+            if !is_error && !vigil_blocked {
                 lsp_tool_calls.push((tc.name.to_string(), tc.input.clone(), llm_content.clone()));
+            }
+
+            // Emit skill outcome after VIGIL gate so a block suppresses the success outcome.
+            if vigil_blocked {
+                // SecurityBlocked must not pollute skill quality scores (FR-006).
+                pending_outcomes.push(crate::agent::learning::PendingSkillOutcome {
+                    outcome: FailureKind::SecurityBlocked.as_str().into(),
+                    error_context: Some("VIGIL blocked tool output".into()),
+                    outcome_detail: None,
+                });
+            } else if tool_succeeded {
+                pending_outcomes.push(crate::agent::learning::PendingSkillOutcome {
+                    outcome: "success".into(),
+                    error_context: None,
+                    outcome_detail: None,
+                });
+                self.provider
+                    .record_quality_outcome(self.provider.name(), true);
             }
 
             result_parts.push(MessagePart::ToolResult {

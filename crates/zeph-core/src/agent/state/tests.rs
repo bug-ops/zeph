@@ -62,6 +62,7 @@ fn make_session_state() -> SessionState {
         env_context: EnvironmentContext::gather(""),
         response_cache: None,
         parent_tool_use_id: None,
+        current_turn_intent: None,
         status_tx: None,
         lsp_hooks: None,
         policy_config: None,
