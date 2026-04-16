@@ -99,7 +99,7 @@ impl Grant {
     /// use std::time::Duration;
     /// use zeph_subagent::grants::{Grant, GrantKind};
     ///
-    /// let grant = Grant::new(GrantKind::Tool("shell".to_owned()), Duration::from_secs(60));
+    /// let grant = Grant::new(GrantKind::Tool("shell".to_owned()), Duration::from_mins(1));
     /// assert!(!grant.is_expired());
     /// ```
     #[must_use]
@@ -119,7 +119,7 @@ impl Grant {
     /// use std::time::Duration;
     /// use zeph_subagent::grants::{Grant, GrantKind};
     ///
-    /// let grant = Grant::new(GrantKind::Tool("web".to_owned()), Duration::from_secs(300));
+    /// let grant = Grant::new(GrantKind::Tool("web".to_owned()), Duration::from_mins(5));
     /// // A brand-new grant is not yet expired.
     /// assert!(!grant.is_expired());
     /// ```
@@ -167,7 +167,7 @@ impl PermissionGrants {
     /// use zeph_subagent::grants::{GrantKind, PermissionGrants};
     ///
     /// let mut grants = PermissionGrants::default();
-    /// grants.add(GrantKind::Tool("shell".to_owned()), Duration::from_secs(60));
+    /// grants.add(GrantKind::Tool("shell".to_owned()), Duration::from_mins(1));
     /// assert!(grants.is_active(&GrantKind::Tool("shell".to_owned())));
     /// ```
     pub fn add(&mut self, kind: GrantKind, ttl: Duration) {
@@ -232,10 +232,7 @@ mod tests {
     #[test]
     fn grant_is_active_before_expiry() {
         let mut pg = PermissionGrants::default();
-        pg.add(
-            GrantKind::Secret("api-key".into()),
-            Duration::from_secs(300),
-        );
+        pg.add(GrantKind::Secret("api-key".into()), Duration::from_mins(5));
         assert!(pg.is_active(&GrantKind::Secret("api-key".into())));
     }
 
@@ -255,8 +252,8 @@ mod tests {
     #[test]
     fn revoke_all_clears_all_grants() {
         let mut pg = PermissionGrants::default();
-        pg.add(GrantKind::Secret("token".into()), Duration::from_secs(60));
-        pg.add(GrantKind::Tool("web".into()), Duration::from_secs(60));
+        pg.add(GrantKind::Secret("token".into()), Duration::from_mins(1));
+        pg.add(GrantKind::Tool("web".into()), Duration::from_mins(1));
         pg.revoke_all();
         assert!(pg.grants.is_empty());
     }
@@ -264,7 +261,7 @@ mod tests {
     #[test]
     fn grant_secret_is_active() {
         let mut pg = PermissionGrants::default();
-        pg.grant_secret("db-password", Duration::from_secs(120));
+        pg.grant_secret("db-password", Duration::from_mins(2));
         assert!(pg.is_active(&GrantKind::Secret("db-password".into())));
     }
 
@@ -298,10 +295,7 @@ mod tests {
         });
 
         // Add one live grant with long TTL.
-        pg.add(
-            GrantKind::Secret("live-key".into()),
-            Duration::from_secs(300),
-        );
+        pg.add(GrantKind::Secret("live-key".into()), Duration::from_mins(5));
 
         pg.sweep_expired();
 
@@ -312,8 +306,8 @@ mod tests {
     #[test]
     fn duplicate_grant_for_same_key_both_tracked() {
         let mut pg = PermissionGrants::default();
-        pg.add(GrantKind::Secret("my-key".into()), Duration::from_secs(60));
-        pg.add(GrantKind::Secret("my-key".into()), Duration::from_secs(60));
+        pg.add(GrantKind::Secret("my-key".into()), Duration::from_mins(1));
+        pg.add(GrantKind::Secret("my-key".into()), Duration::from_mins(1));
 
         // Both grants are stored; is_active just checks any match.
         assert_eq!(pg.grants.len(), 2);

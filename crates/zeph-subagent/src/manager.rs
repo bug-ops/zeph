@@ -1577,7 +1577,7 @@ mod tests {
         mgr.definitions.push(def_with_secrets());
 
         let task_id = do_spawn(&mut mgr, "bot", "work").unwrap();
-        mgr.approve_secret(&task_id, "api-key", std::time::Duration::from_secs(60))
+        mgr.approve_secret(&task_id, "api-key", std::time::Duration::from_mins(1))
             .unwrap();
 
         let handle = mgr.agents.get_mut(&task_id).unwrap();
@@ -1597,7 +1597,7 @@ mod tests {
 
         let task_id = do_spawn(&mut mgr, "bot", "work").unwrap();
         let err = mgr
-            .approve_secret(&task_id, "not-allowed", std::time::Duration::from_secs(60))
+            .approve_secret(&task_id, "not-allowed", std::time::Duration::from_mins(1))
             .unwrap_err();
         assert!(matches!(err, SubAgentError::Invalid(_)));
     }
@@ -1606,7 +1606,7 @@ mod tests {
     fn approve_secret_unknown_task_id_returns_not_found() {
         let mut mgr = make_manager();
         let err = mgr
-            .approve_secret("unknown", "key", std::time::Duration::from_secs(60))
+            .approve_secret("unknown", "key", std::time::Duration::from_mins(1))
             .unwrap_err();
         assert!(matches!(err, SubAgentError::NotFound(_)));
     }
@@ -3166,6 +3166,7 @@ mod tests {
                     description: std::borrow::Cow::Borrowed("Run a shell command"),
                     schema: schemars::Schema::default(),
                     invocation: InvocationHint::ToolCall,
+                    output_schema: None,
                 }]
             }
 

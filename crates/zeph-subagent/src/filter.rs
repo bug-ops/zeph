@@ -415,6 +415,7 @@ mod tests {
                 description: "fenced stub".into(),
                 schema: schemars::Schema::default(),
                 invocation: InvocationHint::FencedBlock(self.tag),
+                output_schema: None,
             }]
         }
 
@@ -483,6 +484,7 @@ mod tests {
                     description: "stub".into(),
                     schema: schemars::Schema::default(),
                     invocation: InvocationHint::ToolCall,
+                    output_schema: None,
                 })
                 .collect()
         }

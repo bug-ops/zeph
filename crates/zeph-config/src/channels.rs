@@ -528,6 +528,10 @@ fn default_elicitation_queue_capacity() -> usize {
     16
 }
 
+fn default_output_schema_hint_bytes() -> usize {
+    512
+}
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpConfig {
@@ -582,6 +586,22 @@ pub struct McpConfig {
     /// Default: `false` (backward compatible).
     #[serde(default)]
     pub default_env_isolation: bool,
+    /// When `true`, forward MCP tool output schemas as a hint appended to the tool description.
+    ///
+    /// Disabled by default to preserve Anthropic prompt-cache hit rates. Enabling this mutates
+    /// tool descriptions, which changes the cached hash and causes a one-off cache miss after
+    /// every MCP reconnect or server redeploy.
+    ///
+    /// See `output_schema_hint_bytes` for the budget controlling hint size.
+    #[serde(default)]
+    pub forward_output_schema: bool,
+    /// Maximum bytes of the compact JSON appended to the tool description as the output schema
+    /// hint when `forward_output_schema = true`. Default: 512.
+    ///
+    /// If the serialized schema exceeds this budget, a stub message is used instead and a WARN
+    /// is emitted once per session per tool.
+    #[serde(default = "default_output_schema_hint_bytes")]
+    pub output_schema_hint_bytes: usize,
 }
 
 impl Default for McpConfig {
@@ -601,6 +621,8 @@ impl Default for McpConfig {
             elicitation_warn_sensitive_fields: true,
             lock_tool_list: false,
             default_env_isolation: false,
+            forward_output_schema: false,
+            output_schema_hint_bytes: default_output_schema_hint_bytes(),
         }
     }
 }
