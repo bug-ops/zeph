@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **chore(msrv): bump workspace MSRV from 1.88 to 1.94.** Brings the declared
+  `rust-version` in line with APIs already in use (`Duration::from_mins`,
+  `Duration::from_hours`, stable in 1.91) and unlocks `with_added_extension`
+  (1.91), `str::floor_char_boundary` (1.91), `Vec::extract_if` (1.87, no
+  gate change) and `<[T]>::array_windows::<N>()` (1.94). CI now enforces the
+  MSRV via a dedicated `msrv` job that mirrors the `lint-clippy` feature
+  matrix (`desktop,ide,server,chat,pdf,scheduler` and `bench`) and is wired
+  into the `ci-status` gate. The `docker/Dockerfile.dev` base image is
+  bumped from `rust:1.88-slim` to `rust:1.94-slim`.
+
 - fix(profiling): emit periodic system resource metrics on `TRACE` instead of `INFO` to keep
   routine RSS/CPU/thread/fd snapshots out of normal logs; `target = "system.metrics"` is
   unchanged

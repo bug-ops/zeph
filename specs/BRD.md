@@ -398,7 +398,7 @@ Detailed targets are in [[NFR]]. High-level constraints for business context:
 
 ### Technical Constraints
 
-- Language: Rust 1.88 (MSRV), Edition 2024, no `unsafe` blocks.
+- Language: Rust 1.94 (MSRV), Edition 2024, no `unsafe` blocks.
 - Async: tokio; no `async-trait` crate in library crates.
 - TLS: rustls only; `openssl-sys` banned.
 - YAML: `serde_norway` only; `serde_yaml` / `serde_yml` banned.

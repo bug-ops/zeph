@@ -6,7 +6,7 @@ Thank you for considering contributing to Zeph.
 
 1. Fork the repository
 2. Clone your fork and create a branch from `main`
-3. Install Rust 1.88+ (Edition 2024 required, resolver 3)
+3. Install Rust 1.94+ (Edition 2024 required, resolver 3)
 4. Install [sccache](https://github.com/mozilla/sccache) for build caching (optional but recommended)
 5. Run `cargo build` to verify the setup
 6. Install [cargo-nextest](https://nexte.st/) for running tests

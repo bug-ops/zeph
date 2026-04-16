@@ -50,7 +50,7 @@ cargo install zeph --features tui,a2a
 
 ## From Source
 
-Requires Rust 1.88+ (Edition 2024).
+Requires Rust 1.94+ (Edition 2024).
 
 ```bash
 git clone https://github.com/bug-ops/zeph

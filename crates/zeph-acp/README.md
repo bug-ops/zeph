@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-acp)](https://crates.io/crates/zeph-acp)
 [![docs.rs](https://img.shields.io/docsrs/zeph-acp)](https://docs.rs/zeph-acp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
 
 ACP (Agent Client Protocol) server adapter for embedding Zeph in IDE environments.
 
@@ -22,7 +22,7 @@ zeph-acp = { version = "0.18.3", features = ["acp-http"] }
 ```
 
 **Important:**
-> Requires Rust 1.88 or later.
+> Requires Rust 1.94 or later.
 
 ## Features
 

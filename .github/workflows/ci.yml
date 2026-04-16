@@ -151,6 +151,31 @@ jobs:
       - name: Clippy
         run: cargo clippy --profile ci --workspace --features ${{ matrix.features }} -- -D warnings
 
+  msrv:
+    name: MSRV check (1.94, ${{ matrix.label }})
+    needs: detect-changes
+    if: needs.detect-changes.outputs.run-full-ci == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - features: "desktop,ide,server,chat,pdf,scheduler"
+            label: desktop-ide-server-chat-pdf-scheduler
+          - features: bench
+            label: bench
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: "1.94"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: "msrv-${{ matrix.label }}"
+      - name: cargo check (MSRV, --all-targets)
+        run: cargo check --workspace --all-targets --features ${{ matrix.features }} --locked
+
   build-tests:
     name: Build Tests (${{ matrix.os }})
     needs: detect-changes
@@ -418,7 +443,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [cla, lint-shellcheck, lint-fmt, lint-clippy, build-tests, test, integration, coverage, docker-build-and-scan, bundle-check, validate-specs, build-postgres, rustdoc]
+    needs: [cla, lint-shellcheck, lint-fmt, lint-clippy, msrv, build-tests, test, integration, coverage, docker-build-and-scan, bundle-check, validate-specs, build-postgres, rustdoc]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -429,6 +454,7 @@ jobs:
             "${{ needs.lint-shellcheck.result }}"
             "${{ needs.lint-fmt.result }}"
             "${{ needs.lint-clippy.result }}"
+            "${{ needs.msrv.result }}"
             "${{ needs.build-tests.result }}"
             "${{ needs.test.result }}"
             "${{ needs.integration.result }}"

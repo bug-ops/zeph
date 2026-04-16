@@ -2382,7 +2382,7 @@ fn retry_backoff_ms_is_non_deterministic() {
     // all return the same value (probability of 100 identical draws from [0, 500] is
     // effectively zero for a properly seeded PRNG).
     let samples: Vec<u64> = (0..100).map(|_| retry_backoff_ms(0, 500, 5000)).collect();
-    let all_same = samples.windows(2).all(|w| w[0] == w[1]);
+    let all_same = samples.array_windows::<2>().all(|[a, b]| a == b);
     assert!(
         !all_same,
         "retry_backoff_ms returned identical values 100 times — jitter not applied"

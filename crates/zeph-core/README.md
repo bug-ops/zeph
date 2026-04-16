@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-core)](https://crates.io/crates/zeph-core)
 [![docs.rs](https://img.shields.io/docsrs/zeph-core)](https://docs.rs/zeph-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
 
 Core agent loop, configuration, context builder, metrics, vault, and sub-agent orchestration for Zeph.
 

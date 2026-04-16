@@ -1,7 +1,7 @@
 # zeph-experiments
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
 
 Experiment engine for adaptive agent behavior — autonomous hyperparameter search and A/B testing for Zeph.
 

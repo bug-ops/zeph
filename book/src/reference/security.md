@@ -445,7 +445,7 @@ Rust-native memory safety guarantees:
 - **No panic in production:** `unwrap()` and `expect()` linted via clippy
 - **Reduced attack surface:** Unused database backends (MySQL) and transitive dependencies (RSA) are excluded from the build
 - **Secure dependencies:** All crates audited with `cargo-deny`
-- **MSRV policy:** Rust 1.88+ (Edition 2024) for latest security patches
+- **MSRV policy:** Rust 1.94+ (Edition 2024) for latest security patches
 
 ## Reporting Vulnerabilities
 

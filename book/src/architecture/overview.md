@@ -2,7 +2,7 @@
 
 Cargo workspace (Edition 2024, resolver 3) with 21 crates + binary root.
 
-Requires Rust 1.88+. Native async traits are used throughout. `async-trait` is retained only in crates blocked by upstream dependencies (`zeph-core`, `zeph-mcp`, `zeph-acp` — blocked by `rmcp`).
+Requires Rust 1.94+. Native async traits are used throughout. `async-trait` is retained only in crates blocked by upstream dependencies (`zeph-core`, `zeph-mcp`, `zeph-acp` — blocked by `rmcp`).
 
 ## Workspace Layout
 

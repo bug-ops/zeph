@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-a2a)](https://crates.io/crates/zeph-a2a)
 [![docs.rs](https://img.shields.io/docsrs/zeph-a2a)](https://docs.rs/zeph-a2a)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
 
 A2A protocol client and server with agent discovery for Zeph.
 

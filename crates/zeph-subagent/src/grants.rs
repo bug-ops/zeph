@@ -178,17 +178,12 @@ impl PermissionGrants {
 
     /// Remove all expired grants.
     pub fn sweep_expired(&mut self) {
-        let before = self.grants.len();
-        self.grants.retain(|g| {
-            let expired = g.is_expired();
-            if expired {
-                tracing::debug!(kind = %g.kind, "permission grant expired and revoked");
-            }
-            !expired
-        });
-        let removed = before - self.grants.len();
-        if removed > 0 {
-            tracing::debug!(removed, "swept expired grants");
+        let expired: Vec<_> = self.grants.extract_if(.., |g| g.is_expired()).collect();
+        for g in &expired {
+            tracing::debug!(kind = %g.kind, "permission grant expired and revoked");
+        }
+        if !expired.is_empty() {
+            tracing::debug!(removed = expired.len(), "swept expired grants");
         }
     }
 

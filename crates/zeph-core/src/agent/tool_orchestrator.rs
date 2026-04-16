@@ -209,7 +209,7 @@ impl ToolOrchestrator {
             return false;
         }
         let recent = &self.doom_loop_history[self.doom_loop_history.len() - DOOM_LOOP_WINDOW..];
-        recent.windows(2).all(|w| w[0] == w[1])
+        recent.array_windows::<2>().all(|[a, b]| a == b)
     }
 
     /// Record a tool call (LLM-initiated only — not retry re-executions).

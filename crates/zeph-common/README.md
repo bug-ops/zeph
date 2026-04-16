@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-common)](https://crates.io/crates/zeph-common)
 [![docs.rs](https://img.shields.io/docsrs/zeph-common)](https://docs.rs/zeph-common)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
 
 Shared utility functions and security primitives for the Zeph workspace. Zero `zeph-*` dependencies — safe to depend on from any crate.
 

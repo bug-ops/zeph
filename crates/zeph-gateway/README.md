@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-gateway)](https://crates.io/crates/zeph-gateway)
 [![docs.rs](https://img.shields.io/docsrs/zeph-gateway)](https://docs.rs/zeph-gateway)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
 
 HTTP gateway for webhook ingestion with bearer auth for Zeph.
 

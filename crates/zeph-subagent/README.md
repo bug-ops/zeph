@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-subagent)](https://crates.io/crates/zeph-subagent)
 [![docs.rs](https://img.shields.io/docsrs/zeph-subagent)](https://docs.rs/zeph-subagent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
 
 Subagent management for Zeph — spawning, zero-trust grants, JSONL transcripts, scoped tool access, and lifecycle hooks.
 

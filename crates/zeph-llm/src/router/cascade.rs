@@ -205,8 +205,8 @@ fn repetition_ratio(response: &str) -> f64 {
         return 0.0;
     }
     let mut trigrams = std::collections::HashMap::<(&str, &str, &str), usize>::new();
-    for w in words.windows(3) {
-        *trigrams.entry((w[0], w[1], w[2])).or_insert(0) += 1;
+    for &[a, b, c] in words.array_windows::<3>() {
+        *trigrams.entry((a, b, c)).or_insert(0) += 1;
     }
     let total = trigrams.values().sum::<usize>();
     let repeated = trigrams.values().filter(|&&c| c > 1).sum::<usize>();
@@ -461,5 +461,15 @@ mod tests {
         let text = "abc abc abc abc abc abc abc abc abc abc";
         let ratio = repetition_ratio(text);
         assert!(ratio > 0.5, "expected high repetition, got {ratio}");
+    }
+
+    #[test]
+    fn repetition_ratio_pinned_input() {
+        // words: [foo,bar,baz,foo,bar,baz,foo,bar,qux] — 9 words, 7 trigrams
+        // trigrams: (foo,bar,baz)→2, (bar,baz,foo)→2, (baz,foo,bar)→2, (foo,bar,qux)→1
+        // total (sum of counts) = 7, repeated (sum of counts > 1) = 6 → ratio = 6/7
+        let s = "foo bar baz foo bar baz foo bar qux";
+        let r = repetition_ratio(s);
+        assert!((r - 6.0_f64 / 7.0_f64).abs() < 1e-9, "got {r}");
     }
 }

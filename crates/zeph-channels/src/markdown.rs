@@ -110,17 +110,11 @@ pub fn utf8_chunks(text: &str, max_bytes: usize) -> Vec<&str> {
             break;
         }
 
-        let mut split_at = offset + max_bytes;
+        let mut split_at = text.floor_char_boundary(offset + max_bytes);
 
         if split_at >= text.len() {
             chunks.push(&text[offset..]);
             break;
-        }
-
-        if !text.is_char_boundary(split_at) {
-            while split_at > offset && !text.is_char_boundary(split_at) {
-                split_at -= 1;
-            }
         }
 
         let search_start = split_at.saturating_sub(256).max(offset);

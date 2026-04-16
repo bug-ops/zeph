@@ -38,7 +38,7 @@ related:
 
 ## II. Technology Stack
 
-- Language: Rust 1.88 (MSRV), Edition 2024
+- Language: Rust 1.94 (MSRV), Edition 2024
 - Async: tokio + native async traits; no `async-trait` crate for new code in library crates
 - HTTP: reqwest 0.13 (rustls, no openssl-sys)
 - Database: SQLite (sqlx 0.8) for persistence + Qdrant for semantic search

@@ -6,7 +6,7 @@ Thank you for considering contributing to Zeph.
 
 1. Fork the repository
 2. Clone your fork and create a branch from `main`
-3. Install Rust 1.85+ (Edition 2024 required)
+3. Install Rust 1.94+ (Edition 2024 included)
 4. Run `cargo build` to verify the setup
 
 ## Development

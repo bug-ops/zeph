@@ -52,7 +52,7 @@ pub async fn await_oauth_callback(
                 break;
             }
             buf.extend_from_slice(&chunk[..n]);
-            if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() >= cap {
+            if buf.array_windows::<4>().any(|w| w == b"\r\n\r\n") || buf.len() >= cap {
                 break;
             }
         }

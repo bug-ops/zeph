@@ -162,7 +162,7 @@ Migrations run automatically on first `DbConfig::connect` call. The active backe
 
 ## MSRV
 
-Rust **1.88** (Edition 2024, resolver 3).
+Rust **1.94** (Edition 2024, resolver 3).
 
 ## License
 

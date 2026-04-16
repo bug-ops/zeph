@@ -9,7 +9,7 @@
   [![Tests](https://img.shields.io/badge/tests-7973-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![Crates](https://img.shields.io/badge/crates-25-orange)](https://github.com/bug-ops/zeph/tree/main/crates)
-  [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+  [![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 </div>
 

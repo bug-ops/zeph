@@ -569,7 +569,7 @@ fn encrypt_secrets(
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AgeVaultError> {
-    let tmp_path = path.with_extension("age.tmp");
+    let tmp_path = path.with_added_extension("tmp");
     std::fs::write(&tmp_path, data).map_err(AgeVaultError::VaultWrite)?;
     std::fs::rename(&tmp_path, path).map_err(AgeVaultError::VaultWrite)
 }
@@ -807,6 +807,16 @@ mod tests {
     #![allow(clippy::doc_markdown)]
 
     use super::*;
+
+    #[test]
+    fn atomic_write_uses_age_tmp_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.age");
+        atomic_write(&path, b"data").unwrap();
+        assert!(path.exists());
+        let tmp = path.with_added_extension("tmp");
+        assert_eq!(tmp.file_name().unwrap(), "vault.age.tmp");
+    }
 
     #[test]
     fn secret_expose_returns_inner() {

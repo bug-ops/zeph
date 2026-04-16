@@ -1,7 +1,7 @@
 # zeph-sanitizer
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
 
 Content sanitization, exfiltration guard, PII filtering, and quarantine for Zeph — untrusted input isolation before LLM context injection.
 

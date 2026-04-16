@@ -8,7 +8,7 @@ support, multi-model orchestration with Thompson Sampling, self-learning skill e
 dashboard, untrusted content isolation, guardrails, policy enforcement, context compression,
 and multi-channel I/O (CLI + Telegram + TUI + Discord + Slack).
 
-Current version: **v0.16.1**. MSRV: **1.88** (Edition 2024, resolver 3).
+Current version: **v0.16.1**. MSRV: **1.94** (Edition 2024, resolver 3).
 
 ## Architecture
 

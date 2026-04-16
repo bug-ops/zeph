@@ -175,7 +175,7 @@ fn save_persisted(path: &Path, perms: &PersistedPermissions) {
         );
         return;
     }
-    let tmp = path.with_extension(format!("toml.{}.tmp", std::process::id()));
+    let tmp = path.with_added_extension(format!("{}.tmp", std::process::id()));
     if let Err(e) = std::fs::write(&tmp, &content) {
         warn!("failed to write ACP permission tmp file: {e}");
         return;
@@ -1069,5 +1069,15 @@ mod tests {
                 assert!(!gate2.check_permission(sid2, tc_rm).await.unwrap());
             })
             .await;
+    }
+
+    #[test]
+    fn permission_tmp_uses_pid_suffix() {
+        let path = std::path::PathBuf::from("/tmp/perms.toml");
+        let pid = std::process::id();
+        let tmp = path.with_added_extension(format!("{pid}.tmp"));
+        let name = tmp.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("perms.toml."), "unexpected prefix: {name}");
+        assert!(name.ends_with(".tmp"), "unexpected suffix: {name}");
     }
 }

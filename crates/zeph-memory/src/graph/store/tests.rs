@@ -3224,13 +3224,8 @@ async fn find_entities_ranked_top_match_has_highest_score() {
     );
     // Scores must be in non-increasing order
     let scores: Vec<f32> = results.iter().map(|(_, s)| *s).collect();
-    for w in scores.windows(2) {
-        assert!(
-            w[0] >= w[1],
-            "results must be ordered by score desc: {} < {}",
-            w[0],
-            w[1]
-        );
+    for [a, b] in scores.array_windows::<2>().copied() {
+        assert!(a >= b, "results must be ordered by score desc: {a} < {b}");
     }
 }
 
