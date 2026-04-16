@@ -620,8 +620,7 @@ impl SemanticMemory {
                         if decay_lambda > 0.0 && decay_interval_secs > 0 {
                             let now_secs = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
+                                .map_or(0, |d| d.as_secs());
                             let last_decay = store2
                                 .get_metadata("last_link_weight_decay_at")
                                 .await

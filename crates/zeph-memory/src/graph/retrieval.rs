@@ -74,8 +74,7 @@ pub async fn graph_recall(
     // Capture current time once for consistent decay scoring across all facts.
     let now_secs: i64 = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs().cast_signed())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs().cast_signed());
 
     // Step 2: BFS from each seed entity, collect facts
     let mut all_facts: Vec<GraphFact> = Vec::new();

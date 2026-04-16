@@ -44,8 +44,8 @@ struct AuthConfig {
 }
 
 const MAX_RATE_LIMIT_ENTRIES: usize = 10_000;
-const EVICTION_INTERVAL: Duration = Duration::from_secs(60);
-const RATE_WINDOW: Duration = Duration::from_secs(60);
+const EVICTION_INTERVAL: Duration = Duration::from_mins(1);
+const RATE_WINDOW: Duration = Duration::from_mins(1);
 
 #[derive(Clone)]
 struct RateLimitState {

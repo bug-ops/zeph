@@ -103,8 +103,7 @@ impl SpreadingActivation {
         // across all edges (matches the pattern in retrieval.rs:83-86).
         let now_secs: i64 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs().cast_signed())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs().cast_signed());
 
         // activation map: entity_id -> (score, depth_at_max)
         let mut activation: HashMap<i64, (f32, u32)> = HashMap::new();

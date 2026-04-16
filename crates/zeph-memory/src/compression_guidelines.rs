@@ -298,7 +298,7 @@ mod updater {
     ) {
         let base_interval = Duration::from_secs(config.update_interval_secs);
         let mut backoff = base_interval;
-        let max_backoff = Duration::from_secs(3600);
+        let max_backoff = Duration::from_hours(1);
 
         let mut ticker = tokio::time::interval(base_interval);
         // Skip first immediate tick so the loop doesn't fire at startup.

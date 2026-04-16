@@ -39,7 +39,7 @@ struct AuthConfig {
 const MAX_RATE_LIMIT_ENTRIES: usize = 10_000;
 
 /// Fixed window duration for the per-IP request counter.
-const RATE_WINDOW: Duration = Duration::from_secs(60);
+const RATE_WINDOW: Duration = Duration::from_mins(1);
 
 /// Shared state threaded through the rate-limiting middleware.
 #[derive(Clone)]

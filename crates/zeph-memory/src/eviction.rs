@@ -127,8 +127,7 @@ impl EvictionPolicy for EbbinghausPolicy {
 fn unix_now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Parse a `SQLite` TEXT timestamp ("YYYY-MM-DD HH:MM:SS") into Unix seconds.
