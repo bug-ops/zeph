@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- fix(profiling): emit periodic system resource metrics on `TRACE` instead of `INFO` to keep
+  routine RSS/CPU/thread/fd snapshots out of normal logs; `target = "system.metrics"` is
+  unchanged
+
 ### Added
 
 - **skills: hub skill install pipeline** (`#2806`, `#3040`): `SkillManager` now exposes

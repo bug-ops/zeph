@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 /// count at the configured interval and emits them as:
 ///
 /// ```text
-/// tracing::info!(target: "system.metrics", rss_bytes, cpu_percent, thread_count, fd_count);
+/// tracing::trace!(target: "system.metrics", rss_bytes, cpu_percent, thread_count, fd_count);
 /// ```
 ///
 /// Some metrics are platform-specific:
@@ -83,7 +83,7 @@ pub fn spawn_system_metrics_task(
                 None => (0, 0.0, 0, 0),
             };
 
-            tracing::info!(
+            tracing::trace!(
                 target: "system.metrics",
                 rss_bytes,
                 cpu_percent,
