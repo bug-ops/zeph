@@ -25,6 +25,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **tui: multiline composer now expands up to three visible lines**: the TUI input box now
+  grows with explicit newline-based drafts up to 3 visible rows, keeps the cursor-scrolled
+  portion of the draft in view, and adds `Ctrl+J` as a portable newline chord alongside
+  `Shift+Enter`.
+
 - **skills: bundled skill trust scanner bypass** (`#3045`, `#3046`, `#3049`, `#3050`): three
   defense-in-depth fixes closing a trust elevation bypass where a hub-installed skill with a
   forged `.bundled` marker could receive `bundled_level` trust. (1) `build_registry()` in

@@ -1,6 +1,6 @@
 ---
 source: crates/zeph-tui/src/widgets/help.rs
-assertion_line: 107
+assertion_line: 113
 expression: output
 ---
             ┌─────────── Help — press ? or Esc to close ───────────┐            
@@ -25,10 +25,10 @@ expression: output
             │                                                      │            
             │Subagent transcript                                   │            
             │Esc                 return to main conversation       │            
-            │                                                      │            
             │Insert mode                                           │            
             │Enter               send message                      │            
             │Shift+Enter         insert newline                    │            
+            │Ctrl+J              insert newline                    │            
             │Esc                 return to normal mode             │            
             │Ctrl+U              clear input                       │            
             │Ctrl+K              clear queue                       │            

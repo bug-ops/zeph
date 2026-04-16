@@ -49,7 +49,7 @@ When using `--connect`, the TUI renders token-by-token streaming from the remote
 
 - **Chat panel** (left 70%): bottom-up message feed with full markdown rendering (bold, italic, code blocks, lists, headings), scrollbar with proportional thumb, and scroll indicators (▲/▼). Mouse wheel scrolling supported
 - **Side panels** (right 30%): skills, memory, resources, and security metrics — hidden on terminals < 80 cols. The security panel replaces the sub-agents panel when recent events exist (see [Security Indicators](#security-indicators))
-- **Input line**: always visible, supports multiline input via Shift+Enter. Shows `[+N queued]` badge when messages are pending
+- **Input line**: always visible, supports multiline input via `Shift+Enter` or `Ctrl+J`, and expands up to 3 visible lines. Shows `[+N queued]` badge when messages are pending
 - **Status bar**: mode indicator, skill count, token usage, [security indicators](#security-indicators), uptime
 - **Splash screen**: colored block-letter "ZEPH" banner on startup
 
@@ -79,6 +79,7 @@ When using `--connect`, the TUI renders token-by-token streaming from the remote
 |-----|--------|
 | `Enter` | Submit input to agent |
 | `Shift+Enter` | Insert newline (multiline input) |
+| `Ctrl+J` | Insert newline (multiline input) |
 | `/` | Open slash-command autocomplete (when input is empty) |
 | `@` | Open file picker (fuzzy file search) |
 | `Escape` | Switch to Normal mode |

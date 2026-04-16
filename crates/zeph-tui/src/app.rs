@@ -30,6 +30,7 @@ const MAX_TUI_MESSAGES: usize = 2000;
 
 /// Maximum number of input history entries retained in the TUI (#2737).
 const MAX_INPUT_HISTORY: usize = 500;
+const MAX_VISIBLE_INPUT_LINES: u16 = 3;
 
 /// The currently focused side panel in the TUI layout.
 ///
@@ -935,6 +936,25 @@ impl App {
         self.cursor_position
     }
 
+    /// Returns the composer height requested by the current draft, capped at three visible rows.
+    #[must_use]
+    pub(crate) fn desired_input_height(&self) -> u16 {
+        let content_lines = self.input_line_count().min(MAX_VISIBLE_INPUT_LINES);
+        content_lines.saturating_add(2)
+    }
+
+    /// Returns the number of logical lines in the current draft or indicator.
+    #[must_use]
+    pub(crate) fn input_line_count(&self) -> u16 {
+        if self.paste_state.is_some()
+            || (self.input.is_empty() && matches!(self.input_mode, InputMode::Insert))
+        {
+            1
+        } else {
+            u16::try_from(self.input.matches('\n').count() + 1).unwrap_or(u16::MAX)
+        }
+    }
+
     /// Return the number of lines the chat view is scrolled up from the bottom.
     ///
     /// `0` means the view is at the bottom (latest messages visible).
@@ -1296,7 +1316,11 @@ impl App {
     }
 
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
-        let layout = AppLayout::compute(frame.area(), self.show_side_panels);
+        let layout = AppLayout::compute(
+            frame.area(),
+            self.show_side_panels,
+            self.desired_input_height(),
+        );
 
         self.draw_header(frame, layout.header);
         if self.show_splash {
@@ -2115,6 +2139,12 @@ impl App {
         match key.code {
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 // First edit keystroke after paste reveals raw text; clear indicator.
+                self.paste_state = None;
+                let byte_offset = self.byte_offset_of_char(self.cursor_position);
+                self.input.insert(byte_offset, '\n');
+                self.cursor_position += 1;
+            }
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.paste_state = None;
                 let byte_offset = self.byte_offset_of_char(self.cursor_position);
                 self.input.insert(byte_offset, '\n');
@@ -3057,6 +3087,20 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_j_inserts_newline() {
+        let (mut app, mut rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "hello".into();
+        app.cursor_position = 5;
+        let key = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        app.handle_event(AppEvent::Key(key));
+        assert_eq!(app.input(), "hello\n");
+        assert_eq!(app.cursor_position(), 6);
+        assert!(app.messages().is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn shift_enter_mid_input() {
         let (mut app, _rx, _tx) = make_app();
         app.input_mode = InputMode::Insert;
@@ -3417,6 +3461,17 @@ mod tests {
         app.cursor_position = 9;
         app.submit_input();
         assert!(!app.editing_queued());
+    }
+
+    #[test]
+    fn desired_input_height_caps_at_three_visible_lines() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "one\ntwo\nthree\nfour".into();
+        app.cursor_position = app.char_count();
+
+        assert_eq!(app.input_line_count(), 4);
+        assert_eq!(app.desired_input_height(), 5);
     }
 
     mod integration {

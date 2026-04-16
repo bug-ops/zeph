@@ -32,6 +32,16 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         block = block.title_bottom(Span::styled(" [editing queued] ", theme.highlight));
     }
 
+    let visible_lines = area.height.saturating_sub(2);
+    let cursor_line = app.input()[..app
+        .input()
+        .char_indices()
+        .nth(app.cursor_position())
+        .map_or(app.input().len(), |(idx, _)| idx)]
+        .matches('\n')
+        .count() as u16;
+    let scroll = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
+
     let paragraph = if let Some(ps) = app.paste_state() {
         // Show compact indicator while multiline paste is pending in the buffer.
         // Cursor is not shown — the user cannot edit within the indicator display.
@@ -47,16 +57,19 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Paragraph::new(indicator)
             .block(block)
             .style(theme.system_message)
+            .scroll((scroll, 0))
             .wrap(Wrap { trim: false })
     } else if app.input().is_empty() && matches!(app.input_mode(), InputMode::Insert) {
         Paragraph::new("Type a message, / for commands, @ to mention")
             .block(block)
             .style(theme.system_message)
+            .scroll((scroll, 0))
             .wrap(Wrap { trim: false })
     } else {
         Paragraph::new(app.input())
             .block(block)
             .style(theme.input_text)
+            .scroll((scroll, 0))
             .wrap(Wrap { trim: false })
     };
 
@@ -69,9 +82,9 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         let last_line = prefix.rsplit('\n').next().unwrap_or(&prefix);
         #[allow(clippy::cast_possible_truncation)]
         let cursor_x = area.x + last_line.width() as u16 + 1;
-        let line_count = prefix.matches('\n').count();
+        let line_count = prefix.matches('\n').count() as u16;
         #[allow(clippy::cast_possible_truncation)]
-        let cursor_y = area.y + 1 + line_count as u16;
+        let cursor_y = area.y + 1 + line_count.saturating_sub(scroll);
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 }
