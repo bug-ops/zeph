@@ -130,11 +130,15 @@ impl VigilConfig {
                     pat.len(),
                 )));
             }
-            regex::Regex::new(pat).map_err(|e| {
-                ConfigError::Validation(format!(
-                    "security.vigil.extra_patterns[{idx}]: invalid regex: {e}"
-                ))
-            })?;
+            regex::RegexBuilder::new(pat)
+                .size_limit(1 << 20)
+                .dfa_size_limit(1 << 20)
+                .build()
+                .map_err(|e| {
+                    ConfigError::Validation(format!(
+                        "security.vigil.extra_patterns[{idx}]: invalid regex: {e}"
+                    ))
+                })?;
         }
         Ok(())
     }
