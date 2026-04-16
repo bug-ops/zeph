@@ -1,6 +1,27 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+/// Metadata for an active paste in the input buffer.
+///
+/// Present only while the input contains unsubmitted pasted text that was
+/// multiline (two or more lines). Single-line pastes do not set this.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::PasteState;
+///
+/// let ps = PasteState { line_count: 5, byte_len: 128 };
+/// assert_eq!(ps.line_count, 5);
+/// ```
+#[derive(Debug, Clone)]
+pub struct PasteState {
+    /// Number of lines in the pasted text (always >= 2).
+    pub line_count: usize,
+    /// Byte length of the pasted text.
+    pub byte_len: usize,
+}
+
 /// The current text-input mode of the TUI.
 ///
 /// Inspired by modal editors: in `Normal` mode key bindings trigger actions;
@@ -81,6 +102,10 @@ pub struct ChatMessage {
     pub kept_lines: Option<Vec<usize>>,
     /// Wall-clock time formatted as `HH:MM` when the message was created.
     pub timestamp: String,
+    /// Number of lines in the pasted content when this message was submitted
+    /// from a paste. `Some(n)` (n >= 2) enables collapsible display in the
+    /// chat renderer; `None` means normal display.
+    pub paste_line_count: Option<usize>,
 }
 
 impl ChatMessage {
@@ -105,6 +130,7 @@ impl ChatMessage {
             filter_stats: None,
             kept_lines: None,
             timestamp: format_local_time(),
+            paste_line_count: None,
         }
     }
 

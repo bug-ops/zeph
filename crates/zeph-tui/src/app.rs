@@ -22,6 +22,8 @@ use crate::widgets::slash_autocomplete::{SlashAutocompleteState, command_id_to_s
 pub use crate::render_cache::{RenderCache, RenderCacheEntry, RenderCacheKey, content_hash};
 pub use crate::types::{ChatMessage, InputMode, MessageRole};
 
+use crate::types::PasteState;
+
 /// Maximum number of chat messages retained in the TUI message buffer.
 /// Older messages are evicted from the front when the limit is exceeded (#2737).
 const MAX_TUI_MESSAGES: usize = 2000;
@@ -413,6 +415,9 @@ pub struct App {
     task_supervisor: Option<TaskSupervisor>,
     /// Whether the task registry panel is currently visible (toggled by `/tasks`).
     show_task_panel: bool,
+    /// Active paste indicator state. `Some` when a multiline paste is in the buffer
+    /// and the user has not yet edited or submitted the input.
+    paste_state: Option<PasteState>,
     /// Snapshot of supervisor tasks cached once per render tick before `terminal.draw()`.
     ///
     /// Avoids acquiring `TaskSupervisor`'s inner mutex inside the draw closure, which
@@ -492,6 +497,7 @@ impl App {
             pending_transcript: None,
             task_supervisor: None,
             show_task_panel: false,
+            paste_state: None,
             cached_task_snapshots: Vec::new(),
         }
     }
@@ -948,6 +954,15 @@ impl App {
     #[must_use]
     pub fn tool_expanded(&self) -> bool {
         self.tool_expanded
+    }
+
+    /// Return the active paste indicator state, if any.
+    ///
+    /// `Some` when a multiline paste is in the input buffer and no edit
+    /// keypress has occurred since the paste. `None` otherwise.
+    #[must_use]
+    pub fn paste_state(&self) -> Option<&PasteState> {
+        self.paste_state.as_ref()
     }
 
     /// Return `true` when tool blocks use compact single-line rendering.
@@ -2078,8 +2093,20 @@ impl App {
         let byte_offset = self.byte_offset_of_char(self.cursor_position);
         self.input.insert_str(byte_offset, text);
         self.cursor_position += text.chars().count();
+
+        let line_count = text.matches('\n').count() + 1;
+        if line_count >= 2 {
+            // Replace any existing paste indicator — new paste supersedes the old one.
+            self.paste_state = Some(PasteState {
+                line_count,
+                byte_len: text.len(),
+            });
+        } else {
+            self.paste_state = None;
+        }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_insert_key(&mut self, key: KeyEvent) {
         if self.slash_autocomplete.is_some() {
             self.handle_slash_autocomplete_key(key);
@@ -2087,6 +2114,8 @@ impl App {
         }
         match key.code {
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                // First edit keystroke after paste reveals raw text; clear indicator.
+                self.paste_state = None;
                 let byte_offset = self.byte_offset_of_char(self.cursor_position);
                 self.input.insert(byte_offset, '\n');
                 self.cursor_position += 1;
@@ -2094,6 +2123,8 @@ impl App {
             KeyCode::Enter => self.submit_input(),
             KeyCode::Esc => self.input_mode = InputMode::Normal,
             KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
+                // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
+                self.paste_state = None;
                 let boundary = self.prev_word_boundary();
                 if boundary < self.cursor_position {
                     let start = self.byte_offset_of_char(boundary);
@@ -2103,6 +2134,8 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
+                // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
+                self.paste_state = None;
                 if self.cursor_position > 0 {
                     let byte_offset = self.byte_offset_of_char(self.cursor_position - 1);
                     self.input.remove(byte_offset);
@@ -2110,6 +2143,8 @@ impl App {
                 }
             }
             KeyCode::Delete => {
+                // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
+                self.paste_state = None;
                 if self.cursor_position < self.char_count() {
                     let byte_offset = self.byte_offset_of_char(self.cursor_position);
                     self.input.remove(byte_offset);
@@ -2119,6 +2154,7 @@ impl App {
                 self.handle_history_up();
             }
             KeyCode::Down => {
+                self.paste_state = None;
                 let Some(i) = self.history_index else {
                     return;
                 };
@@ -2137,28 +2173,41 @@ impl App {
                 self.cursor_position = self.char_count();
             }
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.paste_state = None;
                 self.cursor_position = self.prev_word_boundary();
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.paste_state = None;
                 self.cursor_position = self.next_word_boundary();
             }
             KeyCode::Left => {
+                self.paste_state = None;
                 self.cursor_position = self.cursor_position.saturating_sub(1);
             }
             KeyCode::Right => {
+                self.paste_state = None;
                 if self.cursor_position < self.char_count() {
                     self.cursor_position += 1;
                 }
             }
-            KeyCode::Home => self.cursor_position = 0,
-            KeyCode::End => self.cursor_position = self.char_count(),
+            KeyCode::Home => {
+                self.paste_state = None;
+                self.cursor_position = 0;
+            }
+            KeyCode::End => {
+                self.paste_state = None;
+                self.cursor_position = self.char_count();
+            }
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.paste_state = None;
                 self.cursor_position = 0;
             }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.paste_state = None;
                 self.cursor_position = self.char_count();
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.paste_state = None;
                 self.input.clear();
                 self.cursor_position = 0;
             }
@@ -2169,6 +2218,8 @@ impl App {
                 self.open_file_picker();
             }
             KeyCode::Char(c) => {
+                // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
+                self.paste_state = None;
                 let was_empty = self.input.is_empty();
                 let byte_offset = self.byte_offset_of_char(self.cursor_position);
                 self.input.insert(byte_offset, c);
@@ -2259,6 +2310,7 @@ impl App {
     }
 
     fn handle_history_up(&mut self) {
+        self.paste_state = None;
         if self.input.is_empty() && self.pending_count > 0 && self.history_index.is_none() {
             if let Some(last) = self.input_history.pop() {
                 self.input = last;
@@ -2391,8 +2443,10 @@ impl App {
         }
         self.history_index = None;
         self.draft_input.clear();
-        self.messages
-            .push(ChatMessage::new(MessageRole::User, text.clone()));
+        let paste_lines = self.paste_state.take().map(|p| p.line_count);
+        let mut msg = ChatMessage::new(MessageRole::User, text.clone());
+        msg.paste_line_count = paste_lines;
+        self.messages.push(msg);
         self.trim_messages();
         self.input.clear();
         self.cursor_position = 0;
@@ -5178,5 +5232,125 @@ mod tests {
         );
         // Confirm byte-slicing the full string at char-boundary position doesn't panic.
         let _ = &long_name[..truncated.len()];
+    }
+
+    #[test]
+    fn paste_state_set_for_multiline() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.handle_event(AppEvent::Paste("line1\nline2\nline3".to_owned()));
+        let ps = app.paste_state().expect("paste_state should be Some");
+        assert_eq!(ps.line_count, 3);
+        assert_eq!(ps.byte_len, "line1\nline2\nline3".len());
+    }
+
+    #[test]
+    fn paste_state_none_for_single_line() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.handle_event(AppEvent::Paste("single line".to_owned()));
+        assert!(app.paste_state().is_none());
+    }
+
+    #[test]
+    fn paste_state_cleared_on_char() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.handle_event(AppEvent::Paste("a\nb".to_owned()));
+        assert!(app.paste_state().is_some());
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+        )));
+        assert!(app.paste_state().is_none());
+    }
+
+    #[test]
+    fn paste_state_cleared_on_backspace() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.handle_event(AppEvent::Paste("a\nb".to_owned()));
+        assert!(app.paste_state().is_some());
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+        )));
+        assert!(app.paste_state().is_none());
+    }
+
+    #[test]
+    fn paste_state_cleared_on_ctrl_u() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.handle_event(AppEvent::Paste("a\nb".to_owned()));
+        assert!(app.paste_state().is_some());
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(app.paste_state().is_none());
+        assert!(
+            app.input().is_empty(),
+            "Ctrl+U must also clear input buffer"
+        );
+    }
+
+    #[test]
+    fn paste_state_cleared_on_shift_enter() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.handle_event(AppEvent::Paste("a\nb".to_owned()));
+        assert!(app.paste_state().is_some());
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::SHIFT,
+        )));
+        assert!(app.paste_state().is_none());
+    }
+
+    #[test]
+    fn paste_state_cleared_on_navigation() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+
+        // Left arrow
+        app.handle_event(AppEvent::Paste("a\nb".to_owned()));
+        assert!(app.paste_state().is_some());
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::NONE,
+        )));
+        assert!(app.paste_state().is_none(), "Left must clear paste_state");
+
+        // Home key
+        app.handle_event(AppEvent::Paste("c\nd".to_owned()));
+        assert!(app.paste_state().is_some());
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Home,
+            KeyModifiers::NONE,
+        )));
+        assert!(app.paste_state().is_none(), "Home must clear paste_state");
+    }
+
+    #[test]
+    fn paste_state_consumed_on_submit() {
+        let (mut app, _rx, _tx) = make_app();
+        app.input_mode = InputMode::Insert;
+        app.handle_event(AppEvent::Paste("line1\nline2\nline3\nline4".to_owned()));
+        assert!(app.paste_state().is_some());
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(
+            app.paste_state().is_none(),
+            "paste_state cleared after submit"
+        );
+        assert_eq!(app.messages().len(), 1);
+        assert_eq!(
+            app.messages()[0].paste_line_count,
+            Some(4),
+            "paste_line_count must be set on submitted message"
+        );
     }
 }

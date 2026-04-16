@@ -32,7 +32,23 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         block = block.title_bottom(Span::styled(" [editing queued] ", theme.highlight));
     }
 
-    let paragraph = if app.input().is_empty() && matches!(app.input_mode(), InputMode::Insert) {
+    let paragraph = if let Some(ps) = app.paste_state() {
+        // Show compact indicator while multiline paste is pending in the buffer.
+        // Cursor is not shown — the user cannot edit within the indicator display.
+        let size_label = if ps.byte_len >= 1024 {
+            // Integer KB with one decimal place; precision loss at >4 PB is acceptable.
+            #[allow(clippy::cast_precision_loss)]
+            let kb = ps.byte_len as f64 / 1024.0;
+            format!("{kb:.1} KB")
+        } else {
+            format!("{} B", ps.byte_len)
+        };
+        let indicator = format!("[Pasted: {} lines · {}]", ps.line_count, size_label);
+        Paragraph::new(indicator)
+            .block(block)
+            .style(theme.system_message)
+            .wrap(Wrap { trim: false })
+    } else if app.input().is_empty() && matches!(app.input_mode(), InputMode::Insert) {
         Paragraph::new("Type a message, / for commands, @ to mention")
             .block(block)
             .style(theme.system_message)
@@ -46,7 +62,9 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(paragraph, area);
 
-    if matches!(app.input_mode(), InputMode::Insert) {
+    // Do not show cursor when paste indicator is active — the user interacts
+    // with the indicator as a whole unit, not individual characters.
+    if app.paste_state().is_none() && matches!(app.input_mode(), InputMode::Insert) {
         let prefix: String = app.input().chars().take(app.cursor_position()).collect();
         let last_line = prefix.rsplit('\n').next().unwrap_or(&prefix);
         #[allow(clippy::cast_possible_truncation)]

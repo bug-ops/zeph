@@ -258,13 +258,21 @@ fn render_message_lines(
         );
         Vec::new()
     } else {
-        render_chat_message(msg, theme, wrap_width, show_labels, &mut lines)
+        render_chat_message(
+            msg,
+            tool_expanded,
+            theme,
+            wrap_width,
+            show_labels,
+            &mut lines,
+        )
     };
     (lines, md_links)
 }
 
 fn render_chat_message(
     msg: &crate::app::ChatMessage,
+    tool_expanded: bool,
     theme: &Theme,
     wrap_width: usize,
     _show_labels: bool,
@@ -280,6 +288,42 @@ fn render_chat_message(
 
     let indent = " ".repeat(prefix.len());
     let is_assistant = msg.role == MessageRole::Assistant;
+
+    // Collapsible paste block: show first PASTE_COLLAPSED_LINES lines and an
+    // expand hint when the message was submitted from a multiline paste and the
+    // global expand toggle is off. This reuses tool_expanded deliberately —
+    // 'e' means "show full content" for all collapsible blocks (paste and tool output).
+    if let Some(total_lines) = msg.paste_line_count
+        && !tool_expanded
+        && total_lines > PASTE_COLLAPSED_LINES
+    {
+        let content_lines: Vec<&str> = msg.content.lines().collect();
+        let visible: Vec<&str> = content_lines
+            .iter()
+            .take(PASTE_COLLAPSED_LINES)
+            .copied()
+            .collect();
+        let preview = visible.join("\n");
+        let (styled_lines, md_links) = render_md(&preview, base_style, theme);
+        for (i, spans) in styled_lines.iter().enumerate() {
+            let mut line_spans = Vec::with_capacity(spans.len() + 1);
+            let pfx = if i == 0 {
+                prefix.to_string()
+            } else {
+                indent.clone()
+            };
+            line_spans.push(Span::styled(pfx, base_style));
+            line_spans.extend(spans.iter().cloned());
+            lines.extend(wrap_spans(line_spans, wrap_width));
+        }
+        let hidden = total_lines - PASTE_COLLAPSED_LINES;
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        lines.push(Line::from(Span::styled(
+            format!("[... {hidden} more lines — press e to expand]"),
+            dim,
+        )));
+        return md_links;
+    }
 
     let (styled_lines, md_links) = if is_assistant {
         render_with_thinking(&msg.content, base_style, theme)
@@ -358,6 +402,10 @@ fn render_scrollbar(
 }
 
 const TOOL_OUTPUT_COLLAPSED_LINES: usize = 3;
+
+/// Number of lines shown in a collapsed paste block before the expand hint.
+/// Mirrors `TOOL_OUTPUT_COLLAPSED_LINES` for visual consistency.
+const PASTE_COLLAPSED_LINES: usize = 3;
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn render_tool_message(
@@ -1196,5 +1244,90 @@ mod tests {
         assert_eq!(lines.len(), 5);
         let data: String = lines[3].iter().map(|s| s.content.as_ref()).collect();
         assert!(data.contains('1'));
+    }
+
+    fn make_paste_msg(content: &str, paste_line_count: Option<usize>) -> crate::app::ChatMessage {
+        let mut msg = crate::app::ChatMessage::new(crate::app::MessageRole::User, content);
+        msg.paste_line_count = paste_line_count;
+        msg
+    }
+
+    fn lines_text(lines: &[ratatui::text::Line<'_>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn paste_collapsed_shows_first_3_lines() {
+        let theme = Theme::default();
+        let content = "alpha\nbeta\ngamma\ndelta\nepsilon";
+        let msg = make_paste_msg(content, Some(5));
+        let mut lines = Vec::new();
+        render_chat_message(&msg, false, &theme, 80, false, &mut lines);
+        let text = lines_text(&lines);
+        assert!(text.contains("alpha"), "first line must be visible");
+        assert!(text.contains("beta"), "second line must be visible");
+        assert!(text.contains("gamma"), "third line must be visible");
+        assert!(
+            !text.contains("delta"),
+            "fourth line must be hidden when collapsed"
+        );
+        assert!(
+            text.contains("more lines"),
+            "expand hint must be present: {text}"
+        );
+    }
+
+    #[test]
+    fn paste_collapsed_no_hint_for_3_or_fewer_lines() {
+        let theme = Theme::default();
+        // 2 lines — no hint (nothing hidden beyond PASTE_COLLAPSED_LINES=3)
+        let content_2 = "one\ntwo";
+        let msg_2 = make_paste_msg(content_2, Some(2));
+        let mut lines_2 = Vec::new();
+        render_chat_message(&msg_2, false, &theme, 80, false, &mut lines_2);
+        assert!(
+            !lines_text(&lines_2).contains("more lines"),
+            "no hint for 2-line paste"
+        );
+        // Exactly 3 lines — still no hint (collapse only triggers when > 3)
+        let content_3 = "one\ntwo\nthree";
+        let msg_3 = make_paste_msg(content_3, Some(3));
+        let mut lines_3 = Vec::new();
+        render_chat_message(&msg_3, false, &theme, 80, false, &mut lines_3);
+        assert!(
+            !lines_text(&lines_3).contains("more lines"),
+            "no hint for 3-line paste"
+        );
+    }
+
+    #[test]
+    fn paste_expanded_shows_all_lines() {
+        let theme = Theme::default();
+        let content = "alpha\nbeta\ngamma\ndelta\nepsilon";
+        let msg = make_paste_msg(content, Some(5));
+        let mut lines = Vec::new();
+        render_chat_message(&msg, true, &theme, 80, false, &mut lines);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("delta"),
+            "fourth line must be visible when expanded"
+        );
+        assert!(
+            text.contains("epsilon"),
+            "fifth line must be visible when expanded"
+        );
+        assert!(
+            !text.contains("more lines"),
+            "no hint when expanded: {text}"
+        );
     }
 }

@@ -65,7 +65,7 @@ pub use metrics::{MetricsCollector, MetricsSnapshot};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
-pub use types::{ChatMessage, InputMode, MessageRole};
+pub use types::{ChatMessage, InputMode, MessageRole, PasteState};
 
 /// Run the TUI dashboard until the user quits.
 ///
