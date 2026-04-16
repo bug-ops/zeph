@@ -97,8 +97,7 @@ pub use config::AdversarialPolicyConfig;
 pub use config::{
     AnomalyConfig, AuditConfig, AuthorizationConfig, DependencyConfig, EgressConfig, FileConfig,
     OverflowConfig, ResultCacheConfig, RetryConfig, SandboxConfig, ScrapeConfig, ShellConfig,
-    TafcConfig,
-    ToolDependency, ToolsConfig, UtilityScoringConfig,
+    TafcConfig, ToolDependency, ToolsConfig, UtilityScoringConfig,
 };
 pub use cwd::SetCwdExecutor;
 pub use diagnostics::DiagnosticsExecutor;
