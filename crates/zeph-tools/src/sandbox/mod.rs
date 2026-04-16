@@ -25,10 +25,10 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use zeph_tools::sandbox::{MacosSandbox, Sandbox, SandboxPolicy, SandboxProfile};
+//! use zeph_tools::sandbox::{build_sandbox, SandboxPolicy, SandboxProfile};
 //! use tokio::process::Command;
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let policy = SandboxPolicy {
 //!     profile: SandboxProfile::Workspace,
 //!     allow_read: vec![],
@@ -37,7 +37,7 @@
 //!     allow_exec: vec![],
 //!     env_inherit: vec![],
 //! };
-//! let sb = MacosSandbox::new();
+//! let sb = build_sandbox(false)?;
 //! let mut cmd = Command::new("bash");
 //! cmd.arg("-c").arg("echo hello");
 //! sb.wrap(&mut cmd, &policy)?;
