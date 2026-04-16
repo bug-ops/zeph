@@ -1779,7 +1779,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_pii_ner_classifier(agent, config);
     let agent = agent_setup::apply_causal_analyzer(agent, provider.clone(), config);
-    let agent = agent_setup::apply_vigil(agent, config);
+    let agent = agent_setup::apply_vigil(agent, &config.security.vigil);
 
     #[cfg(feature = "tui")]
     if config.index.enabled {

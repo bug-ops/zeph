@@ -826,17 +826,17 @@ pub(crate) fn apply_three_class_classifier_with_cfg<C: Channel>(
 /// leaving `SecurityState::vigil = None` (the subagent exemption invariant, spec FR-009).
 pub(crate) fn apply_vigil<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
-    config: &Config,
+    vigil: &zeph_config::VigilConfig,
 ) -> zeph_core::agent::Agent<C> {
-    if !config.security.vigil.enabled {
+    if !vigil.enabled {
         return agent;
     }
     tracing::info!(
-        strict_mode = config.security.vigil.strict_mode,
-        extra_patterns = config.security.vigil.extra_patterns.len(),
+        strict_mode = vigil.strict_mode,
+        extra_patterns = vigil.extra_patterns.len(),
         "VIGIL pre-sanitizer gate enabled"
     );
-    agent.with_vigil_config(config.security.vigil.clone())
+    agent.with_vigil_config(vigil.clone())
 }
 
 pub(crate) fn apply_causal_analyzer<C: Channel>(

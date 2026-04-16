@@ -128,6 +128,7 @@ struct SharedAgentDeps {
     #[cfg(feature = "classifiers")]
     classifiers_config: zeph_core::config::ClassifiersConfig,
     causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig,
+    vigil_config: zeph_config::VigilConfig,
     probe_provider: Option<zeph_llm::any::AnyProvider>,
     planner_provider: Option<zeph_llm::any::AnyProvider>,
     verify_provider: Option<zeph_llm::any::AnyProvider>,
@@ -483,6 +484,7 @@ async fn build_acp_deps(
         #[cfg(feature = "classifiers")]
         classifiers_config: config.classifiers.clone(),
         causal_ipi_config: config.security.causal_ipi.clone(),
+        vigil_config: config.security.vigil.clone(),
         probe_provider: app.build_probe_provider(),
         planner_provider: app.build_planner_provider(),
         verify_provider: app.build_verify_provider(),
@@ -579,6 +581,7 @@ async fn spawn_acp_agent(
     #[cfg(feature = "classifiers")]
     let classifiers_config = d.classifiers_config.clone();
     let causal_ipi_config = d.causal_ipi_config.clone();
+    let vigil_config = d.vigil_config.clone();
     let probe_provider = d.probe_provider.clone();
     let planner_provider = d.planner_provider.clone();
     let verify_provider = d.verify_provider.clone();
@@ -812,7 +815,7 @@ async fn spawn_acp_agent(
     }
     agent =
         agent_setup::apply_causal_analyzer_with_cfg(agent, provider.clone(), &causal_ipi_config);
-    agent = agent_setup::apply_vigil(agent, config);
+    agent = agent_setup::apply_vigil(agent, &vigil_config);
 
     if debug_config.enabled {
         // Use session_id as a subdirectory prefix so concurrent sessions never share the same
