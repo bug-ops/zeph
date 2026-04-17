@@ -605,7 +605,7 @@ impl AppBuilder {
         registry
     }
 
-    /// Returns per-plugin skill directories expanded via [`PluginManager::collect_skill_dirs`].
+    /// Returns per-plugin skill directories expanded via `PluginManager::collect_skill_dirs`.
     ///
     /// Used by [`Self::build_registry`] and by runner/daemon/acp when constructing the agent
     /// via `with_skill_reload`. Every entry points directly at a directory containing `SKILL.md`.
