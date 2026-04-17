@@ -108,6 +108,12 @@ pub fn build_provider_from_entry(
             if let Some(ref vm) = entry.vision_model {
                 provider = provider.with_vision_model(vm.clone());
             }
+            if config.mcp.forward_output_schema {
+                tracing::warn!(
+                    "mcp.forward_output_schema is enabled but Ollama does not support \
+                     output schema forwarding; setting ignored for this provider"
+                );
+            }
             Ok(AnyProvider::Ollama(provider))
         }
         ProviderKind::Claude => {
@@ -214,6 +220,12 @@ pub fn build_provider_from_entry(
             if let Some(include) = entry.include_thoughts {
                 provider = provider.with_include_thoughts(include);
             }
+            if config.mcp.forward_output_schema {
+                tracing::warn!(
+                    "mcp.forward_output_schema is enabled but Gemini does not support \
+                     output schema forwarding; setting ignored for this provider"
+                );
+            }
             Ok(AnyProvider::Gemini(provider))
         }
         ProviderKind::Compatible => {
@@ -237,14 +249,25 @@ pub fn build_provider_from_entry(
                     .unwrap_or_default()
             });
             let max_tokens = entry.max_tokens.unwrap_or(4096);
-            Ok(AnyProvider::Compatible(CompatibleProvider::new(
+            let provider = CompatibleProvider::new(
                 name.to_owned(),
                 api_key,
                 base_url,
                 model,
                 max_tokens,
                 entry.embedding_model.clone(),
-            )))
+            )
+            .with_output_schema_forwarding(
+                config.mcp.forward_output_schema,
+                config.mcp.output_schema_hint_bytes,
+                config.mcp.max_description_bytes,
+            );
+            tracing::info!(
+                forward = config.mcp.forward_output_schema,
+                provider = name,
+                "mcp.output_schema.forwarding_configured"
+            );
+            Ok(AnyProvider::Compatible(provider))
         }
         #[cfg(feature = "candle")]
         ProviderKind::Candle => {

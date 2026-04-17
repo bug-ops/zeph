@@ -106,6 +106,24 @@ impl CompatibleProvider {
         self.inner = self.inner.with_coe();
         self
     }
+
+    /// Forward MCP tool output schemas as JSON hints appended to tool descriptions.
+    ///
+    /// Delegates to the inner [`OpenAiProvider`]. When `enabled` is `false` the call is a no-op.
+    /// `hint_bytes` caps the JSON representation; `max_description_bytes` caps the combined
+    /// description string.
+    #[must_use]
+    pub fn with_output_schema_forwarding(
+        mut self,
+        enabled: bool,
+        hint_bytes: usize,
+        max_description_bytes: usize,
+    ) -> Self {
+        self.inner =
+            self.inner
+                .with_output_schema_forwarding(enabled, hint_bytes, max_description_bytes);
+        self
+    }
 }
 
 impl LlmProvider for CompatibleProvider {
@@ -305,5 +323,12 @@ mod tests {
     #[test]
     fn last_usage_initially_none() {
         assert!(test_provider().last_usage().is_none());
+    }
+
+    #[test]
+    fn with_output_schema_forwarding_does_not_panic() {
+        // Smoke-test that the builder compiles and returns self without panicking.
+        let p = test_provider().with_output_schema_forwarding(true, 512, usize::MAX);
+        assert_eq!(p.name(), "groq");
     }
 }

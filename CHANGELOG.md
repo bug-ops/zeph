@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **fix(mcp): wire `forward_output_schema` for Compatible, Gemini, and Ollama providers** —
+  `forward_output_schema = true` was silently ignored for all backends except Claude and OpenAi.
+  `CompatibleProvider` now exposes `with_output_schema_forwarding()` (delegating to the inner
+  `OpenAiProvider`) and the factory wires it for the Compatible branch. Gemini and Ollama emit a
+  `WARN` log when the setting is enabled, since neither backend supports the feature, so users are
+  no longer silently misled. Closes #3111.
 - **fix(mcp): raise default `output_schema_hint_bytes` from 512 to 1024** — the 512-byte default
   caused stub fallback for most real-world MCP tool schemas, making `forward_output_schema`
   largely ineffective at default config. Closes #3084.
