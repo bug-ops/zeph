@@ -745,6 +745,7 @@ impl<C: Channel> Agent<C> {
 
         // Load the session digest once at session start for context injection.
         self.load_and_cache_session_digest().await;
+        self.maybe_send_resume_recap().await;
 
         loop {
             self.apply_provider_override();
@@ -910,7 +911,7 @@ impl<C: Channel> Agent<C> {
                 use zeph_commands::CommandRegistry;
                 use zeph_commands::handlers::{
                     agent_cmd::AgentCommand,
-                    compaction::{CompactCommand, NewConversationCommand},
+                    compaction::{CompactCommand, NewConversationCommand, RecapCommand},
                     experiment::ExperimentCommand,
                     lsp::LspCommand,
                     mcp::McpCommand,
@@ -949,6 +950,7 @@ impl<C: Channel> Agent<C> {
                 // Phase 5 migrations (Send-compatible):
                 agent_reg.register(CompactCommand);
                 agent_reg.register(NewConversationCommand);
+                agent_reg.register(RecapCommand);
                 agent_reg.register(ExperimentCommand);
                 agent_reg.register(PlanCommand);
 

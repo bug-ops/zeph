@@ -226,6 +226,8 @@ pub(crate) struct RuntimeConfig {
     pub(crate) layers: Vec<std::sync::Arc<dyn crate::runtime_layer::RuntimeLayer>>,
     /// Background supervisor config snapshot for turn-boundary abort logic.
     pub(crate) supervisor_config: crate::config::TaskSupervisorConfig,
+    /// Session recap config (#3064).
+    pub(crate) recap_config: zeph_config::RecapConfig,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.
@@ -820,6 +822,7 @@ impl Default for RuntimeConfig {
             channel_skills: zeph_config::ChannelSkillsConfig::default(),
             layers: Vec::new(),
             supervisor_config: crate::config::TaskSupervisorConfig::default(),
+            recap_config: zeph_config::RecapConfig::default(),
         }
     }
 }

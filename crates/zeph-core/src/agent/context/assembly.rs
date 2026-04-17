@@ -160,6 +160,7 @@ impl<C: Channel> Agent<C> {
         let memory = self.memory_state.persistence.memory.clone();
         let provider = self.provider.clone();
         let tc = self.metrics.token_counter.clone();
+        let sanitizer = self.security.sanitizer.clone();
         let status_tx = self.session.status_tx.clone();
         if let Some(ref tx) = self.session.status_tx {
             let _ = tx.send("Generating session digest...".to_string());
@@ -173,6 +174,7 @@ impl<C: Channel> Agent<C> {
                     &non_system,
                     &digest_config,
                     &tc,
+                    &sanitizer,
                 )
                 .await;
             }
@@ -641,12 +643,15 @@ impl<C: Channel> Agent<C> {
 
         // Inject session digest AFTER all other memory inserts so it lands at position 1
         // (closest to the system prompt). #2289
-        if let Some((digest_text, _)) = self
-            .memory_state
-            .compaction
-            .cached_session_digest
-            .clone()
-            .filter(|_| self.msg.messages.len() > 1)
+        // Gate on digest_config.enabled: disabling digest generation also disables injection
+        // even when a cached digest was loaded for recap purposes (#3064 C3-bis fix).
+        if self.memory_state.compaction.digest_config.enabled
+            && let Some((digest_text, _)) = self
+                .memory_state
+                .compaction
+                .cached_session_digest
+                .clone()
+                .filter(|_| self.msg.messages.len() > 1)
         {
             let digest_msg = Message {
                 role: Role::User,

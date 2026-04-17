@@ -40,6 +40,7 @@ static CANONICAL_ORDER: &[&str] = &[
     "experiments",
     "lsp",
     "telemetry",
+    "session",
 ];
 
 /// Error type for migration failures.

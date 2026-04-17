@@ -102,6 +102,9 @@ pub struct AgentSessionConfig {
     /// Inject `<budget>` XML into the volatile system prompt section (#2267).
     pub budget_hint_enabled: bool,
 
+    /// Session recap settings (#3064).
+    pub recap: zeph_config::RecapConfig,
+
     /// Custom secrets from config.
     ///
     /// Stored as `Arc` because `Secret` intentionally does not implement `Clone` —
@@ -170,6 +173,7 @@ impl AgentSessionConfig {
                 .map(|(k, v)| (k.clone(), Secret::new(v.expose().to_owned())))
                 .collect::<Vec<_>>()
                 .into(),
+            recap: config.session.recap.clone(),
         }
     }
 }
@@ -268,5 +272,7 @@ mod tests {
             config.llm.providers.iter().any(|e| e.server_compaction)
         );
         assert_eq!(sc.secrets.len(), config.secrets.custom.len());
+        assert_eq!(sc.recap.on_resume, config.session.recap.on_resume);
+        assert_eq!(sc.recap.max_tokens, config.session.recap.max_tokens);
     }
 }

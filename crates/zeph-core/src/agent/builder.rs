@@ -1545,6 +1545,7 @@ impl<C: Channel> Agent<C> {
             server_compaction,
             budget_hint_enabled,
             secrets,
+            recap,
         } = cfg;
 
         self.tool_orchestrator.apply_config(
@@ -1595,6 +1596,7 @@ impl<C: Channel> Agent<C> {
         self.orchestration.orchestration_config = orchestration_config;
         self.wire_graph_persistence();
         self.runtime.budget_hint_enabled = budget_hint_enabled;
+        self.runtime.recap_config = recap;
 
         self.debug_state.reasoning_model_warning = anomaly_config.reasoning_model_warning;
         if anomaly_config.enabled {

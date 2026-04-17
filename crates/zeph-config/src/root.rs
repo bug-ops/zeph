@@ -102,6 +102,9 @@ pub struct Config {
     /// Prometheus metrics export configuration.
     #[serde(default)]
     pub metrics: MetricsConfig,
+    /// Session UX settings (recap-on-resume, etc.).
+    #[serde(default)]
+    pub session: crate::session::SessionConfig,
     /// Resolved secrets from vault. Never serialized — populated at runtime.
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
@@ -264,6 +267,7 @@ impl Default for Config {
             magic_docs: MagicDocsConfig::default(),
             telemetry: TelemetryConfig::default(),
             metrics: MetricsConfig::default(),
+            session: crate::session::SessionConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

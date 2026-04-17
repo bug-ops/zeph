@@ -101,6 +101,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         category: SlashCategory::Session,
         feature_gate: None,
     },
+    CommandInfo {
+        name: "/recap",
+        args: "",
+        description: "Show a recap of the current or previous session",
+        category: SlashCategory::Session,
+        feature_gate: None,
+    },
     // --- Configuration (model/provider) ---
     CommandInfo {
         name: "/model",

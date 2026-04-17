@@ -175,6 +175,8 @@ pub(crate) struct WizardState {
     pub(crate) retry_parameter_reformat_provider: String,
     // Session digest (#2289)
     pub(crate) digest_enabled: bool,
+    // Session recap on resume (#3064)
+    pub(crate) recap_on_resume: bool,
     // Context strategy (#2288)
     pub(crate) context_strategy: String,
     // MCP tool discovery (#2321)
@@ -343,6 +345,7 @@ impl Default for WizardState {
             retry_max_attempts: 2,
             retry_parameter_reformat_provider: String::new(),
             digest_enabled: false,
+            recap_on_resume: true,
             context_strategy: "full_history".to_owned(),
             mcp_discovery_strategy: "none".to_owned(),
             mcp_discovery_top_k: 10,
@@ -435,6 +438,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_policy(&mut state)?;
     step_telemetry(&mut state)?;
     step_prometheus(&mut state)?;
+    step_session_recap(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -692,6 +696,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     }
     config.memory.shutdown_summary = state.shutdown_summary;
     config.memory.digest.enabled = state.digest_enabled;
+    config.session.recap.on_resume = state.recap_on_resume;
     config.memory.context_strategy = match state.context_strategy.as_str() {
         "memory_first" => zeph_core::config::ContextStrategy::MemoryFirst,
         "adaptive" => zeph_core::config::ContextStrategy::Adaptive,
@@ -1318,6 +1323,16 @@ fn step_prometheus(state: &mut WizardState) -> anyhow::Result<()> {
         .default(false)
         .interact()?;
 
+    println!();
+    Ok(())
+}
+
+fn step_session_recap(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Session Recap ==\n");
+    state.recap_on_resume = Confirm::new()
+        .with_prompt("Show a recap when resuming a conversation? [Y/n]")
+        .default(true)
+        .interact()?;
     println!();
     Ok(())
 }

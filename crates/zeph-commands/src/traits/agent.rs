@@ -228,6 +228,21 @@ pub trait AgentAccess: Send {
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
 
+    // ----- /recap -----
+
+    /// Produce the session recap text.
+    ///
+    /// Returns the cached digest when available, otherwise generates a fresh summary of the
+    /// current conversation. Non-fatal: on LLM timeout or error the implementor returns a
+    /// user-visible message rather than `Err`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` only on unrecoverable internal agent errors.
+    fn session_recap<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
     // ----- /compact -----
 
     /// Compact the context window and return a user-visible status string.
@@ -494,6 +509,12 @@ impl AgentAccess for NullAgent {
     }
 
     fn lsp_status<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn session_recap<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async { Ok(String::new()) })

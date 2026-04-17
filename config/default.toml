@@ -1108,3 +1108,14 @@ sweep_batch_size = 100
 # sample_rate = 1.0
 # # Interval between system-metrics snapshots in seconds (Phase 3)
 # system_metrics_interval_secs = 5
+
+# [session.recap] — session recap on resume (#3064)
+# [session.recap]
+# Show a recap of the previous session when resuming a conversation (requires a persisted digest)
+# on_resume = true
+# Maximum tokens for the recap text
+# max_tokens = 200
+# Provider name from [[llm.providers]] for recap calls; empty = primary provider
+# provider = ""
+# Maximum recent messages included for fresh-generation path (no cached digest)
+# max_input_messages = 20

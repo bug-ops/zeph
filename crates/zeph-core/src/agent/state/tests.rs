@@ -90,6 +90,7 @@ fn make_runtime_config() -> RuntimeConfig {
         channel_skills: zeph_config::ChannelSkillsConfig::default(),
         layers: Vec::new(),
         supervisor_config: crate::config::TaskSupervisorConfig::default(),
+        recap_config: zeph_config::RecapConfig::default(),
     }
 }
 

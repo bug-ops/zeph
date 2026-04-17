@@ -81,6 +81,42 @@ impl CommandHandler<CommandContext<'_>> for NewConversationCommand {
     }
 }
 
+/// Session recap handler for `/recap`.
+///
+/// Delegates to `AgentAccess::session_recap`. Uses the agent registry (not the
+/// session/debug registry) because recap requires memory state, an LLM provider, and
+/// the cached digest.
+pub struct RecapCommand;
+
+impl CommandHandler<CommandContext<'_>> for RecapCommand {
+    fn name(&self) -> &'static str {
+        "/recap"
+    }
+
+    fn description(&self) -> &'static str {
+        "Show a recap of the current or previous session"
+    }
+
+    fn args_hint(&self) -> &'static str {
+        ""
+    }
+
+    fn category(&self) -> SlashCategory {
+        SlashCategory::Session
+    }
+
+    fn handle<'a>(
+        &'a self,
+        ctx: &'a mut CommandContext<'_>,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
+        Box::pin(async move {
+            let text = ctx.agent.session_recap().await?;
+            Ok(CommandOutput::Message(text))
+        })
+    }
+}
+
 /// Parse `--keep-plan` and `--no-digest` flags from the `/new` command args string.
 fn parse_new_flags(args: &str) -> (bool, bool) {
     let keep_plan = args.split_whitespace().any(|a| a == "--keep-plan");

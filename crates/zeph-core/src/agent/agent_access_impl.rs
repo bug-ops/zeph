@@ -560,6 +560,25 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         })
     }
 
+    // ----- /recap -----
+
+    fn session_recap<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async move {
+            match self.build_recap().await {
+                Ok(text) => Ok(text),
+                Err(e) => {
+                    // /recap is an explicit user command — surface a fixed message so that
+                    // LlmError internals (URLs with embedded credentials, response excerpts)
+                    // are never forwarded to the user channel. Full detail goes to the log.
+                    tracing::warn!("session recap command: {}", e.0);
+                    Ok("Recap unavailable — see logs for details".to_string())
+                }
+            }
+        })
+    }
+
     // ----- /compact -----
 
     fn compact_context<'a>(

@@ -18,6 +18,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the vault file has group/world-readable bits set and correctly fails on unexpected
   metadata errors. Closes [#3121](https://github.com/bug-ops/zeph/issues/3121).
 
+- **feat(session): session recap on resume (#3064)** — adds `/recap` command and
+  `[session.recap]` config section. When a session has a persisted digest, a brief recap is shown
+  before the first user message on resume. The cached digest is now always loaded on startup
+  regardless of `memory.digest.enabled` (C3-bis fix). Input is sanitized with credential redaction
+  and injection-pattern stripping before reaching the LLM. Provider is configurable via
+  `session.recap.provider`; falls back to the primary provider when unset.
+
 - **feat(llm): configurable prompt cache TTL with 1-hour Claude variant** — adds `CacheTtl` enum
   (`Ephemeral` | `OneHour`) to `zeph-llm`. Setting `prompt_cache_ttl = "1h"` in a Claude provider
   block enables the `extended-cache-ttl-2025-04-25` beta and extends cached prefix lifetime to 1

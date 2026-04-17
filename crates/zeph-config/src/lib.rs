@@ -72,6 +72,7 @@ pub mod rate_limit;
 pub mod root;
 pub mod sanitizer;
 pub mod security;
+pub mod session;
 pub mod subagent;
 pub mod telemetry;
 pub mod ui;
@@ -129,6 +130,7 @@ pub use sanitizer::{
 };
 pub use sanitizer::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
 pub use security::{ScannerConfig, SecurityConfig, TimeoutConfig, TrustConfig};
+pub use session::{RecapConfig, SessionConfig};
 pub use subagent::{
     HookDef, HookMatcher, HookType, MemoryScope, PermissionMode, SkillFilter, SubagentHooks,
     ToolPolicy,
