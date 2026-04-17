@@ -458,6 +458,7 @@ fn skill_paths_for_watcher_includes_plugins_root() {
         vault: Box::new(EnvVaultProvider),
         age_vault: None,
         qdrant_ops: None,
+        resolved_overlay: zeph_plugins::ResolvedOverlay::default(),
     };
     let paths = builder.skill_paths_for_watcher();
     let plugins_root = plugins_dir();
