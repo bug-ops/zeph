@@ -72,7 +72,7 @@ impl VerifyPredicate {
 
 /// Result of evaluating a [`VerifyPredicate`] against a task's output.
 ///
-/// Stored on [`TaskNode::predicate_outcome`] (in-memory only; restart re-evaluates
+/// Stored on `TaskNode::predicate_outcome` (in-memory only; restart re-evaluates
 /// any pending predicates). A `None` value signals "not yet evaluated"; consumers
 /// should re-emit `SchedulerAction::VerifyPredicate` on the next tick.
 ///
@@ -103,7 +103,7 @@ pub struct PredicateOutcome {
 /// rather than aborting the scheduler.
 ///
 /// Task output is sanitized via [`ContentSanitizer`] before being embedded in the
-/// judge prompt, mirroring the same defence used by [`PlanVerifier`].
+/// judge prompt, mirroring the same defence used by `PlanVerifier`.
 ///
 /// # Examples
 ///

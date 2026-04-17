@@ -111,7 +111,8 @@ mod orchestration_integration {
                     }
                     SchedulerAction::Cancel { .. }
                     | SchedulerAction::RunInline { .. }
-                    | SchedulerAction::Verify { .. } => {}
+                    | SchedulerAction::Verify { .. }
+                    | SchedulerAction::VerifyPredicate { .. } => {}
                 }
             }
 
@@ -338,7 +339,8 @@ mod orchestration_integration {
                     }
                     SchedulerAction::Cancel { .. }
                     | SchedulerAction::RunInline { .. }
-                    | SchedulerAction::Verify { .. } => {}
+                    | SchedulerAction::Verify { .. }
+                    | SchedulerAction::VerifyPredicate { .. } => {}
                 }
             }
 
