@@ -89,6 +89,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **fix(tools): add `invoke_skill` to adversarial policy, VIGIL, and tool-filter always-on lists** (#3133) —
+  `AdversarialPolicyConfig::default_exempt_tools()`, `vigil::default_exempt_tools()`, and
+  `default_tool_filter_always_on()` now include `"invoke_skill"` alongside the existing `"load_skill"`
+  entry. Without this, tool-schema filtering could silently remove `invoke_skill` from the LLM prompt
+  when `tool_filter.enabled = true`. Both operations are read-only local registry calls with no network
+  or filesystem side effects; the omission was an oversight when `invoke_skill` was introduced in the
+  agent-invocable skills PR.
+
+- **fix(skills): plugin skills installed via `/plugins add` now hot-reload without restart** (#3134) —
+  `AppBuilder::skill_paths()` is replaced by two helpers: `skill_paths_for_registry()` (expanded
+  per-plugin skill dirs, used by the skill registry and `with_skill_reload`) and
+  `skill_paths_for_watcher()` (config paths + managed dir + plugins root, used by `SkillWatcher`).
+  Watching the plugins root recursively covers skills from any plugin installed after startup.
+  A `plugin_dirs_supplier` closure is captured at agent construction and called inside
+  `reload_skills()` so the registry discovers newly installed plugin skill dirs on every watcher
+  event without restarting the agent.
+
 - **fix(sandbox): emit WARN log when canonicalize_paths drops an unresolvable path** (#3117) —
   `SandboxPolicy::canonicalized` now logs `tracing::warn!` with `path` and `error` fields before
   silently dropping paths that fail `fs::canonicalize` (ENOENT, EACCES, ELOOP, etc.).

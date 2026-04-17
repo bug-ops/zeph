@@ -2128,10 +2128,19 @@ impl<C: Channel> Agent<C> {
     )]
     async fn reload_skills(&mut self) {
         let old_fp = self.skill_state.fingerprint();
-        self.skill_state
-            .registry
-            .write()
-            .reload(&self.skill_state.skill_paths);
+        let reload_paths = if let Some(ref supplier) = self.skill_state.plugin_dirs_supplier {
+            let plugin_dirs = supplier();
+            let mut paths = self.skill_state.skill_paths.clone();
+            for dir in plugin_dirs {
+                if !paths.contains(&dir) {
+                    paths.push(dir);
+                }
+            }
+            paths
+        } else {
+            self.skill_state.skill_paths.clone()
+        };
+        self.skill_state.registry.write().reload(&reload_paths);
         if self.skill_state.fingerprint() == old_fp {
             return;
         }

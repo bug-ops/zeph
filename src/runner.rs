@@ -1274,7 +1274,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         });
     }
 
-    let skill_paths = app.skill_paths();
+    let skill_paths = app.skill_paths_for_registry();
+    let plugin_dirs_supplier = app.plugin_dirs_supplier();
 
     let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
         std::sync::Arc::clone(&memory),
@@ -1576,7 +1577,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.skills.two_stage_matching,
         config.skills.confusability_threshold,
     )
-    .with_skill_reload(skill_paths.clone(), reload_rx)
+    .with_skill_reload(skill_paths, reload_rx)
+    .with_plugin_dirs_supplier(plugin_dirs_supplier)
     .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())
     .with_trust_config(config.skills.trust.clone())
     .with_trust_snapshot(trust_snapshot)

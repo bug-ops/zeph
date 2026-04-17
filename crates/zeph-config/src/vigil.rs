@@ -32,6 +32,7 @@ fn default_exempt_tools() -> Vec<String> {
         "memory_search".into(),
         "read_overflow".into(),
         "load_skill".into(),
+        "invoke_skill".into(),
         "schedule_deferred".into(),
     ]
 }
@@ -156,6 +157,8 @@ mod tests {
         assert_eq!(cfg.sanitize_max_chars, 2048);
         assert!(cfg.extra_patterns.is_empty());
         assert!(cfg.exempt_tools.contains(&"memory_search".to_owned()));
+        assert!(cfg.exempt_tools.contains(&"load_skill".to_owned()));
+        assert!(cfg.exempt_tools.contains(&"invoke_skill".to_owned()));
     }
 
     #[test]

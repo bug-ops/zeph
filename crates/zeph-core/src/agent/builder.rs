@@ -201,6 +201,20 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set a supplier that returns the current per-plugin skill directories.
+    ///
+    /// Called at the start of every hot-reload cycle so plugins installed after agent startup
+    /// are discovered without restarting. The supplier should call
+    /// `PluginManager::collect_skill_dirs()` and return the resulting paths.
+    #[must_use]
+    pub fn with_plugin_dirs_supplier(
+        mut self,
+        supplier: impl Fn() -> Vec<PathBuf> + Send + Sync + 'static,
+    ) -> Self {
+        self.skill_state.plugin_dirs_supplier = Some(std::sync::Arc::new(supplier));
+        self
+    }
+
     /// Set the directory used by `/skill install` and `/skill remove`.
     #[must_use]
     pub fn with_managed_skills_dir(mut self, dir: PathBuf) -> Self {

@@ -173,6 +173,8 @@ struct SharedAgentDeps {
     acp_provider_factory: Option<zeph_acp::ProviderFactory>,
     /// Project rule file paths to advertise in session `_meta`.
     acp_project_rules: Vec<PathBuf>,
+    /// Resolves current per-plugin skill dirs at hot-reload time.
+    plugin_dirs_supplier: std::sync::Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>,
 
     /// Shell overlay snapshot captured at startup for hot-reload divergence detection.
     startup_shell_overlay: zeph_core::ShellOverlaySnapshot,
@@ -376,7 +378,8 @@ async fn build_acp_deps(
     )
     .await;
     let summary_provider = app.build_summary_provider();
-    let skill_paths = app.skill_paths();
+    let skill_paths = app.skill_paths_for_registry();
+    let plugin_dirs_supplier = app.plugin_dirs_supplier();
     let acp_project_rules = collect_project_rules(&skill_paths);
     let crate::bootstrap::WatcherBundle {
         skill_watcher,
@@ -530,6 +533,7 @@ async fn build_acp_deps(
         sqlite_path: crate::db_url::resolve_db_url(config).to_owned(),
         acp_provider_factory: Some(build_acp_provider_factory(config)),
         acp_project_rules,
+        plugin_dirs_supplier: std::sync::Arc::new(plugin_dirs_supplier),
         #[cfg(feature = "scheduler")]
         scheduler_executor,
         #[cfg(feature = "scheduler")]
@@ -574,6 +578,7 @@ async fn spawn_acp_agent(
     let max_active_skills = d.max_active_skills;
     let tool_executor = Arc::clone(&d.tool_executor);
     let skill_paths = d.skill_paths.clone();
+    let plugin_dirs_supplier = Arc::clone(&d.plugin_dirs_supplier);
     let memory = Arc::clone(&d.memory);
     let history_limit = d.history_limit;
     let recall_limit = d.recall_limit;
@@ -725,6 +730,7 @@ async fn spawn_acp_agent(
         .apply_session_config(session_config)
         .with_working_dir(session_ctx.working_dir.clone())
         .with_skill_reload(skill_paths, reload_rx)
+        .with_plugin_dirs_supplier(move || plugin_dirs_supplier())
         .with_managed_skills_dir(managed_skills_dir)
         .with_shutdown(shutdown_rx)
         .with_config_reload(config_path, config_reload_rx)
@@ -1288,7 +1294,7 @@ pub(crate) async fn run_acp_http_server(
         auth_bearer_token,
         discovery_enabled: app.config().acp.discovery_enabled,
         terminal_timeout_secs: 120,
-        project_rules: collect_project_rules(&app.skill_paths()),
+        project_rules: collect_project_rules(&app.skill_paths_for_registry()),
         title_max_chars: app.config().memory.sessions.title_max_chars,
         max_history: app.config().memory.sessions.max_history,
         sqlite_path: Some(crate::db_url::resolve_db_url(app.config()).to_owned()),

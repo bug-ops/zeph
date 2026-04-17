@@ -111,6 +111,7 @@ fn default_tool_filter_always_on() -> Vec<String> {
         "memory_search".into(),
         "memory_save".into(),
         "load_skill".into(),
+        "invoke_skill".into(),
         "bash".into(),
         "read".into(),
         "edit".into(),

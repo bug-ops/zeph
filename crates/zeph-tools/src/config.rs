@@ -413,6 +413,7 @@ impl AdversarialPolicyConfig {
             "memory_search".into(),
             "read_overflow".into(),
             "load_skill".into(),
+            "invoke_skill".into(),
             "schedule_deferred".into(),
         ]
     }
@@ -1254,5 +1255,18 @@ mod tests {
         ";
         let config: ToolsConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.result_cache.ttl_secs, 0);
+    }
+
+    #[test]
+    fn adversarial_policy_default_exempt_tools_contains_skill_ops() {
+        let exempt = AdversarialPolicyConfig::default_exempt_tools();
+        assert!(
+            exempt.contains(&"load_skill".to_string()),
+            "default exempt_tools must contain load_skill"
+        );
+        assert!(
+            exempt.contains(&"invoke_skill".to_string()),
+            "default exempt_tools must contain invoke_skill"
+        );
     }
 }

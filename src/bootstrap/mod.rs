@@ -563,7 +563,7 @@ impl AppBuilder {
             }
         }
 
-        let skill_paths = self.skill_paths();
+        let skill_paths = self.skill_paths_for_registry();
         let registry = SkillRegistry::load(&skill_paths).with_hub_dirs(std::iter::once(managed));
 
         if self.config.skills.trust.scan_on_load {
@@ -605,13 +605,16 @@ impl AppBuilder {
         registry
     }
 
-    pub fn skill_paths(&self) -> Vec<PathBuf> {
+    /// Returns per-plugin skill directories expanded via [`PluginManager::collect_skill_dirs`].
+    ///
+    /// Used by [`Self::build_registry`] and by runner/daemon/acp when constructing the agent
+    /// via `with_skill_reload`. Every entry points directly at a directory containing `SKILL.md`.
+    pub fn skill_paths_for_registry(&self) -> Vec<PathBuf> {
         let mut paths: Vec<PathBuf> = self.config.skills.paths.iter().map(PathBuf::from).collect();
         let managed_dir = managed_skills_dir();
         if !paths.contains(&managed_dir) {
             paths.push(managed_dir.clone());
         }
-        // Append per-plugin skill directories so the registry loads plugin skills at startup.
         let plugins_dir = plugins_dir();
         let mgr = zeph_plugins::PluginManager::new(
             plugins_dir,
@@ -628,6 +631,52 @@ impl AppBuilder {
         paths
     }
 
+    /// Returns paths for the filesystem watcher: config paths + managed dir + plugins root.
+    ///
+    /// Passes the plugins root (not per-plugin subdirs) so that skills added by `/plugins add`
+    /// after startup are covered by the recursive watcher without re-registration.
+    /// Eagerly creates the plugins root directory so [`SkillWatcher::start`] does not fail on a
+    /// clean install where no plugins have been installed yet.
+    pub fn skill_paths_for_watcher(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self.config.skills.paths.iter().map(PathBuf::from).collect();
+        let managed_dir = managed_skills_dir();
+        if !paths.contains(&managed_dir) {
+            paths.push(managed_dir);
+        }
+        let plugins_root = plugins_dir();
+        let _ = std::fs::create_dir_all(&plugins_root).map_err(|e| {
+            tracing::warn!(
+                path = %plugins_root.display(),
+                error = %e,
+                "failed to create plugins directory for watcher; skipping"
+            );
+        });
+        if plugins_root.exists() && !paths.contains(&plugins_root) {
+            paths.push(plugins_root);
+        }
+        paths
+    }
+
+    /// Returns a closure that resolves current per-plugin skill directories.
+    ///
+    /// Pass the returned closure to `AgentBuilder::with_plugin_dirs_supplier` so that
+    /// `reload_skills()` picks up plugins installed after agent startup.
+    pub fn plugin_dirs_supplier(
+        &self,
+    ) -> impl Fn() -> Vec<std::path::PathBuf> + Send + Sync + 'static {
+        let plugins_dir = plugins_dir();
+        let managed_dir = managed_skills_dir();
+        let allowed_commands = self.config.mcp.allowed_commands.clone();
+        move || {
+            let mgr = zeph_plugins::PluginManager::new(
+                plugins_dir.clone(),
+                managed_dir.clone(),
+                allowed_commands.clone(),
+            );
+            mgr.collect_skill_dirs().unwrap_or_default()
+        }
+    }
+
     #[allow(dead_code)]
     pub fn managed_skills_dir() -> PathBuf {
         managed_skills_dir()
@@ -636,7 +685,7 @@ impl AppBuilder {
     pub fn build_watchers(&self) -> WatcherBundle {
         use zeph_core::instrumented_channel::instrumented_channel;
 
-        let skill_paths = self.skill_paths();
+        let skill_paths = self.skill_paths_for_watcher();
         let (skill_tx, skill_reload_rx) = instrumented_channel(4, "skill_reload_rx");
         let skill_watcher = match SkillWatcher::start(&skill_paths, skill_tx.into_inner()) {
             Ok(w) => {

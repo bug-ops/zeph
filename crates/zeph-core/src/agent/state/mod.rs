@@ -89,6 +89,11 @@ pub(crate) struct SkillState {
     pub(crate) min_injection_score: f32,
     pub(crate) embedding_model: String,
     pub(crate) skill_reload_rx: Option<mpsc::Receiver<SkillEvent>>,
+    /// Resolves the current set of per-plugin skill dirs at reload time.
+    ///
+    /// Called inside `reload_skills()` so that plugins installed via `/plugins add` after
+    /// startup are discovered on the next watcher event without restarting the agent.
+    pub(crate) plugin_dirs_supplier: Option<Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>>,
     pub(crate) active_skill_names: Vec<String>,
     pub(crate) last_skills_prompt: String,
     pub(crate) prompt_mode: SkillPromptMode,
@@ -878,6 +883,7 @@ impl SkillState {
             min_injection_score: 0.20,
             embedding_model: String::new(),
             skill_reload_rx: None,
+            plugin_dirs_supplier: None,
             active_skill_names: Vec::new(),
             last_skills_prompt,
             prompt_mode: crate::config::SkillPromptMode::Auto,

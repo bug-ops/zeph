@@ -436,7 +436,8 @@ pub(crate) async fn run_daemon(
     let reload_rx = watchers.skill_reload_rx.into_inner();
     let _config_watcher = watchers.config_watcher;
     let config_reload_rx = watchers.config_reload_rx.into_inner();
-    let skill_paths = app.skill_paths();
+    let skill_paths = app.skill_paths_for_registry();
+    let plugin_dirs_supplier = app.plugin_dirs_supplier();
     let config_path_owned = app.config_path().to_owned();
     let session_config = zeph_core::AgentSessionConfig::from_config(config, budget_tokens);
 
@@ -473,6 +474,7 @@ pub(crate) async fn run_daemon(
             config.skills.confusability_threshold,
         )
         .with_skill_reload(skill_paths, reload_rx)
+        .with_plugin_dirs_supplier(plugin_dirs_supplier)
         .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())
         .with_memory(
             std::sync::Arc::clone(&memory),

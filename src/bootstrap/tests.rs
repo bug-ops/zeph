@@ -420,11 +420,11 @@ fn skill_paths_includes_managed_dir() {
         qdrant_ops: None,
         resolved_overlay: zeph_plugins::ResolvedOverlay::default(),
     };
-    let paths = builder.skill_paths();
+    let paths = builder.skill_paths_for_registry();
     let managed = managed_skills_dir();
     assert!(
         paths.contains(&managed),
-        "skill_paths() should include managed_skills_dir, got: {paths:?}"
+        "skill_paths_for_registry() should include managed_skills_dir, got: {paths:?}"
     );
 }
 
@@ -441,12 +441,41 @@ fn skill_paths_does_not_duplicate_managed_dir() {
         qdrant_ops: None,
         resolved_overlay: zeph_plugins::ResolvedOverlay::default(),
     };
-    let paths = builder.skill_paths();
+    let paths = builder.skill_paths_for_registry();
     let count = paths.iter().filter(|p| p == &&managed).count();
     assert_eq!(
         count, 1,
         "managed dir should appear exactly once, got: {paths:?}"
     );
+}
+
+#[test]
+fn skill_paths_for_watcher_includes_plugins_root() {
+    let config = Config::load(Path::new("/nonexistent")).unwrap();
+    let builder = AppBuilder {
+        config,
+        config_path: PathBuf::from("/nonexistent/config.toml"),
+        vault: Box::new(EnvVaultProvider),
+        age_vault: None,
+        qdrant_ops: None,
+    };
+    let paths = builder.skill_paths_for_watcher();
+    let plugins_root = plugins_dir();
+    // The helper must either include the plugins root (created eagerly) or skip it cleanly
+    // when creation fails. On CI where HOME is writable this should always be present.
+    if plugins_root.exists() {
+        assert!(
+            paths.contains(&plugins_root),
+            "skill_paths_for_watcher() should include plugins_root when it exists, got: {paths:?}"
+        );
+    }
+    // Watcher paths must NOT contain per-plugin subdirs — only the root.
+    for p in &paths {
+        assert!(
+            p != &plugins_root.join("some_plugin").join("skills").join("x"),
+            "skill_paths_for_watcher() must not expand per-plugin skill dirs"
+        );
+    }
 }
 
 #[tokio::test]
