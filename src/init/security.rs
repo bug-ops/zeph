@@ -355,6 +355,7 @@ pub(super) fn step_policy(state: &mut WizardState) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]
