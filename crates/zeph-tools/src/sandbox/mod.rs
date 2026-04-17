@@ -75,6 +75,11 @@ pub struct SandboxPolicy {
     /// The enforcement profile controlling which restrictions are active.
     pub profile: SandboxProfile,
     /// Paths granted read (and execute) access. Normalized to absolute paths at construction.
+    ///
+    /// Paths are resolved to their canonical (real) form by [`SandboxPolicy::canonicalized`]
+    /// before being applied. If a path is a symlink, the resolved target is used for the allow
+    /// rule. Deny rules for well-known secret paths are also generated for the canonical form,
+    /// so the allow override works correctly even when the denied path is a symlink.
     pub allow_read: Vec<PathBuf>,
     /// Paths granted read and write access. Normalized to absolute paths at construction.
     pub allow_write: Vec<PathBuf>,
@@ -102,7 +107,17 @@ impl SandboxPolicy {
 fn canonicalize_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     paths
         .into_iter()
-        .filter_map(|p| std::fs::canonicalize(&p).ok())
+        .filter_map(|p| {
+            let canonical = std::fs::canonicalize(&p).ok()?;
+            if canonical != p {
+                tracing::debug!(
+                    "sandbox: resolved symlink {} → {}",
+                    p.display(),
+                    canonical.display()
+                );
+            }
+            Some(canonical)
+        })
         .collect()
 }
 

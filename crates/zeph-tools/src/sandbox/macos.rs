@@ -241,10 +241,6 @@ fn generate_sb_profile_for_home(policy: &SandboxPolicy, home: &Path) -> String {
     //   3. User-provided allow_read paths appearing here override deny-first rules
     //      above (last-rule-wins), giving callers an explicit opt-in escape hatch.
     //
-    // NOTE: deny rules use non-canonicalized home.join(rel); allow_read paths are
-    // canonicalized by SandboxPolicy::canonicalized(). If ~/.ssh is a symlink to
-    // /secure/ssh-mount/, the user override will NOT override the deny rule because
-    // they resolve to different paths. This is a known limitation — document in config.
     for path in &policy.allow_read {
         let p = escape_sb(&path.to_string_lossy());
         rules.push(format!("(allow file-read* (subpath \"{p}\"))"));
@@ -267,20 +263,44 @@ fn generate_sb_profile_for_home(policy: &SandboxPolicy, home: &Path) -> String {
 ///
 /// Iterates [`SECRET_DIRS`] (subpath deny) and [`SECRET_FILES`] (literal deny).
 /// Placed after the global `(allow file-read*)` so they take effect via last-rule-wins.
+///
+/// When a path is a symlink, both the canonical (real) path and the symlink path receive
+/// deny rules. This ensures that a user-provided `allow_read` entry pointing at the canonical
+/// path (as produced by `SandboxPolicy::canonicalized()`) can override the correct deny rule.
 fn push_secret_deny_rules_for_home(rules: &mut Vec<String>, home: &Path) {
     for rel in SECRET_DIRS {
         let path: PathBuf = home.join(rel);
+        let canonical = std::fs::canonicalize(&path).ok();
+        let deny_path = canonical.as_deref().unwrap_or(&path);
         rules.push(format!(
             "(deny file-read* (subpath {}))",
-            escape_sb_quoted(&path.to_string_lossy())
+            escape_sb_quoted(&deny_path.to_string_lossy())
         ));
+        if let Some(ref c) = canonical
+            && c != &path
+        {
+            rules.push(format!(
+                "(deny file-read* (subpath {}))",
+                escape_sb_quoted(&path.to_string_lossy())
+            ));
+        }
     }
     for rel in SECRET_FILES {
         let path: PathBuf = home.join(rel);
+        let canonical = std::fs::canonicalize(&path).ok();
+        let deny_path = canonical.as_deref().unwrap_or(&path);
         rules.push(format!(
             "(deny file-read* (literal {}))",
-            escape_sb_quoted(&path.to_string_lossy())
+            escape_sb_quoted(&deny_path.to_string_lossy())
         ));
+        if let Some(ref c) = canonical
+            && c != &path
+        {
+            rules.push(format!(
+                "(deny file-read* (literal {}))",
+                escape_sb_quoted(&path.to_string_lossy())
+            ));
+        }
     }
 }
 
@@ -553,6 +573,10 @@ mod tests {
 
     #[test]
     fn all_37_deny_rules_emitted() {
+        // Uses FAKE_HOME (/tmp/fake-home-test) which does not exist on disk, so
+        // fs::canonicalize will fail and fall back to the raw path — one rule per entry,
+        // same as before. When symlinks are present, additional rules may be emitted
+        // (covered by allow_read_overrides_deny_when_ssh_is_symlink).
         let policy = SandboxPolicy {
             profile: SandboxProfile::Workspace,
             ..Default::default()
@@ -566,17 +590,49 @@ mod tests {
             .lines()
             .filter(|l| l.contains("(deny file-read* (literal"))
             .count();
-        assert_eq!(
-            subpath_denies,
-            SECRET_DIRS.len(),
-            "expected {} subpath deny rules, got {subpath_denies}",
+        assert!(
+            subpath_denies >= SECRET_DIRS.len(),
+            "expected at least {} subpath deny rules, got {subpath_denies}",
             SECRET_DIRS.len()
         );
-        assert_eq!(
-            literal_denies,
-            SECRET_FILES.len(),
-            "expected {} literal deny rules, got {literal_denies}",
+        assert!(
+            literal_denies >= SECRET_FILES.len(),
+            "expected at least {} literal deny rules, got {literal_denies}",
             SECRET_FILES.len()
+        );
+    }
+
+    #[test]
+    fn allow_read_overrides_deny_when_ssh_is_symlink() {
+        let real_dir = tempfile::tempdir().unwrap();
+        let fake_home_dir = tempfile::tempdir().unwrap();
+        let symlink_path = fake_home_dir.path().join(".ssh");
+        std::os::unix::fs::symlink(real_dir.path(), &symlink_path).unwrap();
+
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::Workspace,
+            allow_read: vec![symlink_path],
+            ..Default::default()
+        }
+        .canonicalized();
+
+        let profile = generate_sb_profile_for_home(&policy, fake_home_dir.path());
+
+        // On macOS /tmp is a symlink to /private/tmp; canonicalize real_dir to get the
+        // resolved path that Seatbelt rules will use.
+        let real = std::fs::canonicalize(real_dir.path()).unwrap();
+        let real = real.to_string_lossy();
+        let deny_real = format!("(deny file-read* (subpath \"{real}\"))");
+        let allow_real = format!("(allow file-read* (subpath \"{real}\"))");
+        let deny_pos = profile
+            .find(&deny_real)
+            .expect("deny rule on canonical path must exist");
+        let allow_pos = profile
+            .find(&allow_real)
+            .expect("allow override on canonical path must exist");
+        assert!(
+            allow_pos > deny_pos,
+            "allow must appear after deny (last-rule-wins)"
         );
     }
 }
