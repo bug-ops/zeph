@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use futures::{StreamExt as _, TryStreamExt as _};
 use zeph_llm::provider::{LlmProvider as _, Message};
 
@@ -89,13 +92,14 @@ const MAX_EMBED_BG_TASKS: usize = 64;
 
 /// Shared arguments for background embed tasks.
 struct EmbedBgArgs {
-    qdrant: std::sync::Arc<crate::embedding_store::EmbeddingStore>,
+    qdrant: Arc<crate::embedding_store::EmbeddingStore>,
     embed_provider: zeph_llm::any::AnyProvider,
     embedding_model: String,
     message_id: MessageId,
     conversation_id: ConversationId,
     role: String,
     content: String,
+    last_qdrant_warn: Arc<AtomicU64>,
 }
 
 /// Background task: embed chunks and store as regular message vectors.
@@ -110,6 +114,7 @@ async fn embed_and_store_regular_bg(args: EmbedBgArgs) {
         conversation_id,
         role,
         content,
+        last_qdrant_warn,
     } = args;
     let chunks = chunk_text(&content);
     let chunk_count = chunks.len();
@@ -127,7 +132,19 @@ async fn embed_and_store_regular_bg(args: EmbedBgArgs) {
     };
     let vector_size = first.len() as u64;
     if let Err(e) = qdrant.ensure_collection(vector_size).await {
-        tracing::warn!("bg embed_regular: failed to ensure Qdrant collection: {e:#}");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let last = last_qdrant_warn.load(Ordering::Relaxed);
+        if now.saturating_sub(last) >= 10 {
+            last_qdrant_warn.store(now, Ordering::Relaxed);
+            tracing::warn!("bg embed_regular: failed to ensure Qdrant collection: {e:#}");
+        } else {
+            tracing::debug!(
+                "bg embed_regular: failed to ensure Qdrant collection (suppressed): {e:#}"
+            );
+        }
         return;
     }
 
@@ -165,6 +182,7 @@ async fn embed_chunks_with_tool_context_bg(args: EmbedBgArgs, embed_ctx: EmbedCo
         conversation_id,
         role,
         content,
+        last_qdrant_warn,
     } = args;
     let chunks = chunk_text(&content);
     let chunk_count = chunks.len();
@@ -182,7 +200,19 @@ async fn embed_chunks_with_tool_context_bg(args: EmbedBgArgs, embed_ctx: EmbedCo
     if let Some(first) = vectors.first() {
         let vector_size = first.len() as u64;
         if let Err(e) = qdrant.ensure_collection(vector_size).await {
-            tracing::warn!("bg embed_tool: failed to ensure Qdrant collection: {e:#}");
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let last = last_qdrant_warn.load(Ordering::Relaxed);
+            if now.saturating_sub(last) >= 10 {
+                last_qdrant_warn.store(now, Ordering::Relaxed);
+                tracing::warn!("bg embed_tool: failed to ensure Qdrant collection: {e:#}");
+            } else {
+                tracing::debug!(
+                    "bg embed_tool: failed to ensure Qdrant collection (suppressed): {e:#}"
+                );
+            }
             return;
         }
     }
@@ -240,6 +270,7 @@ async fn embed_and_store_with_category_bg(args: EmbedBgArgs, category: Option<St
         conversation_id,
         role,
         content,
+        last_qdrant_warn,
     } = args;
     let chunks = chunk_text(&content);
     let chunk_count = chunks.len();
@@ -259,7 +290,19 @@ async fn embed_and_store_with_category_bg(args: EmbedBgArgs, category: Option<St
     };
     let vector_size = first.len() as u64;
     if let Err(e) = qdrant.ensure_collection(vector_size).await {
-        tracing::warn!("bg embed_category: failed to ensure Qdrant collection: {e:#}");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let last = last_qdrant_warn.load(Ordering::Relaxed);
+        if now.saturating_sub(last) >= 10 {
+            last_qdrant_warn.store(now, Ordering::Relaxed);
+            tracing::warn!("bg embed_category: failed to ensure Qdrant collection: {e:#}");
+        } else {
+            tracing::debug!(
+                "bg embed_category: failed to ensure Qdrant collection (suppressed): {e:#}"
+            );
+        }
         return;
     }
 
@@ -560,6 +603,7 @@ impl SemanticMemory {
                 conversation_id,
                 role: role.to_owned(),
                 content: content.to_owned(),
+                last_qdrant_warn: Arc::clone(&self.last_qdrant_warn),
             },
             category.map(str::to_owned),
         ))
@@ -590,6 +634,7 @@ impl SemanticMemory {
             conversation_id,
             role: role.to_owned(),
             content: content.to_owned(),
+            last_qdrant_warn: Arc::clone(&self.last_qdrant_warn),
         }))
     }
 
@@ -620,6 +665,7 @@ impl SemanticMemory {
                 conversation_id,
                 role: role.to_owned(),
                 content: content.to_owned(),
+                last_qdrant_warn: Arc::clone(&self.last_qdrant_warn),
             },
             embed_ctx,
         ))
@@ -1440,6 +1486,7 @@ mod tests {
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+            last_qdrant_warn: Arc::new(AtomicU64::new(0)),
             tier_boost_semantic: 1.3,
             admission_control: None,
             key_facts_dedup_threshold: 0.95,
@@ -1473,6 +1520,67 @@ mod tests {
         assert!(
             !dispatched,
             "spawn_embed_bg must return false when the task limit is reached"
+        );
+    }
+
+    #[test]
+    fn qdrant_warn_rate_limit_suppresses_within_window() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let last_warn = Arc::new(AtomicU64::new(0));
+        let window_secs = 10u64;
+
+        // Simulate first call: last=0, now=100 → should emit (diff >= 10)
+        let now1 = 100u64;
+        let last1 = last_warn.load(Ordering::Relaxed);
+        let should_warn1 = now1.saturating_sub(last1) >= window_secs;
+        assert!(should_warn1, "first call must not be suppressed");
+        if should_warn1 {
+            last_warn.store(now1, Ordering::Relaxed);
+        }
+
+        // Simulate second call 5s later: now=105 → should be suppressed (diff < 10)
+        let now2 = 105u64;
+        let last2 = last_warn.load(Ordering::Relaxed);
+        let should_warn2 = now2.saturating_sub(last2) >= window_secs;
+        assert!(!should_warn2, "call within 10s window must be suppressed");
+
+        // Simulate third call 10s after first: now=110 → should emit again
+        let now3 = 110u64;
+        let last3 = last_warn.load(Ordering::Relaxed);
+        let should_warn3 = now3.saturating_sub(last3) >= window_secs;
+        assert!(
+            should_warn3,
+            "call after window expiry must not be suppressed"
+        );
+    }
+
+    #[test]
+    fn qdrant_warn_rate_limit_shared_across_concurrent_sites() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        // All 3 WARN sites share one Arc<AtomicU64>. Simulate site A warning at t=100,
+        // then site B attempting at t=105 — must be suppressed.
+        let shared = Arc::new(AtomicU64::new(0));
+        let window_secs = 10u64;
+
+        let site_a = Arc::clone(&shared);
+        let site_b = Arc::clone(&shared);
+
+        let now_a = 100u64;
+        let last_a = site_a.load(Ordering::Relaxed);
+        if now_a.saturating_sub(last_a) >= window_secs {
+            site_a.store(now_a, Ordering::Relaxed);
+        }
+
+        let now_b = 105u64;
+        let last_b = site_b.load(Ordering::Relaxed);
+        let warn_b = now_b.saturating_sub(last_b) >= window_secs;
+        assert!(
+            !warn_b,
+            "site B must be suppressed because site A already warned within the window"
         );
     }
 }
