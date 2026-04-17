@@ -1746,6 +1746,11 @@ impl App {
             TuiCommand::MemoryTreeStats => {
                 let _ = self.user_input_tx.try_send("/memory tree".to_owned());
             }
+            TuiCommand::PluginList => {
+                let _ = self.user_input_tx.try_send("/plugins list".to_owned());
+            }
+            TuiCommand::PluginAdd => self.prefill_input("/plugins add "),
+            TuiCommand::PluginRemove => self.prefill_input("/plugins remove "),
             _ => {}
         }
     }

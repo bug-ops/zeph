@@ -258,6 +258,7 @@ pub fn build_sandbox(strict: bool) -> Result<Box<dyn Sandbox>, SandboxError> {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]

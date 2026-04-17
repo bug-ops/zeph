@@ -71,6 +71,7 @@ zeph-index.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true
 zeph-mcp.workspace = true
+zeph-plugins.workspace = true
 zeph-skills = { workspace = true, features = ["qdrant"] }
 zeph-tools.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)

@@ -98,3 +98,11 @@ pub fn create_embedding_provider(config: &Config, primary: &AnyProvider) -> AnyP
 pub fn managed_skills_dir() -> PathBuf {
     zeph_core::vault::default_vault_dir().join("skills")
 }
+
+/// Returns the default plugins directory: `~/.local/share/zeph/plugins/`.
+///
+/// Delegates to [`zeph_plugins::PluginManager::default_plugins_dir`] so there is a single
+/// canonical source of truth used by both the CLI and the TUI path in `zeph-core`.
+pub fn plugins_dir() -> PathBuf {
+    zeph_plugins::PluginManager::default_plugins_dir()
+}

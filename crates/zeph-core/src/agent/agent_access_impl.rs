@@ -810,6 +810,23 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             }
         })
     }
+
+    // ----- /plugins -----
+
+    fn handle_plugins<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let args_owned = args.to_owned();
+        // PluginManager performs synchronous filesystem I/O (copy, remove_dir_all, read_dir).
+        // Off-load to a blocking thread so the tokio runtime worker is never stalled.
+        let result = self.handle_plugins_as_string(&args_owned);
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || result)
+                .await
+                .map_err(|e| CommandError(format!("plugin task panicked: {e}")))
+        })
+    }
 }
 
 /// Convert `AgentError` to `CommandError` for the trait boundary.

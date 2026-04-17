@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn wilson_zero_observations() {
-        assert_eq!(wilson_lower_bound(0, 0), 0.0);
+        assert!((wilson_lower_bound(0, 0) - 0.0_f64).abs() < f64::EPSILON);
     }
 
     #[test]

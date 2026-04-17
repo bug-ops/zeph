@@ -480,9 +480,9 @@ mod tests {
                 assert_eq!(known_leaves["x"], 42);
             }
             PrefixState::Incomplete => {} // also acceptable
-            other => panic!("unexpected: {other:?}"),
+            other @ PrefixState::Malformed => panic!("unexpected: {other:?}"),
         }
-        let done = p.push(r#"}"#);
+        let done = p.push("}");
         assert!(matches!(done, PrefixState::ValidPrefix { .. }));
     }
 
@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn fixture_malformed_input() {
         let mut p = PartialJsonParser::new();
-        let state = p.push(r#"not-json"#);
+        let state = p.push("not-json");
         assert!(matches!(state, PrefixState::Malformed));
     }
 
@@ -564,10 +564,10 @@ mod tests {
                 assert!(missing_required.contains(&"b".to_string()));
             }
             PrefixState::Incomplete => {} // also acceptable before 'b' is fully parsed
-            other => panic!("unexpected s1: {other:?}"),
+            other @ PrefixState::Malformed => panic!("unexpected s1: {other:?}"),
         }
         // Second push: completes 'b'
-        let s2 = p.push(r#"2}"#);
+        let s2 = p.push("2}");
         match s2 {
             PrefixState::ValidPrefix {
                 known_leaves,

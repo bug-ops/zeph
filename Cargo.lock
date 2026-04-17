@@ -9964,6 +9964,7 @@ dependencies = [
  "zeph-mcp",
  "zeph-memory",
  "zeph-orchestration",
+ "zeph-plugins",
  "zeph-sanitizer",
  "zeph-scheduler",
  "zeph-skills",
@@ -10204,6 +10205,7 @@ dependencies = [
  "zeph-mcp",
  "zeph-memory",
  "zeph-orchestration",
+ "zeph-plugins",
  "zeph-sanitizer",
  "zeph-skills",
  "zeph-subagent",
@@ -10432,6 +10434,24 @@ dependencies = [
  "zeph-memory",
  "zeph-sanitizer",
  "zeph-subagent",
+]
+
+[[package]]
+name = "zeph-plugins"
+version = "0.19.1"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
+ "tracing",
+ "walkdir",
+ "zeph-common",
+ "zeph-config",
+ "zeph-skills",
 ]
 
 [[package]]

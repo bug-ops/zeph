@@ -283,6 +283,57 @@ pub(crate) async fn handle_skill_command(
                 anyhow::bail!("skill \"{name}\" not found in trust database");
             }
         }
+
+        SkillCommand::Invoke { name, args } => {
+            use std::str::FromStr;
+
+            use zeph_common::SkillTrustLevel;
+            use zeph_skills::prompt::{sanitize_skill_text, wrap_quarantined};
+
+            let registry = zeph_skills::registry::SkillRegistry::load(&[managed_dir]);
+
+            // Resolve persisted trust from SQLite. No trust row → Quarantined (fail-closed,
+            // matches `SkillTrustLevel::default`).
+            let trust = {
+                let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
+                store
+                    .load_skill_trust(&name)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .and_then(|r| SkillTrustLevel::from_str(&r.trust_level).ok())
+                    .unwrap_or_default()
+            };
+
+            if trust == SkillTrustLevel::Blocked {
+                anyhow::bail!("skill is blocked by policy: {name}");
+            }
+
+            let raw = registry
+                .get_body(&name)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .to_owned();
+
+            let sanitized = if trust == SkillTrustLevel::Trusted {
+                raw
+            } else {
+                sanitize_skill_text(&raw)
+            };
+            let body = if trust == SkillTrustLevel::Quarantined {
+                wrap_quarantined(&name, &sanitized)
+            } else {
+                sanitized
+            };
+
+            match args {
+                Some(a) => {
+                    let args_safe = sanitize_skill_text(&a);
+                    println!("{body}\n\n<args>\n{args_safe}\n</args>");
+                }
+                None => println!("{body}"),
+            }
+        }
     }
 
     Ok(())

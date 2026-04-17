@@ -645,8 +645,8 @@ mod tests {
         assert!(files.contains(&"src/b.rs".to_string()));
     }
 
-    /// Verifies that inserting the same (file_path, content_hash) twice does not
-    /// produce a duplicate row — the ON CONFLICT(file_path, content_hash) clause
+    /// Verifies that inserting the same (`file_path`, `content_hash`) twice does not
+    /// produce a duplicate row — the `ON CONFLICT(file_path, content_hash)` clause
     /// must perform an UPDATE, not a second INSERT.
     #[tokio::test]
     async fn upsert_same_file_path_and_hash_is_idempotent() {

@@ -1094,6 +1094,15 @@ impl<C: Channel> Agent<C> {
                 .collect();
             (all, active)
         };
+        let trust_map = self.build_skill_trust_map().await;
+
+        // Write the per-turn trust snapshot so SkillInvokeExecutor can resolve trust
+        // without re-querying the store on every tool call.
+        self.skill_state
+            .trust_snapshot
+            .write()
+            .clone_from(&trust_map);
+
         let remaining_skills: Vec<Skill> = all_skills
             .iter()
             .filter(|s| {
@@ -1102,10 +1111,15 @@ impl<C: Channel> Agent<C> {
                     .active_skill_names
                     .contains(&s.name().to_string())
             })
+            .filter(|s| match trust_map.get(s.name()) {
+                Some(zeph_common::SkillTrustLevel::Blocked) => {
+                    tracing::debug!(skill = s.name(), "excluded from catalog: trust=blocked");
+                    false
+                }
+                _ => true,
+            })
             .cloned()
             .collect();
-
-        let trust_map = self.build_skill_trust_map().await;
 
         // Apply the most restrictive trust level among active skills to the executor gate.
         let effective_trust = if self.skill_state.active_skill_names.is_empty() {
@@ -1821,5 +1835,51 @@ mod tests {
             2,
             "partial prefixes must not be treated as policy markers"
         );
+    }
+
+    // ── Blocked-skill catalog filter (GAP-1) ────────────────────────────────
+
+    #[test]
+    fn blocked_skill_excluded_from_catalog_filter() {
+        use std::collections::HashMap;
+        use zeph_common::SkillTrustLevel;
+        use zeph_skills::loader::SkillMeta;
+
+        // Simulate the catalog filter: skills whose trust level is Blocked are dropped.
+        let mut trust_map: HashMap<String, SkillTrustLevel> = HashMap::new();
+        trust_map.insert("blocked-skill".to_owned(), SkillTrustLevel::Blocked);
+        trust_map.insert("allowed-skill".to_owned(), SkillTrustLevel::Trusted);
+
+        // Two minimal SkillMeta stubs.
+        let make_meta = |name: &str| SkillMeta {
+            name: name.to_owned(),
+            description: "desc".to_owned(),
+            compatibility: None,
+            license: None,
+            metadata: vec![],
+            allowed_tools: vec![],
+            requires_secrets: vec![],
+            skill_dir: std::path::PathBuf::new(),
+            source_url: None,
+            git_hash: None,
+            category: None,
+        };
+        let skills = vec![make_meta("blocked-skill"), make_meta("allowed-skill")];
+
+        // Apply the same filter logic used in the catalog-building path.
+        let catalog: Vec<_> = skills
+            .iter()
+            .filter(|s| match trust_map.get(s.name.as_str()) {
+                Some(SkillTrustLevel::Blocked) => false,
+                _ => true,
+            })
+            .collect();
+
+        assert_eq!(
+            catalog.len(),
+            1,
+            "blocked skill must be excluded from catalog"
+        );
+        assert_eq!(catalog[0].name, "allowed-skill");
     }
 }

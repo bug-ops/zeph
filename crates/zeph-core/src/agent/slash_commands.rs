@@ -339,6 +339,80 @@ impl<C: crate::channel::Channel> Agent<C> {
     ///
     /// Used by the `AgentAccess::handle_skills` implementation to satisfy the `Send` bound
     /// on the returned future.
+    /// Handle `/plugins [subcommand] [args]` slash command.
+    ///
+    /// Returns a user-visible string result. This is a sync helper — plugin operations
+    /// are blocking filesystem calls, so they run in the current thread.
+    pub(super) fn handle_plugins_as_string(&self, args: &str) -> String {
+        // Use the canonical default so CLI and TUI always reference the same directory.
+        let plugins_dir = zeph_plugins::PluginManager::default_plugins_dir();
+        // Fall back to the canonical default managed skills dir so the conflict check is
+        // never silently disabled by an empty path (M5 fix).
+        let managed_dir = self
+            .skill_state
+            .managed_dir
+            .clone()
+            .unwrap_or_else(|| zeph_config::defaults::default_vault_dir().join("skills"));
+        let mcp_allowed: Vec<String> = self.mcp.allowed_commands.clone();
+        let mgr = zeph_plugins::PluginManager::new(plugins_dir, managed_dir, mcp_allowed);
+
+        let (subcmd, rest) = args.trim().split_once(' ').unwrap_or((args.trim(), ""));
+        match subcmd {
+            "" | "list" => match mgr.list_installed() {
+                Ok(plugins) if plugins.is_empty() => "No plugins installed.".to_owned(),
+                Ok(plugins) => plugins
+                    .iter()
+                    .map(|p| format!("{} v{} — {}", p.name, p.version, p.description))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                Err(e) => format!("plugin list failed: {e}"),
+            },
+            "add" => {
+                use std::fmt::Write as _;
+                if rest.is_empty() {
+                    return "Usage: /plugins add <source>".to_owned();
+                }
+                match mgr.add(rest.trim()) {
+                    Ok(r) => {
+                        let mut out = format!("Installed plugin \"{}\"", r.name);
+                        if !r.installed_skills.is_empty() {
+                            let _ = write!(out, "\n  Skills: {}", r.installed_skills.join(", "));
+                        }
+                        if !r.mcp_server_ids.is_empty() {
+                            let _ = write!(
+                                out,
+                                "\n  MCP servers (restart required): {}",
+                                r.mcp_server_ids.join(", ")
+                            );
+                        }
+                        out
+                    }
+                    Err(e) => format!("plugin add failed: {e}"),
+                }
+            }
+            "remove" => {
+                use std::fmt::Write as _;
+                if rest.is_empty() {
+                    return "Usage: /plugins remove <name>".to_owned();
+                }
+                match mgr.remove(rest.trim()) {
+                    Ok(r) => {
+                        let mut out = format!("Removed plugin \"{}\"", rest.trim());
+                        if !r.removed_skills.is_empty() {
+                            let _ =
+                                write!(out, "\n  Removed skills: {}", r.removed_skills.join(", "));
+                        }
+                        out
+                    }
+                    Err(e) => format!("plugin remove failed: {e}"),
+                }
+            }
+            other => {
+                format!("Unknown /plugins subcommand: '{other}'. Available: list, add, remove")
+            }
+        }
+    }
+
     pub(super) async fn handle_skills_as_string(
         &mut self,
         subcommand: &str,

@@ -774,4 +774,17 @@ mod tests {
         assert!(gate.is_mcp_tool("test_tool"));
         assert!(!gate.is_mcp_tool("other_tool"));
     }
+
+    // M9: document that the suffix matcher applies to MCP tools ending with
+    // `_invoke_skill` or `_load_skill`. Future MCP tool authors should be aware.
+    #[test]
+    fn invoke_skill_and_load_skill_suffix_match_is_intentional() {
+        // Exact-match branch: native tool IDs are denied.
+        assert!(is_quarantine_denied("invoke_skill"));
+        assert!(is_quarantine_denied("load_skill"));
+        // Suffix-match branch: hypothetical MCP-prefixed versions are also denied.
+        // This is intentional — prevents a renamed MCP wrapper from bypassing the gate.
+        assert!(is_quarantine_denied("foo_invoke_skill"));
+        assert!(is_quarantine_denied("foo_load_skill"));
+    }
 }

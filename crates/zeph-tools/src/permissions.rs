@@ -43,6 +43,8 @@ const READONLY_TOOLS: &[&str] = &[
     "list_directory",
     "web_scrape",
     "fetch",
+    "load_skill",
+    "invoke_skill",
 ];
 
 /// Tool permission policy: maps `tool_id` → ordered list of rules.

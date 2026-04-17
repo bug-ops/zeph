@@ -76,6 +76,10 @@ pub(crate) struct MemoryState {
 
 pub(crate) struct SkillState {
     pub(crate) registry: Arc<RwLock<SkillRegistry>>,
+    /// Per-turn trust snapshot written by `prepare_context` after `build_skill_trust_map`.
+    /// Shared with `SkillInvokeExecutor` so it can resolve trust without hitting `SQLite`
+    /// on every tool call. Refreshed once per turn — stale by at most one turn.
+    pub(crate) trust_snapshot: Arc<RwLock<HashMap<String, zeph_common::SkillTrustLevel>>>,
     pub(crate) skill_paths: Vec<PathBuf>,
     pub(crate) managed_dir: Option<PathBuf>,
     pub(crate) trust_config: crate::config::TrustConfig,
@@ -845,6 +849,7 @@ impl SkillState {
     ) -> Self {
         Self {
             registry,
+            trust_snapshot: Arc::new(RwLock::new(HashMap::new())),
             skill_paths: Vec::new(),
             managed_dir: None,
             trust_config: crate::config::TrustConfig::default(),

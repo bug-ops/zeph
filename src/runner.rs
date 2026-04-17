@@ -375,6 +375,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Skill { command: skill_cmd }) => {
             return handle_skill_command(skill_cmd, cli.config.as_deref()).await;
         }
+        Some(Command::Plugin {
+            command: plugin_cmd,
+        }) => {
+            return crate::commands::plugin::handle_plugin_command(
+                plugin_cmd,
+                cli.config.as_deref(),
+            );
+        }
         Some(Command::Memory { command: mem_cmd }) => {
             return handle_memory_command(mem_cmd, cli.config.as_deref()).await;
         }
@@ -1269,16 +1277,28 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_conversation(conversation_id.0);
     let skill_loader_executor =
         zeph_core::SkillLoaderExecutor::new(std::sync::Arc::clone(&registry));
+    // Pre-allocate trust snapshot Arc shared between the agent's SkillState and
+    // SkillInvokeExecutor — written once per turn by prepare_context, read by the executor.
+    let trust_snapshot: std::sync::Arc<
+        parking_lot::RwLock<std::collections::HashMap<String, zeph_tools::SkillTrustLevel>>,
+    > = std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
+    let skill_invoke_executor = zeph_core::SkillInvokeExecutor::new(
+        std::sync::Arc::clone(&registry),
+        std::sync::Arc::clone(&trust_snapshot),
+    );
     let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
         std::sync::Arc::new(tool_setup.executor);
     let inner_executor =
         zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
             skill_loader_executor,
             zeph_tools::CompositeExecutor::new(
-                memory_executor,
+                skill_invoke_executor,
                 zeph_tools::CompositeExecutor::new(
-                    overflow_executor,
-                    zeph_tools::DynExecutor(base),
+                    memory_executor,
+                    zeph_tools::CompositeExecutor::new(
+                        overflow_executor,
+                        zeph_tools::DynExecutor(base),
+                    ),
                 ),
             ),
         )));
@@ -1547,6 +1567,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_skill_reload(skill_paths.clone(), reload_rx)
     .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())
     .with_trust_config(config.skills.trust.clone())
+    .with_trust_snapshot(trust_snapshot)
     .with_memory(
         std::sync::Arc::clone(&memory),
         conversation_id,

@@ -616,7 +616,8 @@ mod tests {
         let hub_dir = tempfile::tempdir().unwrap();
         let path = hub_dir.path().to_path_buf();
 
-        let mut registry = SkillRegistry::load(&[path.clone()]).with_hub_dirs([path.clone()]);
+        let mut registry =
+            SkillRegistry::load(std::slice::from_ref(&path)).with_hub_dirs([path.clone()]);
         registry.register_hub_dir(path.clone());
         registry.register_hub_dir(path);
 

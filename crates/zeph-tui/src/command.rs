@@ -98,6 +98,10 @@ pub enum TuiCommand {
     MemoryTreeStats,
     // Task registry panel (#2962)
     TaskPanel,
+    // Plugin management (#2806)
+    PluginList,
+    PluginAdd,
+    PluginRemove,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -143,6 +147,7 @@ pub struct CommandEntry {
 /// assert!(registry.iter().any(|e| e.id == "app:quit"));
 /// ```
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn command_registry() -> &'static [CommandEntry] {
     static COMMANDS: &[CommandEntry] = &[
         CommandEntry {
@@ -235,6 +240,27 @@ pub fn command_registry() -> &'static [CommandEntry] {
             category: "view",
             shortcut: None,
             command: TuiCommand::TaskPanel,
+        },
+        CommandEntry {
+            id: "plugin:list",
+            label: "List installed plugins (/plugins list)",
+            category: "plugin",
+            shortcut: None,
+            command: TuiCommand::PluginList,
+        },
+        CommandEntry {
+            id: "plugin:add",
+            label: "Install a plugin (/plugins add <source>)",
+            category: "plugin",
+            shortcut: None,
+            command: TuiCommand::PluginAdd,
+        },
+        CommandEntry {
+            id: "plugin:remove",
+            label: "Remove an installed plugin (/plugins remove <name>)",
+            category: "plugin",
+            shortcut: None,
+            command: TuiCommand::PluginRemove,
         },
     ];
     COMMANDS
@@ -689,7 +715,7 @@ mod tests {
 
     #[test]
     fn registry_has_twelve_commands() {
-        assert_eq!(command_registry().len(), 13);
+        assert_eq!(command_registry().len(), 16);
     }
 
     #[test]

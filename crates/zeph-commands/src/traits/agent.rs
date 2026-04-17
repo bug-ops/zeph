@@ -361,6 +361,20 @@ pub trait AgentAccess: Send {
         &'a mut self,
         input: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>>;
+
+    // ----- /plugins -----
+
+    /// Handle `/plugins [subcommand] [args]` and return a user-visible result.
+    ///
+    /// Subcommands: `list`, `add <source>`, `remove <name>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when a plugin operation fails.
+    fn handle_plugins<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
 }
 
 /// A no-op [`AgentAccess`] implementation.
@@ -554,5 +568,12 @@ impl AgentAccess for NullAgent {
         _input: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
         Box::pin(async { Ok(None) })
+    }
+
+    fn handle_plugins<'a>(
+        &'a mut self,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
     }
 }

@@ -307,7 +307,7 @@ mod tests {
         );
         match verdict {
             VigilVerdict::Flagged { risk, .. } => assert_eq!(risk, VigilRiskLevel::High),
-            _ => panic!("expected Flagged"),
+            VigilVerdict::Clean => panic!("expected Flagged"),
         }
     }
 

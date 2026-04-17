@@ -216,6 +216,22 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Replace the trust snapshot Arc with a pre-allocated one shared with `SkillInvokeExecutor`.
+    ///
+    /// Call this when building the executor chain before `Agent::new_with_registry_arc` so that
+    /// both the executor and the agent share the same `Arc` — the agent writes to it once per
+    /// turn and the executor reads from it without hitting `SQLite`.
+    #[must_use]
+    pub fn with_trust_snapshot(
+        mut self,
+        snapshot: std::sync::Arc<
+            parking_lot::RwLock<std::collections::HashMap<String, zeph_common::SkillTrustLevel>>,
+        >,
+    ) -> Self {
+        self.skill_state.trust_snapshot = snapshot;
+        self
+    }
+
     /// Configure skill matching parameters (disambiguation, two-stage, confusability).
     #[must_use]
     pub fn with_skill_matching_config(

@@ -129,6 +129,7 @@ unicode-normalization = "0.1"
 unicode-width = "0.2"
 url = "2.5"
 uuid = "1.23"
+walkdir = "2.5"
 wiremock = "0.6.5"
 zeroize = { version = "1", default-features = false }
 zeph-a2a = { path = "crates/zeph-a2a", version = "0.19.1" }
@@ -153,6 +154,7 @@ zeph-tools = { path = "crates/zeph-tools", version = "0.19.1" }
 zeph-tui = { path = "crates/zeph-tui", version = "0.19.1" }
 zeph-vault = { path = "crates/zeph-vault", version = "0.19.1" }
 zeph-orchestration = { path = "crates/zeph-orchestration", version = "0.19.1" }
+zeph-plugins = { path = "crates/zeph-plugins", version = "0.19.1" }
 zeph-sanitizer = { path = "crates/zeph-sanitizer", version = "0.19.1" }
 zeph-subagent = { path = "crates/zeph-subagent", version = "0.19.1" }
 
@@ -284,6 +286,7 @@ zeph-sanitizer.workspace = true
 zeph-scheduler = { workspace = true, optional = true }
 zeph-experiments.workspace = true
 zeph-orchestration.workspace = true
+zeph-plugins.workspace = true
 zeph-skills.workspace = true
 zeph-subagent.workspace = true
 zeph-tools.workspace = true

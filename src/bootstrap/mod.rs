@@ -20,6 +20,7 @@ pub use provider::{
 };
 pub use skills::{
     create_embedding_provider, create_skill_matcher, effective_embedding_model, managed_skills_dir,
+    plugins_dir,
 };
 
 use std::path::{Path, PathBuf};
@@ -594,7 +595,21 @@ impl AppBuilder {
         let mut paths: Vec<PathBuf> = self.config.skills.paths.iter().map(PathBuf::from).collect();
         let managed_dir = managed_skills_dir();
         if !paths.contains(&managed_dir) {
-            paths.push(managed_dir);
+            paths.push(managed_dir.clone());
+        }
+        // Append per-plugin skill directories so the registry loads plugin skills at startup.
+        let plugins_dir = plugins_dir();
+        let mgr = zeph_plugins::PluginManager::new(
+            plugins_dir,
+            managed_dir,
+            self.config.mcp.allowed_commands.clone(),
+        );
+        if let Ok(plugin_skill_dirs) = mgr.collect_skill_dirs() {
+            for dir in plugin_skill_dirs {
+                if !paths.contains(&dir) {
+                    paths.push(dir);
+                }
+            }
         }
         paths
     }

@@ -15,6 +15,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to the previous wire format — no rollout risk for existing deployments. Closes
   [#3096](https://github.com/bug-ops/zeph/issues/3096).
 
+- **feat(core): `invoke_skill` tool (`SkillInvokeExecutor`)** — new `invoke_skill` tool that
+  returns a skill body as tool output with trust-aware sanitization. Blocked skills are refused
+  before any body read; non-Trusted bodies pass through `sanitize_skill_text`; Quarantined bodies
+  are additionally wrapped with `wrap_quarantined`. A per-turn trust snapshot
+  (`Arc<RwLock<HashMap>>`) is written by `prepare_context` and read by the executor without
+  re-querying SQLite on every tool call. `invoke_skill` and `load_skill` are added to
+  `QUARANTINE_DENIED` and `READONLY_TOOLS`. CLI subcommand `zeph skill invoke <name> [args]`
+  with the same trust-aware pipeline. Closes [#3105](https://github.com/bug-ops/zeph/issues/3105).
+
+- **feat(plugins): `zeph-plugins` crate + `zeph plugin` CLI** — new `zeph-plugins` crate with
+  `PluginManager` for install/remove/list of plugin packages. Enforces tighten-only config overlay
+  validation at install time (union on `blocked_commands`, intersection on `allowed_commands`, max
+  on `disambiguation_threshold`; keys outside this safelist are rejected with `UnsafeOverlay`).
+  **Note:** runtime application of overlay values to the live config is validated and stored in
+  `plugin.toml` but not yet merged into the running `Config` struct — scheduled for a follow-up PR.
+  MCP allowlist validation, skill name conflict detection (managed, bundled, other-plugin), path
+  traversal defense (canonicalize + `starts_with(root)`), and recursive `.bundled` marker stripping
+  via `walkdir`. CLI subcommand `zeph plugin list|add|remove`. TUI slash command
+  `/plugins list|add|remove` wired through `AgentAccess::handle_plugins` and TUI command palette.
+  Implements [#2806](https://github.com/bug-ops/zeph/issues/2806).
+
 ### Fixed
 
 - **fix(config): make `migrate-config --in-place` fully idempotent** — refactored

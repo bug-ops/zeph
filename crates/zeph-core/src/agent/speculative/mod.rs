@@ -281,8 +281,10 @@ mod tests {
     #[tokio::test]
     async fn dispatch_and_commit_succeeds() {
         let exec: Arc<dyn ErasedToolExecutor> = Arc::new(AlwaysOkExecutor);
-        let mut config = SpeculativeConfig::default();
-        config.mode = SpeculationMode::Decoding;
+        let config = SpeculativeConfig {
+            mode: SpeculationMode::Decoding,
+            ..Default::default()
+        };
         let engine = SpeculationEngine::new(exec, config);
 
         let pred = Prediction {
@@ -299,8 +301,10 @@ mod tests {
     #[tokio::test]
     async fn untrusted_skill_skips_dispatch() {
         let exec: Arc<dyn ErasedToolExecutor> = Arc::new(AlwaysOkExecutor);
-        let mut config = SpeculativeConfig::default();
-        config.mode = SpeculationMode::Decoding;
+        let config = SpeculativeConfig {
+            mode: SpeculationMode::Decoding,
+            ..Default::default()
+        };
         let engine = SpeculationEngine::new(exec, config);
 
         let pred = Prediction {
@@ -320,8 +324,10 @@ mod tests {
     #[tokio::test]
     async fn cancel_for_removes_handle() {
         let exec: Arc<dyn ErasedToolExecutor> = Arc::new(AlwaysOkExecutor);
-        let mut config = SpeculativeConfig::default();
-        config.mode = SpeculationMode::Decoding;
+        let config = SpeculativeConfig {
+            mode: SpeculationMode::Decoding,
+            ..Default::default()
+        };
         let engine = SpeculationEngine::new(exec, config);
 
         let pred = Prediction {

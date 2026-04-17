@@ -30,4 +30,8 @@ pub const QUARANTINE_DENIED: &[&str] = &[
     "fetch",
     // Memory persistence
     "memory_save",
+    // Skill body retrieval — denied for Quarantined active skills to prevent
+    // side-channel injection via dynamically loaded skill bodies.
+    "load_skill",
+    "invoke_skill",
 ];

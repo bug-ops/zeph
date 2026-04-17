@@ -213,6 +213,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: SkillCommand,
     },
+    /// Manage plugins (bundled skills + MCP servers)
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
     /// Manage memory snapshots
     Memory {
         #[command(subcommand)]
@@ -397,6 +402,30 @@ pub(crate) enum SkillCommand {
     /// Unblock a skill (sets to quarantined)
     Unblock {
         /// Skill name
+        name: String,
+    },
+    /// Preview a skill body with trust-aware sanitization (same pipeline as the agent)
+    Invoke {
+        /// Skill name
+        name: String,
+        /// Optional arguments appended as <args>…</args> block
+        #[arg(long)]
+        args: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum PluginCommand {
+    /// List installed plugins
+    List,
+    /// Install a plugin from a local directory path
+    Add {
+        /// Local directory path to the plugin root (must contain plugin.toml)
+        source: String,
+    },
+    /// Remove an installed plugin
+    Remove {
+        /// Plugin name
         name: String,
     },
 }
