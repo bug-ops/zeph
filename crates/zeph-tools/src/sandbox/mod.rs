@@ -93,8 +93,9 @@ pub struct SandboxPolicy {
 
 impl SandboxPolicy {
     /// Canonicalize all path fields so that symlinks and `..` components cannot bypass
-    /// the policy. Paths that cannot be resolved (e.g., non-existent) are dropped
-    /// silently — callers must ensure paths exist before adding them to the policy.
+    /// the policy. Paths that cannot be resolved (e.g., non-existent) are dropped and
+    /// logged at WARN level with the OS error — callers should ensure paths exist
+    /// before adding them to the policy.
     #[must_use]
     pub fn canonicalized(mut self) -> Self {
         self.allow_read = canonicalize_paths(self.allow_read);
@@ -107,16 +108,25 @@ impl SandboxPolicy {
 fn canonicalize_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     paths
         .into_iter()
-        .filter_map(|p| {
-            let canonical = std::fs::canonicalize(&p).ok()?;
-            if canonical != p {
-                tracing::debug!(
-                    "sandbox: resolved symlink {} → {}",
-                    p.display(),
-                    canonical.display()
-                );
+        .filter_map(|p| match std::fs::canonicalize(&p) {
+            Ok(canonical) => {
+                if canonical != p {
+                    tracing::debug!(
+                        "sandbox: resolved symlink {} → {}",
+                        p.display(),
+                        canonical.display()
+                    );
+                }
+                Some(canonical)
             }
-            Some(canonical)
+            Err(e) => {
+                tracing::warn!(
+                    path = %p.display(),
+                    error = %e,
+                    "sandbox: allow-list path could not be canonicalized and was dropped from policy"
+                );
+                None
+            }
         })
         .collect()
 }
@@ -258,12 +268,10 @@ pub fn build_sandbox(strict: bool) -> Result<Box<dyn Sandbox>, SandboxError> {
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
-    use super::*;
-
     #[test]
     #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "sandbox"))))]
     fn build_sandbox_strict_fails_when_unsupported() {
+        use super::{SandboxError, build_sandbox};
         let err = build_sandbox(true).expect_err("strict must fail on unsupported platform");
         assert!(matches!(err, SandboxError::Unavailable { .. }));
     }
@@ -271,7 +279,31 @@ mod tests {
     #[test]
     #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "sandbox"))))]
     fn build_sandbox_nonstrict_falls_back_to_noop() {
+        use super::build_sandbox;
         let sb = build_sandbox(false).expect("noop fallback ok");
         assert_eq!(sb.name(), "noop");
+    }
+
+    #[test]
+    fn canonicalize_paths_drops_nonexistent_path() {
+        use super::{SandboxPolicy, SandboxProfile};
+        use std::path::PathBuf;
+
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::Workspace,
+            allow_read: vec![PathBuf::from(
+                "/this/path/does/not/exist/zeph-test-sentinel",
+            )],
+            allow_write: vec![],
+            allow_network: false,
+            allow_exec: vec![],
+            env_inherit: vec![],
+        }
+        .canonicalized();
+
+        assert!(
+            policy.allow_read.is_empty(),
+            "non-existent path must be dropped by canonicalized()"
+        );
     }
 }

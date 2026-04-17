@@ -3247,7 +3247,7 @@ fn apply_cache_breakpoint_propagates_one_hour_ttl() {
                 if let AnthropicContentBlock::Text { cache_control, .. } = b {
                     cache_control
                         .as_ref()
-                        .map_or(false, |cc| cc.ttl == Some(CacheTtl::OneHour))
+                        .is_some_and(|cc| cc.ttl == Some(CacheTtl::OneHour))
                 } else {
                     false
                 }

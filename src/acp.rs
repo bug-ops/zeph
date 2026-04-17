@@ -1473,12 +1473,6 @@ mod tests {
         };
         assert!(doc_cfg.rag_enabled);
         assert_eq!(doc_cfg.top_k, 7);
-
-        // Closure-based compile-time check for GraphConfig: the closure is never called,
-        // so no Default construction takes place, but the field accesses are type-checked.
-        let _check_graph = |g: &zeph_core::config::GraphConfig| {
-            let _: bool = g.enabled;
-        };
     }
 
     // Compile-time regression test for issue #1643: anomaly_config and orchestration_config

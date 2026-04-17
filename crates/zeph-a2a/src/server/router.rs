@@ -453,9 +453,7 @@ mod tests {
         let counters = Arc::new(Mutex::new(HashMap::new()));
         {
             let mut map = counters.lock().await;
-            let stale = Instant::now()
-                .checked_sub(Duration::from_secs(120))
-                .unwrap();
+            let stale = Instant::now().checked_sub(Duration::from_mins(2)).unwrap();
             for i in 0..MAX_RATE_LIMIT_ENTRIES {
                 let ip = ip_from_index(i);
                 map.insert(ip, (1, stale));
@@ -473,9 +471,7 @@ mod tests {
     #[tokio::test]
     async fn eviction_removes_stale_entries() {
         let counters = Arc::new(Mutex::new(HashMap::new()));
-        let stale_time = Instant::now()
-            .checked_sub(Duration::from_secs(120))
-            .unwrap();
+        let stale_time = Instant::now().checked_sub(Duration::from_mins(2)).unwrap();
         let fresh_time = Instant::now();
 
         let stale_ip = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));

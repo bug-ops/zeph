@@ -347,7 +347,7 @@ mod tests {
         let token = Ibct::issue(
             "task-123",
             "https://agent.example.com",
-            Duration::from_secs(300),
+            Duration::from_mins(5),
             &key,
         )
         .unwrap();
@@ -365,7 +365,7 @@ mod tests {
         let token = Ibct::issue(
             "task-123",
             "https://agent.example.com",
-            Duration::from_secs(300),
+            Duration::from_mins(5),
             &key,
         )
         .unwrap();
@@ -382,7 +382,7 @@ mod tests {
         let token = Ibct::issue(
             "task-123",
             "https://agent.example.com",
-            Duration::from_secs(300),
+            Duration::from_mins(5),
             &key,
         )
         .unwrap();
@@ -399,7 +399,7 @@ mod tests {
         let mut token = Ibct::issue(
             "task-123",
             "https://agent.example.com",
-            Duration::from_secs(300),
+            Duration::from_mins(5),
             &key,
         )
         .unwrap();
@@ -417,7 +417,7 @@ mod tests {
         let token = Ibct::issue(
             "task-123",
             "https://agent.example.com",
-            Duration::from_secs(300),
+            Duration::from_mins(5),
             &key,
         )
         .unwrap();
@@ -438,7 +438,7 @@ mod tests {
         let token = Ibct::issue(
             "task-abc",
             "https://agent.example.com",
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             &key,
         )
         .unwrap();
@@ -506,7 +506,7 @@ mod tests {
         let token = Ibct::issue(
             "task-1",
             "https://agent.example.com",
-            Duration::from_secs(300),
+            Duration::from_mins(5),
             &old_key,
         )
         .unwrap();

@@ -186,7 +186,7 @@ mod tests {
         // Force-close by expiring the window.
         {
             let mut guard = cb.circuit_open_until.lock().unwrap();
-            *guard = Some(Instant::now() - Duration::from_secs(1));
+            *guard = Instant::now().checked_sub(Duration::from_secs(1));
         }
         assert!(!cb.is_open());
 
@@ -207,7 +207,7 @@ mod tests {
         // Expire the back-off window.
         {
             let mut guard = cb.circuit_open_until.lock().unwrap();
-            *guard = Some(Instant::now() - Duration::from_secs(1));
+            *guard = Instant::now().checked_sub(Duration::from_secs(1));
         }
         cb.maybe_close_circuit();
         assert!(!cb.is_open(), "circuit should close after back-off expires");

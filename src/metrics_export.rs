@@ -994,7 +994,7 @@ mod tests {
 
         // These calls must not panic.
         recorder.observe_llm_latency(std::time::Duration::from_millis(100));
-        recorder.observe_turn_duration(std::time::Duration::from_millis(5000));
+        recorder.observe_turn_duration(std::time::Duration::from_secs(5));
         recorder.observe_tool_execution(std::time::Duration::from_millis(50));
     }
 }

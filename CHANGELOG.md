@@ -38,6 +38,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **fix(sandbox): emit WARN log when canonicalize_paths drops an unresolvable path** (#3117) —
+  `SandboxPolicy::canonicalized` now logs `tracing::warn!` with `path` and `error` fields before
+  silently dropping paths that fail `fs::canonicalize` (ENOENT, EACCES, ELOOP, etc.).
+  Previously the drop was silent, making misconfigured allow-lists impossible to diagnose.
+  Updated doc comment on `SandboxPolicy::canonicalized` to reflect the new behaviour.
+  Added unit test `canonicalize_paths_drops_nonexistent_path` in `zeph-tools`.
+
+- **fix(clippy): resolve all `--all-targets` violations across 6 crates and binary** (#3125) —
+  mechanical lint fixes: `map_or(false, …)` → `is_some_and`, `Duration::from_secs(N*60)` →
+  `Duration::from_mins`, `from_millis(N000)` → `from_secs`, unused `use super::*` import,
+  doc-markdown bare identifiers wrapped in backticks, `&[x.clone()]` → `std::slice::from_ref`,
+  `_handle` field renamed to `guard` (RAII semantics), `assert!(CONST > 0)` → `const { assert! }`,
+  underscore-prefixed binding used in test, no-effect closure binding. Affected files:
+  `crates/zeph-llm`, `crates/zeph-tools`, `crates/zeph-a2a`, `crates/zeph-index`,
+  `crates/zeph-skills`, `src/`.
+
 - **fix(config): make `migrate-config --in-place` fully idempotent** — refactored
   `merge_table_commented` to collect comment lines and append them via raw-string guards
   scoped to the target section body. Removed `append_comment_to_table_suffix` which

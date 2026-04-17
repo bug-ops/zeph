@@ -82,7 +82,7 @@ mod tests {
     use opentelemetry_sdk::trace::{SpanData, SpanProcessor};
     use std::sync::{Arc, Mutex};
 
-    /// Minimal no-op SpanProcessor that captures the last span passed to on_end.
+    /// Minimal no-op `SpanProcessor` that captures the last span passed to `on_end`.
     #[derive(Debug, Default)]
     struct CapturingProcessor {
         captured: Arc<Mutex<Option<SpanData>>>,
@@ -109,7 +109,7 @@ mod tests {
         }
     }
 
-    /// Build a minimal SpanData with given span attributes, no events.
+    /// Build a minimal `SpanData` with given span attributes, no events.
     fn make_span_data(attrs: Vec<KeyValue>) -> SpanData {
         use opentelemetry::trace::{
             SpanContext, SpanId, SpanKind, TraceFlags, TraceId, TraceState,
@@ -138,7 +138,7 @@ mod tests {
         }
     }
 
-    /// String attribute containing a secret pattern is scrubbed after on_end.
+    /// String attribute containing a secret pattern is scrubbed after `on_end`.
     #[test]
     fn string_attribute_with_secret_is_scrubbed() {
         let captured = Arc::new(Mutex::new(None));

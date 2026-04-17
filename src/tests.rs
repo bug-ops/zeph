@@ -375,7 +375,7 @@ fn agent_task_processor_construction() {
     let processor = AgentTaskProcessor {
         loopback_handle: std::sync::Arc::new(tokio::sync::Mutex::new(handle)),
         sanitizer,
-        drain_timeout: std::time::Duration::from_millis(30_000),
+        drain_timeout: std::time::Duration::from_secs(30),
     };
     assert!(std::sync::Arc::strong_count(&processor.loopback_handle) == 1);
 }

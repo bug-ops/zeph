@@ -123,7 +123,7 @@ impl Clone for CandleProvider {
                 tx: self.worker.tx.clone(),
                 inference_timeout: self.worker.inference_timeout,
                 // None on clones: the original InferenceWorker owns the JoinHandle.
-                _handle: None,
+                guard: None,
             },
             tokenizer: std::sync::Arc::clone(&self.tokenizer),
             eos_token_id: self.eos_token_id,

@@ -45,9 +45,10 @@ pub(crate) struct InferenceWorker {
     pub tx: tokio::sync::mpsc::Sender<InferenceRequest>,
     pub inference_timeout: Duration,
     /// `Some` on the original worker; `None` on all clones (they share the same channel).
-    /// The task exits naturally when all `Sender` clones are dropped — `_handle` exists only
+    /// The task exits naturally when all `Sender` clones are dropped — `guard` exists only
     /// to prevent premature abort, not for join.
-    pub(super) _handle: Option<tokio::task::JoinHandle<()>>,
+    #[allow(dead_code)]
+    pub(super) guard: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl InferenceWorker {
@@ -66,7 +67,7 @@ impl InferenceWorker {
         Self {
             tx,
             inference_timeout,
-            _handle: Some(handle),
+            guard: Some(handle),
         }
     }
 }
@@ -126,7 +127,7 @@ mod tests {
 
     #[test]
     fn default_inference_timeout_is_nonzero() {
-        assert!(DEFAULT_INFERENCE_TIMEOUT_SECS > 0);
+        const { assert!(DEFAULT_INFERENCE_TIMEOUT_SECS > 0) };
     }
 
     /// Verify that the oneshot channel round-trip in `InferenceRequest` compiles and
@@ -173,12 +174,12 @@ mod tests {
             }
         });
 
-        let (_reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         drop(reply_rx); // drop receiver before worker sends
 
         let req = InferenceRequest {
             messages: vec![],
-            reply: _reply_tx,
+            reply: reply_tx,
         };
         // Send succeeds — worker receives it and handles the dropped receiver gracefully.
         req_tx
@@ -198,8 +199,8 @@ mod tests {
         let worker = InferenceWorker {
             tx: tx.clone(),
             inference_timeout: Duration::from_secs(1),
-            _handle: None,
+            guard: None,
         };
-        assert!(worker._handle.is_none());
+        assert!(worker.guard.is_none());
     }
 }
