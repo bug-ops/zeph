@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **fix(config): make `migrate-config --in-place` fully idempotent** — refactored
+  `merge_table_commented` to collect comment lines and append them via raw-string guards
+  scoped to the target section body. Removed `append_comment_to_table_suffix` which
+  misused `toml_edit`'s `table.decor().suffix()` API (always empty after a write→re-parse
+  roundtrip), causing 45 entries re-added on every subsequent run and section-header
+  inline comment corruption. Added `section_body()` helper to prevent false-positive
+  cross-section suppression. Closes [#3116](https://github.com/bug-ops/zeph/issues/3116).
+
+- **chore(deps): remove stale RUSTSEC-2026-0097 ignore entry from `deny.toml`** —
+  advisory was patched in rand 0.8.6 (landed in #3104); the ignore entry and its
+  incorrect comment (claiming rand ≥0.9.3 was needed) are now removed.
+  Closes [#3113](https://github.com/bug-ops/zeph/issues/3113).
+
 ### Performance
 
 - **perf(orchestration): cache forward adjacency in `CascadeDetector`** — eliminates per-call

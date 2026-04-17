@@ -7,7 +7,7 @@
 //! Missing sections and keys are added as `# key = default_value` comments so users can discover
 //! and enable them without hunting through documentation.
 
-use toml_edit::{Array, DocumentMut, Item, RawString, Table, Value};
+use toml_edit::{Array, DocumentMut, Item, Table, Value};
 
 /// Canonical section ordering for top-level keys in the output document.
 static CANONICAL_ORDER: &[&str] = &[
@@ -111,6 +111,9 @@ impl ConfigMigrator {
 
         let mut added_count = 0usize;
         let mut sections_added: Vec<String> = Vec::new();
+        // Collected scalar/sub-table comment lines to insert after rendering.
+        // Each entry: (section_key, comment_line).
+        let mut pending_comments: Vec<(String, String)> = Vec::new();
 
         // Walk the reference top-level keys.
         for (key, ref_item) in reference_doc.as_table() {
@@ -119,7 +122,10 @@ impl ConfigMigrator {
                 if user_doc.contains_key(key) {
                     // Section exists — merge missing sub-keys.
                     if let Some(user_table) = user_doc.get_mut(key).and_then(Item::as_table_mut) {
-                        added_count += merge_table_commented(user_table, ref_table, key);
+                        let (n, comments) =
+                            merge_table_commented(user_table, ref_table, key, user_toml);
+                        added_count += n;
+                        pending_comments.extend(comments);
                     }
                 } else {
                     // Entire section is missing — record for textual append after rendering.
@@ -148,8 +154,16 @@ impl ConfigMigrator {
         // Render the user doc as-is first.
         let user_str = user_doc.to_string();
 
-        // Append missing sections as raw commented text at the end.
+        // Insert collected scalar/sub-table comment lines via raw text operations.
+        // This avoids toml_edit decor roundtrip loss — guards check the rendered string.
         let mut output = user_str;
+        for (section_key, comment_line) in &pending_comments {
+            if !section_body(&output, section_key).contains(comment_line.trim()) {
+                output = insert_after_section(&output, section_key, comment_line);
+            }
+        }
+
+        // Append missing sections as raw commented text at the end.
         for key in &sections_added {
             if let Some(scalar_key) = key.strip_prefix("__scalar__") {
                 if let Some(ref_item) = reference_doc.get(scalar_key) {
@@ -189,9 +203,17 @@ impl ConfigMigrator {
 
 /// Merge missing keys from `ref_table` into `user_table` as commented-out entries.
 ///
-/// Returns the number of keys added.
-fn merge_table_commented(user_table: &mut Table, ref_table: &Table, section_key: &str) -> usize {
+/// Returns `(count, comment_lines)` where `comment_lines` is a list of
+/// `(section_key, comment_line)` pairs to be inserted into the rendered output.
+/// Using raw-string insertion avoids `toml_edit` decor roundtrip loss.
+fn merge_table_commented(
+    user_table: &mut Table,
+    ref_table: &Table,
+    section_key: &str,
+    user_toml: &str,
+) -> (usize, Vec<(String, String)>) {
     let mut count = 0usize;
+    let mut comments: Vec<(String, String)> = Vec::new();
     for (key, ref_item) in ref_table {
         if ref_item.is_table() {
             if user_table.contains_key(key) {
@@ -201,22 +223,19 @@ fn merge_table_commented(user_table: &mut Table, ref_table: &Table, section_key:
                 );
                 if let (Some(user_sub_table), Some(ref_sub_table)) = pair {
                     let sub_key = format!("{section_key}.{key}");
-                    count += merge_table_commented(user_sub_table, ref_sub_table, &sub_key);
+                    let (n, c) =
+                        merge_table_commented(user_sub_table, ref_sub_table, &sub_key, user_toml);
+                    count += n;
+                    comments.extend(c);
                 }
             } else if let Some(ref_sub_table) = ref_item.as_table() {
-                // Sub-table missing from user config — append as commented block.
+                // Sub-table missing from user config — collect as raw commented block.
                 let dotted = format!("{section_key}.{key}");
                 let marker = format!("# [{dotted}]");
-                let existing = user_table
-                    .decor()
-                    .suffix()
-                    .and_then(RawString::as_str)
-                    .unwrap_or("");
-                if !existing.contains(&marker) {
+                if !user_toml.contains(&marker) {
                     let block = commented_table_block(&dotted, ref_sub_table);
                     if !block.is_empty() {
-                        let new_suffix = format!("{existing}\n{block}");
-                        user_table.decor_mut().set_suffix(new_suffix);
+                        comments.push((section_key.to_owned(), format!("\n{block}")));
                         count += 1;
                     }
                 }
@@ -232,28 +251,34 @@ fn merge_table_commented(user_table: &mut Table, ref_table: &Table, section_key:
                     .unwrap_or_default();
                 if !raw_value.is_empty() {
                     let comment_line = format!("# {key} = {raw_value}\n");
-                    append_comment_to_table_suffix(user_table, &comment_line);
-                    count += 1;
+                    // Scope the guard to the target section body so that an identical key
+                    // name in another section does not suppress this insertion.
+                    if !section_body(user_toml, section_key).contains(comment_line.trim()) {
+                        comments.push((section_key.to_owned(), comment_line));
+                        count += 1;
+                    }
                 }
             }
         }
     }
-    count
+    (count, comments)
 }
 
-/// Append a comment line to a table's trailing whitespace/decor.
-fn append_comment_to_table_suffix(table: &mut Table, comment_line: &str) {
-    let existing: String = table
-        .decor()
-        .suffix()
-        .and_then(RawString::as_str)
-        .unwrap_or("")
-        .to_owned();
-    // Only append if this exact comment_line is not already present (idempotency).
-    if !existing.contains(comment_line.trim()) {
-        let new_suffix = format!("{existing}{comment_line}");
-        table.decor_mut().set_suffix(new_suffix);
-    }
+/// Return the body of `[section]` in `doc` — the text between the section header line
+/// and the next top-level `[...]` header (or end of document).
+///
+/// Used to scope idempotency guards to a single section so that a comment present in
+/// one section does not suppress insertion into a different section with the same key name.
+fn section_body<'a>(doc: &'a str, section: &str) -> &'a str {
+    let header = format!("[{section}]");
+    let Some(section_start) = doc.find(&header) else {
+        return "";
+    };
+    let body_start = section_start + header.len();
+    let body_end = doc[body_start..]
+        .find("\n[")
+        .map_or(doc.len(), |r| body_start + r);
+    &doc[body_start..body_end]
 }
 
 /// Insert `text` after the last line belonging to `[section_name]` and before the next
@@ -3097,5 +3122,76 @@ trust_level = "untrusted"
         let second = migrate_otel_filter(&first.output).unwrap();
         assert_eq!(second.added_count, 0, "second run must not double-append");
         assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn config_migrator_does_not_suppress_duplicate_key_across_sections() {
+        // `enabled` appears as a live key in [telemetry]. The migrator must still add
+        // `# enabled = ...` as a comment hint inside other sections that are missing it,
+        // rather than globally suppressing it because [telemetry] already has `enabled`.
+        let migrator = ConfigMigrator::new();
+        let src = "[telemetry]\nenabled = true\n\n[security]\n[security.content_isolation]\n";
+        let result = migrator.migrate(src).expect("migrate");
+        // [security.content_isolation] should receive its own `# enabled = ...` hint
+        // even though `enabled` exists in [telemetry].
+        let sec_body_start = result
+            .output
+            .find("[security.content_isolation]")
+            .unwrap_or(0);
+        let sec_body = &result.output[sec_body_start..];
+        let next_header = sec_body[1..].find("\n[").map_or(sec_body.len(), |p| p + 1);
+        let sec_slice = &sec_body[..next_header];
+        assert!(
+            sec_slice.contains("# enabled"),
+            "[security.content_isolation] body must contain `# enabled` hint; got: {sec_slice:?}"
+        );
+    }
+
+    #[test]
+    fn config_migrator_idempotent_on_realistic_config() {
+        // Regression test for #3116: second run must add 0 entries and produce identical output.
+        let base = r#"
+[agent]
+name = "Zeph"
+
+[memory]
+db_path = "~/.zeph/memory.db"
+soft_compaction_threshold = 0.6
+
+[index]
+max_chunks = 12
+
+[tools]
+[tools.shell]
+allow_list = []
+
+[telemetry]
+enabled = false
+
+[security]
+[security.content_isolation]
+enabled = true
+"#;
+        let migrator = ConfigMigrator::new();
+        let first = migrator.migrate(base).expect("first migrate");
+        let second = migrator.migrate(&first.output).expect("second migrate");
+        assert_eq!(
+            second.added_count, 0,
+            "second run of ConfigMigrator::migrate must add 0 entries, got {}",
+            second.added_count
+        );
+        assert_eq!(
+            first.output, second.output,
+            "output must be identical on second run"
+        );
+        // Verify no section-header inline comment corruption.
+        for line in first.output.lines() {
+            if line.starts_with('[') && !line.starts_with("[[") {
+                assert!(
+                    !line.contains('#'),
+                    "section header must not have inline comment: {line:?}"
+                );
+            }
+        }
     }
 }

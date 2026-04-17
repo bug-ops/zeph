@@ -13,9 +13,7 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # rustls-pemfile unmaintained (RUSTSEC-2025-0134, via qdrant-client -> tonic 0.12)
 # Blocked on qdrant/rust-client#255 (tonic 0.14 upgrade removes rustls-pemfile)
 # number_prefix unmaintained (via indicatif -> hf-hub, candle transitive dep)
-# rand 0.8.5 unsound with custom logger (RUSTSEC-2026-0097, via age v0.11.2)
-# Blocked on age upgrading to rand >=0.9.3; we do not use rand::rng() in any logger
-ignore = ["RUSTSEC-2025-0134", "RUSTSEC-2024-0436", "RUSTSEC-2026-0097"]
+ignore = ["RUSTSEC-2025-0134", "RUSTSEC-2024-0436"]
 
 [licenses]
 confidence-threshold = 0.93
