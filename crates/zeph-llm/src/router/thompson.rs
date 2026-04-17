@@ -478,6 +478,31 @@ mod tests {
         );
     }
 
+    /// Verifies that a 429 rate-limit error causes the beta distribution to shift by 2
+    /// (one from the normal failure path + one extra penalty for rate-limit).
+    ///
+    /// This mirrors `record_availability(false, latency)` followed by
+    /// `record_availability(false, 0)` in the router's chat dispatch on `is_rate_limited()`.
+    #[test]
+    fn rate_limited_error_increments_beta_by_two() {
+        let mut state = ThompsonState::default();
+        // Simulate the two record_availability(false) calls that happen on a 429 error.
+        state.update("provider", false); // normal failure
+        state.update("provider", false); // extra penalty for rate-limit
+        let dist = state.get_distribution("provider");
+        // Default prior: beta = 1.0; after two failures: beta = 3.0.
+        assert!(
+            (dist.beta - 3.0).abs() < f64::EPSILON,
+            "expected beta=3.0 after two failures, got {}",
+            dist.beta
+        );
+        assert!(
+            (dist.alpha - 1.0).abs() < f64::EPSILON,
+            "alpha must remain unchanged at 1.0, got {}",
+            dist.alpha
+        );
+    }
+
     #[test]
     fn load_clamps_out_of_range_values() {
         let dir = tempfile::tempdir().unwrap();

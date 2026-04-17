@@ -183,8 +183,8 @@ impl CodeStore {
             sql!("INSERT INTO chunk_metadata \
              (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type, entity_name) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(qdrant_id) DO UPDATE SET \
-               file_path = excluded.file_path, content_hash = excluded.content_hash, \
+             ON CONFLICT(file_path, content_hash) DO UPDATE SET \
+               qdrant_id = excluded.qdrant_id, \
                line_start = excluded.line_start, line_end = excluded.line_end, \
                language = excluded.language, node_type = excluded.node_type, \
                entity_name = excluded.entity_name"),
@@ -262,8 +262,8 @@ impl CodeStore {
                 sql!("INSERT INTO chunk_metadata \
                  (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type, entity_name) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
-                 ON CONFLICT(qdrant_id) DO UPDATE SET \
-                   file_path = excluded.file_path, content_hash = excluded.content_hash, \
+                 ON CONFLICT(file_path, content_hash) DO UPDATE SET \
+                   qdrant_id = excluded.qdrant_id, \
                    line_start = excluded.line_start, line_end = excluded.line_end, \
                    language = excluded.language, node_type = excluded.node_type, \
                    entity_name = excluded.entity_name"),
@@ -643,6 +643,60 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert!(files.contains(&"src/a.rs".to_string()));
         assert!(files.contains(&"src/b.rs".to_string()));
+    }
+
+    /// Verifies that inserting the same (file_path, content_hash) twice does not
+    /// produce a duplicate row — the ON CONFLICT(file_path, content_hash) clause
+    /// must perform an UPDATE, not a second INSERT.
+    #[tokio::test]
+    async fn upsert_same_file_path_and_hash_is_idempotent() {
+        let pool = setup_pool().await;
+
+        for i in 0..2_u32 {
+            zeph_db::query(sql!(
+                "INSERT INTO chunk_metadata \
+                 (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(file_path, content_hash) DO UPDATE SET \
+                   qdrant_id = excluded.qdrant_id, \
+                   line_start = excluded.line_start, line_end = excluded.line_end, \
+                   language = excluded.language, node_type = excluded.node_type, \
+                   entity_name = excluded.entity_name"
+            ))
+            .bind(format!("q{i}"))
+            .bind("src/lib.rs")
+            .bind("dedup_hash")
+            .bind(1_i64)
+            .bind(5_i64)
+            .bind("rust")
+            .bind("function_item")
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let count: (i64,) = zeph_db::query_as(sql!(
+            "SELECT COUNT(*) FROM chunk_metadata \
+             WHERE file_path = 'src/lib.rs' AND content_hash = 'dedup_hash'"
+        ))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(count.0, 1, "duplicate upsert must not produce a second row");
+
+        // The second upsert must have updated qdrant_id to the latest value.
+        let qdrant_id: (String,) = zeph_db::query_as(sql!(
+            "SELECT qdrant_id FROM chunk_metadata \
+             WHERE file_path = 'src/lib.rs' AND content_hash = 'dedup_hash'"
+        ))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            qdrant_id.0, "q1",
+            "qdrant_id must reflect the latest upsert"
+        );
     }
 
     #[tokio::test]

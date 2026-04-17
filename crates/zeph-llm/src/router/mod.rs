@@ -1358,6 +1358,9 @@ impl LlmProvider for RouterProvider {
                             false,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                         );
+                        if e.is_rate_limited() {
+                            router.record_availability(p.name(), false, 0);
+                        }
                         if let Some(ref tx) = status_tx {
                             let _ = tx.send(format!("router: {} failed, falling back", p.name()));
                         }
@@ -1427,6 +1430,9 @@ impl LlmProvider for RouterProvider {
                             false,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                         );
+                        if e.is_rate_limited() {
+                            router.record_availability(p.name(), false, 0);
+                        }
                         if let Some(ref tx) = status_tx {
                             let _ = tx.send(format!("router: {} failed, falling back", p.name()));
                         }
@@ -1700,6 +1706,9 @@ impl LlmProvider for RouterProvider {
                             false,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                         );
+                        if e.is_rate_limited() {
+                            router.record_availability(p.name(), false, 0);
+                        }
                         if let Some(ref tx) = status_tx {
                             let _ = tx.send(format!(
                                 "router: {} tool call failed, falling back",
