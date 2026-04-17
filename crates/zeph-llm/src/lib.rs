@@ -103,5 +103,6 @@ pub use claude::{ThinkingConfig, ThinkingEffort};
 pub use error::LlmError;
 pub use extractor::Extractor;
 pub use gemini::ThinkingLevel as GeminiThinkingLevel;
-pub use provider::{ChatStream, LlmProvider, StreamChunk, ThinkingBlock};
+pub use provider::{ChatExtras, ChatStream, LlmProvider, StreamChunk, ThinkingBlock};
+pub use router::coe::{CoeConfig, CoeMetrics, CoeRouter};
 pub use stt::{SpeechToText, Transcription};

@@ -163,6 +163,7 @@ impl Default for Config {
                 summary_model: None,
                 summary_provider: None,
                 complexity_routing: None,
+                coe: None,
             },
             skills: SkillsConfig {
                 paths: default_skill_paths(),

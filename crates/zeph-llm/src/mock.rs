@@ -42,6 +42,8 @@ pub struct MockProvider {
     pub embed_call_count: Arc<std::sync::atomic::AtomicU64>,
     /// Milliseconds to sleep inside `embed()` before returning. Used to simulate slow providers.
     pub embed_delay_ms: u64,
+    /// Fixed entropy value returned by `chat_with_extras()`. `None` returns `ChatExtras::default()`.
+    pub fixed_entropy: Option<f64>,
 }
 
 impl Default for MockProvider {
@@ -63,6 +65,7 @@ impl Default for MockProvider {
             embed_invalid_input: false,
             embed_call_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             embed_delay_ms: 0,
+            fixed_entropy: None,
         }
     }
 }
@@ -161,6 +164,28 @@ impl MockProvider {
         self
     }
 
+    /// Set a fixed entropy value returned by `chat_with_extras()`.
+    ///
+    /// Required for unit tests that drive `CoE` thresholds without mocking the HTTP layer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::mock::MockProvider;
+    /// use zeph_llm::provider::LlmProvider;
+    ///
+    /// # tokio_test::block_on(async {
+    /// let provider = MockProvider::default().with_entropy(0.9);
+    /// let (_, extras) = provider.chat_with_extras(&[]).await.unwrap();
+    /// assert_eq!(extras.entropy, Some(0.9));
+    /// # });
+    /// ```
+    #[must_use]
+    pub fn with_entropy(mut self, entropy: f64) -> Self {
+        self.fixed_entropy = Some(entropy);
+        self
+    }
+
     /// Enable native `tool_use` support with a pre-configured sequence of `ChatResponse`
     /// values returned from `chat_with_tools()`.
     ///
@@ -204,6 +229,18 @@ impl LlmProvider for MockProvider {
         } else {
             Ok(responses.pop_front().expect("non-empty"))
         }
+    }
+
+    async fn chat_with_extras(
+        &self,
+        messages: &[Message],
+    ) -> Result<(String, crate::provider::ChatExtras), crate::LlmError> {
+        let text = self.chat(messages).await?;
+        let extras = match self.fixed_entropy {
+            Some(e) => crate::provider::ChatExtras::with_entropy(e),
+            None => crate::provider::ChatExtras::default(),
+        };
+        Ok((text, extras))
     }
 
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, crate::LlmError> {

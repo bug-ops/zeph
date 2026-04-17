@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **feat(orchestration): AdaptOrch topology advisor** — 16-arm Thompson Beta-bandit that classifies
+  goals into `TaskClass` variants and samples `TopologyHint` (Sequential / Parallel / Cascade /
+  Adaptive) to inject into the planner prompt. Outcomes are recorded synchronously; state persists
+  to disk on graceful shutdown. Enabled via `[orchestration.adaptorch]` config block.
+  Closes #2434.
+- **feat(llm): Collaborative Entropy (`CoE`) routing** — per-call `ChatExtras { entropy }` returned
+  by `chat_with_extras()` for all providers (OpenAI, Compatible, Ollama, Mock). Router uses
+  intra-entropy threshold and inter-divergence `(1-cosine)/2` to escalate uncertain primary
+  responses to a configured secondary provider. Gated to `Ema` and `Thompson` routing strategies.
+  Configured via `[llm.coe]` block. Closes #2505.
+
 ### Security
 
 - **sandbox/macos: Workspace profile no longer scopes file reads to `/usr|/bin|/sbin|/lib`.** The

@@ -1001,6 +1001,60 @@ impl AppBuilder {
         }
     }
 
+    /// Build a `TopologyAdvisor` when `[orchestration.adaptorch]` is enabled.
+    ///
+    /// Returns `None` when disabled or when the classify provider cannot be resolved.
+    pub fn build_topology_advisor(
+        &self,
+    ) -> Option<std::sync::Arc<zeph_orchestration::TopologyAdvisor>> {
+        let cfg = &self.config.orchestration.adaptorch;
+        if !cfg.enabled {
+            return None;
+        }
+        let classify_provider = if cfg.topology_provider.is_empty() {
+            match create_named_provider(
+                &self.config.llm.providers.first()?.effective_name(),
+                &self.config,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(error = %e, "adaptorch: cannot resolve classify provider");
+                    return None;
+                }
+            }
+        } else {
+            match create_named_provider(cfg.topology_provider.as_str(), &self.config) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %cfg.topology_provider.as_str(),
+                        error = %e,
+                        "adaptorch: classify provider resolution failed"
+                    );
+                    return None;
+                }
+            }
+        };
+        let state_path = if cfg.state_path.is_empty() {
+            std::path::PathBuf::new()
+        } else {
+            std::path::PathBuf::from(&cfg.state_path)
+        };
+        let timeout = std::time::Duration::from_secs(cfg.classify_timeout_secs);
+        tracing::info!(
+            provider = %cfg.topology_provider.as_str(),
+            timeout_secs = cfg.classify_timeout_secs,
+            "adaptorch: topology advisor initialized"
+        );
+        Some(std::sync::Arc::new(
+            zeph_orchestration::TopologyAdvisor::new(
+                std::sync::Arc::new(classify_provider),
+                state_path,
+                timeout,
+            ),
+        ))
+    }
+
     /// Build the `PlanVerifier` provider from `[orchestration] verify_provider`.
     ///
     /// Returns `None` when `verify_provider` is empty (falls back to the primary provider at

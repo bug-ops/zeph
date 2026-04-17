@@ -48,6 +48,7 @@
 pub mod asi;
 pub mod bandit;
 pub mod cascade;
+pub mod coe;
 pub mod reputation;
 pub mod thompson;
 pub mod triage;
@@ -64,6 +65,7 @@ use crate::ema::EmaTracker;
 use crate::embed::owned_strs;
 use crate::error::LlmError;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
+use coe::{CoeDecision, CoeRouter, run_coe};
 
 use asi::AsiState;
 use bandit::{BanditState, embedding_to_features};
@@ -310,6 +312,8 @@ pub struct RouterProvider {
     /// After provider selection, `cosine_similarity(query_emb, response_emb)` must be >= this
     /// value; otherwise the next provider in the ordered list is tried.
     quality_gate: Option<f32>,
+    /// `CoE` (Collaborative Entropy) router. `None` when `CoE` is disabled.
+    coe: Option<Arc<CoeRouter>>,
     /// Monotonically increasing turn counter. Incremented once per top-level `chat()` call.
     /// Shared across clones so that concurrent sub-calls within the same turn see the same value.
     turn_counter: Arc<AtomicU64>,
@@ -361,6 +365,7 @@ impl RouterProvider {
             embed_semaphore: None,
             embed_call_count: Arc::new(AtomicU64::new(0)),
             embed_cache_hits: Arc::new(AtomicU64::new(0)),
+            coe: None,
         }
     }
 
@@ -390,6 +395,51 @@ impl RouterProvider {
     pub fn with_ema(mut self, alpha: f64, reorder_interval: u64) -> Self {
         self.ema = Some(EmaTracker::new(alpha, reorder_interval));
         self
+    }
+
+    /// Enable Collaborative Entropy (`CoE`) for Ema/Thompson strategies.
+    ///
+    /// `CoE` detects uncertain responses via intra-entropy and inter-divergence signals,
+    /// escalating to `secondary` when either threshold is exceeded.
+    ///
+    /// No-op (with a `warn!`) when the active strategy is `Cascade` or `Bandit`.
+    #[must_use]
+    pub fn with_coe(
+        mut self,
+        config: coe::CoeConfig,
+        secondary: AnyProvider,
+        embed: AnyProvider,
+    ) -> Self {
+        if matches!(
+            self.strategy,
+            RouterStrategy::Cascade | RouterStrategy::Bandit
+        ) {
+            tracing::warn!(
+                strategy = ?self.strategy,
+                "coe disabled for strategy; supported: ema, thompson"
+            );
+            return self;
+        }
+        self.coe = Some(Arc::new(CoeRouter {
+            config,
+            secondary,
+            embed,
+            metrics: Arc::new(coe::CoeMetrics::default()),
+        }));
+        self
+    }
+
+    /// Return session-level `CoE` metrics snapshot, or `None` if `CoE` is disabled.
+    #[must_use]
+    pub fn coe_metrics(&self) -> Option<(u64, u64, u64, u64)> {
+        self.coe.as_ref().map(|c| {
+            (
+                c.metrics.kept_primary.load(Ordering::Relaxed),
+                c.metrics.intra_escalations.load(Ordering::Relaxed),
+                c.metrics.inter_escalations.load(Ordering::Relaxed),
+                c.metrics.embed_failures.load(Ordering::Relaxed),
+            )
+        })
     }
 
     /// Enable Agent Stability Index (ASI) coherence tracking.
@@ -1261,6 +1311,7 @@ impl LlmProvider for RouterProvider {
         self.providers.first().and_then(LlmProvider::context_window)
     }
 
+    #[allow(clippy::too_many_lines)] // CoE + quality-gate inline logic; extracting would obscure the control flow
     fn chat(
         &self,
         messages: &[Message],
@@ -1344,11 +1395,43 @@ impl LlmProvider for RouterProvider {
                             }
                             // Pass resp_emb to ASI to avoid a redundant embed call.
                             router.spawn_asi_update(p.name(), r.clone(), turn_id, resp_emb);
+
+                            // CoE: run after quality gate passes.
+                            if let Some(ref coe_router) = router.coe
+                                && let Ok((final_r, pname, decision)) =
+                                    run_coe(coe_router, p, &messages).await
+                            {
+                                if matches!(
+                                    decision,
+                                    CoeDecision::EscalateIntra | CoeDecision::EscalateInter
+                                ) {
+                                    router.record_quality_outcome(&pname, false);
+                                    router
+                                        .record_quality_outcome(coe_router.secondary.name(), true);
+                                }
+                                return Ok(final_r);
+                            }
+
                             return Ok(r);
                         }
 
                         // Spawn ASI embedding update (fire-and-forget, no precomputed embedding).
                         router.spawn_asi_update(p.name(), r.clone(), turn_id, None);
+
+                        // CoE: run when quality gate is not active.
+                        if let Some(ref coe_router) = router.coe
+                            && let Ok((final_r, pname, decision)) =
+                                run_coe(coe_router, p, &messages).await
+                        {
+                            if matches!(
+                                decision,
+                                CoeDecision::EscalateIntra | CoeDecision::EscalateInter
+                            ) {
+                                router.record_quality_outcome(&pname, false);
+                                router.record_quality_outcome(coe_router.secondary.name(), true);
+                            }
+                            return Ok(final_r);
+                        }
 
                         return Ok(r);
                     }

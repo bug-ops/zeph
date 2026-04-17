@@ -19,7 +19,8 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
 use crate::provider::{
-    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx, ToolDefinition,
+    ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx,
+    ToolDefinition,
 };
 use crate::router::RouterProvider;
 use crate::router::triage::TriageRouter;
@@ -245,6 +246,13 @@ impl LlmProvider for AnyProvider {
 
     async fn chat(&self, messages: &[Message]) -> Result<String, crate::LlmError> {
         delegate_provider!(self, |p| p.chat(messages).await)
+    }
+
+    async fn chat_with_extras(
+        &self,
+        messages: &[Message],
+    ) -> Result<(String, ChatExtras), crate::LlmError> {
+        delegate_provider!(self, |p| p.chat_with_extras(messages).await)
     }
 
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, crate::LlmError> {

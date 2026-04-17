@@ -622,6 +622,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         summary_model: None,
         summary_provider: None,
         complexity_routing: None,
+        coe: None,
     };
 
     // When postgres backend was chosen, sqlite_path is left at its serde default (unused).

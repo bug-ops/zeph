@@ -25,7 +25,8 @@ use std::fmt;
 use crate::error::LlmError;
 use crate::openai::OpenAiProvider;
 use crate::provider::{
-    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx, ToolDefinition,
+    ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx,
+    ToolDefinition,
 };
 
 /// [`LlmProvider`] adapter for OpenAI-compatible REST endpoints.
@@ -98,6 +99,13 @@ impl CompatibleProvider {
         self.inner = self.inner.with_generation_overrides(overrides);
         self
     }
+
+    /// Enable `CoE` logprobs collection for `chat_with_extras`.
+    #[must_use]
+    pub fn with_coe(mut self) -> Self {
+        self.inner = self.inner.with_coe();
+        self
+    }
 }
 
 impl LlmProvider for CompatibleProvider {
@@ -115,6 +123,13 @@ impl LlmProvider for CompatibleProvider {
     )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         self.inner.chat(messages).await
+    }
+
+    async fn chat_with_extras(
+        &self,
+        messages: &[Message],
+    ) -> Result<(String, ChatExtras), LlmError> {
+        self.inner.chat_with_extras(messages).await
     }
 
     #[cfg_attr(

@@ -35,8 +35,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
 use crate::provider::{
-    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role,
-    StatusTx, ToolDefinition, ToolUseRequest,
+    ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart,
+    Role, StatusTx, ToolDefinition, ToolUseRequest,
 };
 use crate::retry::send_with_retry;
 use crate::sse::openai_sse_to_stream;
@@ -70,6 +70,8 @@ pub struct OpenAiProvider {
     output_schema_hint_bytes: usize,
     /// Maximum bytes of the combined description (base + hint). `usize::MAX` means no cap.
     max_tool_description_bytes: usize,
+    /// When `true`, `chat_with_extras` requests `logprobs: true` and computes entropy.
+    coe_enabled: bool,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -91,6 +93,7 @@ impl fmt::Debug for OpenAiProvider {
                 "max_tool_description_bytes",
                 &self.max_tool_description_bytes,
             )
+            .field("coe_enabled", &self.coe_enabled)
             .finish()
     }
 }
@@ -111,6 +114,7 @@ impl Clone for OpenAiProvider {
             forward_output_schema: self.forward_output_schema,
             output_schema_hint_bytes: self.output_schema_hint_bytes,
             max_tool_description_bytes: self.max_tool_description_bytes,
+            coe_enabled: self.coe_enabled,
         }
     }
 }
@@ -148,7 +152,18 @@ impl OpenAiProvider {
             forward_output_schema: false,
             output_schema_hint_bytes: 512,
             max_tool_description_bytes: usize::MAX,
+            coe_enabled: false,
         }
+    }
+
+    /// Enable `CoE` logprobs collection for `chat_with_extras`.
+    ///
+    /// When enabled, `chat_with_extras` includes `logprobs: true` in the request
+    /// and computes mean negative log-probability from the response.
+    #[must_use]
+    pub fn with_coe(mut self) -> Self {
+        self.coe_enabled = true;
+        self
     }
 
     /// Override generation parameters (temperature, top-p, frequency/presence penalty).
@@ -429,6 +444,80 @@ impl OpenAiProvider {
 
         Ok(response)
     }
+
+    /// Send a request with `logprobs: true` and return the response text plus computed entropy.
+    async fn send_request_with_logprobs(
+        &self,
+        messages: &[Message],
+    ) -> Result<(String, ChatExtras), LlmError> {
+        let api_messages = convert_messages(messages);
+        let (temperature, top_p, frequency_penalty, presence_penalty) =
+            if let Some(ref ov) = self.generation_overrides {
+                (
+                    ov.temperature,
+                    ov.top_p,
+                    ov.frequency_penalty,
+                    ov.presence_penalty,
+                )
+            } else {
+                (None, None, None, None)
+            };
+        let body = LogprobsChatRequest {
+            model: &self.model,
+            messages: &api_messages,
+            completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+            logprobs: true,
+            temperature,
+            top_p,
+            frequency_penalty,
+            presence_penalty,
+        };
+        let response = send_with_retry("OpenAI", MAX_RETRIES, self.status_tx.as_ref(), || {
+            self.client
+                .post(format!("{}/chat/completions", self.base_url))
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+        })
+        .await?;
+
+        let status = response.status();
+        let text = response.text().await.map_err(LlmError::Http)?;
+
+        if !status.is_success() {
+            tracing::error!("OpenAI API error {status}: {text}");
+            return Err(LlmError::Other(format!(
+                "OpenAI API request failed (status {status})"
+            )));
+        }
+
+        let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
+
+        if let Some(ref usage) = resp.usage {
+            self.store_cache_usage(usage);
+        }
+
+        let content = resp
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .ok_or(LlmError::EmptyResponse {
+                provider: "openai".into(),
+            })?;
+
+        let entropy = resp.choices.first().and_then(|c| {
+            let logprobs = c.logprobs.as_ref()?.content.as_slice();
+            if logprobs.is_empty() {
+                return None;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let mean = -logprobs.iter().map(|t| t.logprob).sum::<f64>() / logprobs.len() as f64;
+            Some(mean)
+        });
+
+        Ok((content, ChatExtras { entropy }))
+    }
 }
 
 impl LlmProvider for OpenAiProvider {
@@ -454,6 +543,16 @@ impl LlmProvider for OpenAiProvider {
     )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         self.send_request(messages).await
+    }
+
+    async fn chat_with_extras(
+        &self,
+        messages: &[Message],
+    ) -> Result<(String, ChatExtras), LlmError> {
+        if !self.coe_enabled {
+            return Ok((self.send_request(messages).await?, ChatExtras::default()));
+        }
+        self.send_request_with_logprobs(messages).await
     }
 
     #[cfg_attr(
@@ -1072,6 +1171,23 @@ struct ChatRequest<'a> {
 }
 
 #[derive(Serialize)]
+struct LogprobsChatRequest<'a> {
+    model: &'a str,
+    messages: &'a [ApiMessage<'a>],
+    #[serde(flatten)]
+    completion_tokens: CompletionTokens,
+    logprobs: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f64>,
+}
+
+#[derive(Serialize)]
 struct Reasoning<'a> {
     effort: &'a str,
 }
@@ -1108,6 +1224,19 @@ struct PromptTokensDetails {
 #[derive(Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
+    #[serde(default)]
+    logprobs: Option<ChoiceLogprobs>,
+}
+
+#[derive(Deserialize)]
+struct ChoiceLogprobs {
+    #[serde(default)]
+    content: Vec<TokenLogprob>,
+}
+
+#[derive(Deserialize)]
+struct TokenLogprob {
+    logprob: f64,
 }
 
 #[derive(Deserialize)]

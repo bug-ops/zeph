@@ -367,6 +367,10 @@ pub struct LlmConfig {
     /// Complexity triage routing configuration. Required when `routing = "triage"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub complexity_routing: Option<ComplexityRoutingConfig>,
+
+    /// Collaborative Entropy (`CoE`) configuration. `None` = `CoE` disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coe: Option<CoeConfig>,
 }
 
 fn default_embedding_model_opt() -> String {
@@ -1049,6 +1053,61 @@ impl Default for ComplexityRoutingConfig {
             max_triage_tokens: default_max_triage_tokens(),
             triage_timeout_secs: default_triage_timeout_secs(),
             fallback_strategy: None,
+        }
+    }
+}
+
+/// Configuration for the Collaborative Entropy (`CoE`) subsystem (`[llm.coe]` TOML section).
+///
+/// `CoE` detects uncertain responses from the primary provider and escalates to a
+/// secondary provider when either the intra-entropy or inter-divergence signal crosses
+/// its threshold. Only active for `RouterStrategy::Ema` and `RouterStrategy::Thompson`.
+///
+/// # Example
+///
+/// ```toml
+/// [llm.coe]
+/// enabled = true
+/// intra_threshold = 0.8
+/// inter_threshold = 0.20
+/// shadow_sample_rate = 0.1
+/// secondary_provider = "quality"
+/// embed_provider = ""
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CoeConfig {
+    /// Enable `CoE`. When `false`, the struct is ignored.
+    pub enabled: bool,
+    /// Mean negative log-prob threshold; responses above this trigger intra escalation.
+    pub intra_threshold: f64,
+    /// Divergence threshold in `[0.0, 1.0]`.
+    pub inter_threshold: f64,
+    /// Baseline rate at which secondary is called even when intra is low.
+    pub shadow_sample_rate: f64,
+    /// Provider name from `[[llm.providers]]` used as the escalation target.
+    pub secondary_provider: ProviderName,
+    /// Provider name for inter-divergence embeddings. Empty → inherit bandit's embed provider.
+    pub embed_provider: ProviderName,
+    /// Per-turn cap on secondary calls.
+    #[serde(default = "default_coe_max_secondary_calls")]
+    pub max_secondary_calls_per_turn: u32,
+}
+
+fn default_coe_max_secondary_calls() -> u32 {
+    1
+}
+
+impl Default for CoeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            intra_threshold: 0.8,
+            inter_threshold: 0.20,
+            shadow_sample_rate: 0.1,
+            secondary_provider: ProviderName::default(),
+            embed_provider: ProviderName::default(),
+            max_secondary_calls_per_turn: default_coe_max_secondary_calls(),
         }
     }
 }

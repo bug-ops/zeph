@@ -218,6 +218,10 @@ pub struct OrchestrationConfig {
     /// end-to-end latency. Default: false (opt-in).
     #[serde(default)]
     pub tree_optimized_dispatch: bool,
+
+    /// `AdaptOrch` bandit-driven topology advisor. Default: disabled.
+    #[serde(default)]
+    pub adaptorch: AdaptOrchConfig,
 }
 
 impl Default for OrchestrationConfig {
@@ -246,6 +250,57 @@ impl Default for OrchestrationConfig {
             cascade_routing: false,
             cascade_failure_threshold: default_cascade_failure_threshold(),
             tree_optimized_dispatch: false,
+            adaptorch: AdaptOrchConfig::default(),
+        }
+    }
+}
+
+/// Configuration for `AdaptOrch` — bandit-driven topology advisor (`[orchestration.adaptorch]`).
+///
+/// # Example
+///
+/// ```toml
+/// [orchestration.adaptorch]
+/// enabled = true
+/// topology_provider = "fast"
+/// classify_timeout_secs = 4
+/// state_path = ""
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AdaptOrchConfig {
+    /// Enable `AdaptOrch`. When `false`, planning uses the default `plan()` path.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for goal classification. Empty → primary provider.
+    pub topology_provider: ProviderName,
+    /// Hard timeout (seconds) for the classification LLM call.
+    #[serde(default = "default_classify_timeout_secs")]
+    pub classify_timeout_secs: u64,
+    /// Path to the persisted Beta-arm JSON state file.
+    /// Empty string → `~/.zeph/adaptorch_state.json` (resolved at runtime).
+    #[serde(default)]
+    pub state_path: String,
+    /// Maximum tokens for the classification LLM call.
+    #[serde(default = "default_max_classify_tokens")]
+    pub max_classify_tokens: u32,
+}
+
+fn default_classify_timeout_secs() -> u64 {
+    4
+}
+
+fn default_max_classify_tokens() -> u32 {
+    80
+}
+
+impl Default for AdaptOrchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            topology_provider: ProviderName::default(),
+            classify_timeout_secs: default_classify_timeout_secs(),
+            state_path: String::new(),
+            max_classify_tokens: default_max_classify_tokens(),
         }
     }
 }

@@ -417,6 +417,18 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         use zeph_orchestration::{Aggregator, GraphStatus, LlmAggregator};
 
+        // AdaptOrch: record outcome synchronously before aggregation.
+        if let Some(verdict) = self.orchestration.last_advisor_verdict.take()
+            && let Some(ref advisor) = self.orchestration.topology_advisor
+        {
+            let reward = if final_status == GraphStatus::Completed {
+                1.0
+            } else {
+                0.0
+            };
+            advisor.record_outcome(verdict.class, verdict.hint, reward);
+        }
+
         let result_label = match final_status {
             GraphStatus::Completed => {
                 let completed_count = completed_graph
@@ -583,6 +595,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
     // ----- _as_string variants (used by AgentAccess / CommandHandler) -----
 
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn handle_plan_goal_as_string(
         &mut self,
         goal: &str,
@@ -616,6 +629,23 @@ impl<C: crate::channel::Channel> Agent<C> {
             "plan cache state for goal"
         );
 
+        // AdaptOrch: classify goal and obtain topology hint before planning.
+        let topology_hint = if let Some(ref advisor) = self.orchestration.topology_advisor.clone() {
+            let verdict = advisor.recommend(goal).await;
+            tracing::debug!(
+                class = ?verdict.class,
+                hint = ?verdict.hint,
+                exploit = verdict.exploit,
+                fallback = verdict.fallback,
+                "adaptorch verdict"
+            );
+            let hint = verdict.hint;
+            self.orchestration.last_advisor_verdict = Some(verdict);
+            Some(hint)
+        } else {
+            None
+        };
+
         let planner_provider = self
             .orchestration
             .planner_provider
@@ -624,18 +654,28 @@ impl<C: crate::channel::Channel> Agent<C> {
             .clone();
         let planner = LlmPlanner::new(planner_provider, &self.orchestration.orchestration_config);
         let embed_model = self.skill_state.embedding_model.clone();
-        let (graph, planner_usage) = plan_with_cache(
-            &planner,
-            self.orchestration.plan_cache.as_ref(),
-            &self.provider,
-            goal_embedding.as_deref(),
-            &embed_model,
-            goal,
-            &available_agents,
-            self.orchestration.orchestration_config.max_tasks,
-        )
-        .await
-        .map_err(|e| error::AgentError::Other(e.to_string()))?;
+        let max_tasks = self.orchestration.orchestration_config.max_tasks;
+        let (graph, planner_usage) = {
+            use zeph_orchestration::Planner as _;
+            let result = if topology_hint.is_some() {
+                planner
+                    .plan_with_hint(goal, &available_agents, topology_hint)
+                    .await
+            } else {
+                plan_with_cache(
+                    &planner,
+                    self.orchestration.plan_cache.as_ref(),
+                    &self.provider,
+                    goal_embedding.as_deref(),
+                    &embed_model,
+                    goal,
+                    &available_agents,
+                    max_tasks,
+                )
+                .await
+            };
+            result.map_err(|e| error::AgentError::Other(e.to_string()))?
+        };
 
         self.orchestration.pending_goal_embedding = goal_embedding;
 

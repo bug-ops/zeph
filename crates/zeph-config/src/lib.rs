@@ -94,7 +94,9 @@ pub use defaults::{
     is_legacy_default_sqlite_path,
 };
 pub use dump_format::DumpFormat;
-pub use experiment::{ExperimentConfig, ExperimentSchedule, OrchestrationConfig, PlanCacheConfig};
+pub use experiment::{
+    AdaptOrchConfig, ExperimentConfig, ExperimentSchedule, OrchestrationConfig, PlanCacheConfig,
+};
 pub use features::{
     CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, ScheduledTaskConfig,
     ScheduledTaskKind, SchedulerConfig, SkillMiningConfig, SkillPromptMode, SkillsConfig,
@@ -114,9 +116,9 @@ pub use memory::{
 pub use metrics::MetricsConfig;
 pub use providers::{
     BanditConfig, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
-    ComplexityRoutingConfig, GenerationParams, LlmConfig, LlmRoutingStrategy, MAX_TOKENS_CAP,
-    ProviderEntry, ProviderKind, ProviderName, RouterConfig, RouterStrategyConfig, SttConfig,
-    TierMapping, validate_pool,
+    CoeConfig, ComplexityRoutingConfig, GenerationParams, LlmConfig, LlmRoutingStrategy,
+    MAX_TOKENS_CAP, ProviderEntry, ProviderKind, ProviderName, RouterConfig, RouterStrategyConfig,
+    SttConfig, TierMapping, validate_pool,
 };
 pub use providers::{default_stt_language, default_stt_provider};
 pub use rate_limit::RateLimitConfig;

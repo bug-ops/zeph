@@ -10411,10 +10411,15 @@ name = "zeph-orchestration"
 version = "0.19.1"
 dependencies = [
  "blake3",
+ "dirs",
  "futures",
+ "parking_lot",
+ "rand 0.10.1",
+ "rand_distr 0.6.0",
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

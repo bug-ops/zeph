@@ -420,6 +420,12 @@ pub(crate) struct OrchestrationState {
     /// Goal embedding from the most recent `plan_with_cache()` call. Consumed by
     /// `finalize_plan_execution()` to cache the completed plan template.
     pub(crate) pending_goal_embedding: Option<Vec<f32>>,
+    /// `AdaptOrch` topology advisor — `None` when `[orchestration.adaptorch]` is disabled.
+    pub(crate) topology_advisor: Option<std::sync::Arc<zeph_orchestration::TopologyAdvisor>>,
+    /// Last `AdaptOrch` verdict; carried from `handle_plan_goal_as_string` to scheduler loop
+    /// for `record_outcome`.
+    #[allow(dead_code)] // read via .take() in plan.rs; clippy false positive
+    pub(crate) last_advisor_verdict: Option<zeph_orchestration::AdvisorVerdict>,
 }
 
 /// Groups instruction hot-reload state.

@@ -69,6 +69,7 @@
 #[allow(unused_imports)]
 pub(crate) use zeph_db::sql;
 
+pub mod adaptorch;
 pub mod aggregator;
 pub mod cascade;
 pub mod command;
@@ -82,6 +83,7 @@ pub mod scheduler;
 pub mod topology;
 pub mod verifier;
 
+pub use adaptorch::{AdaptOrchMetrics, AdvisorVerdict, TaskClass, TopologyAdvisor, TopologyHint};
 pub use aggregator::{Aggregator, LlmAggregator};
 pub use cascade::{CascadeConfig, CascadeDetector, RegionHealth};
 pub use command::PlanCommand;

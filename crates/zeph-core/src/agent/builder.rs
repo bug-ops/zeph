@@ -341,6 +341,19 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the `AdaptOrch` topology advisor.
+    ///
+    /// When set, `handle_plan_goal_as_string` calls `advisor.recommend()` before planning
+    /// and injects the topology hint into the planner prompt.
+    #[must_use]
+    pub fn with_topology_advisor(
+        mut self,
+        advisor: std::sync::Arc<zeph_orchestration::TopologyAdvisor>,
+    ) -> Self {
+        self.orchestration.topology_advisor = Some(advisor);
+        self
+    }
+
     /// Set a dedicated judge provider for experiment evaluation.
     ///
     /// When set, the evaluator uses this provider instead of the agent's primary provider,

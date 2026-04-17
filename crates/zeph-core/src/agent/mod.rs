@@ -602,6 +602,13 @@ impl<C: Channel> Agent<C> {
         // CRIT-1: persist Thompson state accumulated during this session.
         self.provider.save_router_state();
 
+        // Persist AdaptOrch Beta-arm table alongside Thompson state.
+        if let Some(ref advisor) = self.orchestration.topology_advisor
+            && let Err(e) = advisor.save()
+        {
+            tracing::warn!(error = %e, "adaptorch: failed to persist state");
+        }
+
         if let Some(ref mut mgr) = self.orchestration.subagent_manager {
             mgr.shutdown_all();
         }

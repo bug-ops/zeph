@@ -6,8 +6,9 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
-use zeph_llm::provider::{LlmProvider, Message, Role};
+use zeph_llm::provider::{LlmProvider, Message, Role}; // Role needed for plan_with_hint prompt augmentation
 
+use super::adaptorch::TopologyHint;
 use super::dag;
 use super::error::OrchestrationError;
 use super::graph::{ExecutionMode, FailureStrategy, TaskGraph, TaskId, TaskNode};
@@ -54,6 +55,24 @@ pub trait Planner: Send + Sync {
         goal: &str,
         available_agents: &[SubAgentDef],
     ) -> Result<(TaskGraph, Option<(u64, u64)>), OrchestrationError>;
+
+    /// Plan with an optional topology hint from `AdaptOrch`.
+    ///
+    /// Default implementation ignores the hint and forwards to [`plan`][Self::plan].
+    /// This lets every existing implementor compile without changes; `LlmPlanner`
+    /// overrides this to inject one prompt sentence per hint variant.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`plan`][Self::plan].
+    async fn plan_with_hint(
+        &self,
+        goal: &str,
+        available_agents: &[SubAgentDef],
+        _hint: Option<TopologyHint>,
+    ) -> Result<(TaskGraph, Option<(u64, u64)>), OrchestrationError> {
+        self.plan(goal, available_agents).await
+    }
 }
 
 /// LLM-backed [`Planner`] using `chat_typed` for structured JSON output.
@@ -108,6 +127,38 @@ pub(crate) struct PlannedTask {
 }
 
 impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
+    async fn plan_with_hint(
+        &self,
+        goal: &str,
+        available_agents: &[SubAgentDef],
+        hint: Option<TopologyHint>,
+    ) -> Result<(TaskGraph, Option<(u64, u64)>), OrchestrationError> {
+        if goal.trim().is_empty() {
+            return Err(OrchestrationError::PlanningFailed(
+                "goal cannot be empty".into(),
+            ));
+        }
+        let mut messages = build_prompt(goal, available_agents, self.max_tasks);
+        if let Some(hint) = hint
+            && let Some(sentence) = hint.prompt_sentence()
+        {
+            // Append the topology hint to the system prompt (first message).
+            if let Some(sys) = messages.first_mut() {
+                let augmented = format!("{}\n\n{}", sys.content, sentence);
+                *sys = Message::from_legacy(Role::System, augmented);
+            }
+        }
+        let response: PlannerResponse = self
+            .provider
+            .chat_typed(&messages)
+            .await
+            .map_err(|e| OrchestrationError::PlanningFailed(e.to_string()))?;
+        let usage = self.provider.last_usage();
+        let graph = convert_response(response, goal, available_agents, self.max_tasks)?;
+        dag::validate(&graph.tasks, self.max_tasks as usize)?;
+        Ok((graph, usage))
+    }
+
     async fn plan(
         &self,
         goal: &str,

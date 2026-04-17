@@ -1766,6 +1766,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
+    let agent = if let Some(ta) = app.build_topology_advisor() {
+        agent.with_topology_advisor(ta)
+    } else {
+        agent
+    };
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
     let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());
     #[cfg(feature = "classifiers")]

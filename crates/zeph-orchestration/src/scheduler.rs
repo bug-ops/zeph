@@ -1433,6 +1433,7 @@ mod tests {
             cascade_routing: false,
             cascade_failure_threshold: 0.5,
             tree_optimized_dispatch: false,
+            adaptorch: Default::default(),
         }
     }
 

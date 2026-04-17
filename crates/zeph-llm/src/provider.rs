@@ -66,6 +66,45 @@ pub(crate) fn short_type_name<T: ?Sized>() -> &'static str {
         .unwrap_or("Output")
 }
 
+/// Per-call extras returned alongside the chat response by [`LlmProvider::chat_with_extras`].
+///
+/// Always paired 1:1 with a single response — no shared state, no races possible.
+/// All optional fields default to `None` so providers that do not expose the
+/// underlying API (e.g. Claude, Gemini) can simply return the default.
+///
+/// Marked `#[non_exhaustive]` so future fields (e.g. `cached_tokens`) can be added
+/// without breaking match sites.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct ChatExtras {
+    /// Mean negative log-probability of the generated tokens, when the provider
+    /// was configured to request `logprobs` and the API supplied them.
+    ///
+    /// Lower = more confident. Typical range: `[0.0, ~6.0]` for natural-language tokens.
+    pub entropy: Option<f64>,
+}
+
+impl ChatExtras {
+    /// Return a `ChatExtras` with the given entropy value.
+    ///
+    /// Used by [`MockProvider`](crate::mock::MockProvider) and OpenAI/Ollama providers.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::provider::ChatExtras;
+    ///
+    /// let extras = ChatExtras::with_entropy(0.9);
+    /// assert_eq!(extras.entropy, Some(0.9));
+    /// ```
+    #[must_use]
+    pub fn with_entropy(entropy: f64) -> Self {
+        Self {
+            entropy: Some(entropy),
+        }
+    }
+}
+
 /// A chunk from an LLM streaming response.
 ///
 /// Consumers should match all variants: future providers may emit non-`Content` chunks
@@ -795,6 +834,28 @@ pub trait LlmProvider: Send + Sync {
     /// Must only be called for semantic failures (invalid tool arguments, parse errors).
     /// Do NOT call for network errors, rate limits, or transient I/O failures.
     fn record_quality_outcome(&self, _provider_name: &str, _success: bool) {}
+
+    /// Send messages and return the assistant response together with per-call extras.
+    ///
+    /// Default implementation calls [`chat`][Self::chat] and returns [`ChatExtras::default()`],
+    /// keeping every existing implementor source-compatible at zero cost.
+    ///
+    /// Providers that support logprobs (`OpenAI`, `Compatible`, `Ollama`) override this to
+    /// populate [`ChatExtras::entropy`] with the mean negative log-probability.
+    ///
+    /// `CoE` is the only caller of this method; the canonical entry point for the agent
+    /// loop remains [`chat`][Self::chat].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`chat`][Self::chat].
+    fn chat_with_extras(
+        &self,
+        messages: &[Message],
+    ) -> impl Future<Output = Result<(String, ChatExtras), LlmError>> + Send {
+        let msgs = messages.to_vec();
+        async move { Ok((self.chat(&msgs).await?, ChatExtras::default())) }
+    }
 
     /// Return the request payload that will be sent to the provider, for debug dumps.
     ///
