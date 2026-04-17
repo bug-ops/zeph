@@ -1531,3 +1531,43 @@ fn output_schema_forwarding_none_schema_unchanged_description_openai() {
         "description must be unchanged when output_schema is None even if forwarding is enabled"
     );
 }
+
+#[test]
+fn test_openai_default_output_schema_hint_bytes_is_1024() {
+    // Default budget is 1024 — a schema under 1024 bytes must not trigger the stub
+    let schema =
+        serde_json::json!({"type": "object", "properties": {"result": {"type": "string"}}});
+    let compact = serde_json::to_string(&schema).unwrap();
+    assert!(
+        compact.len() < 1024,
+        "test schema must be under 1024 bytes for this assertion to be meaningful"
+    );
+    let desc = build_tool_description(
+        "Do something",
+        Some(&schema),
+        true,
+        1024,
+        usize::MAX,
+        "do_something",
+    );
+    assert!(
+        desc.contains("Expected output schema"),
+        "schema under 1024 bytes must be forwarded, not stubbed"
+    );
+    assert!(
+        !desc.contains("too large"),
+        "schema under 1024 bytes must not trigger stub with default budget"
+    );
+}
+
+#[test]
+fn test_openai_stub_used_when_schema_exceeds_1024_bytes() {
+    // Schema larger than 1024 bytes must produce the stub message
+    let large_value = "y".repeat(1100);
+    let schema = serde_json::json!({"description": large_value});
+    let desc = build_tool_description("Tool", Some(&schema), true, 1024, usize::MAX, "large_tool");
+    assert!(
+        desc.contains("too large"),
+        "schema exceeding 1024 bytes must use stub with default budget"
+    );
+}

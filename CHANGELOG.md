@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **fix(mcp): raise default `output_schema_hint_bytes` from 512 to 1024** — the 512-byte default
+  caused stub fallback for most real-world MCP tool schemas, making `forward_output_schema`
+  largely ineffective at default config. Closes #3084.
+- **fix(mcp): distinguish stub event name from success event** — WARN emitted when
+  `output_schema_hint_bytes` budget is exceeded now uses `event = "mcp.output_schema.stub_used"`
+  instead of the misleading `mcp.output_schema.forwarded_to_llm`. Fixed in openai and claude
+  backends. Closes #3087.
+
 ### Added
 
 - **feat(orchestration): AdaptOrch topology advisor** — 16-arm Thompson Beta-bandit that classifies

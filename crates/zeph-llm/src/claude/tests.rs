@@ -3061,3 +3061,55 @@ fn tool_cache_key_sensitive_to_description() {
         "cache key must differ when description changes"
     );
 }
+
+#[test]
+fn test_claude_default_output_schema_hint_bytes_is_1024() {
+    use zeph_common::types::ToolDefinition;
+    let schema =
+        serde_json::json!({"type": "object", "properties": {"result": {"type": "string"}}});
+    let compact = serde_json::to_string(&schema).unwrap();
+    assert!(
+        compact.len() < 1024,
+        "test schema must be under 1024 bytes for this assertion to be meaningful"
+    );
+    let tool = ToolDefinition {
+        name: "do_something".into(),
+        description: "Do something".into(),
+        parameters: serde_json::json!({"type": "object"}),
+        output_schema: Some(schema),
+    };
+    let provider =
+        crate::claude::ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1000)
+            .with_output_schema_forwarding(true, 1024, usize::MAX);
+    let api_tools = provider.get_or_build_api_tools(&[tool]);
+    let desc = api_tools[0]["description"].as_str().unwrap();
+    assert!(
+        desc.contains("Expected output schema"),
+        "schema under 1024 bytes must be forwarded with default budget"
+    );
+    assert!(
+        !desc.contains("too large"),
+        "schema under 1024 bytes must not trigger stub with default budget"
+    );
+}
+
+#[test]
+fn test_claude_stub_used_when_schema_exceeds_1024_bytes() {
+    use zeph_common::types::ToolDefinition;
+    let large_schema = serde_json::json!({"description": "y".repeat(1100)});
+    let tool = ToolDefinition {
+        name: "large_tool".into(),
+        description: "Base".into(),
+        parameters: serde_json::json!({"type": "object"}),
+        output_schema: Some(large_schema),
+    };
+    let provider =
+        crate::claude::ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1000)
+            .with_output_schema_forwarding(true, 1024, usize::MAX);
+    let api_tools = provider.get_or_build_api_tools(&[tool]);
+    let desc = api_tools[0]["description"].as_str().unwrap();
+    assert!(
+        desc.contains("too large"),
+        "schema exceeding 1024 bytes must use stub with default budget"
+    );
+}

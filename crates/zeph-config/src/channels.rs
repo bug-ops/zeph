@@ -66,6 +66,17 @@ mod tests {
     }
 
     #[test]
+    fn test_default_output_schema_hint_bytes_is_1024() {
+        assert_eq!(default_output_schema_hint_bytes(), 1024);
+    }
+
+    #[test]
+    fn test_mcp_config_default_output_schema_hint_bytes_is_1024() {
+        let cfg = McpConfig::default();
+        assert_eq!(cfg.output_schema_hint_bytes, 1024);
+    }
+
+    #[test]
     fn wildcard_star_allows_any_skill() {
         let cfg = allow(&["*"]);
         assert!(is_skill_allowed("anything", &cfg));
@@ -529,7 +540,7 @@ fn default_elicitation_queue_capacity() -> usize {
 }
 
 fn default_output_schema_hint_bytes() -> usize {
-    512
+    1024
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -596,7 +607,7 @@ pub struct McpConfig {
     #[serde(default)]
     pub forward_output_schema: bool,
     /// Maximum bytes of the compact JSON appended to the tool description as the output schema
-    /// hint when `forward_output_schema = true`. Default: 512.
+    /// hint when `forward_output_schema = true`. Default: 1024.
     ///
     /// If the serialized schema exceeds this budget, a stub message is used instead and a WARN
     /// is emitted once per session per tool.

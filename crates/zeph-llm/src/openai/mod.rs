@@ -150,7 +150,7 @@ impl OpenAiProvider {
             usage: UsageTracker::default(),
             generation_overrides: None,
             forward_output_schema: false,
-            output_schema_hint_bytes: 512,
+            output_schema_hint_bytes: 1024,
             max_tool_description_bytes: usize::MAX,
             coe_enabled: false,
         }
@@ -1666,7 +1666,7 @@ pub(crate) fn build_tool_description(
                 tool = tool_name,
                 schema_bytes = compact.len(),
                 cap = hint_bytes,
-                event = "mcp.output_schema.forwarded_to_llm",
+                event = "mcp.output_schema.stub_used",
                 "MCP output_schema hint exceeds budget — using stub"
             );
         }
