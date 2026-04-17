@@ -72,6 +72,9 @@ use bandit::{BanditState, embedding_to_features};
 use cascade::{CascadeState, ClassifierMode, heuristic_score};
 use reputation::ReputationTracker;
 use thompson::ThompsonState;
+
+/// Rate-limits the ASI coherence WARN to at most once per 60 seconds process-wide.
+static ASI_WARN_LAST_SECS: AtomicU64 = AtomicU64::new(0);
 use zeph_common::math::cosine_similarity;
 
 /// Simple bounded embedding cache for bandit feature vectors.
@@ -955,12 +958,30 @@ impl RouterProvider {
                 .map(|(idx, p)| {
                     let coherence = asi.coherence(p.name());
                     if coherence < asi_cfg.coherence_threshold {
-                        tracing::warn!(
-                            provider = p.name(),
-                            coherence,
-                            threshold = asi_cfg.coherence_threshold,
-                            "asi: coherence below threshold"
-                        );
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or(std::time::Duration::MAX)
+                            .as_secs();
+                        let last = ASI_WARN_LAST_SECS.load(Ordering::Relaxed);
+                        if now.saturating_sub(last) >= 60
+                            && ASI_WARN_LAST_SECS
+                                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                                .is_ok()
+                        {
+                            tracing::warn!(
+                                provider = p.name(),
+                                coherence,
+                                threshold = asi_cfg.coherence_threshold,
+                                "asi: coherence below threshold"
+                            );
+                        } else {
+                            tracing::trace!(
+                                provider = p.name(),
+                                coherence,
+                                threshold = asi_cfg.coherence_threshold,
+                                "asi: coherence below threshold (warn rate-limited)"
+                            );
+                        }
                     }
                     let base_score = snap
                         .as_ref()
@@ -1024,12 +1045,35 @@ impl RouterProvider {
                     if let (Some(asi), Some(asi_cfg)) = (&asi_guard, &self.asi_config) {
                         let coherence = asi.coherence(name);
                         if coherence < asi_cfg.coherence_threshold {
-                            tracing::warn!(
-                                provider = name.as_str(),
-                                coherence,
-                                threshold = asi_cfg.coherence_threshold,
-                                "asi: coherence below threshold"
-                            );
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or(std::time::Duration::MAX)
+                                .as_secs();
+                            let last = ASI_WARN_LAST_SECS.load(Ordering::Relaxed);
+                            if now.saturating_sub(last) >= 60
+                                && ASI_WARN_LAST_SECS
+                                    .compare_exchange(
+                                        last,
+                                        now,
+                                        Ordering::Relaxed,
+                                        Ordering::Relaxed,
+                                    )
+                                    .is_ok()
+                            {
+                                tracing::warn!(
+                                    provider = name.as_str(),
+                                    coherence,
+                                    threshold = asi_cfg.coherence_threshold,
+                                    "asi: coherence below threshold"
+                                );
+                            } else {
+                                tracing::trace!(
+                                    provider = name.as_str(),
+                                    coherence,
+                                    threshold = asi_cfg.coherence_threshold,
+                                    "asi: coherence below threshold (warn rate-limited)"
+                                );
+                            }
                             let deficit = asi_cfg.coherence_threshold - coherence;
                             let penalty = f64::from(asi_cfg.penalty_weight * deficit);
                             beta += penalty;
