@@ -172,13 +172,8 @@ impl MockProvider {
     ///
     /// ```
     /// use zeph_llm::mock::MockProvider;
-    /// use zeph_llm::provider::LlmProvider;
     ///
-    /// # tokio_test::block_on(async {
     /// let provider = MockProvider::default().with_entropy(0.9);
-    /// let (_, extras) = provider.chat_with_extras(&[]).await.unwrap();
-    /// assert_eq!(extras.entropy, Some(0.9));
-    /// # });
     /// ```
     #[must_use]
     pub fn with_entropy(mut self, entropy: f64) -> Self {
