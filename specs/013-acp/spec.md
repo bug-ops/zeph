@@ -202,3 +202,33 @@ Uses `agent-client-protocol 0.10.3` / `schema 0.11.3`.
 - `authMethods` in `/agent.json` must reflect the actual authentication configuration — never hardcoded
 - IPI duplication between ACP session init and MCP passthrough is eliminated — validate once, not twice
 - Protocol version in `/agent.json` must match the compiled `agent-client-protocol` crate version
+
+---
+
+## Addendum: Interop Protocol Gap Analysis (2026-04-17)
+
+Cross-reference: `specs/045-interop-protocol-gaps/spec.md`
+
+### ACP Baseline vs. arXiv:2505.02279 Survey
+
+Zeph's ACP implementation is based on `agent-client-protocol = "0.10"` (workspace `Cargo.toml`).
+
+The survey (arXiv:2505.02279) describes ACP's capability advertisement and re-negotiation
+model as a differentiating feature vs. MCP and A2A.
+
+**Capability re-negotiation status: Unverified.** The `agent-client-protocol` 0.10 SDK
+includes capability fields in the session handshake message. However, dynamic re-negotiation
+during an active session (i.e., client and agent updating mutually advertised capabilities
+mid-session without reconnecting) has not been confirmed tested in Zeph's `AcpSessionManager`.
+
+This does not block any current feature. It is tracked as a P3 follow-up in
+`specs/045-interop-protocol-gaps/spec.md` under "P3 Follow-up: ACP capability re-negotiation
+integration test".
+
+### Version Upgrade Note
+
+If `agent-client-protocol` 0.11.x becomes available on crates.io:
+1. Check changelog for re-negotiation API changes.
+2. Update `Cargo.toml` workspace dependency only after reviewing breaking changes.
+3. Run `cargo nextest run --workspace --features full --lib --bins` — ACP session tests must pass.
+4. Update the capability matrix in `specs/045-interop-protocol-gaps/spec.md` accordingly.

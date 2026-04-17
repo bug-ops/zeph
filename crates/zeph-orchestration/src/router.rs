@@ -153,9 +153,12 @@ mod tests {
             result: None,
             assigned_agent: None,
             retry_count: 0,
+            predicate_rerun_count: 0,
             failure_strategy: None,
             max_retries: None,
             execution_mode: crate::graph::ExecutionMode::default(),
+            verify_predicate: None,
+            predicate_outcome: None,
         }
     }
 

@@ -18,6 +18,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   intra-entropy threshold and inter-divergence `(1-cosine)/2` to escalate uncertain primary
   responses to a configured secondary provider. Gated to `Ema` and `Thompson` routing strategies.
   Configured via `[llm.coe]` block. Closes #2505.
+- **feat(orchestration): VeriMAP per-subtask predicate gate (#2269).**
+  Adds a verification predicate gate to `DagScheduler`. Each `TaskNode` may carry a
+  `verify_predicate: Option<VerifyPredicate>` (natural-language criterion). After task
+  completion, the scheduler emits `SchedulerAction::VerifyPredicate`; the agent loop
+  calls `PredicateEvaluator::evaluate()` via the configured LLM provider and records the
+  outcome via `DagScheduler::record_predicate_outcome()`. Downstream tasks are blocked
+  until `predicate_outcome.is_some()`. Failed predicates inject a remediation task (re-run
+  with prior failure context). New config fields: `verify_predicate_enabled`,
+  `predicate_provider`, `max_predicate_replans`. New types: `VerifyPredicate`,
+  `PredicateOutcome`, `PredicateEvaluator`. New error variant:
+  `OrchestrationError::PredicateNotSupported`. Planner emits `verify_criteria` field in
+  plan JSON when enabled.
+- **feat(orchestration): error lineage and cascade abort defense (#2407).**
+  Introduces `ErrorLineage` side-table on `DagScheduler` that tracks consecutive failure
+  chains across `depends_on` paths. When N consecutive nodes fail (configurable via
+  `cascade_chain_threshold`, default 3), or a region's fan-out failure rate reaches
+  `cascade_failure_rate_abort_threshold` (default 0.0 = opt-in), the DAG is aborted
+  immediately with `OrchestrationError::CascadeAborted`. New config fields:
+  `cascade_chain_threshold`, `cascade_failure_rate_abort_threshold`, `lineage_ttl_secs`.
+  New types: `lineage::ErrorLineage`, `lineage::LineageEntry`, `lineage::LineageKind`,
+  `cascade::AbortDecision`. Audit log emits one structured `tracing::error!` per abort
+  with full lineage path and cause discriminator.
 
 ### Security
 

@@ -32,7 +32,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                 SchedulerAction::Done { status } => return Some(status),
                 SchedulerAction::Spawn { .. }
                 | SchedulerAction::RunInline { .. }
-                | SchedulerAction::Verify { .. } => {}
+                | SchedulerAction::Verify { .. }
+                | SchedulerAction::VerifyPredicate { .. } => {}
             }
         }
         None
@@ -227,6 +228,11 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         let mut plan_verifier: Option<PlanVerifier<zeph_llm::any::AnyProvider>> = None;
         let mut stdin_closed = false;
+        // In-flight dedupe for VerifyPredicate actions (S9): prevents double-charging
+        // the LLM when tick() re-emits the same task before the previous eval completes.
+        // Reset on process restart — restart-safety is provided by predicate_outcome.is_none().
+        let mut in_flight_predicate_evals: std::collections::HashSet<zeph_orchestration::TaskId> =
+            std::collections::HashSet::new();
 
         let final_status = 'tick: loop {
             let actions = scheduler.tick();
@@ -278,6 +284,67 @@ impl<C: crate::channel::Channel> Agent<C> {
                     }
                     SchedulerAction::Done { status } => {
                         break 'tick status;
+                    }
+                    SchedulerAction::VerifyPredicate {
+                        task_id,
+                        predicate,
+                        output,
+                    } => {
+                        // Dedupe: skip if an evaluation for this task is already in flight.
+                        if in_flight_predicate_evals.contains(&task_id) {
+                            continue;
+                        }
+                        in_flight_predicate_evals.insert(task_id);
+
+                        // Resolve predicate provider: verify_provider fallback > primary.
+                        // Full named-provider resolution requires provider_pool lookup which is
+                        // not yet exposed here; use verify_provider as the preferred alternate.
+                        let predicate_provider = self
+                            .orchestration
+                            .verify_provider
+                            .as_ref()
+                            .unwrap_or(&self.provider)
+                            .clone();
+
+                        let prior_reason = scheduler
+                            .predicate_failure_reason(task_id)
+                            .map(str::to_string);
+                        let max_tasks = self.orchestration.orchestration_config.max_tasks as usize;
+
+                        let timeout_secs = self
+                            .orchestration
+                            .orchestration_config
+                            .predicate_timeout_secs;
+                        let sanitizer = zeph_sanitizer::ContentSanitizer::new(
+                            &zeph_sanitizer::ContentIsolationConfig::default(),
+                        );
+                        let evaluator = zeph_orchestration::PredicateEvaluator::new(
+                            predicate_provider,
+                            sanitizer,
+                            timeout_secs,
+                        );
+                        let outcome = evaluator
+                            .evaluate(&predicate, &output, prior_reason.as_deref())
+                            .await;
+
+                        tracing::debug!(
+                            task_id = %task_id,
+                            passed = outcome.passed,
+                            confidence = outcome.confidence,
+                            "predicate evaluation result"
+                        );
+
+                        in_flight_predicate_evals.remove(&task_id);
+
+                        if let Err(e) =
+                            scheduler.record_predicate_outcome(task_id, outcome, max_tasks)
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                task_id = %task_id,
+                                "record_predicate_outcome failed (fail-open)"
+                            );
+                        }
                     }
                     SchedulerAction::Verify { task_id, output } => {
                         let verify_provider = self

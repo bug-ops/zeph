@@ -10,6 +10,7 @@ use uuid::Uuid;
 use zeph_memory::store::graph_store::{GraphSummary, RawGraphStore};
 
 use super::error::OrchestrationError;
+use super::verify_predicate::{PredicateOutcome, VerifyPredicate};
 
 /// Index of a task within a [`TaskGraph::tasks`] `Vec`.
 ///
@@ -347,8 +348,11 @@ pub struct TaskNode {
     pub result: Option<TaskResult>,
     /// Agent name actually assigned by the router at dispatch time.
     pub assigned_agent: Option<String>,
-    /// Number of times this task has been retried so far.
+    /// Number of times this task has been retried so far (execution retries only).
     pub retry_count: u32,
+    /// Number of predicate-driven re-runs for this task (independent of `retry_count`).
+    #[serde(default)]
+    pub predicate_rerun_count: u32,
     /// Per-task failure strategy override; `None` means use [`TaskGraph::default_failure_strategy`].
     pub failure_strategy: Option<FailureStrategy>,
     /// Maximum retry attempts for this task; `None` means use [`TaskGraph::default_max_retries`].
@@ -357,6 +361,21 @@ pub struct TaskNode {
     /// deserialises to the default (`Parallel`).
     #[serde(default)]
     pub execution_mode: ExecutionMode,
+    /// Per-subtask verification predicate (predicate gate).
+    ///
+    /// When `Some`, the task's output must satisfy this criterion before downstream
+    /// tasks may consume it. The scheduler emits `SchedulerAction::VerifyPredicate`
+    /// after task completion and blocks downstream dispatch until
+    /// `predicate_outcome.is_some()`.
+    #[serde(default)]
+    pub verify_predicate: Option<VerifyPredicate>,
+    /// Outcome of the most recent predicate evaluation.
+    ///
+    /// `None` means the gate has not been evaluated yet (in-memory only; restart
+    /// re-evaluates any pending predicates). The scheduler re-emits `VerifyPredicate`
+    /// on every tick while this is `None` and `verify_predicate.is_some()`.
+    #[serde(default)]
+    pub predicate_outcome: Option<PredicateOutcome>,
 }
 
 impl TaskNode {
@@ -373,9 +392,12 @@ impl TaskNode {
             result: None,
             assigned_agent: None,
             retry_count: 0,
+            predicate_rerun_count: 0,
             failure_strategy: None,
             max_retries: None,
             execution_mode: ExecutionMode::default(),
+            verify_predicate: None,
+            predicate_outcome: None,
         }
     }
 }
@@ -781,6 +803,28 @@ mod tests {
         // The check itself lives in GraphPersistence::save(), exercised by
         // the async persistence tests in zeph-memory; here we verify the constant.
         assert_eq!(MAX_GOAL_LEN, 1024);
+    }
+
+    #[test]
+    fn test_task_node_predicate_fields_default_to_none() {
+        // Old SQLite blobs without verify_predicate / predicate_outcome must deserialize
+        // to None without error (#[serde(default)]).
+        let json = r#"{
+            "id": 0,
+            "title": "t",
+            "description": "d",
+            "agent_hint": null,
+            "status": "pending",
+            "depends_on": [],
+            "result": null,
+            "assigned_agent": null,
+            "retry_count": 0,
+            "failure_strategy": null,
+            "max_retries": null
+        }"#;
+        let node: TaskNode = serde_json::from_str(json).expect("should deserialize old JSON");
+        assert!(node.verify_predicate.is_none());
+        assert!(node.predicate_outcome.is_none());
     }
 
     #[test]

@@ -60,6 +60,22 @@ fn default_cascade_failure_threshold() -> f32 {
     0.5
 }
 
+fn default_cascade_chain_threshold() -> usize {
+    3
+}
+
+fn default_lineage_ttl_secs() -> u64 {
+    300
+}
+
+fn default_max_predicate_replans() -> u32 {
+    2
+}
+
+fn default_predicate_timeout_secs() -> u64 {
+    30
+}
+
 fn default_plan_cache_similarity_threshold() -> f32 {
     0.90
 }
@@ -222,6 +238,48 @@ pub struct OrchestrationConfig {
     /// `AdaptOrch` bandit-driven topology advisor. Default: disabled.
     #[serde(default)]
     pub adaptorch: AdaptOrchConfig,
+    /// Consecutive-chain cascade abort threshold: number of consecutive `Failed` entries
+    /// in a `depends_on` chain that triggers a DAG abort.
+    ///
+    /// `0` disables linear-chain cascade abort. Default: 3.
+    /// Must not be `1` — a threshold of 1 would abort on every single failure.
+    #[serde(default = "default_cascade_chain_threshold")]
+    pub cascade_chain_threshold: usize,
+    /// Fan-out cascade abort failure-rate threshold (0.0–1.0).
+    ///
+    /// When a DAG region's failure rate reaches this value AND the region has ≥ 3 tasks,
+    /// the DAG is aborted immediately. `0.0` disables this signal (opt-in).
+    /// Recommended production value: `0.7`.
+    #[serde(default)]
+    pub cascade_failure_rate_abort_threshold: f32,
+    /// TTL for lineage entries in seconds. Entries older than this are pruned during
+    /// chain merge. Setting this too low can prevent detection of slow-build cascades.
+    ///
+    /// Default: 300 seconds (5 minutes).
+    #[serde(default = "default_lineage_ttl_secs")]
+    pub lineage_ttl_secs: u64,
+    /// Enable per-subtask predicate verification gate.
+    ///
+    /// Requires `predicate_provider` or a primary LLM provider to be configured.
+    /// Default: false (opt-in).
+    #[serde(default)]
+    pub verify_predicate_enabled: bool,
+    /// Provider name from `[[llm.providers]]` for predicate evaluation.
+    ///
+    /// Empty string = fall back to `verify_provider`, then primary.
+    #[serde(default)]
+    pub predicate_provider: ProviderName,
+    /// Maximum number of predicate-driven task re-runs across the entire DAG.
+    ///
+    /// Independent of `max_replans` (verifier completeness budget). Default: 2.
+    #[serde(default = "default_max_predicate_replans")]
+    pub max_predicate_replans: u32,
+    /// Timeout in seconds for each predicate LLM evaluation call.
+    ///
+    /// On timeout the evaluator returns a fail-open outcome (`passed = true`,
+    /// `confidence = 0.0`) and logs a warning. Default: 30.
+    #[serde(default = "default_predicate_timeout_secs")]
+    pub predicate_timeout_secs: u64,
 }
 
 impl Default for OrchestrationConfig {
@@ -251,56 +309,13 @@ impl Default for OrchestrationConfig {
             cascade_failure_threshold: default_cascade_failure_threshold(),
             tree_optimized_dispatch: false,
             adaptorch: AdaptOrchConfig::default(),
-        }
-    }
-}
-
-/// Configuration for `AdaptOrch` — bandit-driven topology advisor (`[orchestration.adaptorch]`).
-///
-/// # Example
-///
-/// ```toml
-/// [orchestration.adaptorch]
-/// enabled = true
-/// topology_provider = "fast"
-/// classify_timeout_secs = 4
-/// state_path = ""
-/// ```
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct AdaptOrchConfig {
-    /// Enable `AdaptOrch`. When `false`, planning uses the default `plan()` path.
-    pub enabled: bool,
-    /// Provider name from `[[llm.providers]]` for goal classification. Empty → primary provider.
-    pub topology_provider: ProviderName,
-    /// Hard timeout (seconds) for the classification LLM call.
-    #[serde(default = "default_classify_timeout_secs")]
-    pub classify_timeout_secs: u64,
-    /// Path to the persisted Beta-arm JSON state file.
-    /// Empty string → `~/.zeph/adaptorch_state.json` (resolved at runtime).
-    #[serde(default)]
-    pub state_path: String,
-    /// Maximum tokens for the classification LLM call.
-    #[serde(default = "default_max_classify_tokens")]
-    pub max_classify_tokens: u32,
-}
-
-fn default_classify_timeout_secs() -> u64 {
-    4
-}
-
-fn default_max_classify_tokens() -> u32 {
-    80
-}
-
-impl Default for AdaptOrchConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            topology_provider: ProviderName::default(),
-            classify_timeout_secs: default_classify_timeout_secs(),
-            state_path: String::new(),
-            max_classify_tokens: default_max_classify_tokens(),
+            cascade_chain_threshold: default_cascade_chain_threshold(),
+            cascade_failure_rate_abort_threshold: 0.0,
+            lineage_ttl_secs: default_lineage_ttl_secs(),
+            verify_predicate_enabled: false,
+            predicate_provider: ProviderName::default(),
+            max_predicate_replans: default_max_predicate_replans(),
+            predicate_timeout_secs: default_predicate_timeout_secs(),
         }
     }
 }
@@ -352,6 +367,56 @@ impl Default for ExperimentConfig {
             eval_budget_tokens: default_experiment_eval_budget_tokens(),
             auto_apply: false,
             schedule: ExperimentSchedule::default(),
+        }
+    }
+}
+
+/// Configuration for `AdaptOrch` — bandit-driven topology advisor (`[orchestration.adaptorch]`).
+///
+/// # Example
+///
+/// ```toml
+/// [orchestration.adaptorch]
+/// enabled = true
+/// topology_provider = "fast"
+/// classify_timeout_secs = 4
+/// state_path = ""
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AdaptOrchConfig {
+    /// Enable `AdaptOrch`. When `false`, planning uses the default `plan()` path.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for goal classification. Empty → primary provider.
+    pub topology_provider: ProviderName,
+    /// Hard timeout (seconds) for the classification LLM call.
+    #[serde(default = "default_classify_timeout_secs")]
+    pub classify_timeout_secs: u64,
+    /// Path to the persisted Beta-arm JSON state file.
+    /// Empty string → `~/.zeph/adaptorch_state.json` (resolved at runtime).
+    #[serde(default)]
+    pub state_path: String,
+    /// Maximum tokens for the classification LLM call.
+    #[serde(default = "default_max_classify_tokens")]
+    pub max_classify_tokens: u32,
+}
+
+fn default_classify_timeout_secs() -> u64 {
+    4
+}
+
+fn default_max_classify_tokens() -> u32 {
+    80
+}
+
+impl Default for AdaptOrchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            topology_provider: ProviderName::default(),
+            classify_timeout_secs: default_classify_timeout_secs(),
+            state_path: String::new(),
+            max_classify_tokens: default_max_classify_tokens(),
         }
     }
 }

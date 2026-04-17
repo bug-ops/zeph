@@ -3,6 +3,8 @@
 
 use zeph_subagent::SubAgentError;
 
+use super::lineage::LineageEntry;
+
 /// All error variants produced by the orchestration subsystem.
 ///
 /// Variants are exhaustive — callers that match on this type should use a
@@ -98,4 +100,31 @@ pub enum OrchestrationError {
     /// Propagated error from a sub-agent execution.
     #[error(transparent)]
     SubAgent(#[from] SubAgentError),
+
+    /// A `VerifyPredicate::Expression` was encountered; only `Natural` is
+    /// supported in v1.
+    #[error("predicate type not supported: {0}")]
+    PredicateNotSupported(String),
+
+    /// Predicate remediation could not be injected because the replan budget is exhausted.
+    #[error("replan budget exhausted for task {task_id}: {reason}")]
+    ReplanBudgetExhausted {
+        /// Task that triggered remediation.
+        task_id: String,
+        /// Human-readable reason (e.g. "predicate remediation").
+        reason: String,
+    },
+
+    /// The DAG was aborted because a consecutive error chain in a `depends_on` path
+    /// (or a region fan-out failure rate) exceeded the configured threshold.
+    ///
+    /// `chain_depth` in the display is `chain.len()` for quick log scanning; the full
+    /// [`LineageEntry`] list is emitted to the structured audit log.
+    #[error("cascade abort: root={root:?}, chain_depth={}", chain.len())]
+    CascadeAborted {
+        /// Root task ID where the failure chain began.
+        root: super::graph::TaskId,
+        /// Full lineage chain at the time of abort; earliest entry first.
+        chain: Vec<LineageEntry>,
+    },
 }

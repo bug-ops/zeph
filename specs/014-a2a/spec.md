@@ -154,3 +154,29 @@ The `ibct` feature flag must be enabled for IBCT to be compiled in.
 - NEVER log or dump raw IBCT tokens — they are bearer credentials
 - `X-Zeph-IBCT` header must be stripped from any request before forwarding to MCP servers or external tools
 - HMAC-SHA256 comparison must use constant-time equality (`subtle::ConstantTimeEq`) — not `==`
+
+---
+
+## Addendum: A2A vs. ANP Positioning (2026-04-17)
+
+Cross-reference: `specs/045-interop-protocol-gaps/spec.md`
+
+### A2A is Zeph's recommended protocol for agent-to-agent delegation
+
+A2A provides centralized discovery via `/.well-known/agent.json` and structured task delegation
+via JSON-RPC 2.0. This is sufficient for all current Zeph orchestration use cases:
+- DAG subtask delegation to remote specialist agents
+- Orchestrator exposing Zeph as a callable agent to external frameworks
+- Agent federation via `AgentRegistry` + TTL cache
+
+### ANP is explicitly out of scope (P4 research)
+
+ANP (Agent Network Protocol) offers decentralized, DID-based discovery and capability
+re-negotiation designed for open, permissionless agent meshes. Zeph does not implement ANP.
+
+Rationale: centralized A2A discovery covers all current use cases. ANP's DID infrastructure
+adds operational complexity with no near-term user benefit. Revisit if Zeph is deployed in
+multi-tenant or marketplace environments where arbitrary third-party agent trust is required.
+
+Any proposal to implement ANP must update `specs/045-interop-protocol-gaps/spec.md` and
+receive an explicit architectural decision before code is written.

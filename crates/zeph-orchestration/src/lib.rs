@@ -76,22 +76,25 @@ pub mod command;
 pub mod dag;
 pub mod error;
 pub mod graph;
+pub mod lineage;
 pub mod plan_cache;
 pub mod planner;
 pub mod router;
 pub mod scheduler;
 pub mod topology;
 pub mod verifier;
+pub mod verify_predicate;
 
 pub use adaptorch::{AdaptOrchMetrics, AdvisorVerdict, TaskClass, TopologyAdvisor, TopologyHint};
 pub use aggregator::{Aggregator, LlmAggregator};
-pub use cascade::{CascadeConfig, CascadeDetector, RegionHealth};
+pub use cascade::{AbortDecision, CascadeConfig, CascadeDetector, RegionHealth};
 pub use command::PlanCommand;
 pub use error::OrchestrationError;
 pub use graph::{
     ExecutionMode, FailureStrategy, GraphId, GraphPersistence, GraphStatus, TaskGraph, TaskId,
     TaskNode, TaskResult, TaskStatus,
 };
+pub use lineage::{ErrorLineage, LineageEntry, LineageKind, classify_error};
 pub use plan_cache::{
     PlanCache, PlanCacheError, PlanTemplate, TemplateTask, normalize_goal, plan_with_cache,
 };
@@ -100,3 +103,4 @@ pub use router::{AgentRouter, RuleBasedRouter};
 pub use scheduler::{DagScheduler, SchedulerAction, TaskEvent, TaskOutcome};
 pub use topology::{DispatchStrategy, Topology, TopologyAnalysis, TopologyClassifier};
 pub use verifier::{Gap, GapSeverity, PlanVerifier, VerificationResult};
+pub use verify_predicate::{PredicateEvaluator, PredicateOutcome, VerifyPredicate};

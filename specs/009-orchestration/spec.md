@@ -377,3 +377,45 @@ tree_optimized_dispatch = false
 - `TreeOptimized` applies only to `FanOut`/`FanIn` topologies — no-op for `Linear`/`Mixed`
 - Critical-path distance is computed at dispatch time, not at plan creation
 - NEVER assume `ExecutionMode::Sequential` implies dependency — it only controls concurrency
+
+---
+
+## Cascade Abort Defense
+
+Error cascade defense (arXiv:2603.04474) aborts a DAG when consecutive failures in a
+`depends_on` chain exceed the configured threshold, preventing silent propagation of
+a root failure through the entire graph.
+
+Two independent abort signals are evaluated after every `TaskOutcome::Failed` event:
+
+1. **Linear-chain abort**: `cascade_chain_threshold` consecutive `Failed` entries in a
+   `depends_on` path trigger abort. The chain is built by merging parent lineage entries
+   into the failing task's chain.
+
+2. **Fan-out rate abort**: when `cascade_failure_rate_abort_threshold > 0.0` and a region's
+   failure rate reaches the threshold (with ≥ 3 tasks observed), the DAG is aborted.
+   Requires `cascade_routing = true`.
+
+Lineage is stored as a **side-table on `DagScheduler`** (`lineage_chains: HashMap<TaskId, ErrorLineage>`),
+not on `TaskNode` — avoiding database serialization cost.
+
+### Config
+
+```toml
+[orchestration]
+cascade_chain_threshold = 3               # 0 = disable chain abort; must not be 1
+cascade_failure_rate_abort_threshold = 0.0  # 0.0 = disable; recommended production: 0.7
+lineage_ttl_secs = 300                    # must be > 0
+```
+
+### Key Invariants
+
+- `cascade_chain_threshold = 1` is rejected at config validation — it would abort on every failure
+- `lineage_ttl_secs = 0` is rejected — use `cascade_chain_threshold = 0` to disable lineage
+- `cascade_failure_rate_abort_threshold` must be in `[0.0, 1.0]`; `0.0` disables fan-out abort
+- Lineage chains are reset on `inject_tasks()` — stale chains do not affect post-replan execution
+- Fan-out abort requires `region_size >= 3`; single-failure 100%-rate regions never trigger abort
+- Both signals (`chain_threshold` and `fan_out_rate`) are evaluated independently; first to fire wins
+- NEVER store lineage on `TaskNode` or serialize it to the database — lineage is a runtime-only signal
+- Audit log MUST emit ONE structured `tracing::error!` per abort with `root`, `chain_depth`, and `cause`
+

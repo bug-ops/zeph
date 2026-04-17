@@ -12,6 +12,7 @@ use super::adaptorch::TopologyHint;
 use super::dag;
 use super::error::OrchestrationError;
 use super::graph::{ExecutionMode, FailureStrategy, TaskGraph, TaskId, TaskNode};
+use super::verify_predicate::VerifyPredicate;
 use zeph_config::OrchestrationConfig;
 use zeph_subagent::{SubAgentDef, ToolPolicy};
 
@@ -124,6 +125,13 @@ pub(crate) struct PlannedTask {
     /// LLM-annotated execution mode. Absent or `null` defaults to `Parallel`.
     #[serde(default)]
     pub execution_mode: Option<ExecutionMode>,
+    /// Natural-language verification criterion for the predicate gate.
+    ///
+    /// When non-empty, the scheduler evaluates this criterion against the task's
+    /// output before allowing downstream tasks to proceed. Absent or `null`
+    /// means no gate is applied for this task.
+    #[serde(default)]
+    pub verify_criteria: Option<String>,
 }
 
 impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
@@ -224,15 +232,22 @@ fn build_prompt(goal: &str, agents: &[SubAgentDef], max_tasks: u32) -> Vec<Messa
          - failure_strategy is optional: \"abort\", \"retry\", \"skip\", \"ask\", or omit for default.\n\
          - For each task, specify execution_mode: \"parallel\" (can run concurrently with sibling \
            tasks) or \"sequential\" (must run alone at its DAG level, e.g. deploy, shared-state \
-           mutation, exclusive resource access). Default to \"parallel\" when unsure.\n\n\
+           mutation, exclusive resource access). Default to \"parallel\" when unsure.\n\
+         - For each task, you may include verify_criteria: a short natural-language statement \
+           describing what a correct output must satisfy (e.g. \"output must contain a valid JSON \
+           object\", \"response must list at least 3 recommendations\"). Set to null when no \
+           explicit output criterion is needed. Downstream tasks will be blocked until the \
+           criterion is satisfied.\n\n\
          Example (2-task plan):\n\
          {{\"tasks\": [\
            {{\"task_id\": \"fetch-data\", \"title\": \"Fetch raw data\", \
              \"description\": \"Download the dataset from source.\", \
-             \"depends_on\": [], \"execution_mode\": \"parallel\"}},\
+             \"depends_on\": [], \"execution_mode\": \"parallel\", \
+             \"verify_criteria\": \"output must contain the raw dataset as valid JSON\"}},\
            {{\"task_id\": \"deploy\", \"title\": \"Deploy service\", \
              \"description\": \"Deploy the processed artifact to production.\", \
-             \"depends_on\": [\"fetch-data\"], \"execution_mode\": \"sequential\"}}\
+             \"depends_on\": [\"fetch-data\"], \"execution_mode\": \"sequential\", \
+             \"verify_criteria\": null}}\
          ]}}"
     );
 
@@ -378,6 +393,20 @@ fn convert_response(
             node.execution_mode = mode;
         }
 
+        if let Some(criteria) = &pt.verify_criteria {
+            let trimmed = criteria.trim();
+            if !trimmed.is_empty() {
+                let criterion: String = trimmed.chars().take(1024).collect();
+                if criterion.len() < trimmed.len() {
+                    tracing::warn!(
+                        original_len = trimmed.len(),
+                        "verify_criteria truncated to 1024 chars"
+                    );
+                }
+                node.verify_predicate = Some(VerifyPredicate::Natural(criterion));
+            }
+        }
+
         graph.tasks.push(node);
     }
 
@@ -422,6 +451,7 @@ mod tests {
             depends_on: deps.iter().map(std::string::ToString::to_string).collect(),
             failure_strategy: None,
             execution_mode: None,
+            verify_criteria: None,
         }
     }
 
@@ -560,6 +590,7 @@ mod tests {
                     depends_on: vec![],
                     failure_strategy: None,
                     execution_mode: None,
+                    verify_criteria: None,
                 }],
             };
             let err = convert_response(response, "goal", &agents(), 20).unwrap_err();
@@ -589,6 +620,7 @@ mod tests {
                 depends_on: vec![],
                 failure_strategy: Some("explode".to_string()),
                 execution_mode: None,
+                verify_criteria: None,
             }],
         };
         let graph = convert_response(response, "goal", &agents(), 20).unwrap();
@@ -668,6 +700,7 @@ mod tests {
                 depends_on: vec![],
                 failure_strategy: None,
                 execution_mode: Some(ExecutionMode::Parallel),
+                verify_criteria: None,
             }],
         };
         let graph = convert_response(response, "goal", &agents(), 20).unwrap();
@@ -685,6 +718,7 @@ mod tests {
                 depends_on: vec![],
                 failure_strategy: None,
                 execution_mode: Some(ExecutionMode::Sequential),
+                verify_criteria: None,
             }],
         };
         let graph = convert_response(response, "goal", &agents(), 20).unwrap();

@@ -233,6 +233,30 @@ impl Config {
             )));
         }
 
+        // Cascade chain threshold must not be 1 — that would abort on every single failure.
+        if self.orchestration.cascade_chain_threshold == 1 {
+            return Err(ConfigError::Validation(
+                "orchestration.cascade_chain_threshold=1 aborts on every failure; \
+                 use 0 to disable linear-chain cascade abort instead"
+                    .into(),
+            ));
+        }
+
+        let cfrat = self.orchestration.cascade_failure_rate_abort_threshold;
+        if !cfrat.is_finite() || !(0.0..=1.0).contains(&cfrat) {
+            return Err(ConfigError::Validation(format!(
+                "orchestration.cascade_failure_rate_abort_threshold must be in [0.0, 1.0], got {cfrat}"
+            )));
+        }
+
+        if self.orchestration.lineage_ttl_secs == 0 {
+            return Err(ConfigError::Validation(
+                "orchestration.lineage_ttl_secs must be > 0; \
+                 set cascade_chain_threshold=0 to disable lineage tracking instead"
+                    .into(),
+            ));
+        }
+
         // Focus config validation
         if self.agent.focus.compression_interval == 0 {
             return Err(ConfigError::Validation(

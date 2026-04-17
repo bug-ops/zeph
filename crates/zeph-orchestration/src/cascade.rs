@@ -17,6 +17,34 @@ use std::collections::{HashMap, HashSet};
 
 use super::graph::{TaskGraph, TaskId};
 
+/// Decision returned by [`CascadeDetector::evaluate_abort`].
+///
+/// Callers match on this to decide whether to abort the DAG immediately.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::cascade::AbortDecision;
+/// use zeph_orchestration::graph::TaskId;
+///
+/// let decision = AbortDecision::None;
+/// assert!(matches!(decision, AbortDecision::None));
+/// ```
+#[derive(Debug, Clone)]
+pub enum AbortDecision {
+    /// No abort warranted; continue normal execution.
+    None,
+    /// A DAG region's failure rate exceeded the configured threshold.
+    FanOutCascade {
+        /// The root task ID of the failing region.
+        region_root: TaskId,
+        /// Failure rate at the time of abort (0.0–1.0).
+        failure_rate: f32,
+        /// Total tasks observed in the region (completed + failed).
+        region_size: usize,
+    },
+}
+
 /// Per-region failure health snapshot.
 ///
 /// Accumulated by [`CascadeDetector::record_outcome`] and read by
@@ -141,6 +169,69 @@ impl CascadeDetector {
             .filter(|t| cascading_roots.contains(&primary_root(t.id, graph)))
             .map(|t| t.id)
             .collect()
+    }
+
+    /// Evaluate whether a cascade abort should be triggered by fan-out failure rate.
+    ///
+    /// Returns [`AbortDecision::FanOutCascade`] when the primary region of `failed_task_id`
+    /// has a failure rate ≥ `rate_threshold` AND the region has at least 3 tasks (floor
+    /// prevents a single-failure 100%-rate region from triggering an abort prematurely).
+    ///
+    /// Returns [`AbortDecision::None`] when `rate_threshold ≤ 0.0` (disabled by default).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_orchestration::cascade::{AbortDecision, CascadeConfig, CascadeDetector};
+    /// use zeph_orchestration::graph::{TaskGraph, TaskId, TaskNode};
+    ///
+    /// fn make_node(id: u32, deps: &[u32]) -> TaskNode {
+    ///     let mut n = TaskNode::new(id, format!("t{id}"), "desc");
+    ///     n.depends_on = deps.iter().map(|&d| TaskId(d)).collect();
+    ///     n
+    /// }
+    ///
+    /// let mut g = TaskGraph::new("test");
+    /// g.tasks = vec![
+    ///     make_node(0, &[]),
+    ///     make_node(1, &[0]),
+    ///     make_node(2, &[0]),
+    ///     make_node(3, &[0]),
+    /// ];
+    ///
+    /// let mut det = CascadeDetector::new(CascadeConfig { failure_threshold: 0.5 });
+    /// det.record_outcome(TaskId(1), false, &g);
+    /// det.record_outcome(TaskId(2), false, &g);
+    /// det.record_outcome(TaskId(3), true, &g);
+    ///
+    /// // 2/3 failures = 0.67 >= threshold 0.7? No, so None here.
+    /// match det.evaluate_abort(&g, TaskId(1), 0.9) {
+    ///     AbortDecision::None => {}
+    ///     other => panic!("unexpected: {:?}", other),
+    /// }
+    /// ```
+    #[must_use]
+    pub fn evaluate_abort(
+        &self,
+        graph: &TaskGraph,
+        failed_task_id: TaskId,
+        rate_threshold: f32,
+    ) -> AbortDecision {
+        if rate_threshold <= f32::EPSILON {
+            return AbortDecision::None;
+        }
+        let root = primary_root(failed_task_id, graph);
+        if let Some(health) = self.region_health.get(&root)
+            && health.failure_rate >= rate_threshold
+            && health.total_tasks >= 3
+        {
+            return AbortDecision::FanOutCascade {
+                region_root: root,
+                failure_rate: health.failure_rate,
+                region_size: health.total_tasks,
+            };
+        }
+        AbortDecision::None
     }
 
     /// Reset all region health counters.

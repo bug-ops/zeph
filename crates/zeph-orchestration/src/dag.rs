@@ -14,6 +14,7 @@ use std::collections::VecDeque;
 
 use super::error::OrchestrationError;
 use super::graph::{FailureStrategy, GraphStatus, TaskGraph, TaskId, TaskNode, TaskStatus};
+use super::verify_predicate::PredicateOutcome;
 
 /// Validate that the task slice forms a well-structured DAG.
 ///
@@ -138,11 +139,37 @@ pub fn toposort(tasks: &[TaskNode]) -> Result<Vec<TaskId>, OrchestrationError> {
     Ok(order)
 }
 
+/// Returns `true` when all predecessor predicates are satisfied for `task`.
+///
+/// A predecessor blocks the task when it has a `verify_predicate` set **and**
+/// its `predicate_outcome` is either absent or failed. Only `Completed`
+/// predecessors with `predicate_outcome.passed == true` are considered cleared.
+///
+/// This is the single authoritative predicate gate — `tick()` calls `ready_tasks()`
+/// which calls this helper, so restart-safety is guaranteed by the persisted
+/// `predicate_outcome` field on `TaskNode`.
+fn all_parents_predicate_clear(task: &TaskNode, graph: &TaskGraph) -> bool {
+    task.depends_on.iter().all(|parent_id| {
+        let parent = &graph.tasks[parent_id.index()];
+        matches!(
+            (&parent.verify_predicate, &parent.predicate_outcome),
+            // No gate on this parent — pass through.
+            (None, _)
+            // Gate present and outcome explicitly passed.
+            | (Some(_), Some(PredicateOutcome { passed: true, .. }))
+        )
+    })
+}
+
 /// Find tasks that are ready to be scheduled.
 ///
 /// Returns tasks that are either:
 /// - In `Ready` status (already marked ready but not yet running), or
 /// - In `Pending` status with all dependencies in `Completed` state.
+///
+/// Additionally, tasks whose predecessors have an uncleared `verify_predicate`
+/// gate are excluded regardless of their own status (predicate gate S2 — gate in
+/// `ready_tasks()` as single source of truth).
 ///
 /// This makes the function idempotent across scheduler ticks.
 #[must_use]
@@ -152,14 +179,24 @@ pub fn ready_tasks(graph: &TaskGraph) -> Vec<TaskId> {
         .iter()
         .filter_map(|task| {
             match task.status {
-                TaskStatus::Ready => Some(task.id),
+                TaskStatus::Ready => {
+                    if all_parents_predicate_clear(task, graph) {
+                        Some(task.id)
+                    } else {
+                        None
+                    }
+                }
                 TaskStatus::Pending => {
-                    // All deps must be Completed to unblock
+                    // All deps must be Completed to unblock; also predicate gate must be clear.
                     let all_deps_done = task
                         .depends_on
                         .iter()
                         .all(|dep_id| graph.tasks[dep_id.index()].status == TaskStatus::Completed);
-                    if all_deps_done { Some(task.id) } else { None }
+                    if all_deps_done && all_parents_predicate_clear(task, graph) {
+                        Some(task.id)
+                    } else {
+                        None
+                    }
                 }
                 _ => None,
             }
@@ -540,6 +577,80 @@ mod tests {
         let ready = ready_tasks(&graph);
         // TaskId(0) is Ready so it should be returned
         assert!(ready.contains(&TaskId(0)));
+    }
+
+    // --- predicate gate tests ---
+
+    #[test]
+    fn test_ready_tasks_predicate_gate_blocks_downstream() {
+        use crate::verify_predicate::VerifyPredicate;
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        // Task 0 completed but predicate not yet evaluated.
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural(
+            "output must be non-empty".to_string(),
+        ));
+        graph.tasks[0].predicate_outcome = None;
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let ready = ready_tasks(&graph);
+        assert!(
+            !ready.contains(&TaskId(1)),
+            "task 1 must be blocked by uncleared predicate on task 0"
+        );
+    }
+
+    #[test]
+    fn test_ready_tasks_predicate_gate_unblocks_on_pass() {
+        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural("criterion".to_string()));
+        graph.tasks[0].predicate_outcome = Some(PredicateOutcome {
+            passed: true,
+            confidence: 0.9,
+            reason: "ok".to_string(),
+        });
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let ready = ready_tasks(&graph);
+        assert!(
+            ready.contains(&TaskId(1)),
+            "task 1 must be unblocked when predicate passed"
+        );
+    }
+
+    #[test]
+    fn test_ready_tasks_predicate_gate_remains_closed_on_fail() {
+        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural("criterion".to_string()));
+        graph.tasks[0].predicate_outcome = Some(PredicateOutcome {
+            passed: false,
+            confidence: 0.1,
+            reason: "criterion not met".to_string(),
+        });
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let ready = ready_tasks(&graph);
+        assert!(
+            !ready.contains(&TaskId(1)),
+            "task 1 must remain blocked when predicate failed"
+        );
+    }
+
+    #[test]
+    fn test_ready_tasks_no_predicate_unblocks_normally() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let ready = ready_tasks(&graph);
+        assert!(
+            ready.contains(&TaskId(1)),
+            "no predicate = gate always clear"
+        );
     }
 
     // --- propagate_failure tests ---

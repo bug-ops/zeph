@@ -10,15 +10,17 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
-use super::cascade::{CascadeConfig, CascadeDetector};
+use super::cascade::{AbortDecision, CascadeConfig, CascadeDetector};
 use super::dag;
 use super::error::OrchestrationError;
 use super::graph::{
     ExecutionMode, GraphStatus, TaskGraph, TaskId, TaskNode, TaskResult, TaskStatus,
 };
+use super::lineage::{ErrorLineage, LineageEntry, LineageKind, classify_error, now_ms};
 use super::router::AgentRouter;
 use super::topology::{DispatchStrategy, Topology, TopologyAnalysis, TopologyClassifier};
 use super::verifier::inject_tasks as verifier_inject_tasks;
+use super::verify_predicate::VerifyPredicate;
 use zeph_config::OrchestrationConfig;
 use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind};
 use zeph_subagent::{SubAgentDef, SubAgentError};
@@ -82,6 +84,22 @@ pub enum SchedulerAction {
     Done {
         /// Final graph status.
         status: GraphStatus,
+    },
+    /// Request predicate evaluation for a completed task.
+    ///
+    /// Emitted idempotently from `tick()` for every `Completed` task whose
+    /// `verify_predicate.is_some()` AND `predicate_outcome.is_none()`. The caller
+    /// must evaluate the predicate and call [`DagScheduler::record_predicate_outcome`].
+    ///
+    /// Downstream tasks remain blocked by `dag::ready_tasks()` until
+    /// `predicate_outcome.passed == true`.
+    VerifyPredicate {
+        /// Task whose output must be evaluated.
+        task_id: TaskId,
+        /// The verification predicate to evaluate.
+        predicate: VerifyPredicate,
+        /// Raw output text produced by the task.
+        output: String,
     },
     /// Request verification of a completed task's output (emitted when `verify_completeness=true`).
     ///
@@ -227,6 +245,25 @@ pub struct DagScheduler {
     tree_optimized_dispatch: bool,
     /// Whether `cascade_routing` was enabled at construction.
     cascade_routing: bool,
+    /// Per-task error lineage chains. Side-table on scheduler — NOT on `TaskNode` (S4).
+    /// Reset on `inject_tasks()` mirroring `cascade_detector` reset.
+    lineage_chains: HashMap<TaskId, ErrorLineage>,
+    /// Consecutive-chain abort threshold from config.
+    cascade_chain_threshold: usize,
+    /// Fan-out failure-rate abort threshold from config (0.0 = disabled).
+    cascade_failure_rate_abort_threshold: f32,
+    /// TTL for lineage entries in seconds.
+    lineage_ttl_secs: u64,
+    /// Whether the predicate gate is enabled (`config.verify_predicate_enabled`).
+    verify_predicate_enabled: bool,
+    /// Provider name for predicate evaluation (empty = fall back to `verify_provider` then primary).
+    predicate_provider: String,
+    /// Maximum predicate-driven re-runs across the whole DAG (S1 — independent of `max_replans`).
+    max_predicate_replans: u32,
+    /// Counter of predicate-driven re-runs used so far.
+    predicate_replans_used: u32,
+    /// Per-task accumulated predicate failure reasons, injected into the re-run prompt.
+    predicate_reasons: HashMap<TaskId, String>,
 }
 
 impl std::fmt::Debug for DagScheduler {
@@ -344,6 +381,15 @@ impl DagScheduler {
             cascade_detector,
             tree_optimized_dispatch: config.tree_optimized_dispatch,
             cascade_routing: config.cascade_routing && config.topology_selection,
+            lineage_chains: HashMap::new(),
+            cascade_chain_threshold: config.cascade_chain_threshold,
+            cascade_failure_rate_abort_threshold: config.cascade_failure_rate_abort_threshold,
+            lineage_ttl_secs: config.lineage_ttl_secs,
+            verify_predicate_enabled: config.verify_predicate_enabled,
+            predicate_provider: config.predicate_provider.as_str().trim().to_owned(),
+            max_predicate_replans: config.max_predicate_replans,
+            predicate_replans_used: 0,
+            predicate_reasons: HashMap::new(),
         })
     }
 
@@ -447,6 +493,15 @@ impl DagScheduler {
             cascade_detector,
             tree_optimized_dispatch: config.tree_optimized_dispatch,
             cascade_routing: config.cascade_routing && config.topology_selection,
+            lineage_chains: HashMap::new(),
+            cascade_chain_threshold: config.cascade_chain_threshold,
+            cascade_failure_rate_abort_threshold: config.cascade_failure_rate_abort_threshold,
+            lineage_ttl_secs: config.lineage_ttl_secs,
+            verify_predicate_enabled: config.verify_predicate_enabled,
+            predicate_provider: config.predicate_provider.as_str().trim().to_owned(),
+            max_predicate_replans: config.max_predicate_replans,
+            predicate_replans_used: 0,
+            predicate_reasons: HashMap::new(),
         })
     }
 
@@ -525,6 +580,18 @@ impl DagScheduler {
         &self.verify_provider
     }
 
+    /// Provider name for predicate evaluation (empty = fall back to `verify_provider` then primary).
+    #[must_use]
+    pub fn predicate_provider_name(&self) -> &str {
+        &self.predicate_provider
+    }
+
+    /// Whether the predicate gate is enabled.
+    #[must_use]
+    pub fn verify_predicate_enabled(&self) -> bool {
+        self.verify_predicate_enabled
+    }
+
     /// Remaining whole-plan replan budget: `max_replans - global_replan_count`.
     ///
     /// Returns 0 when the global cap has been reached.
@@ -598,7 +665,137 @@ impl DagScheduler {
             det.reset();
         }
 
+        // Reset lineage chains — injected tasks change the dependency topology, so
+        // stale lineage chains no longer reflect the current graph structure.
+        self.lineage_chains.clear();
+
+        // Reset predicate reasons — predicate re-run history is invalidated when new
+        // tasks are injected (graph topology fundamentally changed).
+        self.predicate_reasons.clear();
+
         Ok(())
+    }
+
+    /// Record the outcome of a predicate evaluation for `task_id`.
+    ///
+    /// When the predicate **failed** and the re-run budget allows it, this method
+    /// resets the task to `Ready` (incrementing `retry_count`) so the scheduler
+    /// re-dispatches it on the next tick. The prior failure `reason` is stored in
+    /// `predicate_reasons` so `build_task_prompt()` can augment the next prompt.
+    ///
+    /// When both `max_retries` and `max_predicate_replans` are exhausted, the
+    /// failed predicate is recorded as-is and `inject_predicate_remediation()` is
+    /// called to request a replan via the normal budget.
+    ///
+    /// Note: predicate state is in-memory only; restart re-evaluates any pending predicates.
+    /// After a crash, `predicate_outcome.is_none()` causes the scheduler to re-emit
+    /// `VerifyPredicate` on the next startup tick (idempotent by design).
+    ///
+    /// # Errors
+    ///
+    /// Returns `OrchestrationError::TaskNotFound` when `task_id` is out of bounds.
+    pub fn record_predicate_outcome(
+        &mut self,
+        task_id: TaskId,
+        outcome: super::verify_predicate::PredicateOutcome,
+        max_tasks: usize,
+    ) -> Result<(), OrchestrationError> {
+        if task_id.index() >= self.graph.tasks.len() {
+            return Err(OrchestrationError::TaskNotFound(task_id.to_string()));
+        }
+
+        self.graph.tasks[task_id.index()].predicate_outcome = Some(outcome.clone());
+
+        if outcome.passed {
+            // Gate cleared — downstream tasks will be unblocked by ready_tasks() on next tick.
+            tracing::debug!(task_id = %task_id, confidence = outcome.confidence, "predicate passed");
+            return Ok(());
+        }
+
+        // Predicate failed — attempt a re-run if budgets allow.
+        let task = &self.graph.tasks[task_id.index()];
+        let predicate_rerun_count = task.predicate_rerun_count;
+
+        if self.predicate_replans_used < self.max_predicate_replans {
+            tracing::info!(
+                task_id = %task_id,
+                predicate_rerun_count,
+                predicate_replans_used = self.predicate_replans_used,
+                "predicate failed, scheduling re-run"
+            );
+            let task = &mut self.graph.tasks[task_id.index()];
+            task.predicate_rerun_count += 1;
+            task.result = None;
+            task.predicate_outcome = None;
+            task.status = TaskStatus::Ready;
+            self.predicate_replans_used += 1;
+            self.predicate_reasons.insert(task_id, outcome.reason);
+            return Ok(());
+        }
+
+        // Budget exhausted — inject remediation task via regular replan budget.
+        tracing::warn!(
+            task_id = %task_id,
+            predicate_rerun_count,
+            predicate_replans_used = self.predicate_replans_used,
+            max_predicate_replans = self.max_predicate_replans,
+            "predicate re-run budget exhausted, injecting remediation task"
+        );
+        self.inject_predicate_remediation(task_id, &outcome.reason, max_tasks)?;
+        Ok(())
+    }
+
+    /// Inject a remediation task after predicate re-run budget is exhausted.
+    ///
+    /// Consumes the regular `max_replans` budget (same as verifier-driven replan)
+    /// because remediation injects new tasks into the DAG.
+    fn inject_predicate_remediation(
+        &mut self,
+        failed_task_id: TaskId,
+        reason: &str,
+        max_tasks: usize,
+    ) -> Result<(), OrchestrationError> {
+        // Per-task replan cap and global cap are both checked by inject_tasks().
+        // Build a minimal remediation task description.
+        let task = &self.graph.tasks[failed_task_id.index()];
+        let title = format!("Remediate: {}", task.title);
+        let description = format!(
+            "The output of task '{}' failed its verification predicate.\n\
+             Reason: {reason}\n\n\
+             Re-attempt the task with a corrected approach.",
+            task.title
+        );
+
+        let task_idx = u32::try_from(self.graph.tasks.len()).map_err(|_| {
+            OrchestrationError::VerificationFailed("task index overflows u32".to_string())
+        })?;
+        let mut remediation = super::graph::TaskNode::new(task_idx, title, description);
+        remediation.depends_on = vec![failed_task_id];
+        remediation
+            .agent_hint
+            .clone_from(&self.graph.tasks[failed_task_id.index()].agent_hint);
+
+        let replan_before = self.global_replan_count;
+        self.inject_tasks(failed_task_id, vec![remediation], max_tasks)?;
+
+        if self.global_replan_count == replan_before {
+            // inject_tasks silently no-op'd because the global replan budget is exhausted.
+            return Err(OrchestrationError::ReplanBudgetExhausted {
+                task_id: failed_task_id.to_string(),
+                reason: "predicate remediation".to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Prior predicate failure reason for `task_id`, if any.
+    ///
+    /// Used by `build_task_prompt()` to augment the re-run prompt with context from the
+    /// previous evaluation.
+    #[must_use]
+    pub fn predicate_failure_reason(&self, task_id: TaskId) -> Option<&str> {
+        self.predicate_reasons.get(&task_id).map(String::as_str)
     }
 }
 
@@ -769,6 +966,29 @@ impl DagScheduler {
             slots -= 1;
         }
 
+        // Idempotent predicate gate emission (S9): for every Completed task whose
+        // verify_predicate is set but predicate_outcome is None, emit VerifyPredicate.
+        // Re-emitted every tick until record_predicate_outcome() populates predicate_outcome.
+        // The caller must deduplicate in-flight evaluations (per-process HashSet in scheduler_loop.rs).
+        if self.verify_predicate_enabled {
+            for task in &self.graph.tasks {
+                if task.status == TaskStatus::Completed
+                    && let (Some(predicate), None) =
+                        (&task.verify_predicate, &task.predicate_outcome)
+                {
+                    let output = task
+                        .result
+                        .as_ref()
+                        .map_or_else(String::new, |r| r.output.clone());
+                    actions.push(SchedulerAction::VerifyPredicate {
+                        task_id: task.id,
+                        predicate: predicate.clone(),
+                        output,
+                    });
+                }
+            }
+        }
+
         actions.extend(self.check_graph_completion());
 
         actions
@@ -876,6 +1096,18 @@ impl DagScheduler {
                 status: GraphStatus::Completed,
             }];
         }
+        // Not a deadlock when predicate evaluation is pending — the scheduler is waiting
+        // for record_predicate_outcome() to be called from the agent loop.
+        let predicate_pending = self.verify_predicate_enabled
+            && self.graph.tasks.iter().any(|t| {
+                t.status == TaskStatus::Completed
+                    && t.verify_predicate.is_some()
+                    && t.predicate_outcome.is_none()
+            });
+        if predicate_pending {
+            return vec![];
+        }
+
         if dag::ready_tasks(&self.graph).is_empty() {
             tracing::error!(
                 "scheduler deadlock: no running or ready tasks, but graph not complete"
@@ -1105,6 +1337,7 @@ impl DagScheduler {
 
 impl DagScheduler {
     /// Process a single `TaskEvent` and return any cancel actions needed.
+    #[allow(clippy::too_many_lines)]
     fn process_event(&mut self, event: TaskEvent) -> Vec<SchedulerAction> {
         let TaskEvent {
             task_id,
@@ -1154,6 +1387,9 @@ impl DagScheduler {
                     agent_def: agent_def_name,
                 });
 
+                // Completed tasks need no lineage chain going forward.
+                self.lineage_chains.remove(&task_id);
+
                 // Record success in cascade detector.
                 if let Some(ref mut detector) = self.cascade_detector {
                     detector.record_outcome(task_id, true, &self.graph);
@@ -1195,6 +1431,68 @@ impl DagScheduler {
                     detector.record_outcome(task_id, false, &self.graph);
                 }
 
+                // Build error lineage chain from parent chains (S4 side-table).
+                // BEFORE propagate_failure so we can read the graph topology.
+                let deps: Vec<TaskId> = self.graph.tasks[task_id.index()].depends_on.clone();
+                let mut chain = ErrorLineage::default();
+                for parent_id in &deps {
+                    if let Some(parent_chain) = self.lineage_chains.get(parent_id) {
+                        chain.merge(parent_chain, self.lineage_ttl_secs);
+                    }
+                }
+                chain.push(LineageEntry {
+                    task_id,
+                    kind: LineageKind::Failed {
+                        error_class: classify_error(&error),
+                    },
+                    ts_ms: now_ms(),
+                });
+                self.lineage_chains.insert(task_id, chain.clone());
+
+                // Prune stale lineage entries to bound memory usage.
+                let ttl = self.lineage_ttl_secs;
+                self.lineage_chains.retain(|_, c| c.is_recent(ttl));
+
+                // Check fan-out abort signal from CascadeDetector (S5).
+                if let Some(ref detector) = self.cascade_detector {
+                    match detector.evaluate_abort(
+                        &self.graph,
+                        task_id,
+                        self.cascade_failure_rate_abort_threshold,
+                    ) {
+                        AbortDecision::FanOutCascade {
+                            region_root,
+                            failure_rate,
+                            region_size,
+                        } => {
+                            tracing::error!(
+                                root = %region_root,
+                                failure_rate = failure_rate,
+                                region_size = region_size,
+                                cause = "fan_out_rate",
+                                "cascade abort: fan-out failure rate threshold exceeded"
+                            );
+                            return self.abort_dag_with_lineage(region_root, chain.entries());
+                        }
+                        AbortDecision::None => {}
+                    }
+                }
+
+                // Check linear-chain abort signal (consecutive failures in depends_on path).
+                if self.cascade_chain_threshold > 0
+                    && chain.consecutive_failed_len() >= self.cascade_chain_threshold
+                {
+                    let root_id = chain.first_entry().map_or(task_id, |e| e.task_id);
+                    tracing::error!(
+                        root = %root_id,
+                        chain_depth = chain.consecutive_failed_len(),
+                        threshold = self.cascade_chain_threshold,
+                        cause = "chain_threshold",
+                        "cascade abort: consecutive failure chain threshold exceeded"
+                    );
+                    return self.abort_dag_with_lineage(root_id, chain.entries());
+                }
+
                 let cancel_ids = dag::propagate_failure(&mut self.graph, task_id);
                 let mut actions = Vec::new();
 
@@ -1216,6 +1514,41 @@ impl DagScheduler {
                 actions
             }
         }
+    }
+
+    /// Abort the DAG due to cascade failure; cancel all running tasks.
+    ///
+    /// Sets graph status to `Failed`, records `finished_at`, emits `Cancel` for all
+    /// running tasks, and appends `Done`. The `chain` is logged here for the audit record.
+    /// Callers must emit `tracing::error!` with root/cause before calling this.
+    fn abort_dag_with_lineage(
+        &mut self,
+        root: TaskId,
+        chain: &[LineageEntry],
+    ) -> Vec<SchedulerAction> {
+        self.graph.status = GraphStatus::Failed;
+        self.graph.finished_at = Some(super::graph::chrono_now());
+
+        // Emit structured audit log entry with full lineage path.
+        tracing::error!(
+            root = %root,
+            chain_depth = chain.len(),
+            chain = ?chain.iter().map(|e| e.task_id).collect::<Vec<_>>(),
+            "cascade abort: DAG terminated"
+        );
+
+        let mut actions: Vec<SchedulerAction> = self
+            .running
+            .drain()
+            .map(|(_, r)| SchedulerAction::Cancel {
+                agent_handle_id: r.agent_handle_id,
+            })
+            .collect();
+
+        actions.push(SchedulerAction::Done {
+            status: self.graph.status,
+        });
+        actions
     }
 
     /// Check all running tasks for timeout violations.
@@ -1434,6 +1767,13 @@ mod tests {
             cascade_failure_threshold: 0.5,
             tree_optimized_dispatch: false,
             adaptorch: Default::default(),
+            cascade_chain_threshold: 3,
+            cascade_failure_rate_abort_threshold: 0.0,
+            lineage_ttl_secs: 300,
+            verify_predicate_enabled: false,
+            predicate_provider: Default::default(),
+            max_predicate_replans: 2,
+            predicate_timeout_secs: 30,
         }
     }
 
@@ -3767,6 +4107,521 @@ mod tests {
         assert!(
             scheduler.cascade_detector.is_none(),
             "cascade_detector must be None when topology_selection=false"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Cascade defense (error lineage) tests
+    // ---------------------------------------------------------------------------
+
+    fn make_lineage_scheduler(graph: TaskGraph, chain_threshold: usize) -> DagScheduler {
+        let mut config = make_config();
+        config.cascade_chain_threshold = chain_threshold;
+        config.lineage_ttl_secs = 300;
+        DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn three_deep_failure_chain_triggers_cascade_abort() {
+        // Graph: 0 -> 1 -> 2. All three fail. threshold=3 → abort after task 2 fails.
+        let graph = graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[0]),
+            make_node(2, &[1]),
+        ]);
+        let mut scheduler = make_lineage_scheduler(graph, 3);
+
+        // Simulate task 0 spawned and running.
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+        scheduler.running.insert(
+            TaskId(0),
+            RunningTask {
+                agent_handle_id: "h0".to_string(),
+                agent_def_name: "worker".to_string(),
+                started_at: Instant::now(),
+            },
+        );
+
+        // Fail task 0.
+        let ev0 = TaskEvent {
+            task_id: TaskId(0),
+            agent_handle_id: "h0".to_string(),
+            outcome: TaskOutcome::Failed {
+                error: "timeout".to_string(),
+            },
+        };
+        scheduler.buffered_events.push_back(ev0);
+        let _ = scheduler.tick();
+
+        // Mark task 1 Running and fail it.
+        scheduler.graph.tasks[1].status = TaskStatus::Running;
+        scheduler.running.insert(
+            TaskId(1),
+            RunningTask {
+                agent_handle_id: "h1".to_string(),
+                agent_def_name: "worker".to_string(),
+                started_at: Instant::now(),
+            },
+        );
+        let ev1 = TaskEvent {
+            task_id: TaskId(1),
+            agent_handle_id: "h1".to_string(),
+            outcome: TaskOutcome::Failed {
+                error: "llm error".to_string(),
+            },
+        };
+        scheduler.buffered_events.push_back(ev1);
+        let _ = scheduler.tick();
+
+        // Mark task 2 Running and fail it → should trigger cascade abort.
+        scheduler.graph.tasks[2].status = TaskStatus::Running;
+        scheduler.running.insert(
+            TaskId(2),
+            RunningTask {
+                agent_handle_id: "h2".to_string(),
+                agent_def_name: "worker".to_string(),
+                started_at: Instant::now(),
+            },
+        );
+        let ev2 = TaskEvent {
+            task_id: TaskId(2),
+            agent_handle_id: "h2".to_string(),
+            outcome: TaskOutcome::Failed {
+                error: "timeout".to_string(),
+            },
+        };
+        scheduler.buffered_events.push_back(ev2);
+        let actions = scheduler.tick();
+
+        assert_eq!(
+            scheduler.graph.status,
+            GraphStatus::Failed,
+            "DAG must be Failed after cascade abort"
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, SchedulerAction::Done { .. })),
+            "Done action must be emitted"
+        );
+    }
+
+    #[test]
+    fn mid_success_resets_chain_no_abort() {
+        // Graph: 0 -> 1 -> 2 -> 3. Tasks 0 and 1 fail, 2 succeeds, 3 fails.
+        // threshold=3 — chain of 3 consecutive failures required; mid-success breaks it.
+        let graph = graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[0]),
+            make_node(2, &[1]),
+            make_node(3, &[2]),
+        ]);
+        let mut scheduler = make_lineage_scheduler(graph, 3);
+
+        // Fail tasks 0 and 1.
+        for (id, handle) in [(0u32, "h0"), (1, "h1")] {
+            scheduler.graph.tasks[id as usize].status = TaskStatus::Running;
+            scheduler.running.insert(
+                TaskId(id),
+                RunningTask {
+                    agent_handle_id: handle.to_string(),
+                    agent_def_name: "worker".to_string(),
+                    started_at: Instant::now(),
+                },
+            );
+            scheduler.buffered_events.push_back(TaskEvent {
+                task_id: TaskId(id),
+                agent_handle_id: handle.to_string(),
+                outcome: TaskOutcome::Failed {
+                    error: "err".to_string(),
+                },
+            });
+            let _ = scheduler.tick();
+        }
+
+        // Succeed task 2 — this breaks the chain.
+        scheduler.graph.tasks[2].status = TaskStatus::Running;
+        scheduler.running.insert(
+            TaskId(2),
+            RunningTask {
+                agent_handle_id: "h2".to_string(),
+                agent_def_name: "worker".to_string(),
+                started_at: Instant::now(),
+            },
+        );
+        scheduler.buffered_events.push_back(TaskEvent {
+            task_id: TaskId(2),
+            agent_handle_id: "h2".to_string(),
+            outcome: TaskOutcome::Completed {
+                output: "ok".to_string(),
+                artifacts: vec![],
+            },
+        });
+        let _ = scheduler.tick();
+
+        // Fail task 3 — only 1 in chain now; no abort.
+        scheduler.graph.tasks[3].status = TaskStatus::Running;
+        scheduler.running.insert(
+            TaskId(3),
+            RunningTask {
+                agent_handle_id: "h3".to_string(),
+                agent_def_name: "worker".to_string(),
+                started_at: Instant::now(),
+            },
+        );
+        scheduler.buffered_events.push_back(TaskEvent {
+            task_id: TaskId(3),
+            agent_handle_id: "h3".to_string(),
+            outcome: TaskOutcome::Failed {
+                error: "err".to_string(),
+            },
+        });
+        let _ = scheduler.tick();
+
+        // DAG should not have been cascade-aborted (propagate_failure for task 3 may
+        // mark graph Failed if all tasks failed, but cascade abort is not the cause).
+        // The lineage chain for task 3 starts fresh; length < threshold.
+        assert!(
+            scheduler
+                .lineage_chains
+                .get(&TaskId(3))
+                .map_or(0, ErrorLineage::consecutive_failed_len)
+                < 3,
+            "chain of task 3 must be < threshold after mid-success break"
+        );
+    }
+
+    // --- VeriMAP predicate gate tests ---
+
+    fn make_predicate_config() -> zeph_config::OrchestrationConfig {
+        zeph_config::OrchestrationConfig {
+            verify_predicate_enabled: true,
+            max_predicate_replans: 2,
+            ..make_config()
+        }
+    }
+
+    fn make_predicate_scheduler(graph: TaskGraph) -> DagScheduler {
+        let config = make_predicate_config();
+        let defs = vec![make_def("worker")];
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap()
+    }
+
+    #[test]
+    fn predicate_gate_blocks_downstream_until_outcome_recorded() {
+        use crate::verify_predicate::VerifyPredicate;
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[0].result = Some(TaskResult {
+            output: "output".to_string(),
+            artifacts: vec![],
+            duration_ms: 10,
+            agent_id: None,
+            agent_def: None,
+        });
+        graph.tasks[0].verify_predicate =
+            Some(VerifyPredicate::Natural("must be non-empty".to_string()));
+        graph.tasks[1].status = TaskStatus::Pending;
+        let mut scheduler = make_predicate_scheduler(graph);
+        scheduler.graph.status = GraphStatus::Running;
+
+        let actions = scheduler.tick();
+
+        // VerifyPredicate must be emitted for task 0.
+        let has_verify = actions.iter().any(|a| {
+            matches!(a, SchedulerAction::VerifyPredicate { task_id, .. } if *task_id == TaskId(0))
+        });
+        assert!(has_verify, "tick() must emit VerifyPredicate for task 0");
+
+        // Task 1 must NOT be spawned (gate still closed).
+        let task1_spawned = actions.iter().any(|a| {
+            matches!(a, SchedulerAction::Spawn { task_id, .. } if *task_id == TaskId(1))
+                || matches!(a, SchedulerAction::RunInline { task_id, .. } if *task_id == TaskId(1))
+        });
+        assert!(
+            !task1_spawned,
+            "task 1 must not be dispatched while gate is open"
+        );
+    }
+
+    #[test]
+    fn predicate_pass_unblocks_downstream() {
+        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[0].result = Some(TaskResult {
+            output: "output".to_string(),
+            artifacts: vec![],
+            duration_ms: 10,
+            agent_id: None,
+            agent_def: None,
+        });
+        graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural("criterion".to_string()));
+        graph.tasks[1].status = TaskStatus::Pending;
+        let mut scheduler = make_predicate_scheduler(graph);
+        scheduler.graph.status = GraphStatus::Running;
+
+        // Record a passing outcome.
+        scheduler
+            .record_predicate_outcome(
+                TaskId(0),
+                PredicateOutcome {
+                    passed: true,
+                    confidence: 0.9,
+                    reason: "ok".to_string(),
+                },
+                20,
+            )
+            .unwrap();
+
+        let actions = scheduler.tick();
+
+        // Task 1 should now be dispatched.
+        let task1_dispatched = actions.iter().any(|a| {
+            matches!(a, SchedulerAction::Spawn { task_id, .. } if *task_id == TaskId(1))
+                || matches!(a, SchedulerAction::RunInline { task_id, .. } if *task_id == TaskId(1))
+        });
+        assert!(
+            task1_dispatched,
+            "task 1 must be dispatched after predicate passed"
+        );
+    }
+
+    #[test]
+    fn predicate_fail_triggers_rerun_and_closes_gate() {
+        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[0].result = Some(TaskResult {
+            output: "bad".to_string(),
+            artifacts: vec![],
+            duration_ms: 10,
+            agent_id: None,
+            agent_def: None,
+        });
+        graph.tasks[0].verify_predicate =
+            Some(VerifyPredicate::Natural("must be valid JSON".to_string()));
+        graph.tasks[0].max_retries = Some(3);
+        graph.tasks[1].status = TaskStatus::Pending;
+        let mut scheduler = make_predicate_scheduler(graph);
+        scheduler.graph.status = GraphStatus::Running;
+
+        // Record a failing outcome.
+        scheduler
+            .record_predicate_outcome(
+                TaskId(0),
+                PredicateOutcome {
+                    passed: false,
+                    confidence: 0.1,
+                    reason: "not JSON".to_string(),
+                },
+                20,
+            )
+            .unwrap();
+
+        // Task 0 must be reset to Ready for re-run.
+        assert_eq!(
+            scheduler.graph.tasks[0].status,
+            TaskStatus::Ready,
+            "failed predicate must reset task to Ready"
+        );
+        // predicate_outcome must be cleared for re-run.
+        assert!(
+            scheduler.graph.tasks[0].predicate_outcome.is_none(),
+            "predicate_outcome must be None after re-run reset"
+        );
+        // predicate_rerun_count incremented (retry_count is unchanged — predicate re-runs
+        // are counted separately from execution retries per S1 fix).
+        assert_eq!(scheduler.graph.tasks[0].predicate_rerun_count, 1);
+        assert_eq!(scheduler.graph.tasks[0].retry_count, 0);
+        // Gate must still be closed for task 1.
+        let ready = crate::dag::ready_tasks(&scheduler.graph);
+        assert!(!ready.contains(&TaskId(1)), "task 1 must remain gated");
+    }
+
+    #[test]
+    fn predicate_budget_exhaustion_drops_rerun() {
+        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[0].result = Some(TaskResult {
+            output: "x".to_string(),
+            artifacts: vec![],
+            duration_ms: 1,
+            agent_id: None,
+            agent_def: None,
+        });
+        graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural("criterion".to_string()));
+        graph.tasks[0].max_retries = Some(10);
+
+        // Set max_predicate_replans to 0 to exhaust immediately.
+        let mut config = make_predicate_config();
+        config.max_predicate_replans = 0;
+        let defs = vec![make_def("worker")];
+        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+        scheduler.graph.status = GraphStatus::Running;
+
+        // With budget=0, a failing predicate must not reset to Ready (no re-run).
+        let result = scheduler.record_predicate_outcome(
+            TaskId(0),
+            PredicateOutcome {
+                passed: false,
+                confidence: 0.0,
+                reason: "nope".to_string(),
+            },
+            20,
+        );
+        assert!(result.is_ok(), "record_predicate_outcome must not error");
+        // Task should NOT have been reset to Ready (no budget).
+        assert_ne!(
+            scheduler.graph.tasks[0].status,
+            TaskStatus::Ready,
+            "no re-run when budget=0"
+        );
+    }
+
+    #[test]
+    fn verify_predicate_emit_is_idempotent_each_tick() {
+        use crate::verify_predicate::VerifyPredicate;
+        // Two tasks: task 0 Completed with predicate, task 1 Pending (depends on 0).
+        // Task 1 keeps the graph alive across ticks — gate on task 0 prevents task 1 from
+        // being dispatched, so check_graph_completion never fires.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[0].result = Some(TaskResult {
+            output: "out".to_string(),
+            artifacts: vec![],
+            duration_ms: 1,
+            agent_id: None,
+            agent_def: None,
+        });
+        graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural("check".to_string()));
+        graph.tasks[1].status = TaskStatus::Pending;
+        let mut scheduler = make_predicate_scheduler(graph);
+        scheduler.graph.status = GraphStatus::Running;
+
+        // First tick emits VerifyPredicate.
+        let actions1 = scheduler.tick();
+        let count1 = actions1
+            .iter()
+            .filter(|a| matches!(a, SchedulerAction::VerifyPredicate { .. }))
+            .count();
+        assert_eq!(count1, 1, "first tick must emit exactly 1 VerifyPredicate");
+
+        // Second tick (no outcome recorded) must re-emit.
+        let actions2 = scheduler.tick();
+        let count2 = actions2
+            .iter()
+            .filter(|a| matches!(a, SchedulerAction::VerifyPredicate { .. }))
+            .count();
+        assert_eq!(
+            count2, 1,
+            "second tick must re-emit VerifyPredicate (idempotent)"
+        );
+    }
+
+    // T2: record_predicate_outcome with out-of-bounds task_id returns TaskNotFound.
+    #[test]
+    fn record_predicate_outcome_out_of_bounds_returns_task_not_found() {
+        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural("criterion".to_string()));
+        graph.tasks[0].status = TaskStatus::Completed;
+        let mut scheduler = make_predicate_scheduler(graph);
+        scheduler.graph.status = GraphStatus::Running;
+
+        let out_of_bounds = TaskId(99);
+        let outcome = PredicateOutcome {
+            passed: true,
+            confidence: 1.0,
+            reason: "ok".to_string(),
+        };
+        let err = scheduler
+            .record_predicate_outcome(out_of_bounds, outcome, 64)
+            .unwrap_err();
+        assert!(
+            matches!(err, OrchestrationError::TaskNotFound(_)),
+            "expected TaskNotFound, got {err:?}"
+        );
+    }
+
+    // T1: inject_predicate_remediation when predicate replan budget is exhausted AND global
+    // replan budget is also exhausted → must return Err(ReplanBudgetExhausted).
+    #[test]
+    fn predicate_remediation_returns_budget_exhausted_when_global_limit_reached() {
+        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[0].result = Some(TaskResult {
+            output: "x".to_string(),
+            artifacts: vec![],
+            duration_ms: 1,
+            agent_id: None,
+            agent_def: None,
+        });
+        graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural("criterion".to_string()));
+        graph.tasks[0].max_retries = Some(10);
+
+        // max_predicate_replans=0 exhausts predicate budget immediately.
+        // max_replans=0 exhausts global replan budget so remediation inject is also blocked.
+        let mut config = make_predicate_config();
+        config.max_predicate_replans = 0;
+        config.max_replans = 0;
+        let defs = vec![make_def("worker")];
+        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+        scheduler.graph.status = GraphStatus::Running;
+
+        let result = scheduler.record_predicate_outcome(
+            TaskId(0),
+            PredicateOutcome {
+                passed: false,
+                confidence: 0.0,
+                reason: "nope".to_string(),
+            },
+            20,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(OrchestrationError::ReplanBudgetExhausted { .. })
+            ),
+            "expected ReplanBudgetExhausted, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn inject_tasks_resets_lineage_chains() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Completed;
+        let mut scheduler = make_lineage_scheduler(graph, 3);
+
+        // Insert a fake lineage entry.
+        let mut chain = crate::lineage::ErrorLineage::default();
+        chain.push(crate::lineage::LineageEntry {
+            task_id: TaskId(0),
+            kind: crate::lineage::LineageKind::Failed {
+                error_class: "timeout".to_string(),
+            },
+            ts_ms: crate::lineage::now_ms(),
+        });
+        scheduler.lineage_chains.insert(TaskId(0), chain);
+        assert!(!scheduler.lineage_chains.is_empty());
+
+        // inject_tasks must clear lineage_chains.
+        let new_task = make_node(2, &[1]);
+        scheduler
+            .inject_tasks(TaskId(1), vec![new_task], 20)
+            .unwrap();
+        assert!(
+            scheduler.lineage_chains.is_empty(),
+            "lineage_chains must be cleared after inject_tasks"
         );
     }
 }
