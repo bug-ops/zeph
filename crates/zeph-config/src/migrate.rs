@@ -256,6 +256,29 @@ fn append_comment_to_table_suffix(table: &mut Table, comment_line: &str) {
     }
 }
 
+/// Insert `text` after the last line belonging to `[section_name]` and before the next
+/// top-level `[section]` header (or at the end of the file if no such header follows).
+///
+/// This is a purely textual operation: it does not parse TOML, making it immune to
+/// `toml_edit` decor round-trip loss.
+fn insert_after_section(raw: &str, section_name: &str, text: &str) -> String {
+    let header = format!("[{section_name}]");
+    let Some(section_start) = raw.find(&header) else {
+        return format!("{raw}{text}");
+    };
+    // Find the next top-level section `[...]` after `section_start`.
+    let search_from = section_start + header.len();
+    // Look for `\n[` which signals a new top-level section.
+    let insert_pos = raw[search_from..]
+        .find("\n[")
+        .map_or(raw.len(), |rel| search_from + rel + 1);
+    let mut out = String::with_capacity(raw.len() + text.len());
+    out.push_str(&raw[..insert_pos]);
+    out.push_str(text);
+    out.push_str(&raw[insert_pos..]);
+    out
+}
+
 /// Format a reference item as a commented TOML line: `# key = value`.
 fn format_commented_item(key: &str, item: &Item) -> String {
     if let Some(val) = item.as_value() {
@@ -1435,21 +1458,8 @@ pub fn migrate_agent_retry_to_tools_retry(toml_src: &str) -> Result<MigrationRes
 ///
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_database_url(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
-
-    // Ensure [memory] section exists.
-    if !doc.contains_key("memory") {
-        doc.insert("memory", toml_edit::Item::Table(toml_edit::Table::new()));
-    }
-
-    let memory = doc
-        .get_mut("memory")
-        .and_then(toml_edit::Item::as_table_mut)
-        .ok_or(MigrateError::InvalidStructure(
-            "[memory] key exists but is not a table",
-        ))?;
-
-    if memory.contains_key("database_url") {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if toml_src.contains("database_url") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             added_count: 0,
@@ -1457,15 +1467,22 @@ pub fn migrate_database_url(toml_src: &str) -> Result<MigrationResult, MigrateEr
         });
     }
 
-    // Append as a commented-out line via table suffix decor (same pattern as merge_table_commented).
-    let comment = "# PostgreSQL connection URL (used when binary is compiled with --features postgres).\n\
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    // Ensure [memory] section exists (created if absent so the comment has context).
+    if !doc.contains_key("memory") {
+        doc.insert("memory", toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+
+    let comment = "\n# PostgreSQL connection URL (used when binary is compiled with --features postgres).\n\
          # Leave empty and store the actual URL in the vault:\n\
          #   zeph vault set ZEPH_DATABASE_URL \"postgres://user:pass@localhost:5432/zeph\"\n\
          # database_url = \"\"\n";
-    append_comment_to_table_suffix(memory, comment);
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
 
     Ok(MigrationResult {
-        output: doc.to_string(),
+        output,
         added_count: 1,
         sections_added: vec!["memory.database_url".to_owned()],
     })
@@ -1480,7 +1497,16 @@ pub fn migrate_database_url(toml_src: &str) -> Result<MigrationResult, MigrateEr
 ///
 /// Returns `MigrateError` if the TOML cannot be parsed or `[tools.shell]` is malformed.
 pub fn migrate_shell_transactional(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if toml_src.contains("transactional") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
 
     let tools_shell_exists = doc
         .get("tools")
@@ -1495,33 +1521,17 @@ pub fn migrate_shell_transactional(toml_src: &str) -> Result<MigrationResult, Mi
         });
     }
 
-    let shell = doc
-        .get_mut("tools")
-        .and_then(toml_edit::Item::as_table_mut)
-        .and_then(|t| t.get_mut("shell"))
-        .and_then(toml_edit::Item::as_table_mut)
-        .ok_or(MigrateError::InvalidStructure(
-            "[tools.shell] is not a table",
-        ))?;
-
-    if shell.contains_key("transactional") {
-        return Ok(MigrationResult {
-            output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
-        });
-    }
-
-    let comment = "# Transactional shell: snapshot files before write commands, rollback on failure.\n\
+    let comment = "\n# Transactional shell: snapshot files before write commands, rollback on failure.\n\
          # transactional = false\n\
          # transaction_scope = []          # glob patterns; empty = all extracted paths\n\
          # auto_rollback = false           # rollback when exit code >= 2\n\
          # auto_rollback_exit_codes = []   # explicit exit codes; overrides >= 2 heuristic\n\
          # snapshot_required = false       # abort if snapshot fails (default: warn and proceed)\n";
-    append_comment_to_table_suffix(shell, comment);
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
 
     Ok(MigrationResult {
-        output: doc.to_string(),
+        output,
         added_count: 1,
         sections_added: vec!["tools.shell.transactional".to_owned()],
     })
@@ -1533,10 +1543,8 @@ pub fn migrate_shell_transactional(toml_src: &str) -> Result<MigrationResult, Mi
 ///
 /// Returns an error if the config cannot be parsed or the `[agent]` section is malformed.
 pub fn migrate_agent_budget_hint(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
-
-    let agent_exists = doc.contains_key("agent");
-    if !agent_exists {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if toml_src.contains("budget_hint_enabled") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             added_count: 0,
@@ -1544,12 +1552,8 @@ pub fn migrate_agent_budget_hint(toml_src: &str) -> Result<MigrationResult, Migr
         });
     }
 
-    let agent = doc
-        .get_mut("agent")
-        .and_then(toml_edit::Item::as_table_mut)
-        .ok_or(MigrateError::InvalidStructure("[agent] is not a table"))?;
-
-    if agent.contains_key("budget_hint_enabled") {
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("agent") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             added_count: 0,
@@ -1557,12 +1561,13 @@ pub fn migrate_agent_budget_hint(toml_src: &str) -> Result<MigrationResult, Migr
         });
     }
 
-    let comment = "# Inject <budget> XML into the system prompt so the LLM can self-regulate (#2267).\n\
+    let comment = "\n# Inject <budget> XML into the system prompt so the LLM can self-regulate (#2267).\n\
          # budget_hint_enabled = true\n";
-    append_comment_to_table_suffix(agent, comment);
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
 
     Ok(MigrationResult {
-        output: doc.to_string(),
+        output,
         added_count: 1,
         sections_added: vec!["agent.budget_hint_enabled".to_owned()],
     })
@@ -1577,21 +1582,8 @@ pub fn migrate_agent_budget_hint(toml_src: &str) -> Result<MigrationResult, Migr
 ///
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_forgetting_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    use toml_edit::{Item, Table};
-
-    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
-
-    // If [memory] does not exist, create it so we can check for [memory.forgetting].
-    if !doc.contains_key("memory") {
-        doc.insert("memory", Item::Table(Table::new()));
-    }
-
-    let memory = doc
-        .get_mut("memory")
-        .and_then(Item::as_table_mut)
-        .ok_or(MigrateError::InvalidStructure("[memory] is not a table"))?;
-
-    if memory.contains_key("forgetting") {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if toml_src.contains("[memory.forgetting]") || toml_src.contains("# [memory.forgetting]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             added_count: 0,
@@ -1599,7 +1591,16 @@ pub fn migrate_forgetting_config(toml_src: &str) -> Result<MigrationResult, Migr
         });
     }
 
-    let comment = "# SleepGate forgetting sweep (#2397). Disabled by default.\n\
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("memory") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "\n# SleepGate forgetting sweep (#2397). Disabled by default.\n\
          # [memory.forgetting]\n\
          # enabled = false\n\
          # decay_rate = 0.1                   # per-sweep importance decay\n\
@@ -1608,10 +1609,11 @@ pub fn migrate_forgetting_config(toml_src: &str) -> Result<MigrationResult, Migr
          # sweep_batch_size = 500\n\
          # protect_recent_hours = 24\n\
          # protect_min_access_count = 3\n";
-    append_comment_to_table_suffix(memory, comment);
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
 
     Ok(MigrationResult {
-        output: doc.to_string(),
+        output,
         added_count: 1,
         sections_added: vec!["memory.forgetting".to_owned()],
     })
@@ -1627,30 +1629,10 @@ pub fn migrate_forgetting_config(toml_src: &str) -> Result<MigrationResult, Migr
 pub fn migrate_compression_predictor_config(
     toml_src: &str,
 ) -> Result<MigrationResult, MigrateError> {
-    use toml_edit::{Item, Table};
-
-    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
-
-    // Ensure [memory] and [memory.compression] exist.
-    if !doc.contains_key("memory") {
-        doc.insert("memory", Item::Table(Table::new()));
-    }
-    let memory = doc
-        .get_mut("memory")
-        .and_then(Item::as_table_mut)
-        .ok_or(MigrateError::InvalidStructure("[memory] is not a table"))?;
-
-    if !memory.contains_key("compression") {
-        memory.insert("compression", Item::Table(Table::new()));
-    }
-    let compression = memory
-        .get_mut("compression")
-        .and_then(Item::as_table_mut)
-        .ok_or(MigrateError::InvalidStructure(
-            "[memory.compression] is not a table",
-        ))?;
-
-    if compression.contains_key("predictor") {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if toml_src.contains("[memory.compression.predictor]")
+        || toml_src.contains("# [memory.compression.predictor]")
+    {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             added_count: 0,
@@ -1658,17 +1640,27 @@ pub fn migrate_compression_predictor_config(
         });
     }
 
-    let comment = "# Performance-floor compression ratio predictor (#2460). Disabled by default.\n\
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("memory") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Performance-floor compression ratio predictor (#2460). Disabled by default.\n\
          # [memory.compression.predictor]\n\
          # enabled = false\n\
          # min_samples = 10                                             # cold-start threshold\n\
          # candidate_ratios = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]\n\
          # retrain_interval = 5\n\
          # max_training_samples = 200\n";
-    append_comment_to_table_suffix(compression, comment);
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
 
     Ok(MigrationResult {
-        output: doc.to_string(),
+        output,
         added_count: 1,
         sections_added: vec!["memory.compression.predictor".to_owned()],
     })
@@ -1680,19 +1672,8 @@ pub fn migrate_compression_predictor_config(
 ///
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_microcompact_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    use toml_edit::{Item, Table};
-
-    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
-
-    if !doc.contains_key("memory") {
-        doc.insert("memory", Item::Table(Table::new()));
-    }
-    let memory = doc
-        .get_mut("memory")
-        .and_then(Item::as_table_mut)
-        .ok_or(MigrateError::InvalidStructure("[memory] is not a table"))?;
-
-    if memory.contains_key("microcompact") {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if toml_src.contains("[memory.microcompact]") || toml_src.contains("# [memory.microcompact]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             added_count: 0,
@@ -1700,15 +1681,25 @@ pub fn migrate_microcompact_config(toml_src: &str) -> Result<MigrationResult, Mi
         });
     }
 
-    let comment = "# Time-based microcompact (#2699). Strips stale low-value tool outputs after idle.\n\
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("memory") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Time-based microcompact (#2699). Strips stale low-value tool outputs after idle.\n\
          # [memory.microcompact]\n\
          # enabled = false\n\
          # gap_threshold_minutes = 60   # idle gap before clearing stale outputs\n\
          # keep_recent = 3              # always keep this many recent outputs intact\n";
-    append_comment_to_table_suffix(memory, comment);
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
 
     Ok(MigrationResult {
-        output: doc.to_string(),
+        output,
         added_count: 1,
         sections_added: vec!["memory.microcompact".to_owned()],
     })
@@ -1720,19 +1711,8 @@ pub fn migrate_microcompact_config(toml_src: &str) -> Result<MigrationResult, Mi
 ///
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_autodream_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    use toml_edit::{Item, Table};
-
-    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
-
-    if !doc.contains_key("memory") {
-        doc.insert("memory", Item::Table(Table::new()));
-    }
-    let memory = doc
-        .get_mut("memory")
-        .and_then(Item::as_table_mut)
-        .ok_or(MigrateError::InvalidStructure("[memory] is not a table"))?;
-
-    if memory.contains_key("autodream") {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if toml_src.contains("[memory.autodream]") || toml_src.contains("# [memory.autodream]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             added_count: 0,
@@ -1740,17 +1720,27 @@ pub fn migrate_autodream_config(toml_src: &str) -> Result<MigrationResult, Migra
         });
     }
 
-    let comment = "# autoDream background memory consolidation (#2697). Disabled by default.\n\
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("memory") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "\n# autoDream background memory consolidation (#2697). Disabled by default.\n\
          # [memory.autodream]\n\
          # enabled = false\n\
          # min_sessions = 5             # sessions since last consolidation\n\
          # min_hours = 8                # hours since last consolidation\n\
          # consolidation_provider = \"\" # provider name from [[llm.providers]]; empty = primary\n\
          # max_iterations = 5\n";
-    append_comment_to_table_suffix(memory, comment);
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
 
     Ok(MigrationResult {
-        output: doc.to_string(),
+        output,
         added_count: 1,
         sections_added: vec!["memory.autodream".to_owned()],
     })
@@ -1901,7 +1891,7 @@ pub fn migrate_otel_filter(toml_src: &str) -> Result<MigrationResult, MigrateErr
         });
     }
 
-    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
 
     // Only inject when [telemetry] section exists; otherwise the field will be added
     // by migrate_telemetry_config which already includes it in the commented block.
@@ -1913,20 +1903,15 @@ pub fn migrate_otel_filter(toml_src: &str) -> Result<MigrationResult, MigrateErr
         });
     }
 
-    let telemetry = doc
-        .get_mut("telemetry")
-        .and_then(toml_edit::Item::as_table_mut)
-        .ok_or(MigrateError::InvalidStructure("[telemetry] is not a table"))?;
-
-    // Insert within the [telemetry] section via suffix decor so the comment appears
-    // adjacent to its section even when other sections follow.
-    let comment = "# Base EnvFilter for the OTLP tracing layer. Noisy-crate exclusions \
+    let comment = "\n# Base EnvFilter for the OTLP tracing layer. Noisy-crate exclusions \
         (tonic=warn etc.) are always appended (#2997).\n\
         # otel_filter = \"info\"\n";
-    append_comment_to_table_suffix(telemetry, comment);
+    let raw = doc.to_string();
+    // Insert within [telemetry] so the comment stays adjacent to its section.
+    let output = insert_after_section(&raw, "telemetry", comment);
 
     Ok(MigrationResult {
-        output: doc.to_string(),
+        output,
         added_count: 1,
         sections_added: vec!["telemetry.otel_filter".to_owned()],
     })
@@ -3030,6 +3015,86 @@ trust_level = "untrusted"
         let first = migrate_sandbox_config(base).unwrap();
         assert_eq!(first.added_count, 1);
         let second = migrate_sandbox_config(&first.output).unwrap();
+        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn migrate_agent_budget_hint_idempotent_on_commented_output() {
+        let base = "[agent]\nname = \"Zeph\"\n";
+        let first = migrate_agent_budget_hint(base).unwrap();
+        assert_eq!(first.added_count, 1);
+        let second = migrate_agent_budget_hint(&first.output).unwrap();
+        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn migrate_forgetting_config_idempotent_on_commented_output() {
+        let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
+        let first = migrate_forgetting_config(base).unwrap();
+        assert_eq!(first.added_count, 1);
+        let second = migrate_forgetting_config(&first.output).unwrap();
+        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn migrate_microcompact_config_idempotent_on_commented_output() {
+        let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
+        let first = migrate_microcompact_config(base).unwrap();
+        assert_eq!(first.added_count, 1);
+        let second = migrate_microcompact_config(&first.output).unwrap();
+        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn migrate_autodream_config_idempotent_on_commented_output() {
+        let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
+        let first = migrate_autodream_config(base).unwrap();
+        assert_eq!(first.added_count, 1);
+        let second = migrate_autodream_config(&first.output).unwrap();
+        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn migrate_compression_predictor_idempotent_on_commented_output() {
+        let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
+        let first = migrate_compression_predictor_config(base).unwrap();
+        assert_eq!(first.added_count, 1);
+        let second = migrate_compression_predictor_config(&first.output).unwrap();
+        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn migrate_database_url_idempotent_on_commented_output() {
+        let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
+        let first = migrate_database_url(base).unwrap();
+        assert_eq!(first.added_count, 1);
+        let second = migrate_database_url(&first.output).unwrap();
+        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn migrate_shell_transactional_idempotent_on_commented_output() {
+        let base = "[tools]\n[tools.shell]\nallow_list = []\n";
+        let first = migrate_shell_transactional(base).unwrap();
+        assert_eq!(first.added_count, 1);
+        let second = migrate_shell_transactional(&first.output).unwrap();
+        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn migrate_otel_filter_idempotent_on_commented_output() {
+        let base = "[telemetry]\nenabled = true\n";
+        let first = migrate_otel_filter(base).unwrap();
+        assert_eq!(first.added_count, 1);
+        let second = migrate_otel_filter(&first.output).unwrap();
         assert_eq!(second.added_count, 0, "second run must not double-append");
         assert_eq!(second.output, first.output);
     }
