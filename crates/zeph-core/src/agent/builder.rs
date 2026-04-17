@@ -1071,8 +1071,8 @@ impl<C: Channel> Agent<C> {
 
     /// Configure the VIGIL pre-sanitizer gate from config.
     ///
-    /// Initialises [`VigilGate`] for top-level agent sessions. Subagent sessions must NOT
-    /// call this — they inherit `vigil: None` from the default [`SecurityState`], which
+    /// Initialises `VigilGate` for top-level agent sessions. Subagent sessions must NOT
+    /// call this — they inherit `vigil: None` from the default `SecurityState`, which
     /// satisfies the subagent exemption invariant (spec FR-009).
     ///
     /// Invalid `extra_patterns` are logged as warnings and VIGIL is disabled rather than
