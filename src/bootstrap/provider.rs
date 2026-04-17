@@ -93,6 +93,19 @@ fn build_cascade_router_config(
     }
 }
 
+/// Clamp a `CoE` threshold to `[0.0, 1.0]` and warn on invalid values.
+fn validate_coe_threshold(name: &str, value: f64) -> f64 {
+    if value.is_nan() || value.is_infinite() || !(0.0..=1.0).contains(&value) {
+        tracing::warn!(
+            field = name,
+            value,
+            "coe: threshold out of [0.0, 1.0] — clamping to valid range"
+        );
+        return value.clamp(0.0, 1.0);
+    }
+    value
+}
+
 /// Attach `CoE` to a `RouterProvider` if `[llm.coe]` is configured and enabled.
 ///
 /// Skips silently when the secondary or embed provider cannot be resolved.
@@ -124,16 +137,15 @@ fn apply_coe(router: RouterProvider, config: &Config) -> RouterProvider {
             .and_then(|e| build_provider_from_entry(e, config).ok())
     };
     if let (Some(sec), Some(emb)) = (secondary, embed) {
+        let intra = validate_coe_threshold("intra_threshold", coe_cfg.intra_threshold);
+        let inter = validate_coe_threshold("inter_threshold", coe_cfg.inter_threshold);
+        let shadow = validate_coe_threshold("shadow_sample_rate", coe_cfg.shadow_sample_rate);
         let router_coe = RouterCoeConfig {
-            intra_threshold: coe_cfg.intra_threshold,
-            inter_threshold: coe_cfg.inter_threshold,
-            shadow_sample_rate: coe_cfg.shadow_sample_rate,
+            intra_threshold: intra,
+            inter_threshold: inter,
+            shadow_sample_rate: shadow,
         };
-        tracing::info!(
-            "coe: enabled (intra={:.2} inter={:.2})",
-            coe_cfg.intra_threshold,
-            coe_cfg.inter_threshold
-        );
+        tracing::info!("coe: enabled (intra={:.2} inter={:.2})", intra, inter);
         router.with_coe(router_coe, sec, emb)
     } else {
         tracing::warn!("coe: secondary or embed provider not resolved, CoE disabled");
