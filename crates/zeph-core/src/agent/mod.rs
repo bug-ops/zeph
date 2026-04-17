@@ -2209,17 +2209,12 @@ impl<C: Channel> Agent<C> {
     }
 
     fn reload_config(&mut self) {
-        let Some(ref path) = self.lifecycle.config_path else {
+        let Some(path) = self.lifecycle.config_path.clone() else {
             return;
         };
-        let config = match Config::load(path) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("config reload failed: {e:#}");
-                return;
-            }
+        let Some(config) = self.load_config_with_overlay(&path) else {
+            return;
         };
-
         let budget_tokens = resolve_context_budget(&config, &self.provider);
         self.runtime.security = config.security;
         self.runtime.timeouts = config.timeouts;
@@ -2299,6 +2294,92 @@ impl<C: Channel> Agent<C> {
         self.index.repo_map_ttl = std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
 
         tracing::info!("config reloaded");
+    }
+
+    /// Load config from disk, apply plugin overlays, and warn on shell divergence.
+    ///
+    /// Returns `None` when loading or overlay merge fails (caller keeps prior runtime state).
+    fn load_config_with_overlay(&mut self, path: &std::path::Path) -> Option<Config> {
+        let mut config = match Config::load(path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("config reload failed: {e:#}");
+                return None;
+            }
+        };
+
+        // Re-apply plugin overlays. On error, keep previous runtime state intact.
+        let new_overlay = if self.lifecycle.plugins_dir.as_os_str().is_empty() {
+            None
+        } else {
+            match zeph_plugins::apply_plugin_config_overlays(
+                &mut config,
+                &self.lifecycle.plugins_dir,
+            ) {
+                Ok(o) => Some(o),
+                Err(e) => {
+                    tracing::warn!(
+                        "plugin overlay merge failed during reload: {e:#}; \
+                         keeping previous runtime state"
+                    );
+                    return None;
+                }
+            }
+        };
+
+        // M4: detect shell-level divergence from the baked-in executor and warn loudly.
+        // ShellExecutor is not rebuilt on hot-reload; only skill threshold is live.
+        // A follow-up P2 issue tracks live-rebuild of ShellExecutor.
+        if let Some(ref overlay) = new_overlay {
+            self.warn_on_shell_overlay_divergence(overlay, &config);
+        }
+        Some(config)
+    }
+
+    /// Warn when the shell-level overlay produced by a hot-reload differs from the one
+    /// baked into the live `ShellExecutor` at startup.
+    ///
+    /// `ShellExecutor` is built once and not rebuilt on reload. Until that is fixed
+    /// (tracked as a P2 follow-up), this method emits a `tracing::warn!` and a
+    /// status-channel banner so the user knows to restart.
+    fn warn_on_shell_overlay_divergence(
+        &self,
+        new_overlay: &zeph_plugins::ResolvedOverlay,
+        config: &Config,
+    ) {
+        let new_blocked: Vec<String> = {
+            let mut v = config.tools.shell.blocked_commands.clone();
+            v.sort();
+            v
+        };
+        let new_allowed: Vec<String> = {
+            let mut v = config.tools.shell.allowed_commands.clone();
+            v.sort();
+            v
+        };
+
+        let startup = &self.lifecycle.startup_shell_overlay;
+        let startup_blocked = &startup.blocked;
+        let startup_allowed = &startup.allowed;
+
+        let blocked_changed = new_blocked != *startup_blocked;
+        let allowed_changed = new_allowed != *startup_allowed;
+
+        if blocked_changed || allowed_changed {
+            let msg = format!(
+                "plugin config overlay changed shell blocked/allowed set; RESTART REQUIRED \
+                 for full effect. blocked_changed={blocked_changed} \
+                 allowed_changed={allowed_changed} \
+                 (skills.disambiguation_threshold is applied live)"
+            );
+            tracing::warn!("{msg}");
+            if let Some(ref tx) = self.session.status_tx {
+                let _ = tx.send(msg);
+            }
+        }
+
+        // Suppress unused-variable warning when no overlay was sourced.
+        let _ = new_overlay;
     }
 
     /// Run `SideQuest` tool output eviction pass (#1885).

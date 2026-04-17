@@ -483,6 +483,13 @@ pub(crate) async fn run_daemon(
         )
         .with_shutdown(shutdown_rx.clone())
         .with_config_reload(config_path_owned, config_reload_rx)
+        .with_plugins_dir(crate::bootstrap::plugins_dir(), {
+            let mut blocked = config.tools.shell.blocked_commands.clone();
+            blocked.sort();
+            let mut allowed = config.tools.shell.allowed_commands.clone();
+            allowed.sort();
+            zeph_core::ShellOverlaySnapshot { blocked, allowed }
+        })
         .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
         .with_mcp_shared_tools(mcp_shared_tools)
         .with_hybrid_search(config.skills.hybrid_search)

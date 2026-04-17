@@ -1003,6 +1003,20 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Record the plugins directory and the shell overlay baked in at startup.
+    ///
+    /// Required for hot-reload divergence detection (M4).
+    #[must_use]
+    pub fn with_plugins_dir(
+        mut self,
+        dir: PathBuf,
+        startup_overlay: crate::ShellOverlaySnapshot,
+    ) -> Self {
+        self.lifecycle.plugins_dir = dir;
+        self.lifecycle.startup_shell_overlay = startup_overlay;
+        self
+    }
+
     /// Attach the warmup-ready signal (fires after background init completes).
     #[must_use]
     pub fn with_warmup_ready(mut self, rx: watch::Receiver<bool>) -> Self {

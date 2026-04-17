@@ -174,6 +174,9 @@ struct SharedAgentDeps {
     /// Project rule file paths to advertise in session `_meta`.
     acp_project_rules: Vec<PathBuf>,
 
+    /// Shell overlay snapshot captured at startup for hot-reload divergence detection.
+    startup_shell_overlay: zeph_core::ShellOverlaySnapshot,
+
     // Scheduler runtime objects (broadcast senders; not config-derived values)
     /// Scheduler executor shared across sessions. Initialized once at startup.
     #[cfg(feature = "scheduler")]
@@ -533,6 +536,13 @@ async fn build_acp_deps(
         scheduler_update_tx,
         #[cfg(feature = "scheduler")]
         scheduler_custom_tx,
+        startup_shell_overlay: {
+            let mut blocked = config.tools.shell.blocked_commands.clone();
+            blocked.sort();
+            let mut allowed = config.tools.shell.allowed_commands.clone();
+            allowed.sort();
+            zeph_core::ShellOverlaySnapshot { blocked, allowed }
+        },
     };
 
     let keepalive: Box<dyn std::any::Any> = Box::new((skill_watcher, config_watcher));
@@ -718,6 +728,10 @@ async fn spawn_acp_agent(
         .with_managed_skills_dir(managed_skills_dir)
         .with_shutdown(shutdown_rx)
         .with_config_reload(config_path, config_reload_rx)
+        .with_plugins_dir(
+            crate::bootstrap::plugins_dir(),
+            d.startup_shell_overlay.clone(),
+        )
         .with_mcp(
             mcp_tools,
             mcp_registry,

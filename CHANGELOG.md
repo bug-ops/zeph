@@ -23,6 +23,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **feat(plugins): plugin config overlay merge** — `zeph-plugins` now exposes
+  `apply_plugin_config_overlays(&mut Config, &Path) -> Result<ResolvedOverlay, PluginError>`.
+  At bootstrap (`AppBuilder::new`) and on hot-reload (`reload_config`) the helper scans every
+  installed `<plugin>/.plugin.toml` and applies tighten-only merges for the three safelisted keys:
+  `tools.blocked_commands` (union), `tools.allowed_commands` (intersection, base-gated — empty
+  base stays empty so plugins cannot widen the allowlist), and `skills.disambiguation_threshold`
+  (max). Iteration is sorted by directory name for deterministic log output (M1). The safelist
+  validation from install time is re-run at load time as defence-in-depth against post-install
+  tampering (M2). Integer-literal threshold values (`0`, `1`) are accepted alongside float
+  literals (M3). Symlinked plugin subdirectories are rejected (E8).
+  `ResolvedOverlay` (returned from the helper and stored on `AppBuilder`) carries `source_plugins`,
+  `skipped_plugins`, and all merged values for diagnostic surfacing.
+  **Hot-reload shell limitation**: `ShellExecutor` is built once at startup and is not rebuilt on
+  config reload. When a hot-reload would change `blocked_commands` or `allowed_commands`,
+  a `tracing::warn!` and a status-channel banner are emitted — "RESTART REQUIRED for full effect"
+  — so the user is never silently misled. `skills.disambiguation_threshold` applies live.
+  A follow-up P2 issue tracks live-rebuild of `ShellExecutor`. Closes
+  [#3128](https://github.com/bug-ops/zeph/issues/3128).
+
 - **feat(security): OS-level file permission hardening for sensitive files** — adds
   `zeph-common::fs_secure` module with `open_private_truncate`, `append_private`,
   `write_private`, and `atomic_write_private` helpers. All sensitive files created by

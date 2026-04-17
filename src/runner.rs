@@ -1056,6 +1056,18 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
     let config = app.config();
 
+    // Capture the full merged shell state at startup for hot-reload divergence detection.
+    // Must snapshot config.tools.shell.blocked_commands (full list after overlay), NOT
+    // just resolved_overlay().blocked_commands_add (plugin delta only) — otherwise every
+    // reload would fire a spurious warning when the base config has blocked_commands.
+    let startup_shell_overlay = {
+        let mut blocked = config.tools.shell.blocked_commands.clone();
+        blocked.sort();
+        let mut allowed = config.tools.shell.allowed_commands.clone();
+        allowed.sort();
+        zeph_core::ShellOverlaySnapshot { blocked, allowed }
+    };
+
     // Create a TaskSupervisor for all memory background loops.
     // A single bridge from shutdown_rx → cancel token replaces per-loop cancel bridges.
     let mem_cancel = tokio_util::sync::CancellationToken::new();
@@ -1579,6 +1591,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_routing(config.memory.store_routing.clone())
     .with_shutdown(shutdown_rx.clone())
     .with_config_reload(config_path, config_reload_rx)
+    .with_plugins_dir(crate::bootstrap::plugins_dir(), startup_shell_overlay)
     .with_logging_config(logging_config.clone())
     .with_autosave_config(
         config.memory.autosave_assistant,

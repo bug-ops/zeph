@@ -314,6 +314,18 @@ pub(crate) struct DebugState {
     pub(crate) current_iteration_span_id: Option<[u8; 8]>,
 }
 
+/// Snapshot of the shell-level overlay baked in at startup.
+///
+/// Used in `reload_config` to detect when a hot-reload would produce a different shell
+/// restriction set than the one baked into the live `ShellExecutor` (M4 warn-on-divergence).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShellOverlaySnapshot {
+    /// Sorted `blocked_commands` contributed by plugins.
+    pub blocked: Vec<String>,
+    /// Sorted `allowed_commands` after plugin intersection (empty if base was empty).
+    pub allowed: Vec<String>,
+}
+
 /// Groups agent lifecycle state: shutdown signaling, timing, and I/O notification channels.
 pub(crate) struct LifecycleState {
     pub(crate) shutdown: watch::Receiver<bool>,
@@ -325,6 +337,10 @@ pub(crate) struct LifecycleState {
     pub(crate) cancel_bridge_handle: Option<JoinHandle<()>>,
     pub(crate) config_path: Option<PathBuf>,
     pub(crate) config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
+    /// Path to the plugins directory; used to re-apply overlays on hot-reload.
+    pub(crate) plugins_dir: PathBuf,
+    /// Shell overlay snapshot baked in at startup. Used to detect divergence on hot-reload.
+    pub(crate) startup_shell_overlay: ShellOverlaySnapshot,
     pub(crate) warmup_ready: Option<watch::Receiver<bool>>,
     pub(crate) update_notify_rx: Option<mpsc::Receiver<String>>,
     pub(crate) custom_task_rx: Option<mpsc::Receiver<String>>,
@@ -891,6 +907,8 @@ impl LifecycleState {
             cancel_bridge_handle: None,
             config_path: None,
             config_reload_rx: None,
+            plugins_dir: PathBuf::new(),
+            startup_shell_overlay: ShellOverlaySnapshot::default(),
             warmup_ready: None,
             update_notify_rx: None,
             custom_task_rx: None,

@@ -23,6 +23,7 @@ walkdir = { workspace = true }
 zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-skills.workspace = true
+zeph-tools.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

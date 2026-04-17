@@ -51,6 +51,9 @@ pub struct AppBuilder {
     /// for OAuth credential persistence across sessions.
     age_vault: Option<Arc<RwLock<AgeVaultProvider>>>,
     qdrant_ops: Option<QdrantOps>,
+    /// Overlay resolved from installed plugins at startup. Available for TUI and CLI diagnostics.
+    #[allow(dead_code)]
+    resolved_overlay: zeph_plugins::ResolvedOverlay,
 }
 
 pub struct VaultArgs {
@@ -120,6 +123,10 @@ impl AppBuilder {
 
         config.resolve_secrets(vault.as_ref()).await?;
 
+        let resolved_overlay =
+            zeph_plugins::apply_plugin_config_overlays(&mut config, &plugins_dir())
+                .map_err(|e| BootstrapError::Provider(format!("plugin overlay merge: {e}")))?;
+
         let qdrant_ops = match config.memory.vector_backend {
             zeph_core::config::VectorBackend::Qdrant => {
                 let ops = QdrantOps::new(&config.memory.qdrant_url).map_err(|e| {
@@ -139,6 +146,7 @@ impl AppBuilder {
             vault,
             age_vault,
             qdrant_ops,
+            resolved_overlay,
         })
     }
 
@@ -156,6 +164,12 @@ impl AppBuilder {
 
     pub fn config_path(&self) -> &Path {
         &self.config_path
+    }
+
+    /// Returns the plugin config overlay resolved at startup.
+    #[allow(dead_code)]
+    pub fn resolved_overlay(&self) -> &zeph_plugins::ResolvedOverlay {
+        &self.resolved_overlay
     }
 
     /// Returns the vault provider used for secret resolution.
@@ -1145,6 +1159,7 @@ impl AppBuilder {
             vault: Box::new(zeph_core::vault::EnvVaultProvider),
             age_vault: None,
             qdrant_ops: None,
+            resolved_overlay: zeph_plugins::ResolvedOverlay::default(),
         }
     }
 }

@@ -158,7 +158,7 @@ impl PluginManager {
         }
 
         // Validate config overlay keys.
-        validate_config_overlay(&manifest.config)?;
+        validate_overlay_keys(&manifest.config)?;
 
         // Validate MCP command allowlist.
         validate_mcp_commands(&manifest.mcp.servers, &self.mcp_allowed_commands)?;
@@ -391,7 +391,7 @@ impl PluginManager {
 }
 
 /// Validate that a plugin name is a safe identifier: `[a-z0-9][a-z0-9-]*`.
-fn validate_plugin_name(name: &str) -> Result<(), PluginError> {
+pub(crate) fn validate_plugin_name(name: &str) -> Result<(), PluginError> {
     if name.is_empty() {
         return Err(PluginError::InvalidName {
             name: name.to_owned(),
@@ -417,7 +417,7 @@ fn validate_plugin_name(name: &str) -> Result<(), PluginError> {
 }
 
 /// Validate all keys in the `[config]` overlay are in the tighten-only safelist.
-fn validate_config_overlay(config: &toml::Value) -> Result<(), PluginError> {
+pub(crate) fn validate_overlay_keys(config: &toml::Value) -> Result<(), PluginError> {
     let table = match config.as_table() {
         Some(t) if !t.is_empty() => t,
         _ => return Ok(()),
