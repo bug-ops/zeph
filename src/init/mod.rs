@@ -90,6 +90,7 @@ pub(crate) struct WizardState {
     pub(crate) orchestration_confirm_before_execute: bool,
     pub(crate) orchestration_failure_strategy: String,
     pub(crate) orchestration_planner_provider: Option<String>,
+    pub(crate) orchestration_persistence_enabled: bool,
     // Debug settings
     pub(crate) debug_dump_enabled: bool,
     pub(crate) debug_dump_format: zeph_core::debug_dump::DumpFormat,
@@ -273,6 +274,7 @@ impl Default for WizardState {
             orchestration_confirm_before_execute: false,
             orchestration_failure_strategy: String::new(),
             orchestration_planner_provider: None,
+            orchestration_persistence_enabled: true,
             debug_dump_enabled: false,
             debug_dump_format: zeph_core::debug_dump::DumpFormat::Json,
             graph_memory_enabled: false,
@@ -782,6 +784,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 .clone()
                 .unwrap_or_default(),
         ),
+        persistence_enabled: state.orchestration_persistence_enabled,
         ..OrchestrationConfig::default()
     };
 

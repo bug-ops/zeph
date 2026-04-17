@@ -76,6 +76,10 @@ fn default_predicate_timeout_secs() -> u64 {
     30
 }
 
+fn default_persistence_enabled() -> bool {
+    true
+}
+
 fn default_plan_cache_similarity_threshold() -> f32 {
     0.90
 }
@@ -280,6 +284,14 @@ pub struct OrchestrationConfig {
     /// `confidence = 0.0`) and logs a warning. Default: 30.
     #[serde(default = "default_predicate_timeout_secs")]
     pub predicate_timeout_secs: u64,
+    /// Persist task graph state to `SQLite` across scheduler ticks.
+    ///
+    /// When `true` and a `SemanticMemory` store is available, the scheduler
+    /// snapshots the graph once per tick and on plan completion. Graphs can
+    /// then be rehydrated via `/plan resume <id>` after a restart.
+    /// Default: `true`.
+    #[serde(default = "default_persistence_enabled")]
+    pub persistence_enabled: bool,
 }
 
 impl Default for OrchestrationConfig {
@@ -316,6 +328,7 @@ impl Default for OrchestrationConfig {
             predicate_provider: ProviderName::default(),
             max_predicate_replans: default_max_predicate_replans(),
             predicate_timeout_secs: default_predicate_timeout_secs(),
+            persistence_enabled: default_persistence_enabled(),
         }
     }
 }

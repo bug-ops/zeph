@@ -244,6 +244,12 @@ impl<C: crate::channel::Channel> Agent<C> {
             mgr.release_reservation(reserved);
         }
 
+        // Defensive save before `?` so a scheduler error still commits the last in-flight state.
+        if let Some(ref persistence) = self.orchestration.graph_persistence {
+            super::scheduler_loop::save_graph_snapshot(persistence, scheduler.graph().clone())
+                .await;
+        }
+
         let final_status = scheduler_result?;
 
         let extra_task_outputs = self
@@ -260,6 +266,28 @@ impl<C: crate::channel::Channel> Agent<C> {
         self.update_metrics(|m| {
             m.orchestration_graph = Some(snapshot);
         });
+
+        // Authoritative terminal save after extra_task_outputs are merged — log at ERROR on failure.
+        if let Some(ref persistence) = self.orchestration.graph_persistence {
+            let final_id = completed_graph.id.clone();
+            let snapshot = completed_graph.clone();
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                persistence.save(&snapshot),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::error!(
+                    error = %e, graph_id = %final_id,
+                    "terminal graph persistence save failed — /plan list may be stale"
+                ),
+                Err(_) => tracing::error!(
+                    graph_id = %final_id,
+                    "terminal graph persistence save timed out after 5s — /plan list may be stale"
+                ),
+            }
+        }
 
         let result_label = self
             .finalize_plan_execution(completed_graph, final_status)
@@ -774,45 +802,134 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
-    pub(super) fn handle_plan_resume_as_string(&mut self, graph_id: Option<&str>) -> String {
-        use zeph_orchestration::GraphStatus;
+    // too_many_lines: sequential status×action dispatch table; branching is inherent
+    #[allow(clippy::too_many_lines)]
+    pub(super) async fn handle_plan_resume_as_string(&mut self, graph_id: Option<&str>) -> String {
+        use zeph_orchestration::{GraphId, GraphStatus, TaskStatus};
 
-        let Some(ref graph) = self.orchestration.pending_graph else {
+        // Path A: active pending_graph exists — use existing status-gate logic.
+        if let Some(ref graph) = self.orchestration.pending_graph {
+            if let Some(id) = graph_id
+                && graph.id.to_string() != id
+            {
+                return format!(
+                    "Graph id '{id}' does not match the active plan ({}). \
+                     Use `/plan status` to see the active plan id.",
+                    graph.id
+                );
+            }
+            if graph.status != GraphStatus::Paused {
+                return format!(
+                    "The active plan is in '{}' status and cannot be resumed. \
+                     Only Paused plans can be resumed.",
+                    graph.status
+                );
+            }
+            let graph = self
+                .orchestration
+                .pending_graph
+                .take()
+                .expect("just checked Some");
+            tracing::info!(graph_id = %graph.id, "resuming paused graph");
+            let msg = format!(
+                "Resuming plan: {}\nUse `/plan confirm` to continue execution.",
+                graph.goal
+            );
+            self.orchestration.pending_graph = Some(graph);
+            return msg;
+        }
+
+        // Path B: no active pending_graph — try disk rehydration.
+        let Some(id_str) = graph_id else {
             return "No paused plan to resume. Use `/plan status` to check the current state."
                 .to_owned();
         };
 
-        if let Some(id) = graph_id
-            && graph.id.to_string() != id
-        {
-            return format!(
-                "Graph id '{id}' does not match the active plan ({}). \
-                 Use `/plan status` to see the active plan id.",
-                graph.id
-            );
+        let graph_id_parsed = match id_str.parse::<GraphId>() {
+            Ok(id) => id,
+            Err(e) => return format!("Invalid graph id '{id_str}': {e}"),
+        };
+
+        let Some(ref persistence) = self.orchestration.graph_persistence else {
+            return "Graph persistence is disabled. \
+                    Set `orchestration.persistence_enabled = true` in config."
+                .to_owned();
+        };
+
+        let loaded = match persistence.load(&graph_id_parsed).await {
+            Ok(Some(g)) => g,
+            Ok(None) => return format!("Graph '{id_str}' not found in persistence."),
+            Err(e) => return format!("Failed to load graph '{id_str}' from persistence: {e}"),
+        };
+
+        match loaded.status {
+            GraphStatus::Completed => {
+                format!(
+                    "Plan '{id_str}' is already Completed. \
+                     Use `/plan status` to view results."
+                )
+            }
+            GraphStatus::Canceled => {
+                format!(
+                    "Plan '{id_str}' was Canceled and cannot be resumed. \
+                     Start a new plan with `/plan <goal>`."
+                )
+            }
+            GraphStatus::Paused => {
+                let msg = format!(
+                    "Resuming plan: {}\nUse `/plan confirm` to continue execution.",
+                    loaded.goal
+                );
+                tracing::info!(graph_id = %loaded.id, "rehydrated paused graph from disk");
+                self.orchestration.pending_graph = Some(loaded);
+                msg
+            }
+            GraphStatus::Running => {
+                // Crash recovery: treat as paused, reset in-flight tasks to Ready.
+                let mut graph = loaded;
+                let running_count = graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == TaskStatus::Running)
+                    .count();
+                for task in &mut graph.tasks {
+                    if task.status == TaskStatus::Running {
+                        task.status = TaskStatus::Ready;
+                        task.assigned_agent = None;
+                    }
+                }
+                graph.status = GraphStatus::Paused;
+                let msg = format!(
+                    "Recovered plan after interruption ({running_count} in-flight task(s) reset). \
+                     Use `/plan confirm` to continue."
+                );
+                tracing::info!(
+                    graph_id = %graph.id,
+                    running_count,
+                    "crash-recovery: rehydrated Running graph from disk, reset to Paused"
+                );
+                self.orchestration.pending_graph = Some(graph);
+                msg
+            }
+            GraphStatus::Failed => {
+                let msg = format!(
+                    "Plan '{id_str}' is in Failed status. \
+                     Use `/plan retry` to retry failed tasks or `/plan status` to inspect."
+                );
+                tracing::info!(graph_id = %loaded.id, "rehydrated failed graph from disk");
+                self.orchestration.pending_graph = Some(loaded);
+                msg
+            }
+            GraphStatus::Created => {
+                let msg = format!(
+                    "Plan '{id_str}' has not started executing. \
+                     Use `/plan confirm` to start."
+                );
+                tracing::info!(graph_id = %loaded.id, "rehydrated created graph from disk");
+                self.orchestration.pending_graph = Some(loaded);
+                msg
+            }
         }
-
-        if graph.status != GraphStatus::Paused {
-            return format!(
-                "The active plan is in '{}' status and cannot be resumed. \
-                 Only Paused plans can be resumed.",
-                graph.status
-            );
-        }
-
-        let graph = self.orchestration.pending_graph.take().unwrap();
-
-        tracing::info!(
-            graph_id = %graph.id,
-            "resuming paused graph"
-        );
-
-        let msg = format!(
-            "Resuming plan: {}\nUse `/plan confirm` to continue execution.",
-            graph.goal
-        );
-        self.orchestration.pending_graph = Some(graph);
-        msg
     }
 
     pub(super) fn handle_plan_retry_as_string(
@@ -902,7 +1019,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             PlanCommand::Status(id) => Ok(self.handle_plan_status_as_string(id.as_deref())),
             PlanCommand::List => Ok(self.handle_plan_list_as_string()),
             PlanCommand::Cancel(id) => Ok(self.handle_plan_cancel_as_string(id.as_deref())),
-            PlanCommand::Resume(id) => Ok(self.handle_plan_resume_as_string(id.as_deref())),
+            PlanCommand::Resume(id) => Ok(self.handle_plan_resume_as_string(id.as_deref()).await),
             PlanCommand::Retry(id) => self.handle_plan_retry_as_string(id.as_deref()),
         }
     }

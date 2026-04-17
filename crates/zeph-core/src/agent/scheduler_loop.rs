@@ -11,6 +11,37 @@ use super::error;
 use super::shutdown_signal;
 use super::tool_execution;
 
+/// Save a graph snapshot to persistent storage with a 5-second timeout.
+///
+/// Fail-open: errors and timeouts are logged at `warn!` level and do not abort
+/// the scheduler tick. Callers that need `error!` level (authoritative terminal
+/// saves) should inline their own match block.
+///
+/// # Note on timeout testing
+///
+/// This 5-second `SQLite` timeout is not exercised in unit tests because
+/// `:memory:` stores do not exhibit blocking behaviour. Timeout coverage
+/// requires an integration test with an artificially stalled pool.
+pub(super) async fn save_graph_snapshot(
+    persistence: &zeph_orchestration::GraphPersistence<
+        zeph_memory::store::graph_store::DbGraphStore,
+    >,
+    graph: zeph_orchestration::TaskGraph,
+) {
+    tracing::debug!(graph_id = %graph.id, status = %graph.status, "save_graph_snapshot: start");
+    match tokio::time::timeout(std::time::Duration::from_secs(5), persistence.save(&graph)).await {
+        Ok(Ok(())) => tracing::debug!(graph_id = %graph.id, "save_graph_snapshot: done"),
+        Ok(Err(e)) => tracing::warn!(
+            error = %e, graph_id = %graph.id,
+            "graph persistence save failed (fail-open)"
+        ),
+        Err(_) => tracing::warn!(
+            graph_id = %graph.id,
+            "graph persistence save timed out after 5s (fail-open)"
+        ),
+    }
+}
+
 impl<C: crate::channel::Channel> Agent<C> {
     /// Cancel all agents referenced in `cancel_actions`.
     ///
@@ -427,6 +458,11 @@ impl<C: crate::channel::Channel> Agent<C> {
             self.update_metrics(|m| {
                 m.orchestration_graph = Some(snapshot);
             });
+
+            if let Some(ref persistence) = self.orchestration.graph_persistence {
+                let graph_clone = scheduler.graph().clone();
+                save_graph_snapshot(persistence, graph_clone).await;
+            }
 
             tokio::select! {
                 biased;

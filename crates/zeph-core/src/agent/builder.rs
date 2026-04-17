@@ -1341,7 +1341,27 @@ impl<C: Channel> Agent<C> {
         self.orchestration.orchestration_config = config;
         self.orchestration.subagent_config = subagent_config;
         self.orchestration.subagent_manager = Some(manager);
+        self.wire_graph_persistence();
         self
+    }
+
+    /// Wire `graph_persistence` from the attached `SemanticMemory` `SQLite` pool.
+    ///
+    /// Idempotent: returns immediately if `graph_persistence` is already `Some`.
+    /// No-ops when `persistence_enabled = false` or when no memory store is attached.
+    pub(super) fn wire_graph_persistence(&mut self) {
+        if self.orchestration.graph_persistence.is_some() {
+            return;
+        }
+        if !self.orchestration.orchestration_config.persistence_enabled {
+            return;
+        }
+        if let Some(memory) = self.memory_state.persistence.memory.as_ref() {
+            let pool = memory.sqlite().pool().clone();
+            let store = zeph_memory::store::graph_store::DbGraphStore::new(pool);
+            self.orchestration.graph_persistence =
+                Some(zeph_orchestration::GraphPersistence::new(store));
+        }
     }
 
     /// Store adversarial policy gate info for `/status` display.
@@ -1557,6 +1577,7 @@ impl<C: Channel> Agent<C> {
         self.memory_state.subsystems.autodream_config = autodream_config;
         self.memory_state.subsystems.magic_docs_config = magic_docs_config;
         self.orchestration.orchestration_config = orchestration_config;
+        self.wire_graph_persistence();
         self.runtime.budget_hint_enabled = budget_hint_enabled;
 
         self.debug_state.reasoning_model_warning = anomaly_config.reasoning_model_warning;

@@ -70,6 +70,14 @@ pub(super) fn step_orchestration(state: &mut WizardState) -> anyhow::Result<()> 
         } else {
             Some(provider)
         };
+
+        state.orchestration_persistence_enabled = Confirm::new()
+            .with_prompt(
+                "Persist task graphs to SQLite after each scheduler tick? \
+                 (enables `/plan resume <id>` across restarts)",
+            )
+            .default(true)
+            .interact()?;
     }
 
     println!();

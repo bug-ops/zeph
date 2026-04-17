@@ -57,6 +57,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **feat(orchestration): persist task graph state to `SQLite` across scheduler ticks; `/plan resume <id>` hydrates from disk** — `GraphPersistence<DbGraphStore>` is now wired into `OrchestrationState` and saved once per scheduler tick plus two defensive saves around plan completion. `/plan resume <id>` supports a full status×action matrix: `Paused` (hydrate), `Running` (crash-recovery: reset in-flight tasks to `Ready`), `Failed` (hydrate for retry), `Completed`/`Canceled` (refuse). New config key `orchestration.persistence_enabled` (default `true`). Follow-up `/plan gc` for TTL-based pruning tracked as P3/enhancement. Closes #3107.
+
 - **feat(orchestration): AdaptOrch topology advisor** — 16-arm Thompson Beta-bandit that classifies
   goals into `TaskClass` variants and samples `TopologyHint` (Sequential / Parallel / Cascade /
   Adaptive) to inject into the planner prompt. Outcomes are recorded synchronously; state persists

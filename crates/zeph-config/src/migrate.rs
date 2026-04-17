@@ -2061,6 +2061,48 @@ pub fn migrate_sandbox_config(toml_src: &str) -> Result<MigrationResult, Migrate
     })
 }
 
+/// Add a commented-out `persistence_enabled` key under `[orchestration]` when absent (#3107).
+///
+/// Existing configs that omit this key pick up `true` via `#[serde(default)]`, so this
+/// migration is informational — it surfaces the new option without changing behaviour.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the TOML document cannot be parsed.
+pub fn migrate_orchestration_persistence(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Skip if the key is already present (active or commented).
+    if toml_src.contains("persistence_enabled") || toml_src.contains("# persistence_enabled") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    // Only inject under an existing [orchestration] section.
+    if !toml_src.contains("[orchestration]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    // Insert the commented key right after the `[orchestration]` header line.
+    let comment = "# persistence_enabled = true  \
+        # persist task graphs to SQLite after each tick; enables `/plan resume <id>` (#3107)\n";
+    let output = toml_src.replacen(
+        "[orchestration]\n",
+        &format!("[orchestration]\n{comment}"),
+        1,
+    );
+    Ok(MigrationResult {
+        output,
+        added_count: 1,
+        sections_added: vec!["orchestration.persistence_enabled".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {

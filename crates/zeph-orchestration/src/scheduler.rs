@@ -1773,6 +1773,7 @@ mod tests {
             predicate_provider: Default::default(),
             max_predicate_replans: 2,
             predicate_timeout_secs: 30,
+            persistence_enabled: true,
         }
     }
 

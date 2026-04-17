@@ -12,11 +12,10 @@
 //! - [`VerifyPredicate`] is an enum stored in `TaskNode.verify_predicate`. Only the
 //!   `Natural(String)` variant is constructible in v1 — `Expression` returns an error
 //!   if the planner ever emits one.
-//! - [`PredicateOutcome`] is persisted on `TaskNode` (in-memory only; restart re-evaluates
-//!   any pending predicates). After a crash, `predicate_outcome.is_none()` signals that
-//!   the gate has not been evaluated yet and the scheduler re-emits `VerifyPredicate` on
-//!   the next tick. Note: `GraphPersistence::save` is not yet wired — persistence is a
-//!   separate scope tracked as a follow-up issue.
+//! - [`PredicateOutcome`] is persisted on `TaskNode` via `GraphPersistence::save` (wired in
+//!   `zeph-core` scheduler loop and `handle_plan_confirm`). After a crash, rehydrating the
+//!   graph via `/plan resume <id>` restores `predicate_outcome` so the gate is not re-evaluated
+//!   for already-completed tasks.
 //! - [`PredicateEvaluator`] wraps any [`LlmProvider`] and produces [`PredicateOutcome`]
 //!   values. The evaluation prompt is intentionally minimal and model-agnostic.
 

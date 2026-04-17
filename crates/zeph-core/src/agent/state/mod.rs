@@ -426,6 +426,13 @@ pub(crate) struct OrchestrationState {
     /// for `record_outcome`.
     #[allow(dead_code)] // read via .take() in plan.rs; clippy false positive
     pub(crate) last_advisor_verdict: Option<zeph_orchestration::AdvisorVerdict>,
+    /// Task graph persistence handle. `None` when no `SemanticMemory` was
+    /// attached via `with_memory`, or when
+    /// `OrchestrationConfig::persistence_enabled` is `false`. When `Some`, the
+    /// scheduler loop snapshots the graph once per tick and `/plan resume <id>`
+    /// rehydrates from disk.
+    pub(crate) graph_persistence:
+        Option<zeph_orchestration::GraphPersistence<zeph_memory::store::graph_store::DbGraphStore>>,
 }
 
 /// Groups instruction hot-reload state.
