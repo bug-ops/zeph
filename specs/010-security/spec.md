@@ -98,6 +98,23 @@ Multiple crates — security is cross-cutting.
 - Blocked: process substitution `$(...)`, here-strings `<<<`, dangerous builtins (`rm -rf`, `mkfs`, etc.)
 - Bypass attempts: passing blocked patterns as arguments is also caught
 
+### Threat Model After #3077
+
+The Workspace Seatbelt profile grants **unconditional read access** to the entire
+filesystem via `(allow file-read*)`. This is the minimum set needed for bash and
+macOS binaries to load dylibs from the DYLD shared cache. Consequences:
+
+- User-scoped secrets (`~/.ssh/id_*`, `~/.aws/credentials`, `~/.config/gh/hosts.yml`,
+  `~/Library/Keychains/*`) are readable by any `bash -c …` the agent emits.
+- The profile now protects only **writes** (scoped to `allow_write`), **network**
+  (denied unless `NetworkAllowAll`), and **execution** (still `(deny default)`
+  for exec primitives beyond `process-exec*` on the child itself).
+
+Callers relying on the sandbox for read-secret protection must adopt the
+`tools.file.deny_read` glob list (#2525) and/or the pre-execution verifier. A
+deny-first Seatbelt rule for well-known secret prefixes is tracked in the
+follow-up issue filed with the #3077 PR.
+
 ## Untrusted Content Isolation
 
 `ContentSanitizer` pipeline (when guardrail feature enabled):

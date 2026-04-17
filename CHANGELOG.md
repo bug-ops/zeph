@@ -6,7 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **sandbox/macos: Workspace profile no longer scopes file reads to `/usr|/bin|/sbin|/lib`.** The
+  profile now grants global `(allow file-read*)` so bash can load dylibs from the DYLD shared cache
+  on macOS 14/15. This means write and network protections remain enforced but read-secret
+  protection has regressed. Follow-up P1 issue tracked for deny-first rules on `~/.ssh`,
+  `~/.aws`, `~/Library/Keychains`. ([#3077](https://github.com/bug-ops/zeph/issues/3077))
+
 ### Fixed
+
+- **fix(sandbox/macos): workspace profile now grants `file-read*` and `process-info*` so bash can
+  load dylibs from the DYLD shared cache on macOS 14/15.** Previous `/usr|/bin|/sbin|/lib` subpath
+  rules were insufficient — xattr reads on SIP-protected libraries during dyld init caused
+  SIGKILL/SIGABRT before `main()`. Matches Apple's `pure-computation.sb`.
+  ([#3077](https://github.com/bug-ops/zeph/issues/3077))
 
 - **fix(tui): skills panel now shows `N active / M loaded` instead of `N/M`.** Previously,
   `Skills: 0/124` was indistinguishable between "no skills matched this query" (normal) and
@@ -25,7 +39,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the loop parks and waits for natural task completion; cancellation on EOF only fires when the
   running set is empty. Adds `DagScheduler::has_running_tasks()` and 5 new tests. ([#3063](https://github.com/bug-ops/zeph/issues/3063))
 
+### Added
+
+- **feat(sandbox): `--init` wizard has a dedicated OS sandbox step, `migrate-config` inserts a
+  commented-out `[tools.sandbox]` block, `config/default.toml` and `docker-compose.yml` carry the
+  section so legacy configs can upgrade without manual editing.**
+  ([#3070](https://github.com/bug-ops/zeph/issues/3070))
+
 ### Changed
+
+- **fix(sandbox): `build_sandbox(strict=true)` now returns `SandboxError::Unavailable` on
+  unsupported platforms instead of silently falling back to noop.** Previously a misconfigured
+  strict sandbox on Windows or a Linux build without the `sandbox` feature degraded to
+  `NoopSandbox` with only a WARN log entry, hiding the misconfiguration.
+  ([#3070](https://github.com/bug-ops/zeph/issues/3070))
 
 - **chore(msrv): bump workspace MSRV from 1.88 to 1.94.** Brings the declared
   `rust-version` in line with APIs already in use (`Duration::from_mins`,

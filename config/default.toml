@@ -531,6 +531,18 @@ confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "dro
 # deny_read = ["/etc/shadow", "/root/*", "/home/*/.ssh/*"]
 # allow_read = ["/etc/hostname"]
 
+# [tools.sandbox]
+# OS-level subprocess sandbox for shell commands (#3070, #3077).
+# macOS: sandbox-exec (Seatbelt); Linux: bwrap + Landlock + seccomp (requires `sandbox` feature).
+# Applies ONLY to subprocess executors (shell) — in-process tools (WebScrapeExecutor,
+# FileExecutor) are not covered.
+# enabled = false                 # set to true to wrap shell commands in the sandbox
+# profile = "workspace"           # "workspace" | "read-only" | "network-allow-all" | "off"
+# backend = "auto"                # "auto" | "seatbelt" | "landlock-bwrap" | "noop"
+# strict = true                   # fail startup if sandbox initialisation fails (fail-closed)
+# allow_read = []                 # additional read-allowed absolute paths
+# allow_write = []                # additional write-allowed absolute paths
+
 [tools.scrape]
 # HTTP request timeout in seconds
 timeout = 15

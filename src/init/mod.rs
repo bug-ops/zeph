@@ -23,7 +23,7 @@ use agents::{step_agents, step_learning, step_orchestration, step_router};
 use llm::step_llm;
 use mcp::{step_mcp_discovery, step_mcp_remote, step_mcpls, write_mcpls_config};
 use memory::{step_context_compression, step_memory};
-use security::{step_policy, step_security};
+use security::{step_policy, step_sandbox, step_security};
 
 #[cfg_attr(test, derive(Clone))]
 #[allow(clippy::struct_excessive_bools)]
@@ -189,6 +189,13 @@ pub(crate) struct WizardState {
     // File read sandbox (#2525)
     pub(crate) file_deny_read: Vec<String>,
     pub(crate) file_allow_read: Vec<String>,
+    // OS subprocess sandbox (#3070, #3077)
+    pub(crate) sandbox_enabled: bool,
+    pub(crate) sandbox_profile: String,
+    pub(crate) sandbox_backend: String,
+    pub(crate) sandbox_strict: bool,
+    pub(crate) sandbox_allow_read: Vec<String>,
+    pub(crate) sandbox_allow_write: Vec<String>,
     // Budget hint injection (#2267)
     pub(crate) budget_hint_enabled: bool,
     // SleepGate forgetting sweep (#2397)
@@ -343,6 +350,12 @@ impl Default for WizardState {
             shell_auto_rollback: false,
             file_deny_read: Vec::new(),
             file_allow_read: Vec::new(),
+            sandbox_enabled: false,
+            sandbox_profile: "workspace".to_owned(),
+            sandbox_backend: "auto".to_owned(),
+            sandbox_strict: true,
+            sandbox_allow_read: Vec::new(),
+            sandbox_allow_write: Vec::new(),
             budget_hint_enabled: true,
             forgetting_enabled: false,
             compression_predictor_enabled: false,
@@ -412,6 +425,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_router(&mut state)?;
     step_learning(&mut state)?;
     step_security(&mut state)?;
+    step_sandbox(&mut state)?;
     step_debug(&mut state)?;
     step_logging(&mut state)?;
     step_experiments(&mut state)?;
@@ -799,6 +813,36 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         .file
         .allow_read
         .clone_from(&state.file_allow_read);
+    // OS subprocess sandbox (#3070).
+    config.tools.sandbox.enabled = state.sandbox_enabled;
+    config.tools.sandbox.profile = match state.sandbox_profile.as_str() {
+        "read-only" => zeph_tools::sandbox::SandboxProfile::ReadOnly,
+        "network-allow-all" => zeph_tools::sandbox::SandboxProfile::NetworkAllowAll,
+        "off" => zeph_tools::sandbox::SandboxProfile::Off,
+        other => {
+            tracing::warn!(
+                "unknown sandbox_profile value {:?}; defaulting to Workspace",
+                other
+            );
+            zeph_tools::sandbox::SandboxProfile::Workspace
+        }
+    };
+    config
+        .tools
+        .sandbox
+        .backend
+        .clone_from(&state.sandbox_backend);
+    config.tools.sandbox.strict = state.sandbox_strict;
+    config.tools.sandbox.allow_read = state
+        .sandbox_allow_read
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+    config.tools.sandbox.allow_write = state
+        .sandbox_allow_write
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
     config.skills.trust.scan_on_load = state.skill_scan_on_load;
     config.skills.trust.scanner.capability_escalation_check =
         state.skill_capability_escalation_check;
@@ -2074,5 +2118,56 @@ mod tests {
         let config = build_config(&state);
         assert!(config.tools.file.deny_read.is_empty());
         assert!(config.tools.file.allow_read.is_empty());
+    }
+
+    #[test]
+    fn build_config_sandbox_disabled_by_default() {
+        let state = single_provider_state();
+        let config = build_config(&state);
+        assert!(!config.tools.sandbox.enabled);
+        assert!(config.tools.sandbox.strict);
+    }
+
+    #[test]
+    fn build_config_sandbox_enabled_workspace() {
+        let state = WizardState {
+            sandbox_enabled: true,
+            sandbox_profile: "workspace".into(),
+            sandbox_backend: "auto".into(),
+            sandbox_strict: true,
+            sandbox_allow_read: vec!["/tmp/read".into()],
+            sandbox_allow_write: vec!["/tmp/write".into()],
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        assert!(config.tools.sandbox.enabled);
+        assert_eq!(
+            config.tools.sandbox.profile,
+            zeph_tools::sandbox::SandboxProfile::Workspace
+        );
+        assert_eq!(config.tools.sandbox.backend, "auto");
+        assert_eq!(config.tools.sandbox.allow_read.len(), 1);
+        assert_eq!(config.tools.sandbox.allow_write.len(), 1);
+    }
+
+    #[test]
+    fn build_config_sandbox_profile_variants() {
+        for (input, expected) in [
+            ("read-only", zeph_tools::sandbox::SandboxProfile::ReadOnly),
+            (
+                "network-allow-all",
+                zeph_tools::sandbox::SandboxProfile::NetworkAllowAll,
+            ),
+            ("off", zeph_tools::sandbox::SandboxProfile::Off),
+            ("workspace", zeph_tools::sandbox::SandboxProfile::Workspace),
+        ] {
+            let state = WizardState {
+                sandbox_enabled: true,
+                sandbox_profile: input.into(),
+                ..single_provider_state()
+            };
+            let config = build_config(&state);
+            assert_eq!(config.tools.sandbox.profile, expected, "input={input}");
+        }
     }
 }

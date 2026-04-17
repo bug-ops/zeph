@@ -229,10 +229,33 @@ pub fn build_sandbox(strict: bool) -> Result<Box<dyn Sandbox>, SandboxError> {
 
     #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "sandbox"))))]
     {
+        if strict {
+            return Err(SandboxError::Unavailable {
+                reason: "OS sandbox not supported on this platform and strict=true".into(),
+            });
+        }
         tracing::warn!(
             "OS sandbox not supported on this platform — running without subprocess isolation"
         );
-        let _ = strict;
         Ok(Box::new(NoopSandbox))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "sandbox"))))]
+    fn build_sandbox_strict_fails_when_unsupported() {
+        let err = build_sandbox(true).expect_err("strict must fail on unsupported platform");
+        assert!(matches!(err, SandboxError::Unavailable { .. }));
+    }
+
+    #[test]
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "sandbox"))))]
+    fn build_sandbox_nonstrict_falls_back_to_noop() {
+        let sb = build_sandbox(false).expect("noop fallback ok");
+        assert_eq!(sb.name(), "noop");
     }
 }

@@ -140,46 +140,44 @@ fn generate_sb_profile(policy: &SandboxPolicy) -> String {
     let mut rules = vec![
         "(version 1)".to_owned(),
         "(deny default)".to_owned(),
-        // Always allow process operations for the child itself.
+        // Process operations for the child itself.
         "(allow process-exec*)".to_owned(),
         "(allow process-fork)".to_owned(),
+        "(allow process-info*)".to_owned(),
         "(allow signal (target self))".to_owned(),
-        // System calls needed for basic operation.
+        // Baseline syscalls needed for dylib loading and libSystem initialisation.
         "(allow sysctl-read)".to_owned(),
         "(allow mach-lookup)".to_owned(),
         "(allow ipc-posix*)".to_owned(),
+        // Unconditional read access.
+        //
+        // bash and every dylib-linked macOS binary mmap()s the DYLD shared cache
+        // (/System/Volumes/Preboot/Cryptexes/OS/...), stat()s /.file, and reads
+        // xattrs on SIP-protected libraries during startup. None of these are
+        // reachable via (subpath ...) rules. Matches Apple's pure-computation.sb.
+        // Writes, exec, ioctl-write and network remain strictly scoped below (#3077).
+        "(allow file-read*)".to_owned(),
     ];
 
-    // Essential read-only paths: only what bash needs to exec.
-    // NOTE: /private/etc is NOT granted unconditionally — would expose ssh keys, passwd, etc.
-    for ro in &["/usr", "/bin", "/sbin", "/lib"] {
-        rules.push(format!(
-            "(allow file-read* (subpath \"{ro}\"))",
-            ro = escape_sb(ro)
-        ));
-    }
-
-    // /tmp is mapped as a tmpfs inside bwrap; grant only exec-time temp via a fresh tmpfs
-    // rather than the real /private/tmp. We do not grant /var/folders or /private/etc
-    // because those paths contain sensitive system state (Keychain trampolines, ssh keys).
-
-    // allow_read paths.
+    // Per-path read allow rules are now subsumed by the global (allow file-read*)
+    // grant but we keep them in the profile for two reasons:
+    //   1. Symmetry with Linux Landlock which strictly requires per-path entries.
+    //   2. Explicit documentation of caller intent — future-you may restrict the
+    //      global grant and these entries will still carry semantic meaning.
     for path in &policy.allow_read {
         let p = escape_sb(&path.display().to_string());
         rules.push(format!("(allow file-read* (subpath \"{p}\"))"));
     }
 
-    // allow_write paths (implies read too).
+    // Writes imply reads — explicit pair stays for documentation.
     for path in &policy.allow_write {
         let p = escape_sb(&path.display().to_string());
         rules.push(format!("(allow file-read* file-write* (subpath \"{p}\"))"));
     }
 
-    // Network.
     if policy.allow_network || policy.profile == SandboxProfile::NetworkAllowAll {
         rules.push("(allow network*)".to_owned());
     }
-    // else: network denied by default
 
     rules.join("\n")
 }
@@ -274,5 +272,43 @@ mod tests {
     #[test]
     fn escape_quotes_and_backslashes() {
         assert_eq!(escape_sb(r#"a"b\c"#), r#"a\"b\\c"#);
+    }
+
+    #[test]
+    fn profile_workspace_grants_global_file_read_wildcard() {
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::Workspace,
+            ..Default::default()
+        };
+        let profile = generate_sb_profile(&policy);
+        assert!(profile.contains("(allow file-read*)"));
+        assert!(profile.contains("(allow process-info*)"));
+    }
+
+    #[test]
+    fn profile_workspace_does_not_grant_global_writes() {
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::Workspace,
+            ..Default::default()
+        };
+        let profile = generate_sb_profile(&policy);
+        for line in profile.lines() {
+            let t = line.trim();
+            assert!(
+                !t.starts_with("(allow file-write"),
+                "unexpected bare write grant: {t}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_workspace_no_legacy_subpath_rules_for_system_dirs() {
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::Workspace,
+            ..Default::default()
+        };
+        let profile = generate_sb_profile(&policy);
+        assert!(!profile.contains("(allow file-read* (subpath \"/usr\"))"));
+        assert!(!profile.contains("(allow file-read* (subpath \"/bin\"))"));
     }
 }

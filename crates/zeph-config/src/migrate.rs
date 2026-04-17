@@ -1995,6 +1995,54 @@ pub fn migrate_vigil_config(toml_src: &str) -> Result<MigrationResult, MigrateEr
     })
 }
 
+/// Adds a commented-out `[tools.sandbox]` section to configs that predate the
+/// OS subprocess sandbox wizard (#3070). Also referenced by #3077.
+///
+/// Idempotent: if the section (or a dotted-key form under `[tools]`) is already
+/// present, OR if the commented-out block was already appended by a prior run,
+/// the input is returned unchanged. Uses `toml_edit` parsing to avoid false
+/// positives from comments that mention `tools.sandbox`.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the TOML source cannot be parsed.
+pub fn migrate_sandbox_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let doc: DocumentMut = toml_src.parse()?;
+    let already_present = doc
+        .get("tools")
+        .and_then(|t| t.as_table())
+        .and_then(|t| t.get("sandbox"))
+        .is_some();
+    // Secondary guard: commented-out block appended by a prior run of this
+    // function is not a real TOML key, so toml_edit would not detect it above.
+    if already_present || toml_src.contains("# [tools.sandbox]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "\n# OS-level subprocess sandbox for shell commands (#3070).\n\
+        # macOS: sandbox-exec (Seatbelt); Linux: bwrap + Landlock + seccomp (requires `sandbox` feature).\n\
+        # Applies ONLY to subprocess executors — in-process tools are unaffected.\n\
+        # [tools.sandbox]\n\
+        # enabled = false                 # set to true to wrap shell commands\n\
+        # profile = \"workspace\"          # \"workspace\" | \"read-only\" | \"network-allow-all\" | \"off\"\n\
+        # backend = \"auto\"               # \"auto\" | \"seatbelt\" | \"landlock-bwrap\" | \"noop\"\n\
+        # strict = true                   # fail startup if sandbox init fails (fail-closed)\n\
+        # allow_read = []                 # additional read-allowed absolute paths\n\
+        # allow_write = []                # additional write-allowed absolute paths\n";
+
+    let mut output = toml_src.to_owned();
+    output.push_str(comment);
+    Ok(MigrationResult {
+        output,
+        added_count: 1,
+        sections_added: vec!["tools.sandbox".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -2934,5 +2982,55 @@ trust_level = "untrusted"
             otel_pos < agent_pos,
             "otel_filter comment should appear before [agent] section"
         );
+    }
+
+    #[test]
+    fn sandbox_migration_adds_commented_section_when_absent() {
+        let src = "[agent]\nname = \"Z\"\n";
+        let result = migrate_sandbox_config(src).expect("migrate sandbox");
+        assert_eq!(result.added_count, 1);
+        assert!(result.output.contains("# [tools.sandbox]"));
+        assert!(result.output.contains("# profile = \"workspace\""));
+    }
+
+    #[test]
+    fn sandbox_migration_noop_when_section_present() {
+        let src = "[tools.sandbox]\nenabled = true\n";
+        let result = migrate_sandbox_config(src).expect("migrate sandbox");
+        assert_eq!(result.added_count, 0);
+    }
+
+    #[test]
+    fn sandbox_migration_noop_when_dotted_key_present() {
+        let src = "[tools]\nsandbox = { enabled = true }\n";
+        let result = migrate_sandbox_config(src).expect("migrate sandbox");
+        assert_eq!(result.added_count, 0);
+    }
+
+    #[test]
+    fn sandbox_migration_false_positive_comment_does_not_block() {
+        // Comments mentioning tools.sandbox must NOT suppress insertion.
+        let src = "# tools.sandbox was planned for #3070\n[agent]\nname = \"Z\"\n";
+        let result = migrate_sandbox_config(src).expect("migrate sandbox");
+        assert_eq!(result.added_count, 1);
+    }
+
+    #[test]
+    fn embedded_default_mentions_tools_sandbox() {
+        let default_src = include_str!("../config/default.toml");
+        assert!(
+            default_src.contains("tools.sandbox"),
+            "embedded default.toml must include tools.sandbox for ConfigMigrator discovery"
+        );
+    }
+
+    #[test]
+    fn sandbox_migration_idempotent_on_own_output() {
+        let base = "[agent]\nmodel = \"test\"\n";
+        let first = migrate_sandbox_config(base).unwrap();
+        assert_eq!(first.added_count, 1);
+        let second = migrate_sandbox_config(&first.output).unwrap();
+        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.output, first.output);
     }
 }
