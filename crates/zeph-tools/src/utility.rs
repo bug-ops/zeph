@@ -34,11 +34,19 @@ pub fn has_explicit_tool_request(user_message: &str) -> bool {
             | run\s+(the\s+)?[a-z_]+\s+tool
             | invoke\s+(the\s+)?[a-z_]+\s+tool
             | execute\s+(the\s+)?[a-z_]+\s+tool
+            | show\s+me\s+the\s+result\s+of\s*:
+            | run\s*:
+            | execute\s*:
+            | what\s+(does|would|is\s+the\s+output\s+of)
             ",
         )
         .expect("static regex is valid")
     });
-    RE.is_match(user_message)
+    // Inline code blocks with shell syntax are matched separately to avoid
+    // making the extended-mode regex unwieldy with backticks.
+    static RE_CODE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"`[^`]*[|><$;&][^`]*`").expect("static regex is valid"));
+    RE.is_match(user_message) || RE_CODE.is_match(user_message)
 }
 
 /// Estimated gain for known tool categories.
@@ -742,6 +750,95 @@ mod tests {
     fn explicit_request_no_match_tool_mentioned_without_invocation() {
         assert!(!has_explicit_tool_request(
             "the shell tool is very useful in general"
+        ));
+    }
+
+    #[test]
+    fn explicit_request_show_me_result_of() {
+        assert!(has_explicit_tool_request(
+            "show me the result of: echo hello"
+        ));
+    }
+
+    #[test]
+    fn explicit_request_run_colon() {
+        assert!(has_explicit_tool_request("run: echo hello"));
+    }
+
+    #[test]
+    fn explicit_request_execute_colon() {
+        assert!(has_explicit_tool_request("execute: ls -la"));
+    }
+
+    #[test]
+    fn explicit_request_what_does() {
+        assert!(has_explicit_tool_request("what does echo hello output?"));
+    }
+
+    #[test]
+    fn explicit_request_what_would() {
+        assert!(has_explicit_tool_request("what would cat /etc/hosts show?"));
+    }
+
+    #[test]
+    fn explicit_request_what_is_the_output_of() {
+        assert!(has_explicit_tool_request(
+            "what is the output of ls | grep foo?"
+        ));
+    }
+
+    #[test]
+    fn explicit_request_inline_code_pipe() {
+        assert!(has_explicit_tool_request("try running `ls | grep foo`"));
+    }
+
+    #[test]
+    fn explicit_request_inline_code_redirect() {
+        assert!(has_explicit_tool_request("run `echo hello > /tmp/out`"));
+    }
+
+    #[test]
+    fn explicit_request_inline_code_dollar() {
+        assert!(has_explicit_tool_request("check `$HOME/bin`"));
+    }
+
+    #[test]
+    fn explicit_request_inline_code_and() {
+        assert!(has_explicit_tool_request("try `git fetch && git rebase`"));
+    }
+
+    #[test]
+    fn no_match_run_the_tests() {
+        assert!(!has_explicit_tool_request("run the tests please"));
+    }
+
+    #[test]
+    fn no_match_execute_the_plan() {
+        assert!(!has_explicit_tool_request("execute the plan we discussed"));
+    }
+
+    #[test]
+    fn no_match_inline_code_no_shell_syntax() {
+        assert!(!has_explicit_tool_request(
+            "the function `process_items` handles it"
+        ));
+    }
+
+    // "what does this function do?" triggers the wide `what\s+(does|...)` pattern.
+    // This is an acceptable false positive: users asking "what does X do?" in the
+    // context of shell commands benefit from the gate bypass, and the cost of an
+    // occasional extra tool call for a prose question is low.
+    #[test]
+    fn known_fp_what_does_function_do() {
+        // Documents known false-positive: prose "what does X do?" also matches.
+        assert!(has_explicit_tool_request("what does this function do?"));
+    }
+
+    #[test]
+    fn no_match_show_me_result_without_colon() {
+        // Without the trailing colon the phrase is ambiguous prose, should not match.
+        assert!(!has_explicit_tool_request(
+            "show me the result of running it"
         ));
     }
 
