@@ -3560,6 +3560,127 @@ mod compaction_e2e {
         );
     }
 
+    /// COV-05: when channel closes (stdin EOF) while sub-agent tasks are still running,
+    /// `run_scheduler_loop` must NOT cancel them immediately.  Instead it parks the recv
+    /// arm (`stdin_closed = true`) and waits for the natural completion event.
+    ///
+    /// Simulates: piped `echo "/plan confirm" | zeph` — stdin closes before sub-agents finish.
+    #[cfg(feature = "scheduler")]
+    #[tokio::test]
+    async fn stdin_closed_parks_when_tasks_running() {
+        use crate::config::OrchestrationConfig;
+        use zeph_orchestration::{DagScheduler, RuleBasedRouter, TaskEvent, TaskOutcome};
+        use zeph_subagent::SubAgentManager;
+
+        // Empty channel: recv() returns Ok(None) immediately, simulating piped stdin EOF.
+        let channel = MockChannel::new(vec![]);
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration.orchestration_config.enabled = true;
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+
+        // A single task that is already running when the channel closes.
+        let mut graph = TaskGraph::new("piped stdin EOF with running task");
+        let mut node = TaskNode::new(0, "task-0", "must finish naturally");
+        node.status = TaskStatus::Running;
+        node.assigned_agent = Some("handle-0".to_string());
+        node.agent_hint = Some("worker".to_string());
+        graph.tasks.push(node);
+        graph.status = GraphStatus::Running;
+
+        let config = OrchestrationConfig {
+            enabled: true,
+            ..OrchestrationConfig::default()
+        };
+        let mut scheduler =
+            DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+
+        // Deliver the completion event asynchronously after a short delay so that the loop
+        // first observes channel-close (stdin_closed = true), then receives the event.
+        let event_tx = scheduler.event_sender();
+        let task_id = scheduler.graph().tasks[0].id;
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let _ = event_tx
+                .send(TaskEvent {
+                    task_id,
+                    agent_handle_id: "handle-0".to_string(),
+                    outcome: TaskOutcome::Completed {
+                        output: "natural completion".to_string(),
+                        artifacts: vec![],
+                    },
+                })
+                .await;
+        });
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = agent
+            .run_scheduler_loop(&mut scheduler, 1, token)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            status,
+            GraphStatus::Completed,
+            "loop must wait for natural task completion after stdin EOF, not cancel immediately; got {status:?}"
+        );
+        assert_eq!(
+            scheduler.graph().tasks[0].status,
+            TaskStatus::Completed,
+            "task must be Completed, not Canceled, when loop parks on stdin EOF"
+        );
+    }
+
+    /// COV-06: when channel closes (stdin EOF) and there are no running tasks,
+    /// `run_scheduler_loop` must exit immediately with `GraphStatus::Canceled`
+    /// (existing behavior preserved for empty-scheduler case).
+    #[cfg(feature = "scheduler")]
+    #[tokio::test]
+    async fn stdin_closed_exits_when_no_tasks() {
+        use crate::config::OrchestrationConfig;
+        use zeph_orchestration::{DagScheduler, RuleBasedRouter};
+        use zeph_subagent::SubAgentManager;
+
+        // Empty channel: recv() returns Ok(None) immediately.
+        let channel = MockChannel::new(vec![]);
+        let provider = mock_provider(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.orchestration.orchestration_config.enabled = true;
+        agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+
+        // Graph has a task in Running state, but no entry in scheduler.running map
+        // (simulates the case where the task was already drained before channel close).
+        let mut graph = TaskGraph::new("no running tasks on channel close");
+        let mut node = TaskNode::new(0, "task-0", "already drained");
+        node.status = TaskStatus::Running;
+        graph.tasks.push(node);
+        graph.status = GraphStatus::Running;
+
+        let config = OrchestrationConfig {
+            enabled: true,
+            ..OrchestrationConfig::default()
+        };
+        // resume_from without assigned_agent → running map stays empty.
+        let mut scheduler =
+            DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = agent
+            .run_scheduler_loop(&mut scheduler, 1, token)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            status,
+            GraphStatus::Canceled,
+            "channel close with no running tasks on exit-supporting channel must return Canceled; got {status:?}"
+        );
+    }
+
     /// GAP-9: `handle_plan_status` shows the correct message for each graph status.
     #[cfg(feature = "scheduler")]
     #[tokio::test]

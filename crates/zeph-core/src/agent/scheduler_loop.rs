@@ -226,6 +226,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             std::collections::HashSet::new();
 
         let mut plan_verifier: Option<PlanVerifier<zeph_llm::any::AnyProvider>> = None;
+        let mut stdin_closed = false;
 
         let final_status = 'tick: loop {
             let actions = scheduler.tick();
@@ -370,7 +371,13 @@ impl<C: crate::channel::Channel> Agent<C> {
                     break 'tick zeph_orchestration::GraphStatus::Canceled;
                 }
                 () = scheduler.wait_event() => {}
-                result = self.channel.recv() => {
+                result = async {
+                    if stdin_closed {
+                        std::future::pending::<Result<Option<crate::channel::ChannelMessage>, crate::channel::ChannelError>>().await
+                    } else {
+                        self.channel.recv().await
+                    }
+                } => {
                     if let Ok(Some(msg)) = result {
                         if msg.text.trim().eq_ignore_ascii_case("/plan cancel") {
                             let _ = self.channel.send_status("Canceling plan...").await;
@@ -387,6 +394,14 @@ impl<C: crate::channel::Channel> Agent<C> {
 
                         if let Some(status) = natural_done {
                             break 'tick status;
+                        }
+
+                        if scheduler.has_running_tasks() {
+                            // Channel closed (piped stdin EOF) but sub-agents are still
+                            // running. Park the recv arm and let wait_event() drive the
+                            // loop until they finish naturally.
+                            stdin_closed = true;
+                            continue;
                         }
 
                         let cancel_actions = scheduler.cancel_all();

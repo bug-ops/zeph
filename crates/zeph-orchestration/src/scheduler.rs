@@ -1095,6 +1095,12 @@ impl DagScheduler {
         });
         actions
     }
+
+    /// Returns `true` when at least one sub-agent task is currently in flight.
+    #[must_use]
+    pub fn has_running_tasks(&self) -> bool {
+        !self.running.is_empty()
+    }
 }
 
 impl DagScheduler {
@@ -3699,6 +3705,44 @@ mod tests {
         assert!(
             !spawned_ids.is_empty(),
             "tick must dispatch at least one ready task; Sequential tasks must not be dropped by cascade logic"
+        );
+    }
+
+    #[test]
+    fn has_running_tasks_false_on_empty_scheduler() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.status = GraphStatus::Created;
+        let scheduler = DagScheduler::new(
+            graph,
+            &make_config(),
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+        assert!(
+            !scheduler.has_running_tasks(),
+            "freshly-created scheduler with no spawns must report no running tasks"
+        );
+    }
+
+    #[test]
+    fn has_running_tasks_true_after_record_spawn() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.status = GraphStatus::Created;
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &make_config(),
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+        )
+        .unwrap();
+        // Advance the task to Running so record_spawn can index into it.
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+        let task_id = scheduler.graph.tasks[0].id;
+        scheduler.record_spawn(task_id, "handle-0".to_string(), "worker".to_string());
+        assert!(
+            scheduler.has_running_tasks(),
+            "scheduler must report running tasks after record_spawn"
         );
     }
 
