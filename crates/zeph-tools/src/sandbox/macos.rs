@@ -13,12 +13,60 @@
 //! [`SandboxError::Unavailable`] and strict-mode startup fails.
 
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tempfile::NamedTempFile;
+use tracing::warn;
 
 use super::{Sandbox, SandboxError, SandboxPolicy, SandboxProfile};
+
+/// Directories under `$HOME` whose entire subtrees are denied for file-read.
+///
+/// Rules use `(subpath ...)` — every file inside these directories is blocked.
+const SECRET_DIRS: &[&str] = &[
+    ".ssh",
+    ".aws",
+    ".azure",
+    ".gnupg",
+    ".password-store",
+    ".config/gh",
+    ".config/op",
+    ".config/gcloud",
+    ".config/hub",
+    ".config/glab-cli",
+    ".config/lab",
+    ".config/rclone",
+    ".docker",
+    ".kube",
+    ".anthropic",
+    ".config/anthropic",
+    ".claude",
+    ".config/claude",
+    ".codex",
+    ".config/codex",
+    ".openai",
+    ".subversion/auth",
+    "Library/Keychains",
+    "Library/Cookies",
+    "Library/Application Support/sops",
+    ".config/zeph",
+];
+
+/// Individual files under `$HOME` denied for file-read via `(literal ...)`.
+const SECRET_FILES: &[&str] = &[
+    ".git-credentials",
+    ".gitconfig",
+    ".config/git/credentials",
+    ".netrc",
+    ".zsh_history",
+    ".bash_history",
+    ".cargo/credentials.toml",
+    ".npmrc",
+    ".pypirc",
+    ".vault-token",
+    "Library/Application Support/sops/age/keys.txt",
+];
 
 /// macOS sandbox backend wrapping commands with `sandbox-exec -f <profile>.sb`.
 ///
@@ -64,7 +112,7 @@ impl Sandbox for MacosSandbox {
     /// # Errors
     ///
     /// - [`SandboxError::Unavailable`] when `sandbox-exec` is not found on `PATH`.
-    /// - [`SandboxError::Policy`] when profile serialization fails.
+    /// - [`SandboxError::Policy`] when profile serialization or home-dir resolution fails.
     /// - [`SandboxError::Setup`] on temp-file I/O errors.
     fn wrap(
         &self,
@@ -78,7 +126,7 @@ impl Sandbox for MacosSandbox {
         // Verify sandbox-exec is available.
         let sandbox_exec = locate_sandbox_exec()?;
 
-        let profile_str = generate_sb_profile(policy);
+        let profile_str = generate_sb_profile(policy)?;
 
         // Write profile to a NamedTempFile. We keep the `NamedTempFile` alive by storing
         // it in `self.tmpfiles` — it stays on disk until `MacosSandbox` itself drops.
@@ -136,7 +184,27 @@ fn which_sandbox_exec() -> Result<std::path::PathBuf, SandboxError> {
 }
 
 /// Generate a `TinyScheme` `.sb` profile string for the given policy.
-fn generate_sb_profile(policy: &SandboxPolicy) -> String {
+///
+/// Returns `Err(SandboxError::Policy)` when the user home directory cannot be resolved.
+/// Failing open (allowing all reads without the deny-first rules) would silently expose
+/// secrets, so we fail closed instead.
+fn generate_sb_profile(policy: &SandboxPolicy) -> Result<String, SandboxError> {
+    let Some(home) = dirs::home_dir() else {
+        warn!("sandbox: home_dir() returned None — cannot generate deny-first secret rules");
+        return Err(SandboxError::Policy(
+            "home_dir() returned None; sandbox profile generation requires a resolvable home \
+             directory"
+                .into(),
+        ));
+    };
+    Ok(generate_sb_profile_for_home(policy, &home))
+}
+
+/// Pure profile-string builder given an explicit `home` path.
+///
+/// Extracted so that unit tests can call it with a deterministic fake home directory
+/// and exercise the real production logic without touching `dirs::home_dir()`.
+fn generate_sb_profile_for_home(policy: &SandboxPolicy, home: &Path) -> String {
     let mut rules = vec![
         "(version 1)".to_owned(),
         "(deny default)".to_owned(),
@@ -159,19 +227,32 @@ fn generate_sb_profile(policy: &SandboxPolicy) -> String {
         "(allow file-read*)".to_owned(),
     ];
 
+    // Deny well-known secret paths AFTER the global (allow file-read*).
+    // Seatbelt uses last-rule-wins semantics, so deny rules placed here override the
+    // global allow above and are themselves overridden by any subsequent (allow ...) entries
+    // from the user-provided allow_read list below.
+    push_secret_deny_rules_for_home(&mut rules, home);
+
     // Per-path read allow rules are now subsumed by the global (allow file-read*)
     // grant but we keep them in the profile for two reasons:
     //   1. Symmetry with Linux Landlock which strictly requires per-path entries.
     //   2. Explicit documentation of caller intent — future-you may restrict the
     //      global grant and these entries will still carry semantic meaning.
+    //   3. User-provided allow_read paths appearing here override deny-first rules
+    //      above (last-rule-wins), giving callers an explicit opt-in escape hatch.
+    //
+    // NOTE: deny rules use non-canonicalized home.join(rel); allow_read paths are
+    // canonicalized by SandboxPolicy::canonicalized(). If ~/.ssh is a symlink to
+    // /secure/ssh-mount/, the user override will NOT override the deny rule because
+    // they resolve to different paths. This is a known limitation — document in config.
     for path in &policy.allow_read {
-        let p = escape_sb(&path.display().to_string());
+        let p = escape_sb(&path.to_string_lossy());
         rules.push(format!("(allow file-read* (subpath \"{p}\"))"));
     }
 
     // Writes imply reads — explicit pair stays for documentation.
     for path in &policy.allow_write {
-        let p = escape_sb(&path.display().to_string());
+        let p = escape_sb(&path.to_string_lossy());
         rules.push(format!("(allow file-read* file-write* (subpath \"{p}\"))"));
     }
 
@@ -180,6 +261,32 @@ fn generate_sb_profile(policy: &SandboxPolicy) -> String {
     }
 
     rules.join("\n")
+}
+
+/// Appends `(deny file-read* ...)` rules for well-known credential paths under `home`.
+///
+/// Iterates [`SECRET_DIRS`] (subpath deny) and [`SECRET_FILES`] (literal deny).
+/// Placed after the global `(allow file-read*)` so they take effect via last-rule-wins.
+fn push_secret_deny_rules_for_home(rules: &mut Vec<String>, home: &Path) {
+    for rel in SECRET_DIRS {
+        let path: PathBuf = home.join(rel);
+        rules.push(format!(
+            "(deny file-read* (subpath {}))",
+            escape_sb_quoted(&path.to_string_lossy())
+        ));
+    }
+    for rel in SECRET_FILES {
+        let path: PathBuf = home.join(rel);
+        rules.push(format!(
+            "(deny file-read* (literal {}))",
+            escape_sb_quoted(&path.to_string_lossy())
+        ));
+    }
+}
+
+/// Wraps a path string in double quotes with internal backslash/quote escaping.
+fn escape_sb_quoted(s: &str) -> String {
+    format!("\"{}\"", escape_sb(s))
 }
 
 fn escape_sb(s: &str) -> String {
@@ -232,7 +339,18 @@ fn rewrite_command_with_sandbox_exec(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+
+    /// Fixed fake home used across all tests — avoids calling `dirs::home_dir()`.
+    const FAKE_HOME: &str = "/tmp/fake-home-test";
+
+    fn fake_home() -> PathBuf {
+        PathBuf::from(FAKE_HOME)
+    }
+
+    // -- Original baseline tests, now calling the real production function -------------
 
     #[test]
     fn profile_workspace_denies_network_by_default() {
@@ -241,7 +359,7 @@ mod tests {
             allow_network: false,
             ..Default::default()
         };
-        let profile = generate_sb_profile(&policy);
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
         assert!(profile.contains("(deny default)"));
         assert!(!profile.contains("(allow network*)"));
     }
@@ -253,7 +371,7 @@ mod tests {
             allow_network: true,
             ..Default::default()
         };
-        let profile = generate_sb_profile(&policy);
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
         assert!(profile.contains("(allow network*)"));
     }
 
@@ -265,7 +383,6 @@ mod tests {
             ..Default::default()
         };
         let mut cmd = tokio::process::Command::new("bash");
-        // Should be a no-op (Ok) even if sandbox-exec missing.
         assert!(sb.wrap(&mut cmd, &policy).is_ok());
     }
 
@@ -280,7 +397,7 @@ mod tests {
             profile: SandboxProfile::Workspace,
             ..Default::default()
         };
-        let profile = generate_sb_profile(&policy);
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
         assert!(profile.contains("(allow file-read*)"));
         assert!(profile.contains("(allow process-info*)"));
     }
@@ -291,7 +408,7 @@ mod tests {
             profile: SandboxProfile::Workspace,
             ..Default::default()
         };
-        let profile = generate_sb_profile(&policy);
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
         for line in profile.lines() {
             let t = line.trim();
             assert!(
@@ -307,8 +424,159 @@ mod tests {
             profile: SandboxProfile::Workspace,
             ..Default::default()
         };
-        let profile = generate_sb_profile(&policy);
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
         assert!(!profile.contains("(allow file-read* (subpath \"/usr\"))"));
         assert!(!profile.contains("(allow file-read* (subpath \"/bin\"))"));
+    }
+
+    // -- Deny-first rules tests (#3086) -----------------------------------------------
+
+    #[test]
+    fn test_deny_rules_present() {
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::Workspace,
+            ..Default::default()
+        };
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
+        assert!(
+            profile.contains(&format!("(deny file-read* (subpath \"{FAKE_HOME}/.ssh\"))")),
+            ".ssh deny rule missing"
+        );
+        assert!(
+            profile.contains(&format!(
+                "(deny file-read* (subpath \"{FAKE_HOME}/.config/zeph\"))"
+            )),
+            ".config/zeph deny rule missing"
+        );
+        assert!(
+            profile.contains(&format!(
+                "(deny file-read* (literal \"{FAKE_HOME}/.netrc\"))"
+            )),
+            ".netrc deny rule missing"
+        );
+    }
+
+    #[test]
+    fn test_deny_ordering() {
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::Workspace,
+            ..Default::default()
+        };
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
+        let allow_pos = profile
+            .find("(allow file-read*)")
+            .expect("global allow missing");
+        let deny_pos = profile
+            .find(&format!("(deny file-read* (subpath \"{FAKE_HOME}/.ssh\"))"))
+            .expect("deny rule for .ssh missing");
+        assert!(
+            deny_pos > allow_pos,
+            "deny rule must appear after global (allow file-read*)"
+        );
+    }
+
+    #[test]
+    fn test_readonly_has_deny_rules() {
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::ReadOnly,
+            ..Default::default()
+        };
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
+        assert!(
+            profile.contains(&format!("(deny file-read* (subpath \"{FAKE_HOME}/.ssh\"))")),
+            "ReadOnly profile must have deny rules"
+        );
+    }
+
+    #[test]
+    fn test_network_allow_all_has_deny_rules() {
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::NetworkAllowAll,
+            allow_network: true,
+            ..Default::default()
+        };
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
+        assert!(
+            profile.contains(&format!("(deny file-read* (subpath \"{FAKE_HOME}/.ssh\"))")),
+            "NetworkAllowAll profile must have deny rules"
+        );
+    }
+
+    #[test]
+    fn test_allow_read_override_after_deny() {
+        let ssh_path = PathBuf::from(format!("{FAKE_HOME}/.ssh"));
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::Workspace,
+            allow_read: vec![ssh_path],
+            ..Default::default()
+        };
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
+        let deny_rule = format!("(deny file-read* (subpath \"{FAKE_HOME}/.ssh\"))");
+        let allow_rule = format!("(allow file-read* (subpath \"{FAKE_HOME}/.ssh\"))");
+        let deny_pos = profile.find(&deny_rule).expect("deny rule missing");
+        let allow_pos = profile.find(&allow_rule).expect("allow override missing");
+        // Last-rule-wins: user allow must appear after deny.
+        assert!(
+            allow_pos > deny_pos,
+            "user allow_read override must appear after deny rule"
+        );
+    }
+
+    #[test]
+    fn home_path_with_quotes_is_escaped() {
+        // A home path containing a double-quote must not produce bare unescaped quotes
+        // in the Seatbelt profile, which would break the TinyScheme parser.
+        let quoted_home = PathBuf::from("/tmp/a\"b-home");
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::Workspace,
+            ..Default::default()
+        };
+        let profile = generate_sb_profile_for_home(&policy, &quoted_home);
+        // Every deny rule line must contain the escaped form \" — never a raw bare "
+        // inside the path portion. We check the .ssh rule as the representative case.
+        let ssh_rule_line = profile
+            .lines()
+            .find(|l| l.contains(".ssh") && l.contains("deny"))
+            .expect("deny rule for .ssh must be present");
+        // The escaped path segment must appear.
+        assert!(
+            ssh_rule_line.contains(r#"/tmp/a\"b-home"#),
+            "quote in home path must be escaped with backslash, got: {ssh_rule_line}"
+        );
+        // And the raw unescaped sequence (space between /tmp/ and b-home without backslash)
+        // must NOT appear.
+        assert!(
+            !ssh_rule_line.contains("/tmp/a\"b-home/.ssh"),
+            "bare unescaped quote must not appear in rule, got: {ssh_rule_line}"
+        );
+    }
+
+    #[test]
+    fn all_37_deny_rules_emitted() {
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::Workspace,
+            ..Default::default()
+        };
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
+        let subpath_denies = profile
+            .lines()
+            .filter(|l| l.contains("(deny file-read* (subpath"))
+            .count();
+        let literal_denies = profile
+            .lines()
+            .filter(|l| l.contains("(deny file-read* (literal"))
+            .count();
+        assert_eq!(
+            subpath_denies,
+            SECRET_DIRS.len(),
+            "expected {} subpath deny rules, got {subpath_denies}",
+            SECRET_DIRS.len()
+        );
+        assert_eq!(
+            literal_denies,
+            SECRET_FILES.len(),
+            "expected {} literal deny rules, got {literal_denies}",
+            SECRET_FILES.len()
+        );
     }
 }

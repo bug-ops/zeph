@@ -43,6 +43,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Add deny-first Seatbelt rules for 37 well-known credential paths in macOS sandbox workspace
+  profile (`.ssh`, `.aws`, `.config/zeph`, git credentials, AI agent caches, vault tokens, etc.)
+  — closes [#3086](https://github.com/bug-ops/zeph/issues/3086)
 - **sandbox/macos: Workspace profile no longer scopes file reads to `/usr|/bin|/sbin|/lib`.** The
   profile now grants global `(allow file-read*)` so bash can load dylibs from the DYLD shared cache
   on macOS 14/15. This means write and network protections remain enforced but read-secret

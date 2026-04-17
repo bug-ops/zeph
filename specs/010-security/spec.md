@@ -340,3 +340,86 @@ MCP server stdio env is also filtered: the blocklist is extended for MCP child p
 - Blocklist is applied unconditionally for shell and MCP stdio subprocesses — no opt-out
 - Audit logger silent-drop bug fixed: every audit write failure must be logged, not silently ignored
 - `ZEPH_*` env vars must never appear in subprocess environments — they contain vault-resolved secrets
+
+---
+
+## Deny-First Secret Paths (#3086)
+
+### Mechanism
+
+macOS Seatbelt profiles use **last-rule-wins** semantics. `generate_sb_profile` emits:
+
+1. `(allow file-read*)` — global read grant (required for dyld/shared cache bootstrap).
+2. `(deny file-read* (subpath ...))` / `(deny file-read* (literal ...))` — per-secret denies placed **after** the global allow, overriding it.
+3. User-provided `allow_read` paths — placed **after** the deny block, re-allowing explicit operator opt-ins.
+
+This pattern ensures the sandbox fails-closed for secrets while remaining open for system libraries.
+
+### Secret Directories (`SECRET_DIRS` — `subpath` deny)
+
+| Path | Rationale |
+|------|-----------|
+| `.ssh` | SSH keys and known_hosts |
+| `.aws` | AWS credentials |
+| `.azure` | Azure CLI tokens |
+| `.gnupg` | GPG private keys |
+| `.password-store` | pass(1) encrypted store |
+| `.config/gh` | GitHub CLI token |
+| `.config/op` | 1Password CLI session |
+| `.config/gcloud` | GCloud ADC credentials |
+| `.config/hub` | hub CLI GitHub token |
+| `.config/glab-cli` | GitLab CLI token |
+| `.config/lab` | lab CLI token |
+| `.config/rclone` | rclone remote credentials |
+| `.docker` | Docker config with registry auth |
+| `.kube` | kubeconfig with cluster tokens |
+| `.anthropic` | Anthropic CLI credentials |
+| `.config/anthropic` | Anthropic SDK config |
+| `.claude` | Claude Code config (vault, sessions) |
+| `.config/claude` | Claude Code alt config path |
+| `.codex` | OpenAI Codex config |
+| `.config/codex` | OpenAI Codex alt config path |
+| `.openai` | OpenAI CLI credentials |
+| `.subversion/auth` | Subversion cached credentials |
+| `Library/Keychains` | macOS Keychain database |
+| `Library/Cookies` | Browser/app cookie stores |
+| `Library/Application Support/sops` | sops age key material |
+| `.config/zeph` | Zeph agent config and vault |
+
+### Secret Files (`SECRET_FILES` — `literal` deny)
+
+| Path | Rationale |
+|------|-----------|
+| `.git-credentials` | git credential helper store |
+| `.gitconfig` | May contain credential helper config |
+| `.config/git/credentials` | XDG git credentials |
+| `.netrc` | FTP/HTTP basic-auth credentials |
+| `.zsh_history` | Shell history (may contain secrets typed in-band) |
+| `.bash_history` | Shell history |
+| `.cargo/credentials.toml` | crates.io publish token |
+| `.npmrc` | npm registry token |
+| `.pypirc` | PyPI publish token |
+| `.vault-token` | HashiCorp Vault login token |
+| `Library/Application Support/sops/age/keys.txt` | sops age private key |
+
+### Why `(param "HOME")` Is Not Used
+
+`sandbox-exec` profiles in Zeph are written to a temp file and invoked programmatically — not via `sandbox-exec -D HOME=...` on the command line. Using `(param "HOME")` would require the caller to pass `-D HOME=<value>`, coupling `wrap()` to a different invocation path. Instead, `dirs::home_dir()` resolves the home directory at profile-generation time and embeds absolute paths directly.
+
+### User-Override Semantics
+
+Any path in `SandboxPolicy::allow_read` is appended **after** the deny-first block. Because Seatbelt uses last-rule-wins, these entries unconditionally re-enable read access for that subtree, giving callers an explicit opt-in escape hatch.
+
+### Non-Goals
+
+- No write protection (write access is governed by `allow_write` policy).
+- No parent-process scope (Seatbelt rules apply only to the sandboxed child).
+- No Mach-IPC keychain interception (Seatbelt `file-read*` does not cover Mach port access).
+- No network exfiltration prevention (governed by `allow_network`/`NetworkAllowAll`).
+- No `XDG_CONFIG_HOME` override awareness.
+
+### Key Invariants
+
+1. Deny rules are placed **after** `(allow file-read*)` and **before** `allow_read` overrides in all non-Off profiles.
+2. Rules apply to **all** `SandboxProfile` variants except `Off`.
+3. Profile generation **fails closed** when `dirs::home_dir()` returns `None` — a `SandboxError::Policy` is returned and the sandbox cannot be started.
