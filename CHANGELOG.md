@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **fix(orchestration): `/plan confirm` now works correctly in piped CLI mode.** Previously,
+  `scheduler_loop` cancelled all running sub-agents the moment stdin EOF was detected, causing
+  every plan execution in non-interactive (piped/scripted) mode to fail with 0/N tasks completed.
+  The fix adds a `stdin_closed` guard: when stdin is exhausted but plan tasks are still running,
+  the loop parks and waits for natural task completion; cancellation on EOF only fires when the
+  running set is empty. Adds `DagScheduler::has_running_tasks()` and 5 new tests. ([#3063](https://github.com/bug-ops/zeph/issues/3063))
+
 ### Changed
 
 - **chore(msrv): bump workspace MSRV from 1.88 to 1.94.** Brings the declared
