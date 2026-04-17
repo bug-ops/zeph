@@ -554,6 +554,14 @@ fn migrate_claude_provider(llm: &toml_edit::Table, model: &Option<String>) -> Ve
             let pairs: Vec<String> = thinking.iter().map(|(k, v)| format!("{k} = {v}")).collect();
             block.push_str(&format!("thinking = {{ {} }}\n", pairs.join(", ")));
         }
+        if let Some(v) = cloud
+            .get("prompt_cache_ttl")
+            .and_then(toml_edit::Item::as_str)
+        {
+            if v != "ephemeral" {
+                block.push_str(&format!("prompt_cache_ttl = \"{v}\"\n"));
+            }
+        }
     } else if let Some(m) = model {
         block.push_str(&format!("model = \"{m}\"\n"));
     }
@@ -3126,14 +3134,9 @@ trust_level = "untrusted"
 
     #[test]
     fn config_migrator_does_not_suppress_duplicate_key_across_sections() {
-        // `enabled` appears as a live key in [telemetry]. The migrator must still add
-        // `# enabled = ...` as a comment hint inside other sections that are missing it,
-        // rather than globally suppressing it because [telemetry] already has `enabled`.
         let migrator = ConfigMigrator::new();
         let src = "[telemetry]\nenabled = true\n\n[security]\n[security.content_isolation]\n";
         let result = migrator.migrate(src).expect("migrate");
-        // [security.content_isolation] should receive its own `# enabled = ...` hint
-        // even though `enabled` exists in [telemetry].
         let sec_body_start = result
             .output
             .find("[security.content_isolation]")
@@ -3149,7 +3152,6 @@ trust_level = "untrusted"
 
     #[test]
     fn config_migrator_idempotent_on_realistic_config() {
-        // Regression test for #3116: second run must add 0 entries and produce identical output.
         let base = r#"
 [agent]
 name = "Zeph"
@@ -3184,7 +3186,6 @@ enabled = true
             first.output, second.output,
             "output must be identical on second run"
         );
-        // Verify no section-header inline comment corruption.
         for line in first.output.lines() {
             if line.starts_with('[') && !line.starts_with("[[") {
                 assert!(
@@ -3193,5 +3194,58 @@ enabled = true
                 );
             }
         }
+    }
+
+    #[test]
+    fn migrate_claude_prompt_cache_ttl_1h_survives() {
+        let src = r#"
+[llm]
+provider = "claude"
+
+[llm.cloud]
+model = "claude-sonnet-4-6"
+prompt_cache_ttl = "1h"
+"#;
+        let result = migrate_llm_to_providers(src).expect("migrate");
+        assert!(
+            result.output.contains("prompt_cache_ttl = \"1h\""),
+            "1h TTL must be preserved in migrated output:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn migrate_claude_prompt_cache_ttl_ephemeral_suppressed() {
+        let src = r#"
+[llm]
+provider = "claude"
+
+[llm.cloud]
+model = "claude-sonnet-4-6"
+prompt_cache_ttl = "ephemeral"
+"#;
+        let result = migrate_llm_to_providers(src).expect("migrate");
+        assert!(
+            !result.output.contains("prompt_cache_ttl"),
+            "ephemeral TTL must be suppressed (M2 idempotency guard):\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn migrate_claude_prompt_cache_ttl_1h_idempotent() {
+        let src = r#"
+[[llm.providers]]
+type = "claude"
+model = "claude-sonnet-4-6"
+prompt_cache_ttl = "1h"
+"#;
+        let migrator = ConfigMigrator::new();
+        let first = migrator.migrate(src).expect("first migrate");
+        let second = migrator.migrate(&first.output).expect("second migrate");
+        assert_eq!(
+            first.output, second.output,
+            "migration must be idempotent when prompt_cache_ttl = \"1h\" already present"
+        );
     }
 }

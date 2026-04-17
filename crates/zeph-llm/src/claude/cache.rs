@@ -12,6 +12,21 @@ use super::types::{
     CACHE_MARKER_VOLATILE, CacheControl, CacheType, StructuredApiMessage, StructuredContent,
     SystemContentBlock,
 };
+use crate::CacheTtl;
+
+/// Build a `CacheControl` value for the given TTL variant.
+///
+/// For `None` or `Ephemeral`, the `ttl` field is omitted from the serialized output,
+/// preserving byte-identical wire format with pre-feature requests.
+pub(super) fn build_cache_control(ttl: Option<CacheTtl>) -> CacheControl {
+    CacheControl {
+        cache_type: CacheType::Ephemeral,
+        ttl: match ttl {
+            Some(CacheTtl::OneHour) => Some(CacheTtl::OneHour),
+            Some(CacheTtl::Ephemeral) | None => None,
+        },
+    }
+}
 
 pub(super) fn log_cache_usage(usage: &super::types::ApiUsage) {
     tracing::debug!(
@@ -44,7 +59,11 @@ pub(super) fn tool_cache_key(tools: &[ToolDefinition]) -> u64 {
     hasher.finish()
 }
 
-pub(super) fn split_system_into_blocks(system: &str, model: &str) -> Vec<SystemContentBlock> {
+pub(super) fn split_system_into_blocks(
+    system: &str,
+    model: &str,
+    ttl: Option<CacheTtl>,
+) -> Vec<SystemContentBlock> {
     // Split on volatile marker first: everything before is cacheable
     let (cacheable_part, volatile_part) = if let Some(pos) = system.find(CACHE_MARKER_VOLATILE) {
         (
@@ -86,9 +105,7 @@ pub(super) fn split_system_into_blocks(system: &str, model: &str) -> Vec<SystemC
                 };
                 let estimated_tokens = estimate_tokens(&text);
                 let cc = if estimated_tokens >= min_tokens {
-                    Some(CacheControl {
-                        cache_type: CacheType::Ephemeral,
-                    })
+                    Some(build_cache_control(ttl))
                 } else {
                     tracing::debug!(
                         estimated_tokens,
@@ -117,9 +134,7 @@ pub(super) fn split_system_into_blocks(system: &str, model: &str) -> Vec<SystemC
         let had_markers = remaining.len() < cacheable_part.trim().len();
         let estimated_tokens = estimate_tokens(remaining);
         let cc = if had_markers || estimated_tokens >= min_tokens {
-            Some(CacheControl {
-                cache_type: CacheType::Ephemeral,
-            })
+            Some(build_cache_control(ttl))
         } else {
             tracing::debug!(
                 estimated_tokens,
@@ -150,7 +165,7 @@ pub(super) fn split_system_into_blocks(system: &str, model: &str) -> Vec<SystemC
     blocks
 }
 
-pub(super) fn apply_cache_breakpoint(chat: &mut [StructuredApiMessage]) {
+pub(super) fn apply_cache_breakpoint(chat: &mut [StructuredApiMessage], ttl: Option<CacheTtl>) {
     let target = chat.len().saturating_sub(20);
     let breakpoint_idx = (target..chat.len())
         .find(|&i| chat[i].role == "user")
@@ -163,18 +178,14 @@ pub(super) fn apply_cache_breakpoint(chat: &mut [StructuredApiMessage]) {
                 | AnthropicContentBlock::ToolResult { cache_control, .. },
             ) = blocks.last_mut()
             {
-                *cache_control = Some(CacheControl {
-                    cache_type: CacheType::Ephemeral,
-                });
+                *cache_control = Some(build_cache_control(ttl));
             }
         }
         StructuredContent::Text(text) => {
             let owned = std::mem::take(text);
             msg.content = StructuredContent::Blocks(vec![AnthropicContentBlock::Text {
                 text: owned,
-                cache_control: Some(CacheControl {
-                    cache_type: CacheType::Ephemeral,
-                }),
+                cache_control: Some(build_cache_control(ttl)),
             }]);
         }
     }

@@ -12,6 +12,7 @@ use super::types::{
     AnthropicContentBlock, ApiMessage, ImageSource, StructuredApiMessage, StructuredContent,
     ToolApiResponse,
 };
+use crate::CacheTtl;
 
 pub(super) fn split_messages(messages: &[Message]) -> (Option<String>, Vec<ApiMessage<'_>>) {
     let mut system_parts = Vec::new();
@@ -49,6 +50,7 @@ pub(super) fn split_messages(messages: &[Message]) -> (Option<String>, Vec<ApiMe
 pub(super) fn split_messages_structured(
     messages: &[Message],
     cache_user_messages: bool,
+    ttl: Option<CacheTtl>,
 ) -> (Option<String>, Vec<StructuredApiMessage>) {
     let mut system_parts = Vec::new();
     let mut chat = Vec::new();
@@ -141,7 +143,7 @@ pub(super) fn split_messages_structured(
     // Place 1 message-level cache breakpoint at the user message closest to position
     // (total - 20) to maximize the 20-block lookback window coverage.
     if cache_user_messages && chat.len() > 1 {
-        apply_cache_breakpoint(&mut chat);
+        apply_cache_breakpoint(&mut chat, ttl);
     }
 
     let system = if system_parts.is_empty() {

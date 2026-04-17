@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **feat(llm): configurable prompt cache TTL with 1-hour Claude variant** — adds `CacheTtl` enum
+  (`Ephemeral` | `OneHour`) to `zeph-llm`. Setting `prompt_cache_ttl = "1h"` in a Claude provider
+  block enables the `extended-cache-ttl-2025-04-25` beta and extends cached prefix lifetime to 1
+  hour at approximately 2× write cost. Default behaviour (omit or set `"ephemeral"`) is byte-identical
+  to the previous wire format — no rollout risk for existing deployments. Closes
+  [#3096](https://github.com/bug-ops/zeph/issues/3096).
+
 ### Fixed
 
 - **fix(config): make `migrate-config --in-place` fully idempotent** — refactored

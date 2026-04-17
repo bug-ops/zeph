@@ -86,6 +86,7 @@ embedding_model = "qwen3-embedding"
 # default = true
 # server_compaction = false             # Claude compact-2026-01-12 beta
 # enable_extended_context = false       # 1M token window (Opus 4.6 / Sonnet 4.6)
+# prompt_cache_ttl = "1h"              # "1h" = extended TTL beta (writes ~2× cost); omit for default ~5 min
 # thinking = { type = "enabled", budget_tokens = 10000 }
 
 # OpenAI / Azure

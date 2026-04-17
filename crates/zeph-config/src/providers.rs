@@ -4,7 +4,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use zeph_llm::{GeminiThinkingLevel, ThinkingConfig};
+use zeph_llm::{CacheTtl, GeminiThinkingLevel, ThinkingConfig};
 
 /// Newtype wrapper for a provider name referencing an entry in `[[llm.providers]]`.
 ///
@@ -1201,6 +1201,10 @@ pub struct ProviderEntry {
     pub server_compaction: bool,
     #[serde(default)]
     pub enable_extended_context: bool,
+    /// Prompt cache TTL variant. `None` keeps the default ~5-minute ephemeral TTL.
+    /// Set to `"1h"` to enable the extended 1-hour TTL (beta, ~2× write cost).
+    #[serde(default)]
+    pub prompt_cache_ttl: Option<CacheTtl>,
 
     // --- OpenAI-specific ---
     #[serde(default)]
@@ -1246,6 +1250,7 @@ impl Default for ProviderEntry {
             thinking: None,
             server_compaction: false,
             enable_extended_context: false,
+            prompt_cache_ttl: None,
             reasoning_effort: None,
             thinking_level: None,
             thinking_budget: None,

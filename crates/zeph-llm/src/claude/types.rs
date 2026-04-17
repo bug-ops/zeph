@@ -383,10 +383,48 @@ pub(super) enum CacheType {
     Ephemeral,
 }
 
+/// Prompt cache TTL variant for the Claude API.
+///
+/// Controls how long a cached prompt prefix is retained. `Ephemeral` (default, ~5 min) is
+/// free to write; `OneHour` uses the `extended-cache-ttl-2025-04-25` beta and costs ~2× more
+/// to write but dramatically reduces re-write frequency for long-lived sessions.
+///
+/// # Serialization
+///
+/// When used as a TOML config value the accepted strings are `"ephemeral"` and `"1h"`.
+/// On the wire (Anthropic API), `OneHour` serializes as `"1h"` inside the `cache_control.ttl`
+/// field.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheTtl {
+    /// Default ephemeral TTL (~5 minutes). No beta header required.
+    #[default]
+    Ephemeral,
+    /// Extended 1-hour TTL. Requires the `extended-cache-ttl-2025-04-25` beta header.
+    /// Cache writes cost approximately 2× more than `Ephemeral`.
+    #[serde(rename = "1h")]
+    OneHour,
+}
+
+impl CacheTtl {
+    /// Returns `true` when this TTL variant requires the `extended-cache-ttl-2025-04-25` beta
+    /// header to be sent with each request.
+    #[must_use]
+    pub fn requires_beta(self) -> bool {
+        match self {
+            Self::OneHour => true,
+            Self::Ephemeral => false,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub(super) struct CacheControl {
     #[serde(rename = "type")]
     pub cache_type: CacheType,
+    /// Extended TTL for the cached prefix. Omitted when `None` (default ~5 min ephemeral).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<CacheTtl>,
 }
 
 /// Serialization-only parameter for Claude's `thinking` request field.

@@ -60,7 +60,7 @@ use crate::provider::{
 use crate::retry::send_with_retry;
 use crate::sse::claude_sse_to_stream;
 
-use self::cache::{log_cache_usage, split_system_into_blocks, tool_cache_key};
+use self::cache::{build_cache_control, log_cache_usage, split_system_into_blocks, tool_cache_key};
 use self::request::{parse_tool_response, split_messages, split_messages_structured};
 use self::types::{
     AnthropicContentBlock, AnthropicTool, ContextManagement, ContextManagementTrigger,
@@ -68,7 +68,7 @@ use self::types::{
     ToolChoice, ToolRequestBody, TypedToolRequestBody, VisionRequestBody,
 };
 
-pub use self::types::{ThinkingConfig, ThinkingEffort};
+pub use self::types::{CacheTtl, ThinkingConfig, ThinkingEffort};
 use self::types::{budget_to_effort, thinking_capability};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -76,6 +76,11 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ANTHROPIC_BETA_INTERLEAVED_THINKING: &str = "interleaved-thinking-2025-05-14";
 const ANTHROPIC_BETA_COMPACT: &str = "compact-2026-01-12";
 const ANTHROPIC_BETA_EXTENDED_CONTEXT: &str = "context-1m-2025-08-07";
+const ANTHROPIC_BETA_EXTENDED_CACHE_TTL: &str = "extended-cache-ttl-2025-04-25";
+
+/// Models known to support the extended 1-hour cache TTL beta.
+const MODELS_WITH_EXTENDED_CACHE_TTL: &[&str] =
+    &["claude-opus-4", "claude-sonnet-4", "claude-haiku-4"];
 const MAX_RETRIES: u32 = 3;
 
 use self::types::MIN_MAX_TOKENS_WITH_THINKING;
@@ -117,6 +122,8 @@ pub struct ClaudeProvider {
     /// Most recent compaction summary received from the API, if any.
     last_compaction: Mutex<Option<String>>,
     enable_extended_context: bool,
+    /// Prompt cache TTL variant. `None` means default (~5 min ephemeral).
+    prompt_cache_ttl: Option<CacheTtl>,
 }
 
 impl fmt::Debug for ClaudeProvider {
@@ -145,6 +152,7 @@ impl fmt::Debug for ClaudeProvider {
                 &self.last_compaction.lock().as_ref().map(String::len),
             )
             .field("enable_extended_context", &self.enable_extended_context)
+            .field("prompt_cache_ttl", &self.prompt_cache_ttl)
             .field("forward_output_schema", &self.forward_output_schema)
             .field("output_schema_hint_bytes", &self.output_schema_hint_bytes)
             .field(
@@ -172,6 +180,7 @@ impl Clone for ClaudeProvider {
             server_compaction_rejected: Arc::clone(&self.server_compaction_rejected),
             last_compaction: Mutex::new(None),
             enable_extended_context: self.enable_extended_context,
+            prompt_cache_ttl: self.prompt_cache_ttl,
             forward_output_schema: self.forward_output_schema,
             output_schema_hint_bytes: self.output_schema_hint_bytes,
             max_tool_description_bytes: self.max_tool_description_bytes,
@@ -213,6 +222,7 @@ impl ClaudeProvider {
             server_compaction_rejected: Arc::new(AtomicBool::new(false)),
             last_compaction: Mutex::new(None),
             enable_extended_context: false,
+            prompt_cache_ttl: None,
         }
     }
 
@@ -321,6 +331,42 @@ impl ClaudeProvider {
         if enabled {
             tracing::info!("Claude extended context (1M) enabled");
         }
+        self
+    }
+
+    /// Set the prompt cache TTL variant for this provider.
+    ///
+    /// Passing `None` (the default) uses the standard ~5-minute ephemeral TTL at no extra cost.
+    /// Passing `Some(CacheTtl::OneHour)` enables the `extended-cache-ttl-2025-04-25` beta and
+    /// approximately doubles cache write cost in exchange for far fewer re-writes.
+    ///
+    /// # Interaction with `with_cache_user_messages`
+    ///
+    /// The 1-hour TTL is applied to all three cache surfaces: system blocks, the tool list, and
+    /// the message-level breakpoint. If [`with_cache_user_messages`](Self::with_cache_user_messages)
+    /// was called with `false`, the message-level breakpoint is never placed, so the 1-hour TTL
+    /// applies only to system blocks and tools in that configuration.
+    #[must_use]
+    pub fn with_prompt_cache_ttl(mut self, ttl: Option<CacheTtl>) -> Self {
+        if let Some(CacheTtl::OneHour) = ttl {
+            let supported = MODELS_WITH_EXTENDED_CACHE_TTL
+                .iter()
+                .any(|prefix| self.model.starts_with(prefix));
+            if !supported {
+                tracing::warn!(
+                    model = %self.model,
+                    "model may not support extended 1h cache TTL beta; \
+                    known-supported prefixes: {}",
+                    MODELS_WITH_EXTENDED_CACHE_TTL.join(", "),
+                );
+            }
+            tracing::info!(
+                model = %self.model,
+                "prompt cache TTL set to 1 hour (extended-cache-ttl-2025-04-25 beta); \
+                cache writes cost ~2× ephemeral",
+            );
+        }
+        self.prompt_cache_ttl = ttl;
         self
     }
 
@@ -536,6 +582,10 @@ impl ClaudeProvider {
             headers.push(ANTHROPIC_BETA_COMPACT);
         }
 
+        if self.prompt_cache_ttl.is_some_and(CacheTtl::requires_beta) {
+            headers.push(ANTHROPIC_BETA_EXTENDED_CACHE_TTL);
+        }
+
         if headers.is_empty() {
             None
         } else {
@@ -593,9 +643,10 @@ impl ClaudeProvider {
             })
             .collect();
         if let Some(Some(obj)) = serialized.last_mut().map(serde_json::Value::as_object_mut) {
+            let cc = build_cache_control(self.prompt_cache_ttl);
             obj.insert(
                 "cache_control".into(),
-                serde_json::json!({"type": "ephemeral"}),
+                serde_json::to_value(&cc).expect("CacheControl serializes"),
             );
         }
         *guard = Some((key, serialized.clone()));
@@ -694,9 +745,13 @@ impl ClaudeProvider {
         let no_prefill = cap.prefers_effort && thinking_param.is_some();
 
         if Self::has_image_parts(messages) {
-            let (system, mut chat_messages) =
-                split_messages_structured(messages, self.cache_user_messages);
-            let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            let (system, mut chat_messages) = split_messages_structured(
+                messages,
+                self.cache_user_messages,
+                self.prompt_cache_ttl,
+            );
+            let system_blocks =
+                system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
             Self::cap_block_cache_controls(0, system_blocks.as_deref(), Some(&mut chat_messages));
             if no_prefill {
                 while chat_messages.last().is_some_and(|m| m.role == "assistant") {
@@ -732,7 +787,8 @@ impl ClaudeProvider {
                 chat_messages.pop();
             }
         }
-        let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        let system_blocks =
+            system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
         let beta = self.beta_header(false);
         let body = RequestBody {
             model: &self.model,
@@ -955,7 +1011,7 @@ impl LlmProvider for ClaudeProvider {
         };
 
         let (system, mut chat_messages) =
-            split_messages_structured(messages, self.cache_user_messages);
+            split_messages_structured(messages, self.cache_user_messages, self.prompt_cache_ttl);
         let api_tool = AnthropicTool {
             name: tool.name.as_str(),
             description: &tool.description,
@@ -969,7 +1025,8 @@ impl LlmProvider for ClaudeProvider {
             temperature = Some(t);
         }
         let output_config = effort.map(|e| OutputConfig { effort: e });
-        let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        let system_blocks =
+            system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
         Self::cap_block_cache_controls(0, system_blocks.as_deref(), Some(&mut chat_messages));
         let beta = self.beta_header(true);
         let body = TypedToolRequestBody {
@@ -1073,9 +1130,13 @@ impl LlmProvider for ClaudeProvider {
         let output_config = effort.map(|e| OutputConfig { effort: e });
 
         if !tools.is_empty() {
-            let (system, mut chat_messages) =
-                split_messages_structured(messages, self.cache_user_messages);
-            let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            let (system, mut chat_messages) = split_messages_structured(
+                messages,
+                self.cache_user_messages,
+                self.prompt_cache_ttl,
+            );
+            let system_blocks =
+                system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
             Self::cap_block_cache_controls(1, system_blocks.as_deref(), Some(&mut chat_messages));
             let api_tools = self.get_or_build_api_tools(tools);
             let body = ToolRequestBody {
@@ -1094,9 +1155,13 @@ impl LlmProvider for ClaudeProvider {
         }
 
         if Self::has_image_parts(messages) {
-            let (system, mut chat_messages) =
-                split_messages_structured(messages, self.cache_user_messages);
-            let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+            let (system, mut chat_messages) = split_messages_structured(
+                messages,
+                self.cache_user_messages,
+                self.prompt_cache_ttl,
+            );
+            let system_blocks =
+                system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
             Self::cap_block_cache_controls(0, system_blocks.as_deref(), Some(&mut chat_messages));
             let body = VisionRequestBody {
                 model: &self.model,
@@ -1114,7 +1179,8 @@ impl LlmProvider for ClaudeProvider {
         }
 
         let (system, chat_messages) = split_messages(messages);
-        let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        let system_blocks =
+            system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
         let body = RequestBody {
             model: &self.model,
             max_tokens: self.max_tokens,
@@ -1136,7 +1202,7 @@ impl LlmProvider for ClaudeProvider {
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
         let (system, mut chat_messages) =
-            split_messages_structured(messages, self.cache_user_messages);
+            split_messages_structured(messages, self.cache_user_messages, self.prompt_cache_ttl);
         let api_tools = self.get_or_build_api_tools(tools);
 
         let (thinking_param, mut temperature, effort) = self.build_thinking_param();
@@ -1146,7 +1212,8 @@ impl LlmProvider for ClaudeProvider {
             temperature = Some(t);
         }
         let output_config = effort.map(|e| OutputConfig { effort: e });
-        let system_blocks = system.map(|s| split_system_into_blocks(&s, &self.model));
+        let system_blocks =
+            system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
         Self::cap_block_cache_controls(1, system_blocks.as_deref(), Some(&mut chat_messages));
         let beta = self.beta_header(!tools.is_empty());
         let body = ToolRequestBody {

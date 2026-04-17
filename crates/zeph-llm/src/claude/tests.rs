@@ -9,6 +9,7 @@ use super::types::{
     ThinkingParam,
 };
 use super::*;
+use crate::CacheTtl;
 use crate::provider::{ImageData, MessageMetadata, Role, ThinkingBlock};
 use tokio_stream::StreamExt;
 
@@ -203,6 +204,7 @@ fn request_body_serializes_with_system_blocks() {
             text: "You are helpful.".into(),
             cache_control: Some(CacheControl {
                 cache_type: CacheType::Ephemeral,
+                ttl: None,
             }),
         }]),
         messages: &[],
@@ -409,7 +411,7 @@ fn request_body_serializes_with_stream_false_omits_stream() {
 fn split_system_no_markers_caches_entire_block() {
     // Text must meet the 2048-token threshold for sonnet (≈ 8192 chars).
     let long_text = format!("You are Zeph, an AI assistant. {}", "x".repeat(8200));
-    let blocks = split_system_into_blocks(&long_text, "claude-sonnet-4-6");
+    let blocks = split_system_into_blocks(&long_text, "claude-sonnet-4-6", None);
     assert_eq!(blocks.len(), 1);
     assert!(blocks[0].cache_control.is_some());
     assert!(blocks[0].text.contains("Zeph"));
@@ -417,7 +419,8 @@ fn split_system_no_markers_caches_entire_block() {
 
 #[test]
 fn split_system_no_markers_short_text_skips_cache() {
-    let blocks = split_system_into_blocks("You are Zeph, an AI assistant.", "claude-sonnet-4-6");
+    let blocks =
+        split_system_into_blocks("You are Zeph, an AI assistant.", "claude-sonnet-4-6", None);
     assert_eq!(blocks.len(), 1);
     assert!(blocks[0].cache_control.is_none());
 }
@@ -426,7 +429,7 @@ fn split_system_no_markers_short_text_skips_cache() {
 fn split_system_no_markers_exact_threshold_sonnet_caches() {
     // Exactly 8192 chars => 8192 / 4 = 2048 tokens == sonnet threshold: should cache.
     let exact_text = "A".repeat(8192);
-    let blocks = split_system_into_blocks(&exact_text, "claude-sonnet-4-6");
+    let blocks = split_system_into_blocks(&exact_text, "claude-sonnet-4-6", None);
     assert_eq!(blocks.len(), 1);
     assert!(blocks[0].cache_control.is_some());
 }
@@ -435,7 +438,7 @@ fn split_system_no_markers_exact_threshold_sonnet_caches() {
 fn split_system_no_markers_opus_skips_short_text() {
     // 8192 chars = 2048 tokens < 4096 opus minimum — no cache.
     let medium_text = "A".repeat(8192);
-    let blocks = split_system_into_blocks(&medium_text, "claude-opus-4-6");
+    let blocks = split_system_into_blocks(&medium_text, "claude-opus-4-6", None);
     assert_eq!(blocks.len(), 1);
     assert!(blocks[0].cache_control.is_none());
 }
@@ -444,7 +447,7 @@ fn split_system_no_markers_opus_skips_short_text() {
 fn split_system_no_markers_opus_caches_long_text() {
     // 16384 chars = 4096 tokens >= 4096 opus minimum — should cache.
     let long_text = "A".repeat(16384);
-    let blocks = split_system_into_blocks(&long_text, "claude-opus-4-6");
+    let blocks = split_system_into_blocks(&long_text, "claude-opus-4-6", None);
     assert_eq!(blocks.len(), 1);
     assert!(blocks[0].cache_control.is_some());
 }
@@ -458,7 +461,7 @@ fn split_system_with_all_markers() {
          {CACHE_MARKER_TOOLS}\ntool catalog {padding}\n\
          {CACHE_MARKER_VOLATILE}\nvolatile stuff"
     );
-    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6");
+    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6", None);
     assert_eq!(blocks.len(), 4);
     assert!(blocks[0].cache_control.is_some());
     assert!(blocks[0].text.contains("base prompt"));
@@ -474,7 +477,7 @@ fn split_system_with_all_markers() {
 fn split_system_partial_markers() {
     let padding = "x".repeat(8200);
     let system = format!("base prompt {padding}\n{CACHE_MARKER_VOLATILE}\nvolatile only");
-    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6");
+    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6", None);
     assert_eq!(blocks.len(), 2);
     assert!(blocks[0].cache_control.is_some());
     assert!(blocks[1].cache_control.is_none());
@@ -485,7 +488,7 @@ fn split_system_block1_padded_when_below_threshold() {
     // Block 1 is below 2048 tokens but gets padded with AGENT_IDENTITY_PREAMBLE,
     // so it must receive cache_control after padding.
     let system = format!("short text\n{CACHE_MARKER_STABLE}\nmore content");
-    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6");
+    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6", None);
     // Block 1 must be padded and cached
     assert!(blocks[0].cache_control.is_some());
     assert!(blocks[0].text.contains("short text"));
@@ -499,7 +502,7 @@ fn split_system_block2_not_padded_when_below_threshold() {
     let padding = "x".repeat(8200);
     let system =
         format!("base {padding}\n{CACHE_MARKER_STABLE}\nshort\n{CACHE_MARKER_TOOLS}\nmore");
-    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6");
+    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6", None);
     // Block 2 ("short") is below threshold and must NOT contain identity preamble
     assert!(!blocks[1].text.contains("Agent Identity"));
 }
@@ -749,7 +752,7 @@ fn split_messages_structured_with_tool_parts() {
             }],
         ),
     ];
-    let (system, chat) = split_messages_structured(&messages, true);
+    let (system, chat) = split_messages_structured(&messages, true, None);
     assert!(system.is_none());
     assert_eq!(chat.len(), 2);
 
@@ -791,7 +794,7 @@ fn split_messages_structured_downgrades_unmatched_tool_use_to_text() {
         ),
     ];
 
-    let (_, chat) = split_messages_structured(&messages, false);
+    let (_, chat) = split_messages_structured(&messages, false, None);
     assert_eq!(chat.len(), 2);
 
     // The assistant block must NOT contain a tool_use block for the unmatched ID.
@@ -830,7 +833,7 @@ fn split_messages_structured_preserves_matched_tool_use_block() {
         ),
     ];
 
-    let (_, chat) = split_messages_structured(&messages, false);
+    let (_, chat) = split_messages_structured(&messages, false, None);
     assert_eq!(chat.len(), 2);
 
     let assistant_json = serde_json::to_string(&chat[0]).unwrap();
@@ -878,7 +881,7 @@ fn split_structured_downgrades_orphaned_tool_result() {
 
     // Verify the full round-trip: the assistant ToolUse is matched (t_orphan has a
     // corresponding ToolResult), so this tests the happy path.
-    let (_, chat) = split_messages_structured(&messages, false);
+    let (_, chat) = split_messages_structured(&messages, false, None);
     assert_eq!(chat.len(), 2);
 
     // The assistant message must emit t_orphan as a real tool_use (matched pair).
@@ -925,7 +928,7 @@ fn split_structured_downgrades_orphaned_tool_result() {
         ),
     ];
 
-    let (_, chat2) = split_messages_structured(&messages_partial, false);
+    let (_, chat2) = split_messages_structured(&messages_partial, false, None);
     assert_eq!(chat2.len(), 2);
 
     // t_missing_result must be downgraded to text in the assistant message: if its ID
@@ -997,7 +1000,7 @@ fn split_structured_system_not_in_visible() {
         ),
     ];
 
-    let (system_text, chat) = split_messages_structured(&messages, false);
+    let (system_text, chat) = split_messages_structured(&messages, false, None);
 
     // Both system messages must be extracted to the system string.
     let system = system_text.unwrap_or_default();
@@ -1078,7 +1081,7 @@ fn split_messages_structured_produces_image_block() {
             })),
         ],
     );
-    let (system, chat) = split_messages_structured(&[msg], true);
+    let (system, chat) = split_messages_structured(&[msg], true, None);
     assert!(system.is_none());
     assert_eq!(chat.len(), 1);
     assert_eq!(chat[0].role, "user");
@@ -1988,7 +1991,7 @@ fn thinking_block_serializes_in_structured_message() {
             },
         ],
     );
-    let (_, chat) = split_messages_structured(&[msg], true);
+    let (_, chat) = split_messages_structured(&[msg], true, None);
     assert_eq!(chat.len(), 1);
     let json = serde_json::to_value(&chat[0]).unwrap();
     let blocks = json["content"].as_array().unwrap();
@@ -2006,7 +2009,7 @@ fn redacted_thinking_block_serializes_in_structured_message() {
             data: "secret".into(),
         }],
     );
-    let (_, chat) = split_messages_structured(&[msg], true);
+    let (_, chat) = split_messages_structured(&[msg], true, None);
     let json = serde_json::to_value(&chat[0]).unwrap();
     let blocks = json["content"].as_array().unwrap();
     assert_eq!(blocks[0]["type"], "redacted_thinking");
@@ -2171,7 +2174,7 @@ fn split_system_opus_block_above_threshold_gets_cache_control() {
     // opus threshold = 4096 tokens = 16384 chars
     let padding = "x".repeat(16400);
     let system = format!("{padding}\n{CACHE_MARKER_STABLE}\nmore");
-    let blocks = split_system_into_blocks(&system, "claude-opus-4-6");
+    let blocks = split_system_into_blocks(&system, "claude-opus-4-6", None);
     assert!(
         blocks[0].cache_control.is_some(),
         "block above opus threshold must be cached"
@@ -2182,7 +2185,7 @@ fn split_system_opus_block_above_threshold_gets_cache_control() {
 fn split_system_opus_block_below_threshold_skips_cache_control() {
     // text under 16384 chars is below opus threshold (4096 tokens)
     let system = format!("short\n{CACHE_MARKER_STABLE}\nmore content");
-    let blocks = split_system_into_blocks(&system, "claude-opus-4-6");
+    let blocks = split_system_into_blocks(&system, "claude-opus-4-6", None);
     assert!(
         blocks[0].cache_control.is_none(),
         "block below opus threshold must not be cached"
@@ -2251,7 +2254,7 @@ fn split_messages_structured_single_message_no_cache_breakpoint() {
         parts: vec![],
         metadata: MessageMetadata::default(),
     }];
-    let (_, chat) = split_messages_structured(&messages, true);
+    let (_, chat) = split_messages_structured(&messages, true, None);
     assert_eq!(chat.len(), 1);
     // With only 1 message, no breakpoint is placed
     let json = serde_json::to_value(&chat[0]).unwrap();
@@ -2278,7 +2281,7 @@ fn split_messages_structured_two_messages_places_breakpoint_on_user() {
             metadata: MessageMetadata::default(),
         },
     ];
-    let (_, chat) = split_messages_structured(&messages, true);
+    let (_, chat) = split_messages_structured(&messages, true, None);
     assert_eq!(chat.len(), 2);
     // Breakpoint must be on the user message at index 0 (only user in range)
     let user_json = serde_json::to_value(&chat[0]).unwrap();
@@ -2311,7 +2314,7 @@ fn split_messages_structured_breakpoint_targets_last_minus_20_position() {
             metadata: MessageMetadata::default(),
         });
     }
-    let (_, chat) = split_messages_structured(&messages, true);
+    let (_, chat) = split_messages_structured(&messages, true, None);
     assert_eq!(chat.len(), 25);
     // target = 25 - 20 = 5; first user at or after index 5 is index 6 (even indices are user)
     // Actually index 5 is assistant (odd), so search finds index 6 (user)
@@ -2527,7 +2530,7 @@ fn split_messages_structured_cache_enabled_adds_cache_control() {
         Message::from_legacy(Role::Assistant, "answer"),
         Message::from_legacy(Role::User, "second"),
     ];
-    let (_, chat) = split_messages_structured(&messages, true);
+    let (_, chat) = split_messages_structured(&messages, true, None);
     assert_eq!(chat.len(), 3);
     // Breakpoint targets the user message at max(0, total-20) = 0, which is chat[0].
     let has_cache = chat.iter().any(|m| {
@@ -2558,7 +2561,7 @@ fn split_messages_structured_cache_disabled_no_cache_control() {
         Message::from_legacy(Role::Assistant, "answer"),
         Message::from_legacy(Role::User, "second"),
     ];
-    let (_, chat) = split_messages_structured(&messages, false);
+    let (_, chat) = split_messages_structured(&messages, false, None);
     assert_eq!(chat.len(), 3);
     // With cache disabled, last user message stays as plain Text.
     assert!(
@@ -2930,7 +2933,7 @@ fn split_messages_structured_compaction_round_trip() {
             ],
         ),
     ];
-    let (system, chat) = split_messages_structured(&messages, false);
+    let (system, chat) = split_messages_structured(&messages, false, None);
     assert!(system.is_none());
     assert_eq!(chat.len(), 2);
 
@@ -3111,5 +3114,150 @@ fn test_claude_stub_used_when_schema_exceeds_1024_bytes() {
     assert!(
         desc.contains("too large"),
         "schema exceeding 1024 bytes must use stub with default budget"
+    );
+}
+
+// ─── CacheTtl tests ──────────────────────────────────────────────────────────
+
+#[test]
+fn cache_ttl_ephemeral_requires_no_beta() {
+    assert!(!CacheTtl::Ephemeral.requires_beta());
+}
+
+#[test]
+fn cache_ttl_one_hour_requires_beta() {
+    assert!(CacheTtl::OneHour.requires_beta());
+}
+
+#[test]
+fn cache_ttl_ephemeral_serializes_without_ttl_field() {
+    use super::cache::build_cache_control;
+    let cc = build_cache_control(None);
+    let v = serde_json::to_value(&cc).unwrap();
+    assert_eq!(v, serde_json::json!({"type": "ephemeral"}));
+}
+
+#[test]
+fn cache_ttl_one_hour_serializes_with_ttl_field() {
+    use super::cache::build_cache_control;
+    let cc = build_cache_control(Some(CacheTtl::OneHour));
+    let v = serde_json::to_value(&cc).unwrap();
+    assert_eq!(v, serde_json::json!({"type": "ephemeral", "ttl": "1h"}));
+}
+
+#[test]
+fn cache_ttl_deserialize_rejects_unknown_string() {
+    let result = serde_json::from_str::<CacheTtl>("\"30m\"");
+    assert!(
+        result.is_err(),
+        "unknown TTL string must fail deserialization"
+    );
+}
+
+#[test]
+fn cache_ttl_one_hour_toml_round_trip() {
+    use serde::Deserialize;
+    let v = toml::Value::String("1h".into());
+    let ttl = CacheTtl::deserialize(v).unwrap();
+    assert_eq!(ttl, CacheTtl::OneHour);
+}
+
+#[test]
+fn cache_ttl_ephemeral_toml_round_trip() {
+    use serde::Deserialize;
+    let v = toml::Value::String("ephemeral".into());
+    let ttl = CacheTtl::deserialize(v).unwrap();
+    assert_eq!(ttl, CacheTtl::Ephemeral);
+}
+
+#[test]
+fn beta_header_includes_extended_cache_ttl_for_one_hour() {
+    let p = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
+        .with_prompt_cache_ttl(Some(CacheTtl::OneHour));
+    let header = p.beta_header(false).unwrap_or_default();
+    assert!(
+        header.contains("extended-cache-ttl-2025-04-25"),
+        "beta header must include extended-cache-ttl-2025-04-25 for OneHour TTL"
+    );
+}
+
+#[test]
+fn beta_header_omits_extended_cache_ttl_for_ephemeral() {
+    let p = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+    let header = p.beta_header(false).unwrap_or_default();
+    assert!(
+        !header.contains("extended-cache-ttl-2025-04-25"),
+        "beta header must not include extended-cache-ttl for default ephemeral TTL"
+    );
+}
+
+#[test]
+fn tool_cache_control_uses_typed_path_for_one_hour() {
+    use zeph_common::types::ToolDefinition;
+    let tool = ToolDefinition {
+        name: "my_tool".into(),
+        description: "desc".into(),
+        parameters: serde_json::json!({"type": "object"}),
+        output_schema: None,
+    };
+    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
+        .with_prompt_cache_ttl(Some(CacheTtl::OneHour));
+    let api_tools = provider.get_or_build_api_tools(&[tool]);
+    let cc = &api_tools[0]["cache_control"];
+    assert_eq!(cc["type"], "ephemeral");
+    assert_eq!(cc["ttl"], "1h");
+}
+
+#[test]
+fn split_system_into_blocks_propagates_one_hour_ttl() {
+    use super::cache::split_system_into_blocks;
+    // Use a long enough string to exceed the cache threshold for any model
+    let system = "A".repeat(20_000);
+    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6", Some(CacheTtl::OneHour));
+    let cached = blocks
+        .iter()
+        .find(|b| b.cache_control.is_some())
+        .expect("at least one cached block");
+    let cc = cached.cache_control.as_ref().unwrap();
+    assert_eq!(cc.ttl, Some(CacheTtl::OneHour));
+}
+
+#[test]
+fn apply_cache_breakpoint_propagates_one_hour_ttl() {
+    use super::cache::apply_cache_breakpoint;
+    use super::types::{AnthropicContentBlock, StructuredContent};
+    let mut chat = vec![
+        StructuredApiMessage {
+            role: "user".into(),
+            content: StructuredContent::Text("first".into()),
+        },
+        StructuredApiMessage {
+            role: "assistant".into(),
+            content: StructuredContent::Text("reply".into()),
+        },
+        StructuredApiMessage {
+            role: "user".into(),
+            content: StructuredContent::Text("second".into()),
+        },
+    ];
+    apply_cache_breakpoint(&mut chat, Some(CacheTtl::OneHour));
+    let breakpoint_msg = chat.iter().find(|m| {
+        if let StructuredContent::Blocks(blocks) = &m.content {
+            blocks.iter().any(|b| {
+                if let AnthropicContentBlock::Text { cache_control, .. } = b {
+                    cache_control
+                        .as_ref()
+                        .map_or(false, |cc| cc.ttl == Some(CacheTtl::OneHour))
+                } else {
+                    false
+                }
+            })
+        } else {
+            false
+        }
+    });
+    assert!(
+        breakpoint_msg.is_some(),
+        "breakpoint message must carry 1h TTL"
     );
 }
