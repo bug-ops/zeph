@@ -11,12 +11,13 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use zeph_common::math::cosine_similarity;
 
 use crate::any::AnyProvider;
 use crate::error::LlmError;
-use crate::provider::Message;
+use crate::provider::{LlmProvider, Message};
 
 /// Configuration for the `CoE` subsystem (mirrors `[llm.coe]` in TOML).
 #[derive(Debug, Clone)]
@@ -27,8 +28,6 @@ pub struct CoeConfig {
     pub inter_threshold: f64,
     /// Baseline rate at which secondary is called even when intra is low.
     pub shadow_sample_rate: f64,
-    /// Per-turn cap on secondary calls.
-    pub max_secondary_calls_per_turn: u32,
 }
 
 impl Default for CoeConfig {
@@ -37,7 +36,6 @@ impl Default for CoeConfig {
             intra_threshold: 0.8,
             inter_threshold: 0.20,
             shadow_sample_rate: 0.1,
-            max_secondary_calls_per_turn: 1,
         }
     }
 }
@@ -79,7 +77,12 @@ pub async fn inter_divergence(primary: &str, secondary: &str, embed: &AnyProvide
     if primary.len().min(secondary.len()) < MIN_INTER_LEN {
         return None;
     }
-    let (a, b) = tokio::try_join!(embed.embed(primary), embed.embed(secondary)).ok()?;
+    let (a, b) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::try_join!(embed.embed(primary), embed.embed(secondary))
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)?;
     let cos = cosine_similarity(&a, &b);
     Some(((1.0 - cos) * 0.5).clamp(0.0, 1.0))
 }
@@ -124,25 +127,22 @@ pub fn decide(entropy: Option<f64>, divergence: Option<f32>, config: &CoeConfig)
 
 /// Run the full `CoE` pipeline for a single turn.
 ///
-/// Calls `chosen.chat_with_extras`, optionally shadows via secondary, and returns the
-/// final response text. Also returns the primary provider name for Thompson updates.
+/// Takes the already-obtained primary response to avoid a redundant LLM call.
+/// Optionally shadows via secondary and returns the final response text.
+/// Also returns the primary provider name for Thompson updates.
 ///
 /// Returns `(response_text, primary_name, decision)`.
 ///
 /// # Errors
 ///
-/// Propagates errors from the primary provider. Secondary/embed failures are swallowed
-/// and cause fallback to the primary response (COE-02).
+/// Secondary/embed failures are swallowed and cause fallback to the primary response (COE-02).
 pub async fn run_coe(
     coe: &CoeRouter,
-    primary: &AnyProvider,
+    primary_name: String,
+    primary_text: String,
+    primary_extras: crate::provider::ChatExtras,
     messages: &[Message],
 ) -> Result<(String, String, CoeDecision), LlmError> {
-    use crate::provider::LlmProvider;
-
-    let primary_name = primary.name().to_owned();
-    let (primary_text, primary_extras) = primary.chat_with_extras(messages).await?;
-
     let entropy = primary_extras.entropy;
 
     if !should_shadow(entropy, &coe.config) {
@@ -237,5 +237,102 @@ mod tests {
             decide(Some(0.1), Some(0.05), &config),
             CoeDecision::KeepPrimary
         ));
+    }
+
+    fn make_coe_router(
+        secondary: crate::any::AnyProvider,
+        embed: crate::any::AnyProvider,
+    ) -> CoeRouter {
+        CoeRouter {
+            config: CoeConfig {
+                intra_threshold: 0.8,
+                inter_threshold: 0.20,
+                shadow_sample_rate: 0.0, // disable random shadow unless explicitly set
+            },
+            secondary,
+            embed,
+            metrics: Arc::new(CoeMetrics::default()),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_coe_keeps_primary_when_shadow_disabled() {
+        use crate::any::AnyProvider;
+        use crate::mock::MockProvider;
+        use crate::provider::ChatExtras;
+
+        let secondary = MockProvider::with_responses(vec!["secondary response".into()]);
+        let mut embed = MockProvider::default();
+        embed.supports_embeddings = true;
+        let coe = make_coe_router(AnyProvider::Mock(secondary), AnyProvider::Mock(embed));
+
+        // Low entropy → should_shadow returns false with shadow_sample_rate=0.0
+        let (text, _name, decision) = run_coe(
+            &coe,
+            "primary".into(),
+            "primary response".into(),
+            ChatExtras { entropy: Some(0.1) },
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(text, "primary response");
+        assert!(matches!(decision, CoeDecision::KeepPrimary));
+        assert_eq!(coe.metrics.kept_primary.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn run_coe_fallback_on_secondary_failure() {
+        use crate::any::AnyProvider;
+        use crate::mock::MockProvider;
+        use crate::provider::ChatExtras;
+
+        let mut secondary = MockProvider::default();
+        secondary.fail_chat = true;
+        let mut embed = MockProvider::default();
+        embed.supports_embeddings = true;
+        let coe = make_coe_router(AnyProvider::Mock(secondary), AnyProvider::Mock(embed));
+
+        // High entropy triggers shadow; secondary fails → fallback to primary.
+        let (text, _name, decision) = run_coe(
+            &coe,
+            "primary".into(),
+            "primary response".into(),
+            ChatExtras { entropy: Some(1.0) },
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(text, "primary response");
+        assert!(matches!(decision, CoeDecision::KeepPrimary));
+        assert_eq!(coe.metrics.embed_failures.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn run_coe_escalates_intra_when_entropy_high() {
+        use crate::any::AnyProvider;
+        use crate::mock::MockProvider;
+        use crate::provider::ChatExtras;
+
+        let secondary = MockProvider::with_responses(vec!["secondary response".into()]);
+        let mut embed = MockProvider::default();
+        embed.supports_embeddings = true;
+        let coe = make_coe_router(AnyProvider::Mock(secondary), AnyProvider::Mock(embed));
+
+        let (text, _name, decision) = run_coe(
+            &coe,
+            "primary".into(),
+            "primary response text long enough to matter".into(),
+            ChatExtras { entropy: Some(1.0) }, // above intra_threshold=0.8
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(text, "secondary response");
+        assert!(matches!(decision, CoeDecision::EscalateIntra));
+        assert_eq!(coe.metrics.intra_escalations.load(Ordering::Relaxed), 1);
     }
 }

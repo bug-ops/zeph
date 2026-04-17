@@ -128,7 +128,6 @@ fn apply_coe(router: RouterProvider, config: &Config) -> RouterProvider {
             intra_threshold: coe_cfg.intra_threshold,
             inter_threshold: coe_cfg.inter_threshold,
             shadow_sample_rate: coe_cfg.shadow_sample_rate,
-            max_secondary_calls_per_turn: coe_cfg.max_secondary_calls_per_turn,
         };
         tracing::info!(
             "coe: enabled (intra={:.2} inter={:.2})",

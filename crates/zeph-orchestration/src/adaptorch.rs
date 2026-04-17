@@ -110,8 +110,9 @@ impl BetaDist {
     fn sample<R: rand::Rng>(&self, rng: &mut R) -> f64 {
         let a = self.alpha.max(1e-6);
         let b = self.beta.max(1e-6);
+        // Safety: a and b are clamped to ≥1e-6, so Beta::new never fails.
         Beta::new(a, b)
-            .unwrap_or_else(|_| Beta::new(1.0, 1.0).unwrap())
+            .expect("clamped values ≥1e-6 are always valid Beta params")
             .sample(rng)
     }
 }
@@ -320,7 +321,7 @@ impl TopologyAdvisor {
     // ─── private helpers ─────────────────────────────────────────────────────
 
     async fn classify(&self, goal: &str) -> TaskClass {
-        let truncated = &goal[..goal.len().min(400)];
+        let truncated: String = goal.chars().take(400).collect();
         let system = "\
 You classify task decomposition patterns. Read the goal and answer with one of:\n\
 - independent_batch  — fan-out work with no cross-deps (research, comparisons, multi-source queries)\n\
@@ -350,14 +351,23 @@ Respond with a single JSON object:\n\
         if class == TaskClass::Unknown {
             return (TopologyHint::Hybrid, false);
         }
+        // Clone arm entries under arms lock, then release before acquiring rng lock.
+        let arm_entries: Vec<(TopologyHint, BetaDist)> = {
+            let arms = self.arms.lock();
+            ALL_HINTS
+                .iter()
+                .map(|hint| {
+                    (
+                        *hint,
+                        arms.get(&(class, *hint)).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect()
+        };
         let mut rng = self.rng.lock();
-        let arms = self.arms.lock();
-        let scores: Vec<(TopologyHint, f64)> = ALL_HINTS
+        let scores: Vec<(TopologyHint, f64)> = arm_entries
             .iter()
-            .map(|hint| {
-                let dist = arms.get(&(class, *hint)).cloned().unwrap_or_default();
-                (*hint, dist.sample(&mut *rng))
-            })
+            .map(|(hint, dist)| (*hint, dist.sample(&mut *rng)))
             .collect();
 
         let (hint, score) = scores
@@ -366,7 +376,11 @@ Respond with a single JSON object:\n\
             .map_or((TopologyHint::Hybrid, 0.0), |(h, s)| (*h, *s));
 
         // "exploit" = the arm's mean (alpha / (alpha+beta)) aligns with the sampled score
-        let arm = arms.get(&(class, hint)).cloned().unwrap_or_default();
+        let arm = arm_entries
+            .iter()
+            .find(|(h, _)| *h == hint)
+            .map(|(_, d)| d.clone())
+            .unwrap_or_default();
         let mean = arm.alpha / (arm.alpha + arm.beta);
         let exploit = (score - mean).abs() < 0.15;
 
@@ -531,6 +545,69 @@ mod tests {
             .unwrap();
         assert!((arm.alpha - 2.0).abs() < f64::EPSILON);
         assert!((arm.beta - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn recommend_with_valid_json_returns_correct_class() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        let mock = MockProvider::with_responses(vec![
+            r#"{"class":"sequential_pipeline","reason":"strict ordering"}"#.into(),
+        ]);
+        let advisor = TopologyAdvisor::new(
+            Arc::new(AnyProvider::Mock(mock)),
+            PathBuf::new(),
+            Duration::from_secs(4),
+        );
+        let verdict = advisor
+            .recommend("Build, test, then deploy the service")
+            .await;
+        assert_eq!(verdict.class, TaskClass::SequentialPipeline);
+        assert!(advisor.metrics.classify_timeouts.load(Ordering::Relaxed) == 0);
+    }
+
+    #[tokio::test]
+    async fn recommend_timeout_returns_unknown_and_increments_metric() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        // Delay longer than classify_timeout so the call times out.
+        let mut mock = MockProvider::default();
+        mock.delay_ms = 200;
+        mock.default_response = r#"{"class":"sequential_pipeline","reason":"x"}"#.into();
+        let advisor = TopologyAdvisor::new(
+            Arc::new(AnyProvider::Mock(mock)),
+            PathBuf::new(),
+            Duration::from_millis(50), // short timeout
+        );
+        let verdict = advisor.recommend("any goal").await;
+        assert_eq!(verdict.class, TaskClass::Unknown);
+        assert_eq!(advisor.metrics.classify_timeouts.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn sample_arm_favours_reinforced_hint() {
+        use zeph_llm::any::AnyProvider;
+        let mock = zeph_llm::mock::MockProvider::default();
+        let advisor = TopologyAdvisor::new(
+            Arc::new(AnyProvider::Mock(mock)),
+            PathBuf::new(),
+            Duration::from_secs(4),
+        );
+        // Reinforce Sequential 20 times for SequentialPipeline class.
+        for _ in 0..20 {
+            advisor.record_outcome(TaskClass::SequentialPipeline, TopologyHint::Sequential, 1.0);
+        }
+        // Sample 50 times and verify Sequential wins most often.
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..50 {
+            let (hint, _) = advisor.sample_arm(TaskClass::SequentialPipeline);
+            *counts.entry(hint).or_insert(0u32) += 1;
+        }
+        let sequential_count = counts.get(&TopologyHint::Sequential).copied().unwrap_or(0);
+        assert!(
+            sequential_count > 30,
+            "expected Sequential to win >30/50 times after reinforcement, got {sequential_count}"
+        );
     }
 
     #[test]

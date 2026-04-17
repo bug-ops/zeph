@@ -1359,8 +1359,8 @@ impl LlmProvider for RouterProvider {
 
             for p in &providers {
                 let start = std::time::Instant::now();
-                match p.chat(&messages).await {
-                    Ok(r) => {
+                match p.chat_with_extras(&messages).await {
+                    Ok((r, extras)) => {
                         router.record_availability(
                             p.name(),
                             true,
@@ -1396,10 +1396,16 @@ impl LlmProvider for RouterProvider {
                             // Pass resp_emb to ASI to avoid a redundant embed call.
                             router.spawn_asi_update(p.name(), r.clone(), turn_id, resp_emb);
 
-                            // CoE: run after quality gate passes.
+                            // CoE: pass already-obtained primary result to avoid double call.
                             if let Some(ref coe_router) = router.coe
-                                && let Ok((final_r, pname, decision)) =
-                                    run_coe(coe_router, p, &messages).await
+                                && let Ok((final_r, pname, decision)) = run_coe(
+                                    coe_router,
+                                    p.name().to_owned(),
+                                    r.clone(),
+                                    extras,
+                                    &messages,
+                                )
+                                .await
                             {
                                 if matches!(
                                     decision,
@@ -1418,10 +1424,16 @@ impl LlmProvider for RouterProvider {
                         // Spawn ASI embedding update (fire-and-forget, no precomputed embedding).
                         router.spawn_asi_update(p.name(), r.clone(), turn_id, None);
 
-                        // CoE: run when quality gate is not active.
+                        // CoE: pass already-obtained primary result to avoid double call.
                         if let Some(ref coe_router) = router.coe
-                            && let Ok((final_r, pname, decision)) =
-                                run_coe(coe_router, p, &messages).await
+                            && let Ok((final_r, pname, decision)) = run_coe(
+                                coe_router,
+                                p.name().to_owned(),
+                                r.clone(),
+                                extras,
+                                &messages,
+                            )
+                            .await
                         {
                             if matches!(
                                 decision,

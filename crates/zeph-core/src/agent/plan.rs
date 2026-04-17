@@ -657,11 +657,11 @@ impl<C: crate::channel::Channel> Agent<C> {
         let max_tasks = self.orchestration.orchestration_config.max_tasks;
         let (graph, planner_usage) = {
             use zeph_orchestration::Planner as _;
-            let result = if topology_hint.is_some() {
-                planner
-                    .plan_with_hint(goal, &available_agents, topology_hint)
-                    .await
-            } else {
+            // Use cache when there is no hint, or when the hint has no prompt sentence (Hybrid).
+            let use_cache = topology_hint
+                .as_ref()
+                .is_none_or(|h| h.prompt_sentence().is_none());
+            let result = if use_cache {
                 plan_with_cache(
                     &planner,
                     self.orchestration.plan_cache.as_ref(),
@@ -673,6 +673,10 @@ impl<C: crate::channel::Channel> Agent<C> {
                     max_tasks,
                 )
                 .await
+            } else {
+                planner
+                    .plan_with_hint(goal, &available_agents, topology_hint)
+                    .await
             };
             result.map_err(|e| error::AgentError::Other(e.to_string()))?
         };

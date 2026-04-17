@@ -1089,13 +1089,6 @@ pub struct CoeConfig {
     pub secondary_provider: ProviderName,
     /// Provider name for inter-divergence embeddings. Empty → inherit bandit's embed provider.
     pub embed_provider: ProviderName,
-    /// Per-turn cap on secondary calls.
-    #[serde(default = "default_coe_max_secondary_calls")]
-    pub max_secondary_calls_per_turn: u32,
-}
-
-fn default_coe_max_secondary_calls() -> u32 {
-    1
 }
 
 impl Default for CoeConfig {
@@ -1107,7 +1100,6 @@ impl Default for CoeConfig {
             shadow_sample_rate: 0.1,
             secondary_provider: ProviderName::default(),
             embed_provider: ProviderName::default(),
-            max_secondary_calls_per_turn: default_coe_max_secondary_calls(),
         }
     }
 }
