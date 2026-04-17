@@ -109,7 +109,7 @@ pub fn build_provider_from_entry(
                 provider = provider.with_vision_model(vm.clone());
             }
             if config.mcp.forward_output_schema {
-                tracing::warn!(
+                tracing::debug!(
                     "mcp.forward_output_schema is enabled but Ollama does not support \
                      output schema forwarding; setting ignored for this provider"
                 );
@@ -222,7 +222,7 @@ pub fn build_provider_from_entry(
                 provider = provider.with_include_thoughts(include);
             }
             if config.mcp.forward_output_schema {
-                tracing::warn!(
+                tracing::debug!(
                     "mcp.forward_output_schema is enabled but Gemini does not support \
                      output schema forwarding; setting ignored for this provider"
                 );
