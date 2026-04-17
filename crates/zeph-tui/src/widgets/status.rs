@@ -47,7 +47,7 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
     let bg_segment = build_bg_segment(metrics);
 
     let main_text = format!(
-        " [{mode}]{model}{channel_segment}{plan_mode_segment}{subagent_view_segment} | Skills: {active}/{total} | Tokens: {tok}{qdrant_segment}{filter_segment}{bg_segment}",
+        " [{mode}]{model}{channel_segment}{plan_mode_segment}{subagent_view_segment} | Skills: {active} active / {total} loaded | Tokens: {tok}{qdrant_segment}{filter_segment}{bg_segment}",
         model = if metrics.model_name.is_empty() {
             String::new()
         } else {

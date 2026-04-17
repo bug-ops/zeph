@@ -51,7 +51,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
             .borders(Borders::ALL)
             .border_style(theme.panel_border)
             .title(format!(
-                " Skills ({}/{}) ",
+                " Skills ({} active / {} loaded) ",
                 metrics.active_skills.len(),
                 metrics.total_skills
             )),

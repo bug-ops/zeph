@@ -1,5 +1,6 @@
 ---
 source: crates/zeph-tui/src/widgets/status.rs
+assertion_line: 246
 expression: output
 ---
- [Insert] | Skills: 2/5 | Tokens: 4.2k | qdrant: OK | API: 12 | 2m 15s
+ [Insert] | Skills: 2 active / 5 loaded | Tokens: 4.2k | qdrant: OK | API: 12 | 2m 15s

@@ -1,8 +1,9 @@
 ---
 source: crates/zeph-tui/src/widgets/skills.rs
+assertion_line: 130
 expression: output
 ---
-┌ Skills (2/5) ──────────────┐
+┌ Skills (2 active / 5 loaded┐
 │  - web-search              │
 │  - code-gen                │
 │                            │

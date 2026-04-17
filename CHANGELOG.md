@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **fix(tui): skills panel now shows `N active / M loaded` instead of `N/M`.** Previously,
+  `Skills: 0/124` was indistinguishable between "no skills matched this query" (normal) and
+  "skills failed to load" (error). Explicit labels make the per-turn active count clear.
+  ([#3062](https://github.com/bug-ops/zeph/issues/3062))
+
+- **fix(config): add `embed_provider = "ollama-embed"` to testing.toml.** Missing field caused
+  SemanticMemory to fall back to the Thompson-routed default provider (OpenAI, 1536-dim) instead
+  of Ollama nomic-embed-text-v2-moe (768-dim), producing `vector dimension mismatch — recreating
+  collection` warnings and data loss on every CI session. ([#3061](https://github.com/bug-ops/zeph/issues/3061))
+
 - **fix(orchestration): `/plan confirm` now works correctly in piped CLI mode.** Previously,
   `scheduler_loop` cancelled all running sub-agents the moment stdin EOF was detected, causing
   every plan execution in non-interactive (piped/scripted) mode to fail with 0/N tasks completed.
