@@ -858,10 +858,11 @@ impl DagScheduler {
 
         // CascadeAware: partition ready tasks into preferred (healthy region) and deferred
         // (cascading region). Deferred tasks still run when no preferred tasks remain.
-        // Skip for Sequential tasks — they must not be reordered relative to each other (C14).
+        // Skip for Sequential tasks — they must not be reordered relative to each other.
         let ready: Vec<TaskId> = if self.topology.strategy == DispatchStrategy::CascadeAware {
-            if let Some(ref detector) = self.cascade_detector {
-                let deprioritized = detector.deprioritized_tasks(&self.graph);
+            if let Some(ref mut detector) = self.cascade_detector {
+                let graph = &self.graph;
+                let deprioritized = detector.deprioritized_tasks(graph);
                 if deprioritized.is_empty() {
                     raw_ready
                 } else {
@@ -883,7 +884,7 @@ impl DagScheduler {
 
         // TreeOptimized: sort ready tasks by critical-path distance descending
         // (tasks deepest in the DAG go first — shortest distance to sinks).
-        // Skip for Sequential tasks to preserve their ordering invariant (C14).
+        // Skip for Sequential tasks to preserve their ordering invariant.
         let ready: Vec<TaskId> = if self.topology.strategy == DispatchStrategy::TreeOptimized {
             let max_depth = self.topology.depth;
             let mut sortable = ready;
@@ -1453,13 +1454,11 @@ impl DagScheduler {
                 let ttl = self.lineage_ttl_secs;
                 self.lineage_chains.retain(|_, c| c.is_recent(ttl));
 
-                // Check fan-out abort signal from CascadeDetector (S5).
-                if let Some(ref detector) = self.cascade_detector {
-                    match detector.evaluate_abort(
-                        &self.graph,
-                        task_id,
-                        self.cascade_failure_rate_abort_threshold,
-                    ) {
+                // Check fan-out abort signal from CascadeDetector.
+                let graph = &self.graph;
+                let threshold = self.cascade_failure_rate_abort_threshold;
+                if let Some(ref mut detector) = self.cascade_detector {
+                    match detector.evaluate_abort(graph, task_id, threshold) {
                         AbortDecision::FanOutCascade {
                             region_root,
                             failure_rate,
@@ -3988,7 +3987,7 @@ mod tests {
     #[test]
     fn sequential_tasks_not_reordered_by_cascade() {
         // Sequential tasks must stay at the front of the dispatch queue even when
-        // their region is cascading (C14 fix): they must not be moved to the deferred set.
+        // their region is cascading: they must not be moved to the deferred set.
         //
         // Graph: root0 (healthy region), root1 -> t2 (cascading region, Sequential).
         // After injecting failures for root1's region, deprioritized = {root1, t2}.

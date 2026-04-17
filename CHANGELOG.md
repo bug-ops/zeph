@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- **perf(orchestration): cache forward adjacency in `CascadeDetector`** — eliminates per-call
+  O(N+E) forward-adjacency rebuild inside `descendant_count` for diamond/fan-in DAGs.
+  The map is computed once on first use and reused until `reset()` is called (on graph mutation
+  via `inject_tasks`). Converts `is_cascading`, `deprioritized_tasks`, and `evaluate_abort`
+  from `&self` to `&mut self`; call-sites in `scheduler.rs` updated accordingly.
+  Closes [#3094](https://github.com/bug-ops/zeph/issues/3094).
+
 ### Fixed
 
 - **fix(mcp): wire `forward_output_schema` for Compatible, Gemini, and Ollama providers** —

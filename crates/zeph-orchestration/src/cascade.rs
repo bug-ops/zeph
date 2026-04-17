@@ -13,7 +13,7 @@
 //!
 //! [`DagScheduler::tick`]: crate::scheduler::DagScheduler::tick
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet, VecDeque};
 
 use super::graph::{TaskGraph, TaskId};
 
@@ -99,12 +99,30 @@ pub struct CascadeConfig {
 /// A "region" is the set of tasks reachable from the "heaviest root" of each task — the
 /// root ancestor that is the source of the most downstream tasks. For tasks with multiple
 /// roots (diamond patterns), we pick the single root that covers the most descendants,
-/// preventing over-aggressive deprioritisation (C8 fix).
+/// preventing over-aggressive deprioritisation on diamond-shaped DAGs.
+///
+/// ## Caching
+///
+/// The forward adjacency map (task → direct dependents) is computed lazily on first use
+/// and reused until `reset()` is called. Cache invariants:
+///
+/// - `forward_adjacency.is_none()` OR
+///   `forward_adjacency.as_ref().unwrap().len() == graph.tasks.len()` at use time.
+/// - Indexed by `TaskId::index()`; relies on the dense-id invariant in [`TaskGraph`].
+/// - Any post-construction mutation of `graph.tasks` (push, truncate, reorder) OR of any
+///   `TaskNode::depends_on` on a task already in `graph.tasks` MUST be followed by
+///   [`CascadeDetector::reset`]. `inject_tasks` and its callers currently guarantee this;
+///   no other mutation path exists in-tree.
 #[derive(Debug)]
 pub struct CascadeDetector {
     config: CascadeConfig,
     /// Per-root failure health. Key = root `TaskId`.
-    region_health: HashMap<TaskId, RegionHealth>,
+    region_health: std::collections::HashMap<TaskId, RegionHealth>,
+    /// Cached forward adjacency: `forward_adjacency[i]` is the list of task IDs that
+    /// depend on `TaskId(i)`. Populated lazily on first use; invalidated by `reset()`.
+    ///
+    /// `None` means not yet built or just invalidated. See struct-level "Caching" section.
+    forward_adjacency: Option<Vec<Vec<TaskId>>>,
 }
 
 impl CascadeDetector {
@@ -113,13 +131,14 @@ impl CascadeDetector {
     pub fn new(config: CascadeConfig) -> Self {
         Self {
             config,
-            region_health: HashMap::new(),
+            region_health: std::collections::HashMap::new(),
+            forward_adjacency: None,
         }
     }
 
     /// Record a task outcome and update the health of its primary region.
     pub fn record_outcome(&mut self, task_id: TaskId, succeeded: bool, graph: &TaskGraph) {
-        let root = primary_root(task_id, graph);
+        let root = self.primary_root(task_id, graph);
         self.region_health
             .entry(root)
             .or_insert_with(RegionHealth::new)
@@ -128,8 +147,8 @@ impl CascadeDetector {
 
     /// Returns `true` when the primary region of `task_id` is in cascade failure.
     #[must_use]
-    pub fn is_cascading(&self, task_id: TaskId, graph: &TaskGraph) -> bool {
-        let root = primary_root(task_id, graph);
+    pub fn is_cascading(&mut self, task_id: TaskId, graph: &TaskGraph) -> bool {
+        let root = self.primary_root(task_id, graph);
         self.region_health
             .get(&root)
             .is_some_and(|h| h.failure_rate > self.config.failure_threshold)
@@ -139,7 +158,7 @@ impl CascadeDetector {
     ///
     /// Returns an empty set when no region is cascading, avoiding unnecessary reordering.
     #[must_use]
-    pub fn deprioritized_tasks(&self, graph: &TaskGraph) -> HashSet<TaskId> {
+    pub fn deprioritized_tasks(&mut self, graph: &TaskGraph) -> HashSet<TaskId> {
         // Collect cascading roots first to avoid calling is_cascading per-task.
         let cascading_roots: HashSet<TaskId> = self
             .region_health
@@ -163,11 +182,11 @@ impl CascadeDetector {
             return HashSet::new();
         }
 
-        graph
-            .tasks
-            .iter()
-            .filter(|t| cascading_roots.contains(&primary_root(t.id, graph)))
-            .map(|t| t.id)
+        // Collect task ids first to avoid borrow conflict with &mut self in primary_root.
+        let task_ids: Vec<TaskId> = graph.tasks.iter().map(|t| t.id).collect();
+        task_ids
+            .into_iter()
+            .filter(|&id| cascading_roots.contains(&self.primary_root(id, graph)))
             .collect()
     }
 
@@ -212,7 +231,7 @@ impl CascadeDetector {
     /// ```
     #[must_use]
     pub fn evaluate_abort(
-        &self,
+        &mut self,
         graph: &TaskGraph,
         failed_task_id: TaskId,
         rate_threshold: f32,
@@ -220,7 +239,7 @@ impl CascadeDetector {
         if rate_threshold <= f32::EPSILON {
             return AbortDecision::None;
         }
-        let root = primary_root(failed_task_id, graph);
+        let root = self.primary_root(failed_task_id, graph);
         if let Some(health) = self.region_health.get(&root)
             && health.failure_rate >= rate_threshold
             && health.total_tasks >= 3
@@ -234,49 +253,97 @@ impl CascadeDetector {
         AbortDecision::None
     }
 
-    /// Reset all region health counters.
+    /// Reset all region health counters and invalidate the cached forward adjacency.
     ///
     /// Called by `DagScheduler::inject_tasks()` because graph topology has fundamentally
-    /// changed — old failure counts no longer reflect the new task set (C13 fix).
+    /// changed — old failure counts no longer reflect the new task set, and the cached
+    /// forward-adjacency map no longer matches the new `graph.tasks`.
     pub fn reset(&mut self) {
         self.region_health.clear();
+        self.forward_adjacency = None;
     }
 
     /// Expose region health for testing.
     #[cfg(test)]
     #[must_use]
-    pub fn region_health(&self) -> &HashMap<TaskId, RegionHealth> {
+    pub fn region_health(&self) -> &std::collections::HashMap<TaskId, RegionHealth> {
         &self.region_health
     }
-}
 
-/// Compute the "heaviest" root for `task_id`: the root ancestor that reaches the most
-/// downstream tasks (largest subtree). For tasks that have no ancestors (roots themselves)
-/// `task_id` is returned directly.
-///
-/// "Heaviest root" prevents over-aggressive cascade deprioritisation on diamond DAGs: if
-/// task C is reachable from both A and B, we assign it to whichever root's subtree is
-/// larger. Ties are broken by smaller `TaskId` value for determinism.
-fn primary_root(task_id: TaskId, graph: &TaskGraph) -> TaskId {
-    let roots = ancestor_roots(task_id, graph);
-    if roots.is_empty() {
-        return task_id;
-    }
-    if roots.len() == 1 {
-        return roots[0];
+    /// Returns `true` when the forward adjacency cache is populated.
+    #[cfg(test)]
+    #[must_use]
+    pub fn forward_adjacency_is_cached(&self) -> bool {
+        self.forward_adjacency.is_some()
     }
 
-    // Count descendants for each root candidate.
-    roots
-        .into_iter()
-        .max_by_key(|&r| (descendant_count(r, graph), u32::MAX - r.as_u32()))
-        .unwrap_or(task_id)
+    /// Build the forward adjacency cache on first use; return the slice on subsequent calls.
+    ///
+    /// Asserts (in debug builds) that a cached vector has the same length as `graph.tasks`,
+    /// catching stale-cache bugs where `graph.tasks` was mutated without calling `reset()`.
+    fn ensure_adjacency(&mut self, graph: &TaskGraph) -> &[Vec<TaskId>] {
+        if self.forward_adjacency.is_none() {
+            let mut forward: Vec<Vec<TaskId>> = vec![Vec::new(); graph.tasks.len()];
+            for task in &graph.tasks {
+                for &dep in &task.depends_on {
+                    forward[dep.index()].push(task.id);
+                }
+            }
+            self.forward_adjacency = Some(forward);
+        } else if let Some(ref fwd) = self.forward_adjacency {
+            debug_assert_eq!(
+                fwd.len(),
+                graph.tasks.len(),
+                "forward_adjacency stale: graph.tasks was mutated without CascadeDetector::reset()"
+            );
+        }
+        self.forward_adjacency.as_deref().unwrap()
+    }
+
+    /// Compute the "heaviest" root for `task_id` using the cached forward adjacency.
+    fn primary_root(&mut self, task_id: TaskId, graph: &TaskGraph) -> TaskId {
+        let roots = ancestor_roots(task_id, graph);
+        if roots.is_empty() {
+            return task_id;
+        }
+        if roots.len() == 1 {
+            return roots[0];
+        }
+        roots
+            .into_iter()
+            .max_by_key(|&r| (self.descendant_count(r, graph), u32::MAX - r.as_u32()))
+            .unwrap_or(task_id)
+    }
+
+    /// Count tasks reachable from `root` (inclusive) using the cached forward adjacency.
+    fn descendant_count(&mut self, root: TaskId, graph: &TaskGraph) -> usize {
+        // Ensure the cache is populated, then take ownership of the slice length
+        // by pre-collecting children into a local work-list to avoid a long-lived
+        // borrow of `self` that would conflict with the mutable `ensure_adjacency`.
+        self.ensure_adjacency(graph);
+        let fwd = self.forward_adjacency.as_ref().unwrap();
+
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(root);
+        visited.insert(root);
+        while let Some(id) = queue.pop_front() {
+            if let Some(children) = fwd.get(id.index()) {
+                for &child in children {
+                    if visited.insert(child) {
+                        queue.push_back(child);
+                    }
+                }
+            }
+        }
+        visited.len()
+    }
 }
 
 /// Collect all root (in-degree 0) ancestors of `task_id` via BFS.
 fn ancestor_roots(task_id: TaskId, graph: &TaskGraph) -> Vec<TaskId> {
     let mut visited = HashSet::new();
-    let mut queue = std::collections::VecDeque::new();
+    let mut queue = VecDeque::new();
     queue.push_back(task_id);
     visited.insert(task_id);
 
@@ -296,35 +363,6 @@ fn ancestor_roots(task_id: TaskId, graph: &TaskGraph) -> Vec<TaskId> {
     }
 
     roots
-}
-
-/// Count the number of tasks reachable from `root` (inclusive) via BFS.
-fn descendant_count(root: TaskId, graph: &TaskGraph) -> usize {
-    let mut visited = HashSet::new();
-    let mut queue = std::collections::VecDeque::new();
-    queue.push_back(root);
-    visited.insert(root);
-
-    // Build forward adjacency on the fly.
-    // Tasks store `depends_on` (reverse edges). We need forward edges.
-    let mut forward: HashMap<TaskId, Vec<TaskId>> = HashMap::new();
-    for task in &graph.tasks {
-        for &dep in &task.depends_on {
-            forward.entry(dep).or_default().push(task.id);
-        }
-    }
-
-    while let Some(id) = queue.pop_front() {
-        if let Some(children) = forward.get(&id) {
-            for &child in children {
-                if visited.insert(child) {
-                    queue.push_back(child);
-                }
-            }
-        }
-    }
-
-    visited.len()
 }
 
 #[cfg(test)]
@@ -481,11 +519,77 @@ mod tests {
         // Only one region (root 0), make it cascade.
         det.record_outcome(TaskId(1), false, &g);
         // With one region and it cascading, deprioritized_tasks returns empty
-        // to prevent complete deadlock (C9 fix).
+        // to prevent complete deadlock when all regions fail simultaneously.
         let dp = det.deprioritized_tasks(&g);
         assert!(
             dp.is_empty(),
             "all-regions-cascading should return empty to allow forward progress"
         );
+    }
+
+    // --- forward adjacency cache ---
+
+    #[test]
+    fn cache_populated_after_first_call_multi_root() {
+        // Fan-in: A(0), B(1) -> C(2). Task C has two roots, so descendant_count is called
+        // and the adjacency cache is built.
+        let g = graph_from(vec![
+            make_node(0, &[]),
+            make_node(1, &[]),
+            make_node(2, &[0, 1]),
+        ]);
+        let mut det = CascadeDetector::new(cfg(0.5));
+        assert!(!det.forward_adjacency_is_cached());
+        det.record_outcome(TaskId(2), true, &g);
+        assert!(det.forward_adjacency_is_cached());
+    }
+
+    #[test]
+    fn cache_still_populated_on_second_call() {
+        // Fan-in: same multi-root graph to ensure cache is built on first call.
+        let g = graph_from(vec![
+            make_node(0, &[]),
+            make_node(1, &[]),
+            make_node(2, &[0, 1]),
+        ]);
+        let mut det = CascadeDetector::new(cfg(0.5));
+        det.record_outcome(TaskId(2), true, &g);
+        assert!(det.forward_adjacency_is_cached());
+        // Second call must not rebuild (cache stays populated).
+        det.record_outcome(TaskId(2), false, &g);
+        assert!(det.forward_adjacency_is_cached());
+    }
+
+    #[test]
+    fn reset_clears_forward_adjacency() {
+        // Use multi-root graph so the cache is populated on record_outcome.
+        let g = graph_from(vec![
+            make_node(0, &[]),
+            make_node(1, &[]),
+            make_node(2, &[0, 1]),
+        ]);
+        let mut det = CascadeDetector::new(cfg(0.3));
+        det.record_outcome(TaskId(2), false, &g);
+        assert!(det.forward_adjacency_is_cached());
+        det.reset();
+        assert!(!det.forward_adjacency_is_cached());
+    }
+
+    #[test]
+    fn primary_root_consistent_with_and_without_cache() {
+        // Fan-in: two independent roots A(0) and B(1) both feed into C(2).
+        // C has two root ancestors, so descendant_count is called and cache is built.
+        let g = graph_from(vec![
+            make_node(0, &[]),
+            make_node(1, &[]),
+            make_node(2, &[0, 1]),
+        ]);
+        let mut det = CascadeDetector::new(cfg(0.5));
+        // First call builds cache.
+        let root_cold = det.primary_root(TaskId(2), &g);
+        assert!(det.forward_adjacency_is_cached());
+        // Second call uses cache; result must be identical.
+        let root_warm = det.primary_root(TaskId(2), &g);
+        assert_eq!(root_cold, root_warm);
     }
 }
