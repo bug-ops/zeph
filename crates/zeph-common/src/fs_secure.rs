@@ -9,7 +9,7 @@
 //!
 //! # Unix vs non-Unix
 //!
-//! On Unix the helpers set mode `0o600` via [`OpenOptionsExt::mode`]. On non-Unix
+//! On Unix the helpers set mode `0o600` via `OpenOptionsExt::mode`. On non-Unix
 //! platforms (Windows) the helpers fall back to plain [`OpenOptions`] without extra
 //! permissions — Windows uses ACLs rather than mode bits, and proper ACL hardening
 //! requires additional platform-specific code (TODO: tracked for a follow-up issue).
