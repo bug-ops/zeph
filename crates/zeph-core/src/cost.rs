@@ -140,11 +140,18 @@ impl CostTracker {
 
     /// Record token usage for a single LLM call, attributed to `provider_name`.
     ///
+    /// `provider_kind` must be the value returned by `AnyProvider::provider_kind_str()`:
+    /// `"ollama"` or `"candle"` for local providers, `"cloud"` for API providers.
+    /// Local providers always have zero cost by design; the missing-pricing WARN is
+    /// suppressed for them to avoid log floods on every Ollama call.
+    ///
     /// Cache token counts are optional (pass 0 when not available). Cost is computed
     /// using model-specific pricing including cache read/write rates.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_usage(
         &self,
         provider_name: &str,
+        provider_kind: &str,
         model: &str,
         input_tokens: u64,
         cache_read_tokens: u64,
@@ -157,10 +164,15 @@ impl CostTracker {
         let pricing = if let Some(p) = self.pricing.get(model).cloned() {
             p
         } else {
-            tracing::warn!(
-                model,
-                "model not found in pricing table; cost recorded as zero"
-            );
+            let is_local = matches!(provider_kind, "ollama" | "candle" | "local");
+            if is_local {
+                tracing::debug!(model, "local model; cost recorded as zero");
+            } else {
+                tracing::warn!(
+                    model,
+                    "model not found in pricing table; cost recorded as zero"
+                );
+            }
             ModelPricing {
                 prompt_cents_per_1k: 0.0,
                 completion_cents_per_1k: 0.0,
@@ -241,7 +253,7 @@ mod tests {
     use super::*;
 
     fn record(tracker: &CostTracker, provider: &str, model: &str, input: u64, output: u64) {
-        tracker.record_usage(provider, model, input, 0, 0, output);
+        tracker.record_usage(provider, "cloud", model, input, 0, 0, output);
     }
 
     #[test]
@@ -300,6 +312,38 @@ mod tests {
     fn ollama_zero_cost() {
         let tracker = CostTracker::new(true, 100.0);
         record(&tracker, "ollama", "llama3:8b", 10000, 10000);
+        assert!((tracker.current_spend() - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn ollama_unknown_model_no_warn_no_panic() {
+        // Local providers should silently record zero cost for unknown models.
+        let tracker = CostTracker::new(true, 100.0);
+        tracker.record_usage(
+            "local",
+            "ollama",
+            "totally-unknown-ollama-model",
+            5000,
+            0,
+            0,
+            5000,
+        );
+        assert!((tracker.current_spend() - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn cloud_unknown_model_still_records_zero_cost() {
+        // Cloud providers record zero cost for unknown models (WARN emitted separately).
+        let tracker = CostTracker::new(true, 100.0);
+        tracker.record_usage(
+            "openai",
+            "cloud",
+            "totally-unknown-cloud-model",
+            5000,
+            0,
+            0,
+            5000,
+        );
         assert!((tracker.current_spend() - 0.0).abs() < 0.001);
     }
 
@@ -398,7 +442,15 @@ mod tests {
         let tracker = CostTracker::new(true, 1000.0);
         // claude-haiku prompt=0.1, cache_read=0.01 per 1k
         // 1000 cache_read tokens = 0.01 cents; 0 input/output for isolation
-        tracker.record_usage("claude", "claude-haiku-4-5-20251001", 0, 1000, 0, 0);
+        tracker.record_usage(
+            "claude",
+            "cloud",
+            "claude-haiku-4-5-20251001",
+            0,
+            1000,
+            0,
+            0,
+        );
         let spend = tracker.current_spend();
         assert!(spend > 0.0, "cache read should contribute to cost");
     }
@@ -409,7 +461,7 @@ mod tests {
         // Claude pricing: cache_write = 125% of prompt price
         // claude-opus-4-6: prompt = 0.5 cents/1k
         // 1000 cache_write tokens = (0.5 * 1.25 * 1000) / 1000 = 0.625 cents
-        tracker.record_usage("claude-provider", "claude-opus-4-6", 0, 0, 1000, 0);
+        tracker.record_usage("claude-provider", "cloud", "claude-opus-4-6", 0, 0, 1000, 0);
         let cost = tracker.current_spend();
         assert!((cost - 0.625).abs() < 0.001);
     }
@@ -417,7 +469,15 @@ mod tests {
     #[test]
     fn provider_breakdown_empty_when_disabled() {
         let tracker = CostTracker::new(false, 100.0);
-        tracker.record_usage("claude", "claude-haiku-4-5-20251001", 1000, 0, 0, 1000);
+        tracker.record_usage(
+            "claude",
+            "cloud",
+            "claude-haiku-4-5-20251001",
+            1000,
+            0,
+            0,
+            1000,
+        );
         assert!(tracker.provider_breakdown().is_empty());
     }
 }

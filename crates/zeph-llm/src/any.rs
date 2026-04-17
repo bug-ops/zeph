@@ -162,6 +162,25 @@ impl AnyProvider {
         }
     }
 
+    /// Returns a static string identifying the provider kind for cost/logging purposes.
+    ///
+    /// Returns `"ollama"` or `"candle"` for local inference providers (no API cost),
+    /// `"local"` for providers that are always unpriced (Compatible, Router, Triage),
+    /// and `"cloud"` for metered API providers (`Claude`, `OpenAI`, `Gemini`).
+    #[must_use]
+    pub fn provider_kind_str(&self) -> &'static str {
+        match self {
+            Self::Ollama(_) => "ollama",
+            #[cfg(feature = "candle")]
+            Self::Candle(_) => "candle",
+            // Compatible targets LM Studio / vLLM / llama.cpp — always local, never metered.
+            Self::Compatible(_) => "local",
+            // Routers are never directly invoiced; cost attribution flows to child providers.
+            Self::Router(_) | Self::Triage(_) => "local",
+            _ => "cloud",
+        }
+    }
+
     /// Record a quality outcome for reputation-based routing (RAPS).
     ///
     /// Delegates to `RouterProvider::record_quality_outcome`; no-op for all other variants.

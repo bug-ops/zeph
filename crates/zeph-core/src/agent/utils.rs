@@ -245,6 +245,7 @@ impl<C: Channel> Agent<C> {
             };
             tracker.record_usage(
                 provider_name,
+                self.provider.provider_kind_str(),
                 &self.runtime.model_name,
                 input_tokens,
                 cache_read,
