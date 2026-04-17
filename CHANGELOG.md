@@ -21,6 +21,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   users to know the XDG-conditional vault path manually.
   Closes [#3137](https://github.com/bug-ops/zeph/issues/3137).
 
+- **fix(cost): suppress false-positive WARN for local Ollama/Candle/Compatible providers** —
+  `CostTracker::record_usage()` now accepts a `provider_kind: &str` parameter and downgrades the
+  "model not found in pricing table" log from `warn!` to `debug!` for local providers (`"ollama"`,
+  `"candle"`, `"local"`). Zero cost is the correct and expected value for local inference; the WARN
+  was misleading. `AnyProvider::provider_kind_str()` added in `zeph-llm` as the discriminator;
+  `Compatible` (LM Studio / vLLM / llama.cpp) and `Router`/`Triage` resolve to `"local"`.
+  `record_usage()` is a breaking API change (pre-1.0).
+  Closes [#3139](https://github.com/bug-ops/zeph/issues/3139).
+
+- **fix(llm): deduplicate forward_output_schema unsupported WARN at startup** — downgraded the
+  `forward_output_schema` capability WARN in `provider_factory.rs` from `warn!` to `debug!` for
+  both Ollama and Gemini providers. The setting is silently and correctly ignored; the WARN fired
+  up to 5 times per startup as multiple subsystems each called `build_provider()` independently.
+  Closes [#3138](https://github.com/bug-ops/zeph/issues/3138).
+
+- **fix(llm): rate-limit ASI coherence WARN to at most once per 60 seconds** — the ASI coherence
+  WARN in `zeph-llm/src/router/mod.rs` previously fired on every `route_next()` call (up to 70/s
+  during normal operation). Now suppressed via an `AtomicU64` CAS rate-limiter with a 60-second
+  window; suppressed-path log is emitted at `trace!` level. Uses the same pattern as the existing
+  Qdrant WARN rate-limiter.
+  Closes [#3129](https://github.com/bug-ops/zeph/issues/3129).
+
 ### Added
 
 - **feat(plugins): plugin config overlay merge** — `zeph-plugins` now exposes
