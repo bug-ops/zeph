@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **fix(core): run plugin filesystem I/O on a blocking thread** — `handle_plugins` now
+  clones the required state fields (`managed_dir`, `mcp_allowed`) before the async block
+  and executes the `PluginManager` call inside `tokio::task::spawn_blocking`. Previously
+  the blocking call ran on a tokio worker thread despite the `spawn_blocking` wrapper.
+  Closes [#3135](https://github.com/bug-ops/zeph/issues/3135).
+
+- **fix(doctor): include remediation command in vault permission FAIL messages** — when
+  `zeph doctor` reports `vault.file_mode` or `vault.key_mode` failures due to
+  group/world-readable permissions, the detail message now includes the exact `chmod 600
+  <path>` command to fix the issue. Previously there was no actionable hint, requiring
+  users to know the XDG-conditional vault path manually.
+  Closes [#3137](https://github.com/bug-ops/zeph/issues/3137).
+
 ### Added
 
 - **feat(security): OS-level file permission hardening for sensitive files** — adds

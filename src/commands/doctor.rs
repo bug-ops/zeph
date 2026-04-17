@@ -261,7 +261,9 @@ fn check_vault_key_mode(key_path: &str) -> CheckResult {
             if mode & 0o077 != 0 {
                 CheckResult::fail(
                     "vault.key_mode",
-                    format!("key file has group/world permissions (mode {mode:#o})"),
+                    format!(
+                        "key file has group/world permissions (mode {mode:#o}) — fix: chmod 600 {key_path}"
+                    ),
                     elapsed_ms(start),
                 )
             } else {
@@ -291,7 +293,9 @@ fn check_vault_file_mode(vault_path: &str, check_name: &str) -> CheckResult {
             if mode & 0o077 != 0 {
                 CheckResult::fail(
                     check_name,
-                    format!("vault file has group/world permissions (mode {mode:#o})"),
+                    format!(
+                        "vault file has group/world permissions (mode {mode:#o}) — fix: chmod 600 {vault_path}"
+                    ),
                     elapsed_ms(start),
                 )
             } else {
@@ -1060,6 +1064,11 @@ mod tests {
             CheckStatus::Fail,
             "group-readable key must FAIL"
         );
+        assert!(
+            result.detail.contains("chmod 600"),
+            "FAIL message must include remediation command, got: {}",
+            result.detail
+        );
     }
 
     #[cfg(unix)]
@@ -1072,6 +1081,23 @@ mod tests {
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let result = check_vault_key_mode(key_path.to_str().unwrap());
         assert_eq!(result.status, CheckStatus::Ok);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn doctor_vault_file_mode_fail_includes_chmod_hint() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let vault_path = dir.path().join("secrets.age");
+        std::fs::write(&vault_path, "data").unwrap();
+        std::fs::set_permissions(&vault_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let result = check_vault_file_mode(vault_path.to_str().unwrap(), "vault.file_mode");
+        assert_eq!(result.status, CheckStatus::Fail);
+        assert!(
+            result.detail.contains("chmod 600"),
+            "FAIL message must include remediation command, got: {}",
+            result.detail
+        );
     }
 
     #[test]

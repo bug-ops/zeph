@@ -837,13 +837,18 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         let args_owned = args.to_owned();
-        // PluginManager performs synchronous filesystem I/O (copy, remove_dir_all, read_dir).
-        // Off-load to a blocking thread so the tokio runtime worker is never stalled.
-        let result = self.handle_plugins_as_string(&args_owned);
+        // Clone the fields needed by PluginManager before entering the async block.
+        // spawn_blocking requires 'static, so we cannot borrow &self inside the closure.
+        let managed_dir = self.skill_state.managed_dir.clone();
+        let mcp_allowed = self.mcp.allowed_commands.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || result)
-                .await
-                .map_err(|e| CommandError(format!("plugin task panicked: {e}")))
+            // PluginManager performs synchronous filesystem I/O (copy, remove_dir_all,
+            // read_dir). Run on a blocking thread to avoid stalling the tokio worker.
+            tokio::task::spawn_blocking(move || {
+                Self::run_plugin_command(&args_owned, managed_dir, mcp_allowed)
+            })
+            .await
+            .map_err(|e| CommandError(format!("plugin task panicked: {e}")))
         })
     }
 }

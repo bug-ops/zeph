@@ -337,23 +337,19 @@ impl<C: crate::channel::Channel> Agent<C> {
 
     /// Return the `/skills [subcommand]` output as a `String` without sending via channel.
     ///
-    /// Used by the `AgentAccess::handle_skills` implementation to satisfy the `Send` bound
-    /// on the returned future.
-    /// Handle `/plugins [subcommand] [args]` slash command.
-    ///
-    /// Returns a user-visible string result. This is a sync helper — plugin operations
-    /// are blocking filesystem calls, so they run in the current thread.
-    pub(super) fn handle_plugins_as_string(&self, args: &str) -> String {
+    /// Execute a `/plugins` command given pre-cloned state, suitable for use inside
+    /// `tokio::task::spawn_blocking` without borrowing `&self`.
+    pub(super) fn run_plugin_command(
+        args: &str,
+        managed_dir: Option<std::path::PathBuf>,
+        mcp_allowed: Vec<String>,
+    ) -> String {
         // Use the canonical default so CLI and TUI always reference the same directory.
         let plugins_dir = zeph_plugins::PluginManager::default_plugins_dir();
         // Fall back to the canonical default managed skills dir so the conflict check is
         // never silently disabled by an empty path (M5 fix).
-        let managed_dir = self
-            .skill_state
-            .managed_dir
-            .clone()
+        let managed_dir = managed_dir
             .unwrap_or_else(|| zeph_config::defaults::default_vault_dir().join("skills"));
-        let mcp_allowed: Vec<String> = self.mcp.allowed_commands.clone();
         let mgr = zeph_plugins::PluginManager::new(plugins_dir, managed_dir, mcp_allowed);
 
         let (subcmd, rest) = args.trim().split_once(' ').unwrap_or((args.trim(), ""));
