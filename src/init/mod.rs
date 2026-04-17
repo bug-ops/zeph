@@ -1356,7 +1356,7 @@ fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, &toml_str)?;
+    zeph_common::fs_secure::atomic_write_private(&path, toml_str.as_bytes())?;
     println!("Config written to {}", path.display());
 
     if state.mcpls_enabled {

@@ -10035,6 +10035,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+ "zeph-common",
  "zeph-core",
  "zeph-llm",
  "zeph-mcp",
@@ -10099,6 +10100,7 @@ dependencies = [
  "blake3",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -10219,11 +10221,13 @@ version = "0.19.1"
 dependencies = [
  "regex",
  "sqlx",
+ "tempfile",
  "testcontainers",
  "testcontainers-modules",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "zeph-common",
 ]
 
 [[package]]
@@ -10546,6 +10550,7 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "uuid",
+ "zeph-common",
  "zeph-config",
  "zeph-llm",
  "zeph-skills",

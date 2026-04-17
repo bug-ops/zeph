@@ -11,7 +11,7 @@
 //! is synchronous and never spawns a task.
 
 use std::collections::HashMap;
-use std::io::{self, Write as _};
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -481,22 +481,7 @@ fn default_arms() -> HashMap<(TaskClass, TopologyHint), BetaDist> {
 }
 
 fn atomic_write(path: &std::path::Path, data: &[u8]) -> io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)?;
-        f.write_all(data)?;
-        f.flush()?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-    }
-    std::fs::rename(&tmp, path)
+    zeph_common::fs_secure::atomic_write_private(path, data)
 }
 
 #[cfg(test)]

@@ -76,7 +76,7 @@ impl DebugDumper {
 
     fn write(&self, filename: &str, content: &[u8]) {
         let path = self.dir.join(filename);
-        if let Err(e) = std::fs::write(&path, content) {
+        if let Err(e) = zeph_common::fs_secure::write_private(&path, content) {
             tracing::warn!(path = %path.display(), error = %e, "debug dump write failed");
         }
     }

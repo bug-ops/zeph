@@ -260,6 +260,7 @@ impl AuditLogger {
     /// # Errors
     ///
     /// Returns an error if a file destination cannot be opened.
+    #[allow(clippy::unused_async)]
     pub async fn from_config(config: &AuditConfig, tui_mode: bool) -> Result<Self, std::io::Error> {
         let effective_dest = if tui_mode && config.destination == "stdout" {
             tracing::warn!("TUI mode: audit stdout redirected to file audit.jsonl");
@@ -271,11 +272,8 @@ impl AuditLogger {
         let destination = if effective_dest == "stdout" {
             AuditDestination::Stdout
         } else {
-            let file = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(Path::new(&effective_dest))
-                .await?;
+            let std_file = zeph_common::fs_secure::append_private(Path::new(&effective_dest))?;
+            let file = tokio::fs::File::from_std(std_file);
             AuditDestination::File(tokio::sync::Mutex::new(file))
         };
 

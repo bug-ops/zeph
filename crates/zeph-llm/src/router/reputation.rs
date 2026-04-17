@@ -18,8 +18,6 @@
 //! - Reputation is not used in Cascade mode (fixed cost tiers, no-op to avoid mutex overhead).
 
 use std::collections::{HashMap, HashSet};
-#[cfg(unix)]
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -258,22 +256,7 @@ impl ReputationTracker {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let tmp = path.with_extension("tmp");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)?
-                .write_all(&json)?;
-        }
-        #[cfg(not(unix))]
-        std::fs::write(&tmp, &json)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        zeph_common::fs_secure::atomic_write_private(path, &json)
     }
 }
 

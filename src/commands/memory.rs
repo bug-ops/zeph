@@ -38,7 +38,7 @@ async fn cmd_export(
         .map_err(|e| anyhow::anyhow!("export failed: {e}"))?;
     let json = serde_json::to_string_pretty(&snapshot)
         .map_err(|e| anyhow::anyhow!("serialization failed: {e}"))?;
-    std::fs::write(path, json)
+    zeph_common::fs_secure::write_private(path, json.as_bytes())
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
     let convs = snapshot.conversations.len();
     let msgs: usize = snapshot

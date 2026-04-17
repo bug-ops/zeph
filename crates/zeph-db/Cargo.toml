@@ -29,8 +29,13 @@ regex = { workspace = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 tracing.workspace = true
+zeph-common.workspace = true
 testcontainers = { workspace = true, optional = true }
 testcontainers-modules = { workspace = true, features = ["postgres"], optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

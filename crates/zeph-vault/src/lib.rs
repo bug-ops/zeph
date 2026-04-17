@@ -569,29 +569,11 @@ fn encrypt_secrets(
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AgeVaultError> {
-    let tmp_path = path.with_added_extension("tmp");
-    std::fs::write(&tmp_path, data).map_err(AgeVaultError::VaultWrite)?;
-    std::fs::rename(&tmp_path, path).map_err(AgeVaultError::VaultWrite)
+    zeph_common::fs_secure::atomic_write_private(path, data).map_err(AgeVaultError::VaultWrite)
 }
 
-#[cfg(unix)]
 fn write_private_file(path: &Path, data: &[u8]) -> Result<(), AgeVaultError> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(AgeVaultError::KeyWrite)?;
-    file.write_all(data).map_err(AgeVaultError::KeyWrite)
-}
-
-// TODO: Windows does not enforce file permissions via mode bits; the key file is created
-// without access control restrictions. Consider using Windows ACLs in a follow-up.
-#[cfg(not(unix))]
-fn write_private_file(path: &Path, data: &[u8]) -> Result<(), AgeVaultError> {
-    std::fs::write(path, data).map_err(AgeVaultError::KeyWrite)
+    zeph_common::fs_secure::write_private(path, data).map_err(AgeVaultError::KeyWrite)
 }
 
 impl VaultProvider for AgeVaultProvider {
@@ -816,6 +798,26 @@ mod tests {
         assert!(path.exists());
         let tmp = path.with_added_extension("tmp");
         assert_eq!(tmp.file_name().unwrap(), "vault.age.tmp");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_vault_sets_0600_on_both_files() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        AgeVaultProvider::init_vault(dir.path()).unwrap();
+        let key_mode = std::fs::metadata(dir.path().join("vault-key.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let vault_mode = std::fs::metadata(dir.path().join("secrets.age"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(key_mode, 0o600, "vault-key.txt must be 0o600");
+        assert_eq!(vault_mode, 0o600, "secrets.age must be 0o600");
     }
 
     #[test]

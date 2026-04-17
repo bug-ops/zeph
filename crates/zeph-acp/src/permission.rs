@@ -175,18 +175,8 @@ fn save_persisted(path: &Path, perms: &PersistedPermissions) {
         );
         return;
     }
-    let tmp = path.with_added_extension(format!("{}.tmp", std::process::id()));
-    if let Err(e) = std::fs::write(&tmp, &content) {
-        warn!("failed to write ACP permission tmp file: {e}");
-        return;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        warn!("failed to rename ACP permission file: {e}");
+    if let Err(e) = zeph_common::fs_secure::atomic_write_private(path, content.as_bytes()) {
+        warn!("failed to write ACP permission file: {e}");
     }
 }
 

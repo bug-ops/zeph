@@ -11,6 +11,7 @@
 
 pub mod config;
 pub mod error_taxonomy;
+pub mod fs_secure;
 pub mod hash;
 pub mod math;
 pub mod net;

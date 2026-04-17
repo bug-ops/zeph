@@ -281,6 +281,43 @@ fn check_vault_key_mode(_key_path: &str) -> CheckResult {
     CheckResult::ok("vault.key_mode", "skipped on non-unix", 0)
 }
 
+#[cfg(unix)]
+fn check_vault_file_mode(vault_path: &str, check_name: &str) -> CheckResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let start = Instant::now();
+    match std::fs::metadata(vault_path) {
+        Ok(meta) => {
+            let mode = meta.permissions().mode();
+            if mode & 0o077 != 0 {
+                CheckResult::fail(
+                    check_name,
+                    format!("vault file has group/world permissions (mode {mode:#o})"),
+                    elapsed_ms(start),
+                )
+            } else {
+                CheckResult::ok(
+                    check_name,
+                    format!("permissions ok (mode {mode:#o})"),
+                    elapsed_ms(start),
+                )
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            CheckResult::ok(check_name, "file not found (skipped)", elapsed_ms(start))
+        }
+        Err(e) => CheckResult::fail(
+            check_name,
+            format!("could not read metadata: {e}"),
+            elapsed_ms(start),
+        ),
+    }
+}
+
+#[cfg(not(unix))]
+fn check_vault_file_mode(_vault_path: &str, check_name: &str) -> CheckResult {
+    CheckResult::ok(check_name, "skipped on non-unix", 0)
+}
+
 fn check_fs_writable(name: &str, dir: &Path) -> CheckResult {
     let start = Instant::now();
     match tempfile::NamedTempFile::new_in(dir) {
@@ -702,6 +739,7 @@ pub(crate) async fn run_doctor(
         if vault_args.backend == "age" {
             if let Some(ref vault_path) = vault_args.vault_path {
                 results.push(check_vault_file_exists(vault_path));
+                results.push(check_vault_file_mode(vault_path, "vault.file_mode"));
             }
             if let Some(ref key_path) = vault_args.key_path {
                 results.push(check_vault_key_mode(key_path));

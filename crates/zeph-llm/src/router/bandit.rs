@@ -33,8 +33,6 @@
 //! load. Do not place the state file in world-writable directories.
 
 use std::collections::{HashMap, HashSet};
-#[cfg(unix)]
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -426,24 +424,7 @@ impl BanditState {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // TODO: use randomised suffix (e.g. `tempfile::NamedTempFile`) to avoid
-        // predictable `.tmp` path being a symlink-race target on shared directories.
-        let tmp = path.with_extension("tmp");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)?
-                .write_all(&json)?;
-        }
-        #[cfg(not(unix))]
-        std::fs::write(&tmp, &json)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        zeph_common::fs_secure::atomic_write_private(path, &json)
     }
 }
 

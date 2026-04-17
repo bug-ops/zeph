@@ -12,7 +12,7 @@
 //! The [`sweep_old_transcripts`] function prunes the oldest `.jsonl` files when a
 //! configurable maximum count is exceeded.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -93,7 +93,7 @@ impl TranscriptWriter {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let file = open_private(path)?;
+        let file = zeph_common::fs_secure::append_private(path)?;
         Ok(Self { file })
     }
 
@@ -124,7 +124,7 @@ impl TranscriptWriter {
         let path = dir.join(format!("{agent_id}.meta.json"));
         let content = serde_json::to_string_pretty(meta)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        write_private(&path, content.as_bytes())
+        zeph_common::fs_secure::write_private(&path, content.as_bytes())
     }
 }
 
@@ -321,47 +321,6 @@ pub fn sweep_old_transcripts(dir: &Path, max_files: usize) -> io::Result<usize> 
         deleted += 1;
     }
     Ok(deleted)
-}
-
-/// Open a file in append mode with owner-only permissions (0o600 on Unix).
-///
-/// On non-Unix platforms falls back to standard `OpenOptions` without extra permissions.
-fn open_private(path: &Path) -> io::Result<File> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(path)
-    }
-    #[cfg(not(unix))]
-    {
-        OpenOptions::new().create(true).append(true).open(path)
-    }
-}
-
-/// Write `contents` to `path` atomically with owner-only permissions (0o600 on Unix).
-///
-/// On non-Unix platforms falls back to `fs::write`.
-fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(contents)?;
-        file.flush()
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, contents)
-    }
 }
 
 /// Returns the current UTC time as an ISO 8601 string (`"YYYY-MM-DDTHH:MM:SSZ"`).

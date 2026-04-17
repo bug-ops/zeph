@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **feat(security): OS-level file permission hardening for sensitive files** — adds
+  `zeph-common::fs_secure` module with `open_private_truncate`, `append_private`,
+  `write_private`, and `atomic_write_private` helpers. All sensitive files created by
+  Zeph (vault secrets, SQLite databases, debug dumps, audit JSONL, router state, ACP
+  permission files, init config) are now created with mode 0600 (owner read/write only),
+  independent of process umask. `atomic_write_private` uses `O_EXCL` on the temp file
+  and fsyncs before rename for crash safety. `zeph doctor` now reports a warning when
+  the vault file has group/world-readable bits set and correctly fails on unexpected
+  metadata errors. Closes [#3121](https://github.com/bug-ops/zeph/issues/3121).
+
 - **feat(llm): configurable prompt cache TTL with 1-hour Claude variant** — adds `CacheTtl` enum
   (`Ephemeral` | `OneHour`) to `zeph-llm`. Setting `prompt_cache_ttl = "1h"` in a Claude provider
   block enables the `extended-cache-ttl-2025-04-25` beta and extends cached prefix lifetime to 1

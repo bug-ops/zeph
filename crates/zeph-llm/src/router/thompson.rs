@@ -9,8 +9,6 @@
 //! other's state on shutdown (known limitation, acceptable pre-1.0).
 
 use std::collections::{HashMap, HashSet};
-#[cfg(unix)]
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use rand::SeedableRng as _;
@@ -272,24 +270,7 @@ impl ThompsonState {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // TODO: use a randomized suffix (e.g., via `tempfile::NamedTempFile`) to avoid
-        // the predictable `.tmp` path being a symlink-race target on shared directories.
-        let tmp = path.with_extension("tmp");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)?
-                .write_all(&json)?;
-        }
-        #[cfg(not(unix))]
-        std::fs::write(&tmp, &json)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        zeph_common::fs_secure::atomic_write_private(path, &json)
     }
 }
 

@@ -56,10 +56,18 @@ impl DbConfig {
         let url = if path == ":memory:" {
             "sqlite::memory:".to_string()
         } else {
-            if let Some(parent) = std::path::Path::new(path).parent()
+            let db_path = std::path::Path::new(path);
+            if let Some(parent) = db_path.parent()
                 && !parent.as_os_str().is_empty()
             {
                 std::fs::create_dir_all(parent)?;
+            }
+            // Pre-create with 0o600 so sqlx inherits the mode rather than using the
+            // process umask. sqlx reopens the existing file via SQLITE_OPEN_CREATE.
+            // WAL/SHM sidecars are created by sqlx after the pool opens and will still
+            // inherit the process umask (sqlx limitation — best-effort chmod below).
+            if !db_path.exists() {
+                drop(zeph_common::fs_secure::open_private_truncate(db_path)?);
             }
             format!("sqlite:{path}?mode=rwc")
         };
@@ -91,14 +99,21 @@ impl DbConfig {
 
         crate::migrate::run_migrations(&pool).await?;
 
-        // Restrict file permissions to owner-only on Unix.
+        // Best-effort chmod for .db, .db-wal, and .db-shm. The .db itself was
+        // pre-created with 0o600 above; the WAL/SHM sidecars are created by sqlx
+        // after the pool opens and inherit the process umask, so we fix them here.
+        // There is a small race window between sidecar creation and this chmod;
+        // there is no way to close it without upstream sqlx support.
         #[cfg(unix)]
         if path != ":memory:" {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = std::fs::metadata(path) {
-                let mut perms = metadata.permissions();
-                perms.set_mode(0o600);
-                let _ = std::fs::set_permissions(path, perms);
+            use std::os::unix::fs::PermissionsExt as _;
+            for suffix in &["", "-wal", "-shm", "-journal"] {
+                let p = format!("{path}{suffix}");
+                if let Ok(metadata) = std::fs::metadata(&p) {
+                    let mut perms = metadata.permissions();
+                    perms.set_mode(0o600);
+                    let _ = std::fs::set_permissions(&p, perms);
+                }
             }
         }
 
@@ -181,5 +196,24 @@ mod tests {
     fn redact_url_handles_sqlite_path() {
         let url = "sqlite:/path/to/db";
         assert!(redact_url(url).is_none());
+    }
+
+    #[cfg(all(unix, feature = "sqlite", not(feature = "postgres")))]
+    #[tokio::test]
+    async fn sqlite_precreated_with_0600() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let cfg = DbConfig {
+            url: db_path.to_str().unwrap().to_owned(),
+            max_connections: 1,
+            pool_size: 1,
+        };
+        cfg.connect().await.unwrap();
+        let mode = std::fs::metadata(&db_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "SQLite DB file must be created with mode 0o600"
+        );
     }
 }

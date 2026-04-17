@@ -93,7 +93,7 @@ file_patterns = ["**/*.rs"]
     );
 
     let mcpls_path = zeph_dir.join("mcpls.toml");
-    std::fs::write(&mcpls_path, content)?;
+    zeph_common::fs_secure::write_private(&mcpls_path, content.as_bytes())?;
     println!("mcpls config written to {}", mcpls_path.display());
 
     Ok(())

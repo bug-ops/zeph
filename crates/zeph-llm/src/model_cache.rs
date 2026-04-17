@@ -113,10 +113,8 @@ impl ModelCache {
         };
         let json =
             serde_json::to_vec_pretty(&envelope).map_err(|e| LlmError::Other(e.to_string()))?;
-        let tmp = self.path.with_added_extension("tmp");
-        std::fs::write(&tmp, &json).map_err(|e| LlmError::Other(format!("cache write: {e}")))?;
-        std::fs::rename(&tmp, &self.path)
-            .map_err(|e| LlmError::Other(format!("cache rename: {e}")))?;
+        zeph_common::fs_secure::atomic_write_private(&self.path, &json)
+            .map_err(|e| LlmError::Other(format!("cache write: {e}")))?;
         Ok(())
     }
 
