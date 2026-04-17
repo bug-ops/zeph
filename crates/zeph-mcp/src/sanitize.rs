@@ -301,7 +301,7 @@ fn sanitize_schema_value_tracked(
     depth: usize,
 ) {
     if depth > MAX_SCHEMA_DEPTH {
-        tracing::warn!(
+        tracing::debug!(
             server_id = ctx.server_id,
             tool_name = ctx.tool_name,
             max_depth = MAX_SCHEMA_DEPTH,
@@ -994,6 +994,40 @@ mod tests {
         // Should not panic; inner injection at depth > MAX_SCHEMA_DEPTH stays unsanitized
         // (acceptable: excessively deep schemas are already flagged via WARN)
         sanitize_schema_value(&mut schema, "srv", "t", 0);
+    }
+
+    #[test]
+    fn schema_deep_recursion_sets_depth_cap_hit() {
+        // Multiple sibling branches each exceeding MAX_SCHEMA_DEPTH — depth_cap_hit must be set.
+        let deep_branch = || {
+            let mut node = serde_json::json!({ "type": "string" });
+            for _ in 0..15 {
+                node = serde_json::json!({ "items": node });
+            }
+            node
+        };
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "a": deep_branch(),
+                "b": deep_branch(),
+            }
+        });
+
+        let mut depth_cap_hit = false;
+        let mut ctx = SchemaWalkCtx {
+            server_id: "srv",
+            tool_name: "t",
+            injection_count: &mut 0,
+            flagged_patterns: &mut Vec::new(),
+            flagged_parameters: &mut Vec::new(),
+            depth_cap_hit: &mut depth_cap_hit,
+        };
+        sanitize_schema_value_tracked(&mut schema, &mut ctx, "", 0);
+        assert!(
+            depth_cap_hit,
+            "depth_cap_hit must be true when schema exceeds MAX_SCHEMA_DEPTH"
+        );
     }
 
     // --- sanitize_tools (integration) ---
