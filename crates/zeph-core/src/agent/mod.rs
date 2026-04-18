@@ -188,6 +188,16 @@ pub struct Agent<C: Channel> {
     pub(super) quality: Option<std::sync::Arc<crate::quality::SelfCheckPipeline>>,
 }
 
+/// Control flow signal returned by [`Agent::apply_dispatch_result`].
+enum DispatchFlow {
+    /// The command requested exit; the agent loop should `break`.
+    Break,
+    /// The command was handled; the agent loop should `continue`.
+    Continue,
+    /// The command was not recognised; the agent loop should fall through.
+    Fallthrough,
+}
+
 impl<C: Channel> Agent<C> {
     /// Create a new agent instance with the given LLM provider, I/O channel, and subsystems.
     ///
@@ -896,29 +906,14 @@ impl<C: Channel> Agent<C> {
                 };
                 reg.dispatch(&mut ctx, trimmed).await
             };
-            match registry_handled {
-                Some(Ok(zeph_commands::CommandOutput::Exit)) => {
-                    let _ = self.channel.flush_chunks().await;
-                    break;
-                }
-                Some(Ok(
-                    zeph_commands::CommandOutput::Continue | zeph_commands::CommandOutput::Silent,
-                )) => {
-                    let _ = self.channel.flush_chunks().await;
-                    continue;
-                }
-                Some(Ok(zeph_commands::CommandOutput::Message(msg))) => {
-                    let _ = self.channel.send(&msg).await;
-                    let _ = self.channel.flush_chunks().await;
-                    continue;
-                }
-                Some(Err(e)) => {
-                    let _ = self.channel.send(&e.to_string()).await;
-                    let _ = self.channel.flush_chunks().await;
-                    tracing::warn!(command = %trimmed, error = %e.0, "slash command failed");
-                    continue;
-                }
-                None => {
+            let session_reg_missed = registry_handled.is_none();
+            match self
+                .apply_dispatch_result(registry_handled, trimmed, false)
+                .await
+            {
+                DispatchFlow::Break => break,
+                DispatchFlow::Continue => continue,
+                DispatchFlow::Fallthrough => {
                     // Not handled by the session/debug registry; try agent-command registry.
                 }
             }
@@ -934,7 +929,7 @@ impl<C: Channel> Agent<C> {
             let mut agent_null_sink = zeph_commands::NullSink;
             let agent_result: Option<
                 Result<zeph_commands::CommandOutput, zeph_commands::CommandError>,
-            > = if registry_handled.is_none() {
+            > = if session_reg_missed {
                 use zeph_commands::CommandRegistry;
                 use zeph_commands::handlers::{
                     agent_cmd::AgentCommand,
@@ -947,6 +942,7 @@ impl<C: Channel> Agent<C> {
                     misc::{CacheStatsCommand, ImageCommand},
                     model::{ModelCommand, ProviderCommand},
                     plan::PlanCommand,
+                    plugins::PluginsCommand,
                     policy::PolicyCommand,
                     scheduler::SchedulerCommand,
                     skill::{FeedbackCommand, SkillCommand, SkillsCommand},
@@ -982,6 +978,7 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(ExperimentCommand);
                 agent_reg.register(PlanCommand);
                 agent_reg.register(LoopCommand);
+                agent_reg.register(PluginsCommand);
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut agent_null_sink,
@@ -996,33 +993,15 @@ impl<C: Channel> Agent<C> {
                 None
             };
             // self.channel is available again here (ctx borrow dropped above).
-            match agent_result {
-                Some(Ok(zeph_commands::CommandOutput::Exit)) => {
-                    let _ = self.channel.flush_chunks().await;
-                    break;
-                }
-                Some(Ok(
-                    zeph_commands::CommandOutput::Continue | zeph_commands::CommandOutput::Silent,
-                )) => {
-                    let _ = self.channel.flush_chunks().await;
-                    continue;
-                }
-                Some(Ok(zeph_commands::CommandOutput::Message(msg))) => {
-                    let _ = self.channel.send(&msg).await;
-                    let _ = self.channel.flush_chunks().await;
-                    // Post-dispatch learning hook: trigger generate_improved_skill for
-                    // `/skill reject` and `/feedback` commands. These calls require &mut self
-                    // and cannot be placed inside the Send future in agent_access_impl.rs.
-                    self.maybe_trigger_post_command_learning(trimmed).await;
-                    continue;
-                }
-                Some(Err(e)) => {
-                    let _ = self.channel.send(&e.to_string()).await;
-                    let _ = self.channel.flush_chunks().await;
-                    tracing::warn!(command = %trimmed, error = %e.0, "slash command failed");
-                    continue;
-                }
-                None => {
+            // Post-dispatch learning hook for `/skill reject` / `/feedback` is triggered
+            // inside apply_dispatch_result when with_learning = true.
+            match self
+                .apply_dispatch_result(agent_result, trimmed, true)
+                .await
+            {
+                DispatchFlow::Break => break,
+                DispatchFlow::Continue => continue,
+                DispatchFlow::Fallthrough => {
                     // Not handled by agent registry; fall through to existing dispatch.
                 }
             }
@@ -1046,6 +1025,46 @@ impl<C: Channel> Agent<C> {
         }
 
         Ok(())
+    }
+
+    /// Dispatch a slash-command registry result and flush the channel.
+    ///
+    /// Returns [`DispatchFlow::Break`] on exit, [`DispatchFlow::Continue`] when handled, or
+    /// [`DispatchFlow::Fallthrough`] when `result` is `None`.
+    /// When `with_learning` is `true`, triggers the post-command learning hook for `Message` output.
+    async fn apply_dispatch_result(
+        &mut self,
+        result: Option<Result<zeph_commands::CommandOutput, zeph_commands::CommandError>>,
+        command: &str,
+        with_learning: bool,
+    ) -> DispatchFlow {
+        match result {
+            Some(Ok(zeph_commands::CommandOutput::Exit)) => {
+                let _ = self.channel.flush_chunks().await;
+                DispatchFlow::Break
+            }
+            Some(Ok(
+                zeph_commands::CommandOutput::Continue | zeph_commands::CommandOutput::Silent,
+            )) => {
+                let _ = self.channel.flush_chunks().await;
+                DispatchFlow::Continue
+            }
+            Some(Ok(zeph_commands::CommandOutput::Message(msg))) => {
+                let _ = self.channel.send(&msg).await;
+                let _ = self.channel.flush_chunks().await;
+                if with_learning {
+                    self.maybe_trigger_post_command_learning(command).await;
+                }
+                DispatchFlow::Continue
+            }
+            Some(Err(e)) => {
+                let _ = self.channel.send(&e.to_string()).await;
+                let _ = self.channel.flush_chunks().await;
+                tracing::warn!(command = %command, error = %e.0, "slash command failed");
+                DispatchFlow::Continue
+            }
+            None => DispatchFlow::Fallthrough,
+        }
     }
 
     /// Apply any pending LLM provider override from ACP `set_session_config_option`.

@@ -2958,6 +2958,28 @@ pub mod agent_tests {
             "channel must receive the error message; got: {sent:?}"
         );
     }
+
+    /// `/plugins list` is registered in the agent-command registry (fix for #3215).
+    /// The command must be routed — agent exits cleanly and the channel receives a reply.
+    #[tokio::test]
+    async fn plugins_list_is_routed_via_agent_registry() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/plugins list".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run().await;
+
+        assert!(result.is_ok(), "agent must exit cleanly: {result:?}");
+        // PluginsCommand responds with either an installed-plugins listing or
+        // "No plugins installed." — either way the channel must have received something.
+        let sent = agent.channel.sent_messages();
+        assert!(
+            !sent.is_empty(),
+            "/plugins list must produce output; got: {sent:?}"
+        );
+    }
 }
 
 /// End-to-end tests for M30 resilient compaction: error detection → compact → retry → success.

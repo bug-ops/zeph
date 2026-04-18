@@ -169,6 +169,13 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     // --- Integration (external tools) ---
     CommandInfo {
+        name: "/plugins",
+        args: "[list | install <name> | remove <name> | update [name]]",
+        description: "Manage installed plugins",
+        category: SlashCategory::Integration,
+        feature_gate: None,
+    },
+    CommandInfo {
         name: "/mcp",
         args: "[add|list|tools|remove]",
         description: "Manage MCP servers",

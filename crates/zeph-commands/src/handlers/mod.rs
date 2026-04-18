@@ -21,6 +21,7 @@ pub mod memory;
 pub mod misc;
 pub mod model;
 pub mod plan;
+pub mod plugins;
 pub mod policy;
 pub mod scheduler;
 pub mod session;
