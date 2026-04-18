@@ -19,7 +19,7 @@
 //! `emit` holds the lock only for serialization + write + flush. It never
 //! `.await`s while holding the lock, satisfying invariant §10.
 
-use std::io::{self, Stdout, Write};
+use std::io::{self, Write};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -81,7 +81,7 @@ pub enum JsonEvent<'a> {
 /// Wrap in `Arc` and share between `JsonCliChannel` and `JsonEventLayer`.
 /// `emit` is synchronous and lock-bounded: it never yields across `.await`.
 pub struct JsonEventSink {
-    writer: Mutex<Stdout>,
+    writer: Mutex<Box<dyn Write + Send>>,
 }
 
 impl std::fmt::Debug for JsonEventSink {
@@ -95,11 +95,33 @@ impl JsonEventSink {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            writer: Mutex::new(io::stdout()),
+            writer: Mutex::new(Box::new(io::stdout())),
         }
     }
 
-    /// Serialize `event` as a JSON line and write it to stdout.
+    /// Create a sink backed by an arbitrary [`Write`] implementation.
+    ///
+    /// Intended for testing: pass a type that implements [`Write`] + [`Send`] + `'static`,
+    /// such as [`std::io::Cursor`]`<Vec<u8>>`, to capture emitted JSONL lines in memory.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::io::Cursor;
+    /// use std::sync::Arc;
+    /// use zeph_core::json_event_sink::{JsonEvent, JsonEventSink};
+    ///
+    /// let sink = Arc::new(JsonEventSink::with_writer(Cursor::new(Vec::<u8>::new())));
+    /// sink.emit(&JsonEvent::Status { message: "hello" });
+    /// ```
+    #[must_use]
+    pub fn with_writer(w: impl Write + Send + 'static) -> Self {
+        Self {
+            writer: Mutex::new(Box::new(w)),
+        }
+    }
+
+    /// Serialize `event` as a JSON line and write it to the underlying writer.
     ///
     /// Silently drops the event when the mutex is poisoned or serialization fails.
     /// This is intentional: a JSON output failure must not crash the agent.
@@ -117,6 +139,40 @@ impl JsonEventSink {
 impl Default for JsonEventSink {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Returns a `(Arc<JsonEventSink>, captured_output_fn)` pair for use in tests.
+///
+/// The sink writes to an in-memory buffer. Call the returned closure to retrieve
+/// the captured JSONL output as a `String`.
+#[cfg(test)]
+pub(crate) fn test_sink() -> (std::sync::Arc<JsonEventSink>, impl Fn() -> String) {
+    use std::sync::Arc;
+    let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let buf_clone = Arc::clone(&buf);
+
+    // Use a shared-buffer writer so we can read back later.
+    let writer = SharedBufWriter(Arc::clone(&buf));
+    let sink = Arc::new(JsonEventSink::with_writer(writer));
+    let read_fn = move || {
+        let data = buf_clone.lock().unwrap();
+        String::from_utf8(data.clone()).unwrap_or_default()
+    };
+    (sink, read_fn)
+}
+
+#[cfg(test)]
+struct SharedBufWriter(std::sync::Arc<Mutex<Vec<u8>>>);
+
+#[cfg(test)]
+impl Write for SharedBufWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 

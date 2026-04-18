@@ -598,7 +598,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Call this before dropping the agent to ensure no data loss.
     pub async fn shutdown(&mut self) {
-        self.channel.send("Shutting down...").await.ok();
+        let _ = self.channel.send_status("Shutting down...").await;
 
         // CRIT-1: persist Thompson state accumulated during this session.
         self.provider.save_router_state();
@@ -877,6 +877,8 @@ impl<C: Channel> Agent<C> {
                 reg.register(DebugDumpCommand);
                 reg.register(DumpFormatCommand);
                 reg.register(HelpCommand);
+                #[cfg(test)]
+                reg.register(test_stubs::TestErrorCommand);
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut sink_adapter,
@@ -903,7 +905,12 @@ impl<C: Channel> Agent<C> {
                     let _ = self.channel.flush_chunks().await;
                     continue;
                 }
-                Some(Err(e)) => return Err(error::AgentError::Other(e.0)),
+                Some(Err(e)) => {
+                    let _ = self.channel.send(&e.to_string()).await;
+                    let _ = self.channel.flush_chunks().await;
+                    tracing::warn!(command = %trimmed, error = %e.0, "slash command failed");
+                    continue;
+                }
                 None => {
                     // Not handled by the session/debug registry; try agent-command registry.
                 }
@@ -1002,7 +1009,12 @@ impl<C: Channel> Agent<C> {
                     self.maybe_trigger_post_command_learning(trimmed).await;
                     continue;
                 }
-                Some(Err(e)) => return Err(error::AgentError::Other(e.0)),
+                Some(Err(e)) => {
+                    let _ = self.channel.send(&e.to_string()).await;
+                    let _ = self.channel.flush_chunks().await;
+                    tracing::warn!(command = %trimmed, error = %e.0, "slash command failed");
+                    continue;
+                }
                 None => {
                     // Not handled by agent registry; fall through to existing dispatch.
                 }
@@ -2732,3 +2744,43 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) use tests::agent_tests;
+
+#[cfg(test)]
+mod test_stubs {
+    use std::pin::Pin;
+
+    use zeph_commands::{
+        CommandContext, CommandError, CommandHandler, CommandOutput, SlashCategory,
+    };
+
+    /// Stub slash command registered only in `#[cfg(test)]` builds.
+    ///
+    /// Triggers the `Some(Err(CommandError))` arm in the session/debug registry
+    /// dispatch block so the non-fatal error path can be tested without production
+    /// command validation logic.
+    pub(super) struct TestErrorCommand;
+
+    impl CommandHandler<CommandContext<'_>> for TestErrorCommand {
+        fn name(&self) -> &'static str {
+            "/test-error"
+        }
+
+        fn description(&self) -> &'static str {
+            "Test stub: always returns CommandError"
+        }
+
+        fn category(&self) -> SlashCategory {
+            SlashCategory::Session
+        }
+
+        fn handle<'a>(
+            &'a self,
+            _ctx: &'a mut CommandContext<'_>,
+            _args: &'a str,
+        ) -> Pin<
+            Box<dyn std::future::Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>,
+        > {
+            Box::pin(async { Err(CommandError::new("boom")) })
+        }
+    }
+}

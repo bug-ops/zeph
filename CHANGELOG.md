@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **fix(json-cli): spurious `response_end` events in `--json` mode** (#3212) — `JsonCliChannel`
+  now tracks whether any `ResponseChunk` has been emitted since the last `ResponseEnd` and only
+  emits `ResponseEnd` when there is at least one preceding chunk. Lifecycle strings (e.g.
+  `"Shutting down..."`) are now routed through `send_status` (emitting `{"event":"status",...}`)
+  instead of `send`, eliminating a spurious `response_chunk`/`response_end` pair at shutdown.
+  `JsonEventSink` gained a `with_writer` constructor for testability; behavioural unit tests added
+  for all emission sequences.
+
+- **fix(agent): slash command errors no longer terminate the agent loop** (#3211) — `CommandError`
+  returned by registry-handled slash commands (e.g. `/loop` with an invalid interval) is now
+  surfaced to the user channel and logged at WARN level, then the loop continues. Previously the
+  agent exited with `AgentError::Other`, producing no visible output on stdout.
+
 ### Added
 
 - **feat(mcp): server-driven elicitation support** (#3141) — MCP servers speaking protocol version

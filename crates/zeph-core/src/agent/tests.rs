@@ -2905,6 +2905,59 @@ pub mod agent_tests {
             "blocked_commands must be rebuilt live via shell_policy_handle"
         );
     }
+
+    #[tokio::test]
+    async fn slash_command_error_is_non_fatal_session_registry() {
+        // "/test-error" is registered only in test builds into the session/debug registry arm.
+        // Before the fix this arm returned Err(AgentError::Other), terminating the agent.
+        // After the fix the error is sent to the channel and the loop continues; the channel
+        // then reaches EOF and the agent exits cleanly with Ok(()).
+        //
+        // Single message only — avoids MESSAGE_MERGE_WINDOW combining two rapid try_recv calls.
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/test-error".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run().await;
+
+        assert!(
+            result.is_ok(),
+            "agent must not exit with Err after CommandError: {result:?}"
+        );
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|m| m.contains("boom")),
+            "channel must receive the error message; got: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn slash_command_error_is_non_fatal_agent_registry() {
+        // "/loop every 2s tick" triggers CommandError from LoopCommand (minimum interval is 5s).
+        // Before the fix this arm returned Err(AgentError::Other). After the fix the error is
+        // surfaced to the channel and the loop continues; EOF then causes a clean exit.
+        //
+        // Single message only — avoids MESSAGE_MERGE_WINDOW combining two rapid try_recv calls.
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec!["/loop every 2s tick".to_string()]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let result = agent.run().await;
+
+        assert!(
+            result.is_ok(),
+            "agent must not exit with Err after CommandError: {result:?}"
+        );
+        let sent = agent.channel.sent_messages();
+        assert!(
+            !sent.is_empty(),
+            "channel must receive the error message; got: {sent:?}"
+        );
+    }
 }
 
 /// End-to-end tests for M30 resilient compaction: error detection → compact → retry → success.

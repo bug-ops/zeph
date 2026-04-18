@@ -34,6 +34,10 @@ pub struct JsonCliChannel {
     rx: tokio::sync::mpsc::Receiver<Option<String>>,
     /// Whether the caller should auto-approve confirmation prompts.
     auto: bool,
+    /// True iff at least one `ResponseChunk` has been emitted since the last
+    /// `ResponseEnd`. `ResponseEnd` must never be emitted when this is `false`.
+    /// Both `send()` and `flush_chunks()` always reset this flag to `false`.
+    pending_chunks: bool,
 }
 
 impl JsonCliChannel {
@@ -66,7 +70,12 @@ impl JsonCliChannel {
             let _ = tx.blocking_send(None);
         });
 
-        Self { sink, rx, auto }
+        Self {
+            sink,
+            rx,
+            auto,
+            pending_chunks: false,
+        }
     }
 }
 
@@ -123,16 +132,21 @@ impl Channel for JsonCliChannel {
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::ResponseChunk { text });
         self.sink.emit(&JsonEvent::ResponseEnd);
+        self.pending_chunks = false;
         Ok(())
     }
 
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::ResponseChunk { text: chunk });
+        self.pending_chunks = true;
         Ok(())
     }
 
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        self.sink.emit(&JsonEvent::ResponseEnd);
+        if self.pending_chunks {
+            self.sink.emit(&JsonEvent::ResponseEnd);
+            self.pending_chunks = false;
+        }
         Ok(())
     }
 
@@ -216,30 +230,125 @@ impl Channel for JsonCliChannel {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use zeph_core::json_event_sink::JsonEventSink;
+
     use super::*;
 
-    fn make_sink() -> Arc<JsonEventSink> {
-        Arc::new(JsonEventSink::new())
+    /// Returns a `(sink, read_output)` pair. `read_output()` returns captured JSONL lines.
+    fn make_test_sink() -> (Arc<JsonEventSink>, impl Fn() -> Vec<String>) {
+        let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let buf_read = Arc::clone(&buf);
+
+        struct BufWriter(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for BufWriter {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let sink = Arc::new(JsonEventSink::with_writer(BufWriter(buf)));
+        let read = move || {
+            let data = buf_read.lock().unwrap();
+            String::from_utf8(data.clone())
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        (sink, read)
+    }
+
+    fn event_field<'a>(line: &'a str, key: &str) -> &'a str {
+        // minimal parse: find `"key":"value"` in the JSONL line
+        let needle = format!("\"{}\":\"", key);
+        line.find(&needle)
+            .map(|i| {
+                let rest = &line[i + needle.len()..];
+                &rest[..rest.find('"').unwrap_or(rest.len())]
+            })
+            .unwrap_or("")
     }
 
     #[tokio::test]
-    async fn send_emits_chunk_and_end() {
-        let sink = make_sink();
+    async fn flush_chunks_is_noop_without_chunks() {
+        let (sink, read) = make_test_sink();
         let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
-        assert!(ch.send("hello").await.is_ok());
+        ch.flush_chunks().await.unwrap();
+        assert!(
+            read().is_empty(),
+            "flush_chunks must not emit when no chunks were sent"
+        );
     }
 
     #[tokio::test]
-    async fn send_chunk_and_flush() {
-        let sink = make_sink();
+    async fn flush_chunks_emits_end_after_chunk() {
+        let (sink, read) = make_test_sink();
         let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
-        assert!(ch.send_chunk("a").await.is_ok());
-        assert!(ch.flush_chunks().await.is_ok());
+        ch.send_chunk("hello").await.unwrap();
+        ch.flush_chunks().await.unwrap();
+        let lines = read();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(event_field(&lines[0], "event"), "response_chunk");
+        assert_eq!(event_field(&lines[1], "event"), "response_end");
+    }
+
+    #[tokio::test]
+    async fn send_resets_pending_and_subsequent_flush_is_noop() {
+        // send_chunk then send: ResponseEnd is emitted by send; flush_chunks after must be no-op.
+        let (sink, read) = make_test_sink();
+        let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
+        ch.send_chunk("a").await.unwrap();
+        ch.send("b").await.unwrap();
+        let before_flush = read().len();
+        ch.flush_chunks().await.unwrap();
+        assert_eq!(
+            read().len(),
+            before_flush,
+            "flush_chunks must be no-op after send()"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_after_send_chunk_emits_single_end() {
+        // send_chunk("a") + send("b") => chunk(a), chunk(b), response_end — no duplicate end.
+        let (sink, read) = make_test_sink();
+        let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
+        ch.send_chunk("a").await.unwrap();
+        ch.send("b").await.unwrap();
+        let lines = read();
+        assert_eq!(
+            lines.len(),
+            3,
+            "expected chunk(a), chunk(b), response_end; got: {lines:?}"
+        );
+        assert_eq!(event_field(&lines[0], "event"), "response_chunk");
+        assert_eq!(event_field(&lines[1], "event"), "response_chunk");
+        assert_eq!(event_field(&lines[2], "event"), "response_end");
+    }
+
+    #[tokio::test]
+    async fn two_sequential_sends_emit_two_ends() {
+        let (sink, read) = make_test_sink();
+        let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
+        ch.send("first").await.unwrap();
+        ch.send("second").await.unwrap();
+        let lines = read();
+        // chunk, end, chunk, end
+        assert_eq!(lines.len(), 4);
+        assert_eq!(event_field(&lines[1], "event"), "response_end");
+        assert_eq!(event_field(&lines[3], "event"), "response_end");
     }
 
     #[tokio::test]
     async fn send_status_ok() {
-        let sink = make_sink();
+        let (sink, _read) = make_test_sink();
         let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
         assert!(ch.send_status("working…").await.is_ok());
     }
@@ -247,7 +356,7 @@ mod tests {
     #[tokio::test]
     async fn no_ops_do_not_error() {
         use zeph_core::channel::{ToolOutputEvent, ToolStartEvent};
-        let sink = make_sink();
+        let (sink, _read) = make_test_sink();
         let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
         assert!(ch.send_typing().await.is_ok());
         assert!(ch.send_thinking_chunk("...").await.is_ok());
@@ -288,14 +397,14 @@ mod tests {
 
     #[test]
     fn supports_exit_is_true() {
-        let sink = make_sink();
+        let (sink, _) = make_test_sink();
         let ch = JsonCliChannel::new(sink, false);
         assert!(ch.supports_exit());
     }
 
     #[test]
     fn try_recv_returns_none_when_no_input() {
-        let sink = make_sink();
+        let (sink, _) = make_test_sink();
         let mut ch = JsonCliChannel::new(sink, false);
         assert!(ch.try_recv().is_none());
     }
