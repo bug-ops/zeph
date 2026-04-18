@@ -356,7 +356,7 @@ impl SemanticMemory {
                 .evaluate(
                     content,
                     role,
-                    &self.provider,
+                    self.effective_embed_provider(),
                     self.qdrant.as_ref(),
                     goal_text,
                 )
@@ -404,7 +404,7 @@ impl SemanticMemory {
                 .evaluate(
                     content,
                     role,
-                    &self.provider,
+                    self.effective_embed_provider(),
                     self.qdrant.as_ref(),
                     goal_text,
                 )
@@ -452,7 +452,13 @@ impl SemanticMemory {
     ) -> Result<(Option<MessageId>, bool), MemoryError> {
         if let Some(ref admission) = self.admission_control {
             let decision = admission
-                .evaluate(content, role, &self.provider, self.qdrant.as_ref(), None)
+                .evaluate(
+                    content,
+                    role,
+                    self.effective_embed_provider(),
+                    self.qdrant.as_ref(),
+                    None,
+                )
                 .await;
             let preview: String = content.chars().take(100).collect();
             log_admission_decision(&decision, &preview, role, admission.threshold());
@@ -504,7 +510,7 @@ impl SemanticMemory {
                 .evaluate(
                     content,
                     role,
-                    &self.provider,
+                    self.effective_embed_provider(),
                     self.qdrant.as_ref(),
                     goal_text,
                 )
