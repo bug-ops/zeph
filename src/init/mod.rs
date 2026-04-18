@@ -8,7 +8,7 @@ use zeph_core::config::{
     AcpConfig, ChannelSkillsConfig, Config, DiscordConfig, LlmConfig, LlmRoutingStrategy,
     McpServerConfig, McpTrustLevel, MemoryConfig, OrchestrationConfig, ProviderEntry, ProviderKind,
     ProviderName, PruningStrategy, SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig,
-    VaultConfig,
+    TriggerPolicy, VaultConfig,
 };
 use zeph_llm::{GeminiThinkingLevel, ThinkingConfig};
 use zeph_subagent::def::{MemoryScope, PermissionMode};
@@ -180,6 +180,10 @@ pub(crate) struct WizardState {
     // MCP elicitation (#3141)
     pub(crate) mcp_elicitation_enabled: bool,
     pub(crate) mcp_elicitation_warn_sensitive: bool,
+    // MARCH self-check pipeline (#3226, #3228)
+    pub(crate) quality_self_check: bool,
+    pub(crate) quality_trigger: String,
+    pub(crate) quality_latency_budget_ms: u64,
     // Context strategy (#2288)
     pub(crate) context_strategy: String,
     // MCP tool discovery (#2321)
@@ -351,6 +355,9 @@ impl Default for WizardState {
             recap_on_resume: true,
             mcp_elicitation_enabled: false,
             mcp_elicitation_warn_sensitive: true,
+            quality_self_check: false,
+            quality_trigger: "has_retrieval".to_owned(),
+            quality_latency_budget_ms: 4_000,
             context_strategy: "full_history".to_owned(),
             mcp_discovery_strategy: "none".to_owned(),
             mcp_discovery_top_k: 10,
@@ -444,6 +451,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_telemetry(&mut state)?;
     step_prometheus(&mut state)?;
     step_session_recap(&mut state)?;
+    step_quality(&mut state)?;
     step_review_and_write(&state, output)?;
 
     Ok(())
@@ -704,6 +712,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.session.recap.on_resume = state.recap_on_resume;
     config.mcp.elicitation_enabled = state.mcp_elicitation_enabled;
     config.mcp.elicitation_warn_sensitive_fields = state.mcp_elicitation_warn_sensitive;
+    config.quality.self_check = state.quality_self_check;
+    config.quality.trigger = match state.quality_trigger.as_str() {
+        "always" => TriggerPolicy::Always,
+        "manual" => TriggerPolicy::Manual,
+        _ => TriggerPolicy::HasRetrieval,
+    };
+    config.quality.latency_budget_ms = state.quality_latency_budget_ms;
     config.memory.context_strategy = match state.context_strategy.as_str() {
         "memory_first" => zeph_core::config::ContextStrategy::MemoryFirst,
         "adaptive" => zeph_core::config::ContextStrategy::Adaptive,
@@ -1356,6 +1371,58 @@ fn step_session_recap(state: &mut WizardState) -> anyhow::Result<()> {
             )
             .default(true)
             .interact()?;
+    }
+
+    println!();
+    Ok(())
+}
+
+fn step_quality(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Quality Self-Check (MARCH) ==\n");
+    println!("Post-response Proposer+Checker pipeline that flags unsupported claims.");
+    println!("Adds LLM latency/cost per turn; off by default.\n");
+
+    state.quality_self_check = Confirm::new()
+        .with_prompt("Enable post-response self-check?")
+        .default(false)
+        .interact()?;
+
+    if state.quality_self_check {
+        println!(
+            "Note: dedicated proposer_provider / checker_provider can be set by editing \
+             `proposer_provider` / `checker_provider` in config.toml; \
+             both default to the primary provider when empty."
+        );
+
+        let triggers = [
+            "has_retrieval (only when the turn used retrieval)",
+            "always",
+            "manual",
+        ];
+        let idx = Select::new()
+            .with_prompt("When to trigger the pipeline")
+            .items(triggers)
+            .default(0)
+            .interact()?;
+        state.quality_trigger = match idx {
+            1 => "always".into(),
+            2 => "manual".into(),
+            _ => "has_retrieval".into(),
+        };
+
+        state.quality_latency_budget_ms = Input::new()
+            .with_prompt("Total pipeline latency budget (ms)")
+            .default(4_000u64)
+            .validate_with(|v: &u64| -> Result<(), &str> {
+                if *v < 2_000 {
+                    Err("must be >= 2000ms (one per-call timeout)")
+                } else if *v > 60_000 {
+                    Err("must be <= 60000ms")
+                } else {
+                    Ok(())
+                }
+            })
+            .interact_text()?;
     }
 
     println!();
@@ -2213,5 +2280,52 @@ mod tests {
             let config = build_config(&state);
             assert_eq!(config.tools.sandbox.profile, expected, "input={input}");
         }
+    }
+
+    #[test]
+    fn build_config_quality_disabled_by_default() {
+        let state = WizardState {
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(!config.quality.self_check);
+        assert_eq!(config.quality.trigger, TriggerPolicy::HasRetrieval);
+    }
+
+    #[test]
+    fn build_config_quality_enabled_with_always() {
+        let state = WizardState {
+            quality_self_check: true,
+            quality_trigger: "always".into(),
+            quality_latency_budget_ms: 6_000,
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        assert!(config.quality.self_check);
+        assert_eq!(config.quality.trigger, TriggerPolicy::Always);
+        assert_eq!(config.quality.latency_budget_ms, 6_000);
+    }
+
+    #[test]
+    fn build_config_quality_trigger_manual() {
+        let state = WizardState {
+            quality_self_check: true,
+            quality_trigger: "manual".into(),
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.quality.trigger, TriggerPolicy::Manual);
+    }
+
+    #[test]
+    fn build_config_quality_trigger_unknown_falls_back_to_has_retrieval() {
+        let state = WizardState {
+            quality_self_check: true,
+            quality_trigger: "unknown_value".into(),
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.quality.trigger, TriggerPolicy::HasRetrieval);
     }
 }

@@ -10,9 +10,9 @@ use zeph_core::config::migrate::{
     migrate_egress_config, migrate_forgetting_config, migrate_magic_docs_config,
     migrate_mcp_elicitation_config, migrate_mcp_trust_levels, migrate_microcompact_config,
     migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
-    migrate_sandbox_config, migrate_session_recap_config, migrate_shell_transactional,
-    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
-    migrate_vigil_config,
+    migrate_quality_config, migrate_sandbox_config, migrate_session_recap_config,
+    migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
+    migrate_telemetry_config, migrate_vigil_config,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -118,9 +118,13 @@ pub(crate) fn handle_migrate_config(
     let mcp_elicitation_result = migrate_mcp_elicitation_config(&after_session_recap)?;
     let after_mcp_elicitation = mcp_elicitation_result.output;
 
-    // Step 22: add missing default keys as commented-out entries.
+    // Step 22: add commented-out [quality] block if absent (#3228).
+    let quality_result = migrate_quality_config(&after_mcp_elicitation)?;
+    let after_quality = quality_result.output;
+
+    // Step 23: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_mcp_elicitation)?;
+    let result = migrator.migrate(&after_quality)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -202,6 +206,9 @@ pub(crate) fn handle_migrate_config(
             eprintln!(
                 "MCP elicitation migration: added commented-out elicitation keys under [mcp]."
             );
+        }
+        if quality_result.added_count > 0 {
+            eprintln!("Quality migration: added commented-out [quality] block.");
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

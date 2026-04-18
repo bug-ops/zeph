@@ -2186,6 +2186,52 @@ pub fn migrate_mcp_elicitation_config(toml_src: &str) -> Result<MigrationResult,
     })
 }
 
+/// Add a commented-out `[quality]` block if the config lacks it (#3228).
+///
+/// Introduced alongside the MARCH self-check pipeline (#3226). All `QualityConfig`
+/// fields have `#[serde(default)]` so existing configs parse without changes; this
+/// migration only surfaces the section so users can discover and enable it.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the
+/// migration function convention for use in chained pipelines.
+pub fn migrate_quality_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: line-anchored check avoids false-positives on [quality.foo] subtables.
+    if toml_src
+        .lines()
+        .any(|l| l.trim() == "[quality]" || l.trim() == "# [quality]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [quality] — MARCH Proposer+Checker self-check pipeline (#3226, #3228).\n\
+         # [quality]\n\
+         # self_check = false                    # enable post-response self-check\n\
+         # trigger = \"has_retrieval\"             # has_retrieval | always | manual\n\
+         # latency_budget_ms = 4000              # hard ceiling for the whole pipeline\n\
+         # proposer_provider = \"\"                # optional: provider name from [[llm.providers]]\n\
+         # checker_provider = \"\"                 # optional: provider name from [[llm.providers]]\n\
+         # min_evidence = 0.6                    # 0.0..1.0; below → flag assertion\n\
+         # async_run = false                     # true = fire-and-forget (non-blocking)\n\
+         # per_call_timeout_ms = 2000            # per-LLM-call timeout\n\
+         # max_assertions = 12                   # maximum assertions extracted from one response\n\
+         # max_response_chars = 8000             # skip pipeline when response exceeds this\n\
+         # cache_disabled_for_checker = true     # suppress prompt-cache on Checker provider\n\
+         # flag_marker = \"[verify]\"              # marker appended when assertions are flagged\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        added_count: 1,
+        sections_added: vec!["quality".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -3439,6 +3485,35 @@ prompt_cache_ttl = "1h"
         // Edge case: `[mcp]` at EOF with no `\n` — replacen would be a no-op.
         let src = "[mcp]";
         let result = migrate_mcp_elicitation_config(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    // ── migrate_quality_config ────────────────────────────────────────────────
+
+    #[test]
+    fn migrate_quality_adds_block_when_absent() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_quality_config(src).expect("migrate");
+        assert_eq!(result.added_count, 1);
+        assert!(result.sections_added.contains(&"quality".to_owned()));
+        assert!(result.output.contains("# [quality]"));
+        assert!(result.output.contains("self_check = false"));
+        assert!(result.output.contains("trigger = \"has_retrieval\""));
+    }
+
+    #[test]
+    fn migrate_quality_idempotent_on_commented_block() {
+        let src = "[agent]\nname = \"Zeph\"\n# [quality]\n# self_check = false\n";
+        let result = migrate_quality_config(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_quality_idempotent_on_active_section() {
+        let src = "[agent]\nname = \"Zeph\"\n[quality]\nself_check = true\n";
+        let result = migrate_quality_config(src).expect("migrate");
         assert_eq!(result.added_count, 0);
         assert_eq!(result.output, src);
     }
