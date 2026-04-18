@@ -400,6 +400,16 @@ repo_map_ttl_secs = 300
 allowed_commands = ["npx", "uvx", "node", "python", "python3"]
 # Maximum number of dynamically added MCP servers
 max_dynamic_servers = 10
+# Enable MCP elicitation (servers can request user input mid-task).
+# Default: false — all elicitation requests are auto-declined.
+# Opt-in because it interrupts agent flow and could be abused by malicious servers.
+# elicitation_enabled = false
+# Timeout in seconds for the user to respond to an elicitation request. Default: 120.
+# elicitation_timeout = 120
+# Bounded channel capacity for elicitation events. Requests beyond this are auto-declined.
+# elicitation_queue_capacity = 16
+# When true, warn the user before prompting for sensitive-looking fields (password, token, etc.).
+# elicitation_warn_sensitive_fields = true
 
 [mcp.pruning]
 # Enable dynamic MCP tool pruning (LLM-based relevance filter before main inference)

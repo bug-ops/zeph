@@ -177,6 +177,9 @@ pub(crate) struct WizardState {
     pub(crate) digest_enabled: bool,
     // Session recap on resume (#3064)
     pub(crate) recap_on_resume: bool,
+    // MCP elicitation (#3141)
+    pub(crate) mcp_elicitation_enabled: bool,
+    pub(crate) mcp_elicitation_warn_sensitive: bool,
     // Context strategy (#2288)
     pub(crate) context_strategy: String,
     // MCP tool discovery (#2321)
@@ -346,6 +349,8 @@ impl Default for WizardState {
             retry_parameter_reformat_provider: String::new(),
             digest_enabled: false,
             recap_on_resume: true,
+            mcp_elicitation_enabled: false,
+            mcp_elicitation_warn_sensitive: true,
             context_strategy: "full_history".to_owned(),
             mcp_discovery_strategy: "none".to_owned(),
             mcp_discovery_top_k: 10,
@@ -697,6 +702,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.shutdown_summary = state.shutdown_summary;
     config.memory.digest.enabled = state.digest_enabled;
     config.session.recap.on_resume = state.recap_on_resume;
+    config.mcp.elicitation_enabled = state.mcp_elicitation_enabled;
+    config.mcp.elicitation_warn_sensitive_fields = state.mcp_elicitation_warn_sensitive;
     config.memory.context_strategy = match state.context_strategy.as_str() {
         "memory_first" => zeph_core::config::ContextStrategy::MemoryFirst,
         "adaptive" => zeph_core::config::ContextStrategy::Adaptive,
@@ -1328,11 +1335,29 @@ fn step_prometheus(state: &mut WizardState) -> anyhow::Result<()> {
 }
 
 fn step_session_recap(state: &mut WizardState) -> anyhow::Result<()> {
-    println!("== Session Recap ==\n");
+    println!("== Session Recap & MCP Elicitation ==\n");
     state.recap_on_resume = Confirm::new()
         .with_prompt("Show a recap when resuming a conversation? [Y/n]")
         .default(true)
         .interact()?;
+
+    state.mcp_elicitation_enabled = Confirm::new()
+        .with_prompt(
+            "Allow MCP servers to request user input mid-task (elicitation)? [y/N]\n  \
+             (opt-in; servers with elicitation can interrupt agent flow)",
+        )
+        .default(false)
+        .interact()?;
+
+    if state.mcp_elicitation_enabled {
+        state.mcp_elicitation_warn_sensitive = Confirm::new()
+            .with_prompt(
+                "Warn before prompting for sensitive fields (password, token, etc.)? [Y/n]",
+            )
+            .default(true)
+            .interact()?;
+    }
+
     println!();
     Ok(())
 }

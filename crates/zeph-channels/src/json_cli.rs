@@ -159,10 +159,8 @@ impl Channel for JsonCliChannel {
         &mut self,
         _request: ElicitationRequest,
     ) -> Result<ElicitationResponse, ChannelError> {
-        // v1: elicitation over JSON is not supported.
-        Err(ChannelError::Other(
-            "elicitation not supported in --json mode".into(),
-        ))
+        // Elicitation is not supported in JSON mode; decline quietly to avoid log spam.
+        Ok(ElicitationResponse::Declined)
     }
 
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {

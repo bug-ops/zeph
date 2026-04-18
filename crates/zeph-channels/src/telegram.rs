@@ -784,7 +784,10 @@ impl Channel for TelegramChannel {
 
             let Some(value) = coerce_telegram_field(&text, &field.field_type) else {
                 let _ = self
-                    .send(&format!("Invalid value for '{}'. Declining.", field.name))
+                    .send(&format!(
+                        "Invalid value for '{}'. Declining.",
+                        sanitize_markdown(&field.name)
+                    ))
                     .await;
                 return Ok(ElicitationResponse::Declined);
             };
@@ -813,6 +816,12 @@ fn sanitize_markdown(s: &str) -> String {
 /// Keeps only alphanumeric characters and underscores to prevent injection via
 /// malicious MCP server field names (e.g. keys with special chars that could
 /// confuse downstream consumers).
+///
+/// Note: this can produce collisions when two field names differ only in stripped
+/// characters (e.g. `"pass word"` and `"pass_word"` both map to `"password"`).
+/// In that case the second field silently overwrites the first in the response map.
+/// This is acceptable because Telegram's callback-data limit (64 bytes) means we
+/// cannot use raw field names; a well-formed MCP server must not send colliding keys.
 fn sanitize_field_key(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_alphanumeric() || *c == '_')
@@ -829,9 +838,10 @@ fn sanitize_field_key(s: &str) -> String {
 /// * `String` — asks for free-form text.
 fn build_telegram_field_prompt(field: &ElicitationField) -> String {
     let req = if field.required { " (required)" } else { "" };
+    let name = sanitize_markdown(&field.name);
     match &field.field_type {
         ElicitationFieldType::Boolean => {
-            format!("*{}*{}: Reply *yes* or *no*", field.name, req)
+            format!("*{name}*{req}: Reply *yes* or *no*")
         }
         ElicitationFieldType::Enum(opts) => {
             // Use short numeric indexes to avoid Telegram 64-byte callback_data limit
@@ -841,16 +851,16 @@ fn build_telegram_field_prompt(field: &ElicitationField) -> String {
                 .map(|(i, o)| format!("{}: {}", i + 1, sanitize_markdown(o)))
                 .collect::<Vec<_>>()
                 .join("\n");
-            format!("*{}*{}: Reply with the number:\n{}", field.name, req, list)
+            format!("*{name}*{req}: Reply with the number:\n{list}")
         }
         ElicitationFieldType::Integer => {
-            format!("*{}*{}: Reply with an integer", field.name, req)
+            format!("*{name}*{req}: Reply with an integer")
         }
         ElicitationFieldType::Number => {
-            format!("*{}*{}: Reply with a number", field.name, req)
+            format!("*{name}*{req}: Reply with a number")
         }
         ElicitationFieldType::String => {
-            format!("*{}*{}: Reply with text", field.name, req)
+            format!("*{name}*{req}: Reply with text")
         }
     }
 }

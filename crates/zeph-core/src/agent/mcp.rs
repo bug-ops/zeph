@@ -649,7 +649,7 @@ fn build_elicitation_fields(
             let description = json
                 .get("description")
                 .and_then(|v| v.as_str())
-                .map(String::from);
+                .map(sanitize_elicitation_message);
 
             let field_type = match prop {
                 PrimitiveSchema::Boolean(_) => ElicitationFieldType::Boolean,
@@ -665,7 +665,7 @@ fn build_elicitation_fields(
                         .map(|arr| {
                             arr.iter()
                                 .filter_map(|v| v.as_str())
-                                .map(String::from)
+                                .map(sanitize_elicitation_message)
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
@@ -674,6 +674,8 @@ fn build_elicitation_fields(
             };
             let required = schema.required.as_deref().is_some_and(|r| r.contains(name));
             ElicitationField {
+                // Keep the raw schema key intact — it is used verbatim as the response map key.
+                // Channels sanitize it at display time only (see build_field_prompt / build_telegram_field_prompt).
                 name: name.clone(),
                 description,
                 field_type,

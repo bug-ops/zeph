@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **feat(mcp): server-driven elicitation support** (#3141) — MCP servers speaking protocol version
+  2025-06-18 can now pause a tool call and request structured user input (credentials, file paths,
+  confirmations). Elicitation requests are routed to the active channel: CLI prompts interactively,
+  TUI shows a modal-style status prompt, Telegram sends a message and waits for a reply (with
+  configurable timeout). Sensitive fields (password/token/key) trigger a warning before display.
+  URL-type fields are declined in phase 1. Elicitation is disabled for `Sandboxed` trust level and
+  can be toggled globally via `[mcp] elicitation_enabled`. Field names and descriptions are
+  sanitized at display time to prevent ANSI/Markdown injection from malicious servers.
+
+- **feat(ux): `/recap` slash command** (#3140) — on-demand session summary. Invoked as `/recap`,
+  it summarises messages exchanged, tools invoked (with outcomes), and projects the next logical
+  step using a configurable fast LLM provider (`[session.recap] provider`). A dedup gate
+  suppresses redundant calls. Session recap can be automatically shown on session resume via
+  `[session.recap] on_resume = true` (default). Operates on in-session state — distinct from the
+  persistent semantic memory recall shown at startup.
+
 - **feat(cli): `--bare` mode for scripted/CI usage** (#2790) — new flag strips the agent to
   essentials: skips memory init, scheduler startup, skill loading, and watcher registration.
   Suitable for piping and automation where full subsystem overhead is unnecessary.

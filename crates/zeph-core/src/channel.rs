@@ -2,26 +2,81 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 /// A single field in an elicitation form request.
+///
+/// Created by the MCP layer when a server sends an elicitation request; passed to
+/// channels so they can render the field in a channel-appropriate way (CLI prompt,
+/// Telegram inline keyboard, TUI form, etc.).
+///
+/// # Examples
+///
+/// ```
+/// use zeph_core::channel::{ElicitationField, ElicitationFieldType};
+///
+/// let field = ElicitationField {
+///     name: "username".to_owned(),
+///     description: Some("Your login name".to_owned()),
+///     field_type: ElicitationFieldType::String,
+///     required: true,
+/// };
+/// assert_eq!(field.name, "username");
+/// assert!(field.required);
+/// ```
 #[derive(Debug, Clone)]
 pub struct ElicitationField {
+    /// Field key as declared in the server's JSON Schema (sanitized before display).
     pub name: String,
+    /// Optional human-readable description from the server (sanitized before display).
     pub description: Option<String>,
+    /// Value type expected for this field.
     pub field_type: ElicitationFieldType,
+    /// Whether the field must be filled before the form can be submitted.
     pub required: bool,
 }
 
 /// Type of an elicitation form field.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_core::channel::ElicitationFieldType;
+///
+/// let enum_field = ElicitationFieldType::Enum(vec!["low".into(), "medium".into(), "high".into()]);
+/// assert!(matches!(enum_field, ElicitationFieldType::Enum(_)));
+/// ```
 #[derive(Debug, Clone)]
 pub enum ElicitationFieldType {
     String,
     Integer,
     Number,
     Boolean,
-    /// Enum with allowed values.
+    /// Enum with allowed values (sanitized before display).
     Enum(Vec<String>),
 }
 
 /// An elicitation request from an MCP server.
+///
+/// Channels receive this struct and are responsible for rendering the form and
+/// collecting user input. The `server_name` must be shown to help users identify
+/// which server is requesting information (phishing prevention).
+///
+/// # Examples
+///
+/// ```
+/// use zeph_core::channel::{ElicitationField, ElicitationFieldType, ElicitationRequest};
+///
+/// let req = ElicitationRequest {
+///     server_name: "my-server".to_owned(),
+///     message: "Please provide your credentials".to_owned(),
+///     fields: vec![ElicitationField {
+///         name: "api_key".to_owned(),
+///         description: None,
+///         field_type: ElicitationFieldType::String,
+///         required: true,
+///     }],
+/// };
+/// assert_eq!(req.server_name, "my-server");
+/// assert_eq!(req.fields.len(), 1);
+/// ```
 #[derive(Debug, Clone)]
 pub struct ElicitationRequest {
     /// Name of the MCP server making the request (shown for phishing prevention).
@@ -33,6 +88,22 @@ pub struct ElicitationRequest {
 }
 
 /// User's response to an elicitation request.
+///
+/// Channels return this after the user interacts with the form. The MCP layer
+/// maps `Declined` and `Cancelled` to the appropriate protocol responses.
+///
+/// # Examples
+///
+/// ```
+/// use serde_json::json;
+/// use zeph_core::channel::ElicitationResponse;
+///
+/// let accepted = ElicitationResponse::Accepted(json!({"username": "alice"}));
+/// assert!(matches!(accepted, ElicitationResponse::Accepted(_)));
+///
+/// let declined = ElicitationResponse::Declined;
+/// assert!(matches!(declined, ElicitationResponse::Declined));
+/// ```
 #[derive(Debug, Clone)]
 pub enum ElicitationResponse {
     /// User filled in the form and submitted.

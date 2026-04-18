@@ -2104,6 +2104,88 @@ pub fn migrate_orchestration_persistence(toml_src: &str) -> Result<MigrationResu
     })
 }
 
+/// Add commented-out `[session.recap]` block if absent (#3064).
+///
+/// All recap fields have `#[serde(default)]` so existing configs parse without changes.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_session_recap_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: check both active and commented forms.
+    if toml_src.contains("[session.recap]") || toml_src.contains("# [session.recap]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [session.recap] — show a recap when resuming a conversation (#3064).\n\
+         # [session.recap]\n\
+         # on_resume = true\n\
+         # max_tokens = 200\n\
+         # provider = \"\"\n\
+         # max_input_messages = 20\n";
+    let raw = toml_src.parse::<toml_edit::DocumentMut>()?.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        added_count: 1,
+        sections_added: vec!["session.recap".to_owned()],
+    })
+}
+
+/// Add commented-out MCP elicitation keys to `[mcp]` section if absent (#3141).
+///
+/// All elicitation fields have `#[serde(default)]` so existing configs parse without changes.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_mcp_elicitation_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: check for any elicitation key presence.
+    if toml_src.contains("elicitation_enabled") || toml_src.contains("# elicitation_enabled") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    // Only inject under an existing [mcp] section.
+    if !toml_src.contains("[mcp]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    // Guard against configs that have `[mcp]` but with Windows line endings or at EOF.
+    if !toml_src.contains("[mcp]\n") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            added_count: 0,
+            sections_added: Vec::new(),
+        });
+    }
+
+    let comment = "# elicitation_enabled = false          \
+        # opt-in: servers may request user input mid-task (#3141)\n\
+        # elicitation_timeout = 120            # seconds to wait for user response\n\
+        # elicitation_queue_capacity = 16      # beyond this limit requests are auto-declined\n\
+        # elicitation_warn_sensitive_fields = true  # warn before prompting for password/token/etc.\n";
+    let output = toml_src.replacen("[mcp]\n", &format!("[mcp]\n{comment}"), 1);
+
+    Ok(MigrationResult {
+        output,
+        added_count: 1,
+        sections_added: vec!["mcp.elicitation".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -3290,5 +3372,74 @@ prompt_cache_ttl = "1h"
             first.output, second.output,
             "migration must be idempotent when prompt_cache_ttl = \"1h\" already present"
         );
+    }
+
+    // ── migrate_session_recap_config ──────────────────────────────────────────
+
+    #[test]
+    fn migrate_session_recap_adds_block_when_absent() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_session_recap_config(src).expect("migrate");
+        assert_eq!(result.added_count, 1);
+        assert!(result.sections_added.contains(&"session.recap".to_owned()));
+        assert!(result.output.contains("# [session.recap]"));
+        assert!(result.output.contains("on_resume = true"));
+    }
+
+    #[test]
+    fn migrate_session_recap_idempotent_on_commented_block() {
+        let src = "[agent]\nname = \"Zeph\"\n# [session.recap]\n# on_resume = true\n";
+        let result = migrate_session_recap_config(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_session_recap_idempotent_on_active_section() {
+        let src = "[agent]\nname = \"Zeph\"\n[session.recap]\non_resume = false\n";
+        let result = migrate_session_recap_config(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    // ── migrate_mcp_elicitation_config ────────────────────────────────────────
+
+    #[test]
+    fn migrate_mcp_elicitation_adds_keys_when_absent() {
+        let src = "[mcp]\nallowed_commands = []\n";
+        let result = migrate_mcp_elicitation_config(src).expect("migrate");
+        assert_eq!(result.added_count, 1);
+        assert!(
+            result
+                .sections_added
+                .contains(&"mcp.elicitation".to_owned())
+        );
+        assert!(result.output.contains("# elicitation_enabled = false"));
+        assert!(result.output.contains("# elicitation_timeout = 120"));
+    }
+
+    #[test]
+    fn migrate_mcp_elicitation_idempotent_when_key_present() {
+        let src = "[mcp]\nelicitation_enabled = true\n";
+        let result = migrate_mcp_elicitation_config(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_mcp_elicitation_skips_when_no_mcp_section() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_mcp_elicitation_config(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_mcp_elicitation_skips_without_trailing_newline() {
+        // Edge case: `[mcp]` at EOF with no `\n` — replacen would be a no-op.
+        let src = "[mcp]";
+        let result = migrate_mcp_elicitation_config(src).expect("migrate");
+        assert_eq!(result.added_count, 0);
+        assert_eq!(result.output, src);
     }
 }

@@ -8,10 +8,11 @@ use zeph_core::config::migrate::{
     ConfigMigrator, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
     migrate_autodream_config, migrate_compression_predictor_config, migrate_database_url,
     migrate_egress_config, migrate_forgetting_config, migrate_magic_docs_config,
-    migrate_mcp_trust_levels, migrate_microcompact_config, migrate_orchestration_persistence,
-    migrate_otel_filter, migrate_planner_model_to_provider, migrate_sandbox_config,
-    migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
-    migrate_telemetry_config, migrate_vigil_config,
+    migrate_mcp_elicitation_config, migrate_mcp_trust_levels, migrate_microcompact_config,
+    migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
+    migrate_sandbox_config, migrate_session_recap_config, migrate_shell_transactional,
+    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
+    migrate_vigil_config,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -109,9 +110,17 @@ pub(crate) fn handle_migrate_config(
     let orch_persistence_result = migrate_orchestration_persistence(&after_sandbox)?;
     let after_orch_persistence = orch_persistence_result.output;
 
-    // Step 20: add missing default keys as commented-out entries.
+    // Step 20: add commented-out [session.recap] block if absent (#3064).
+    let session_recap_result = migrate_session_recap_config(&after_orch_persistence)?;
+    let after_session_recap = session_recap_result.output;
+
+    // Step 21: add commented-out MCP elicitation keys under [mcp] if absent (#3141).
+    let mcp_elicitation_result = migrate_mcp_elicitation_config(&after_session_recap)?;
+    let after_mcp_elicitation = mcp_elicitation_result.output;
+
+    // Step 22: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_orch_persistence)?;
+    let result = migrator.migrate(&after_mcp_elicitation)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -184,6 +193,14 @@ pub(crate) fn handle_migrate_config(
             eprintln!(
                 "Orchestration persistence migration: \
                  added commented-out persistence_enabled under [orchestration]."
+            );
+        }
+        if session_recap_result.added_count > 0 {
+            eprintln!("Session recap migration: added commented-out [session.recap] block.");
+        }
+        if mcp_elicitation_result.added_count > 0 {
+            eprintln!(
+                "MCP elicitation migration: added commented-out elicitation keys under [mcp]."
             );
         }
         eprintln!(
