@@ -275,6 +275,7 @@ mod tests {
 
     #[test]
     fn atomic_write_private_errors_on_unwritable_dir() {
+        use std::os::unix::fs::PermissionsExt as _;
         // Verify that atomic_write_private returns an error when the directory is
         // not writable (no writeable dir → cannot create tmp), and the original
         // target file is untouched.
@@ -287,7 +288,6 @@ mod tests {
         atomic_write_private(&p, b"first").unwrap();
 
         // Make the directory read-only so the exclusive tmp create fails.
-        use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o500)).unwrap();
 
         let result = atomic_write_private(&p, b"second");
