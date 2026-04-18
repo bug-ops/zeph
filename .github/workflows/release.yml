@@ -45,7 +45,7 @@ jobs:
           # Windows ARM64 SDK headers unavailable in cross containers.
           # Re-enable when GitHub provides hosted Windows ARM64 runners.
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: stable
@@ -56,7 +56,7 @@ jobs:
           shared-key: "release-${{ matrix.target }}"
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
         if: "!matrix.use_cross"
-      - uses: taiki-e/install-action@f90de9db888af81a66244f6fed63376aa8163cef # cross
+      - uses: taiki-e/install-action@06e1821e928f70c3a625134f4f93bfc876141b9a # cross
       - name: Build binary (cross)
         if: matrix.use_cross
         run: cross build --release --features full --target ${{ matrix.target }}
@@ -93,7 +93,7 @@ jobs:
             sha256sum zeph-${{ matrix.target }}.zip > zeph-${{ matrix.target }}.zip.sha256
           fi
       - name: Upload archive
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: binary-${{ matrix.target }}
           path: |
@@ -113,7 +113,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: stable
@@ -193,14 +193,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@v6
       - name: Download all artifacts
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
           pattern: binary-*
       - name: Create release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
           generate_release_notes: true
           files: |
@@ -218,9 +218,9 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@v6
       - name: Download Linux binaries
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: binary-*-unknown-linux-gnu
           path: artifacts
@@ -233,14 +233,14 @@ jobs:
           mv binaries/zeph binaries/zeph-arm64
           chmod +x binaries/zeph-*
           ls -lh binaries/
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+      - uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
         id: meta
         with:
           images: ghcr.io/${{ github.repository }}
@@ -249,7 +249,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=raw,value=latest,enable={{is_default_branch}}
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      - uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
         with:
           context: .
           file: docker/Dockerfile

@@ -38,11 +38,11 @@ jobs:
   validate-config:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
-          node-version: "22.22.2"
+          node-version: "24.14.1"
 
       - name: Validate Renovate config
         run: |
@@ -54,9 +54,9 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: renovatebot/github-action@eb932558ad942cccfd8211cf535f17ff183a9f74 # v46.1.9
+      - uses: renovatebot/github-action@68a3ea99af6ad249940b5a9fdf44fc6d7f14378b # v46.1.6
         env:
           RENOVATE_REPOSITORIES: ${{ github.repository }}
           LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
