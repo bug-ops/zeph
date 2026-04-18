@@ -349,7 +349,7 @@ impl AppBuilder {
         }
 
         if self.config.memory.admission.enabled {
-            memory = memory.with_admission_control(self.build_admission_control(provider));
+            memory = memory.with_admission_control(self.build_admission_control());
         }
 
         if let Some(ep) = self.build_memory_embed_provider() {
@@ -423,34 +423,7 @@ pub fn spawn_embed_backfill(
 }
 
 impl AppBuilder {
-    fn build_admission_control(
-        &self,
-        fallback_provider: &AnyProvider,
-    ) -> zeph_memory::AdmissionControl {
-        let admission_provider = if self.config.memory.admission.admission_provider.is_empty() {
-            fallback_provider.clone()
-        } else {
-            match create_named_provider(
-                &self.config.memory.admission.admission_provider,
-                &self.config,
-            ) {
-                Ok(p) => {
-                    tracing::info!(
-                        provider = %self.config.memory.admission.admission_provider,
-                        "A-MAC admission provider configured"
-                    );
-                    p
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        provider = %self.config.memory.admission.admission_provider,
-                        error = %e,
-                        "A-MAC admission provider resolution failed — primary provider will be used"
-                    );
-                    fallback_provider.clone()
-                }
-            }
-        };
+    fn build_admission_control(&self) -> zeph_memory::AdmissionControl {
         let w = &self.config.memory.admission.weights;
         let weights = zeph_memory::AdmissionWeights {
             future_utility: w.future_utility,
@@ -464,8 +437,29 @@ impl AppBuilder {
             self.config.memory.admission.threshold,
             self.config.memory.admission.fast_path_margin,
             weights,
-        )
-        .with_provider(admission_provider);
+        );
+        if !self.config.memory.admission.admission_provider.is_empty() {
+            match create_named_provider(
+                &self.config.memory.admission.admission_provider,
+                &self.config,
+            ) {
+                Ok(p) => {
+                    tracing::info!(
+                        provider = %p.name(),
+                        "A-MAC admission provider configured"
+                    );
+                    control = control.with_provider(p);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %self.config.memory.admission.admission_provider,
+                        error = %e,
+                        "A-MAC admission provider resolution failed — embed provider will be used as fallback"
+                    );
+                    // intentionally no .with_provider() — evaluate() will use fallback embed provider
+                }
+            }
+        }
 
         if self.config.memory.admission.goal_conditioned_write {
             let goal_provider = if self

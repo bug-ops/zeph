@@ -599,3 +599,30 @@ async fn remember_with_parts_returns_some_when_admission_admits() {
         "remember_with_parts must return Some(id) when admitted"
     );
 }
+
+#[tokio::test]
+async fn admission_without_dedicated_provider_uses_embed_provider() {
+    // Regression test for #3158: AdmissionControl with no dedicated provider (provider = None)
+    // must succeed using the embed provider from SemanticMemory rather than panicking or
+    // falling back to the main 1536-dim provider.
+    let memory = test_semantic_memory(false)
+        .await
+        .with_admission_control(make_always_admit_admission());
+    // make_always_admit_admission() creates AdmissionControl::new(...) with NO .with_provider()
+    // call, which is exactly the unconfigured path fixed in src/bootstrap/mod.rs.
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let result = memory
+        .remember(
+            cid,
+            "user",
+            "content evaluated without dedicated admission provider",
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        result.is_some(),
+        "admission without dedicated provider must admit when threshold=0.0"
+    );
+}

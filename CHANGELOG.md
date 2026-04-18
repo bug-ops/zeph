@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **fix(memory): A-MAC admission control now correctly falls back to embed provider when
+  `admission_provider` is not configured** — `build_admission_control()` previously always
+  called `.with_provider(main_provider)` even when `admission_provider` was empty, causing
+  `evaluate()` to use the 1536-dim main provider and ignore the 768-dim embed provider
+  passed as `fallback_provider` from `recall.rs`. Now `.with_provider()` is only called
+  when `admission_provider` is explicitly set and resolves successfully; otherwise
+  `AdmissionControl.provider = None` and `evaluate()` correctly uses the embed provider.
+  Closes [#3158](https://github.com/bug-ops/zeph/issues/3158).
+
+- **test(memory): regression test for A-MAC admission without dedicated embed provider** —
+  `admission_without_dedicated_provider_uses_embed_provider` verifies that `remember()`
+  succeeds and admits a message when `AdmissionControl` has no dedicated provider set.
+  Closes [#3155](https://github.com/bug-ops/zeph/issues/3155).
+
 - **fix(core): run plugin filesystem I/O on a blocking thread** — `handle_plugins` now
   clones the required state fields (`managed_dir`, `mcp_allowed`) before the async block
   and executes the `PluginManager` call inside `tokio::task::spawn_blocking`. Previously
