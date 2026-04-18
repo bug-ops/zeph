@@ -356,11 +356,8 @@ fn duplicate_patterns_deduped() {
         ..default_config()
     };
     let executor = ShellExecutor::new(&config);
-    let count = executor
-        .blocked_commands
-        .iter()
-        .filter(|c| c.as_str() == "sudo")
-        .count();
+    let blocked = executor.policy_handle().snapshot_blocked();
+    let count = blocked.iter().filter(|c| c.as_str() == "sudo").count();
     assert_eq!(count, 1);
 }
 
@@ -435,11 +432,8 @@ fn mixed_case_user_patterns_deduped() {
         ..default_config()
     };
     let executor = ShellExecutor::new(&config);
-    let count = executor
-        .blocked_commands
-        .iter()
-        .filter(|c| c.as_str() == "sudo")
-        .count();
+    let blocked = executor.policy_handle().snapshot_blocked();
+    let count = blocked.iter().filter(|c| c.as_str() == "sudo").count();
     assert_eq!(count, 1);
 }
 
@@ -450,8 +444,9 @@ fn user_pattern_stored_lowercase() {
         ..default_config()
     };
     let executor = ShellExecutor::new(&config);
-    assert!(executor.blocked_commands.iter().any(|c| c == "mycustom"));
-    assert!(!executor.blocked_commands.iter().any(|c| c == "MyCustom"));
+    let blocked = executor.policy_handle().snapshot_blocked();
+    assert!(blocked.iter().any(|c| c == "mycustom"));
+    assert!(!blocked.iter().any(|c| c == "MyCustom"));
 }
 
 // --- allowed_commands tests ---
@@ -2447,4 +2442,89 @@ async fn shell_output_envelope_truncated_flag_set_when_filter_shortens_output() 
         val["truncated"].as_bool().unwrap_or(false),
         "truncated flag should be true when filter shortens output"
     );
+}
+
+// --- ShellPolicyHandle hot-reload tests ---
+
+#[test]
+fn policy_handle_rebuild_extends_blocklist() {
+    let cfg = default_config();
+    let executor = ShellExecutor::new(&cfg);
+    let handle = executor.policy_handle();
+
+    // "ping" is not in DEFAULT_BLOCKED or NETWORK_COMMANDS, so it starts unblocked.
+    assert!(executor.find_blocked_command("ping example.com").is_none());
+
+    let new_cfg = ShellConfig {
+        blocked_commands: vec!["ping".to_owned()],
+        ..default_config()
+    };
+    handle.rebuild(&new_cfg);
+
+    assert!(
+        executor.find_blocked_command("ping example.com").is_some(),
+        "ping must be blocked after rebuild"
+    );
+}
+
+#[test]
+fn policy_handle_rebuild_removes_command_from_blocklist() {
+    // Start with "ping" blocked via custom blocked_commands.
+    let cfg = ShellConfig {
+        blocked_commands: vec!["ping".to_owned()],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&cfg);
+    let handle = executor.policy_handle();
+
+    assert!(executor.find_blocked_command("ping example.com").is_some());
+
+    // Rebuild without "ping" in blocked_commands.
+    let new_cfg = default_config();
+    handle.rebuild(&new_cfg);
+
+    assert!(
+        executor.find_blocked_command("ping example.com").is_none(),
+        "ping must be unblocked after rebuild without it in blocked_commands"
+    );
+}
+
+#[test]
+fn snapshot_blocked_reflects_latest_rebuild() {
+    let cfg = ShellConfig {
+        blocked_commands: vec!["foo".to_owned()],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&cfg);
+    let handle = executor.policy_handle();
+
+    let snap_a = handle.snapshot_blocked();
+    assert!(snap_a.contains(&"foo".to_owned()));
+
+    let new_cfg = ShellConfig {
+        blocked_commands: vec!["bar".to_owned()],
+        ..default_config()
+    };
+    handle.rebuild(&new_cfg);
+
+    let snap_b = handle.snapshot_blocked();
+    assert!(
+        snap_b.contains(&"bar".to_owned()),
+        "snapshot must reflect rebuilt policy"
+    );
+    assert!(
+        !snap_b.contains(&"foo".to_owned()),
+        "old entry must not persist after rebuild"
+    );
+}
+
+#[test]
+fn find_blocked_command_returns_owned_string() {
+    let cfg = ShellConfig {
+        blocked_commands: vec!["mycmd".to_owned()],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&cfg);
+    let result: Option<String> = executor.find_blocked_command("mycmd arg");
+    assert_eq!(result, Some("mycmd".to_owned()));
 }

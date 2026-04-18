@@ -148,6 +148,19 @@ pub fn is_legacy_default_log_file(path: &str) -> bool {
     path == DEFAULT_LOG_FILE
 }
 
+/// Returns the platform-appropriate path for the plugin integrity registry.
+///
+/// The file is a sibling of `plugins/` inside the Zeph data root, not inside
+/// the plugins directory itself.
+///
+/// - Linux: `~/.local/share/zeph/.plugin-integrity.toml`
+/// - macOS: `~/Library/Application Support/Zeph/.plugin-integrity.toml`
+/// - Windows: `%LOCALAPPDATA%\Zeph\.plugin-integrity.toml`
+#[must_use]
+pub fn default_integrity_registry_path() -> PathBuf {
+    default_runtime_data_root().join(".plugin-integrity.toml")
+}
+
 pub(crate) fn default_true() -> bool {
     true
 }

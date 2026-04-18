@@ -416,8 +416,14 @@ pub(crate) enum SkillCommand {
 
 #[derive(Subcommand)]
 pub(crate) enum PluginCommand {
-    /// List installed plugins
-    List,
+    /// List installed plugins, optionally showing the active config overlay
+    List {
+        /// Show plugin overlay: which plugins contributed to the active config and which
+        /// were skipped (with reasons). Values shown against `Config::default()` — use
+        /// --config for live intersection.
+        #[arg(long)]
+        overlay: bool,
+    },
     /// Install a plugin from a local directory path
     Add {
         /// Local directory path to the plugin root (must contain plugin.toml)

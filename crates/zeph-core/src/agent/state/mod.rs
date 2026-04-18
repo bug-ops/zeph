@@ -357,6 +357,9 @@ pub(crate) struct LifecycleState {
     pub(crate) plugins_dir: PathBuf,
     /// Shell overlay snapshot baked in at startup. Used to detect divergence on hot-reload.
     pub(crate) startup_shell_overlay: ShellOverlaySnapshot,
+    /// Handle for live-rebuilding the `ShellExecutor`'s `blocked_commands` policy on hot-reload.
+    /// `None` when no `ShellExecutor` is in the executor chain (test harnesses, daemon-only modes).
+    pub(crate) shell_policy_handle: Option<zeph_tools::ShellPolicyHandle>,
     pub(crate) warmup_ready: Option<watch::Receiver<bool>>,
     pub(crate) update_notify_rx: Option<mpsc::Receiver<String>>,
     pub(crate) custom_task_rx: Option<mpsc::Receiver<String>>,
@@ -928,6 +931,7 @@ impl LifecycleState {
             config_reload_rx: None,
             plugins_dir: PathBuf::new(),
             startup_shell_overlay: ShellOverlaySnapshot::default(),
+            shell_policy_handle: None,
             warmup_ready: None,
             update_notify_rx: None,
             custom_task_rx: None,

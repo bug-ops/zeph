@@ -140,7 +140,7 @@ pub use search_code::{
 };
 pub use shell::{
     DEFAULT_BLOCKED_COMMANDS, SHELL_INTERPRETERS, ShellExecutor, ShellOutputEnvelope,
-    check_blocklist, effective_shell_command,
+    ShellPolicyHandle, check_blocklist, effective_shell_command,
 };
 pub use tool_filter::ToolFilter;
 pub use trust_gate::TrustGateExecutor;

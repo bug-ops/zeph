@@ -19,6 +19,7 @@
 //! - Skill name conflicts with managed, bundled, or other plugin skills are hard-errors at install.
 
 pub mod error;
+pub(crate) mod integrity;
 pub mod manager;
 pub mod manifest;
 pub mod overlay;

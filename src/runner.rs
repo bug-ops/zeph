@@ -1467,6 +1467,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(not(feature = "tui"))]
     let _tool_event_rx = tool_setup.tool_event_rx;
     let egress_rx = tool_setup.egress_rx;
+    let shell_policy_handle = tool_setup.shell_policy_handle;
     let _skill_watcher = watchers.skill_watcher;
     // Receivers arrive as InstrumentedReceiver<T> from build_watchers().
     // Agent builder expects mpsc::Receiver<T>, so unwrap the instrumented wrapper.
@@ -1594,6 +1595,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_shutdown(shutdown_rx.clone())
     .with_config_reload(config_path, config_reload_rx)
     .with_plugins_dir(crate::bootstrap::plugins_dir(), startup_shell_overlay)
+    .with_shell_policy_handle(shell_policy_handle)
     .with_logging_config(logging_config.clone())
     .with_autosave_config(
         config.memory.autosave_assistant,

@@ -386,6 +386,7 @@ pub(crate) async fn run_daemon(
     let mcp_shared_tools = std::sync::Arc::new(RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    let shell_policy_handle = shell_executor.policy_handle();
     let cwd_executor = zeph_tools::SetCwdExecutor;
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
@@ -492,6 +493,7 @@ pub(crate) async fn run_daemon(
             allowed.sort();
             zeph_core::ShellOverlaySnapshot { blocked, allowed }
         })
+        .with_shell_policy_handle(shell_policy_handle)
         .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
         .with_mcp_shared_tools(mcp_shared_tools)
         .with_hybrid_search(config.skills.hybrid_search)

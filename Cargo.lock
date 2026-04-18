@@ -10444,9 +10444,12 @@ dependencies = [
 name = "zeph-plugins"
 version = "0.19.1"
 dependencies = [
+ "anyhow",
  "dirs",
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -10562,6 +10565,7 @@ dependencies = [
 name = "zeph-tools"
 version = "0.19.1"
 dependencies = [
+ "arc-swap",
  "dirs",
  "glob",
  "globset",

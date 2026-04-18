@@ -20,6 +20,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Session switches are blocked while a `confirm_state` or `elicitation_state` modal is
   open to avoid deadlocking the agent's oneshot response channel.
 
+- **feat(plugins): ShellExecutor live-rebuild on hot-reload via ArcSwap (#3146)** — `blocked_commands`
+  policy is now rebuilt atomically in place when a plugin config overlay changes the blocklist, with
+  no agent restart required. A `ShellPolicyHandle` (backed by `arc_swap::ArcSwap<ShellPolicy>`)
+  is created at executor construction time and stored in `LifecycleState`. `reload_config` calls
+  `handle.rebuild(&config.tools.shell)` after overlay merge. `allowed_commands` changes cannot be
+  rebuilt live (feeds sandbox path intersection at construction time) and still emit a RESTART REQUIRED
+  warning. `arc-swap v1.9` added as a direct workspace dependency (was already compiled transitively).
+  `find_blocked_command` return type changed from `Option<&str>` to `Option<String>` (no caller
+  impact). Closes [#3146](https://github.com/bug-ops/zeph/issues/3146).
+
+- **feat(security): sha256 integrity check for .plugin.toml at load time (#3148)** — each
+  `plugin add` now records a sha256 hex digest of the installed `.plugin.toml` in
+  `<data_root>/.plugin-integrity.toml` (sibling of `plugins_dir`, not inside it). At overlay
+  load time, the digest is verified; a mismatch skips the plugin and records a reason in
+  `ResolvedOverlay::skipped_plugins` visible via `zeph plugin list --overlay`. Missing entries
+  (pre-feature installs or interrupted installs) are allowed with a `debug!` log and can be
+  re-protected with `plugin remove && plugin add`. Known limits: not cryptographically signed;
+  concurrent `plugin add` may race (last writer wins); listed in CHANGELOG `### Security`.
+  Closes [#3148](https://github.com/bug-ops/zeph/issues/3148).
+
+- **feat(plugins): surface skipped_plugins in `zeph plugin list --overlay`** — `zeph plugin
+  list --overlay` now prints the active plugin overlay: which plugins contributed
+  (`source_plugins`) and which were skipped with reasons (`skipped_plugins`), including
+  integrity-mismatch reasons from #3148. The same output is available via `/plugins overlay`
+  or `/plugins list --overlay` slash commands and via the TUI command palette entry "Plugin
+  overlay status". Values are resolved against `Config::default()` (not the live config) — a
+  note in the output clarifies this. Closes
+  [#3147](https://github.com/bug-ops/zeph/issues/3147).
+
 ### Breaking (pre-1.0)
 
 - `zeph-tui`: `App::render_cache`, `App::view_target`, and `App::transcript_cache`
@@ -105,6 +134,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Qdrant WARN rate-limiter.
   Closes [#3129](https://github.com/bug-ops/zeph/issues/3129).
 
+### Security
+
+- **sha256 integrity registry for plugin manifests (#3148)** — the integrity registry at
+  `<data_root>/.plugin-integrity.toml` defends against accidental corruption and naive in-tree
+  tampering (a skill's bash block editing its own `.plugin.toml` without knowing the sibling
+  data-root location). Known limits: not cryptographically signed (vault-signed digests are a
+  future P3); concurrent `plugin add` races are not locked (last writer wins — see module doc);
+  plugins installed before this release load without verification until reinstalled.
+
 ### Added
 
 - **feat(plugins): plugin config overlay merge** — `zeph-plugins` now exposes
@@ -119,12 +157,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   literals (M3). Symlinked plugin subdirectories are rejected (E8).
   `ResolvedOverlay` (returned from the helper and stored on `AppBuilder`) carries `source_plugins`,
   `skipped_plugins`, and all merged values for diagnostic surfacing.
-  **Hot-reload shell limitation**: `ShellExecutor` is built once at startup and is not rebuilt on
-  config reload. When a hot-reload would change `blocked_commands` or `allowed_commands`,
-  a `tracing::warn!` and a status-channel banner are emitted — "RESTART REQUIRED for full effect"
-  — so the user is never silently misled. `skills.disambiguation_threshold` applies live.
-  A follow-up P2 issue tracks live-rebuild of `ShellExecutor`. Closes
-  [#3128](https://github.com/bug-ops/zeph/issues/3128).
+  **Hot-reload shell behaviour** (updated by #3146): `blocked_commands` is now rebuilt live via
+  `ShellPolicyHandle::rebuild` — no restart required when a plugin overlay changes the blocklist.
+  `allowed_commands` changes still require a restart (feeds sandbox path intersection at construction
+  time); a `tracing::warn!` and a status-channel banner are emitted in that case so the user is
+  never silently misled. `skills.disambiguation_threshold` applies live.
+  Closes [#3128](https://github.com/bug-ops/zeph/issues/3128).
 
 - **feat(security): OS-level file permission hardening for sensitive files** — adds
   `zeph-common::fs_secure` module with `open_private_truncate`, `append_private`,

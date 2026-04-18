@@ -68,17 +68,37 @@ pub fn apply_plugin_config_overlays(
     config: &mut Config,
     plugins_dir: &Path,
 ) -> Result<ResolvedOverlay, PluginError> {
-    let resolved = resolve_overlays(plugins_dir)?;
+    let integrity_registry_path = crate::integrity::IntegrityRegistry::default_path();
+    let resolved = resolve_overlays(plugins_dir, &integrity_registry_path)?;
     apply_resolved(config, &resolved);
     Ok(resolved)
 }
 
-fn resolve_overlays(plugins_dir: &Path) -> Result<ResolvedOverlay, PluginError> {
+/// Like [`apply_plugin_config_overlays`] but with an explicit integrity registry path.
+///
+/// Used by tests to inject an isolated registry path and avoid touching the real data dir.
+#[cfg(test)]
+pub(crate) fn apply_plugin_config_overlays_with_registry(
+    config: &mut Config,
+    plugins_dir: &Path,
+    integrity_registry_path: &Path,
+) -> Result<ResolvedOverlay, PluginError> {
+    let resolved = resolve_overlays(plugins_dir, integrity_registry_path)?;
+    apply_resolved(config, &resolved);
+    Ok(resolved)
+}
+
+fn resolve_overlays(
+    plugins_dir: &Path,
+    integrity_registry_path: &Path,
+) -> Result<ResolvedOverlay, PluginError> {
     let mut out = ResolvedOverlay::default();
 
     if !plugins_dir.exists() {
         return Ok(out);
     }
+
+    let registry = crate::integrity::IntegrityRegistry::load(integrity_registry_path);
 
     // M1: sort entries deterministically so log ordering and `source_plugins` are
     // platform-independent (ext4 inode order, APFS insertion order, etc. vary).
@@ -98,6 +118,7 @@ fn resolve_overlays(plugins_dir: &Path) -> Result<ResolvedOverlay, PluginError> 
     for entry in entries {
         process_plugin_entry(
             &entry.path(),
+            &registry,
             &mut out,
             &mut blocked_set,
             &mut allowed_accum,
@@ -113,6 +134,7 @@ fn resolve_overlays(plugins_dir: &Path) -> Result<ResolvedOverlay, PluginError> 
 
 fn process_plugin_entry(
     path: &std::path::Path,
+    registry: &crate::integrity::IntegrityRegistry,
     out: &mut ResolvedOverlay,
     blocked_set: &mut BTreeSet<String>,
     allowed_accum: &mut Option<BTreeSet<String>>,
@@ -166,6 +188,27 @@ fn process_plugin_entry(
             }
         }
     };
+
+    // Integrity check: verify the manifest has not been modified since install.
+    let plugin_dir_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("?")
+        .to_owned();
+    match registry.verify(&plugin_dir_name, &manifest_path) {
+        Ok(crate::integrity::VerifyResult::Match | crate::integrity::VerifyResult::Missing) => {}
+        Ok(crate::integrity::VerifyResult::Mismatch { expected, actual }) => {
+            out.skipped_plugins.push(format!(
+                "{plugin_dir_name}: integrity mismatch (expected {expected}, got {actual})"
+            ));
+            return;
+        }
+        Err(e) => {
+            out.skipped_plugins
+                .push(format!("{plugin_dir_name}: integrity check failed: {e}"));
+            return;
+        }
+    }
 
     // Security: validate plugin name before using it in logs/data structures to prevent
     // log injection via a post-install-tampered manifest.
@@ -780,5 +823,92 @@ mod tests {
         assert!(cfg.tools.shell.blocked_commands.is_empty());
         // source_plugins must NOT contain the untrusted name.
         assert!(overlay.source_plugins.is_empty());
+    }
+
+    // H4 regression: a stray `.plugin-integrity.toml` inside plugins_dir must not be
+    // treated as a plugin directory.
+    #[test]
+    fn overlay_ignores_integrity_registry_file() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path();
+        // Place a stray registry file directly inside plugins_dir.
+        fs::write(plugins_dir.join(".plugin-integrity.toml"), b"").unwrap();
+        let mut cfg = base_config();
+        let overlay = apply_plugin_config_overlays(&mut cfg, plugins_dir).unwrap();
+        assert!(
+            overlay.source_plugins.is_empty(),
+            "registry file must not be treated as a plugin"
+        );
+        assert!(
+            overlay.skipped_plugins.is_empty(),
+            "no errors expected for a non-dir entry"
+        );
+    }
+
+    // Tampered manifest is skipped with "integrity mismatch" reason.
+    #[test]
+    fn tampered_manifest_skipped_with_integrity_reason() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path();
+        let registry_path = dir.path().join("registry.toml");
+
+        write_plugin_overlay(
+            plugins_dir,
+            "myplugin",
+            "[config.tools]\nblocked_commands = [\"curl\"]",
+        );
+        let toml_path = plugins_dir.join("myplugin").join(".plugin.toml");
+
+        // Record digest of original manifest.
+        let mut registry = crate::integrity::IntegrityRegistry::load(&registry_path);
+        registry.record("myplugin", &toml_path).unwrap();
+        registry.save(&registry_path).unwrap();
+
+        // Tamper the manifest.
+        fs::write(&toml_path, "[plugin]\nname = \"myplugin\"\nversion = \"0.1.0\"\n[config.tools]\nblocked_commands = [\"evil\"]").unwrap();
+
+        let mut cfg = base_config();
+        let overlay =
+            apply_plugin_config_overlays_with_registry(&mut cfg, plugins_dir, &registry_path)
+                .unwrap();
+
+        assert!(
+            cfg.tools.shell.blocked_commands.is_empty(),
+            "tampered plugin must not contribute"
+        );
+        let reason = overlay
+            .skipped_plugins
+            .iter()
+            .find(|s| s.contains("integrity mismatch"));
+        assert!(
+            reason.is_some(),
+            "expected integrity mismatch in skipped_plugins; got: {:?}",
+            overlay.skipped_plugins
+        );
+    }
+
+    // Plugin with no registry entry (pre-integrity install) loads without errors.
+    #[test]
+    fn missing_integrity_record_allowed() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path();
+        let registry_path = dir.path().join("registry.toml");
+
+        write_plugin_overlay(
+            plugins_dir,
+            "oldplugin",
+            "[config.tools]\nblocked_commands = [\"nc\"]",
+        );
+
+        let mut cfg = base_config();
+        let overlay =
+            apply_plugin_config_overlays_with_registry(&mut cfg, plugins_dir, &registry_path)
+                .unwrap();
+
+        assert!(
+            overlay.skipped_plugins.is_empty(),
+            "pre-integrity plugin must not be skipped"
+        );
+        assert!(cfg.tools.shell.blocked_commands.contains(&"nc".to_owned()));
     }
 }

@@ -106,6 +106,8 @@ pub enum TuiCommand {
     SessionSwitchNext,
     SessionSwitchPrev,
     SessionClose,
+    // Plugin overlay status (#3147)
+    PluginListOverlay,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -286,6 +288,13 @@ pub fn command_registry() -> &'static [CommandEntry] {
             category: "session",
             shortcut: None,
             command: TuiCommand::SessionClose,
+        },
+        CommandEntry {
+            id: "plugin:overlay",
+            label: "Plugin overlay status — source and skipped plugins (/plugins overlay)",
+            category: "plugin",
+            shortcut: None,
+            command: TuiCommand::PluginListOverlay,
         },
     ];
     COMMANDS
@@ -740,7 +749,7 @@ mod tests {
 
     #[test]
     fn registry_has_correct_count() {
-        assert_eq!(command_registry().len(), 19);
+        assert_eq!(command_registry().len(), 20);
     }
 
     #[test]

@@ -31,6 +31,7 @@ use serde::Deserialize;
 
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use parking_lot::RwLock;
 
 use zeph_common::ToolName;
@@ -120,6 +121,76 @@ pub fn effective_shell_command<'a>(binary: &str, args: &'a [String]) -> Option<&
 
 const NETWORK_COMMANDS: &[&str] = &["curl", "wget", "nc ", "ncat", "netcat"];
 
+/// Effective command-restriction policy held inside a `ShellExecutor`.
+///
+/// Swapped atomically on hot-reload via [`ShellPolicyHandle`].
+#[derive(Debug)]
+pub(crate) struct ShellPolicy {
+    pub(crate) blocked_commands: Vec<String>,
+}
+
+/// Clonable handle for live policy rebuilds on hot-reload.
+///
+/// Obtained from [`ShellExecutor::policy_handle`] at construction time and stored
+/// on the agent. Call [`ShellPolicyHandle::rebuild`] to atomically replace the
+/// effective `blocked_commands` list without recreating the executor. Reads on
+/// the dispatch path are lock-free via `ArcSwap::load_full`.
+#[derive(Clone, Debug)]
+pub struct ShellPolicyHandle {
+    inner: Arc<ArcSwap<ShellPolicy>>,
+}
+
+impl ShellPolicyHandle {
+    /// Atomically install a new effective blocklist derived from `config`.
+    ///
+    /// # Rebuild contract
+    ///
+    /// `config` must be the **already-overlay-merged** `ShellConfig` (i.e. the
+    /// value produced by `load_config_with_overlay`). Plugin contributions are
+    /// already present in `config.blocked_commands` at this point; this method
+    /// does NOT re-apply overlays.
+    pub fn rebuild(&self, config: &crate::config::ShellConfig) {
+        let policy = Arc::new(ShellPolicy {
+            blocked_commands: compute_blocked_commands(config),
+        });
+        self.inner.store(policy);
+    }
+
+    /// Snapshot of the current effective blocklist.
+    #[must_use]
+    pub fn snapshot_blocked(&self) -> Vec<String> {
+        self.inner.load().blocked_commands.clone()
+    }
+}
+
+/// Compute the effective blocklist from an already-overlay-merged `ShellConfig`.
+///
+/// Invariant: identical to the logic in `ShellExecutor::new`.
+pub(crate) fn compute_blocked_commands(config: &crate::config::ShellConfig) -> Vec<String> {
+    let allowed: Vec<String> = config
+        .allowed_commands
+        .iter()
+        .map(|s| s.to_lowercase())
+        .collect();
+    let mut blocked: Vec<String> = DEFAULT_BLOCKED
+        .iter()
+        .filter(|s| !allowed.contains(&s.to_lowercase()))
+        .map(|s| (*s).to_owned())
+        .collect();
+    blocked.extend(config.blocked_commands.iter().map(|s| s.to_lowercase()));
+    if !config.allow_network {
+        for cmd in NETWORK_COMMANDS {
+            let lower = cmd.to_lowercase();
+            if !blocked.contains(&lower) {
+                blocked.push(lower);
+            }
+        }
+    }
+    blocked.sort();
+    blocked.dedup();
+    blocked
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct BashParams {
     /// The bash command to execute
@@ -151,7 +222,7 @@ pub(crate) struct BashParams {
 #[derive(Debug)]
 pub struct ShellExecutor {
     timeout: Duration,
-    blocked_commands: Vec<String>,
+    policy: Arc<ArcSwap<ShellPolicy>>,
     allowed_paths: Vec<PathBuf>,
     confirm_patterns: Vec<String>,
     env_blocklist: Vec<String>,
@@ -179,30 +250,9 @@ impl ShellExecutor {
     /// No subprocess is spawned at construction time.
     #[must_use]
     pub fn new(config: &ShellConfig) -> Self {
-        let allowed: Vec<String> = config
-            .allowed_commands
-            .iter()
-            .map(|s| s.to_lowercase())
-            .collect();
-
-        let mut blocked: Vec<String> = DEFAULT_BLOCKED
-            .iter()
-            .filter(|s| !allowed.contains(&s.to_lowercase()))
-            .map(|s| (*s).to_owned())
-            .collect();
-        blocked.extend(config.blocked_commands.iter().map(|s| s.to_lowercase()));
-
-        if !config.allow_network {
-            for cmd in NETWORK_COMMANDS {
-                let lower = cmd.to_lowercase();
-                if !blocked.contains(&lower) {
-                    blocked.push(lower);
-                }
-            }
-        }
-
-        blocked.sort();
-        blocked.dedup();
+        let policy = Arc::new(ArcSwap::from_pointee(ShellPolicy {
+            blocked_commands: compute_blocked_commands(config),
+        }));
 
         let allowed_paths = if config.allowed_paths.is_empty() {
             vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]
@@ -212,7 +262,7 @@ impl ShellExecutor {
 
         Self {
             timeout: Duration::from_secs(config.timeout),
-            blocked_commands: blocked,
+            policy,
             allowed_paths,
             confirm_patterns: config.confirm_patterns.clone(),
             env_blocklist: config.env_blocklist.clone(),
@@ -290,6 +340,18 @@ impl ShellExecutor {
     pub fn with_output_filters(mut self, registry: OutputFilterRegistry) -> Self {
         self.output_filter_registry = Some(registry);
         self
+    }
+
+    /// Return a clonable handle for live policy rebuilds on hot-reload.
+    ///
+    /// Clone the handle out at construction time and store it on the agent.
+    /// Calling [`ShellPolicyHandle::rebuild`] atomically swaps the effective
+    /// `blocked_commands` without recreating the executor.
+    #[must_use]
+    pub fn policy_handle(&self) -> ShellPolicyHandle {
+        ShellPolicyHandle {
+            inner: Arc::clone(&self.policy),
+        }
     }
 
     /// Execute a bash block bypassing the confirmation check (called after user confirms).
@@ -611,7 +673,7 @@ impl ShellExecutor {
         // that must not be bypassed by the PermissionPolicy layer.
         if let Some(blocked) = self.find_blocked_command(block) {
             let err = ToolError::Blocked {
-                command: blocked.to_owned(),
+                command: blocked.clone(),
             };
             self.log_audit(
                 block,
@@ -726,23 +788,29 @@ impl ShellExecutor {
     ///
     /// For high-security deployments, complement this filter with OS-level sandboxing
     /// (Linux namespaces, seccomp, or similar) to enforce hard execution boundaries.
-    fn find_blocked_command(&self, code: &str) -> Option<&str> {
+    /// Scan `code` for commands that match the configured blocklist.
+    ///
+    /// Returns an owned `String` because the backing `Vec<String>` lives inside an
+    /// `ArcSwap` that may be replaced between calls — borrowing from the snapshot
+    /// guard would be unsound after the guard drops.
+    fn find_blocked_command(&self, code: &str) -> Option<String> {
+        let snapshot = self.policy.load_full();
         let cleaned = strip_shell_escapes(&code.to_lowercase());
         let commands = tokenize_commands(&cleaned);
-        for blocked in &self.blocked_commands {
+        for blocked in &snapshot.blocked_commands {
             for cmd_tokens in &commands {
                 if tokens_match_pattern(cmd_tokens, blocked) {
-                    return Some(blocked.as_str());
+                    return Some(blocked.clone());
                 }
             }
         }
         // Also check commands embedded inside subshell constructs.
         for inner in extract_subshell_contents(&cleaned) {
             let inner_commands = tokenize_commands(&inner);
-            for blocked in &self.blocked_commands {
+            for blocked in &snapshot.blocked_commands {
                 for cmd_tokens in &inner_commands {
                     if tokens_match_pattern(cmd_tokens, blocked) {
-                        return Some(blocked.as_str());
+                        return Some(blocked.clone());
                     }
                 }
             }

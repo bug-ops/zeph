@@ -84,6 +84,8 @@ pub struct PluginManager {
     /// plugin overlay will be silently dropped because the base is empty
     /// (see issue #3149).
     base_allowed_commands: Vec<String>,
+    /// Path to the integrity registry file. Injected so tests can use isolated paths.
+    integrity_registry_path: PathBuf,
 }
 
 impl PluginManager {
@@ -115,12 +117,22 @@ impl PluginManager {
         mcp_allowed_commands: Vec<String>,
         base_allowed_commands: Vec<String>,
     ) -> Self {
+        let integrity_registry_path = crate::integrity::IntegrityRegistry::default_path();
         Self {
             plugins_dir,
             managed_skills_dir,
             mcp_allowed_commands,
             base_allowed_commands,
+            integrity_registry_path,
         }
+    }
+
+    /// Override the integrity registry path. Intended for tests only.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_integrity_registry_path(mut self, path: PathBuf) -> Self {
+        self.integrity_registry_path = path;
+        self
     }
 
     /// Install a plugin from a local directory path.
@@ -144,7 +156,10 @@ impl PluginManager {
             path: manifest_path.clone(),
             source: e,
         })?;
-        let manifest: PluginManifest = toml::from_str(&String::from_utf8_lossy(&manifest_bytes))
+        let manifest_str = String::from_utf8(manifest_bytes).map_err(|_| {
+            PluginError::InvalidManifest("plugin.toml is not valid UTF-8".to_owned())
+        })?;
+        let manifest: PluginManifest = toml::from_str(&manifest_str)
             .map_err(|e| PluginError::InvalidManifest(format!("{e}")))?;
 
         // Validate plugin name.
@@ -206,10 +221,20 @@ impl PluginManager {
         // Write manifest copy at plugin root for future reference.
         let installed_manifest_path = dest.join(".plugin.toml");
         let manifest_str = toml::to_string(&manifest)?;
-        std::fs::write(&installed_manifest_path, manifest_str).map_err(|e| PluginError::Io {
-            path: installed_manifest_path,
+        std::fs::write(&installed_manifest_path, &manifest_str).map_err(|e| PluginError::Io {
+            path: installed_manifest_path.clone(),
             source: e,
         })?;
+
+        // Record integrity digest. Crash between the write above and the save here leaves the
+        // plugin with no registry entry — it will load unverified until reinstalled (M4).
+        let mut registry = crate::integrity::IntegrityRegistry::load(&self.integrity_registry_path);
+        if let Err(e) = registry
+            .record(&manifest.plugin.name, &installed_manifest_path)
+            .and_then(|()| registry.save(&self.integrity_registry_path))
+        {
+            tracing::warn!(plugin = %manifest.plugin.name, error = %e, "failed to update integrity registry after install");
+        }
 
         let mcp_server_ids: Vec<String> =
             manifest.mcp.servers.iter().map(|s| s.id.clone()).collect();
@@ -250,8 +275,11 @@ impl PluginManager {
                 path: manifest_path,
                 source: e,
             })?;
-            let manifest: PluginManifest = toml::from_str(&String::from_utf8_lossy(&bytes))
-                .map_err(|e| PluginError::InvalidManifest(format!("{e}")))?;
+            let text = String::from_utf8(bytes).map_err(|_| {
+                PluginError::InvalidManifest(".plugin.toml is not valid UTF-8".to_owned())
+            })?;
+            let manifest: PluginManifest =
+                toml::from_str(&text).map_err(|e| PluginError::InvalidManifest(format!("{e}")))?;
             let skills = collect_skill_names(&plugin_dir, &manifest);
             let mcp = manifest.mcp.servers.iter().map(|s| s.id.clone()).collect();
             (skills, mcp)
@@ -263,6 +291,13 @@ impl PluginManager {
             path: plugin_dir,
             source: e,
         })?;
+
+        // Remove integrity entry; non-fatal if registry cannot be updated.
+        let mut registry = crate::integrity::IntegrityRegistry::load(&self.integrity_registry_path);
+        registry.remove(name);
+        if let Err(e) = registry.save(&self.integrity_registry_path) {
+            tracing::warn!(plugin = %name, error = %e, "failed to update integrity registry after remove");
+        }
 
         tracing::info!(plugin = %name, "plugin removed");
 
@@ -300,9 +335,10 @@ impl PluginManager {
             let Ok(bytes) = std::fs::read(&manifest_path) else {
                 continue;
             };
-            let Ok(manifest): Result<PluginManifest, _> =
-                toml::from_str(&String::from_utf8_lossy(&bytes))
-            else {
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let Ok(manifest): Result<PluginManifest, _> = toml::from_str(&text) else {
                 continue;
             };
             plugins.push(InstalledPlugin {
@@ -332,8 +368,8 @@ impl PluginManager {
         for plugin in &plugins {
             let manifest_path = plugin.path.join(".plugin.toml");
             if let Ok(bytes) = std::fs::read(&manifest_path)
-                && let Ok(manifest) =
-                    toml::from_str::<PluginManifest>(&String::from_utf8_lossy(&bytes))
+                && let Ok(text) = String::from_utf8(bytes)
+                && let Ok(manifest) = toml::from_str::<PluginManifest>(&text)
             {
                 for entry in &manifest.skills {
                     let skill_dir = plugin.path.join(&entry.path);
@@ -388,8 +424,8 @@ impl PluginManager {
             }
             let manifest_path = plugin.path.join(".plugin.toml");
             if let Ok(bytes) = std::fs::read(&manifest_path)
-                && let Ok(manifest) =
-                    toml::from_str::<PluginManifest>(&String::from_utf8_lossy(&bytes))
+                && let Ok(text) = String::from_utf8(bytes)
+                && let Ok(manifest) = toml::from_str::<PluginManifest>(&text)
             {
                 let names = collect_skill_names(&plugin.path, &manifest);
                 for name in names {
@@ -1074,5 +1110,22 @@ allowed_commands = []
 
         let result = mgr.add(source.to_str().unwrap()).unwrap();
         assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn list_installed_ignores_non_directory_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().to_path_buf();
+
+        // Stray files that must not be treated as installed plugins.
+        std::fs::write(plugins_dir.join(".plugin-integrity.toml"), b"plugins = {}").unwrap();
+        std::fs::write(plugins_dir.join("README.txt"), b"docs").unwrap();
+
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+        assert!(
+            mgr.list_installed().unwrap().is_empty(),
+            "non-directory entries inside plugins_dir must not be surfaced as installed plugins"
+        );
     }
 }

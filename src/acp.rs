@@ -178,6 +178,8 @@ struct SharedAgentDeps {
 
     /// Shell overlay snapshot captured at startup for hot-reload divergence detection.
     startup_shell_overlay: zeph_core::ShellOverlaySnapshot,
+    /// Live-rebuild handle for the `ShellExecutor`'s `blocked_commands` policy.
+    shell_policy_handle: zeph_tools::ShellPolicyHandle,
 
     // Scheduler runtime objects (broadcast senders; not config-derived values)
     /// Scheduler executor shared across sessions. Initialized once at startup.
@@ -341,6 +343,7 @@ async fn build_acp_deps(
     let mcp_shared_tools = std::sync::Arc::new(RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    let shell_policy_handle = shell_executor.policy_handle();
     let cwd_executor = zeph_tools::SetCwdExecutor;
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
@@ -547,6 +550,7 @@ async fn build_acp_deps(
             allowed.sort();
             zeph_core::ShellOverlaySnapshot { blocked, allowed }
         },
+        shell_policy_handle,
     };
 
     let keepalive: Box<dyn std::any::Any> = Box::new((skill_watcher, config_watcher));
@@ -738,6 +742,7 @@ async fn spawn_acp_agent(
             crate::bootstrap::plugins_dir(),
             d.startup_shell_overlay.clone(),
         )
+        .with_shell_policy_handle(d.shell_policy_handle.clone())
         .with_mcp(
             mcp_tools,
             mcp_registry,

@@ -90,9 +90,9 @@ pub use channels::{
 };
 pub use defaults::{
     DEFAULT_DEBUG_DIR, DEFAULT_LOG_FILE, DEFAULT_SKILLS_DIR, DEFAULT_SQLITE_PATH,
-    default_debug_dir, default_log_file_path, default_skills_dir, default_sqlite_path,
-    is_legacy_default_debug_dir, is_legacy_default_log_file, is_legacy_default_skills_path,
-    is_legacy_default_sqlite_path,
+    default_debug_dir, default_integrity_registry_path, default_log_file_path, default_skills_dir,
+    default_sqlite_path, is_legacy_default_debug_dir, is_legacy_default_log_file,
+    is_legacy_default_skills_path, is_legacy_default_sqlite_path,
 };
 pub use dump_format::DumpFormat;
 pub use experiment::{

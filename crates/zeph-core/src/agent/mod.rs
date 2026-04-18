@@ -2345,12 +2345,11 @@ impl<C: Channel> Agent<C> {
         Some(config)
     }
 
-    /// Warn when the shell-level overlay produced by a hot-reload differs from the one
-    /// baked into the live `ShellExecutor` at startup.
+    /// React to shell policy divergence detected on hot-reload.
     ///
-    /// `ShellExecutor` is built once and not rebuilt on reload. Until that is fixed
-    /// (tracked as a P2 follow-up), this method emits a `tracing::warn!` and a
-    /// status-channel banner so the user knows to restart.
+    /// `blocked_commands` is rebuilt live via [`ShellPolicyHandle::rebuild`] — no restart needed.
+    /// `allowed_commands` cannot be rebuilt (feeds sandbox path intersection at construction time)
+    /// — emit a warn + status banner when it changes.
     fn warn_on_shell_overlay_divergence(
         &self,
         new_overlay: &zeph_plugins::ResolvedOverlay,
@@ -2368,26 +2367,33 @@ impl<C: Channel> Agent<C> {
         };
 
         let startup = &self.lifecycle.startup_shell_overlay;
-        let startup_blocked = &startup.blocked;
-        let startup_allowed = &startup.allowed;
+        let blocked_changed = new_blocked != startup.blocked;
+        let allowed_changed = new_allowed != startup.allowed;
 
-        let blocked_changed = new_blocked != *startup_blocked;
-        let allowed_changed = new_allowed != *startup_allowed;
-
-        if blocked_changed || allowed_changed {
-            let msg = format!(
-                "plugin config overlay changed shell blocked/allowed set; RESTART REQUIRED \
-                 for full effect. blocked_changed={blocked_changed} \
-                 allowed_changed={allowed_changed} \
-                 (skills.disambiguation_threshold is applied live)"
+        // blocked_commands IS rebuilt live — emit info-level confirmation only.
+        if blocked_changed && let Some(ref h) = self.lifecycle.shell_policy_handle {
+            h.rebuild(&config.tools.shell);
+            tracing::info!(
+                blocked_count = h.snapshot_blocked().len(),
+                "shell blocked_commands rebuilt from hot-reload"
             );
+        }
+
+        // allowed_commands cannot be rebuilt — sandbox path intersection is computed at
+        // executor construction time. Warn loudly so the user restarts.
+        //
+        // Note: when base `allowed_commands` is empty (the default), the overlay's
+        // intersection semantics keep it empty, so this branch is silently unreachable
+        // for users who do not set a non-empty base list.
+        if allowed_changed {
+            let msg = "plugin config overlay changed shell allowed_commands; RESTART REQUIRED \
+                 for sandbox path recomputation (blocked_commands was rebuilt live)";
             tracing::warn!("{msg}");
             if let Some(ref tx) = self.session.status_tx {
-                let _ = tx.send(msg);
+                let _ = tx.send(msg.to_owned());
             }
         }
 
-        // Suppress unused-variable warning when no overlay was sourced.
         let _ = new_overlay;
     }
 

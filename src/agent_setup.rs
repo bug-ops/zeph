@@ -43,6 +43,8 @@ pub(crate) struct ToolSetup {
     pub(crate) audit_logger: Option<Arc<zeph_tools::AuditLogger>>,
     /// Egress event receiver. `None` when egress logging is disabled.
     pub(crate) egress_rx: Option<tokio::sync::mpsc::Receiver<zeph_tools::EgressEvent>>,
+    /// Live-rebuild handle for the `ShellExecutor`'s `blocked_commands` policy.
+    pub(crate) shell_policy_handle: zeph_tools::ShellPolicyHandle,
 }
 
 #[derive(Clone)]
@@ -497,6 +499,7 @@ pub(crate) async fn build_tool_setup(
     let mcp_shared_tools = Arc::new(RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    let shell_policy_handle = shell_executor.policy_handle();
     let cwd_executor = zeph_tools::SetCwdExecutor;
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
@@ -518,6 +521,7 @@ pub(crate) async fn build_tool_setup(
         mcp_elicitation_rx,
         audit_logger,
         egress_rx,
+        shell_policy_handle,
     }
 }
 

@@ -2857,6 +2857,54 @@ pub mod agent_tests {
             "terminal save must persist Completed status"
         );
     }
+
+    // --- ShellExecutor hot-reload integration test (S1) ---
+
+    /// Verify that `warn_on_shell_overlay_divergence` rebuilds the live `ShellExecutor`
+    /// policy via `shell_policy_handle` when `blocked_commands` changes on hot-reload.
+    ///
+    /// Exercises the code path at `agent/mod.rs`: `blocked_changed &&
+    /// shell_policy_handle.is_some() → h.rebuild(config)`.
+    #[test]
+    fn hot_reload_rebuilds_shell_blocklist() {
+        use crate::config::Config;
+        use zeph_tools::config::ShellConfig;
+
+        // ShellExecutor with network allowed (no NETWORK_COMMANDS auto-added to blocklist).
+        let base_cfg = ShellConfig {
+            allow_network: true,
+            blocked_commands: Vec::new(),
+            ..ShellConfig::default()
+        };
+        let executor = zeph_tools::ShellExecutor::new(&base_cfg);
+        let handle = executor.policy_handle();
+
+        // "ping" must not appear in the initial blocklist.
+        assert!(!handle.snapshot_blocked().contains(&"ping".to_owned()));
+
+        // Wire the handle into a minimal agent's lifecycle.
+        let harness = QuickTestAgent::minimal("ok");
+        let mut agent = harness.agent;
+        agent.lifecycle.shell_policy_handle = Some(handle.clone());
+        agent.lifecycle.startup_shell_overlay = crate::ShellOverlaySnapshot {
+            blocked: Vec::new(),
+            allowed: Vec::new(),
+        };
+
+        // Simulate a hot-reload config that adds "ping" to blocked_commands.
+        let mut new_config = Config::load(std::path::Path::new("/nonexistent")).unwrap();
+        new_config.tools.shell.blocked_commands = vec!["ping".to_owned()];
+        new_config.tools.shell.allow_network = true;
+
+        let empty_overlay = zeph_plugins::ResolvedOverlay::default();
+        agent.warn_on_shell_overlay_divergence(&empty_overlay, &new_config);
+
+        // The handle (shared with the executor) must now contain "ping".
+        assert!(
+            handle.snapshot_blocked().contains(&"ping".to_owned()),
+            "blocked_commands must be rebuilt live via shell_policy_handle"
+        );
+    }
 }
 
 /// End-to-end tests for M30 resilient compaction: error detection → compact → retry → success.

@@ -1794,6 +1794,9 @@ impl App {
             TuiCommand::SessionSwitchNext
             | TuiCommand::SessionSwitchPrev
             | TuiCommand::SessionClose => self.try_switch(cmd),
+            TuiCommand::PluginListOverlay => {
+                let _ = self.user_input_tx.try_send("/plugins overlay".to_owned());
+            }
             _ => {}
         }
     }
