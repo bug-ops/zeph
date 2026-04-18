@@ -39,6 +39,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[session.recap] on_resume = true` (default). Operates on in-session state — distinct from the
   persistent semantic memory recall shown at startup.
 
+- **feat(quality): MARCH self-check pipeline** (`self-check` feature, #2352) — post-response
+  factual consistency layer. A two-stage Proposer → Checker LLM pipeline extracts assertions
+  from the assistant response and verifies each against retrieved memory evidence. Contradicted
+  or unsupported assertions trigger a configurable flag marker appended to the response. The
+  Checker never sees the original response text (asymmetry invariant enforced at the type level).
+  Enable via `[quality] self_check = true` in `config.toml`. Configurable: `trigger`
+  (`has_retrieval` | `always` | `manual`), `latency_budget_ms`, `per_call_timeout_ms`,
+  `max_assertions`, `min_evidence`, `flag_marker`, and `cache_disabled_for_checker`.
+
 - **feat(cli): `--bare` mode for scripted/CI usage** (#2790) — new flag strips the agent to
   essentials: skips memory init, scheduler startup, skill loading, and watcher registration.
   Suitable for piping and automation where full subsystem overhead is unnecessary.

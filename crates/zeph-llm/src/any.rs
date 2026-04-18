@@ -229,6 +229,28 @@ impl AnyProvider {
         }
     }
 
+    /// Return a clone of this provider with prompt-cache emission suppressed.
+    ///
+    /// For Claude, this disables explicit `cache_control` emission in outgoing requests —
+    /// the Checker's requests will not carry cache-control markers, preventing cache sharing
+    /// with the Solver's requests (MARCH asymmetry invariant).
+    ///
+    /// For `OpenAI`: uses automatic server-side prompt caching triggered by request shape;
+    /// there is no `cache_control` field to suppress in the request body. This method is a
+    /// documented no-op clone for `OpenAI` — cache separation relies on the distinct
+    /// system prompts used by Proposer and Checker, which produce different cache keys.
+    ///
+    /// For Ollama, Candle, Gemini, and all other providers: no-op clone.
+    #[must_use]
+    pub fn with_prompt_cache_disabled(&self) -> Self {
+        match self {
+            Self::Claude(p) => Self::Claude(p.clone().with_cache_user_messages(false)),
+            // OpenAI: no request-body opt-out for server-side automatic caching; no-op clone.
+            // Cache separation is achieved via distinct system prompts (Proposer ≠ Checker).
+            other => other.clone(),
+        }
+    }
+
     /// Propagate a status sender to the inner provider (where supported).
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         match self {

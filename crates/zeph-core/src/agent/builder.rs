@@ -1728,6 +1728,34 @@ impl<C: Channel> Agent<C> {
         self.session.status_tx = Some(tx);
         self
     }
+
+    /// Attach a pre-built [`SelfCheckPipeline`] to enable per-turn factual self-check.
+    ///
+    /// When set, the agent runs the MARCH Proposer → Checker pipeline after every assistant
+    /// response and appends a flag marker to the channel output if assertions are contradicted
+    /// or unsupported by retrieved evidence.
+    ///
+    /// Calling this method without the `self-check` feature compiled in is a no-op.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use zeph_core::quality::{QualityConfig, SelfCheckPipeline};
+    /// # use zeph_llm::any::AnyProvider;
+    /// # let provider: AnyProvider = unimplemented!();
+    /// let cfg = QualityConfig::default();
+    /// let pipeline = SelfCheckPipeline::build(&cfg, &provider).unwrap();
+    /// // agent_builder.with_quality_pipeline(Some(pipeline));
+    /// ```
+    #[must_use]
+    #[cfg(feature = "self-check")]
+    pub fn with_quality_pipeline(
+        mut self,
+        pipeline: Option<std::sync::Arc<crate::quality::SelfCheckPipeline>>,
+    ) -> Self {
+        self.quality = pipeline;
+        self
+    }
 }
 
 #[cfg(test)]

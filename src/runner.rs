@@ -2267,8 +2267,24 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     };
 
     // Wire supervisor config so concurrency limits and turn-boundary abort are applied (#2883).
+    let agent = agent.with_supervisor_config(&config.agent.supervisor);
+
+    #[cfg(feature = "self-check")]
+    let agent = {
+        let pipeline = if config.quality.self_check {
+            zeph_core::quality::SelfCheckPipeline::build(
+                &zeph_core::quality::QualityConfig::from(&config.quality),
+                &provider,
+            )
+            .map_err(|e| anyhow::anyhow!("self-check pipeline init failed: {e}"))
+            .ok()
+        } else {
+            None
+        };
+        agent.with_quality_pipeline(pipeline)
+    };
+
     let agent = agent
-        .with_supervisor_config(&config.agent.supervisor)
         .build()
         .map_err(|e| anyhow::anyhow!("agent construction failed: {e}"))?;
 

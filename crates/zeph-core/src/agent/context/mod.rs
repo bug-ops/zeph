@@ -3,6 +3,8 @@
 
 pub(super) mod assembler;
 mod assembly;
+#[cfg(feature = "self-check")]
+pub(crate) mod retrieved;
 mod summarization;
 
 #[cfg(test)]

@@ -190,9 +190,10 @@ ide     = ["acp", "acp-http"]
 server  = ["gateway", "a2a", "otel", "prometheus"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "task-metrics", "sandbox"]
-sandbox = ["zeph-tools/sandbox"]
-bench   = ["dep:zeph-bench"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "task-metrics", "sandbox", "self-check"]
+sandbox    = ["zeph-tools/sandbox"]
+self-check = ["zeph-core/self-check"]
+bench      = ["dep:zeph-bench"]
 
 # === Individual feature flags ===
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server", "zeph-a2a?/ibct"]

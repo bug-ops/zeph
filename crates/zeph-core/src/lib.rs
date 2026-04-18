@@ -82,6 +82,8 @@ pub mod metrics_bridge;
 pub mod pipeline;
 pub mod project;
 pub mod provider_factory;
+#[cfg(feature = "self-check")]
+pub mod quality;
 pub mod redact;
 #[cfg(feature = "sysinfo")]
 pub mod system_metrics;

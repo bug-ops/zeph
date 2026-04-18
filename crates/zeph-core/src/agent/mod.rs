@@ -32,6 +32,8 @@ mod persistence;
 mod plan;
 mod policy_commands;
 mod provider_cmd;
+#[cfg(feature = "self-check")]
+mod quality_hook;
 pub(crate) mod rate_limiter;
 #[cfg(feature = "scheduler")]
 mod scheduler_commands;
@@ -181,6 +183,9 @@ pub struct Agent<C: Channel> {
     pub(super) sidequest: sidequest::SidequestState,
     /// Tool filtering, dependency tracking, and iteration bookkeeping.
     pub(super) tool_state: ToolState,
+    /// MARCH self-check pipeline, built at startup and rebuilt on provider swap.
+    #[cfg(feature = "self-check")]
+    pub(super) quality: Option<std::sync::Arc<crate::quality::SelfCheckPipeline>>,
 }
 
 impl<C: Channel> Agent<C> {
@@ -303,6 +308,8 @@ impl<C: Channel> Agent<C> {
             focus: focus::FocusState::default(),
             sidequest: sidequest::SidequestState::default(),
             tool_state: ToolState::default(),
+            #[cfg(feature = "self-check")]
+            quality: None,
         }
     }
 
@@ -1394,6 +1401,12 @@ impl<C: Channel> Agent<C> {
             self.maybe_update_magic_docs();
         }
         tracing::debug!("turn timing: process_response done");
+
+        // MARCH self-check hook: runs after every successful response, including cache-hit path.
+        #[cfg(feature = "self-check")]
+        if let Some(pipeline) = self.quality.clone() {
+            self.run_self_check_for_turn(pipeline, turn.id().0).await;
+        }
 
         // Collect llm_chat_ms and tool_exec_ms from MetricsState.pending_timings (accumulated
         // by the tool execution chain) into turn.metrics so end_turn can flush them.

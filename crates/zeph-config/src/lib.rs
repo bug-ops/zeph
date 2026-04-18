@@ -69,6 +69,7 @@ pub mod memory;
 pub mod metrics;
 pub mod migrate;
 pub mod providers;
+pub mod quality;
 pub mod rate_limit;
 pub mod root;
 pub mod sanitizer;
@@ -124,6 +125,7 @@ pub use providers::{
     SttConfig, TierMapping, validate_pool,
 };
 pub use providers::{default_stt_language, default_stt_provider};
+pub use quality::{QualityConfig, TriggerPolicy};
 pub use rate_limit::RateLimitConfig;
 pub use sanitizer::{
     CausalIpiConfig, ContentIsolationConfig, CustomPiiPattern, EmbeddingGuardConfig,

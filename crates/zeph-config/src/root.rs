@@ -109,6 +109,9 @@ pub struct Config {
     /// Session-scoped CLI overrides (bare mode, JSON output, auto-approve).
     #[serde(default)]
     pub cli: CliConfig,
+    /// MARCH self-check quality pipeline configuration.
+    #[serde(default)]
+    pub quality: crate::quality::QualityConfig,
     /// Resolved secrets from vault. Never serialized — populated at runtime.
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
@@ -273,6 +276,7 @@ impl Default for Config {
             metrics: MetricsConfig::default(),
             session: crate::session::SessionConfig::default(),
             cli: CliConfig::default(),
+            quality: crate::quality::QualityConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

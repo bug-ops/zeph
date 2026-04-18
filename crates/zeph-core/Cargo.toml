@@ -23,7 +23,8 @@ classifiers = ["zeph-llm/classifiers", "zeph-sanitizer/classifiers"]
 cuda = ["zeph-llm/cuda"]
 metal = ["zeph-llm/metal"]
 mock = ["zeph-vault/mock"]
-scheduler = []
+scheduler  = []
+self-check = []
 
 [dependencies]
 base64.workspace = true
