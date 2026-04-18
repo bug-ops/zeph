@@ -79,7 +79,10 @@ impl<C: Channel> Agent<C> {
                 budget_ms = cfg.latency_budget_ms,
                 "self-check timed out at outer budget"
             );
-            let _ = self.channel.send(" [self-check: skipped (timeout)]").await;
+            let _ = self
+                .channel
+                .send_chunk(" [self-check: skipped (timeout)]")
+                .await;
             return;
         };
 
@@ -95,7 +98,7 @@ impl<C: Channel> Agent<C> {
 
         if flagged > 0 {
             let marker = format!(" {}", cfg.flag_marker);
-            let _ = self.channel.send(&marker).await;
+            let _ = self.channel.send_chunk(&marker).await;
         }
     }
 }

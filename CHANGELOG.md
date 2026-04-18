@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   key collisions. Keys now use the raw `field.name` as specified by the MCP schema; sanitization
   is retained only for Telegram display labels. Parity restored with the CLI channel.
 
+- **fix(quality): MARCH `flag_marker` no longer emits extra `response_chunk`/`response_end` after `response_end` in `--json` mode** (#3231) — `quality_hook.rs` now calls `channel.send_chunk()` instead of `channel.send()` at the flag-marker injection sites, and `agent/mod.rs` calls `flush_chunks()` after `run_self_check_for_turn()` returns. This ensures the `[verify]` marker is emitted as part of the primary response stream with a single `response_end`.
+
 - **fix(commands): `/plugins` slash command now routed through `CommandRegistry`** (#3215) — added
   `PluginsCommand` handler in `zeph-commands` that delegates to `Agent::handle_plugins` via
   `AgentAccess`. `/plugins overlay|list|add|remove` are now dispatched correctly instead of falling

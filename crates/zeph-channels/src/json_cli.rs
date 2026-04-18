@@ -400,6 +400,21 @@ mod tests {
         assert!(ch.supports_exit());
     }
 
+    #[tokio::test]
+    async fn flag_marker_appended_via_send_chunk_has_single_end() {
+        // Simulates: streaming response + self-check appends flag marker, then single flush.
+        let (sink, read) = make_test_sink();
+        let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
+        ch.send_chunk("The answer is 42.").await.unwrap();
+        ch.send_chunk(" [verify]").await.unwrap();
+        ch.flush_chunks().await.unwrap();
+        let lines = read();
+        assert_eq!(lines.len(), 3, "expected 2 chunks + 1 end; got: {lines:?}");
+        assert_eq!(event_field(&lines[0], "event"), "response_chunk");
+        assert_eq!(event_field(&lines[1], "event"), "response_chunk");
+        assert_eq!(event_field(&lines[2], "event"), "response_end");
+    }
+
     #[test]
     fn try_recv_returns_none_when_no_input() {
         let (sink, _) = make_test_sink();

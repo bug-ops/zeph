@@ -1425,6 +1425,9 @@ impl<C: Channel> Agent<C> {
         #[cfg(feature = "self-check")]
         if let Some(pipeline) = self.quality.clone() {
             self.run_self_check_for_turn(pipeline, turn.id().0).await;
+            // Flush any chunk appended by the self-check hook (e.g. flag_marker).
+            // No-op when the hook did not append anything (pending_chunks = false).
+            let _ = self.channel.flush_chunks().await;
         }
 
         // Collect llm_chat_ms and tool_exec_ms from MetricsState.pending_timings (accumulated
