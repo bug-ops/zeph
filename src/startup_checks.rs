@@ -78,14 +78,16 @@ mod tests {
 
     #[test]
     fn json_with_telegram_token_is_rejected() {
-        use zeph_config::TelegramConfig;
+        use zeph_config::{ChannelSkillsConfig, TelegramConfig};
         let cli = cli_json();
-        let mut cfg = Config::default();
-        cfg.telegram = Some(TelegramConfig {
-            token: Some("tok".into()),
-            allowed_users: vec![],
-            skills: Default::default(),
-        });
+        let cfg = Config {
+            telegram: Some(TelegramConfig {
+                token: Some("tok".into()),
+                allowed_users: vec![],
+                skills: ChannelSkillsConfig::default(),
+            }),
+            ..Default::default()
+        };
         assert!(validate_mode_compatibility(&cli, &cfg).is_err());
     }
 
@@ -111,35 +113,39 @@ mod tests {
     #[test]
     #[cfg(feature = "discord")]
     fn json_with_discord_token_is_rejected() {
-        use zeph_config::DiscordConfig;
+        use zeph_config::{ChannelSkillsConfig, DiscordConfig};
         let cli = cli_json();
-        let mut cfg = Config::default();
-        cfg.discord = Some(DiscordConfig {
-            token: Some("discord-tok".into()),
-            application_id: None,
-            allowed_user_ids: vec![],
-            allowed_role_ids: vec![],
-            allowed_channel_ids: vec![],
-            skills: Default::default(),
-        });
+        let cfg = Config {
+            discord: Some(DiscordConfig {
+                token: Some("discord-tok".into()),
+                application_id: None,
+                allowed_user_ids: vec![],
+                allowed_role_ids: vec![],
+                allowed_channel_ids: vec![],
+                skills: ChannelSkillsConfig::default(),
+            }),
+            ..Default::default()
+        };
         assert!(validate_mode_compatibility(&cli, &cfg).is_err());
     }
 
     #[test]
     #[cfg(feature = "slack")]
     fn json_with_slack_token_is_rejected() {
-        use zeph_config::SlackConfig;
+        use zeph_config::{ChannelSkillsConfig, SlackConfig};
         let cli = cli_json();
-        let mut cfg = Config::default();
-        cfg.slack = Some(SlackConfig {
-            bot_token: Some("xoxb-slack".into()),
-            signing_secret: None,
-            webhook_host: "0.0.0.0".into(),
-            port: 3000,
-            allowed_user_ids: vec![],
-            allowed_channel_ids: vec![],
-            skills: Default::default(),
-        });
+        let cfg = Config {
+            slack: Some(SlackConfig {
+                bot_token: Some("xoxb-slack".into()),
+                signing_secret: None,
+                webhook_host: "0.0.0.0".into(),
+                port: 3000,
+                allowed_user_ids: vec![],
+                allowed_channel_ids: vec![],
+                skills: ChannelSkillsConfig::default(),
+            }),
+            ..Default::default()
+        };
         assert!(validate_mode_compatibility(&cli, &cfg).is_err());
     }
 }
