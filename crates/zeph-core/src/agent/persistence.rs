@@ -256,7 +256,10 @@ fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
                 .iter()
                 .any(|p| matches!(p, MessagePart::ToolUse { .. }))
         {
-            let orphaned_ids = orphaned_tool_use_ids(&messages[i], messages.get(i + 1));
+            let next_non_system = (i + 1..messages.len())
+                .find(|&j| messages[j].role != Role::System)
+                .and_then(|j| messages.get(j));
+            let orphaned_ids = orphaned_tool_use_ids(&messages[i], next_non_system);
             if !orphaned_ids.is_empty() {
                 tracing::warn!(
                     tool_ids = ?orphaned_ids,
@@ -286,10 +289,11 @@ fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
                 .iter()
                 .any(|p| matches!(p, MessagePart::ToolResult { .. }))
         {
-            let orphaned_ids = orphaned_tool_result_ids(
-                &messages[i],
-                if i > 0 { messages.get(i - 1) } else { None },
-            );
+            let prev_non_system = (0..i)
+                .rev()
+                .find(|&j| messages[j].role != Role::System)
+                .and_then(|j| messages.get(j));
+            let orphaned_ids = orphaned_tool_result_ids(&messages[i], prev_non_system);
             if !orphaned_ids.is_empty() {
                 tracing::warn!(
                     tool_use_ids = ?orphaned_ids,
@@ -454,10 +458,18 @@ impl<C: Channel> Agent<C> {
         let parts_json = if parts.is_empty() {
             "[]".to_string()
         } else {
-            serde_json::to_string(parts).unwrap_or_else(|e| {
-                tracing::warn!("failed to serialize message parts, storing empty: {e}");
-                "[]".to_string()
-            })
+            match serde_json::to_string(parts) {
+                Ok(json) => json,
+                Err(e) => {
+                    tracing::error!(
+                        role = ?role,
+                        parts_count = parts.len(),
+                        error = %e,
+                        "failed to serialize message parts — skipping persist to avoid orphaned tool pair"
+                    );
+                    return;
+                }
+            }
         };
 
         // M2: injection flag is passed explicitly to avoid stale mutable-bool state on Agent.
@@ -3756,5 +3768,214 @@ mod tests {
 
         assert_eq!(window, 5, "should return all messages when fewer than max");
         assert_eq!(tail_start, 0, "slice should start from the beginning");
+    }
+
+    // --- #3168 regression tests ---
+
+    /// Round-trip: persist Assistant[tool_use] + User[tool_result], then load_history.
+    /// After sanitize_tool_pairs the pair must be intact — no WARN, both messages present
+    /// with non-empty parts.
+    #[tokio::test]
+    async fn regression_3168_complete_tool_pair_survives_round_trip() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
+            id: "r3168_call".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": "echo hi"}),
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(
+                cid,
+                "assistant",
+                "[tool_use: shell(r3168_call)]",
+                &use_parts,
+            )
+            .await
+            .unwrap();
+
+        let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
+            tool_use_id: "r3168_call".to_string(),
+            content: "[skipped]".to_string(),
+            is_error: false,
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(cid, "user", "[tool_result: r3168_call]", &result_parts)
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let base = agent.msg.messages.len();
+        agent.load_history().await.unwrap();
+
+        assert_eq!(
+            agent.msg.messages.len(),
+            base + 2,
+            "both messages of the complete pair must survive load_history"
+        );
+
+        let assistant_msg = agent
+            .msg
+            .messages
+            .iter()
+            .find(|m| m.role == Role::Assistant)
+            .expect("assistant message missing after load_history");
+        assert!(
+            assistant_msg
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { id, .. } if id == "r3168_call")),
+            "ToolUse part must be preserved in assistant message"
+        );
+
+        let user_msg = agent
+            .msg
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User)
+            .expect("user message missing after load_history");
+        assert!(
+            user_msg.parts.iter().any(|p| matches!(p, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == "r3168_call")),
+            "ToolResult part must be preserved in user message"
+        );
+    }
+
+    /// A System message between an Assistant[tool_use] and the matching User[tool_result]
+    /// must not cause the tool_use to be treated as an orphan.
+    #[test]
+    fn regression_3168_system_between_tool_pair_not_stripped() {
+        use zeph_llm::provider::{MessageMetadata, MessagePart};
+
+        let tool_id = "call_sys_between".to_string();
+
+        let mut messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: "[tool_use: shell(call_sys_between)]".to_string(),
+                parts: vec![MessagePart::ToolUse {
+                    id: tool_id.clone(),
+                    name: "shell".to_string(),
+                    input: serde_json::json!({"command": "ls"}),
+                }],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::System,
+                content: "system hint injected between tool calls".to_string(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::User,
+                content: "[tool_result: call_sys_between]".to_string(),
+                parts: vec![MessagePart::ToolResult {
+                    tool_use_id: tool_id.clone(),
+                    content: "output".to_string(),
+                    is_error: false,
+                }],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+
+        let (removed, _db_ids) = strip_mid_history_orphans(&mut messages);
+
+        assert_eq!(
+            removed, 0,
+            "no messages should be removed when System sits between a matched tool_use/tool_result pair"
+        );
+        assert_eq!(messages.len(), 3, "all three messages must remain");
+        assert!(
+            messages[0]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { id, .. } if id == &tool_id)),
+            "ToolUse part must not be stripped from assistant message"
+        );
+    }
+
+    /// If parts serialization fails, persist_message must return early and not store
+    /// a row with empty parts that would create an orphaned tool_use on next session load.
+    /// We verify this by writing a row with invalid parts_json directly and confirming
+    /// load_history skips it (empty parts row is not injected into the agent).
+    #[tokio::test]
+    async fn regression_3168_corrupt_parts_row_skipped_on_load() {
+        use zeph_llm::provider::MessagePart;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let sqlite = memory.sqlite();
+
+        // Simulate the pre-fix bug: assistant message stored with empty parts_json "[]"
+        // even though it should have had a ToolUse part. This is what persist_message used
+        // to do before the early-return fix.
+        sqlite
+            .save_message_with_parts(cid, "assistant", "[tool_use: shell(corrupt)]", "[]")
+            .await
+            .unwrap();
+
+        // User message with the matching tool_result stored correctly.
+        let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
+            tool_use_id: "corrupt".to_string(),
+            content: "result".to_string(),
+            is_error: false,
+        }])
+        .unwrap();
+        sqlite
+            .save_message_with_parts(cid, "user", "[tool_result: corrupt]", &result_parts)
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let base = agent.msg.messages.len();
+        agent.load_history().await.unwrap();
+
+        // The user ToolResult has no matching ToolUse in the assistant message (parts="[]"),
+        // so sanitize_tool_pairs must strip the orphaned ToolResult.
+        // Net result: only the content-only assistant message survives; user msg is removed
+        // because after stripping its only part it becomes empty.
+        let loaded = agent.msg.messages.len() - base;
+        // No message injected with orphaned ToolResult parts — either stripped entirely or
+        // the ToolResult part removed. Verify no user message with ToolResult remains.
+        let orphan_present = agent.msg.messages.iter().any(|m| {
+            m.role == Role::User
+                && m.parts.iter().any(|p| {
+                    matches!(p, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == "corrupt")
+                })
+        });
+        assert!(
+            !orphan_present,
+            "orphaned ToolResult must not survive load_history; loaded={loaded}"
+        );
     }
 }
