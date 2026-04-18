@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **feat(cli): `--bare` mode for scripted/CI usage** (#2790) — new flag strips the agent to
+  essentials: skips memory init, scheduler startup, skill loading, and watcher registration.
+  Suitable for piping and automation where full subsystem overhead is unnecessary.
+
+- **feat(cli): `--json` structured output** (#2790) — JSONL event stream to stdout (boot, chunk,
+  response_end, tool_call, tool_result, cost, error). Tool output is redacted via `scrub_content`
+  before emission. Tracing is redirected to stderr when `--json` is active. Mutually exclusive with
+  `--tui`, `--acp`, and messaging-channel integrations (Telegram, Discord, Slack).
+
+- **feat(cli): `-y`/`--auto` flag** (#2790) — sets `AutonomyLevel::Full` to bypass tool
+  confirmation prompts. Shell blocklist and adversarial policy remain enforced.
+
+- **feat(cli): `/loop` slash command** (#3083) — in-session repeating prompt execution:
+  `/loop <prompt> every <N> <unit>` repeats at fixed intervals (minimum 5 s, units: s/m/h);
+  `/loop stop` cancels; `/loop status` shows current state. Uses `tokio::time::interval_at`
+  to avoid an immediate first tick. Prompts beginning with `/` are rejected to prevent
+  slash-command injection.
+
+- **feat(config): `[cli]` TOML section** (#2790, #3083) — `bare`, `json`, `auto` booleans and
+  `[cli.loop]` subsection (`min_interval_secs`, `max_iterations`).
+
 ## [0.19.2] - 2026-04-18
 
 ### Added
