@@ -52,7 +52,7 @@ services:
       start_period: 20s
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
       timeout: 5s
-    image: grafana/grafana:11.6.0@sha256:62d2b9d20a19714ebfe48d1bb405086081bc602aa053e28cf6d73c7537640dfb
+    image: grafana/grafana:12.4.2@sha256:83749231c3835e390a3144e5e940203e42b9589761f20ef3169c716e734ad505
     ports:
       - "3000:3000"
     restart: unless-stopped
