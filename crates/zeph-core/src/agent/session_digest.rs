@@ -183,6 +183,18 @@ pub(super) async fn generate_and_store_digest(
     }
 }
 
+/// Pure predicate for the `/recap` deduplication check (#3144).
+///
+/// Extracted from `Agent::recap_is_duplicate` so it can be unit-tested without a full `Agent`.
+fn recap_is_duplicate_impl(
+    auto_recap_shown: bool,
+    msg_count_at_resume: usize,
+    current_non_system: usize,
+    has_cached_digest: bool,
+) -> bool {
+    auto_recap_shown && current_non_system == msg_count_at_resume && has_cached_digest
+}
+
 impl<C: Channel> Agent<C> {
     /// Generate and persist a session digest at shutdown when digest is enabled.
     ///
@@ -338,6 +350,17 @@ impl<C: Channel> Agent<C> {
             && self.memory_state.compaction.cached_session_digest.is_some()
     }
 
+    /// Return `true` when `/recap` should skip LLM inference because auto-recap was already
+    /// shown and no new messages have been added since the session was resumed (#3144).
+    pub(super) fn recap_is_duplicate(&self, current_non_system: usize) -> bool {
+        recap_is_duplicate_impl(
+            self.runtime.auto_recap_shown,
+            self.runtime.msg_count_at_resume,
+            current_non_system,
+            self.memory_state.compaction.cached_session_digest.is_some(),
+        )
+    }
+
     /// Generate a recap text for the current session.
     ///
     /// Fast path: returns the cached digest verbatim when available.
@@ -352,6 +375,22 @@ impl<C: Channel> Agent<C> {
     pub(super) async fn build_recap(&mut self) -> Result<String, zeph_commands::CommandError> {
         let max_input = self.runtime.recap_config.max_input_messages.max(1);
         let max_tokens = self.runtime.recap_config.max_tokens.max(10);
+
+        // Fast path: auto-recap was already shown and no new messages since then (#3144).
+        // Return the cached digest without a new LLM call and without saving to DB.
+        let current_non_system = self
+            .msg
+            .messages
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .count();
+        if self.recap_is_duplicate(current_non_system)
+            && let Some((digest, _)) = self.memory_state.compaction.cached_session_digest.clone()
+        {
+            let tc = &self.metrics.token_counter;
+            let text = truncate_digest(&digest, max_tokens, tc);
+            return Ok(format!("(shown at session start)\n{text}"));
+        }
 
         // Fast path: use already-loaded digest, truncated to the recap token budget.
         if let Some((digest, _)) = &self.memory_state.compaction.cached_session_digest {
@@ -440,8 +479,21 @@ impl<C: Channel> Agent<C> {
         match self.build_recap().await {
             Ok(text) if !text.is_empty() => {
                 let recap_msg = format!("── Welcome back ──\n{text}\n──────────────────");
-                if let Err(e) = self.channel.send(&recap_msg).await {
-                    tracing::warn!("session recap: channel send failed: {e:#}");
+                match self.channel.send(&recap_msg).await {
+                    Ok(()) => {
+                        // Mark auto-recap as shown only when the user actually received it (#3144).
+                        let non_system_count = self
+                            .msg
+                            .messages
+                            .iter()
+                            .filter(|m| m.role != Role::System)
+                            .count();
+                        self.runtime.auto_recap_shown = true;
+                        self.runtime.msg_count_at_resume = non_system_count;
+                    }
+                    Err(e) => {
+                        tracing::warn!("session recap: channel send failed: {e:#}");
+                    }
                 }
             }
             Ok(_) => {}
@@ -614,28 +666,28 @@ mod tests {
         );
     }
 
-    // ----- T4: should_auto_recap gate conditions -----
+    // ----- T4: recap_is_duplicate_impl gate conditions -----
+
+    use super::recap_is_duplicate_impl;
 
     #[test]
-    fn should_auto_recap_logic_all_conditions() {
-        // T4: verify the three conditions that gate auto-recap.
-        // We test the boolean logic directly since should_auto_recap reads two fields.
-        // Condition: conversation_id.is_some() && cached_session_digest.is_some()
-        // (on_resume is checked by the caller in maybe_send_resume_recap).
+    fn recap_duplicate_returns_true_when_no_new_messages() {
+        assert!(recap_is_duplicate_impl(true, 2, 2, true));
+    }
 
-        let has_conv = true;
-        let has_digest = true;
+    #[test]
+    fn recap_duplicate_returns_false_when_new_messages_exist() {
+        // one new message added since resume
+        assert!(!recap_is_duplicate_impl(true, 2, 3, true));
+    }
 
-        // All pass.
-        assert!(has_conv && has_digest);
+    #[test]
+    fn recap_duplicate_returns_false_when_flag_not_set() {
+        assert!(!recap_is_duplicate_impl(false, 0, 0, true));
+    }
 
-        // Missing conversation_id.
-        assert!(!(false && has_digest));
-
-        // Missing digest.
-        assert!(!(has_conv && false));
-
-        // Both missing.
-        assert!(!(false && false));
+    #[test]
+    fn recap_duplicate_returns_false_when_no_cached_digest() {
+        assert!(!recap_is_duplicate_impl(true, 0, 0, false));
     }
 }

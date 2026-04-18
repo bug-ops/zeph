@@ -200,6 +200,7 @@ pub struct AdversarialPolicyInfo {
     pub fail_open: bool,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct RuntimeConfig {
     pub(crate) security: SecurityConfig,
     pub(crate) timeouts: TimeoutConfig,
@@ -233,6 +234,16 @@ pub(crate) struct RuntimeConfig {
     pub(crate) supervisor_config: crate::config::TaskSupervisorConfig,
     /// Session recap config (#3064).
     pub(crate) recap_config: zeph_config::RecapConfig,
+    /// Set to `true` after the auto-recap is emitted at session resume (#3144).
+    ///
+    /// Used by `/recap` to skip a redundant LLM call when no new messages have
+    /// been added since the auto-recap was shown.
+    pub(crate) auto_recap_shown: bool,
+    /// Number of non-system messages present when the session was resumed (#3144).
+    ///
+    /// Combined with `auto_recap_shown` to detect whether the user has added new
+    /// messages after the auto-recap was shown.
+    pub(crate) msg_count_at_resume: usize,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.
@@ -844,6 +855,8 @@ impl Default for RuntimeConfig {
             layers: Vec::new(),
             supervisor_config: crate::config::TaskSupervisorConfig::default(),
             recap_config: zeph_config::RecapConfig::default(),
+            auto_recap_shown: false,
+            msg_count_at_resume: 0,
         }
     }
 }
