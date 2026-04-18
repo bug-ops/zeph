@@ -18,6 +18,7 @@ use zeph_core::channel::{
 use crate::cli::CliChannel;
 #[cfg(feature = "discord")]
 use crate::discord::DiscordChannel;
+use crate::json_cli::JsonCliChannel;
 #[cfg(feature = "slack")]
 use crate::slack::SlackChannel;
 use crate::telegram::TelegramChannel;
@@ -32,6 +33,7 @@ use crate::telegram::TelegramChannel;
 /// # Variants
 ///
 /// * `Cli` — reads from stdin and writes to stdout via [`CliChannel`].
+/// * `JsonCli` — reads from stdin and emits JSONL events to stdout via [`JsonCliChannel`].
 /// * `Telegram` — Telegram Bot API adapter via [`crate::telegram::TelegramChannel`].
 /// * `Discord` *(feature `discord`)* — Discord gateway adapter.
 /// * `Slack` *(feature `slack`)* — Slack Events API adapter.
@@ -51,6 +53,7 @@ use crate::telegram::TelegramChannel;
 #[derive(Debug)]
 pub enum AnyChannel {
     Cli(CliChannel),
+    JsonCli(JsonCliChannel),
     Telegram(TelegramChannel),
     #[cfg(feature = "discord")]
     Discord(DiscordChannel),
@@ -62,6 +65,7 @@ macro_rules! dispatch_channel {
     ($self:expr, $method:ident $(, $arg:expr)*) => {
         match $self {
             AnyChannel::Cli(c) => c.$method($($arg),*).await,
+            AnyChannel::JsonCli(c) => c.$method($($arg),*).await,
             AnyChannel::Telegram(c) => c.$method($($arg),*).await,
             #[cfg(feature = "discord")]
             AnyChannel::Discord(c) => c.$method($($arg),*).await,
@@ -106,6 +110,7 @@ impl Channel for AnyChannel {
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         match self {
             Self::Cli(c) => c.try_recv(),
+            Self::JsonCli(c) => c.try_recv(),
             Self::Telegram(c) => c.try_recv(),
             #[cfg(feature = "discord")]
             Self::Discord(c) => c.try_recv(),
@@ -117,6 +122,7 @@ impl Channel for AnyChannel {
     fn supports_exit(&self) -> bool {
         match self {
             Self::Cli(c) => c.supports_exit(),
+            Self::JsonCli(c) => c.supports_exit(),
             Self::Telegram(c) => c.supports_exit(),
             #[cfg(feature = "discord")]
             Self::Discord(c) => c.supports_exit(),

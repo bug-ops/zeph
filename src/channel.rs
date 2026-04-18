@@ -1,18 +1,24 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::sync::Arc;
+
 use zeph_channels::AnyChannel;
 use zeph_channels::CliChannel;
+use zeph_channels::JsonCliChannel;
 #[cfg(feature = "discord")]
 use zeph_channels::discord::DiscordChannel;
 #[cfg(feature = "slack")]
 use zeph_channels::slack::SlackChannel;
 use zeph_channels::telegram::TelegramChannel;
+
+use crate::execution_mode::ExecutionMode;
 #[cfg(feature = "tui")]
 use zeph_core::channel::{
     Channel, ChannelError, ChannelMessage, StopHint, ToolOutputEvent, ToolStartEvent,
 };
 use zeph_core::config::Config;
+use zeph_core::json_event_sink::JsonEventSink;
 #[cfg(feature = "tui")]
 use zeph_tui::TuiChannel;
 
@@ -119,11 +125,19 @@ pub(crate) struct TuiHandle {
     pub(crate) command_rx: tokio::sync::mpsc::Receiver<zeph_tui::TuiCommand>,
 }
 
+/// Create a channel and, in JSON mode, return the shared sink so callers can
+/// also install a [`zeph_core::json_event_layer::JsonEventLayer`] on the agent.
 #[allow(clippy::unused_async)]
 pub(crate) async fn create_channel_inner(
     config: &Config,
     history: Option<CliHistory>,
-) -> anyhow::Result<AnyChannel> {
+    exec_mode: ExecutionMode,
+) -> anyhow::Result<(AnyChannel, Option<Arc<JsonEventSink>>)> {
+    if exec_mode.json {
+        let sink = Arc::new(JsonEventSink::new());
+        let channel = AnyChannel::JsonCli(JsonCliChannel::new(Arc::clone(&sink), exec_mode.auto));
+        return Ok((channel, Some(sink)));
+    }
     #[cfg(feature = "discord")]
     if let Some(dc) = &config.discord
         && let Some(token) = &dc.token
@@ -135,7 +149,7 @@ pub(crate) async fn create_channel_inner(
             dc.allowed_channel_ids.clone(),
         );
         tracing::info!("running in Discord mode");
-        return Ok(AnyChannel::Discord(channel));
+        return Ok((AnyChannel::Discord(channel), None));
     }
 
     #[cfg(feature = "slack")]
@@ -158,7 +172,7 @@ pub(crate) async fn create_channel_inner(
             sl.webhook_host,
             sl.port
         );
-        return Ok(AnyChannel::Slack(channel));
+        return Ok((AnyChannel::Slack(channel), None));
     }
 
     if let Some(token) = config.telegram.as_ref().and_then(|t| t.token.clone()) {
@@ -168,15 +182,15 @@ pub(crate) async fn create_channel_inner(
             .map_or_else(Vec::new, |t| t.allowed_users.clone());
         let tg = TelegramChannel::new(token, allowed).start()?;
         tracing::info!("running in Telegram mode");
-        return Ok(AnyChannel::Telegram(tg));
+        return Ok((AnyChannel::Telegram(tg), None));
     }
 
     if let Some((entries, persist_fn)) = history {
         let cli = CliChannel::with_history(entries, persist_fn);
-        return Ok(AnyChannel::Cli(cli));
+        return Ok((AnyChannel::Cli(cli), None));
     }
 
-    Ok(AnyChannel::Cli(CliChannel::new()))
+    Ok((AnyChannel::Cli(CliChannel::new()), None))
 }
 
 #[cfg(feature = "tui")]
@@ -184,7 +198,8 @@ pub(crate) async fn create_channel_with_tui(
     config: &Config,
     tui_active: bool,
     history: Option<CliHistory>,
-) -> anyhow::Result<(AppChannel, Option<TuiHandle>)> {
+    exec_mode: ExecutionMode,
+) -> anyhow::Result<(AppChannel, Option<TuiHandle>, Option<Arc<JsonEventSink>>)> {
     if tui_active {
         let (user_tx, user_rx) = tokio::sync::mpsc::channel(32);
         let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(256);
@@ -199,15 +214,16 @@ pub(crate) async fn create_channel_with_tui(
             command_tx,
             command_rx,
         };
-        return Ok((AppChannel::Tui(channel), Some(handle)));
+        return Ok((AppChannel::Tui(channel), Some(handle), None));
     }
-    let channel = create_channel_inner(config, history).await?;
-    Ok((AppChannel::Standard(channel), None))
+    let (channel, sink) = create_channel_inner(config, history, exec_mode).await?;
+    Ok((AppChannel::Standard(channel), None, sink))
 }
 
 #[cfg(test)]
 pub(crate) async fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
-    create_channel_inner(config, None).await
+    let (ch, _sink) = create_channel_inner(config, None, ExecutionMode::default()).await?;
+    Ok(ch)
 }
 
 #[cfg(all(test, feature = "tui"))]

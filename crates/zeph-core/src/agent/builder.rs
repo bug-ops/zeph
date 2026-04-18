@@ -772,6 +772,32 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Register a [`RuntimeLayer`] that intercepts LLM calls and tool dispatch.
+    ///
+    /// Layers are called in registration order. This method may be called multiple
+    /// times to stack layers.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// use zeph_core::Agent;
+    /// use zeph_core::json_event_sink::JsonEventSink;
+    /// use zeph_core::json_event_layer::JsonEventLayer;
+    ///
+    /// let sink = Arc::new(JsonEventSink::new());
+    /// let layer = JsonEventLayer::new(Arc::clone(&sink));
+    /// // agent.with_runtime_layer(Arc::new(layer));
+    /// ```
+    #[must_use]
+    pub fn with_runtime_layer(
+        mut self,
+        layer: std::sync::Arc<dyn crate::runtime_layer::RuntimeLayer>,
+    ) -> Self {
+        self.runtime.layers.push(layer);
+        self
+    }
+
     // ---- Context & Compression ----
 
     /// Configure the context token budget and compaction thresholds.
@@ -1585,6 +1611,7 @@ impl<C: Channel> Agent<C> {
             budget_hint_enabled,
             secrets,
             recap,
+            loop_min_interval_secs,
         } = cfg;
 
         self.tool_orchestrator.apply_config(
@@ -1636,6 +1663,7 @@ impl<C: Channel> Agent<C> {
         self.wire_graph_persistence();
         self.runtime.budget_hint_enabled = budget_hint_enabled;
         self.runtime.recap_config = recap;
+        self.runtime.loop_min_interval_secs = loop_min_interval_secs;
 
         self.debug_state.reasoning_model_warning = anomaly_config.reasoning_model_warning;
         if anomaly_config.enabled {

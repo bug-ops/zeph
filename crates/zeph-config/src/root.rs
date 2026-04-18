@@ -10,6 +10,7 @@ use zeph_tools::ToolsConfig;
 use crate::agent::{AgentConfig, FocusConfig, SubAgentConfig};
 use crate::channels::{A2aServerConfig, DiscordConfig, McpConfig, SlackConfig, TelegramConfig};
 use crate::classifiers::ClassifiersConfig;
+use crate::cli::CliConfig;
 use crate::defaults::{default_skill_paths, default_sqlite_path_field};
 use crate::experiment::{ExperimentConfig, OrchestrationConfig};
 use crate::features::{
@@ -105,6 +106,9 @@ pub struct Config {
     /// Session UX settings (recap-on-resume, etc.).
     #[serde(default)]
     pub session: crate::session::SessionConfig,
+    /// Session-scoped CLI overrides (bare mode, JSON output, auto-approve).
+    #[serde(default)]
+    pub cli: CliConfig,
     /// Resolved secrets from vault. Never serialized — populated at runtime.
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
@@ -268,6 +272,7 @@ impl Default for Config {
             telemetry: TelemetryConfig::default(),
             metrics: MetricsConfig::default(),
             session: crate::session::SessionConfig::default(),
+            cli: CliConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

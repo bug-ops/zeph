@@ -44,6 +44,7 @@ mod skill_management;
 pub mod slash_commands;
 pub mod speculative;
 pub(crate) mod state;
+pub(crate) mod task_injection;
 pub(crate) mod tool_execution;
 pub(crate) mod tool_orchestrator;
 mod trust_commands;
@@ -803,6 +804,18 @@ impl<C: Channel> Agent<C> {
                         self.drain_channel();
                         self.resolve_message(msg).await
                     }
+                    Some(LoopEvent::TaskInjected(injection)) => {
+                        if let Some(ref mut ls) = self.lifecycle.user_loop {
+                            ls.iteration += 1;
+                            tracing::info!(iteration = ls.iteration, "loop: tick");
+                        }
+                        let msg = crate::channel::ChannelMessage {
+                            text: injection.prompt,
+                            attachments: Vec::new(),
+                        };
+                        self.drain_channel();
+                        self.resolve_message(msg).await
+                    }
                     Some(LoopEvent::FileChanged(event)) => {
                         self.handle_file_changed(event).await;
                         continue;
@@ -913,6 +926,7 @@ impl<C: Channel> Agent<C> {
                     agent_cmd::AgentCommand,
                     compaction::{CompactCommand, NewConversationCommand, RecapCommand},
                     experiment::ExperimentCommand,
+                    loop_cmd::LoopCommand,
                     lsp::LspCommand,
                     mcp::McpCommand,
                     memory::{GraphCommand, GuidelinesCommand, MemoryCommand},
@@ -953,6 +967,7 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(RecapCommand);
                 agent_reg.register(ExperimentCommand);
                 agent_reg.register(PlanCommand);
+                agent_reg.register(LoopCommand);
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut agent_null_sink,
@@ -1058,6 +1073,30 @@ impl<C: Channel> Agent<C> {
             Some(prompt) = recv_optional(&mut self.lifecycle.custom_task_rx) => {
                 tracing::info!("scheduler: injecting custom task as agent turn");
                 LoopEvent::ScheduledTask(prompt)
+            }
+            () = async {
+                if let Some(ref mut ls) = self.lifecycle.user_loop {
+                    if ls.cancel_tx.is_cancelled() {
+                        std::future::pending::<()>().await;
+                    } else {
+                        ls.interval.tick().await;
+                    }
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                // Re-check user_loop after the tick — /loop stop may have fired between the
+                // interval firing and this arm executing. Returning Ok(None) causes the caller
+                // to `continue` without injecting a stale or empty prompt.
+                let Some(ls) = self.lifecycle.user_loop.as_ref() else {
+                    return Ok(None);
+                };
+                if ls.cancel_tx.is_cancelled() {
+                    self.lifecycle.user_loop = None;
+                    return Ok(None);
+                }
+                let prompt = ls.prompt.clone();
+                LoopEvent::TaskInjected(task_injection::TaskInjection { prompt })
             }
             Some(event) = recv_optional(&mut self.lifecycle.file_changed_rx) => {
                 LoopEvent::FileChanged(event)

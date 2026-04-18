@@ -105,6 +105,9 @@ pub struct AgentSessionConfig {
     /// Session recap settings (#3064).
     pub recap: zeph_config::RecapConfig,
 
+    /// Minimum allowed `/loop` tick interval in seconds. From `[cli.loop] min_interval_secs`.
+    pub loop_min_interval_secs: u64,
+
     /// Custom secrets from config.
     ///
     /// Stored as `Arc` because `Secret` intentionally does not implement `Clone` —
@@ -174,6 +177,7 @@ impl AgentSessionConfig {
                 .collect::<Vec<_>>()
                 .into(),
             recap: config.session.recap.clone(),
+            loop_min_interval_secs: config.cli.loop_.min_interval_secs,
         }
     }
 }

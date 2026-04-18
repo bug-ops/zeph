@@ -559,6 +559,37 @@ impl<C: crate::channel::Channel> Agent<C> {
         Ok(output)
     }
 
+    /// Start a user-driven loop that injects `prompt` every `interval_secs` seconds.
+    pub(crate) fn start_user_loop(&mut self, prompt: String, interval_secs: u64) {
+        use std::time::Duration;
+        use tokio::time::{Instant, MissedTickBehavior};
+
+        let period = Duration::from_secs(interval_secs);
+        // interval_at(now + period, period) ensures the first tick fires after one full period,
+        // not immediately. tokio::time::interval() would fire at t=0 which is never desired.
+        let mut interval = tokio::time::interval_at(Instant::now() + period, period);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        let cancel_tx = tokio_util::sync::CancellationToken::new();
+        self.lifecycle.user_loop = Some(crate::agent::state::LoopState {
+            prompt,
+            iteration: 0,
+            interval,
+            cancel_tx,
+        });
+    }
+
+    /// Stop the active user loop and return a user-visible message.
+    pub(crate) fn stop_user_loop(&mut self) -> String {
+        if let Some(ls) = self.lifecycle.user_loop.take() {
+            let iters = ls.iteration;
+            ls.cancel_tx.cancel();
+            format!("Loop stopped after {iters} iteration(s).")
+        } else {
+            "No active loop.".to_owned()
+        }
+    }
+
     async fn handle_skills_confusability_as_string(&mut self) -> Result<String, error::AgentError> {
         let threshold = self.skill_state.confusability_threshold;
         if threshold <= 0.0 {

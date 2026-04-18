@@ -98,6 +98,9 @@ pub(crate) fn init_tracing(
     runtime_ctx: zeph_core::RuntimeContext,
     telemetry: &TelemetryConfig,
     redact_secrets: bool,
+    // When true (`--json` mode), the stderr fmt layer is suppressed so no human-readable
+    // text can interleave with the machine-readable JSONL stream on stdout.
+    json_mode: bool,
     #[cfg(feature = "profiling")] metrics_collector: Option<
         std::sync::Arc<zeph_core::metrics::MetricsCollector>,
     >,
@@ -118,8 +121,9 @@ pub(crate) fn init_tracing(
     #[cfg(not(feature = "otel"))]
     let otlp_active = false;
 
-    // Stderr layer — omitted in TUI mode to avoid corrupting raw-mode rendering.
-    if !runtime_ctx.tui_mode {
+    // Stderr layer — omitted in TUI mode (corrupts raw-mode rendering) and in JSON mode
+    // (keeps stderr clean so `--json | jq` works without non-JSON lines).
+    if !runtime_ctx.tui_mode && !json_mode {
         let stderr_filter = tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
         layers.push(Box::new(

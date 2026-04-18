@@ -852,6 +852,57 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             .map_err(|e| CommandError(format!("plugin task panicked: {e}")))
         })
     }
+
+    // ----- /loop -----
+
+    fn handle_loop<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        use zeph_commands::handlers::loop_cmd::parse_loop_args;
+
+        let args_owned = args.trim().to_owned();
+        Box::pin(async move {
+            if args_owned == "stop" {
+                return Ok(self.stop_user_loop());
+            }
+            if args_owned == "status" {
+                return Ok(match &self.lifecycle.user_loop {
+                    Some(ls) => format!(
+                        "Loop active: \"{}\" (iteration {}, interval every {}s).",
+                        ls.prompt,
+                        ls.iteration,
+                        ls.interval.period().as_secs(),
+                    ),
+                    None => "No active loop.".to_owned(),
+                });
+            }
+            let (prompt, interval_secs) = parse_loop_args(&args_owned)?;
+
+            if prompt.starts_with('/') {
+                return Err(CommandError::new(
+                    "Loop prompt must not start with '/'. Slash commands cannot be used as loop prompts.",
+                ));
+            }
+
+            let min_secs = self.runtime.loop_min_interval_secs;
+            if interval_secs < min_secs {
+                return Err(CommandError::new(format!(
+                    "Minimum loop interval is {min_secs}s. Got {interval_secs}s."
+                )));
+            }
+            if self.lifecycle.user_loop.is_some() {
+                return Err(CommandError::new(
+                    "A loop is already active. Use /loop stop first.",
+                ));
+            }
+
+            self.start_user_loop(prompt.clone(), interval_secs);
+            Ok(format!(
+                "Loop started: \"{prompt}\" every {interval_secs}s. Use /loop stop to cancel."
+            ))
+        })
+    }
 }
 
 /// Convert `AgentError` to `CommandError` for the trait boundary.

@@ -7,6 +7,7 @@
 //! a single enum so the main loop body stays readable and each event source
 //! gets a dedicated handler method.
 
+use crate::agent::task_injection::TaskInjection;
 use crate::channel::ChannelMessage;
 use crate::file_watcher::FileChangedEvent;
 
@@ -39,6 +40,9 @@ pub(crate) enum LoopEvent {
 
     /// A scheduler-injected prompt should be processed as a new agent turn.
     ScheduledTask(String),
+
+    /// A prompt injected by the `/loop` command on a tick.
+    TaskInjected(TaskInjection),
 
     /// A watched file changed and the agent should react accordingly.
     FileChanged(FileChangedEvent),

@@ -87,6 +87,8 @@ pub mod redact;
 pub mod system_metrics;
 
 pub mod http;
+pub mod json_event_layer;
+pub mod json_event_sink;
 pub mod lsp_hooks;
 pub mod memory_tools;
 pub mod overflow_tools;

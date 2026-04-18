@@ -35,6 +35,7 @@ mod any;
 pub mod cli;
 #[cfg(feature = "discord")]
 pub mod discord;
+pub mod json_cli;
 mod line_editor;
 pub mod markdown;
 #[cfg(feature = "slack")]
@@ -43,6 +44,7 @@ pub mod telegram;
 
 pub use any::AnyChannel;
 pub use cli::CliChannel;
+pub use json_cli::JsonCliChannel;
 
 /// Shared timeout for interactive confirmation dialogs across all remote channels.
 ///

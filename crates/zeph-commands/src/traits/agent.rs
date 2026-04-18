@@ -390,6 +390,21 @@ pub trait AgentAccess: Send {
         &'a mut self,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /loop -----
+
+    /// Handle `/loop <prompt> every <N> <unit>` or `/loop stop`.
+    ///
+    /// Starts a repeating loop that injects `prompt` as a new agent turn on each tick,
+    /// or stops the currently active loop. Returns a user-visible ACK string.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the arguments are malformed or the interval is below the minimum.
+    fn handle_loop<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
 }
 
 /// A no-op [`AgentAccess`] implementation.
@@ -592,6 +607,13 @@ impl AgentAccess for NullAgent {
     }
 
     fn handle_plugins<'a>(
+        &'a mut self,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn handle_loop<'a>(
         &'a mut self,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {

@@ -88,6 +88,7 @@ fn make_runtime_config() -> RuntimeConfig {
         spawn_depth: 0,
         budget_hint_enabled: true,
         channel_skills: zeph_config::ChannelSkillsConfig::default(),
+        loop_min_interval_secs: 5,
         layers: Vec::new(),
         supervisor_config: crate::config::TaskSupervisorConfig::default(),
         recap_config: zeph_config::RecapConfig::default(),

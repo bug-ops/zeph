@@ -71,6 +71,14 @@ impl std::fmt::Debug for SkillRegistry {
 }
 
 impl SkillRegistry {
+    /// Create an empty registry with no skills, no watchers, and no hub directories.
+    ///
+    /// Used in `--bare` mode where skill loading is intentionally skipped.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
     /// Register hub-managed directories for defense-in-depth in [`Self::scan_loaded`].
     ///
     /// Skills under these directories are hub-installed. Even if a `.bundled` marker

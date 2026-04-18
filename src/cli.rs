@@ -191,8 +191,33 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) tafc: bool,
 
+    /// Bare mode: skip skill loading, memory init, MCP connections, scheduler
+    /// startup, and filesystem watchers. Useful for scripting and CI pipelines.
+    #[arg(long)]
+    pub(crate) bare: bool,
+
+    /// Emit structured JSON events to stdout (JSONL, one event per line).
+    /// Safe for piping into `jq`. Forces all log output to stderr.
+    /// Mutually exclusive with `--tui` and `--acp`.
+    #[arg(long)]
+    pub(crate) json: bool,
+
+    /// Auto-approve trust-gate prompts. Equivalent to
+    /// `[security] autonomy_level = "full"`. The adversarial policy gate (if
+    /// enabled) still runs. Destructive-command blocklist still applies.
+    #[arg(long = "auto", short = 'y')]
+    pub(crate) auto: bool,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
+}
+
+#[cfg(test)]
+impl Default for Cli {
+    fn default() -> Self {
+        use clap::Parser;
+        Cli::parse_from(["zeph"])
+    }
 }
 
 #[derive(Subcommand)]

@@ -32,6 +32,7 @@ use std::time::Instant;
 
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
+use tokio::time::Interval;
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::Message;
@@ -226,6 +227,8 @@ pub(crate) struct RuntimeConfig {
     /// Per-channel skill allowlist. Skills not matching the allowlist are excluded from the
     /// prompt. An empty `allowed` list means all skills are permitted (default).
     pub(crate) channel_skills: zeph_config::ChannelSkillsConfig,
+    /// Minimum allowed interval for `/loop` ticks (seconds). Sourced from `[cli.loop] min_interval_secs`.
+    pub(crate) loop_min_interval_secs: u64,
     /// Runtime middleware layers for LLM calls and tool dispatch (#2286).
     ///
     /// Default: empty vec (zero-cost — loops never iterate).
@@ -342,6 +345,21 @@ pub struct ShellOverlaySnapshot {
     pub allowed: Vec<String>,
 }
 
+/// Runtime state for an active `/loop` session.
+///
+/// At most one loop is active at a time; `LifecycleState::user_loop` holds `Some` while
+/// the loop is running and `None` otherwise.
+pub(crate) struct LoopState {
+    /// The prompt text injected on each tick.
+    pub(crate) prompt: String,
+    /// Number of ticks fired so far.
+    pub(crate) iteration: u64,
+    /// Tick interval. `MissedTickBehavior::Skip` prevents burst catch-up.
+    pub(crate) interval: Interval,
+    /// Cancel handle. Dropped (and token cancelled) when loop is stopped.
+    pub(crate) cancel_tx: CancellationToken,
+}
+
 /// Groups agent lifecycle state: shutdown signaling, timing, and I/O notification channels.
 pub(crate) struct LifecycleState {
     pub(crate) shutdown: watch::Receiver<bool>,
@@ -363,6 +381,8 @@ pub(crate) struct LifecycleState {
     pub(crate) warmup_ready: Option<watch::Receiver<bool>>,
     pub(crate) update_notify_rx: Option<mpsc::Receiver<String>>,
     pub(crate) custom_task_rx: Option<mpsc::Receiver<String>>,
+    /// Active `/loop` state. `None` when no loop is running.
+    pub(crate) user_loop: Option<LoopState>,
     /// Last known process cwd. Compared after each tool call to detect changes.
     pub(crate) last_known_cwd: PathBuf,
     /// Receiver for file-change events from `FileChangeWatcher`. `None` when no paths configured.
@@ -855,6 +875,7 @@ impl Default for RuntimeConfig {
             spawn_depth: 0,
             budget_hint_enabled: true,
             channel_skills: zeph_config::ChannelSkillsConfig::default(),
+            loop_min_interval_secs: 5,
             layers: Vec::new(),
             supervisor_config: crate::config::TaskSupervisorConfig::default(),
             recap_config: zeph_config::RecapConfig::default(),
@@ -935,6 +956,7 @@ impl LifecycleState {
             warmup_ready: None,
             update_notify_rx: None,
             custom_task_rx: None,
+            user_loop: None,
             last_known_cwd: std::env::current_dir().unwrap_or_default(),
             file_changed_rx: None,
             file_watcher: None,

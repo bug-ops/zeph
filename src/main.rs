@@ -107,6 +107,7 @@ mod cli;
 mod commands;
 mod daemon;
 mod db_url;
+mod execution_mode;
 mod gateway_spawn;
 mod init;
 #[cfg(feature = "prometheus")]
@@ -119,6 +120,7 @@ mod runner;
 mod scheduler;
 #[cfg(feature = "scheduler")]
 mod scheduler_executor;
+mod startup_checks;
 mod tracing_init;
 mod tui_bridge;
 mod tui_remote;

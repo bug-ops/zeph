@@ -354,11 +354,17 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         (std::sync::Arc::new(collector), rx)
     };
 
+    // Resolve json_mode directly from CLI flags before AppBuilder (which loads full config).
+    // Passed to init_tracing so the stderr fmt layer is suppressed in --json mode,
+    // guaranteeing no human-readable text interleaves with the JSONL stdout stream.
+    let json_mode_early = cli.json || base_config.cli.json;
+
     let _tracing_guards = init_tracing(
         &logging_config,
         runtime_ctx,
         &telemetry_config,
         redact_secrets,
+        json_mode_early,
         #[cfg(feature = "profiling")]
         Some(std::sync::Arc::clone(&metrics_collector_arc)),
     );
@@ -519,6 +525,17 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     )
     .await?;
 
+    // Resolve ExecutionMode from CLI + config, then validate mutual exclusions.
+    let exec_mode = crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, app.config());
+    crate::startup_checks::validate_mode_compatibility(&cli, app.config())?;
+
+    // Apply -y / --auto: set autonomy_level to Full so trust-gate prompts are
+    // auto-approved. Adversarial policy and shell blocklist remain enforced.
+    if exec_mode.auto {
+        use zeph_tools::AutonomyLevel;
+        app.config_mut().security.autonomy_level = AutonomyLevel::Full;
+    }
+
     check_legacy_artifact_paths(app.config());
 
     #[cfg(feature = "acp")]
@@ -662,8 +679,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(not(feature = "tui"))]
     let with_tool_events = false;
 
-    let registry = app.build_registry();
-    let watchers = app.build_watchers();
+    let registry = if exec_mode.bare {
+        zeph_skills::registry::SkillRegistry::empty()
+    } else {
+        app.build_registry()
+    };
+    let watchers = if exec_mode.bare {
+        crate::bootstrap::WatcherBundle::empty()
+    } else {
+        app.build_watchers()
+    };
     let summary_provider = app.build_summary_provider();
 
     let warmup_provider_clone = provider.clone();
@@ -690,8 +715,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let early_tui_guard: EarlyTuiGuard;
 
     #[cfg(feature = "tui")]
+    let mut json_sink: Option<std::sync::Arc<zeph_core::json_event_sink::JsonEventSink>> = None;
+    #[cfg(feature = "tui")]
     if tui_active {
-        let (ch, mut th) = create_channel_with_tui(app.config(), true, None).await?;
+        let (ch, mut th, _sink) =
+            create_channel_with_tui(app.config(), true, None, exec_mode).await?;
         early_tui_guard = EarlyTuiGuard::new(th.as_mut().map(|h| start_tui_early(h, app.config())));
         channel_opt = Some(ch);
         tui_handle = th;
@@ -757,13 +785,19 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(feature = "tui")]
     tui_status!("Loading memory...");
-    let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
+    let memory = if exec_mode.bare {
+        // Bare mode: use an ephemeral in-process SQLite with no Qdrant, no graph store,
+        // and no embed backfill. Avoids all startup file and network I/O.
+        std::sync::Arc::new(app.build_bare_memory(&provider).await?)
+    } else {
+        std::sync::Arc::new(app.build_memory(&provider).await?)
+    };
     // backfill_rx: progress tracking for embed backfill.
     // None = idle/done, Some(progress) = in progress.
     #[cfg(feature = "tui")]
     let (backfill_tx, backfill_rx) =
         tokio::sync::watch::channel::<Option<zeph_memory::semantic::BackfillProgress>>(None);
-    {
+    if !exec_mode.bare {
         let memory_arc = std::sync::Arc::clone(&memory);
         #[cfg(feature = "tui")]
         let _backfill_handle =
@@ -938,14 +972,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // where cli_history is available. The TUI path was already created before build_memory.
     #[cfg(feature = "tui")]
     if !tui_active {
-        let (ch, th) = create_channel_with_tui(app.config(), false, cli_history).await?;
+        let (ch, th, sink) =
+            create_channel_with_tui(app.config(), false, cli_history, exec_mode).await?;
         channel_opt = Some(ch);
         tui_handle = th;
+        json_sink = sink;
     }
     #[cfg(feature = "tui")]
     let channel = channel_opt.expect("channel always set before use");
     #[cfg(not(feature = "tui"))]
-    let channel = create_channel_inner(app.config(), cli_history).await?;
+    let (channel, json_sink) = create_channel_inner(app.config(), cli_history, exec_mode).await?;
 
     // Spawn deferred OAuth connections now that the UI channel is ready and can
     // display the authorization URL. Non-OAuth tools are already available from
@@ -961,7 +997,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let is_cli = matches!(channel, AppChannel::Standard(AnyChannel::Cli(_)));
     #[cfg(not(feature = "tui"))]
     let is_cli = matches!(channel, AnyChannel::Cli(_));
-    if is_cli {
+    if let Some(ref sink) = json_sink {
+        sink.emit(&zeph_core::json_event_sink::JsonEvent::Boot {
+            version: env!("CARGO_PKG_VERSION"),
+            bare: exec_mode.bare,
+            auto: exec_mode.auto,
+        });
+    } else if is_cli {
         println!("zeph v{}", env!("CARGO_PKG_VERSION"));
     }
 
@@ -971,6 +1013,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         AppChannel::Tui(_) => "tui",
         AppChannel::Standard(c) => match c {
             AnyChannel::Cli(_) => "cli",
+            AnyChannel::JsonCli(_) => "cli-json",
             AnyChannel::Telegram(_) => "telegram",
             #[cfg(feature = "discord")]
             AnyChannel::Discord(_) => "discord",
@@ -982,6 +1025,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(not(feature = "tui"))]
     let active_channel_name: String = match &channel {
         AnyChannel::Cli(_) => "cli",
+        AnyChannel::JsonCli(_) => "cli-json",
         AnyChannel::Telegram(_) => "telegram",
         #[cfg(feature = "discord")]
         AnyChannel::Discord(_) => "discord",
@@ -1631,6 +1675,18 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_embedding_provider(embedding_provider)
     .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider)
     .await;
+
+    // Wire JsonEventLayer when --json is active so tool_call / tool_result events
+    // are emitted. JsonCliChannel no-ops send_tool_start / send_tool_output to
+    // prevent double-emission; this layer is the canonical emitter.
+    let agent = if let Some(ref sink) = json_sink {
+        use zeph_core::json_event_layer::JsonEventLayer;
+        agent.with_runtime_layer(std::sync::Arc::new(JsonEventLayer::new(
+            std::sync::Arc::clone(sink),
+        )))
+    } else {
+        agent
+    };
 
     let agent = if let Some(logger) = tool_setup.audit_logger {
         agent.with_audit_logger(logger)

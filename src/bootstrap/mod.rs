@@ -69,6 +69,21 @@ pub struct WatcherBundle {
     pub config_reload_rx: zeph_core::instrumented_channel::InstrumentedReceiver<ConfigEvent>,
 }
 
+impl WatcherBundle {
+    /// Create a bundle with no watchers. Used in `--bare` mode.
+    pub fn empty() -> Self {
+        use zeph_core::instrumented_channel::instrumented_channel;
+        let (_, skill_reload_rx) = instrumented_channel(1, "skill_reload_rx_bare");
+        let (_, config_reload_rx) = instrumented_channel(1, "config_reload_rx_bare");
+        Self {
+            skill_watcher: None,
+            skill_reload_rx,
+            config_watcher: None,
+            config_reload_rx,
+        }
+    }
+}
+
 impl AppBuilder {
     /// Resolve config, load it, create vault, resolve secrets.
     ///
@@ -360,6 +375,27 @@ impl AppBuilder {
             memory.with_key_facts_dedup_threshold(self.config.memory.key_facts_dedup_threshold);
 
         Ok(memory)
+    }
+
+    /// Build a minimal ephemeral memory for bare mode.
+    ///
+    /// Uses an in-process `SQLite` `:memory:` database with no Qdrant, no graph store,
+    /// and no admission control. Avoids all file-system and network I/O at startup.
+    pub async fn build_bare_memory(
+        &self,
+        provider: &AnyProvider,
+    ) -> Result<SemanticMemory, BootstrapError> {
+        let embed_model = self.embedding_model();
+        SemanticMemory::with_sqlite_backend_and_pool_size(
+            ":memory:",
+            provider.clone(),
+            &embed_model,
+            self.config.memory.semantic.vector_weight,
+            self.config.memory.semantic.keyword_weight,
+            1,
+        )
+        .await
+        .map_err(|e| BootstrapError::Memory(e.to_string()))
     }
 
     fn build_memory_embed_provider(&self) -> Option<AnyProvider> {

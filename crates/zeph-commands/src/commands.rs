@@ -262,4 +262,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         category: SlashCategory::Debugging,
         feature_gate: None,
     },
+    CommandInfo {
+        name: "/loop",
+        args: "<prompt> every <N> <unit> | stop",
+        description: "Repeat a prompt on a fixed interval (min 5s), or stop the active loop",
+        category: SlashCategory::Advanced,
+        feature_gate: None,
+    },
 ];

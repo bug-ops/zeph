@@ -14,6 +14,7 @@ pub mod compaction;
 pub mod debug;
 pub mod experiment;
 pub mod help;
+pub mod loop_cmd;
 pub mod lsp;
 pub mod mcp;
 pub mod memory;
