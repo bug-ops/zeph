@@ -8,9 +8,9 @@
 //!
 //! # Double-emission prevention
 //!
-//! [`JsonEventLayer`] is the canonical emitter for `tool_call`, `tool_result`,
-//! and `cost` events. The corresponding channel methods (`send_tool_start`,
-//! `send_tool_output`, `send_usage`) are intentionally no-ops here.
+//! `JsonEventLayer` (in `zeph-core`) is the canonical emitter for `tool_call`,
+//! `tool_result`, and `cost` events. The corresponding channel methods
+//! (`send_tool_start`, `send_tool_output`, `send_usage`) are intentionally no-ops here.
 
 use std::io::{BufRead, BufReader, IsTerminal};
 use std::sync::Arc;
@@ -24,7 +24,7 @@ use zeph_core::json_event_sink::{JsonEvent, JsonEventSink};
 
 /// CLI channel that emits structured JSON events to stdout.
 ///
-/// Construct via [`JsonCliChannel::new`] and wrap in [`AnyChannel::JsonCli`].
+/// Construct via [`JsonCliChannel::new`] and wrap in `AnyChannel::JsonCli`.
 /// All assistive output goes through the shared [`JsonEventSink`]; only stdin
 /// reading is internal to this channel.
 #[derive(Debug)]
