@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `JsonEventLayer`: a [`RuntimeLayer`] that emits tool events via [`JsonEventSink`].
+//! `JsonEventLayer`: a [`crate::runtime_layer::RuntimeLayer`] that emits tool events via [`JsonEventSink`].
 //!
 //! Install this layer on the agent when `--json` is active. It is the *canonical*
 //! emitter for `tool_call` and `tool_result` events — `JsonCliChannel` intentionally

@@ -772,7 +772,7 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Register a [`RuntimeLayer`] that intercepts LLM calls and tool dispatch.
+    /// Register a [`crate::runtime_layer::RuntimeLayer`] that intercepts LLM calls and tool dispatch.
     ///
     /// Layers are called in registration order. This method may be called multiple
     /// times to stack layers.

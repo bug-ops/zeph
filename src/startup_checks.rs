@@ -116,7 +116,11 @@ mod tests {
         let mut cfg = Config::default();
         cfg.discord = Some(DiscordConfig {
             token: Some("discord-tok".into()),
-            ..Default::default()
+            application_id: None,
+            allowed_user_ids: vec![],
+            allowed_role_ids: vec![],
+            allowed_channel_ids: vec![],
+            skills: Default::default(),
         });
         assert!(validate_mode_compatibility(&cli, &cfg).is_err());
     }
@@ -129,7 +133,12 @@ mod tests {
         let mut cfg = Config::default();
         cfg.slack = Some(SlackConfig {
             bot_token: Some("xoxb-slack".into()),
-            ..Default::default()
+            signing_secret: None,
+            webhook_host: "0.0.0.0".into(),
+            port: 3000,
+            allowed_user_ids: vec![],
+            allowed_channel_ids: vec![],
+            skills: Default::default(),
         });
         assert!(validate_mode_compatibility(&cli, &cfg).is_err());
     }
