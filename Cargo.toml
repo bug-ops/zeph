@@ -57,7 +57,7 @@ nucleo-matcher = "0.3.1"
 ollama-rs = { version = "0.3", default-features = false }
 open = "5"
 opentelemetry = "0.31"
-opentelemetry-otlp = { version = "0.31", default-features = false }
+opentelemetry-otlp = { version = "0.31.1", default-features = false }
 opentelemetry_sdk = { version = "0.31", default-features = false }
 ordered-float = "5.3"
 pdf-extract = "0.10"
