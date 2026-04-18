@@ -79,6 +79,27 @@ ls -la ~/.zeph/key.txt     # Should show: -rw------- (mode 0600)
 
 Run `zeph doctor` to verify file modes are correct across all sensitive Zeph files.
 
+## Plugin Manifest Integrity
+
+Zeph records a sha256 digest of each installed plugin's `.plugin.toml` manifest and verifies it at startup and during hot-reload. The integrity registry is stored in `~/.local/share/zeph/.plugin-integrity.toml` (outside the plugins directory to prevent TOCTOU races).
+
+**Protection scope:**
+- Detects if a plugin manifest has been modified outside of Zeph's control (e.g., accidentally edited, maliciously replaced)
+- Missing entries from pre-feature installs are permitted with a debug-level log
+- Mismatches cause the plugin to be skipped with an "integrity mismatch" reason visible in `zeph plugin list --overlay`
+
+**To re-protect after a valid change:**
+```bash
+zeph plugin remove <name>
+zeph plugin add /path/to/<name>
+```
+
+This stores a fresh digest, allowing the plugin to load normally.
+
+**Known limits:**
+- Not cryptographically signed — prevents accidental corruption but not determined adversaries
+- Concurrent installs may race (last writer wins on the `.plugin-integrity.toml` file)
+
 ## Shell Command Filtering
 
 All shell commands from LLM responses pass through a security filter before execution. Shell command detection uses a tokenizer-based pipeline that splits input into tokens, handles wrapper commands (e.g., `env`, `nohup`, `timeout`), and applies word-boundary matching against blocked patterns. This replaces the prior substring-based approach for more accurate detection with fewer false positives. Commands matching blocked patterns are rejected with detailed error messages.

@@ -378,6 +378,25 @@ ibct_key_rotation_secs = 3600
 
 ---
 
+## Plugin Manifest Integrity (sha256)
+
+Issue #3166. Each `.plugin.toml` is integrity-checked via a sha256 digest to prevent tampering between install and load time.
+
+### Mechanism
+
+1. At install time (`zeph plugin install`), sha256 of the installed `.plugin.toml` is computed and written to `<data_root>/.plugin-integrity.toml` — outside `plugins_dir` to prevent the plugin from overwriting its own recorded digest (TOCTOU prevention).
+2. At startup and on every plugin overlay hot-reload, the digest is recomputed and compared against the stored value.
+3. Manifests whose digest does not match are rejected: the plugin is skipped and recorded in `ResolvedOverlay::skipped_plugins`.
+
+### Key Invariants
+
+- `.plugin-integrity.toml` MUST reside outside `plugins_dir` — placing it inside would allow a plugin to tamper with its own digest entry
+- Integrity check MUST run at both startup and hot-reload — not only at install time
+- A digest mismatch is always a hard rejection; there is no "warn and continue" mode
+- NEVER skip the integrity check when loading a plugin that was previously validated — the file may have been modified on disk between sessions
+
+---
+
 ## Credential Env Var Scrubbing
 
 

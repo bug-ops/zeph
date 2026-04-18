@@ -81,6 +81,8 @@ CompositeExecutor [
 - Blocked patterns: process substitution `$(...)`, here-strings `<<<`, dangerous builtins
 - `TrustLevel`: `Untrusted` / `Provisional` / `Trusted` — affects which commands are auto-approved
 - Working directory is sandboxed to project root (configurable)
+- `ShellExecutor` holds a `ShellPolicyHandle` (`Arc<ArcSwap<ShellPolicy>>`) rather than a static blocked-commands list. On plugin overlay reload, `handle.rebuild()` swaps the policy atomically — no restart. See [[027-runtime-layer/spec#Hot-Reload Behavior]] for the reload contract.
+- `find_blocked_command()` return type is `Option<String>` (owned) — not `Option<&str>`
 
 ## Structured Shell Output Envelope
 

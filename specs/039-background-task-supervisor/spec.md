@@ -384,7 +384,7 @@ TRACE: background task dropped class=enrichment task=graph-extract limit=4
 - Per-class inflight counters are updated atomically via `Arc<AtomicUsize>`
 - When a task completes, its inflight slot is freed immediately (via `InflightGuard` drop)
 - `reap()` is non-blocking and idempotent — safe to call every turn
-- `shutdown_all(timeout)` drains completions before timeout, then aborts remaining tasks
+- `shutdown_all(timeout)` uses a **two-phase drain**: phase 1 runs the normal completion loop; phase 2 continues draining after the cancellation token fires until the completion channel is empty. This ensures tasks that observe the cancellation token slightly after it is set still have their results collected and are not silently discarded. Only after both phases are exhausted (or the timeout fires) are remaining tasks aborted.
 - Task names are `Arc<str>` — never `&'static str` or `Box::leak`
 - `spawn_blocking` is gated by the blocking semaphore (default capacity 8)
 - `spawn_restartable` uses exponential backoff for `RestartPolicy::Restart`

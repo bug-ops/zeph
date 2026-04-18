@@ -197,10 +197,42 @@ Issue #3145. Plugin config overlays (`<plugin>/.plugin.toml`) are merged into th
 
 Issue #3159. When a plugin is installed (via `zeph plugin install`), the values in `.plugin.toml` are validated against the safelisted keys. Invalid values (e.g., a `blocked_commands` entry that is not a valid command name, or `disambiguation_threshold` outside `[0.0, 1.0]`) cause the install to fail with a clear error message.
 
+### Hot-Reload Behavior
+
+`blocked_commands` changes (union of plugin overlays) take effect **immediately and atomically** on plugin overlay reload. `ShellExecutor` holds an `ArcSwap<ShellPolicy>` handle; `handle.rebuild()` swaps the policy without restarting the agent. `allowed_commands` changes still require a full agent restart and emit a `WARN` banner at reload time.
+
+New types introduced in `zeph-tools` to support atomic reload:
+
+| Type | Role |
+|------|------|
+| `ShellPolicy` | Immutable snapshot of blocked/allowed command rules |
+| `ShellPolicyHandle` | `Arc`-wrapped `ArcSwap<ShellPolicy>` shared across `ShellExecutor`, `LifecycleState`, and `acp/daemon/runner` |
+| `compute_blocked_commands` | Pure fn that rebuilds the policy from a `ResolvedOverlay` |
+
+### Diagnostics: `skipped_plugins` and `source_plugins`
+
+`ResolvedOverlay` surfaces two diagnostic fields:
+
+- `source_plugins` — list of plugins that contributed to the merged overlay
+- `skipped_plugins` — list of plugins skipped due to load/validation errors (non-fatal)
+
+Both fields are exposed in:
+- `zeph plugin list --overlay` (CLI)
+- `/plugins overlay` TUI slash command
+- `PluginListOverlay` TUI palette entry
+
+### Plugin Manifest Integrity (sha256)
+
+At install time, a sha256 digest of each `.plugin.toml` is computed and written to `<data_root>/.plugin-integrity.toml` (outside `plugins_dir` to prevent TOCTOU attacks). At startup and on every hot-reload, the digest is re-computed and compared against the stored value. Manifests whose digest does not match are rejected — the plugin is treated as if it were skipped and recorded in `skipped_plugins`.
+
 ### Key Invariants
 
 - Plugin overlays are **tighten-only** — plugins cannot weaken security posture
 - `allowed_commands` intersection: if the base config has no `allowed_commands` (empty = unrestricted), the intersection is a no-op — plugins cannot re-enable `DEFAULT_BLOCKED` commands
+- `blocked_commands` hot-reload is **atomic** — `ArcSwap` swap is the only permitted update path; no restart required
+- `allowed_commands` changes require restart — emit a `WARN` banner at reload time and do NOT apply dynamically
+- `.plugin-integrity.toml` MUST reside outside `plugins_dir` — storing it inside `plugins_dir` would allow a plugin to tamper with its own digest
+- Integrity check runs at both startup and hot-reload — a tampered manifest is always rejected, never silently accepted
 - `plugins_dir` missing → silently treated as empty; `plugins_dir` exists but unreadable → `PluginError::Io`
 - Per-plugin failures are recorded in `ResolvedOverlay::skipped_plugins` — a bad plugin skips, it does not abort the entire overlay
 - Plugin I/O operations (reading `.plugin.toml`) run in `spawn_blocking` — never block the async runtime

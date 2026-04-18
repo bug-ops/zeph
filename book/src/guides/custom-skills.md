@@ -204,17 +204,17 @@ tools.blocked_commands = ["dangerous_pattern"]
 
 ### Installing Plugins
 
-Use `zeph plugin add` to install a plugin from a git repository or local path:
+Use `zeph plugin add` to install a plugin from a local path:
 
 ```bash
-# From GitHub repository
-zeph plugin add https://github.com/user/zeph-plugin-example.git
-
 # From local directory
 zeph plugin add /path/to/my-plugin
 
 # List installed plugins
 zeph plugin list
+
+# Show the active plugin overlay (which plugins are active/skipped and why)
+zeph plugin list --overlay
 
 # Remove a plugin
 zeph plugin remove my-plugin
@@ -226,9 +226,34 @@ Plugins are installed to `~/.local/share/zeph/plugins/<name>/` (XDG standard loc
 
 ```
 /plugins list              # Show installed plugins
-/plugins add <url|path>    # Install a plugin
+/plugins list --overlay    # Show the active plugin overlay
+/plugins overlay           # Show the active plugin overlay (alias)
+/plugins add <path>        # Install a plugin
 /plugins remove <name>     # Remove a plugin
 ```
+
+### Plugin Integrity Check
+
+When you install a plugin, Zeph records a sha256 digest of its `.plugin.toml` manifest in `~/.local/share/zeph/.plugin-integrity.toml`. At startup and when hot-reloading, Zeph verifies this digest to detect if a plugin manifest has been modified outside of Zeph's control.
+
+**If a manifest is tampered with:**
+- The plugin is skipped with an "integrity mismatch" reason
+- You can see the skipped plugin and reason with `zeph plugin list --overlay` or `/plugins overlay`
+- To re-protect the plugin, reinstall it: `zeph plugin remove my-plugin && zeph plugin add /path/to/my-plugin`
+
+This provides basic tampering detection. The integrity check is not cryptographically signed, and concurrent installs may race (last writer wins).
+
+### Hot-Reload Behavior
+
+Plugin config overlays — restrictions on tool access and embedding thresholds — are applied immediately when a plugin is installed or when you reload config mid-session. However, different overlay fields hot-reload differently:
+
+**Hot-reloads live (no restart needed):**
+- `tools.blocked_commands` — shell commands blocked by the agent are updated atomically on the next execution
+
+**Require agent restart:**
+- `tools.allowed_commands` — restrictions on allowed paths are applied at executor setup time. Zeph emits a **RESTART REQUIRED** warning when you change this setting
+
+You do not need to restart Zeph when modifying `blocked_commands` — the agent picks up the new blocklist immediately. If you modify `allowed_commands`, you must restart Zeph for the change to take effect.
 
 ### Plugin Security
 

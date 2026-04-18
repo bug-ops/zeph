@@ -88,6 +88,35 @@ zeph skill trust my-skill trusted
 zeph skill remove my-skill
 ```
 
+### `zeph plugin`
+
+Manage plugin packages (collections of skills, MCP servers, and config overlays). Installed plugins are stored in `~/.local/share/zeph/plugins/`.
+
+| Subcommand | Description |
+|------------|-------------|
+| `plugin list` | List installed plugins with installation timestamps |
+| `plugin list --overlay` | Show which plugins are active and which were skipped (with reasons), including integrity check failures |
+| `plugin add <path>` | Install a plugin from a local directory path (must contain `plugin.toml`) |
+| `plugin remove <name>` | Remove an installed plugin by name |
+
+```bash
+# List installed plugins
+zeph plugin list
+
+# Show the active plugin overlay (useful for diagnosing load failures)
+zeph plugin list --overlay
+
+# Install a plugin from a local directory
+zeph plugin add /path/to/my-plugin
+
+# Remove a plugin
+zeph plugin remove my-plugin
+```
+
+**Overlay flag note:** `--overlay` shows which plugins contributed to the active config and which were skipped (with reasons like "integrity mismatch", "invalid manifest", etc.). This is evaluated against the default config — use `--config <path>` in the agent to see the live intersection with your active config.
+
+**Integrity checks:** When you install a plugin, Zeph records a sha256 digest of its `.plugin.toml`. At startup and hot-reload, the digest is verified. If it doesn't match, the plugin is skipped and the mismatch is visible in `plugin list --overlay`. See [Plugin Manifest Integrity](security.md#plugin-manifest-integrity) for details.
+
 ### `zeph memory`
 
 Manage conversation history and advanced memory subsystems.
@@ -393,6 +422,28 @@ Display the current file logging configuration and recent log entries.
 ```
 
 See [Logging](../concepts/logging.md) for configuration details.
+
+### `/plugins`
+
+Manage installed plugins interactively. Same operations as the `zeph plugin` CLI command, but available mid-session.
+
+| Subcommand | Description |
+|------------|-------------|
+| `/plugins list` | List installed plugins with installation timestamps |
+| `/plugins list --overlay` | Show the active plugin overlay (which plugins are active/skipped and why) |
+| `/plugins overlay` | Alias for `list --overlay` |
+| `/plugins add <path>` | Install a plugin from a local directory path |
+| `/plugins remove <name>` | Remove an installed plugin by name |
+
+```bash
+> /plugins list
+> /plugins list --overlay
+> /plugins overlay
+> /plugins add /path/to/my-plugin
+> /plugins remove my-plugin
+```
+
+Use `overlay` to diagnose why a plugin didn't load (integrity mismatch, invalid manifest, etc.). This is the same information shown by `zeph plugin list --overlay` in the CLI.
 
 ### `/migrate-config`
 
