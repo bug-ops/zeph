@@ -22,7 +22,7 @@
 
 services:
   prometheus:
-    image: prom/prometheus:v3.4.0
+    image: prom/prometheus:v3.4.0@sha256:78ed1f9050eb9eaf766af6e580230b1c4965728650e332cd1ee918c0c4699775
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -52,7 +52,7 @@ services:
       start_period: 20s
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
       timeout: 5s
-    image: grafana/grafana:11.6.0
+    image: grafana/grafana:11.6.0@sha256:62d2b9d20a19714ebfe48d1bb405086081bc602aa053e28cf6d73c7537640dfb
     ports:
       - "3000:3000"
     restart: unless-stopped
