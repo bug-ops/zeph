@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **fix(commands): `/plugins` slash command now routed through `CommandRegistry`** (#3215) — added
+  `PluginsCommand` handler in `zeph-commands` that delegates to `Agent::handle_plugins` via
+  `AgentAccess`. `/plugins overlay|list|add|remove` are now dispatched correctly instead of falling
+  through to the LLM. Also extracted the two near-identical slash-command dispatch blocks in
+  `zeph-core/agent/mod.rs` into a single `apply_dispatch_result` helper with a `DispatchFlow` enum
+  (#3214), eliminating divergence risk between the session-registry and agent-registry paths.
+
 - **fix(json-cli): spurious `response_end` events in `--json` mode** (#3212) — `JsonCliChannel`
   now tracks whether any `ResponseChunk` has been emitted since the last `ResponseEnd` and only
   emits `ResponseEnd` when there is at least one preceding chunk. Lifecycle strings (e.g.
