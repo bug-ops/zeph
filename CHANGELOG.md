@@ -50,6 +50,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   database, independent of GitHub's vulnerability-alerts API) and the `vulnerabilityAlerts`
   block in `.github/renovate.json`. Secret scanning remains enabled (separate system).
 
+### Fixed
+
+- fix(cli): skip scheduler, code indexer, and mem-eviction task in `--bare` mode (#3209)
+
 ## [0.19.2] - 2026-04-18
 
 ### Added

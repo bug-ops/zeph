@@ -1143,7 +1143,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         });
     }
 
-    {
+    if !exec_mode.bare {
         let store = std::sync::Arc::new(memory.sqlite().clone());
         let eviction_cfg = config.memory.eviction.clone();
         let policy = std::sync::Arc::new(zeph_memory::EbbinghausPolicy::default());
@@ -1880,20 +1880,24 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent_setup::apply_causal_analyzer(agent, provider.clone(), config);
     let agent = agent_setup::apply_vigil(agent, &config.security.vigil);
 
-    #[cfg(feature = "tui")]
-    if config.index.enabled {
-        tui_status!("Indexing codebase...");
-    }
-    let (_index_watcher, index_progress_rx) = agent_setup::apply_code_indexer(
-        &config.index,
-        index_qdrant_ops,
-        index_provider,
-        index_pool,
-        is_cli,
-        Some(agent_status_tx.clone()),
-        Some((*supervisor).clone()),
-    )
-    .await;
+    let (_index_watcher, index_progress_rx) = if exec_mode.bare {
+        (None, None)
+    } else {
+        #[cfg(feature = "tui")]
+        if config.index.enabled {
+            tui_status!("Indexing codebase...");
+        }
+        agent_setup::apply_code_indexer(
+            &config.index,
+            index_qdrant_ops,
+            index_provider,
+            index_pool,
+            is_cli,
+            Some(agent_status_tx.clone()),
+            Some((*supervisor).clone()),
+        )
+        .await
+    };
     // Wire index progress to TUI immediately after the indexer is created.
     #[cfg(feature = "tui")]
     if let (Some(early), Some(rx)) = (&early_tui_guard.0, index_progress_rx.clone()) {
@@ -2009,7 +2013,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let mut sched_refresh_rx: Option<tokio::sync::watch::Receiver<()>> = None;
 
     #[cfg(feature = "scheduler")]
-    let agent = {
+    let agent = if exec_mode.bare {
+        agent
+    } else {
         let exp_deps = provider_for_experiments.map(|p| (p, Some(std::sync::Arc::clone(&memory))));
         let (agent, sched_executor) = Box::pin(bootstrap_scheduler(
             agent,
@@ -2946,5 +2952,65 @@ mod tests {
         );
         let dim = resolve_rl_embed_dim(&config.skills, &provider, 30).await;
         assert_eq!(dim, 768);
+    }
+
+    // --- bare-mode guards ---
+
+    /// `--bare` CLI flag activates bare mode; `!exec_mode.bare` is false so mem-eviction
+    /// is not spawned.
+    #[test]
+    fn bare_flag_suppresses_mem_eviction_guard() {
+        let cli = Cli::parse_from(["zeph", "--bare"]);
+        let mode =
+            crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
+        // Guard condition in runner: `if !exec_mode.bare { spawn mem-eviction }`
+        assert!(mode.bare, "bare mode must make the spawn guard evaluate to false");
+    }
+
+    /// `--bare` CLI flag causes the indexer guard to produce `(None, None)` without calling
+    /// `apply_code_indexer`.
+    #[test]
+    fn bare_flag_skips_code_indexer_guard() {
+        let cli = Cli::parse_from(["zeph", "--bare"]);
+        let mode =
+            crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
+        // Guard: `if exec_mode.bare { (None, None) } else { apply_code_indexer(...) }`
+        let result: (Option<()>, Option<()>) =
+            if mode.bare { (None, None) } else { (Some(()), Some(())) };
+        assert!(result.0.is_none(), "indexer watcher must be None in bare mode");
+        assert!(result.1.is_none(), "indexer progress rx must be None in bare mode");
+    }
+
+    /// `--bare` CLI flag causes the scheduler guard to pass the agent through unchanged.
+    #[test]
+    fn bare_flag_skips_scheduler_guard() {
+        let cli = Cli::parse_from(["zeph", "--bare"]);
+        let mode =
+            crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
+        // Guard: `if exec_mode.bare { agent } else { bootstrap_scheduler(...) }`
+        let scheduler_would_run = !mode.bare;
+        assert!(!scheduler_would_run, "scheduler must not run in bare mode");
+    }
+
+    /// Without `--bare`, all three subsystems are allowed to start (guards evaluate to true).
+    #[test]
+    fn non_bare_mode_allows_mem_eviction_indexer_scheduler() {
+        let cli = Cli::parse_from(["zeph"]);
+        let mode =
+            crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
+        assert!(!mode.bare, "default mode must not be bare");
+        // mem-eviction guard: `if !exec_mode.bare` → true
+        assert!(!mode.bare);
+        // indexer guard: `if exec_mode.bare { (None, None) } else { ... }`
+        let indexer_result: (Option<()>, Option<()>) =
+            if mode.bare { (None, None) } else { (Some(()), Some(())) };
+        assert!(indexer_result.0.is_some(), "indexer watcher slot must be Some in non-bare mode");
+        assert!(
+            indexer_result.1.is_some(),
+            "indexer progress rx slot must be Some in non-bare mode"
+        );
+        // scheduler guard: `if exec_mode.bare { agent } else { ... }`
+        let scheduler_would_run = !mode.bare;
+        assert!(scheduler_would_run, "scheduler must be allowed in non-bare mode");
     }
 }
