@@ -2964,7 +2964,10 @@ mod tests {
         let mode =
             crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
         // Guard condition in runner: `if !exec_mode.bare { spawn mem-eviction }`
-        assert!(mode.bare, "bare mode must make the spawn guard evaluate to false");
+        assert!(
+            mode.bare,
+            "bare mode must make the spawn guard evaluate to false"
+        );
     }
 
     /// `--bare` CLI flag causes the indexer guard to produce `(None, None)` without calling
@@ -2975,10 +2978,19 @@ mod tests {
         let mode =
             crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
         // Guard: `if exec_mode.bare { (None, None) } else { apply_code_indexer(...) }`
-        let result: (Option<()>, Option<()>) =
-            if mode.bare { (None, None) } else { (Some(()), Some(())) };
-        assert!(result.0.is_none(), "indexer watcher must be None in bare mode");
-        assert!(result.1.is_none(), "indexer progress rx must be None in bare mode");
+        let result: (Option<()>, Option<()>) = if mode.bare {
+            (None, None)
+        } else {
+            (Some(()), Some(()))
+        };
+        assert!(
+            result.0.is_none(),
+            "indexer watcher must be None in bare mode"
+        );
+        assert!(
+            result.1.is_none(),
+            "indexer progress rx must be None in bare mode"
+        );
     }
 
     /// `--bare` CLI flag causes the scheduler guard to pass the agent through unchanged.
@@ -3002,15 +3014,24 @@ mod tests {
         // mem-eviction guard: `if !exec_mode.bare` → true
         assert!(!mode.bare);
         // indexer guard: `if exec_mode.bare { (None, None) } else { ... }`
-        let indexer_result: (Option<()>, Option<()>) =
-            if mode.bare { (None, None) } else { (Some(()), Some(())) };
-        assert!(indexer_result.0.is_some(), "indexer watcher slot must be Some in non-bare mode");
+        let indexer_result: (Option<()>, Option<()>) = if mode.bare {
+            (None, None)
+        } else {
+            (Some(()), Some(()))
+        };
+        assert!(
+            indexer_result.0.is_some(),
+            "indexer watcher slot must be Some in non-bare mode"
+        );
         assert!(
             indexer_result.1.is_some(),
             "indexer progress rx slot must be Some in non-bare mode"
         );
         // scheduler guard: `if exec_mode.bare { agent } else { ... }`
         let scheduler_would_run = !mode.bare;
-        assert!(scheduler_would_run, "scheduler must be allowed in non-bare mode");
+        assert!(
+            scheduler_would_run,
+            "scheduler must be allowed in non-bare mode"
+        );
     }
 }
