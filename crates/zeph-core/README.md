@@ -41,6 +41,8 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `vault` | Secret storage and resolution via vault providers (age-encrypted read/write); secrets stored as `BTreeMap` for deterministic JSON serialization on every `vault.save()` call; scans `ZEPH_SECRET_*` keys to build the custom-secrets map used by skill env injection; all secret values are held as `Zeroizing<String>` (zeroize-on-drop) and are not `Clone` |
 | `instructions` | `load_instructions()` — auto-detects and loads provider-specific instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `zeph.md`) from the working directory; injects content into the volatile system prompt section with symlink boundary check, null byte guard, and 256 KiB per-file size cap. `InstructionWatcher` subscribes to filesystem events via `notify-debouncer-mini` (500 ms debounce) and reloads `instruction_blocks` in-place on any `.md` change — no agent restart required |
 | `skill_loader` | `SkillLoaderExecutor` — `ToolExecutor` that exposes the `load_skill` tool to the LLM; accepts a skill name, looks it up in the shared `Arc<RwLock<SkillRegistry>>`, and returns the full SKILL.md body (truncated to `MAX_TOOL_OUTPUT_CHARS`); skill name is capped at 128 characters; unknown names return a human-readable error message rather than a hard error |
+| `skill_invoke` | `SkillInvokeExecutor` — `ToolExecutor` that exposes the `invoke_skill` tool with trust-aware sanitization; Blocked skills are refused; non-Trusted bodies pass through `sanitize_skill_text`; Quarantined bodies are additionally wrapped with `wrap_quarantined`; exempt from adversarial policy, VIGIL gate, and tool-schema filter |
+| `vigil` | `VigilGate` — regex tripwire that runs before `ContentSanitizer` on every tool output; configurable via `[security.vigil]`; `VigilRiskLevel` recorded in audit entries; `vigil_flags_total` / `vigil_blocks_total` counters in `MetricsSnapshot`; fail-open on invalid config; subagent sessions exempt |
 | `scheduler_executor` | `SchedulerExecutor` — `ToolExecutor` that exposes three LLM-callable tools: `schedule_periodic` (add a recurring cron task), `schedule_deferred` (add a one-shot task at a specific ISO 8601 UTC time), and `cancel_task` (remove a task by name); communicates with the scheduler via `mpsc::Sender<SchedulerMessage>` and validates input lengths and cron expressions before forwarding; only present when the `scheduler` feature is enabled |
 | `debug_dump` | `DebugDumper` — writes numbered `{id:04}-request.json`, `{id:04}-response.txt`, and `{id:04}-tool-{name}.txt` files to a timestamped session directory; request dumps include model, token limit, tools, temperature, cache metadata, and message payloads in both `json` and `raw` formats; enabled via `--debug-dump [PATH]` CLI flag, `[debug] enabled = true` config, or `/debug-dump [path]` slash command; hooks into both streaming and non-streaming LLM paths and before `maybe_summarize_tool_output` |
 | `agent::log_commands` | `/log` slash command handler — displays current `LoggingConfig` (file path, level, rotation, max files) and tails the last 20 lines from the active log file |
@@ -166,6 +168,22 @@ auto_update_check = true   # set to false to disable update notifications
 ```
 
 Set `ZEPH_AUTO_UPDATE_CHECK=false` to disable update notifications without changing the config file.
+
+Key `SessionConfig.recap` fields (TOML section `[session.recap]`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Show a recap of the previous session on resume when a digest is available |
+| `provider` | string | `""` | Provider name (references `[[llm.providers]]`) for recap generation; empty = primary provider |
+
+```toml
+[session.recap]
+enabled  = true
+provider = "fast"   # optional; references [[llm.providers]] name
+```
+
+> [!TIP]
+> Use `/recap` to request a session recap on demand at any time during a session, regardless of the `enabled` setting.
 
 Key `DebugConfig` fields (TOML section `[debug]`):
 

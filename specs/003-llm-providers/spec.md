@@ -101,6 +101,34 @@ AnyProvider { Claude, OpenAI, Ollama, Compatible, Candle, Gemini }
 - Block 3 (volatile): instruction files, skill context — changes every turn, not cached
 - Max 4 `cache_control` breakpoints per request
 
+### Configurable Prompt Cache TTL
+
+`CacheTtl` controls the lifetime of Claude prompt-cache breakpoints. Configured per `[[llm.providers]]` entry:
+
+```toml
+[[llm.providers]]
+name = "quality"
+type = "claude"
+model = "claude-sonnet-4-6"
+prompt_cache_ttl = "1h"   # "ephemeral" (default) or "1h"
+```
+
+| Value | Description | Beta header required |
+|-------|-------------|---------------------|
+| `"ephemeral"` | Standard Anthropic default cache TTL (~5 minutes). No beta header needed. | No |
+| `"1h"` | Extended 1-hour TTL. Requires `extended-cache-ttl-2025-04-11` beta header. | Yes |
+
+The `prompt_cache_ttl` field defaults to `None` (interpreted as `ephemeral`). Specifying `"1h"` adds the beta header automatically for the duration of that provider's requests.
+
+`--migrate-config` preserves `prompt_cache_ttl = "1h"` and suppresses `ephemeral` (it is the default, so no migration write-back).
+
+#### Key Invariants
+
+- `CacheTtl::OneHour` requires the `extended-cache-ttl-2025-04-11` beta header — it MUST be added automatically whenever `prompt_cache_ttl = "1h"` is configured.
+- `CacheTtl::Ephemeral` MUST NOT add the beta header — the header is only needed for non-default TTL.
+- `prompt_cache_ttl` is a per-provider field. Different providers in `[[llm.providers]]` may have different TTLs.
+- NEVER apply a `1h` TTL header to non-Claude providers — it is Claude API-specific.
+
 ## Orchestrator
 
 `crates/zeph-llm/src/orchestrator.rs` — multi-provider routing:

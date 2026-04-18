@@ -178,6 +178,25 @@ thinking = { mode = "extended", budget_tokens = 16000 }
 
 CLI: `--thinking extended:16000` or `--thinking adaptive`. When thinking is enabled and `max_tokens` is below 16000, it is raised automatically. Thinking deltas are parsed from the SSE stream and suppressed from the user-facing output; `MessagePart::ThinkingBlock` variants preserve thinking blocks verbatim across tool-use turns.
 
+## Prompt cache TTL
+
+`ClaudeProvider` supports a configurable prompt cache TTL via the `CacheTtl` enum:
+
+| Variant | TTL | Header |
+|---------|-----|--------|
+| `Ephemeral` (default) | ~5 minutes | standard `cache_control` |
+| `OneHour` | 1 hour | `extended-cache-ttl-2025-04-25` beta |
+
+```toml
+[[llm.providers]]
+type = "claude"
+model = "claude-sonnet-4-6"
+prompt_cache_ttl = "1h"   # "ephemeral" (default) or "1h"
+```
+
+> [!NOTE]
+> The 1-hour TTL costs approximately 2× more per cache write but dramatically reduces repeated-prefix costs for long sessions. Default `"ephemeral"` is byte-identical to the previous wire format — no rollout risk for existing deployments.
+
 ## Gemini configuration
 
 ```toml

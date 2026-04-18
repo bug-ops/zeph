@@ -181,6 +181,33 @@ bootstrap based on enabled features. Multiple layers can be composed via a
 
 ---
 
+## 6b. Plugin Config Overlay Merge
+
+Issue #3145. Plugin config overlays (`<plugin>/.plugin.toml`) are merged into the live `Config` at bootstrap, before the agent starts. The merge is tighten-only:
+
+| Key | Merge strategy |
+|-----|---------------|
+| `tools.shell.blocked_commands` | Union (grows monotonically) |
+| `tools.shell.allowed_commands` | Intersection with base (base must be non-empty for intersection to narrow it) |
+| `skills.disambiguation_threshold` | Max across all plugins |
+
+`apply_plugin_config_overlays(config, plugins_dir)` is called from `AppBuilder` after the base config is loaded and before bootstrap completes. `ResolvedOverlay` is returned for diagnostic logging and `zeph plugin list` display.
+
+### Install-Time Value Validation
+
+Issue #3159. When a plugin is installed (via `zeph plugin install`), the values in `.plugin.toml` are validated against the safelisted keys. Invalid values (e.g., a `blocked_commands` entry that is not a valid command name, or `disambiguation_threshold` outside `[0.0, 1.0]`) cause the install to fail with a clear error message.
+
+### Key Invariants
+
+- Plugin overlays are **tighten-only** — plugins cannot weaken security posture
+- `allowed_commands` intersection: if the base config has no `allowed_commands` (empty = unrestricted), the intersection is a no-op — plugins cannot re-enable `DEFAULT_BLOCKED` commands
+- `plugins_dir` missing → silently treated as empty; `plugins_dir` exists but unreadable → `PluginError::Io`
+- Per-plugin failures are recorded in `ResolvedOverlay::skipped_plugins` — a bad plugin skips, it does not abort the entire overlay
+- Plugin I/O operations (reading `.plugin.toml`) run in `spawn_blocking` — never block the async runtime
+- Value validation runs at install time, not at load time — invalid values should never reach `apply_plugin_config_overlays`
+
+---
+
 ## 7. References
 
 - `crates/zeph-core/src/runtime_layer.rs` — trait definition

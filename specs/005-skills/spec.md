@@ -402,6 +402,61 @@ url_domain_allowlist = []          # domains permitted in skill body URLs
 
 ---
 
+## Hub Skill Install Pipeline
+
+Issue #3043 / #3050. The hub install pipeline fetches SKILL.md files from a configured skill hub (default: https://hub.agentskills.io), validates trust, and installs into the managed directory.
+
+### Trust Escalation Filter for Bundled Skills
+
+Skills installed via the hub that originate from `hub.agentskills.io` **and** are in the set of well-known bundled skill names receive a `.bundled` marker during installation. The `.bundled` marker exempts the skill from `WARN`-level security scan output and grants `Trusted` trust on first load (all other hub-sourced skills start at `Provisional`).
+
+Install-time filtering:
+1. Skill fetched from hub
+2. Injection scan runs on SKILL.md body — hard block if positive
+3. URL domain validation against `[skills.scanner.url_domain_allowlist]`
+4. If skill name matches bundled allowlist AND source is the canonical hub → write `.bundled` marker
+5. Trust set to `Trusted` for `.bundled` skills, `Provisional` for all others
+
+At startup and on hot-reload, `build_registry()` assigns `Trusted` trust to all skills that carry a `.bundled` marker file. This initialization is unconditional — it does not wait for feedback accumulation.
+
+### Key Invariants (Hub Install)
+
+- `.bundled` marker is write-once at install time — never added post-install by the agent
+- NEVER assign `Trusted` trust to a skill without a `.bundled` marker via the startup path
+- Injection scan MUST run before writing `.bundled` — a skill that fails scan is never bundled
+- `build_registry()` MUST assign `Trusted` to `.bundled` skills on every startup, including hot-reload
+
+---
+
+## Agent-Invocable Skills (`invoke_skill`)
+
+Issue #3127. Agents can invoke a named skill by calling the `invoke_skill` native tool. This differs from `load_skill` (preview/read-only) — `invoke_skill` carries intent-to-apply semantics: the active skill for the current turn is updated and the skill's system-prompt injection is applied immediately.
+
+### `invoke_skill` Tool
+
+| Field | Description |
+|-------|-------------|
+| `name` | Skill name to activate |
+| `reason` | Optional free-text rationale for the invocation |
+
+The tool returns a confirmation message with the skill's name and first 200 chars of its description. On failure (skill not found, below trust gate), it returns an error with category `ToolErrorCategory::ToolNotFound` or `PolicyBlocked`.
+
+### Security Gate
+
+`invoke_skill` checks:
+1. Skill exists in the registry
+2. Skill trust level is ≥ `Provisional` — `Quarantined` skills cannot be invoked
+3. Skill is not in the channel blocklist for the current channel
+
+### Key Invariants
+
+- `invoke_skill` is always exempt from the utility gate and the adversarial policy gate — listed in both `UtilityScoringConfig::exempt_tools` and `AdversarialPolicyConfig::exempt_tools` by default
+- `invoke_skill` and `load_skill` are both in `QUARANTINE_DENIED` — they cannot be triggered by quarantined skill content
+- `invoke_skill` carries intent-to-apply semantics: the invoked skill IS injected; `load_skill` is preview-only and does NOT update the active skill
+- NEVER invoke a `Quarantined` skill via this tool — trust gate must check before injection
+
+---
+
 ## SKILL.md Injection Sanitization
 
 

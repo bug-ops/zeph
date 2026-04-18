@@ -194,6 +194,44 @@ THEN the message is delivered to the underlying channel without the handler know
 
 ---
 
+## 11. Session Recap (`/recap`)
+
+Issue #3136. `/recap` generates an on-demand session summary using the same `SessionDigest` pipeline used for auto-summaries at startup.
+
+### Behavior
+
+- Calls `Agent::build_recap()` which generates a digest from up to `recap.max_input_messages` most recent messages
+- Output sent directly to the user channel via `ChannelSink`
+- **Deduplication**: if an auto-recap was already shown at session resume and no new messages have been added since, `/recap` returns the cached digest without a new LLM inference call (`recap_is_duplicate()` check)
+
+### Auto-Recap on Resume
+
+When `recap.auto_on_resume = true` and the session has a cached digest from a prior session:
+1. The agent shows the digest immediately after the session loads — before the first user turn
+2. `auto_recap_shown` is set to `true` in `DigestRuntime`
+3. Subsequent `/recap` calls within the same resumed session are deduplicated until new messages arrive
+
+### Config
+
+```toml
+[recap]
+enabled = true                # master switch; /recap always available when true
+auto_on_resume = false        # show auto-summary on session resume
+max_input_messages = 50       # max recent messages fed to the digest LLM
+max_tokens = 512              # max tokens in the recap output
+recap_provider = ""           # provider for recap LLM call; empty = primary provider
+```
+
+### Key Invariants
+
+- `/recap` is always available when `recap.enabled = true` — no feature gate
+- Deduplication check (`recap_is_duplicate()`) compares `current_non_system_message_count` at resume time against the count at auto-recap emit — they must match for dedup to fire
+- NEVER deduplicate when new messages have arrived since auto-recap was shown
+- `recap_provider` must resolve via the provider registry — NEVER hardcode a model in the recap path
+- `build_recap()` is fallible — errors return `CommandError`, not panic
+
+---
+
 ## 9. Open Questions
 
 None.

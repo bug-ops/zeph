@@ -12,7 +12,7 @@ tags:
   - agent-loop
   - contract
 created: 2026-04-17
-status: draft
+status: approved
 related:
   - "[[010-security/spec]]"
   - "[[010-2-injection-defense]]"

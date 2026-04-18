@@ -6,7 +6,7 @@
   [![Crates.io](https://img.shields.io/crates/v/zeph)](https://crates.io/crates/zeph)
   [![docs](https://img.shields.io/badge/docs-book-blue)](https://bug-ops.github.io/zeph/)
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
-  [![Tests](https://img.shields.io/badge/tests-7973-brightgreen)](https://github.com/bug-ops/zeph/actions)
+  [![Tests](https://img.shields.io/badge/tests-8647-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![Crates](https://img.shields.io/badge/crates-25-orange)](https://github.com/bug-ops/zeph/tree/main/crates)
   [![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
@@ -55,8 +55,11 @@ zeph               # start the agent
 - [x] **[ACP server](https://bug-ops.github.io/zeph/advanced/acp.html)** — stdio, HTTP+SSE, WebSocket transports for IDE integration (Zed, VS Code, Helix)
 - [x] **[A2A protocol](https://bug-ops.github.io/zeph/advanced/a2a.html)** — agent-to-agent delegation over JSON-RPC 2.0 with IBCT capability tokens
 - [x] **[Sub-agents](https://bug-ops.github.io/zeph/advanced/sub-agents.html)** — isolated agents with scoped tools, zero-trust secret delegation, persistent transcripts
-- [x] **[TUI dashboard](https://bug-ops.github.io/zeph/advanced/tui.html)** — ratatui-based with real-time metrics, security panel, plan view, command palette
+- [x] **[TUI dashboard](https://bug-ops.github.io/zeph/advanced/tui.html)** — ratatui-based with real-time metrics, security panel, plan view, command palette; multi-session support with `/session switch` and `/session close`
 - [x] **[Multi-channel I/O](https://bug-ops.github.io/zeph/advanced/channels.html)** — CLI, Telegram, TUI, Discord, Slack — all with streaming, voice, and vision input
+- [x] **[OS sandbox](https://bug-ops.github.io/zeph/reference/security.html#sandbox)** — macOS Seatbelt + Linux Landlock isolation for tool execution; VIGIL verify-before-commit security gate; egress network logging
+- [x] **[Plugin system](https://bug-ops.github.io/zeph/advanced/plugins.html)** — install/remove skill packages via `zeph plugin add <url>`; runtime config overlay merge with tighten-only safety rules; hub install pipeline with trust escalation filter
+- [x] **[Session recap](https://bug-ops.github.io/zeph/advanced/sessions.html)** — `/recap` command and configurable auto-summary shown on session resume
 - [x] **[LSP integration](https://bug-ops.github.io/zeph/guides/lsp.html)** — compiler-level code intelligence via rust-analyzer, pyright, gopls and others: type info, diagnostics, call hierarchy, safe rename, references — injected automatically into context after file writes and reads
 - [x] **[Code indexing](https://bug-ops.github.io/zeph/advanced/code-indexing.html)** — tree-sitter AST-based indexing (Rust, Python, JS, TS, Go), semantic search, repo map generation
 - [x] **[Document RAG](https://bug-ops.github.io/zeph/advanced/document-loaders.html)** — ingest `.txt`, `.md`, `.pdf` into Qdrant with automatic retrieval per turn
@@ -94,6 +97,7 @@ zeph (binary)
  +-- zeph-a2a             A2A client + server, agent discovery (feature-gated)
  +-- zeph-gateway         HTTP webhook gateway with bearer auth (feature-gated)
  +-- zeph-scheduler       cron-based periodic tasks (feature-gated)
+ +-- zeph-plugins         plugin packaging, installation, and runtime config overlay
  +-- zeph-experiments     autonomous LLM config experimentation engine
 ```
 

@@ -11,7 +11,7 @@ tags:
   - audit
   - observability
 created: 2026-04-17
-status: draft
+status: approved
 related:
   - "[[010-security/spec]]"
   - "[[010-4-audit]]"

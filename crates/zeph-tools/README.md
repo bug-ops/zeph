@@ -9,7 +9,7 @@ Tool executor trait with shell, web scrape, and composite executors for Zeph.
 
 ## Overview
 
-Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concrete executors for shell commands, file operations, and web scraping. The `CompositeExecutor` chains multiple backends with output filtering, permission checks, trust gating, anomaly detection, audit logging, and TAFC (Think-Augmented Function Calling) for reasoning-enhanced tool selection.
+Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concrete executors for shell commands, file operations, and web scraping. The `CompositeExecutor` chains multiple backends with output filtering, permission checks, trust gating, anomaly detection, audit logging, egress network logging, and TAFC (Think-Augmented Function Calling) for reasoning-enhanced tool selection. Supports OS-level isolation via macOS Seatbelt and Linux Landlock when the `sandbox` feature is enabled.
 
 ## Key modules
 
@@ -22,7 +22,7 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `composite` | `CompositeExecutor` — chains executors with middleware |
 | `filter` | Output filtering pipeline — unified declarative TOML engine with 9 strategy types (`strip_noise`, `truncate`, `keep_matching`, `strip_annotated`, `test_summary`, `group_by_rule`, `git_status`, `git_diff`, `dedup`) and 19 embedded built-in rules; user-configurable via `filters.toml` |
 | `permissions` | Permission checks for tool invocation |
-| `audit` | `AuditLogger` — tool execution audit trail |
+| `audit` | `AuditLogger` — tool execution audit trail; `EgressEvent` with per-hop emission for outbound network requests and JSONL egress records |
 | `registry` | Tool registry and discovery |
 | `trust_level` | `TrustLevel` enum — four-tier trust model (`Trusted`, `Verified`, `Quarantined`, `Blocked`) with severity ordering and `min_trust` helper |
 | `trust_gate` | Trust-based tool access control |
@@ -115,6 +115,10 @@ auto_block = true
 
 TAFC injects a reasoning step before tool selection, allowing the LLM to evaluate which tools are appropriate for the current task. Configure via `[tools.tafc]` in `config.toml`.
 
+## Speculative tool dispatch
+
+`SpeculativeEngine` pre-runs read-only tool calls while the LLM generates its response. Results are cached in `SpeculativeCache` and reused when the model issues the same tool call — eliminating the round-trip latency for deterministic read operations. Non-deterministic or state-mutating tools are excluded from speculation via the `requires_confirmation` policy gate.
+
 ## Dynamic tool schema filtering
 
 `ToolSchemaFilter` uses embedding similarity to select only the top-K most relevant tools for each query, reducing the tool catalog size in the LLM context. Tools marked as `always_on` bypass filtering and are always included.
@@ -166,6 +170,7 @@ Rules are merged into `PolicyEnforcer` at startup. `[tools.policy]` rules always
 | Feature | Description |
 |---------|-------------|
 | `policy-enforcer` | Enables `PolicyEnforcerConfig` and policy-based tool access control |
+| `sandbox` | Enables OS-level tool isolation: macOS Seatbelt (Sandbox framework) and Linux Landlock + seccomp BPF |
 
 ## Installation
 

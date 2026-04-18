@@ -5,11 +5,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
 
-Ratatui-based TUI dashboard with real-time metrics for Zeph.
+Ratatui-based TUI dashboard with real-time metrics and multi-session support for Zeph.
 
 ## Overview
 
-Provides a terminal UI for monitoring the Zeph agent in real time. Built on ratatui and crossterm, it renders live token usage, latency histograms, conversation history, and skill activity. The skills panel includes Wilson score confidence bars showing each skill's posterior reliability estimate. Feature-gated behind `tui`.
+Provides a terminal UI for monitoring the Zeph agent in real time. Built on ratatui and crossterm, it renders live token usage, latency histograms, conversation history, and skill activity. The skills panel includes Wilson score confidence bars showing each skill's posterior reliability estimate. Supports multiple concurrent sessions via `SessionRegistry` — switch between sessions with `/session switch` and close them with `/session close`. Feature-gated behind `tui`.
 
 ## Key Modules
 
@@ -134,6 +134,8 @@ The command palette is opened with `:` in normal mode. Type to fuzzy-filter entr
 | `debug:dump` | Enable debug dump to the configured output directory (equivalent to `/debug-dump`) |
 | `ingest` | Usage hint for `zeph ingest <path>` |
 | `session:new` | Start a new conversation session |
+| `session:switch` | Switch to another open session |
+| `session:close` | Close the current session (refused when only one session is open) |
 | `session:history` | Browse session history (`H` shortcut) |
 | `daemon:connect` | Attach to a running daemon — requires `daemon` feature |
 | `daemon:disconnect` | Detach from daemon |

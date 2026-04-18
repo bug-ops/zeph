@@ -58,6 +58,27 @@ volumes:
   - ~/.zeph/key.txt:/home/zeph/.zeph/key.txt:ro
 ```
 
+### File Permissions
+
+All sensitive files created by Zeph are now protected with mode `0600` (owner read/write only), independent of the process umask. This ensures your secrets are never accidentally readable by other users on the system.
+
+Protected files include:
+- Vault files (`~/.zeph/vault.age`, `~/.zeph/key.txt`)
+- SQLite databases (conversation history, embeddings, metrics)
+- Debug dumps (when enabled)
+- Audit logs (tool execution records, JSONL format)
+- Configuration files (`config.toml`, router state, ACP permissions)
+- MCP server list (`mcpls.toml`)
+
+**Checking permissions manually:**
+
+```bash
+ls -la ~/.zeph/vault.age   # Should show: -rw------- (mode 0600)
+ls -la ~/.zeph/key.txt     # Should show: -rw------- (mode 0600)
+```
+
+Run `zeph doctor` to verify file modes are correct across all sensitive Zeph files.
+
 ## Shell Command Filtering
 
 All shell commands from LLM responses pass through a security filter before execution. Shell command detection uses a tokenizer-based pipeline that splits input into tokens, handles wrapper commands (e.g., `env`, `nohup`, `timeout`), and applies word-boundary matching against blocked patterns. This replaces the prior substring-based approach for more accurate detection with fewer false positives. Commands matching blocked patterns are rejected with detailed error messages.
@@ -401,6 +422,48 @@ All decrypted values in the in-memory secrets map are stored as `BTreeMap<String
 `Secret` no longer derives `Clone`. This is a deliberate trade-off: preventing accidental cloning reduces the number of live copies of a secret value in memory at any given time.
 
 If you need to pass a secret to a function, accept `&Secret` or extract the inner `&str` directly rather than cloning.
+
+## VIGIL Intent-Anchoring Gate
+
+VIGIL is a pre-sanitizer tripwire that scans tool outputs for prompt injection patterns before they reach the LLM context. It operates independently of the DeBERTa/AlignSentinel/TurnCausalAnalyzer stack and uses regex-based pattern matching for low-latency detection.
+
+### Configuration
+
+```toml
+[security.vigil]
+enabled = true                          # Master switch (default: true)
+strict_mode = false                     # Deny on any pattern match; false = log + sanitize (default: false)
+exempt_tools = ["read_file", "shell"]   # Tools exempt from VIGIL checks (default: ["load_skill", "invoke_skill"])
+extra_patterns = []                     # Additional regex patterns to detect (must compile without ReDoS risk)
+```
+
+### Behavior
+
+- **Block mode** (strict_mode = true): Replace flagged content with a sentinel value and log the event
+- **Sanitize mode** (strict_mode = false, default): Truncate flagged content at the injection point and append an annotation note like `[Injection-flagged content truncated by VIGIL]`
+- **Exempt tools**: Tools in the `exempt_tools` list skip VIGIL checks entirely (useful for tools that legitimately process untrusted content)
+- **Subagents**: Sub-agent responses bypass VIGIL checks to avoid cascading denials
+
+### Pattern Detection
+
+VIGIL scans for common prompt injection markers:
+- Prompt switching cues: "ignore previous instructions", "pretend you are", "you are now"
+- System prompt leaks: "system:", "instructions:", "as an AI assistant"
+- Jailbreak attempts: "DAN", "do anything now", "roleplay"
+- Role assumption: "act as", "respond as if", "in the role of"
+
+User-supplied extra patterns are validated for ReDoS resistance (DFA and regex size limits enforced at config validation time).
+
+### Egress Network Logging
+
+When the web scrape tool makes outbound HTTP requests, Zeph records each request to an audit trail with:
+
+- Request timestamp and correlation ID
+- Target domain and HTTP method
+- Response status code and latency
+- Whether content was flagged by VIGIL
+
+Access the audit trail via `view:cost` command palette entry or manually in the metrics.
 
 ## Indirect Prompt Injection (IPI) Defense
 

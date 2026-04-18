@@ -109,6 +109,24 @@ this early load — `AppBuilder::new()` calls `resolve_config_path()` again inde
 - WHEN config file is not found at the resolved path,
   THE SYSTEM SHALL return an error — no further silent fallback occurs.
 
+## `--migrate-config` Idempotency
+
+Issues #3110 / #3118. `migrate-config --in-place` is fully idempotent: running it multiple times on the same config file produces identical output.
+
+### Idempotency Requirements
+
+- Each migration step checks whether the target key already exists before writing it — no duplicate keys are emitted
+- `--in-place` reads the file, applies all migration transforms, and writes back only if content changed
+- A second invocation on an already-migrated file produces no output diff
+
+### Key Invariants
+
+- NEVER write a key that already exists in the config — check presence before add
+- Migration steps are ordered and composable — running step N twice must be equivalent to running it once
+- `--migrate-config` without `--in-place` writes to stdout and never modifies the source file
+
+---
+
 ## Agent Boundaries
 
 ### Always (without asking)

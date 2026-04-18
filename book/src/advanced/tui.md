@@ -88,6 +88,13 @@ When using `--connect`, the TUI renders token-by-token streaming from the remote
 | `Ctrl+K` | Clear message queue |
 | `Ctrl+P` | Open command palette |
 
+**Slash Command Examples:**
+Typing `/` with an empty input shows these and other available commands:
+- `/session next|prev|close` — manage conversations
+- `/recap` — generate a summary of the current discussion
+- `/skills` — list loaded skills
+- `/memory` — show memory statistics
+
 ### Slash-Command Autocomplete
 
 Typing `/` on an empty input line opens an inline autocomplete dropdown above the input area. The dropdown shows up to 8 matching commands and filters in real time as you type more characters.
@@ -140,6 +147,10 @@ Available commands:
 | `view:config` | Show active configuration | |
 | `view:autonomy` | Show autonomy/trust level | |
 | `session:new` | Start new conversation | |
+| `session:switch-next` | Switch to next conversation | |
+| `session:switch-prev` | Switch to previous conversation | |
+| `session:close` | Close current conversation | |
+| `session:recap` | Generate summary of current conversation | |
 | `app:quit` | Quit application | `q` |
 | `app:help` | Show keybindings help | `?` |
 | `app:theme` | Toggle theme (dark/light) | |
@@ -217,9 +228,80 @@ The same `e` key toggles between compact and expanded for tool output blocks as 
 
 When using Ollama models that emit reasoning traces (DeepSeek, Qwen), the `<think>...</think>` segments are rendered in a darker color (DarkGray) to visually separate model reasoning from the final response. Incomplete thinking blocks during streaming are also shown in the darker style.
 
+## Multi-Session Management
+
+Zeph supports multiple independent conversations in a single TUI session. Switch between conversations without losing history or context — each maintains its own message thread, input state, and view position.
+
+### Session Operations
+
+Use the `/session` commands to manage conversations:
+
+| Command | Description |
+|---------|-------------|
+| `/session next` | Switch to the next conversation in creation order |
+| `/session prev` | Switch to the previous conversation |
+| `/session close` | Close the current conversation and revert to the most recent active session |
+| `/session switch <id>` | Jump to a specific conversation by ID |
+
+These commands are also available in the command palette (`Ctrl+P` → search "session").
+
+### Behavior
+
+- **Session switching**: When you switch conversations, the input line is cleared and the chat panel displays the selected conversation's full message history and scroll position.
+- **Single-session mode**: If only one conversation exists, `/session next` and `/session prev` are silent no-ops. `/session close` is refused with a status message.
+- **Blocked switches**: Session switches are prevented while a confirmation modal or elicitation (input prompt) is active. Complete any pending dialog before switching.
+- **Automatic history**: Every conversation's message history, input drafts, and scroll position are automatically saved to SQLite. Closing and reopening Zeph restores the exact state you left.
+
+## Session Recap
+
+When you return to an existing conversation, Zeph automatically generates a brief recap of the prior discussion before accepting new input. The recap is cached and reused across resume sessions unless the conversation history changes.
+
+### Auto-Recap on Resume
+
+When opening a stored conversation that has a cached digest (summary), Zeph displays a recap in the chat panel before the prompt returns focus to the input line. The recap includes:
+
+- Key topics discussed
+- Important decisions or outcomes
+- Links to relevant files or tools mentioned
+
+Recap is automatic and requires no configuration — it uses the same [Session Digest](../reference/configuration.md#sessionrecap) settings as on-demand recap.
+
+### On-Demand Recap with `/recap`
+
+At any time during a conversation, send the `/recap` command to generate a fresh summary of the current discussion. This is useful for:
+
+- Reorienting yourself after a long conversation
+- Getting a summary before making an important decision
+- Explicitly updating the cached digest
+
+### Configuration
+
+Recap behavior is controlled via the `[session.recap]` section in your config:
+
+```toml
+[session.recap]
+# Generate recap automatically when resuming a conversation (default: true)
+on_resume = true
+
+# LLM provider for recap generation; empty uses the primary provider (default: empty)
+# recap_provider = "fast"
+
+# Max tokens to spend on the recap summary (default: 500)
+max_tokens = 500
+
+# Max messages to include in the recap context (default: 50)
+max_input_messages = 50
+```
+
+**Tips:**
+
+- Set `recap_provider` to a fast, cheap model (e.g., `gpt-4o-mini`, `qwen3:8b`) to keep recap generation quick and inexpensive.
+- Increase `max_tokens` for longer or more complex conversations; decrease it for brevity.
+- If auto-recap feels intrusive, set `on_resume = false` and use `/recap` only when you explicitly want a summary.
+
 ## Conversation History
 
-On startup, the TUI loads the latest conversation from SQLite and displays it in the chat panel. This provides continuity across sessions.
+On startup, the TUI loads the latest conversation from SQLite and displays it in the chat panel. This provides continuity across sessions. Use multi-session management and recap to navigate between conversations.
 
 ## Message Queueing
 

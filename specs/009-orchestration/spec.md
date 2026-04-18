@@ -380,6 +380,122 @@ tree_optimized_dispatch = false
 
 ---
 
+## VeriMAP Predicate Gate
+
+Issue #3097. `VeriMAP` (Verify, Map, and Prune) is a predicate-gate layer that runs before task dispatch. Each `TaskNode` may carry a TOML-serialized predicate expression evaluated against the current plan state. Tasks whose predicate evaluates to `false` are skipped (not aborted) for the current tick.
+
+### Predicate Expressions
+
+Predicates are boolean expressions over plan state variables:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `completed(task_id)` | bool | Task completed successfully |
+| `failed(task_id)` | bool | Task failed (any failure) |
+| `running_count` | usize | Number of currently running tasks |
+| `pending_count` | usize | Number of pending tasks |
+
+Expressions combine with `&&`, `||`, `!`, and parentheses.
+
+### Config
+
+```toml
+[orchestration]
+verimap_enabled = false   # opt-in
+```
+
+### Key Invariants
+
+- VeriMAP predicate evaluation runs before topology-based dispatch — a task blocked by predicate is re-evaluated on the next tick
+- Predicate evaluation is pure (no side effects) — it only reads plan state
+- Parse errors at task creation time are hard errors — a task with an invalid predicate expression is rejected at plan construction, not at dispatch
+- NEVER abort a task based on a predicate — only skip for the current tick
+
+---
+
+## AdaptOrch Topology Advisor
+
+Issue #3099. `AdaptOrch` is a bandit-driven topology advisor that runs before `LlmPlanner`. A 16-arm Thompson Beta-bandit (4 task classes × 4 topology hints) learns which topology hint produces better plans for each goal class.
+
+### `TopologyAdvisor`
+
+`TopologyAdvisor::recommend(goal_text)` classifies the goal into a `TaskClass` and samples a `TopologyHint`:
+
+| TaskClass | Description |
+|-----------|-------------|
+| `IndependentBatch` | Fan-out work with no cross-dependencies (research, comparisons) |
+| `SequentialPipeline` | Strict ordering: build→test→deploy, ETL |
+| `HierarchicalDecomp` | Tree decomposition, recursive analysis |
+| `Unknown` | Fallback; defaults to `Hybrid` hint |
+
+| TopologyHint | Prompt sentence injected |
+|--------------|--------------------------|
+| `Parallel` | Prefer maximizing parallel tasks |
+| `Sequential` | Produce a strict linear chain |
+| `Hierarchical` | Decompose into subgoals with 2–3 depth levels |
+| `Hybrid` | No constraint (no sentence injected) |
+
+`record_outcome()` updates the Beta-bandit arm for the (class, hint) pair based on plan quality signals (task completion rate, verifier confidence). State is persisted at shutdown.
+
+### Config
+
+```toml
+[orchestration]
+adapt_orch_enabled = false   # opt-in
+```
+
+### Key Invariants
+
+- `TopologyHint::Hybrid` injects no sentence — `prompt_sentence()` returns `None`
+- Classification failure always produces `TaskClass::Unknown` with `TopologyHint::Hybrid` — no propagated error
+- `record_outcome()` is synchronous — never spawns a background task
+- Bandit state persists between sessions — NEVER reset without explicit user action
+- `TopologyAdvisor` is advisory only — `TopologyClassifier::analyze()` still runs on the produced graph and may override the hint
+
+---
+
+## CoE (Cascade of Experts) Entropy Routing
+
+Issue #3099. `CoE` routes each sub-plan task to the provider whose entropy profile best matches the task's complexity signal. Entropy is estimated from the task description length, dependency depth, and past latency.
+
+### Config
+
+```toml
+[orchestration]
+coe_routing_enabled = false   # opt-in
+coe_routing_provider = ""     # fallback when CoE routing is disabled; empty = planner_provider
+```
+
+### Key Invariants
+
+- `coe_routing_enabled = false` falls back to `planner_provider` for all tasks — no behavioral change
+- CoE routing is per-task, not per-plan — different tasks in the same plan may route to different providers
+
+---
+
+## Graph Persistence in Scheduler Loop
+
+Issue #3107 / #3124. `GraphPersistence::save()` is called from within the `DagScheduler` tick loop after each task state transition. This ensures the graph state is durable across scheduler restarts without requiring a separate flush-on-shutdown step.
+
+### Key Invariants
+
+- `GraphPersistence::save()` is called after every task state transition in `DagScheduler::tick()` — not only at shutdown
+- Save failures are non-fatal — they are logged at `WARN` level and the scheduler continues
+- NEVER call `save()` in the hot path before task dispatch — only after state has actually changed
+
+---
+
+## CascadeDetector Forward Adjacency Cache
+
+Issue #3114. `CascadeDetector` caches the forward adjacency set (direct successors of each task node) to avoid repeated O(E) graph traversal during every tick.
+
+### Key Invariants
+
+- Cache is invalidated on `inject_tasks()` — new task injection resets the adjacency index
+- NEVER use a stale adjacency cache after `inject_tasks()` — must rebuild before next tick
+
+---
+
 ## Cascade Abort Defense
 
 Error cascade defense (arXiv:2603.04474) aborts a DAG when consecutive failures in a

@@ -23,7 +23,7 @@ Parses SKILL.md files (YAML frontmatter + markdown body) from the `.zeph/skills/
 | `trust` | `SkillTrust` — Wilson score Bayesian re-ranking (`posterior_weight`, `posterior_mean`); `check_trust_transition()` for auto-promote/demote; re-exports `TrustLevel` from `zeph-tools` |
 | `watcher` | Filesystem watcher for skill hot-reload |
 | `prompt` | Skill-to-prompt formatting (`full`, `compact`, `auto` modes via `SkillPromptMode`); injects `reliability="N%"` and `uses="N"` health XML attributes |
-| `manager` | `SkillManager` — install, remove, verify, and list external skills (`~/.config/zeph/skills/`) |
+| `manager` | `SkillManager` — install, remove, verify, and list external skills (`~/.config/zeph/skills/`); `install_from_path` / `install_from_url` copy packages with `TrustLevel::Quarantined` default and strip `.bundled` markers to prevent trust escalation |
 | `rl_head` | `RoutingHead` — LinUCB bandit for RL-based skill routing; `ForwardCache` for score memoization; serializable to/from bytes for SQLite persistence |
 | `generator` | `SkillGenerator` — LLM-powered natural language skill generation from user descriptions; `SkillGenerationRequest` / `GeneratedSkill` types |
 | `miner` | `SkillMiner` — GitHub repository mining for skill discovery; `RepoCandidate`, `MinedSkill`, `MiningConfig` |

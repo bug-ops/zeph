@@ -38,6 +38,19 @@ min_score    = 0.55       # minimum similarity threshold
 collection   = "zeph_mcp_tools"
 ```
 
+## outputSchema forwarding
+
+When `mcp.forward_output_schema = true`, Zeph appends a bounded "Expected output schema" hint derived from the MCP tool's `outputSchema` to the tool description sent to the LLM. This enables more accurate tool-result parsing and typed tool chaining. Schema content is sanitized through the injection pipeline; the hint is capped at `mcp.output_schema_hint_bytes` (default: 1024 bytes). The tool cache key covers both `description` and `output_schema` to prevent stale hits on server reconnects.
+
+```toml
+[mcp]
+forward_output_schema    = true
+output_schema_hint_bytes = 1024
+```
+
+> [!NOTE]
+> `forward_output_schema` is supported by Claude and OpenAI backends. Compatible, Gemini, and Ollama providers emit a `WARN` log when the setting is enabled, since those backends do not support structured output schemas.
+
 **Note:**
 > Tool discovery requires an embedding model. Configure `[llm.orchestrator] embedding_model` or set a dedicated `embedding_provider` for the mcp subsystem. When Qdrant is unavailable the index falls back to BM25 keyword matching.
 

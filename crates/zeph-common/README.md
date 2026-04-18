@@ -18,6 +18,7 @@ Provides foundational utilities used across multiple Zeph crates: Unicode-safe s
 | `text` | Unicode-safe string truncation — `truncate_chars`, `truncate_to_chars`, `truncate_to_bytes`, `truncate_to_bytes_ref` |
 | `net` | Network helpers — `is_private_ip()` for IPv4/IPv6 private range detection; used by the SSRF guard in `zeph-tools` and `zeph-acp` |
 | `sanitize` | Low-level sanitization primitives (null byte stripping, control character removal) |
+| `fs_secure` | Secure file I/O helpers — `open_private_truncate`, `append_private`, `write_private`, `atomic_write_private`; all create files with mode `0o600` independent of process umask; `atomic_write_private` uses `O_EXCL` on the temp file and fsyncs before rename for crash safety |
 | `treesitter` | Tree-sitter query constants and parser helpers for Rust, Python, JavaScript, TypeScript, Go (optional, requires `treesitter` feature) |
 
 ## Usage

@@ -50,10 +50,13 @@ Implement adaptive admission control that filters noise while preserving critica
 - Admission check returns `Result<Option<MessageId>>` — None means rejected, not error
 - When [memory.admission] enabled=false, ALL messages admitted (pass-through)
 - Scoring failure is fail-open — admit on any error
+- A-MAC must use `effective_embed_provider()` for all embedding calls — never the primary conversational provider directly. This applies to both the admission `evaluate()` path and the A-MAC bootstrap fallback. `effective_embed_provider()` resolves: first `[[llm.providers]]` entry with `embed = true`, then first with `embedding_model`, then primary.
+- All embedding call sites in semantic submodules (`summarization.rs`, `cross_session.rs`, `recall.rs`) must call `effective_embed_provider()`, not `provider` — this is enforced by `#3035` and `#3154`/`#3162`.
 
 ### Never
 - Treat None from remember() as an error
 - Use admission control as security gate (it's for noise filtering only)
+- Call `provider.embed()` directly in any memory submodule — always use `effective_embed_provider()`
 
 ---
 

@@ -165,6 +165,53 @@ This prevents logs from being silently discarded when stdout/stderr are suppress
 
 `visible_messages()` returns a borrowed reference (`Cow::Borrowed`) instead of cloning the message list. This eliminates ~20,000 `ChatMessage` clones/sec at 2000-message history, reducing idle CPU usage proportional to history depth.
 
+## Multi-Session `SessionRegistry`
+
+Issue #3164. `SessionRegistry` holds per-session state (chat messages, input composer, scroll offset, render cache, paste state) in typed `SessionSlot` structs, keyed by stable `SlotId(u64)`.
+
+Phase-1 (current): always exactly one slot (`SlotId::FIRST`). All per-session fields that were previously on `App` have been relocated to `SessionSlot`. `App` retains shared state that is not session-specific (`queued_count`, `pending_count`, `subagent_sidebar`).
+
+Phase-2 (future): multi-slot rendering and tab bar.
+
+### `/session` Commands
+
+| Command | Action |
+|---------|--------|
+| `/session next` | Cycle to the next session slot (phase-1: no-op, shows placeholder) |
+| `/session prev` | Cycle to the previous session slot |
+| `/session close` | Close the current session slot (phase-1: no-op if only one slot) |
+
+These commands are intercepted by the TUI app before forwarding to the agent. They do NOT reach the agent loop.
+
+### `SessionSlot` Fields
+
+`SessionSlot` owns: `messages`, `scroll_offset`, `render_cache`, `input`, `cursor_position`, `input_mode`, `input_history`, `history_index`, `draft_input`, `paste_state`, `view_target`, `transcript_cache`, `pending_transcript`, `show_splash`, `plan_view_active`, `status_label`.
+
+### Key Invariants (SessionRegistry)
+
+- `SlotId` is assigned once and never reused within a process lifetime
+- `/session` commands are intercepted in `App` before the agent; the agent never sees them
+- `SessionRegistry::bootstrap()` always creates a slot with `SlotId::FIRST` — the registry is never empty after construction
+- NEVER store conversational LLM state in `SessionRegistry` — only UI rendering state belongs here
+
+---
+
+## Compact Paste Indicator
+
+Issue #3054. When the user pastes multi-line content into the TUI input:
+
+- The input widget shows a compact single-line indicator: `[Paste: N lines]` instead of the raw pasted text
+- The full pasted content is preserved in `PasteState` and used for submission
+- In the chat history, pasted multi-line content is rendered as a collapsible block (collapsed by default, toggleable with a key)
+
+### Key Invariants
+
+- Paste indicator must never truncate or lose content — `PasteState` holds the complete original text
+- Collapsible paste blocks in chat history use the standard render cache (`RenderCache`) — not a separate code path
+- Single-line pastes are NOT shown as a compact indicator — only multi-line pastes (≥2 newlines) trigger the indicator
+
+---
+
 ## Key Invariants
 
 - Metrics updated every turn — not only when a specific event fires

@@ -201,6 +201,7 @@ embedding_model = "qwen3-embedding"    # model for text embeddings
 # max_tokens = 4096
 # server_compaction = false            # Enable Claude server-side context compaction (compact-2026-01-12 beta)
 # enable_extended_context = false      # Enable Claude 1M context window (context-1m-2025-08-07 beta, Sonnet/Opus 4.6)
+# prompt_cache_ttl = "1h"              # "1h" = extended TTL beta (writes ~2× cost); omit or "ephemeral" for default ~5 min
 # default = true
 
 # [[llm.providers]]
@@ -415,6 +416,12 @@ edge_history_limit = 100               # Max historical edge versions per source
 # inhibition_threshold = 0.8          # Lateral inhibition threshold (default: 0.8)
 # max_activated_nodes = 50            # Cap on activated nodes (default: 50)
 
+[session.recap]
+on_resume = true              # Auto-generate recap when resuming a stored conversation (default: true)
+# recap_provider = ""           # Provider name for recap generation; empty = primary provider (default: "")
+max_tokens = 500              # Max tokens for the recap summary (default: 500)
+max_input_messages = 50       # Max messages included in recap context (default: 50)
+
 [tools]
 enabled = true
 summarize_output = false      # LLM-based summarization for long tool outputs
@@ -434,6 +441,14 @@ allowed_paths = []          # Directories file tools can access (empty = cwd onl
 [tools.scrape]
 timeout = 15
 max_body_bytes = 1048576  # 1MB
+
+[tools.sandbox]
+# OS-level subprocess isolation for shell commands (macOS: Seatbelt, Linux: bubblewrap + Landlock/seccomp)
+# Defaults: deny (no access), opt-in allow for specific paths
+# disabled = false             # Disable sandboxing and run shell commands unsandboxed (default: false)
+# allow_read = []              # Paths/globs readable by sandboxed commands
+# allow_write = []             # Paths/globs writable by sandboxed commands
+# allow_network = true         # Allow outbound network access (default: true)
 
 [tools.filters]
 enabled = true              # Enable smart output filtering for tool results

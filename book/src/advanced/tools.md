@@ -42,6 +42,65 @@ Each tool executor declares its definitions via `tool_definitions()`. On every L
 
 See [Security](../reference/security.md#file-executor-sandbox) for details on the path validation mechanism.
 
+## OS-Level Process Sandbox
+
+In addition to file path allowlisting, shell commands executed by the agent run inside a platform-native subprocess isolation sandbox. This provides an additional defense layer against accidental or malicious file access and system calls.
+
+### macOS: Seatbelt Profiles
+
+On macOS, shell commands are wrapped with `sandbox-exec -f <profile>.sb -- <cmd>`. A Seatbelt profile is generated per-command (deny-default, explicit allow rules) from a `SandboxPolicy` configuration. The profile is written to a temporary file, passed to the kernel, and cleaned up after command completion.
+
+**Default policy:**
+- Deny all access
+- Allow read/write only to explicitly configured paths
+- Block `/private/tmp`, `/var/folders`, `/private/etc` (system directories)
+- Optional network access control
+
+**Configuration:**
+
+```toml
+[tools.sandbox]
+allow_read = ["/home/user/projects", "/tmp"]
+allow_write = ["/home/user/projects/build"]
+allow_network = true
+```
+
+### Linux: Bubblewrap + Landlock + seccomp
+
+On Linux (requires `sandbox` feature), commands are wrapped with `bwrap <ns-flags> <bind-mounts> --seccomp <fd> -- <cmd>`. Three isolation layers work together:
+
+1. **Namespace isolation** — unshare UTS, IPC, PID (process tree), and optionally USER with UID/GID mapping
+2. **Bind-mount filtering** — only paths listed in `allow_read`/`allow_write` are bind-mounted into the container; rest of filesystem is inaccessible
+3. **seccomp BPF filter** — blocks 16 privilege-escalation syscalls (ptrace, execve-family variants, bpf, perf_event_open, etc.) via deny-list
+
+Landlock filesystem rules (when available) provide an additional capability-based filter.
+
+**Default policy:**
+- Deny all access except read/write to configured paths
+- Block network by default (enable with `allow_network = true`)
+- Cannot escape via syscalls or ptrace
+
+### Fallback: NoopSandbox
+
+On platforms without support (Windows, or missing required tools), sandboxing is disabled with a warning. Commands run unsandboxed but file path allowlisting still applies via `FileExecutor`.
+
+### Configuration
+
+```toml
+[tools.sandbox]
+# disabled = false             # Set to true to disable sandboxing entirely (default: false)
+# allow_read = []              # Paths/globs readable by commands (default: empty = cwd only)
+# allow_write = []             # Paths/globs writable by commands (default: empty = cwd only)
+# allow_network = true         # Allow outbound network (default: true)
+```
+
+### Best Practices
+
+- **Minimize blast radius**: Configure `allow_read` and `allow_write` as tightly as possible. Empty lists restrict access to the current working directory only.
+- **Project directories**: Allow read access to source trees and write access to build output directories.
+- **Secrets**: Keep vault and config files outside the allowed paths; the sandbox cannot access them.
+- **Debugging**: When sandbox violations occur, Zeph logs the denied syscall or path access. Check logs to refine the policy.
+
 ## WebScrapeExecutor — `fetch` tool
 
 In addition to `web_scrape` (CSS-selector-based extraction), `WebScrapeExecutor` exposes a `fetch` tool that returns plain text from a URL without requiring a selector. SSRF validation (HTTPS-only, private IP block, redirect re-validation) is applied identically to both tools.

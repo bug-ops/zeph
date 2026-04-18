@@ -145,6 +145,139 @@ In an active session, use `/skill install <url|path>` and `/skill remove <name>`
 
 See [Skill Trust Levels](../advanced/skill-trust.md) for the full security model.
 
+## Plugin Packages
+
+For distributing and managing multiple related skills, utilities, and configurations together, Zeph supports **plugin packages**. A plugin is a directory containing a `plugin.toml` manifest that bundles:
+
+- Multiple skill directories
+- MCP server entries
+- Configuration overlays (tighten-only: you can only restrict, not expand permissions)
+
+### Plugin Structure
+
+```text
+my-plugin/
+├── plugin.toml                 # Manifest file
+├── skills/
+│   ├── skill-one/
+│   │   └── SKILL.md
+│   └── skill-two/
+│       └── SKILL.md
+└── config/
+    └── overlay.toml            # Optional config tightening rules
+```
+
+### plugin.toml Format
+
+```toml
+[plugin]
+name = "my-plugin"
+version = "1.0.0"
+description = "My plugin description"
+
+# Skills bundled with this plugin (relative paths from plugin root)
+[[plugin.skills]]
+name = "skill-one"
+path = "skills/skill-one"
+
+[[plugin.skills]]
+name = "skill-two"
+path = "skills/skill-two"
+
+# MCP servers managed by this plugin (optional)
+[[plugin.mcp_servers]]
+id = "my-mcp-server"
+command = "python"
+args = ["-m", "my_mcp_module"]
+
+# Configuration overlay — restrictive only (default: empty)
+[plugin.config_overlay]
+# Union of blocked patterns:
+tools.blocked_commands = ["dangerous_pattern"]
+
+# Intersection of allowed patterns (if base is empty, stays empty):
+# tools.allowed_commands = ["safe_pattern"]
+
+# Maximum for numeric fields:
+# skills.disambiguation_threshold = 0.1
+```
+
+### Installing Plugins
+
+Use `zeph plugin add` to install a plugin from a git repository or local path:
+
+```bash
+# From GitHub repository
+zeph plugin add https://github.com/user/zeph-plugin-example.git
+
+# From local directory
+zeph plugin add /path/to/my-plugin
+
+# List installed plugins
+zeph plugin list
+
+# Remove a plugin
+zeph plugin remove my-plugin
+```
+
+Plugins are installed to `~/.local/share/zeph/plugins/<name>/` (XDG standard location). All bundled skills are automatically discovered and hot-reloaded without restart.
+
+**In TUI mode**, use the `/plugins` commands:
+
+```
+/plugins list              # Show installed plugins
+/plugins add <url|path>    # Install a plugin
+/plugins remove <name>     # Remove a plugin
+```
+
+### Plugin Security
+
+- **Path traversal defense**: skill paths in the manifest are canonicalized and must resolve within the plugin root directory
+- **Config overlay validation**: only `tools.blocked_commands`, `tools.allowed_commands`, and `skills.disambiguation_threshold` are permitted; other keys are rejected
+- **Trust escalation filter**: bundled skills are assigned the `Trusted` trust level automatically at startup, bypassing the default `quarantined` level that external skills receive
+
+See [Skill Trust Levels](../advanced/skill-trust.md) for how trust levels control tool access.
+
+## Agent-Invocable Skills
+
+Skills are typically matched to user queries automatically via semantic embedding. With the `invoke_skill` tool, the agent can explicitly fetch and execute any registered skill by name at runtime. This is useful for:
+
+- Skills that should only run when explicitly requested
+- Composing multiple skills in a single response
+- Overriding the default embedding-based matching
+
+### Using invoke_skill in the LLM Response
+
+When the agent needs to reference or use a skill, it calls the `invoke_skill` tool:
+
+```
+I'll use the "git-workflow" skill to help you:
+<invoke_skill>
+{
+  "skill_name": "git-workflow",
+  "args": "--verbose"
+}
+</invoke_skill>
+```
+
+The tool returns the skill body with security-aware sanitization:
+- **Blocked skills**: refused with an error message
+- **Trusted skills**: body returned as-is
+- **Quarantined skills**: body wrapped with a quarantine warning
+
+### CLI Usage
+
+Invoke skills from the command line:
+
+```bash
+zeph skill invoke git-workflow --verbose
+zeph skill invoke deploy-prod --environment staging
+```
+
+### Catalog
+
+The agent sees an `invoke_skill` catalog during context assembly that lists all available skills with their names and descriptions. Use `/skills` in TUI or CLI to see the full registry.
+
 ## Generate a Skill from a Description
 
 Instead of writing SKILL.md manually, use `/skill create` with a natural language description:

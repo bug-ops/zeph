@@ -225,6 +225,43 @@ Timeouts and connection errors automatically map to `transient`. Policy violatio
 
 Tool calls carry an optional `caller_id` field that identifies the originating agent or sub-agent. This field is set automatically when a sub-agent dispatches a tool call and is recorded in the tool audit log. Operators can use `caller_id` to trace which agent issued a specific tool call in multi-agent deployments.
 
+## Tool Output Schema
+
+MCP servers can declare the structure of their tool outputs via the optional `outputSchema` field in a tool definition. Zeph automatically forwards this schema to LLM tool calls (Claude, OpenAI, Gemini, Ollama, and compatible servers), enabling the LLM to better understand and process structured tool results.
+
+**Benefits:**
+
+- LLMs can generate more accurate follow-up tool calls when prior results have known structure
+- Reduces redundant parsing or schema-discovery tool calls
+- Improves multi-step reasoning when output types are known in advance
+
+**Example MCP server output with schema:**
+
+```json
+{
+  "tools": [
+    {
+      "name": "query_database",
+      "description": "Query the database and return structured results",
+      "inputSchema": { ... },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": { "type": "object" }
+          },
+          "count": { "type": "integer" },
+          "query_time_ms": { "type": "number" }
+        }
+      }
+    }
+  ]
+}
+```
+
+Zeph collects `outputSchema` from all connected servers and includes it in the native `ToolDefinition` sent to the LLM during tool calling. No configuration required — it works automatically.
+
 ## How Matching Works
 
 MCP tools are embedded in Qdrant (`zeph_mcp_tools` collection) with BLAKE3 content-hash delta sync. Unified matching injects both skills and MCP tools into the system prompt by relevance score — keeping prompt size O(K) instead of O(N) where N is total tools across all servers.

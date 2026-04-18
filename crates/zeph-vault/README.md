@@ -61,7 +61,7 @@ path = "~/.config/zeph/vault.age"         # only used by "age" backend
 The `env` backend resolves secrets directly from environment variables — no file needed. Use `age` for production deployments where secrets must be stored on disk.
 
 > [!IMPORTANT]
-> Age-encrypted vault files are created with `0o600` permissions. Ensure the key file (`~/.config/zeph/age_key`) is kept secure. Losing the key makes the vault unrecoverable.
+> Age-encrypted vault files are created with `0o600` permissions (owner read/write only), independent of the process umask, using `fs_secure` atomic write helpers from `zeph-common`. Ensure the key file (`~/.config/zeph/age_key`) is kept secure. Losing the key makes the vault unrecoverable. Run `zeph doctor` to verify vault file permissions at any time.
 
 ## Features
 

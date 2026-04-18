@@ -56,17 +56,17 @@ Spec IDs (001–044) follow a logical grouping:
 | Doc | Feature | Crate |
 |---|---|---|
 | `002-agent-loop/spec.md` | Agent loop, turn lifecycle, context pressure, HiAgent subgoal-aware compaction | `zeph-core` |
-| `003-llm-providers/spec.md` | LlmProvider trait, AnyProvider, prompt caching | `zeph-llm` |
+| `003-llm-providers/spec.md` | LlmProvider trait, AnyProvider, prompt caching, configurable `CacheTtl` (ephemeral/1h) | `zeph-llm` |
 | `004-memory/spec.md` | SQLite + Qdrant, compaction, semantic response cache, anchored summarization, compaction probe, importance scoring, A-MAC admission control, MemScene consolidation, multi-vector chunking, GAAMA episode nodes, BATS budget hints, Focus compression, SleepGate forgetting pass, persona memory, trajectory memory, category-aware memory, TiMem tree, microcompact, autoDream, MagicDocs, embed backfill batching | `zeph-memory` |
-| `005-skills/spec.md` | SKILL.md format, registry, matching, hot-reload, skill trust governance, two-stage matching, Wilson score confidence intervals | `zeph-skills` |
-| `006-tools/spec.md` | ToolExecutor, CompositeExecutor, TAFC, schema filter, result cache, dependency graph, tool invocation phase taxonomy, native `tool_use` only | `zeph-tools` |
+| `005-skills/spec.md` | SKILL.md format, registry, matching, hot-reload, skill trust governance, two-stage matching, Wilson score confidence intervals, hub install pipeline, agent-invocable skills (`invoke_skill`) | `zeph-skills` |
+| `006-tools/spec.md` | ToolExecutor, CompositeExecutor, TAFC, schema filter, result cache, dependency graph, tool invocation phase taxonomy, native `tool_use` only; `invoke_skill`/`load_skill` utility-gate exemption | `zeph-tools` |
 | `007-channels/spec.md` | Channel trait, AnyChannel dispatch, streaming, channel feature parity | `zeph-channels` |
 | `008-mcp/spec.md` | MCP client, server lifecycle, semantic tool discovery, per-message pruning cache, injection detection, tool collision detection, caller identity propagation, tool quota, structured error codes, OAP authorization | `zeph-mcp` |
-| `009-orchestration/spec.md` | DAG planner, DagScheduler, AgentRouter, /plan command, plan template cache, VMAO adaptive replanning, cascade-aware DAG routing | `zeph-orchestration` |
-| `010-security/spec.md` | Vault, shell sandbox, content isolation, SSRF protection, IPI defense, PII NER circuit breaker, cross-tool injection correlation, AgentRFC protocol audit, MCP→ACP boundary enforcement, credential env-var scrubbing | cross-cutting |
+| `009-orchestration/spec.md` | DAG planner, DagScheduler, AgentRouter, /plan command, plan template cache, VMAO adaptive replanning, cascade-aware DAG routing, VeriMAP predicate gate, AdaptOrch topology advisor, CoE entropy routing, graph persistence in scheduler loop | `zeph-orchestration` |
+| `010-security/spec.md` | Vault, shell sandbox, content isolation, SSRF protection, IPI defense, PII NER circuit breaker, cross-tool injection correlation, AgentRFC protocol audit, MCP→ACP boundary enforcement, credential env-var scrubbing, file permission hardening (`fs_secure`), Seatbelt deny-first secret-path rules | cross-cutting |
 | `010-security/010-5-egress-logging.md` | Egress logging sub-spec: `EgressEvent` per outbound HTTP call, `AuditEntry.correlation_id`, bounded mpsc telemetry (256 + drop counter), TUI Security panel surface | `zeph-tools`, `zeph-core`, `zeph-tui` |
 | `010-security/010-6-vigil-intent-anchoring.md` | VIGIL verify-before-commit sub-spec: pre-sanitizer regex tripwire with Block/Sanitize action, per-turn `current_turn_intent`, subagent exemption, non-retryable blocks via `error_category="vigil_blocked"` | `zeph-core`, `zeph-tools`, `zeph-config` |
-| `011-tui/spec.md` | ratatui dashboard, spinner rule for background operations, TuiChannel, RenderCache, embed backfill progress | `zeph-tui` |
+| `011-tui/spec.md` | ratatui dashboard, spinner rule for background operations, TuiChannel, RenderCache, embed backfill progress, multi-session `SessionRegistry`, `/session` commands, compact paste indicator | `zeph-tui` |
 | `012-graph-memory/spec.md` | Entity graph, BFS recall, community detection, MAGMA typed edges, SYNAPSE spreading activation | `zeph-memory` |
 | `004-memory/004-6-graph-memory.md` | Graph memory sub-spec (concise reference within 004-memory): MAGMA typed edges, SYNAPSE config, A-MEM link weights, key invariants | `zeph-memory` |
 | `013-acp/spec.md` | ACP transports, session management, permissions, fork/resume, session/close handlers, capability advertisement, /agent.json endpoint | `zeph-acp` |
@@ -76,14 +76,14 @@ Spec IDs (001–044) follow a logical grouping:
 | `017-index/spec.md` | AST indexing, semantic retrieval, repo map generation | `zeph-index` |
 | `018-scheduler/spec.md` | Cron scheduler, SQLite persistence, CLI subcommands (list/add/remove/show) | `zeph-scheduler` |
 | `019-gateway/spec.md` | HTTP webhook ingestion, bearer token authentication | `zeph-gateway` |
-| `020-config-loading/spec.md` | Config resolution order, mode-agnostic defaults, environment overrides | `zeph-core` |
+| `020-config-loading/spec.md` | Config resolution order, mode-agnostic defaults, environment overrides, `--migrate-config --in-place` idempotency | `zeph-core` |
 | `021-zeph-context/spec.md` | `zeph-context` crate: `ContextBudget` token arithmetic, `CompactionState` state machine, `ContextAssembler` parallel fetch, `PreparedContext` output; extracted from `zeph-core` | `zeph-context` |
 | `022-config-simplification/spec.md` | Provider Registry Architecture: canonical `[[llm.providers]]` format, ProviderEntry schema, routing strategies, LinUCB bandit routing, cost-weight dial, memory-augmented routing | `zeph-config`, `zeph-core` |
 | `023-complexity-triage-routing/spec.md` | Pre-inference complexity classification routing, ComplexityTier, TriageRouter, context escalation, metrics | `zeph-llm`, `zeph-config`, `zeph-core` |
 | `024-multi-model-design/spec.md` | Multi-model design principle: complexity tiers, `*_provider` subsystem reference pattern, STT unification | cross-cutting |
 | `025-classifiers/spec.md` | Candle-backed ML classifiers: injection detection, PII detection, LlmClassifier for feedback, unified regex+NER sanitization pipeline | `zeph-classifiers` |
 | `026-tui-subagent-management/spec.md` | Interactive TUI subagent sidebar (a key), j/k navigation, Enter loads transcript, Esc returns, Tab cycling | `zeph-tui` |
-| `027-runtime-layer/spec.md` | RuntimeLayer middleware with before_chat/after_chat/before_tool/after_tool hooks, NoopLayer, LayerContext, unwind guards | `zeph-core` |
+| `027-runtime-layer/spec.md` | RuntimeLayer middleware with before_chat/after_chat/before_tool/after_tool hooks, NoopLayer, LayerContext, unwind guards; plugin config overlay merge (tighten-only) | `zeph-core` |
 | `028-hooks/spec.md` | Reactive hooks: cwd_changed / file_changed events, set_working_directory tool, FileChangeWatcher, ZEPH_* env vars | `zeph-core` |
 | `029-feature-flags/spec.md` | Feature flag decision rules, surviving flag inventory (22 flags), bundle definitions (desktop, ide, server, full) | `Cargo.toml`, cross-cutting |
 | `030-tui-slash-autocomplete/spec.md` | Inline autocomplete dropdown in TUI Insert mode, reuses filter_commands registry, Tab/Enter accepts, Esc dismisses | `zeph-tui` |
@@ -98,7 +98,7 @@ Spec IDs (001–044) follow a logical grouping:
 | `039-background-task-supervisor/spec.md` | (Proposed) Supervised Background Task Manager: AgentTaskSupervisor, task priority classes, queue depth limits, turn-boundary cleanup, metrics (`bg_inflight`, `bg_dropped`) | `zeph-core` |
 | `040-sanitizer/spec.md` | Content Sanitizer: spotlighting pipeline, regex injection detection, PII scrubber, guardrail filter, quarantined summarizer, response verification, exfiltration guards, memory validation, causal analysis (eight-layer defense-in-depth) | `zeph-sanitizer` |
 | `041-experiments/spec.md` | Experiments & Runtime Feature Gating: `[experiments]` config section, ExperimentConfig, rollout percentage, experiment results reporting, CLI subcommands; distinct from compile-time feature flags | `zeph-experiments` |
-| `042-zeph-commands/spec.md` | Slash command registry, `CommandHandler<Ctx>` object-safe trait, `CommandRegistry` with longest-word-boundary dispatch, `ChannelSink` abstraction, static `COMMANDS` list; no dependency on `zeph-core` | `zeph-commands` |
+| `042-zeph-commands/spec.md` | Slash command registry, `CommandHandler<Ctx>` object-safe trait, `CommandRegistry` with longest-word-boundary dispatch, `ChannelSink` abstraction, static `COMMANDS` list; `/recap` command, `/session` TUI commands; no dependency on `zeph-core` | `zeph-commands` |
 | `043-zeph-common/spec.md` | Shared primitives: `Secret` (zeroize-on-drop), `ToolName` (Arc<str>), `SessionId` (UUID v4), `ToolDefinition`, `SkillTrustLevel`, `PolicyLlmClient`; no `zeph-*` peer dependencies | `zeph-common` |
 | `044-subagent-lifecycle/spec.md` | Full `zeph-subagent` crate: `SubAgentDef` parsing, `SubAgentManager` spawning and concurrency cap, `PermissionGrants` TTL, `FilteredToolExecutor` policy gate, transcript JSONL persistence, lifecycle hooks, memory injection | `zeph-subagent` |
 | `045-interop-protocol-gaps/spec.md` | Agent interoperability protocol gap analysis (arXiv:2505.02279): capability matrix for MCP, ACP, A2A, ANP vs. Zeph; protocol selection guidance; ANP as P4 research; ACP re-negotiation as P3 follow-up | cross-cutting |
