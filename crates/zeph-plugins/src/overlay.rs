@@ -345,10 +345,10 @@ mod tests {
     use zeph_config::Config;
 
     fn write_plugin_overlay(plugins_dir: &Path, name: &str, overlay_toml: &str) {
-        let plugin_dir = plugins_dir.join(name);
-        fs::create_dir_all(&plugin_dir).unwrap();
+        let entry_dir = plugins_dir.join(name);
+        fs::create_dir_all(&entry_dir).unwrap();
         fs::write(
-            plugin_dir.join(".plugin.toml"),
+            entry_dir.join(".plugin.toml"),
             format!("[plugin]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n{overlay_toml}"),
         )
         .unwrap();
