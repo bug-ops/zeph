@@ -14,6 +14,7 @@ use crate::file_picker::{FileIndex, FilePickerState};
 use crate::hyperlink::HyperlinkSpan;
 use crate::layout::AppLayout;
 use crate::metrics::MetricsSnapshot;
+use crate::session::SessionRegistry;
 use crate::theme::Theme;
 use crate::widgets;
 use crate::widgets::command_palette::CommandPaletteState;
@@ -23,10 +24,6 @@ pub use crate::render_cache::{RenderCache, RenderCacheEntry, RenderCacheKey, con
 pub use crate::types::{ChatMessage, InputMode, MessageRole};
 
 use crate::types::PasteState;
-
-/// Maximum number of chat messages retained in the TUI message buffer.
-/// Older messages are evicted from the front when the limit is exceeded (#2737).
-const MAX_TUI_MESSAGES: usize = 2000;
 
 /// Maximum number of input history entries retained in the TUI (#2737).
 const MAX_INPUT_HISTORY: usize = 500;
@@ -364,21 +361,18 @@ pub struct ElicitationState {
 /// - [`with_command_tx`](Self::with_command_tx) — slash-command dispatch channel.
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
-    input: String,
-    cursor_position: usize,
-    input_mode: InputMode,
-    messages: Vec<ChatMessage>,
-    show_splash: bool,
+    // SESSION-LOCAL state (10 fields relocated into SessionSlot)
+    pub(crate) sessions: SessionRegistry,
+
+    // GLOBAL state — unchanged from before relocation
     show_side_panels: bool,
     show_help: bool,
-    scroll_offset: usize,
     pub metrics: MetricsSnapshot,
     metrics_rx: Option<watch::Receiver<MetricsSnapshot>>,
     active_panel: Panel,
     tool_expanded: bool,
     compact_tools: bool,
     show_source_labels: bool,
-    status_label: Option<String>,
     throbber_state: throbber_widgets_tui::ThrobberState,
     confirm_state: Option<ConfirmState>,
     elicitation_state: Option<ElicitationState>,
@@ -390,35 +384,19 @@ pub struct App {
     pub should_quit: bool,
     user_input_tx: mpsc::Sender<String>,
     agent_event_rx: mpsc::Receiver<AgentEvent>,
-    input_history: Vec<String>,
-    history_index: Option<usize>,
-    draft_input: String,
+    // GLOBAL — single shared agent queue counters (stays global per arch v2 §7)
     queued_count: usize,
     pending_count: usize,
     editing_queued: bool,
     hyperlinks: Vec<HyperlinkSpan>,
     cancel_signal: Option<Arc<Notify>>,
-    pub render_cache: RenderCache,
     pending_file_index: Option<oneshot::Receiver<FileIndex>>,
-    /// When `true`, the user has toggled back to subagents view despite an active plan.
-    /// Default `false` = auto-show plan view when a graph is active.
-    /// Toggled with the `p` key.
-    plan_view_active: bool,
-    /// Which agent's transcript the chat area is currently displaying.
-    pub view_target: AgentViewTarget,
-    /// Interactive selection state for the subagent sidebar.
+    /// Interactive selection state for the subagent sidebar (stays global per arch v2 E5).
     pub subagent_sidebar: SubAgentSidebarState,
-    /// Cached transcript for the currently-focused subagent.
-    pub transcript_cache: Option<TranscriptCache>,
-    /// Pending transcript load result from background task.
-    pending_transcript: Option<oneshot::Receiver<(Vec<TuiTranscriptEntry>, usize)>>,
     /// Optional handle to the `TaskSupervisor` for the task registry panel.
     task_supervisor: Option<TaskSupervisor>,
     /// Whether the task registry panel is currently visible (toggled by `/tasks`).
     show_task_panel: bool,
-    /// Active paste indicator state. `Some` when a multiline paste is in the buffer
-    /// and the user has not yet edited or submitted the input.
-    paste_state: Option<PasteState>,
     /// Snapshot of supervisor tasks cached once per render tick before `terminal.draw()`.
     ///
     /// Avoids acquiring `TaskSupervisor`'s inner mutex inside the draw closure, which
@@ -455,21 +433,15 @@ impl App {
         agent_event_rx: mpsc::Receiver<AgentEvent>,
     ) -> Self {
         Self {
-            input: String::new(),
-            cursor_position: 0,
-            input_mode: InputMode::Insert,
-            messages: Vec::new(),
-            show_splash: true,
+            sessions: SessionRegistry::bootstrap(),
             show_side_panels: true,
             show_help: false,
-            scroll_offset: 0,
             metrics: MetricsSnapshot::default(),
             metrics_rx: None,
             active_panel: Panel::Chat,
             tool_expanded: false,
             compact_tools: false,
             show_source_labels: false,
-            status_label: None,
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             confirm_state: None,
             elicitation_state: None,
@@ -481,24 +453,15 @@ impl App {
             should_quit: false,
             user_input_tx,
             agent_event_rx,
-            input_history: Vec::new(),
-            history_index: None,
-            draft_input: String::new(),
             queued_count: 0,
             pending_count: 0,
             editing_queued: false,
             hyperlinks: Vec::new(),
             cancel_signal: None,
-            render_cache: RenderCache::default(),
             pending_file_index: None,
-            plan_view_active: false,
-            view_target: AgentViewTarget::Main,
             subagent_sidebar: SubAgentSidebarState::new(),
-            transcript_cache: None,
-            pending_transcript: None,
             task_supervisor: None,
             show_task_panel: false,
-            paste_state: None,
             cached_task_snapshots: Vec::new(),
         }
     }
@@ -508,7 +471,7 @@ impl App {
     /// The splash screen is hidden as soon as the first chat message arrives.
     #[must_use]
     pub fn show_splash(&self) -> bool {
-        self.show_splash
+        self.sessions.current().show_splash
     }
 
     /// Return `true` when the side panels column is visible.
@@ -523,7 +486,32 @@ impl App {
     /// Returns `true` when the user has toggled back to subagents view (plan view overridden).
     #[must_use]
     pub fn plan_view_active(&self) -> bool {
-        self.plan_view_active
+        self.sessions.current().plan_view_active
+    }
+
+    // ---- Accessors for fields relocated into SessionSlot (preserves pub API surface) ----
+
+    /// Returns the active session's render cache.
+    #[must_use]
+    pub fn render_cache(&self) -> &RenderCache {
+        &self.sessions.current().render_cache
+    }
+
+    /// Returns a mutable reference to the active session's render cache.
+    pub fn render_cache_mut(&mut self) -> &mut RenderCache {
+        &mut self.sessions.current_mut().render_cache
+    }
+
+    /// Returns the current chat area view target (main conversation or sub-agent transcript).
+    #[must_use]
+    pub fn view_target(&self) -> &AgentViewTarget {
+        &self.sessions.current().view_target
+    }
+
+    /// Returns the cached transcript for the currently-focused sub-agent, if any.
+    #[must_use]
+    pub fn transcript_cache(&self) -> Option<&TranscriptCache> {
+        self.sessions.current().transcript_cache.as_ref()
     }
 
     /// Populate the message buffer from a persisted session history.
@@ -539,7 +527,9 @@ impl App {
             if role_str == "user"
                 && let Some((tool_name, body)) = parse_tool_output(content, TOOL_SUFFIX)
             {
-                self.messages
+                self.sessions
+                    .current_mut()
+                    .messages
                     .push(ChatMessage::new(MessageRole::Tool, body).with_tool(tool_name.into()));
                 continue;
             }
@@ -555,14 +545,20 @@ impl App {
                 _ => continue,
             };
             if role == MessageRole::User {
-                self.input_history.push(content.to_owned());
+                self.sessions
+                    .current_mut()
+                    .input_history
+                    .push(content.to_owned());
             }
-            self.messages.push(ChatMessage::new(role, content));
+            self.sessions
+                .current_mut()
+                .messages
+                .push(ChatMessage::new(role, content));
         }
         // Enforce the message buffer cap on initial history load as well.
         self.trim_messages();
-        if !self.messages.is_empty() {
-            self.show_splash = false;
+        if !self.sessions.current().messages.is_empty() {
+            self.sessions.current_mut().show_splash = false;
         }
     }
 
@@ -736,7 +732,7 @@ impl App {
                 .as_ref()
                 .map(|s| &s.graph_id);
             if new_graph_id != old_graph_id && new_graph_id.is_some() {
-                self.plan_view_active = false;
+                self.sessions.current_mut().plan_view_active = false;
             }
             self.metrics = new_metrics;
         }
@@ -750,16 +746,16 @@ impl App {
     /// Switch the chat view target. Clears render cache and scroll offset.
     /// All view changes MUST go through this method (W5).
     pub fn set_view_target(&mut self, target: AgentViewTarget) {
-        if self.view_target == target {
+        if self.sessions.current().view_target == target {
             return;
         }
-        self.view_target = target;
-        self.render_cache.clear();
-        self.scroll_offset = 0;
-        self.transcript_cache = None;
-        self.pending_transcript = None;
+        self.sessions.current_mut().view_target = target;
+        self.sessions.current_mut().render_cache.clear();
+        self.sessions.current_mut().scroll_offset = 0;
+        self.sessions.current_mut().transcript_cache = None;
+        self.sessions.current_mut().pending_transcript = None;
         // Kick off transcript load if switching to a subagent.
-        if let AgentViewTarget::SubAgent { ref id, .. } = self.view_target {
+        if let AgentViewTarget::SubAgent { ref id, .. } = self.sessions.current().view_target {
             let id = id.clone();
             self.start_transcript_load(&id);
         }
@@ -781,7 +777,7 @@ impl App {
         };
 
         let (tx, rx) = oneshot::channel();
-        self.pending_transcript = Some(rx);
+        self.sessions.current_mut().pending_transcript = Some(rx);
         // Determine if the agent is still active (for C2: skip warning on partial last line).
         let is_active = self
             .metrics
@@ -798,41 +794,46 @@ impl App {
 
     /// Poll the pending transcript load and install result if ready.
     pub fn poll_pending_transcript(&mut self) {
-        let Some(rx) = self.pending_transcript.as_mut() else {
+        let Some(rx) = self.sessions.current_mut().pending_transcript.as_mut() else {
             return;
         };
         match rx.try_recv() {
             Ok((entries, total)) => {
-                self.pending_transcript = None;
+                self.sessions.current_mut().pending_transcript = None;
                 let turns_at_load = self
+                    .sessions
+                    .current()
                     .view_target
                     .subagent_id()
                     .and_then(|id| self.metrics.sub_agents.iter().find(|sa| sa.id == id))
                     .map_or(0, |sa| sa.turns_used);
-                if let AgentViewTarget::SubAgent { ref id, .. } = self.view_target.clone() {
-                    self.transcript_cache = Some(TranscriptCache {
+                if let AgentViewTarget::SubAgent { ref id, .. } =
+                    self.sessions.current().view_target.clone()
+                {
+                    self.sessions.current_mut().transcript_cache = Some(TranscriptCache {
                         agent_id: id.clone(),
                         entries,
                         turns_at_load,
                         total_in_file: total,
                     });
                 }
-                self.render_cache.clear();
+                self.sessions.current_mut().render_cache.clear();
             }
             Err(oneshot::error::TryRecvError::Empty) => {}
             Err(oneshot::error::TryRecvError::Closed) => {
-                self.pending_transcript = None;
+                self.sessions.current_mut().pending_transcript = None;
             }
         }
     }
 
     /// Check if the transcript needs reloading (turns count increased).
     fn maybe_reload_transcript(&mut self) {
-        let AgentViewTarget::SubAgent { ref id, .. } = self.view_target.clone() else {
+        let AgentViewTarget::SubAgent { ref id, .. } = self.sessions.current().view_target.clone()
+        else {
             return;
         };
         // Don't start a new load while one is already in flight.
-        if self.pending_transcript.is_some() {
+        if self.sessions.current().pending_transcript.is_some() {
             return;
         }
         let current_turns = self
@@ -842,6 +843,8 @@ impl App {
             .find(|sa| sa.id == *id)
             .map_or(0, |sa| sa.turns_used);
         let cached_turns = self
+            .sessions
+            .current()
             .transcript_cache
             .as_ref()
             .map_or(0, |c| c.turns_at_load);
@@ -852,40 +855,41 @@ impl App {
     }
 
     /// Returns the messages to display in the chat area.
-    /// When viewing a subagent, returns transcript entries converted to `ChatMessage`.
+    ///
+    /// Always returns an owned `Vec` — the cost is one clone of at most
+    /// `MAX_TUI_MESSAGES` (2000) ref-counted strings inside `ChatMessage`.
+    /// When viewing a subagent, returns transcript entries converted to [`ChatMessage`].
     /// When no transcript is loaded yet, returns a loading placeholder.
     #[must_use]
-    pub fn visible_messages(&self) -> std::borrow::Cow<'_, [ChatMessage]> {
-        if self.view_target.is_main() {
-            return std::borrow::Cow::Borrowed(&self.messages);
+    pub fn visible_messages(&self) -> Vec<ChatMessage> {
+        let slot = self.sessions.current();
+        if slot.view_target.is_main() {
+            return slot.messages.clone();
         }
-        if let Some(ref cache) = self.transcript_cache {
-            let msgs: Vec<ChatMessage> = cache
+        if let Some(ref cache) = slot.transcript_cache {
+            return cache
                 .entries
                 .iter()
                 .map(TuiTranscriptEntry::to_chat_message)
                 .collect();
-            std::borrow::Cow::Owned(msgs)
-        } else if self.pending_transcript.is_some() {
-            // Loading in progress — show placeholder.
-            std::borrow::Cow::Owned(vec![ChatMessage::new(
+        }
+        if slot.pending_transcript.is_some() {
+            return vec![ChatMessage::new(
                 MessageRole::System,
                 "Loading transcript...".to_owned(),
-            )])
-        } else {
-            // No transcript available.
-            let name = self.view_target.subagent_name().unwrap_or("unknown");
-            std::borrow::Cow::Owned(vec![ChatMessage::new(
-                MessageRole::System,
-                format!("Transcript not available for {name}."),
-            )])
+            )];
         }
+        let name = slot.view_target.subagent_name().unwrap_or("unknown");
+        vec![ChatMessage::new(
+            MessageRole::System,
+            format!("Transcript not available for {name}."),
+        )]
     }
 
     /// Returns the truncation info string if the transcript was truncated.
     #[must_use]
     pub fn transcript_truncation_info(&self) -> Option<String> {
-        let cache = self.transcript_cache.as_ref()?;
+        let cache = self.sessions.current().transcript_cache.as_ref()?;
         if cache.total_in_file > TRANSCRIPT_MAX_ENTRIES {
             Some(format!(
                 "[showing last {TRANSCRIPT_MAX_ENTRIES} of {} messages]",
@@ -901,12 +905,7 @@ impl App {
     /// Shifts the render cache to match the drained messages, preserving cached renders
     /// for the remaining entries and avoiding a full re-render stall (#2775).
     fn trim_messages(&mut self) {
-        if self.messages.len() > MAX_TUI_MESSAGES {
-            let excess = self.messages.len() - MAX_TUI_MESSAGES;
-            self.messages.drain(0..excess);
-            self.render_cache.shift(excess);
-            self.scroll_offset = self.scroll_offset.saturating_sub(excess);
-        }
+        self.sessions.current_mut().trim_messages();
     }
 
     /// Return a slice of all chat messages currently in the buffer.
@@ -915,25 +914,25 @@ impl App {
     /// transcript) use [`visible_messages`](Self::visible_messages) instead.
     #[must_use]
     pub fn messages(&self) -> &[ChatMessage] {
-        &self.messages
+        &self.sessions.current().messages
     }
 
     /// Return the current content of the text input field.
     #[must_use]
     pub fn input(&self) -> &str {
-        &self.input
+        &self.sessions.current().input
     }
 
     /// Return the current input mode (normal vs. insert).
     #[must_use]
     pub fn input_mode(&self) -> InputMode {
-        self.input_mode
+        self.sessions.current().input_mode
     }
 
     /// Return the cursor byte position within the input string.
     #[must_use]
     pub fn cursor_position(&self) -> usize {
-        self.cursor_position
+        self.sessions.current().cursor_position
     }
 
     /// Returns the composer height requested by the current draft, capped at three visible rows.
@@ -946,12 +945,14 @@ impl App {
     /// Returns the number of logical lines in the current draft or indicator.
     #[must_use]
     pub(crate) fn input_line_count(&self) -> u16 {
-        if self.paste_state.is_some()
-            || (self.input.is_empty() && matches!(self.input_mode, InputMode::Insert))
+        if self.sessions.current().paste_state.is_some()
+            || (self.sessions.current().input.is_empty()
+                && matches!(self.sessions.current().input_mode, InputMode::Insert))
         {
             1
         } else {
-            u16::try_from(self.input.matches('\n').count() + 1).unwrap_or(u16::MAX)
+            u16::try_from(self.sessions.current().input.matches('\n').count() + 1)
+                .unwrap_or(u16::MAX)
         }
     }
 
@@ -960,13 +961,13 @@ impl App {
     /// `0` means the view is at the bottom (latest messages visible).
     #[must_use]
     pub fn scroll_offset(&self) -> usize {
-        self.scroll_offset
+        self.sessions.current().scroll_offset
     }
 
     /// Scroll to bottom only if already at (or near) the bottom.
     fn auto_scroll(&mut self) {
-        if self.scroll_offset <= 1 {
-            self.scroll_offset = 0;
+        if self.sessions.current().scroll_offset <= 1 {
+            self.sessions.current_mut().scroll_offset = 0;
         }
     }
 
@@ -982,7 +983,7 @@ impl App {
     /// keypress has occurred since the paste. `None` otherwise.
     #[must_use]
     pub fn paste_state(&self) -> Option<&PasteState> {
-        self.paste_state.as_ref()
+        self.sessions.current().paste_state.as_ref()
     }
 
     /// Return `true` when tool blocks use compact single-line rendering.
@@ -1004,7 +1005,7 @@ impl App {
     pub fn set_show_source_labels(&mut self, v: bool) {
         if self.show_source_labels != v {
             self.show_source_labels = v;
-            self.render_cache.clear();
+            self.sessions.current_mut().render_cache.clear();
         }
     }
 
@@ -1029,7 +1030,7 @@ impl App {
     /// (e.g. `"Searching memory…"`, `"Executing tool: bash"`).
     #[must_use]
     pub fn status_label(&self) -> Option<&str> {
-        self.status_label.as_deref()
+        self.sessions.current().status_label.as_deref()
     }
 
     /// Return the number of messages queued or pending for the agent.
@@ -1051,13 +1052,21 @@ impl App {
     /// Used by the render loop to decide whether to show the activity spinner.
     #[must_use]
     pub fn is_agent_busy(&self) -> bool {
-        self.status_label.is_some() || self.messages.last().is_some_and(|m| m.streaming)
+        self.sessions.current().status_label.is_some()
+            || self
+                .sessions
+                .current()
+                .messages
+                .last()
+                .is_some_and(|m| m.streaming)
     }
 
     /// Return `true` when the last message is a streaming tool output.
     #[must_use]
     pub fn has_running_tool(&self) -> bool {
-        self.messages
+        self.sessions
+            .current()
+            .messages
             .last()
             .is_some_and(|m| m.role == MessageRole::Tool && m.streaming)
     }
@@ -1087,14 +1096,16 @@ impl App {
                 self.throbber_state.calc_next();
             }
             AppEvent::Resize(_, _) => {
-                self.render_cache.clear();
+                self.sessions.current_mut().render_cache.clear();
             }
             AppEvent::MouseScroll(delta) => {
                 if self.confirm_state.is_none() {
                     if delta > 0 {
-                        self.scroll_offset = self.scroll_offset.saturating_add(1);
+                        self.sessions.current_mut().scroll_offset =
+                            self.sessions.current().scroll_offset.saturating_add(1);
                     } else {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        self.sessions.current_mut().scroll_offset =
+                            self.sessions.current().scroll_offset.saturating_sub(1);
                     }
                 }
             }
@@ -1133,14 +1144,16 @@ impl App {
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Chunk(text) => {
-                self.status_label = None;
-                if let Some(last) = self.messages.last_mut()
+                self.sessions.current_mut().status_label = None;
+                if let Some(last) = self.sessions.current_mut().messages.last_mut()
                     && last.role == MessageRole::Assistant
                     && last.streaming
                 {
                     last.content.push_str(&text);
                 } else {
-                    self.messages
+                    self.sessions
+                        .current_mut()
+                        .messages
                         .push(ChatMessage::new(MessageRole::Assistant, text).streaming());
                     self.trim_messages();
                 }
@@ -1149,34 +1162,40 @@ impl App {
                 self.auto_scroll();
             }
             AgentEvent::FullMessage(text) => {
-                self.status_label = None;
+                self.sessions.current_mut().status_label = None;
                 if !text.starts_with("[tool output") {
-                    self.messages
+                    self.sessions
+                        .current_mut()
+                        .messages
                         .push(ChatMessage::new(MessageRole::Assistant, text));
                     self.trim_messages();
                 }
                 self.auto_scroll();
             }
             AgentEvent::Flush => {
-                if let Some(last) = self.messages.last_mut()
+                if let Some(last) = self.sessions.current_mut().messages.last_mut()
                     && last.streaming
                 {
                     last.streaming = false;
-                    let last_idx = self.messages.len().saturating_sub(1);
-                    self.render_cache.invalidate(last_idx);
+                    let last_idx = self.sessions.current().messages.len().saturating_sub(1);
+                    self.sessions
+                        .current_mut()
+                        .render_cache
+                        .invalidate(last_idx);
                 }
             }
             AgentEvent::Typing => {
                 self.pending_count = self.pending_count.saturating_sub(1);
-                self.status_label = Some("thinking...".to_owned());
+                self.sessions.current_mut().status_label = Some("thinking...".to_owned());
             }
             AgentEvent::Status(text) => {
-                self.status_label = if text.is_empty() { None } else { Some(text) };
+                self.sessions.current_mut().status_label =
+                    if text.is_empty() { None } else { Some(text) };
                 self.auto_scroll();
             }
             AgentEvent::ToolStart { tool_name, command } => {
-                self.status_label = None;
-                self.messages.push(
+                self.sessions.current_mut().status_label = None;
+                self.sessions.current_mut().messages.push(
                     ChatMessage::new(MessageRole::Tool, format!("$ {command}\n"))
                         .streaming()
                         .with_tool(tool_name),
@@ -1186,12 +1205,16 @@ impl App {
             }
             AgentEvent::ToolOutputChunk { chunk, .. } => {
                 if let Some(pos) = self
+                    .sessions
+                    .current_mut()
                     .messages
                     .iter()
                     .rposition(|m| m.role == MessageRole::Tool && m.streaming)
                 {
-                    self.messages[pos].content.push_str(&chunk);
-                    self.render_cache.invalidate(pos);
+                    self.sessions.current_mut().messages[pos]
+                        .content
+                        .push_str(&chunk);
+                    self.sessions.current_mut().render_cache.invalidate(pos);
                 }
                 self.auto_scroll();
             }
@@ -1231,7 +1254,9 @@ impl App {
             AgentEvent::DiffReady(diff) => self.handle_diff_ready(diff),
             AgentEvent::CommandResult { output, .. } => {
                 self.command_palette = None;
-                self.messages
+                self.sessions
+                    .current_mut()
+                    .messages
                     .push(ChatMessage::new(MessageRole::System, output));
                 self.trim_messages();
                 self.auto_scroll();
@@ -1247,6 +1272,8 @@ impl App {
 
     fn handle_diff_ready(&mut self, diff: zeph_core::DiffData) {
         if let Some(msg) = self
+            .sessions
+            .current_mut()
             .messages
             .iter_mut()
             .rev()
@@ -1272,6 +1299,8 @@ impl App {
             "TUI ToolOutput event received"
         );
         if let Some(pos) = self
+            .sessions
+            .current_mut()
             .messages
             .iter()
             .rposition(|m| m.role == MessageRole::Tool && m.streaming)
@@ -1282,14 +1311,21 @@ impl App {
             // appending would duplicate the output. Truncating to the header and re-writing
             // body_display produces exactly one copy regardless of whether chunks arrived.
             debug!("finalizing existing streaming Tool message");
-            let header_end = self.messages[pos].content.find('\n').map_or(0, |i| i + 1);
-            self.messages[pos].content.truncate(header_end);
-            self.messages[pos].content.push_str(&output);
-            self.messages[pos].streaming = false;
-            self.messages[pos].diff_data = diff;
-            self.messages[pos].filter_stats = filter_stats;
-            self.messages[pos].kept_lines = kept_lines;
-            self.render_cache.invalidate(pos);
+            let header_end = self.sessions.current_mut().messages[pos]
+                .content
+                .find('\n')
+                .map_or(0, |i| i + 1);
+            self.sessions.current_mut().messages[pos]
+                .content
+                .truncate(header_end);
+            self.sessions.current_mut().messages[pos]
+                .content
+                .push_str(&output);
+            self.sessions.current_mut().messages[pos].streaming = false;
+            self.sessions.current_mut().messages[pos].diff_data = diff;
+            self.sessions.current_mut().messages[pos].filter_stats = filter_stats;
+            self.sessions.current_mut().messages[pos].kept_lines = kept_lines;
+            self.sessions.current_mut().render_cache.invalidate(pos);
         } else if diff.is_some() || filter_stats.is_some() || kept_lines.is_some() {
             // No prior ToolStart: create the message now (legacy fallback).
             debug!("creating new Tool message with diff (no prior ToolStart)");
@@ -1297,9 +1333,11 @@ impl App {
             msg.diff_data = diff;
             msg.filter_stats = filter_stats;
             msg.kept_lines = kept_lines;
-            self.messages.push(msg);
+            self.sessions.current_mut().messages.push(msg);
             self.trim_messages();
         } else if let Some(msg) = self
+            .sessions
+            .current_mut()
             .messages
             .iter_mut()
             .rev()
@@ -1323,13 +1361,14 @@ impl App {
         );
 
         self.draw_header(frame, layout.header);
-        if self.show_splash {
+        if self.sessions.current().show_splash {
             widgets::splash::render(frame, layout.chat);
         } else {
-            let mut cache = std::mem::take(&mut self.render_cache);
+            let mut cache = std::mem::take(&mut self.sessions.current_mut().render_cache);
             let max_scroll = widgets::chat::render(self, frame, layout.chat, &mut cache);
-            self.render_cache = cache;
-            self.scroll_offset = self.scroll_offset.min(max_scroll);
+            self.sessions.current_mut().render_cache = cache;
+            self.sessions.current_mut().scroll_offset =
+                self.sessions.current().scroll_offset.min(max_scroll);
         }
         self.draw_side_panel(frame, &layout);
         widgets::chat::render_activity(self, frame, layout.activity);
@@ -1415,7 +1454,7 @@ impl App {
                 layout.subagents,
                 tick,
             );
-        } else if has_graph && !self.plan_view_active {
+        } else if has_graph && !self.sessions.current().plan_view_active {
             widgets::plan_view::render(&self.metrics, frame, layout.subagents, tick);
         } else if self.has_recent_security_events() {
             widgets::security::render(&self.metrics, frame, layout.subagents);
@@ -1481,7 +1520,7 @@ impl App {
             return;
         }
 
-        match self.input_mode {
+        match self.sessions.current().input_mode {
             InputMode::Normal => self.handle_normal_key(key),
             InputMode::Insert => self.handle_insert_key(key),
         }
@@ -1611,7 +1650,7 @@ impl App {
                 self.show_help = true;
             }
             TuiCommand::NewSession => {
-                self.messages.clear();
+                self.sessions.current_mut().messages.clear();
                 self.push_system_message("New conversation started.".to_owned());
             }
             TuiCommand::ToggleTheme => {
@@ -1685,7 +1724,8 @@ impl App {
                 let _ = self.user_input_tx.try_send("/plan list".to_owned());
             }
             TuiCommand::PlanToggleView => {
-                self.plan_view_active = !self.plan_view_active;
+                self.sessions.current_mut().plan_view_active =
+                    !self.sessions.current().plan_view_active;
             }
             TuiCommand::GraphStats => {
                 self.push_system_message("Loading graph stats...".to_owned());
@@ -1751,14 +1791,64 @@ impl App {
             }
             TuiCommand::PluginAdd => self.prefill_input("/plugins add "),
             TuiCommand::PluginRemove => self.prefill_input("/plugins remove "),
+            TuiCommand::SessionSwitchNext
+            | TuiCommand::SessionSwitchPrev
+            | TuiCommand::SessionClose => self.try_switch(cmd),
             _ => {}
         }
     }
 
+    /// Handle a session switch or close command, blocking when a modal with a response channel
+    /// is open (would deadlock the agent's `confirm()`/`elicit()` call if dismissed silently).
+    fn try_switch(&mut self, cmd: TuiCommand) {
+        if self.confirm_state.is_some() || self.elicitation_state.is_some() {
+            self.push_system_message(
+                "Resolve the current confirmation dialog before switching sessions.".to_owned(),
+            );
+            return;
+        }
+        // Pure-UI overlays carry no response channel — safe to dismiss silently.
+        self.command_palette = None;
+        self.file_picker_state = None;
+        self.slash_autocomplete = None;
+        let prev = self.sessions.active();
+        match cmd {
+            TuiCommand::SessionSwitchNext => self.sessions.switch_next(),
+            TuiCommand::SessionSwitchPrev => self.sessions.switch_prev(),
+            TuiCommand::SessionClose => {
+                let active = self.sessions.active();
+                if !self.sessions.close(active) {
+                    self.push_system_message("Cannot close the last remaining session.".to_owned());
+                }
+            }
+            _ => {}
+        }
+        // Only invalidate render cache when the active slot actually changed.
+        if self.sessions.active() != prev {
+            self.sessions.current_mut().render_cache.clear();
+        }
+    }
+
+    fn parse_session_slash(text: &str) -> Option<TuiCommand> {
+        let tokens: Vec<&str> = text.split_whitespace().collect();
+        match tokens.as_slice() {
+            [cmd, "next"] if cmd.eq_ignore_ascii_case("/session") => {
+                Some(TuiCommand::SessionSwitchNext)
+            }
+            [cmd, "prev"] if cmd.eq_ignore_ascii_case("/session") => {
+                Some(TuiCommand::SessionSwitchPrev)
+            }
+            [cmd, "close"] if cmd.eq_ignore_ascii_case("/session") => {
+                Some(TuiCommand::SessionClose)
+            }
+            _ => None,
+        }
+    }
+
     fn prefill_input(&mut self, prefix: &str) {
-        self.input.clear();
-        self.input.push_str(prefix);
-        self.cursor_position = self.input.len();
+        self.sessions.current_mut().input.clear();
+        self.sessions.current_mut().input.push_str(prefix);
+        self.sessions.current_mut().cursor_position = self.sessions.current().input.len();
     }
 
     fn format_skill_list(&self) -> String {
@@ -1933,10 +2023,12 @@ impl App {
     }
 
     fn push_system_message(&mut self, content: String) {
-        self.show_splash = false;
-        self.messages
+        self.sessions.current_mut().show_splash = false;
+        self.sessions
+            .current_mut()
+            .messages
             .push(ChatMessage::new(MessageRole::System, content));
-        self.scroll_offset = 0;
+        self.sessions.current_mut().scroll_offset = 0;
     }
 
     /// Returns true if there are security events within the last 60 seconds.
@@ -1987,7 +2079,7 @@ impl App {
             }
         }
         // Esc while viewing a subagent transcript returns to Main.
-        if key.code == KeyCode::Esc && !self.view_target.is_main() {
+        if key.code == KeyCode::Esc && !self.sessions.current().view_target.is_main() {
             self.set_view_target(AgentViewTarget::Main);
             return true;
         }
@@ -2006,42 +2098,47 @@ impl App {
             }
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('H') => self.execute_command(TuiCommand::SessionBrowser),
-            KeyCode::Char('i') => self.input_mode = InputMode::Insert,
+            KeyCode::Char('i') => self.sessions.current_mut().input_mode = InputMode::Insert,
             KeyCode::Char(':') => {
                 self.command_palette = Some(CommandPaletteState::new());
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
+                self.sessions.current_mut().scroll_offset =
+                    self.sessions.current().scroll_offset.saturating_add(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                self.sessions.current_mut().scroll_offset =
+                    self.sessions.current().scroll_offset.saturating_sub(1);
             }
             KeyCode::PageUp => {
-                self.scroll_offset = self.scroll_offset.saturating_add(10);
+                self.sessions.current_mut().scroll_offset =
+                    self.sessions.current().scroll_offset.saturating_add(10);
             }
             KeyCode::PageDown => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(10);
+                self.sessions.current_mut().scroll_offset =
+                    self.sessions.current().scroll_offset.saturating_sub(10);
             }
             KeyCode::Home => {
-                self.scroll_offset = if let Some(cache) = &self.transcript_cache {
-                    cache.entries.len()
-                } else {
-                    self.messages.len()
-                };
+                self.sessions.current_mut().scroll_offset =
+                    if let Some(cache) = &self.sessions.current().transcript_cache {
+                        cache.entries.len()
+                    } else {
+                        self.sessions.current().messages.len()
+                    };
             }
             KeyCode::End => {
-                self.scroll_offset = 0;
+                self.sessions.current_mut().scroll_offset = 0;
             }
             KeyCode::Char('d') => {
                 self.show_side_panels = !self.show_side_panels;
             }
             KeyCode::Char('e') => {
                 self.tool_expanded = !self.tool_expanded;
-                self.render_cache.clear();
+                self.sessions.current_mut().render_cache.clear();
             }
             KeyCode::Char('c') => {
                 self.compact_tools = !self.compact_tools;
-                self.render_cache.clear();
+                self.sessions.current_mut().render_cache.clear();
             }
             KeyCode::Tab => {
                 self.active_panel = match self.active_panel {
@@ -2053,17 +2150,18 @@ impl App {
                 };
             }
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.view_target.is_main() {
-                    self.messages.clear();
+                if self.sessions.current().view_target.is_main() {
+                    self.sessions.current_mut().messages.clear();
                 }
-                self.render_cache.clear();
-                self.scroll_offset = 0;
+                self.sessions.current_mut().render_cache.clear();
+                self.sessions.current_mut().scroll_offset = 0;
             }
             KeyCode::Char('?') => {
                 self.show_help = true;
             }
             KeyCode::Char('p') => {
-                self.plan_view_active = !self.plan_view_active;
+                self.sessions.current_mut().plan_view_active =
+                    !self.sessions.current().plan_view_active;
             }
             KeyCode::Char('a') => {
                 self.active_panel = Panel::SubAgents;
@@ -2079,19 +2177,21 @@ impl App {
 
     /// Returns the byte offset of the char at the given char index.
     fn byte_offset_of_char(&self, char_idx: usize) -> usize {
-        self.input
+        self.sessions
+            .current()
+            .input
             .char_indices()
             .nth(char_idx)
-            .map_or(self.input.len(), |(i, _)| i)
+            .map_or(self.sessions.current().input.len(), |(i, _)| i)
     }
 
     fn char_count(&self) -> usize {
-        self.input.chars().count()
+        self.sessions.current().input.chars().count()
     }
 
     fn prev_word_boundary(&self) -> usize {
-        let chars: Vec<char> = self.input.chars().collect();
-        let mut pos = self.cursor_position;
+        let chars: Vec<char> = self.sessions.current().input.chars().collect();
+        let mut pos = self.sessions.current().cursor_position;
         while pos > 0 && !chars[pos - 1].is_alphanumeric() {
             pos -= 1;
         }
@@ -2102,9 +2202,9 @@ impl App {
     }
 
     fn next_word_boundary(&self) -> usize {
-        let chars: Vec<char> = self.input.chars().collect();
+        let chars: Vec<char> = self.sessions.current().input.chars().collect();
         let len = chars.len();
-        let mut pos = self.cursor_position;
+        let mut pos = self.sessions.current().cursor_position;
         while pos < len && chars[pos].is_alphanumeric() {
             pos += 1;
         }
@@ -2115,23 +2215,26 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) {
-        if self.input_mode != InputMode::Insert {
+        if self.sessions.current().input_mode != InputMode::Insert {
             return;
         }
         self.slash_autocomplete = None;
-        let byte_offset = self.byte_offset_of_char(self.cursor_position);
-        self.input.insert_str(byte_offset, text);
-        self.cursor_position += text.chars().count();
+        let byte_offset = self.byte_offset_of_char(self.sessions.current().cursor_position);
+        self.sessions
+            .current_mut()
+            .input
+            .insert_str(byte_offset, text);
+        self.sessions.current_mut().cursor_position += text.chars().count();
 
         let line_count = text.matches('\n').count() + 1;
         if line_count >= 2 {
             // Replace any existing paste indicator — new paste supersedes the old one.
-            self.paste_state = Some(PasteState {
+            self.sessions.current_mut().paste_state = Some(PasteState {
                 line_count,
                 byte_len: text.len(),
             });
         } else {
-            self.paste_state = None;
+            self.sessions.current_mut().paste_state = None;
         }
     }
 
@@ -2144,107 +2247,112 @@ impl App {
         match key.code {
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 // First edit keystroke after paste reveals raw text; clear indicator.
-                self.paste_state = None;
-                let byte_offset = self.byte_offset_of_char(self.cursor_position);
-                self.input.insert(byte_offset, '\n');
-                self.cursor_position += 1;
+                self.sessions.current_mut().paste_state = None;
+                let byte_offset = self.byte_offset_of_char(self.sessions.current().cursor_position);
+                self.sessions.current_mut().input.insert(byte_offset, '\n');
+                self.sessions.current_mut().cursor_position += 1;
             }
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.paste_state = None;
-                let byte_offset = self.byte_offset_of_char(self.cursor_position);
-                self.input.insert(byte_offset, '\n');
-                self.cursor_position += 1;
+                self.sessions.current_mut().paste_state = None;
+                let byte_offset = self.byte_offset_of_char(self.sessions.current().cursor_position);
+                self.sessions.current_mut().input.insert(byte_offset, '\n');
+                self.sessions.current_mut().cursor_position += 1;
             }
             KeyCode::Enter => self.submit_input(),
-            KeyCode::Esc => self.input_mode = InputMode::Normal,
+            KeyCode::Esc => self.sessions.current_mut().input_mode = InputMode::Normal,
             KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
                 // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
-                self.paste_state = None;
+                self.sessions.current_mut().paste_state = None;
                 let boundary = self.prev_word_boundary();
-                if boundary < self.cursor_position {
+                if boundary < self.sessions.current().cursor_position {
                     let start = self.byte_offset_of_char(boundary);
-                    let end = self.byte_offset_of_char(self.cursor_position);
-                    self.input.drain(start..end);
-                    self.cursor_position = boundary;
+                    let end = self.byte_offset_of_char(self.sessions.current().cursor_position);
+                    self.sessions.current_mut().input.drain(start..end);
+                    self.sessions.current_mut().cursor_position = boundary;
                 }
             }
             KeyCode::Backspace => {
                 // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
-                self.paste_state = None;
-                if self.cursor_position > 0 {
-                    let byte_offset = self.byte_offset_of_char(self.cursor_position - 1);
-                    self.input.remove(byte_offset);
-                    self.cursor_position -= 1;
+                self.sessions.current_mut().paste_state = None;
+                if self.sessions.current().cursor_position > 0 {
+                    let byte_offset =
+                        self.byte_offset_of_char(self.sessions.current().cursor_position - 1);
+                    self.sessions.current_mut().input.remove(byte_offset);
+                    self.sessions.current_mut().cursor_position -= 1;
                 }
             }
             KeyCode::Delete => {
                 // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
-                self.paste_state = None;
-                if self.cursor_position < self.char_count() {
-                    let byte_offset = self.byte_offset_of_char(self.cursor_position);
-                    self.input.remove(byte_offset);
+                self.sessions.current_mut().paste_state = None;
+                if self.sessions.current().cursor_position < self.char_count() {
+                    let byte_offset =
+                        self.byte_offset_of_char(self.sessions.current().cursor_position);
+                    self.sessions.current_mut().input.remove(byte_offset);
                 }
             }
             KeyCode::Up => {
                 self.handle_history_up();
             }
             KeyCode::Down => {
-                self.paste_state = None;
-                let Some(i) = self.history_index else {
+                self.sessions.current_mut().paste_state = None;
+                let Some(i) = self.sessions.current().history_index else {
                     return;
                 };
-                let prefix = &self.draft_input;
-                let found = self.input_history[i + 1..]
+                let prefix = &self.sessions.current().draft_input;
+                let found = self.sessions.current().input_history[i + 1..]
                     .iter()
                     .position(|e| prefix.is_empty() || e.starts_with(prefix))
                     .map(|offset| i + 1 + offset);
                 if let Some(idx) = found {
-                    self.history_index = Some(idx);
-                    self.input.clone_from(&self.input_history[idx]);
+                    self.sessions.current_mut().history_index = Some(idx);
+                    let text = self.sessions.current().input_history[idx].clone();
+                    self.sessions.current_mut().input = text;
                 } else {
-                    self.history_index = None;
-                    self.input = std::mem::take(&mut self.draft_input);
+                    self.sessions.current_mut().history_index = None;
+                    self.sessions.current_mut().input =
+                        std::mem::take(&mut self.sessions.current_mut().draft_input);
                 }
-                self.cursor_position = self.char_count();
+                self.sessions.current_mut().cursor_position = self.char_count();
             }
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.paste_state = None;
-                self.cursor_position = self.prev_word_boundary();
+                self.sessions.current_mut().paste_state = None;
+                self.sessions.current_mut().cursor_position = self.prev_word_boundary();
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.paste_state = None;
-                self.cursor_position = self.next_word_boundary();
+                self.sessions.current_mut().paste_state = None;
+                self.sessions.current_mut().cursor_position = self.next_word_boundary();
             }
             KeyCode::Left => {
-                self.paste_state = None;
-                self.cursor_position = self.cursor_position.saturating_sub(1);
+                self.sessions.current_mut().paste_state = None;
+                self.sessions.current_mut().cursor_position =
+                    self.sessions.current().cursor_position.saturating_sub(1);
             }
             KeyCode::Right => {
-                self.paste_state = None;
-                if self.cursor_position < self.char_count() {
-                    self.cursor_position += 1;
+                self.sessions.current_mut().paste_state = None;
+                if self.sessions.current().cursor_position < self.char_count() {
+                    self.sessions.current_mut().cursor_position += 1;
                 }
             }
             KeyCode::Home => {
-                self.paste_state = None;
-                self.cursor_position = 0;
+                self.sessions.current_mut().paste_state = None;
+                self.sessions.current_mut().cursor_position = 0;
             }
             KeyCode::End => {
-                self.paste_state = None;
-                self.cursor_position = self.char_count();
+                self.sessions.current_mut().paste_state = None;
+                self.sessions.current_mut().cursor_position = self.char_count();
             }
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.paste_state = None;
-                self.cursor_position = 0;
+                self.sessions.current_mut().paste_state = None;
+                self.sessions.current_mut().cursor_position = 0;
             }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.paste_state = None;
-                self.cursor_position = self.char_count();
+                self.sessions.current_mut().paste_state = None;
+                self.sessions.current_mut().cursor_position = self.char_count();
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.paste_state = None;
-                self.input.clear();
-                self.cursor_position = 0;
+                self.sessions.current_mut().paste_state = None;
+                self.sessions.current_mut().input.clear();
+                self.sessions.current_mut().cursor_position = 0;
             }
             KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let _ = self.user_input_tx.try_send("/clear-queue".to_owned());
@@ -2254,11 +2362,11 @@ impl App {
             }
             KeyCode::Char(c) => {
                 // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
-                self.paste_state = None;
-                let was_empty = self.input.is_empty();
-                let byte_offset = self.byte_offset_of_char(self.cursor_position);
-                self.input.insert(byte_offset, c);
-                self.cursor_position += 1;
+                self.sessions.current_mut().paste_state = None;
+                let was_empty = self.sessions.current().input.is_empty();
+                let byte_offset = self.byte_offset_of_char(self.sessions.current().cursor_position);
+                self.sessions.current_mut().input.insert(byte_offset, c);
+                self.sessions.current_mut().cursor_position += 1;
                 if c == '/' && was_empty {
                     self.slash_autocomplete = Some(SlashAutocompleteState::new());
                 }
@@ -2280,8 +2388,8 @@ impl App {
                 self.slash_autocomplete = None;
                 if let Some(id) = entry {
                     let slash_form = command_id_to_slash_form(id);
-                    self.input = slash_form;
-                    self.cursor_position = self.char_count();
+                    self.sessions.current_mut().input = slash_form;
+                    self.sessions.current_mut().cursor_position = self.char_count();
                 }
                 if key.code == KeyCode::Enter {
                     self.submit_input();
@@ -2303,16 +2411,16 @@ impl App {
                     .as_mut()
                     .is_none_or(SlashAutocompleteState::pop_char);
                 if dismiss {
-                    self.input.clear();
-                    self.cursor_position = 0;
+                    self.sessions.current_mut().input.clear();
+                    self.sessions.current_mut().cursor_position = 0;
                     self.slash_autocomplete = None;
                 } else {
                     let query = self
                         .slash_autocomplete
                         .as_ref()
                         .map_or(String::new(), |s| s.query.clone());
-                    self.input = format!("/{query}");
-                    self.cursor_position = self.char_count();
+                    self.sessions.current_mut().input = format!("/{query}");
+                    self.sessions.current_mut().cursor_position = self.char_count();
                     if self
                         .slash_autocomplete
                         .as_ref()
@@ -2330,8 +2438,8 @@ impl App {
                     .slash_autocomplete
                     .as_ref()
                     .map_or(String::new(), |s| s.query.clone());
-                self.input = format!("/{query}");
-                self.cursor_position = self.char_count();
+                self.sessions.current_mut().input = format!("/{query}");
+                self.sessions.current_mut().cursor_position = self.char_count();
                 if self
                     .slash_autocomplete
                     .as_ref()
@@ -2345,58 +2453,67 @@ impl App {
     }
 
     fn handle_history_up(&mut self) {
-        self.paste_state = None;
-        if self.input.is_empty() && self.pending_count > 0 && self.history_index.is_none() {
-            if let Some(last) = self.input_history.pop() {
-                self.input = last;
-                self.cursor_position = self.char_count();
+        self.sessions.current_mut().paste_state = None;
+        if self.sessions.current().input.is_empty()
+            && self.pending_count > 0
+            && self.sessions.current().history_index.is_none()
+        {
+            if let Some(last) = self.sessions.current_mut().input_history.pop() {
+                self.sessions.current_mut().input = last;
+                self.sessions.current_mut().cursor_position = self.char_count();
                 self.pending_count -= 1;
                 self.queued_count = self.queued_count.saturating_sub(1);
                 self.editing_queued = true;
                 if let Some(pos) = self
+                    .sessions
+                    .current_mut()
                     .messages
                     .iter()
                     .rposition(|m| m.role == MessageRole::User)
                 {
-                    self.messages.remove(pos);
+                    self.sessions.current_mut().messages.remove(pos);
                 }
                 let _ = self.user_input_tx.try_send("/drop-last-queued".to_owned());
             }
             return;
         }
-        match self.history_index {
+        match self.sessions.current().history_index {
             None => {
-                if self.input_history.is_empty() {
+                if self.sessions.current().input_history.is_empty() {
                     return;
                 }
-                self.draft_input = self.input.clone();
-                let prefix = &self.draft_input;
+                self.sessions.current_mut().draft_input = self.sessions.current().input.clone();
+                let prefix = &self.sessions.current().draft_input;
                 let found = self
+                    .sessions
+                    .current()
                     .input_history
                     .iter()
                     .rposition(|e| prefix.is_empty() || e.starts_with(prefix));
                 let Some(idx) = found else { return };
-                self.history_index = Some(idx);
-                self.input.clone_from(&self.input_history[idx]);
+                self.sessions.current_mut().history_index = Some(idx);
+                let text = self.sessions.current().input_history[idx].clone();
+                self.sessions.current_mut().input = text;
             }
             Some(i) => {
-                let prefix = &self.draft_input;
-                let found = self.input_history[..i]
+                let prefix = &self.sessions.current().draft_input;
+                let found = self.sessions.current().input_history[..i]
                     .iter()
                     .rposition(|e| prefix.is_empty() || e.starts_with(prefix));
                 let Some(idx) = found else { return };
-                self.history_index = Some(idx);
-                self.input.clone_from(&self.input_history[idx]);
+                self.sessions.current_mut().history_index = Some(idx);
+                let text = self.sessions.current().input_history[idx].clone();
+                self.sessions.current_mut().input = text;
             }
         }
-        self.cursor_position = self.char_count();
+        self.sessions.current_mut().cursor_position = self.char_count();
     }
 
     fn open_file_picker(&mut self) {
         let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let needs_rebuild = self.file_index.as_ref().is_none_or(FileIndex::is_stale);
         if needs_rebuild && self.pending_file_index.is_none() {
-            self.status_label = Some("indexing files...".to_owned());
+            self.sessions.current_mut().status_label = Some("indexing files...".to_owned());
             let (tx, rx) = oneshot::channel();
             tokio::task::spawn_blocking(move || {
                 let _ = tx.send(FileIndex::build(&root));
@@ -2421,12 +2538,12 @@ impl App {
                 self.file_index = Some(idx);
                 self.file_picker_state = Some(picker);
                 self.pending_file_index = None;
-                self.status_label = None;
+                self.sessions.current_mut().status_label = None;
             }
             Err(oneshot::error::TryRecvError::Empty) => {}
             Err(oneshot::error::TryRecvError::Closed) => {
                 self.pending_file_index = None;
-                self.status_label = None;
+                self.sessions.current_mut().status_label = None;
             }
         }
     }
@@ -2441,9 +2558,13 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Tab => {
                 if let Some(path) = state.selected_path().map(ToOwned::to_owned) {
-                    let byte_offset = self.byte_offset_of_char(self.cursor_position);
-                    self.input.insert_str(byte_offset, &path);
-                    self.cursor_position += path.chars().count();
+                    let byte_offset =
+                        self.byte_offset_of_char(self.sessions.current().cursor_position);
+                    self.sessions
+                        .current_mut()
+                        .input
+                        .insert_str(byte_offset, &path);
+                    self.sessions.current_mut().cursor_position += path.chars().count();
                 }
                 self.file_picker_state = None;
             }
@@ -2464,26 +2585,38 @@ impl App {
     }
 
     fn submit_input(&mut self) {
-        let text = self.input.trim().to_string();
+        let text = self.sessions.current().input.trim().to_string();
         if text.is_empty() {
             return;
         }
-        self.show_splash = false;
-        self.input_history.push(text.clone());
-        if self.input_history.len() > MAX_INPUT_HISTORY {
-            let excess = self.input_history.len() - MAX_INPUT_HISTORY;
-            self.input_history.drain(0..excess);
+        // Intercept /session slash commands before forwarding to the agent.
+        if let Some(cmd) = Self::parse_session_slash(&text) {
+            self.sessions.current_mut().input.clear();
+            self.sessions.current_mut().cursor_position = 0;
+            self.execute_command(cmd);
+            return;
         }
-        self.history_index = None;
-        self.draft_input.clear();
-        let paste_lines = self.paste_state.take().map(|p| p.line_count);
+        self.sessions.current_mut().show_splash = false;
+        self.sessions.current_mut().input_history.push(text.clone());
+        if self.sessions.current().input_history.len() > MAX_INPUT_HISTORY {
+            let excess = self.sessions.current().input_history.len() - MAX_INPUT_HISTORY;
+            self.sessions.current_mut().input_history.drain(0..excess);
+        }
+        self.sessions.current_mut().history_index = None;
+        self.sessions.current_mut().draft_input.clear();
+        let paste_lines = self
+            .sessions
+            .current_mut()
+            .paste_state
+            .take()
+            .map(|p| p.line_count);
         let mut msg = ChatMessage::new(MessageRole::User, text.clone());
         msg.paste_line_count = paste_lines;
-        self.messages.push(msg);
+        self.sessions.current_mut().messages.push(msg);
         self.trim_messages();
-        self.input.clear();
-        self.cursor_position = 0;
-        self.scroll_offset = 0;
+        self.sessions.current_mut().input.clear();
+        self.sessions.current_mut().cursor_position = 0;
+        self.sessions.current_mut().scroll_offset = 0;
         self.editing_queued = false;
         self.pending_count += 1;
 
@@ -2725,12 +2858,13 @@ fn parse_tool_output(content: &str, suffix: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::MAX_TUI_MESSAGES;
 
     fn make_app() -> (App, mpsc::Receiver<String>, mpsc::Sender<AgentEvent>) {
         let (user_tx, user_rx) = mpsc::channel(16);
         let (agent_tx, agent_rx) = mpsc::channel(16);
         let mut app = App::new(user_tx, agent_rx);
-        app.messages.clear();
+        app.sessions.current_mut().messages.clear();
         (app, user_rx, agent_tx)
     }
 
@@ -2755,7 +2889,7 @@ mod tests {
     #[test]
     fn insert_mode_typing() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "a");
@@ -2765,7 +2899,7 @@ mod tests {
     #[test]
     fn escape_switches_to_normal() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input_mode(), InputMode::Normal);
@@ -2774,7 +2908,7 @@ mod tests {
     #[test]
     fn i_enters_insert_mode() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Normal;
+        app.sessions.current_mut().input_mode = InputMode::Normal;
         let key = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input_mode(), InputMode::Insert);
@@ -2783,7 +2917,7 @@ mod tests {
     #[test]
     fn q_quits_in_normal_mode() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Normal;
+        app.sessions.current_mut().input_mode = InputMode::Normal;
         let key = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
         assert!(app.should_quit);
@@ -2792,9 +2926,9 @@ mod tests {
     #[test]
     fn backspace_deletes_char() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "ab".into();
-        app.cursor_position = 2;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "ab".into();
+        app.sessions.current_mut().cursor_position = 2;
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "a");
@@ -2804,9 +2938,9 @@ mod tests {
     #[test]
     fn enter_submits_input() {
         let (mut app, mut rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "hello".into();
-        app.cursor_position = 5;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "hello".into();
+        app.sessions.current_mut().cursor_position = 5;
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
         assert!(app.input().is_empty());
@@ -2820,7 +2954,7 @@ mod tests {
     #[test]
     fn empty_enter_does_not_submit() {
         let (mut app, mut rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
         assert!(app.messages().is_empty());
@@ -2870,7 +3004,7 @@ mod tests {
     #[test]
     fn scroll_in_normal_mode() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Normal;
+        app.sessions.current_mut().input_mode = InputMode::Normal;
         let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(up));
         assert_eq!(app.scroll_offset(), 1);
@@ -2883,7 +3017,7 @@ mod tests {
     #[test]
     fn tab_cycles_panels() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Normal;
+        app.sessions.current_mut().input_mode = InputMode::Normal;
         assert_eq!(app.active_panel, Panel::Chat);
 
         let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
@@ -2906,9 +3040,9 @@ mod tests {
     #[test]
     fn ctrl_u_clears_input() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "some text".into();
-        app.cursor_position = 9;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "some text".into();
+        app.sessions.current_mut().cursor_position = 9;
         let key = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
         app.handle_event(AppEvent::Key(key));
         assert!(app.input().is_empty());
@@ -2918,9 +3052,9 @@ mod tests {
     #[test]
     fn cursor_movement() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "abc".into();
-        app.cursor_position = 1;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "abc".into();
+        app.sessions.current_mut().cursor_position = 1;
 
         let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(left));
@@ -2946,9 +3080,9 @@ mod tests {
     #[test]
     fn delete_key_removes_char_at_cursor() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "abc".into();
-        app.cursor_position = 1;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "abc".into();
+        app.sessions.current_mut().cursor_position = 1;
         let key = KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "ac");
@@ -2958,7 +3092,7 @@ mod tests {
     #[test]
     fn unicode_input_insert_and_delete() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
 
         // Type multi-byte chars
         for c in "\u{00e9}a\u{1f600}".chars() {
@@ -3059,10 +3193,68 @@ mod tests {
     }
 
     #[test]
+    fn try_switch_blocked_by_confirm_modal() {
+        let (mut app, _rx, _tx) = make_app();
+        let (tx, _oneshot_rx) = tokio::sync::oneshot::channel();
+        app.confirm_state = Some(ConfirmState {
+            prompt: "ok?".into(),
+            response_tx: Some(tx),
+        });
+        let prev_active = app.sessions.active();
+        app.execute_command(TuiCommand::SessionSwitchNext);
+        assert_eq!(app.sessions.active(), prev_active);
+        assert!(
+            app.sessions
+                .current()
+                .messages
+                .iter()
+                .any(|m| m.content.contains("Resolve"))
+        );
+    }
+
+    #[test]
+    fn try_switch_blocked_by_elicitation_modal() {
+        let (mut app, _rx, _tx) = make_app();
+        let (tx, _oneshot_rx) = tokio::sync::oneshot::channel();
+        let req = zeph_core::channel::ElicitationRequest {
+            server_name: "test".into(),
+            message: "test".into(),
+            fields: vec![],
+        };
+        app.elicitation_state = Some(ElicitationState {
+            dialog: crate::widgets::elicitation::ElicitationDialogState::new(req),
+            response_tx: Some(tx),
+        });
+        let prev_active = app.sessions.active();
+        app.execute_command(TuiCommand::SessionSwitchPrev);
+        assert_eq!(app.sessions.active(), prev_active);
+        assert!(
+            app.sessions
+                .current()
+                .messages
+                .iter()
+                .any(|m| m.content.contains("Resolve"))
+        );
+    }
+
+    #[test]
+    fn try_switch_close_refused_on_last_slot() {
+        let (mut app, _rx, _tx) = make_app();
+        app.execute_command(TuiCommand::SessionClose);
+        assert!(
+            app.sessions
+                .current()
+                .messages
+                .iter()
+                .any(|m| m.content.contains("Cannot close"))
+        );
+    }
+
+    #[test]
     fn confirm_modal_blocks_other_keys() {
         let (mut app, _rx, _tx) = make_app();
         let (tx, _oneshot_rx) = tokio::sync::oneshot::channel();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         app.confirm_state = Some(ConfirmState {
             prompt: "test?".into(),
             response_tx: Some(tx),
@@ -3076,9 +3268,9 @@ mod tests {
     #[test]
     fn shift_enter_inserts_newline() {
         let (mut app, mut rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "hello".into();
-        app.cursor_position = 5;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "hello".into();
+        app.sessions.current_mut().cursor_position = 5;
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "hello\n");
@@ -3090,9 +3282,9 @@ mod tests {
     #[test]
     fn ctrl_j_inserts_newline() {
         let (mut app, mut rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "hello".into();
-        app.cursor_position = 5;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "hello".into();
+        app.sessions.current_mut().cursor_position = 5;
         let key = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "hello\n");
@@ -3104,9 +3296,9 @@ mod tests {
     #[test]
     fn shift_enter_mid_input() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "ab".into();
-        app.cursor_position = 1;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "ab".into();
+        app.sessions.current_mut().cursor_position = 1;
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "a\nb");
@@ -3116,7 +3308,7 @@ mod tests {
     #[test]
     fn d_toggles_side_panels() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Normal;
+        app.sessions.current_mut().input_mode = InputMode::Normal;
         assert!(app.show_side_panels());
 
         let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
@@ -3140,7 +3332,7 @@ mod tests {
     #[test]
     fn mouse_scroll_down() {
         let (mut app, _rx, _tx) = make_app();
-        app.scroll_offset = 5;
+        app.sessions.current_mut().scroll_offset = 5;
         app.handle_event(AppEvent::MouseScroll(-1));
         assert_eq!(app.scroll_offset(), 4);
         app.handle_event(AppEvent::MouseScroll(-1));
@@ -3150,7 +3342,7 @@ mod tests {
     #[test]
     fn mouse_scroll_down_saturates_at_zero() {
         let (mut app, _rx, _tx) = make_app();
-        app.scroll_offset = 1;
+        app.sessions.current_mut().scroll_offset = 1;
         app.handle_event(AppEvent::MouseScroll(-1));
         assert_eq!(app.scroll_offset(), 0);
         app.handle_event(AppEvent::MouseScroll(-1));
@@ -3165,7 +3357,7 @@ mod tests {
             prompt: "test?".into(),
             response_tx: Some(tx),
         });
-        app.scroll_offset = 5;
+        app.sessions.current_mut().scroll_offset = 5;
         app.handle_event(AppEvent::MouseScroll(1));
         assert_eq!(app.scroll_offset(), 5);
         app.handle_event(AppEvent::MouseScroll(-1));
@@ -3331,7 +3523,7 @@ mod tests {
     #[test]
     fn question_mark_in_normal_mode_opens_help() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Normal;
+        app.sessions.current_mut().input_mode = InputMode::Normal;
         let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
         assert!(app.show_help);
@@ -3358,7 +3550,7 @@ mod tests {
     #[test]
     fn other_keys_ignored_when_help_open() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         app.show_help = true;
 
         // Typing a character should not modify input
@@ -3386,7 +3578,7 @@ mod tests {
     #[test]
     fn question_mark_in_insert_mode_does_not_open_help() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
         assert!(!app.show_help);
@@ -3405,8 +3597,8 @@ mod tests {
         tokio::task::yield_now().await;
 
         app = app.with_cancel_signal(Arc::clone(&notify));
-        app.input_mode = InputMode::Normal;
-        app.status_label = Some("Thinking...".into());
+        app.sessions.current_mut().input_mode = InputMode::Normal;
+        app.sessions.current_mut().status_label = Some("Thinking...".into());
         assert!(app.is_agent_busy());
 
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
@@ -3420,7 +3612,7 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         let notify = Arc::new(Notify::new());
         app = app.with_cancel_signal(notify);
-        app.input_mode = InputMode::Normal;
+        app.sessions.current_mut().input_mode = InputMode::Normal;
         assert!(!app.is_agent_busy());
 
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
@@ -3431,10 +3623,15 @@ mod tests {
     #[test]
     fn up_with_empty_input_and_queued_recalls_from_history() {
         let (mut app, mut rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         app.pending_count = 2;
-        app.input_history.push("queued msg".into());
-        app.messages
+        app.sessions
+            .current_mut()
+            .input_history
+            .push("queued msg".into());
+        app.sessions
+            .current_mut()
+            .messages
             .push(ChatMessage::new(MessageRole::User, "queued msg"));
 
         let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
@@ -3444,7 +3641,7 @@ mod tests {
         assert_eq!(app.cursor_position(), 10);
         assert!(app.editing_queued());
         assert_eq!(app.queued_count(), 1);
-        assert!(app.input_history.is_empty());
+        assert!(app.sessions.current_mut().input_history.is_empty());
         assert!(app.messages().is_empty());
         let sent = rx.try_recv().unwrap();
         assert_eq!(sent, "/drop-last-queued");
@@ -3453,11 +3650,14 @@ mod tests {
     #[test]
     fn up_with_non_empty_input_navigates_history() {
         let (mut app, mut rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         app.pending_count = 2;
-        app.input = "hello".into();
-        app.cursor_position = 5;
-        app.input_history.push("hello world".into());
+        app.sessions.current_mut().input = "hello".into();
+        app.sessions.current_mut().cursor_position = 5;
+        app.sessions
+            .current_mut()
+            .input_history
+            .push("hello world".into());
 
         let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
@@ -3470,8 +3670,8 @@ mod tests {
     fn submit_input_resets_editing_queued() {
         let (mut app, _rx, _tx) = make_app();
         app.editing_queued = true;
-        app.input = "some text".into();
-        app.cursor_position = 9;
+        app.sessions.current_mut().input = "some text".into();
+        app.sessions.current_mut().cursor_position = 9;
         app.submit_input();
         assert!(!app.editing_queued());
     }
@@ -3479,9 +3679,9 @@ mod tests {
     #[test]
     fn desired_input_height_caps_at_three_visible_lines() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "one\ntwo\nthree\nfour".into();
-        app.cursor_position = app.char_count();
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "one\ntwo\nthree\nfour".into();
+        app.sessions.current_mut().cursor_position = app.char_count();
 
         assert_eq!(app.input_line_count(), 4);
         assert_eq!(app.desired_input_height(), 5);
@@ -3508,9 +3708,9 @@ mod tests {
         #[test]
         fn submit_message_appears_in_chat() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Insert;
-            app.input = "hello world".into();
-            app.cursor_position = 11;
+            app.sessions.current_mut().input_mode = InputMode::Insert;
+            app.sessions.current_mut().input = "hello world".into();
+            app.sessions.current_mut().cursor_position = 11;
             let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(enter));
 
@@ -3521,7 +3721,7 @@ mod tests {
         #[test]
         fn help_overlay_renders() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Normal;
+            app.sessions.current_mut().input_mode = InputMode::Normal;
             let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(key));
 
@@ -3533,7 +3733,7 @@ mod tests {
         #[test]
         fn help_overlay_closes() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Normal;
+            app.sessions.current_mut().input_mode = InputMode::Normal;
             let open = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(open));
             let close = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
@@ -3576,7 +3776,7 @@ mod tests {
         #[test]
         fn side_panels_toggle_off() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Normal;
+            app.sessions.current_mut().input_mode = InputMode::Normal;
 
             let before = draw_app(&mut app, 120, 40);
             assert!(before.contains("Skills"));
@@ -3599,20 +3799,23 @@ mod tests {
         #[test]
         fn splash_disappears_after_submit() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Insert;
-            app.input = "hi".into();
-            app.cursor_position = 2;
+            app.sessions.current_mut().input_mode = InputMode::Insert;
+            app.sessions.current_mut().input = "hi".into();
+            app.sessions.current_mut().cursor_position = 2;
             let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(enter));
 
-            assert!(!app.show_splash, "splash should be hidden after submit");
+            assert!(
+                !app.sessions.current_mut().show_splash,
+                "splash should be hidden after submit"
+            );
         }
 
         #[test]
         fn markdown_link_produces_hyperlink_span() {
             let (mut app, _rx, _tx) = make_app();
-            app.show_splash = false;
-            app.messages.push(ChatMessage::new(
+            app.sessions.current_mut().show_splash = false;
+            app.sessions.current_mut().messages.push(ChatMessage::new(
                 MessageRole::Assistant,
                 "See [docs](https://docs.rs) for details",
             ));
@@ -3629,8 +3832,8 @@ mod tests {
         #[test]
         fn bare_url_still_produces_hyperlink_span() {
             let (mut app, _rx, _tx) = make_app();
-            app.show_splash = false;
-            app.messages.push(ChatMessage::new(
+            app.sessions.current_mut().show_splash = false;
+            app.sessions.current_mut().messages.push(ChatMessage::new(
                 MessageRole::Assistant,
                 "Visit https://example.com today",
             ));
@@ -3648,48 +3851,48 @@ mod tests {
     #[test]
     fn prev_word_boundary_from_middle_of_word() {
         let (mut app, _rx, _tx) = make_app();
-        app.input = "hello world".into();
-        app.cursor_position = 8;
+        app.sessions.current_mut().input = "hello world".into();
+        app.sessions.current_mut().cursor_position = 8;
         assert_eq!(app.prev_word_boundary(), 6);
     }
 
     #[test]
     fn prev_word_boundary_from_start_of_second_word() {
         let (mut app, _rx, _tx) = make_app();
-        app.input = "hello world".into();
-        app.cursor_position = 6;
+        app.sessions.current_mut().input = "hello world".into();
+        app.sessions.current_mut().cursor_position = 6;
         assert_eq!(app.prev_word_boundary(), 0);
     }
 
     #[test]
     fn prev_word_boundary_at_zero_stays_zero() {
         let (mut app, _rx, _tx) = make_app();
-        app.input = "hello world".into();
-        app.cursor_position = 0;
+        app.sessions.current_mut().input = "hello world".into();
+        app.sessions.current_mut().cursor_position = 0;
         assert_eq!(app.prev_word_boundary(), 0);
     }
 
     #[test]
     fn next_word_boundary_from_middle_of_first_word() {
         let (mut app, _rx, _tx) = make_app();
-        app.input = "hello world".into();
-        app.cursor_position = 2;
+        app.sessions.current_mut().input = "hello world".into();
+        app.sessions.current_mut().cursor_position = 2;
         assert_eq!(app.next_word_boundary(), 6);
     }
 
     #[test]
     fn next_word_boundary_from_start_of_second_word() {
         let (mut app, _rx, _tx) = make_app();
-        app.input = "hello world".into();
-        app.cursor_position = 6;
+        app.sessions.current_mut().input = "hello world".into();
+        app.sessions.current_mut().cursor_position = 6;
         assert_eq!(app.next_word_boundary(), 11);
     }
 
     #[test]
     fn next_word_boundary_at_end_stays_at_end() {
         let (mut app, _rx, _tx) = make_app();
-        app.input = "hello world".into();
-        app.cursor_position = 11;
+        app.sessions.current_mut().input = "hello world".into();
+        app.sessions.current_mut().cursor_position = 11;
         assert_eq!(app.next_word_boundary(), 11);
     }
 
@@ -3697,8 +3900,8 @@ mod tests {
     fn prev_word_boundary_unicode() {
         let (mut app, _rx, _tx) = make_app();
         // "привет мир" — 6 chars + space + 3 chars = 10 chars total
-        app.input = "привет мир".into();
-        app.cursor_position = 9;
+        app.sessions.current_mut().input = "привет мир".into();
+        app.sessions.current_mut().cursor_position = 9;
         assert_eq!(app.prev_word_boundary(), 7);
     }
 
@@ -3706,17 +3909,17 @@ mod tests {
     fn next_word_boundary_unicode() {
         let (mut app, _rx, _tx) = make_app();
         // "привет мир" — 6 chars + space + 3 chars
-        app.input = "привет мир".into();
-        app.cursor_position = 2;
+        app.sessions.current_mut().input = "привет мир".into();
+        app.sessions.current_mut().cursor_position = 2;
         assert_eq!(app.next_word_boundary(), 7);
     }
 
     #[test]
     fn alt_left_moves_to_prev_word_boundary() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "hello world".into();
-        app.cursor_position = 8;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "hello world".into();
+        app.sessions.current_mut().cursor_position = 8;
         let key = KeyEvent::new(KeyCode::Left, KeyModifiers::ALT);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.cursor_position(), 6);
@@ -3725,9 +3928,9 @@ mod tests {
     #[test]
     fn alt_right_moves_to_next_word_boundary() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "hello world".into();
-        app.cursor_position = 2;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "hello world".into();
+        app.sessions.current_mut().cursor_position = 2;
         let key = KeyEvent::new(KeyCode::Right, KeyModifiers::ALT);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.cursor_position(), 6);
@@ -3736,9 +3939,9 @@ mod tests {
     #[test]
     fn ctrl_a_moves_cursor_to_start() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "hello world".into();
-        app.cursor_position = 7;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "hello world".into();
+        app.sessions.current_mut().cursor_position = 7;
         let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.cursor_position(), 0);
@@ -3747,9 +3950,9 @@ mod tests {
     #[test]
     fn ctrl_e_moves_cursor_to_end() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "hello world".into();
-        app.cursor_position = 3;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "hello world".into();
+        app.sessions.current_mut().cursor_position = 3;
         let key = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.cursor_position(), 11);
@@ -3758,9 +3961,9 @@ mod tests {
     #[test]
     fn alt_backspace_deletes_to_prev_word_boundary() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "hello world".into();
-        app.cursor_position = 11;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "hello world".into();
+        app.sessions.current_mut().cursor_position = 11;
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "hello ");
@@ -3770,9 +3973,9 @@ mod tests {
     #[test]
     fn alt_backspace_at_boundary_deletes_word_and_space() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "hello world".into();
-        app.cursor_position = 6;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "hello world".into();
+        app.sessions.current_mut().cursor_position = 6;
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "world");
@@ -3782,9 +3985,9 @@ mod tests {
     #[test]
     fn alt_backspace_at_zero_is_noop() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
-        app.input = "hello".into();
-        app.cursor_position = 0;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "hello".into();
+        app.sessions.current_mut().cursor_position = 0;
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
         app.handle_event(AppEvent::Key(key));
         assert_eq!(app.input(), "hello");
@@ -3804,15 +4007,15 @@ mod tests {
                 cursor in 0usize..=100,
             ) {
                 let (mut app, _rx, _tx) = make_app();
-                app.input = input;
+                app.sessions.current_mut().input = input;
                 let len = app.char_count();
-                app.cursor_position = cursor.min(len);
+                app.sessions.current_mut().cursor_position = cursor.min(len);
 
                 let prev = app.prev_word_boundary();
-                prop_assert!(prev <= app.cursor_position, "prev {prev} > cursor {}", app.cursor_position);
+                prop_assert!(prev <= app.sessions.current_mut().cursor_position, "prev {prev} > cursor {}", app.sessions.current_mut().cursor_position);
 
                 let next = app.next_word_boundary();
-                prop_assert!(next >= app.cursor_position, "next {next} < cursor {}", app.cursor_position);
+                prop_assert!(next >= app.sessions.current_mut().cursor_position, "next {next} < cursor {}", app.sessions.current_mut().cursor_position);
                 prop_assert!(next <= len, "next {next} > len {len}");
             }
 
@@ -3822,10 +4025,10 @@ mod tests {
                 cursor in 0usize..=50,
             ) {
                 let (mut app, _rx, _tx) = make_app();
-                app.input_mode = InputMode::Insert;
-                app.input = input;
+                app.sessions.current_mut().input_mode = InputMode::Insert;
+                app.sessions.current_mut().input = input;
                 let len = app.char_count();
-                app.cursor_position = cursor.min(len);
+                app.sessions.current_mut().cursor_position = cursor.min(len);
 
                 let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
                 app.handle_event(AppEvent::Key(key));
@@ -3964,7 +4167,7 @@ mod tests {
         #[test]
         fn colon_in_normal_mode_opens_palette() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Normal;
+            app.sessions.current_mut().input_mode = InputMode::Normal;
             assert!(app.command_palette.is_none());
 
             let key = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE);
@@ -3975,7 +4178,7 @@ mod tests {
         #[test]
         fn esc_closes_palette() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Normal;
+            app.sessions.current_mut().input_mode = InputMode::Normal;
             app.command_palette = Some(crate::widgets::command_palette::CommandPaletteState::new());
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
@@ -3986,7 +4189,7 @@ mod tests {
         #[test]
         fn palette_intercepts_all_keys_except_ctrl_c() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Insert;
+            app.sessions.current_mut().input_mode = InputMode::Insert;
             app.command_palette = Some(crate::widgets::command_palette::CommandPaletteState::new());
 
             // Typing a char goes to palette, not to input field
@@ -4000,7 +4203,7 @@ mod tests {
         #[test]
         fn enter_on_selected_dispatches_command_locally() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Normal;
+            app.sessions.current_mut().input_mode = InputMode::Normal;
             // Open palette
             let colon = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(colon));
@@ -4081,7 +4284,7 @@ mod tests {
         #[test]
         fn colon_in_insert_mode_types_colon() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Insert;
+            app.sessions.current_mut().input_mode = InputMode::Insert;
             let key = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(key));
             assert!(app.command_palette.is_none());
@@ -4249,11 +4452,11 @@ mod tests {
             // without spawning a background build (which requires a Tokio runtime).
             let (idx, _dir) = build_temp_index(&["a.rs"]);
             app.file_index = Some(idx);
-            app.input_mode = InputMode::Insert;
+            app.sessions.current_mut().input_mode = InputMode::Insert;
             let key = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(key));
             assert!(
-                !app.input.contains('@'),
+                !app.sessions.current_mut().input.contains('@'),
                 "@ should not be in input after opening picker"
             );
             assert!(
@@ -4272,7 +4475,7 @@ mod tests {
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(key));
             assert!(app.file_picker_state.is_none());
-            assert!(app.input.is_empty());
+            assert!(app.sessions.current_mut().input.is_empty());
         }
 
         #[test]
@@ -4294,10 +4497,13 @@ mod tests {
 
             assert!(app.file_picker_state.is_none());
             assert!(
-                app.input.contains(&selected),
+                app.sessions.current_mut().input.contains(&selected),
                 "input should contain selected path"
             );
-            assert_eq!(app.cursor_position, selected.chars().count());
+            assert_eq!(
+                app.sessions.current_mut().cursor_position,
+                selected.chars().count()
+            );
         }
 
         #[test]
@@ -4318,7 +4524,7 @@ mod tests {
             app.handle_event(AppEvent::Key(key));
 
             assert!(app.file_picker_state.is_none());
-            assert!(app.input.contains(&selected));
+            assert!(app.sessions.current_mut().input.contains(&selected));
         }
 
         #[test]
@@ -4336,7 +4542,10 @@ mod tests {
             app.handle_event(AppEvent::Key(key));
 
             assert!(app.file_picker_state.is_none());
-            assert!(app.input.is_empty(), "input must be unchanged");
+            assert!(
+                app.sessions.current_mut().input.is_empty(),
+                "input must be unchanged"
+            );
         }
 
         #[test]
@@ -4415,12 +4624,13 @@ mod tests {
             let (idx, _dir) = build_temp_index(&["a.rs"]);
             open_picker_with_index(&mut app, &idx);
 
-            app.input = "hello".into();
-            app.cursor_position = 5;
+            app.sessions.current_mut().input = "hello".into();
+            app.sessions.current_mut().cursor_position = 5;
             let key = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
             app.handle_event(AppEvent::Key(key));
             assert_eq!(
-                app.input, "hello",
+                app.sessions.current_mut().input,
+                "hello",
                 "input should be unchanged while picker is open"
             );
         }
@@ -4431,8 +4641,8 @@ mod tests {
             let (idx, _dir) = build_temp_index(&["src/lib.rs"]);
             open_picker_with_index(&mut app, &idx);
 
-            app.input = "ab".into();
-            app.cursor_position = 1;
+            app.sessions.current_mut().input = "ab".into();
+            app.sessions.current_mut().cursor_position = 1;
 
             let selected = app
                 .file_picker_state
@@ -4445,9 +4655,9 @@ mod tests {
             let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(key));
 
-            assert!(app.input.contains(&selected));
-            assert!(app.input.starts_with('a'));
-            assert!(app.input.ends_with('b'));
+            assert!(app.sessions.current_mut().input.contains(&selected));
+            assert!(app.sessions.current_mut().input.starts_with('a'));
+            assert!(app.sessions.current_mut().input.ends_with('b'));
         }
 
         #[tokio::test]
@@ -4461,7 +4671,7 @@ mod tests {
             let (idx, _dir) = build_temp_index(&["foo.rs"]);
             let _ = tx.send(idx);
             app.pending_file_index = Some(rx);
-            app.status_label = Some("indexing files...".to_owned());
+            app.sessions.current_mut().status_label = Some("indexing files...".to_owned());
 
             // Give the oneshot a moment to be ready (it already is since we sent before assigning)
             tokio::task::yield_now().await;
@@ -4474,7 +4684,7 @@ mod tests {
                 "picker should open after index ready"
             );
             assert!(
-                app.status_label.is_none(),
+                app.sessions.current_mut().status_label.is_none(),
                 "status should be cleared after index ready"
             );
             assert!(
@@ -4506,7 +4716,7 @@ mod tests {
             // Drop sender without sending — simulates spawn_blocking panic
             drop(tx);
             app.pending_file_index = Some(rx);
-            app.status_label = Some("indexing files...".to_owned());
+            app.sessions.current_mut().status_label = Some("indexing files...".to_owned());
 
             app.poll_pending_file_index();
 
@@ -4515,7 +4725,7 @@ mod tests {
                 "closed handle should be consumed"
             );
             assert!(
-                app.status_label.is_none(),
+                app.sessions.current_mut().status_label.is_none(),
                 "status should be cleared on closed sender"
             );
         }
@@ -4932,7 +5142,7 @@ mod tests {
     #[test]
     fn transcript_truncation_info_returns_none_when_not_truncated() {
         let (mut app, _rx, _tx) = make_app();
-        app.transcript_cache = Some(TranscriptCache {
+        app.sessions.current_mut().transcript_cache = Some(TranscriptCache {
             agent_id: "a".into(),
             entries: vec![],
             turns_at_load: 1,
@@ -4945,7 +5155,7 @@ mod tests {
     fn transcript_truncation_info_returns_message_when_truncated() {
         let (mut app, _rx, _tx) = make_app();
         let total = TRANSCRIPT_MAX_ENTRIES + 50;
-        app.transcript_cache = Some(TranscriptCache {
+        app.sessions.current_mut().transcript_cache = Some(TranscriptCache {
             agent_id: "a".into(),
             entries: vec![],
             turns_at_load: 1,
@@ -4964,7 +5174,9 @@ mod tests {
     #[test]
     fn visible_messages_returns_main_messages_when_in_main_view() {
         let (mut app, _rx, _tx) = make_app();
-        app.messages
+        app.sessions
+            .current_mut()
+            .messages
             .push(ChatMessage::new(MessageRole::User, String::from("hello")));
         let msgs = app.visible_messages();
         assert_eq!(msgs.len(), 1);
@@ -4974,11 +5186,11 @@ mod tests {
     #[test]
     fn visible_messages_returns_transcript_when_cache_present() {
         let (mut app, _rx, _tx) = make_app();
-        app.view_target = AgentViewTarget::SubAgent {
+        app.sessions.current_mut().view_target = AgentViewTarget::SubAgent {
             id: "x".into(),
             name: "X".into(),
         };
-        app.transcript_cache = Some(TranscriptCache {
+        app.sessions.current_mut().transcript_cache = Some(TranscriptCache {
             agent_id: "x".into(),
             entries: vec![TuiTranscriptEntry {
                 role: "user".into(),
@@ -4997,13 +5209,13 @@ mod tests {
     #[test]
     fn visible_messages_returns_loading_placeholder_when_pending() {
         let (mut app, _rx, _tx) = make_app();
-        app.view_target = AgentViewTarget::SubAgent {
+        app.sessions.current_mut().view_target = AgentViewTarget::SubAgent {
             id: "x".into(),
             name: "X".into(),
         };
         // Simulate pending by installing a oneshot receiver that is not yet resolved.
         let (_tx2, rx2) = tokio::sync::oneshot::channel::<(Vec<TuiTranscriptEntry>, usize)>();
-        app.pending_transcript = Some(rx2);
+        app.sessions.current_mut().pending_transcript = Some(rx2);
         let msgs = app.visible_messages();
         assert_eq!(msgs.len(), 1);
         assert!(
@@ -5016,7 +5228,7 @@ mod tests {
     #[test]
     fn visible_messages_returns_unavailable_when_no_cache_and_no_pending() {
         let (mut app, _rx, _tx) = make_app();
-        app.view_target = AgentViewTarget::SubAgent {
+        app.sessions.current_mut().view_target = AgentViewTarget::SubAgent {
             id: "x".into(),
             name: "MyAgent".into(),
         };
@@ -5034,31 +5246,31 @@ mod tests {
     #[test]
     fn set_view_target_same_target_is_noop() {
         let (mut app, _rx, _tx) = make_app();
-        app.scroll_offset = 5;
+        app.sessions.current_mut().scroll_offset = 5;
         // Already in Main — set to Main again.
         app.set_view_target(AgentViewTarget::Main);
         // scroll_offset must not be reset because nothing changed.
-        assert_eq!(app.scroll_offset, 5);
+        assert_eq!(app.sessions.current_mut().scroll_offset, 5);
     }
 
     #[test]
     fn set_view_target_clears_cache_and_scroll_on_switch() {
         let (mut app, _rx, _tx) = make_app();
-        app.scroll_offset = 10;
-        app.transcript_cache = Some(TranscriptCache {
+        app.sessions.current_mut().scroll_offset = 10;
+        app.sessions.current_mut().transcript_cache = Some(TranscriptCache {
             agent_id: "a".into(),
             entries: vec![],
             turns_at_load: 1,
             total_in_file: 1,
         });
         // Switch to Main (was implicitly Main — set a SubAgent first).
-        app.view_target = AgentViewTarget::SubAgent {
+        app.sessions.current_mut().view_target = AgentViewTarget::SubAgent {
             id: "a".into(),
             name: "A".into(),
         };
         app.set_view_target(AgentViewTarget::Main);
-        assert_eq!(app.scroll_offset, 0);
-        assert!(app.transcript_cache.is_none());
+        assert_eq!(app.sessions.current_mut().scroll_offset, 0);
+        assert!(app.sessions.current_mut().transcript_cache.is_none());
     }
 
     mod slash_autocomplete_tests {
@@ -5067,7 +5279,7 @@ mod tests {
         #[test]
         fn slash_on_empty_input_opens_autocomplete() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Insert;
+            app.sessions.current_mut().input_mode = InputMode::Insert;
             assert!(app.slash_autocomplete.is_none());
 
             let key = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
@@ -5079,9 +5291,9 @@ mod tests {
         #[test]
         fn no_open_mid_input() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Insert;
-            app.input = "hello ".to_owned();
-            app.cursor_position = 6;
+            app.sessions.current_mut().input_mode = InputMode::Insert;
+            app.sessions.current_mut().input = "hello ".to_owned();
+            app.sessions.current_mut().cursor_position = 6;
 
             let key = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(key));
@@ -5091,11 +5303,11 @@ mod tests {
         #[test]
         fn esc_dismisses_autocomplete() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Insert;
+            app.sessions.current_mut().input_mode = InputMode::Insert;
             app.slash_autocomplete =
                 Some(crate::widgets::slash_autocomplete::SlashAutocompleteState::new());
-            app.input = "/sk".to_owned();
-            app.cursor_position = 3;
+            app.sessions.current_mut().input = "/sk".to_owned();
+            app.sessions.current_mut().cursor_position = 3;
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(key));
@@ -5107,11 +5319,11 @@ mod tests {
         #[test]
         fn at_char_while_autocomplete_open_does_not_open_file_picker() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Insert;
+            app.sessions.current_mut().input_mode = InputMode::Insert;
             app.slash_autocomplete =
                 Some(crate::widgets::slash_autocomplete::SlashAutocompleteState::new());
-            app.input = "/".to_owned();
-            app.cursor_position = 1;
+            app.sessions.current_mut().input = "/".to_owned();
+            app.sessions.current_mut().cursor_position = 1;
 
             let key = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(key));
@@ -5121,11 +5333,11 @@ mod tests {
         #[test]
         fn backspace_removes_slash_and_dismisses() {
             let (mut app, _rx, _tx) = make_app();
-            app.input_mode = InputMode::Insert;
+            app.sessions.current_mut().input_mode = InputMode::Insert;
             app.slash_autocomplete =
                 Some(crate::widgets::slash_autocomplete::SlashAutocompleteState::new());
-            app.input = "/".to_owned();
-            app.cursor_position = 1;
+            app.sessions.current_mut().input = "/".to_owned();
+            app.sessions.current_mut().cursor_position = 1;
 
             let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
             app.handle_event(AppEvent::Key(key));
@@ -5140,13 +5352,15 @@ mod tests {
     fn trim_messages_no_trim_when_within_limit() {
         let (mut app, _rx, _tx) = make_app();
         for i in 0..10 {
-            app.messages
+            app.sessions
+                .current_mut()
+                .messages
                 .push(ChatMessage::new(MessageRole::User, format!("msg {i}")));
         }
-        app.scroll_offset = 5;
+        app.sessions.current_mut().scroll_offset = 5;
         app.trim_messages();
-        assert_eq!(app.messages.len(), 10);
-        assert_eq!(app.scroll_offset, 5);
+        assert_eq!(app.sessions.current_mut().messages.len(), 10);
+        assert_eq!(app.sessions.current_mut().scroll_offset, 5);
     }
 
     #[test]
@@ -5154,13 +5368,15 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         let over = MAX_TUI_MESSAGES + 10;
         for i in 0..over {
-            app.messages
+            app.sessions
+                .current_mut()
+                .messages
                 .push(ChatMessage::new(MessageRole::User, format!("msg {i}")));
         }
-        app.scroll_offset = 20;
+        app.sessions.current_mut().scroll_offset = 20;
         app.trim_messages();
-        assert_eq!(app.messages.len(), MAX_TUI_MESSAGES);
-        assert_eq!(app.scroll_offset, 10); // 20 - 10 excess = 10
+        assert_eq!(app.sessions.current_mut().messages.len(), MAX_TUI_MESSAGES);
+        assert_eq!(app.sessions.current_mut().scroll_offset, 10); // 20 - 10 excess = 10
     }
 
     #[test]
@@ -5168,13 +5384,15 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         let over = MAX_TUI_MESSAGES + 50;
         for i in 0..over {
-            app.messages
+            app.sessions
+                .current_mut()
+                .messages
                 .push(ChatMessage::new(MessageRole::User, format!("msg {i}")));
         }
-        app.scroll_offset = 10; // less than excess (50)
+        app.sessions.current_mut().scroll_offset = 10; // less than excess (50)
         app.trim_messages();
-        assert_eq!(app.messages.len(), MAX_TUI_MESSAGES);
-        assert_eq!(app.scroll_offset, 0); // saturates at 0
+        assert_eq!(app.sessions.current_mut().messages.len(), MAX_TUI_MESSAGES);
+        assert_eq!(app.sessions.current_mut().scroll_offset, 0); // saturates at 0
     }
 
     #[test]
@@ -5275,7 +5493,7 @@ mod tests {
     #[test]
     fn paste_in_normal_mode_ignored() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Normal;
+        app.sessions.current_mut().input_mode = InputMode::Normal;
         app.handle_event(AppEvent::Paste("should not appear".to_owned()));
         assert!(app.input().is_empty());
     }
@@ -5311,7 +5529,7 @@ mod tests {
     #[test]
     fn paste_state_set_for_multiline() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         app.handle_event(AppEvent::Paste("line1\nline2\nline3".to_owned()));
         let ps = app.paste_state().expect("paste_state should be Some");
         assert_eq!(ps.line_count, 3);
@@ -5321,7 +5539,7 @@ mod tests {
     #[test]
     fn paste_state_none_for_single_line() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         app.handle_event(AppEvent::Paste("single line".to_owned()));
         assert!(app.paste_state().is_none());
     }
@@ -5329,7 +5547,7 @@ mod tests {
     #[test]
     fn paste_state_cleared_on_char() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         app.handle_event(AppEvent::Paste("a\nb".to_owned()));
         assert!(app.paste_state().is_some());
         app.handle_event(AppEvent::Key(KeyEvent::new(
@@ -5342,7 +5560,7 @@ mod tests {
     #[test]
     fn paste_state_cleared_on_backspace() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         app.handle_event(AppEvent::Paste("a\nb".to_owned()));
         assert!(app.paste_state().is_some());
         app.handle_event(AppEvent::Key(KeyEvent::new(
@@ -5355,7 +5573,7 @@ mod tests {
     #[test]
     fn paste_state_cleared_on_ctrl_u() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         app.handle_event(AppEvent::Paste("a\nb".to_owned()));
         assert!(app.paste_state().is_some());
         app.handle_event(AppEvent::Key(KeyEvent::new(
@@ -5372,7 +5590,7 @@ mod tests {
     #[test]
     fn paste_state_cleared_on_shift_enter() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         app.handle_event(AppEvent::Paste("a\nb".to_owned()));
         assert!(app.paste_state().is_some());
         app.handle_event(AppEvent::Key(KeyEvent::new(
@@ -5385,7 +5603,7 @@ mod tests {
     #[test]
     fn paste_state_cleared_on_navigation() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
 
         // Left arrow
         app.handle_event(AppEvent::Paste("a\nb".to_owned()));
@@ -5409,7 +5627,7 @@ mod tests {
     #[test]
     fn paste_state_consumed_on_submit() {
         let (mut app, _rx, _tx) = make_app();
-        app.input_mode = InputMode::Insert;
+        app.sessions.current_mut().input_mode = InputMode::Insert;
         app.handle_event(AppEvent::Paste("line1\nline2\nline3\nline4".to_owned()));
         assert!(app.paste_state().is_some());
         app.handle_event(AppEvent::Key(KeyEvent::new(

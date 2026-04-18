@@ -10607,6 +10607,7 @@ dependencies = [
  "crossterm",
  "expectrl",
  "ignore",
+ "indexmap 2.14.0",
  "insta",
  "nucleo-matcher",
  "proptest",

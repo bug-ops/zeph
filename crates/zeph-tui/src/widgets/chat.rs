@@ -35,7 +35,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     // Use visible_messages() to support subagent transcript view.
     let messages = app.visible_messages();
     let truncation_info = app.transcript_truncation_info();
-    let title = if let Some(ref name) = app.view_target.subagent_name().map(str::to_owned) {
+    let title = if let Some(ref name) = app.view_target().subagent_name().map(str::to_owned) {
         format!(" Subagent: {name} ")
     } else {
         " Chat ".to_owned()

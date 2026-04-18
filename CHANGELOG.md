@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **feat(tui): multi-session groundwork phase-1** (#3130) — introduces `SessionSlot` and
+  `SessionRegistry` in `crates/zeph-tui/src/session.rs`. Ten per-session fields
+  (`messages`, `input`, `cursor_position`, `input_mode`, `input_history`, `history_index`,
+  `draft_input`, `paste_state`, `view_target`, `transcript_cache`, `pending_transcript`,
+  `show_splash`, `plan_view_active`, `status_label`, `scroll_offset`, `render_cache`) are
+  relocated from `App` into `SessionSlot`. Phase-1 ships with a single active slot; full
+  multi-slot support and tab-bar rendering are deferred to phase-2.
+  Three new palette commands and slash forms are wired: `/session next`, `/session prev`,
+  `/session close` (single-slot: next/prev are silent no-ops, close is refused).
+  Session switches are blocked while a `confirm_state` or `elicitation_state` modal is
+  open to avoid deadlocking the agent's oneshot response channel.
+
+### Breaking (pre-1.0)
+
+- `zeph-tui`: `App::render_cache`, `App::view_target`, and `App::transcript_cache`
+  are no longer public fields; use `App::render_cache(&self)` / `render_cache_mut(&mut self)`,
+  `App::view_target(&self)`, and `App::transcript_cache(&self)` accessor methods instead.
+  `App::subagent_sidebar` remains a public field (unchanged).
+- `zeph-tui`: `App::visible_messages()` now returns owned `Vec<ChatMessage>` instead of
+  `Cow<'_, [ChatMessage]>`. The only external caller (`widgets/chat.rs`) is updated;
+  no additional `.clone()` is required at call sites.
+
 ### Fixed
 
 - **fix(memory): A-MAC admission control now correctly falls back to embed provider when

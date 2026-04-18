@@ -81,7 +81,7 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
 }
 
 fn subagent_view_segment(app: &App) -> String {
-    if let Some(name) = app.view_target.subagent_name() {
+    if let Some(name) = app.view_target().subagent_name() {
         format!(" | Viewing: {name}")
     } else {
         String::new()

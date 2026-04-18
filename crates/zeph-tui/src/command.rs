@@ -102,6 +102,10 @@ pub enum TuiCommand {
     PluginList,
     PluginAdd,
     PluginRemove,
+    // Multi-session management (#3130, phase-1)
+    SessionSwitchNext,
+    SessionSwitchPrev,
+    SessionClose,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -261,6 +265,27 @@ pub fn command_registry() -> &'static [CommandEntry] {
             category: "plugin",
             shortcut: None,
             command: TuiCommand::PluginRemove,
+        },
+        CommandEntry {
+            id: "session:next",
+            label: "Switch to next session (/session next)",
+            category: "session",
+            shortcut: None,
+            command: TuiCommand::SessionSwitchNext,
+        },
+        CommandEntry {
+            id: "session:prev",
+            label: "Switch to previous session (/session prev)",
+            category: "session",
+            shortcut: None,
+            command: TuiCommand::SessionSwitchPrev,
+        },
+        CommandEntry {
+            id: "session:close",
+            label: "Close current session (/session close)",
+            category: "session",
+            shortcut: None,
+            command: TuiCommand::SessionClose,
         },
     ];
     COMMANDS
@@ -714,8 +739,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_has_twelve_commands() {
-        assert_eq!(command_registry().len(), 16);
+    fn registry_has_correct_count() {
+        assert_eq!(command_registry().len(), 19);
     }
 
     #[test]
@@ -810,6 +835,9 @@ mod tests {
         assert!(all.iter().any(|e| e.id == "app:help"));
         assert!(all.iter().any(|e| e.id == "session:new"));
         assert!(all.iter().any(|e| e.id == "session:history"));
+        assert!(all.iter().any(|e| e.id == "session:next"));
+        assert!(all.iter().any(|e| e.id == "session:prev"));
+        assert!(all.iter().any(|e| e.id == "session:close"));
     }
 
     #[test]

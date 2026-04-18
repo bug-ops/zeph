@@ -48,6 +48,7 @@ pub mod hyperlink;
 pub mod layout;
 pub mod metrics;
 pub mod render_cache;
+pub(crate) mod session;
 #[cfg(test)]
 pub mod test_utils;
 pub mod theme;
