@@ -1,4 +1,4 @@
-FROM rust:1.94-slim AS builder
+FROM rust:1.94-slim@sha256:cf09adf8c3ebaba10779e5c23ff7fe4df4cccdab8a91f199b0c142c53fef3e1a AS builder
 
 ARG CARGO_FEATURES=""
 
@@ -24,7 +24,7 @@ RUN touch src/main.rs && \
     for d in crates/*/src/lib.rs; do touch "$d"; done && \
     cargo build --release ${CARGO_FEATURES:+--features $CARGO_FEATURES}
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
