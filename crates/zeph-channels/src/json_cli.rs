@@ -236,21 +236,21 @@ mod tests {
 
     use super::*;
 
+    struct BufWriter(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for BufWriter {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     /// Returns a `(sink, read_output)` pair. `read_output()` returns captured JSONL lines.
     fn make_test_sink() -> (Arc<JsonEventSink>, impl Fn() -> Vec<String>) {
         let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let buf_read = Arc::clone(&buf);
-
-        struct BufWriter(Arc<Mutex<Vec<u8>>>);
-        impl std::io::Write for BufWriter {
-            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(b);
-                Ok(b.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
 
         let sink = Arc::new(JsonEventSink::with_writer(BufWriter(buf)));
         let read = move || {
@@ -267,13 +267,11 @@ mod tests {
 
     fn event_field<'a>(line: &'a str, key: &str) -> &'a str {
         // minimal parse: find `"key":"value"` in the JSONL line
-        let needle = format!("\"{}\":\"", key);
-        line.find(&needle)
-            .map(|i| {
-                let rest = &line[i + needle.len()..];
-                &rest[..rest.find('"').unwrap_or(rest.len())]
-            })
-            .unwrap_or("")
+        let needle = format!("\"{key}\":\"");
+        line.find(&needle).map_or("", |i| {
+            let rest = &line[i + needle.len()..];
+            &rest[..rest.find('"').unwrap_or(rest.len())]
+        })
     }
 
     #[tokio::test]
