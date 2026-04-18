@@ -23,8 +23,14 @@ pub(crate) fn handle_plugin_command(
 
     let managed_skills_dir = crate::bootstrap::managed_skills_dir();
     let mcp_allowed = config.mcp.allowed_commands.clone();
+    let base_shell_allowed = config.tools.shell.allowed_commands.clone();
 
-    let mgr = zeph_plugins::PluginManager::new(plugins_dir, managed_skills_dir, mcp_allowed);
+    let mgr = zeph_plugins::PluginManager::new(
+        plugins_dir,
+        managed_skills_dir,
+        mcp_allowed,
+        base_shell_allowed,
+    );
 
     match cmd {
         PluginCommand::List => {
@@ -49,6 +55,9 @@ pub(crate) fn handle_plugin_command(
                     "  MCP servers (restart required): {}",
                     result.mcp_server_ids.join(", ")
                 );
+            }
+            for w in &result.warnings {
+                eprintln!("warning: {w}");
             }
             // Pointer to plugin add for future users.
             println!(

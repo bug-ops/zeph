@@ -36,7 +36,14 @@ pub struct AddResult {
     pub installed_skills: Vec<String>,
     /// MCP server IDs declared by this plugin (require agent restart).
     pub mcp_server_ids: Vec<String>,
-    /// Non-fatal warnings (e.g. config overlay value narrowed by tighten semantics).
+    /// Non-fatal warnings produced at install time.
+    ///
+    /// Currently populated when a plugin's `allowed_commands` overlay will
+    /// have no effect because the host's base `tools.shell.allowed_commands`
+    /// is empty (see issue #3149 — tighten-only semantics mean plugins
+    /// cannot widen an empty base allowlist). Callers should surface these
+    /// to the user alongside the success message (`eprintln!` on the CLI,
+    /// appended to the output string on the TUI).
     pub warnings: Vec<String>,
 }
 
@@ -73,6 +80,10 @@ pub struct PluginManager {
     managed_skills_dir: PathBuf,
     /// `mcp.allowed_commands` from the agent config. Used to validate plugin MCP entries.
     mcp_allowed_commands: Vec<String>,
+    /// Host's base `tools.shell.allowed_commands`. Used to warn when a
+    /// plugin overlay will be silently dropped because the base is empty
+    /// (see issue #3149).
+    base_allowed_commands: Vec<String>,
 }
 
 impl PluginManager {
@@ -94,16 +105,21 @@ impl PluginManager {
     /// - `plugins_dir` — root installation directory for plugins.
     /// - `managed_skills_dir` — directory for user-managed skills (conflict detection).
     /// - `mcp_allowed_commands` — allowlist for MCP server commands from agent config.
+    /// - `base_allowed_commands` — host's `tools.shell.allowed_commands`.
+    ///   Used to emit a non-fatal warning when a plugin overlay would be
+    ///   silently dropped at load time (tighten-only invariant).
     #[must_use]
     pub fn new(
         plugins_dir: PathBuf,
         managed_skills_dir: PathBuf,
         mcp_allowed_commands: Vec<String>,
+        base_allowed_commands: Vec<String>,
     ) -> Self {
         Self {
             plugins_dir,
             managed_skills_dir,
             mcp_allowed_commands,
+            base_allowed_commands,
         }
     }
 
@@ -160,6 +176,16 @@ impl PluginManager {
         // Validate config overlay keys.
         validate_overlay_keys(&manifest.config)?;
 
+        let mut warnings: Vec<String> = Vec::new();
+        if let Some(msg) = check_allowed_commands_overlay_effect(
+            &manifest.config,
+            &self.base_allowed_commands,
+            &manifest.plugin.name,
+        ) {
+            tracing::warn!(plugin = %manifest.plugin.name, "{msg}");
+            warnings.push(msg);
+        }
+
         // Validate MCP command allowlist.
         validate_mcp_commands(&manifest.mcp.servers, &self.mcp_allowed_commands)?;
 
@@ -200,7 +226,7 @@ impl PluginManager {
             plugin_root: dest,
             installed_skills: skill_names,
             mcp_server_ids,
-            warnings: Vec::new(),
+            warnings,
         })
     }
 
@@ -416,6 +442,41 @@ pub(crate) fn validate_plugin_name(name: &str) -> Result<(), PluginError> {
     Ok(())
 }
 
+/// Returns a warning message if the plugin's `allowed_commands` overlay
+/// will be silently dropped because the host's base allowlist is empty.
+///
+/// Returns `None` when the overlay is absent or empty, or when the base
+/// allowlist is non-empty (in which case the overlay will narrow it and
+/// the existing `tracing::info!` in `apply_resolved` already signals the
+/// transition at load time).
+fn check_allowed_commands_overlay_effect(
+    config: &toml::Value,
+    base_allowed: &[String],
+    plugin_name: &str,
+) -> Option<String> {
+    let overlay_has_entries = config
+        .as_table()
+        .and_then(|t| t.get("tools"))
+        .and_then(toml::Value::as_table)
+        .and_then(|t| t.get("allowed_commands"))
+        .and_then(toml::Value::as_array)
+        .is_some_and(|arr| arr.iter().any(toml::Value::is_str));
+
+    if !overlay_has_entries {
+        return None;
+    }
+    if !base_allowed.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "plugin {plugin_name:?} declares allowed_commands overlay but the host \
+         has no tools.shell.allowed_commands configured; overlay will have no effect \
+         at load time (tighten-only: plugins cannot widen an empty base allowlist). \
+         Install proceeds. To use this overlay, set tools.shell.allowed_commands \
+         in your base config."
+    ))
+}
+
 /// Validate all keys in the `[config]` overlay are in the tighten-only safelist.
 pub(crate) fn validate_overlay_keys(config: &toml::Value) -> Result<(), PluginError> {
     let table = match config.as_table() {
@@ -595,7 +656,7 @@ path = "skills/{skill}"
 
         let plugins_dir = tmp.path().join("plugins");
         let managed_dir = tmp.path().join("managed");
-        let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![]);
+        let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![], vec![]);
 
         let result = mgr.add(source.to_str().unwrap()).unwrap();
         assert_eq!(result.name, "test-plugin");
@@ -619,7 +680,7 @@ path = "skills/{skill}"
 
         let plugins_dir = tmp.path().join("plugins");
         let managed_dir = tmp.path().join("managed");
-        let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![]);
+        let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![], vec![]);
         mgr.add(source.to_str().unwrap()).unwrap();
 
         // .bundled markers must not exist in the installed tree.
@@ -647,7 +708,7 @@ command = "dangerous-binary"
 
         let plugins_dir = tmp.path().join("plugins");
         let managed_dir = tmp.path().join("managed");
-        let mgr = PluginManager::new(plugins_dir, managed_dir, vec!["npx".to_owned()]);
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec!["npx".to_owned()], vec![]);
 
         let err = mgr.add(source.to_str().unwrap()).unwrap_err();
         assert!(matches!(err, PluginError::DisallowedMcpCommand { .. }));
@@ -669,7 +730,7 @@ model = "evil"
 
         let plugins_dir = tmp.path().join("plugins");
         let managed_dir = tmp.path().join("managed");
-        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![]);
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
         let err = mgr.add(source.to_str().unwrap()).unwrap_err();
         assert!(matches!(err, PluginError::UnsafeOverlay { .. }));
@@ -691,7 +752,7 @@ max_active_skills = 10
 
         let plugins_dir = tmp.path().join("plugins");
         let managed_dir = tmp.path().join("managed");
-        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![]);
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
         let err = mgr.add(source.to_str().unwrap()).unwrap_err();
         assert!(matches!(err, PluginError::UnsafeOverlay { .. }));
@@ -716,7 +777,7 @@ blocked_commands = ["rm -rf"]
 
         let plugins_dir = tmp.path().join("plugins");
         let managed_dir = tmp.path().join("managed");
-        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![]);
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
         let result = mgr.add(source.to_str().unwrap()).unwrap();
         assert_eq!(result.name, "safe-overlay");
     }
@@ -734,7 +795,7 @@ blocked_commands = ["rm -rf"]
 
         let plugins_dir = tmp.path().join("plugins");
         let managed_dir = tmp.path().join("managed");
-        let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![]);
+        let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![], vec![]);
         mgr.add(source.to_str().unwrap()).unwrap();
 
         let result = mgr.remove("removable").unwrap();
@@ -748,7 +809,7 @@ blocked_commands = ["rm -rf"]
     fn remove_nonexistent_plugin_returns_not_found() {
         let tmp = tempfile::tempdir().unwrap();
         let plugins_dir = tmp.path().join("plugins");
-        let mgr = PluginManager::new(plugins_dir, tmp.path().to_path_buf(), vec![]);
+        let mgr = PluginManager::new(plugins_dir, tmp.path().to_path_buf(), vec![], vec![]);
         let err = mgr.remove("no-such-plugin").unwrap_err();
         assert!(matches!(err, PluginError::NotFound { .. }));
     }
@@ -804,7 +865,7 @@ path = "skills/{conflict_name}"
 
         let plugins_dir = tmp.path().join("plugins");
         let managed_dir = tmp.path().join("managed");
-        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![]);
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
         let err = mgr.add(source.to_str().unwrap()).unwrap_err();
         assert!(matches!(
@@ -830,7 +891,7 @@ path = "../../../etc/passwd"
 
         let plugins_dir = tmp.path().join("plugins");
         let managed_dir = tmp.path().join("managed");
-        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![]);
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
         let err = mgr.add(source.to_str().unwrap()).unwrap_err();
         assert!(
@@ -858,7 +919,7 @@ command = "/tmp/evil/npx"
 
         let plugins_dir = tmp.path().join("plugins");
         let managed_dir = tmp.path().join("managed");
-        let mgr = PluginManager::new(plugins_dir, managed_dir, vec!["npx".to_owned()]);
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec!["npx".to_owned()], vec![]);
 
         let err = mgr.add(source.to_str().unwrap()).unwrap_err();
         assert!(
@@ -891,7 +952,7 @@ command = "/tmp/evil/npx"
         );
 
         let plugins_dir = tmp.path().join("plugins");
-        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![]);
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
         let err = mgr.add(source.to_str().unwrap()).unwrap_err();
         assert!(
@@ -905,7 +966,7 @@ command = "/tmp/evil/npx"
         let tmp = tempfile::tempdir().unwrap();
         let plugins_dir = tmp.path().join("plugins");
         let managed_dir = tmp.path().join("managed");
-        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![]);
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
         // Install first plugin with "shared-skill".
         let source_a = tmp.path().join("source_a");
@@ -930,5 +991,88 @@ command = "/tmp/evil/npx"
             matches!(err, PluginError::SkillNameConflictWithPlugin { .. }),
             "expected SkillNameConflictWithPlugin, got {err:?}"
         );
+    }
+
+    #[test]
+    fn allowed_commands_overlay_with_empty_base_warns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let manifest = r#"[plugin]
+name = "warn-test"
+version = "0.1.0"
+description = "test"
+
+[config.tools]
+allowed_commands = ["curl", "git"]
+"#;
+        write_plugin(&source, "warn-test", manifest, &[]);
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        // base_allowed_commands is empty — overlay will have no effect
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+
+        let result = mgr.add(source.to_str().unwrap()).unwrap();
+        assert_eq!(result.warnings.len(), 1);
+        let msg = &result.warnings[0];
+        assert!(
+            msg.contains("warn-test"),
+            "warning must contain plugin name"
+        );
+        assert!(
+            msg.contains("allowed_commands"),
+            "warning must mention allowed_commands"
+        );
+        assert!(msg.is_ascii(), "warning message must be ASCII-only");
+    }
+
+    #[test]
+    fn allowed_commands_overlay_with_non_empty_base_no_warn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let manifest = r#"[plugin]
+name = "no-warn-test"
+version = "0.1.0"
+description = "test"
+
+[config.tools]
+allowed_commands = ["curl"]
+"#;
+        write_plugin(&source, "no-warn-test", manifest, &[]);
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        // base_allowed_commands is non-empty — overlay narrows correctly, no warning
+        let mgr = PluginManager::new(
+            plugins_dir,
+            managed_dir,
+            vec![],
+            vec!["curl".to_owned(), "git".to_owned()],
+        );
+
+        let result = mgr.add(source.to_str().unwrap()).unwrap();
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn empty_allowed_commands_array_no_warn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let manifest = r#"[plugin]
+name = "empty-overlay"
+version = "0.1.0"
+description = "test"
+
+[config.tools]
+allowed_commands = []
+"#;
+        write_plugin(&source, "empty-overlay", manifest, &[]);
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+
+        let result = mgr.add(source.to_str().unwrap()).unwrap();
+        assert!(result.warnings.is_empty());
     }
 }

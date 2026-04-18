@@ -620,6 +620,7 @@ impl AppBuilder {
             plugins_dir,
             managed_dir,
             self.config.mcp.allowed_commands.clone(),
+            self.config.tools.shell.allowed_commands.clone(),
         );
         if let Ok(plugin_skill_dirs) = mgr.collect_skill_dirs() {
             for dir in plugin_skill_dirs {
@@ -661,17 +662,23 @@ impl AppBuilder {
     ///
     /// Pass the returned closure to `AgentBuilder::with_plugin_dirs_supplier` so that
     /// `reload_skills()` picks up plugins installed after agent startup.
+    ///
+    /// Both `mcp.allowed_commands` and `tools.shell.allowed_commands` are
+    /// captured by value at construction time. If the operator reloads
+    /// config at runtime, this supplier must be rebuilt.
     pub fn plugin_dirs_supplier(
         &self,
     ) -> impl Fn() -> Vec<std::path::PathBuf> + Send + Sync + 'static {
         let plugins_dir = plugins_dir();
         let managed_dir = managed_skills_dir();
-        let allowed_commands = self.config.mcp.allowed_commands.clone();
+        let mcp_allowed = self.config.mcp.allowed_commands.clone();
+        let base_shell_allowed = self.config.tools.shell.allowed_commands.clone();
         move || {
             let mgr = zeph_plugins::PluginManager::new(
                 plugins_dir.clone(),
                 managed_dir.clone(),
-                allowed_commands.clone(),
+                mcp_allowed.clone(),
+                base_shell_allowed.clone(),
             );
             mgr.collect_skill_dirs().unwrap_or_default()
         }

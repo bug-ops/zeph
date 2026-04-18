@@ -841,11 +841,12 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         // spawn_blocking requires 'static, so we cannot borrow &self inside the closure.
         let managed_dir = self.skill_state.managed_dir.clone();
         let mcp_allowed = self.mcp.allowed_commands.clone();
+        let base_shell_allowed = self.lifecycle.startup_shell_overlay.allowed.clone();
         Box::pin(async move {
             // PluginManager performs synchronous filesystem I/O (copy, remove_dir_all,
             // read_dir). Run on a blocking thread to avoid stalling the tokio worker.
             tokio::task::spawn_blocking(move || {
-                Self::run_plugin_command(&args_owned, managed_dir, mcp_allowed)
+                Self::run_plugin_command(&args_owned, managed_dir, mcp_allowed, base_shell_allowed)
             })
             .await
             .map_err(|e| CommandError(format!("plugin task panicked: {e}")))

@@ -343,6 +343,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         args: &str,
         managed_dir: Option<std::path::PathBuf>,
         mcp_allowed: Vec<String>,
+        base_shell_allowed: Vec<String>,
     ) -> String {
         // Use the canonical default so CLI and TUI always reference the same directory.
         let plugins_dir = zeph_plugins::PluginManager::default_plugins_dir();
@@ -350,7 +351,12 @@ impl<C: crate::channel::Channel> Agent<C> {
         // never silently disabled by an empty path (M5 fix).
         let managed_dir = managed_dir
             .unwrap_or_else(|| zeph_config::defaults::default_vault_dir().join("skills"));
-        let mgr = zeph_plugins::PluginManager::new(plugins_dir, managed_dir, mcp_allowed);
+        let mgr = zeph_plugins::PluginManager::new(
+            plugins_dir,
+            managed_dir,
+            mcp_allowed,
+            base_shell_allowed,
+        );
 
         let (subcmd, rest) = args.trim().split_once(' ').unwrap_or((args.trim(), ""));
         match subcmd {
@@ -380,6 +386,9 @@ impl<C: crate::channel::Channel> Agent<C> {
                                 "\n  MCP servers (restart required): {}",
                                 r.mcp_server_ids.join(", ")
                             );
+                        }
+                        for w in &r.warnings {
+                            let _ = write!(out, "\n  warning: {w}");
                         }
                         out
                     }
