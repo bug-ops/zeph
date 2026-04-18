@@ -3772,8 +3772,8 @@ mod tests {
 
     // --- #3168 regression tests ---
 
-    /// Round-trip: persist Assistant[tool_use] + User[tool_result], then load_history.
-    /// After sanitize_tool_pairs the pair must be intact — no WARN, both messages present
+    /// Round-trip: persist `Assistant[tool_use]` + `User[tool_result]`, then `load_history`.
+    /// After `sanitize_tool_pairs` the pair must be intact — no WARN, both messages present
     /// with non-empty parts.
     #[tokio::test]
     async fn regression_3168_complete_tool_pair_survives_round_trip() {
@@ -3859,8 +3859,8 @@ mod tests {
         );
     }
 
-    /// A System message between an Assistant[tool_use] and the matching User[tool_result]
-    /// must not cause the tool_use to be treated as an orphan.
+    /// A System message between an `Assistant[tool_use]` and the matching `User[tool_result]`
+    /// must not cause the `tool_use` to be treated as an orphan.
     #[test]
     fn regression_3168_system_between_tool_pair_not_stripped() {
         use zeph_llm::provider::{MessageMetadata, MessagePart};
@@ -3912,10 +3912,10 @@ mod tests {
         );
     }
 
-    /// If parts serialization fails, persist_message must return early and not store
-    /// a row with empty parts that would create an orphaned tool_use on next session load.
-    /// We verify this by writing a row with invalid parts_json directly and confirming
-    /// load_history skips it (empty parts row is not injected into the agent).
+    /// If parts serialization fails, `persist_message` must return early and not store
+    /// a row with empty parts that would create an orphaned `tool_use` on next session load.
+    /// We verify this by writing a row with invalid `parts_json` directly and confirming
+    /// `load_history` skips it (empty parts row is not injected into the agent).
     #[tokio::test]
     async fn regression_3168_corrupt_parts_row_skipped_on_load() {
         use zeph_llm::provider::MessagePart;
