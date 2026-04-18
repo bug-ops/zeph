@@ -238,7 +238,7 @@ impl Default for UtilityScoringConfig {
             cost_weight: default_utility_cost_weight(),
             redundancy_weight: default_utility_redundancy_weight(),
             uncertainty_bonus: default_utility_uncertainty_bonus(),
-            exempt_tools: Vec::new(),
+            exempt_tools: vec!["invoke_skill".to_string(), "load_skill".to_string()],
         }
     }
 }
@@ -1267,6 +1267,19 @@ mod tests {
         assert!(
             exempt.contains(&"invoke_skill".to_string()),
             "default exempt_tools must contain invoke_skill"
+        );
+    }
+
+    #[test]
+    fn utility_scoring_default_exempt_tools_contains_skill_ops() {
+        let cfg = UtilityScoringConfig::default();
+        assert!(
+            cfg.exempt_tools.contains(&"invoke_skill".to_string()),
+            "UtilityScoringConfig default exempt_tools must contain invoke_skill"
+        );
+        assert!(
+            cfg.exempt_tools.contains(&"load_skill".to_string()),
+            "UtilityScoringConfig default exempt_tools must contain load_skill"
         );
     }
 }

@@ -32,6 +32,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **fix(tools): `invoke_skill` and `load_skill` are now exempt from the utility gate** —
+  `UtilityScoringConfig::default()` previously set `exempt_tools` to an empty list, causing
+  the utility scorer to block `invoke_skill` calls with `Retrieve` or `Respond` verdicts
+  even though these tools were already exempted from the adversarial and vigil gates in
+  PR #3150. The default now includes both `invoke_skill` and `load_skill`, matching the
+  existing `AdversarialPolicyConfig::default_exempt_tools()` behaviour.
+  Closes [#3163](https://github.com/bug-ops/zeph/issues/3163).
+
 - **fix(memory): A-MAC admission control now correctly falls back to embed provider when
   `admission_provider` is not configured** — `build_admission_control()` previously always
   called `.with_provider(main_provider)` even when `admission_provider` was empty, causing
