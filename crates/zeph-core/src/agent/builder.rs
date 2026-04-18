@@ -1035,7 +1035,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Call this immediately after constructing the executor, before moving it into
     /// the executor chain. The handle shares the same `ArcSwap` as the executor, so
-    /// [`ShellPolicyHandle::rebuild`] takes effect on the live executor atomically.
+    /// `ShellPolicyHandle::rebuild` takes effect on the live executor atomically.
     #[must_use]
     pub fn with_shell_policy_handle(mut self, h: zeph_tools::ShellPolicyHandle) -> Self {
         self.lifecycle.shell_policy_handle = Some(h);

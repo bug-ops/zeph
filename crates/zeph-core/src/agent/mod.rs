@@ -2347,7 +2347,7 @@ impl<C: Channel> Agent<C> {
 
     /// React to shell policy divergence detected on hot-reload.
     ///
-    /// `blocked_commands` is rebuilt live via [`ShellPolicyHandle::rebuild`] — no restart needed.
+    /// `blocked_commands` is rebuilt live via `ShellPolicyHandle::rebuild` — no restart needed.
     /// `allowed_commands` cannot be rebuilt (feeds sandbox path intersection at construction time)
     /// — emit a warn + status banner when it changes.
     fn warn_on_shell_overlay_divergence(
