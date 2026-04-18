@@ -142,40 +142,6 @@ impl Default for JsonEventSink {
     }
 }
 
-/// Returns a `(Arc<JsonEventSink>, captured_output_fn)` pair for use in tests.
-///
-/// The sink writes to an in-memory buffer. Call the returned closure to retrieve
-/// the captured JSONL output as a `String`.
-#[cfg(test)]
-pub(crate) fn test_sink() -> (std::sync::Arc<JsonEventSink>, impl Fn() -> String) {
-    use std::sync::Arc;
-    let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-    let buf_clone = Arc::clone(&buf);
-
-    // Use a shared-buffer writer so we can read back later.
-    let writer = SharedBufWriter(Arc::clone(&buf));
-    let sink = Arc::new(JsonEventSink::with_writer(writer));
-    let read_fn = move || {
-        let data = buf_clone.lock().unwrap();
-        String::from_utf8(data.clone()).unwrap_or_default()
-    };
-    (sink, read_fn)
-}
-
-#[cfg(test)]
-struct SharedBufWriter(std::sync::Arc<Mutex<Vec<u8>>>);
-
-#[cfg(test)]
-impl Write for SharedBufWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
