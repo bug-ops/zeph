@@ -4861,7 +4861,7 @@ mod pii_ner_circuit_breaker {
             >,
         > {
             Box::pin(async move {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                tokio::time::sleep(Duration::from_mins(1)).await;
                 Ok(ClassificationResult {
                     label: "O".into(),
                     score: 0.0,

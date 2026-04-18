@@ -91,6 +91,12 @@ pub enum RestartPolicy {
 /// Maximum delay between restart attempts (caps exponential backoff).
 pub const MAX_RESTART_DELAY: Duration = Duration::from_mins(1);
 
+/// Safety cap on how long the reap driver drains completions after cancellation.
+///
+/// INVARIANT: must be less than the runner shutdown grace period (runner.rs:2387,
+/// currently 10s). If that constant is reduced, this must be reduced proportionally.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Configuration passed to [`TaskSupervisor::spawn`] to describe a supervised task.
 ///
 /// `F` must be `Fn` (not `FnOnce`) to support restarts: the factory is called once on
@@ -651,20 +657,25 @@ impl TaskSupervisor {
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
-                tracing::warn!(
-                    remaining = active,
-                    "shutdown timeout — aborting remaining tasks"
-                );
-                let mut state = self.inner.state.lock();
-                for entry in state.tasks.values_mut() {
-                    if matches!(
-                        entry.status,
-                        TaskStatus::Running | TaskStatus::Restarting { .. }
-                    ) {
-                        entry.abort_handle.abort();
-                        entry.status = TaskStatus::Aborted;
+                let mut remaining_names: Vec<Arc<str>> = Vec::new();
+                {
+                    let mut state = self.inner.state.lock();
+                    for entry in state.tasks.values_mut() {
+                        if matches!(
+                            entry.status,
+                            TaskStatus::Running | TaskStatus::Restarting { .. }
+                        ) {
+                            remaining_names.push(Arc::clone(&entry.name));
+                            entry.abort_handle.abort();
+                            entry.status = TaskStatus::Aborted;
+                        }
                     }
                 }
+                tracing::warn!(
+                    remaining = active,
+                    tasks = ?remaining_names,
+                    "shutdown timeout — aborting remaining tasks"
+                );
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -767,22 +778,55 @@ impl TaskSupervisor {
         cancel: CancellationToken,
     ) {
         tokio::spawn(async move {
+            // Phase 1: normal operation — process completions until cancel fires.
             loop {
                 tokio::select! {
                     biased;
                     Some(completion) = completion_rx.recv() => {
                         Self::handle_completion(&inner, completion).await;
                     }
-                    () = cancel.cancelled() => {
-                        // Drain any completions that arrived at the same time as the cancel.
-                        while let Ok(completion) = completion_rx.try_recv() {
-                            Self::handle_completion(&inner, completion).await;
-                        }
-                        break;
-                    }
+                    () = cancel.cancelled() => break,
                 }
             }
+
+            // Phase 2: post-cancel drain — keep receiving completions until the
+            // registry reports no active tasks, or the channel closes, or the safety
+            // deadline expires. This prevents losing completions that arrive after
+            // tasks observe cancellation (#3161).
+            let drain_deadline = tokio::time::Instant::now() + SHUTDOWN_DRAIN_TIMEOUT;
+            let active = Self::has_active_tasks(&inner);
+            tracing::debug!(active, "reap driver entered post-cancel drain phase");
+            loop {
+                if !Self::has_active_tasks(&inner) {
+                    break;
+                }
+                let remaining =
+                    drain_deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                match tokio::time::timeout(remaining, completion_rx.recv()).await {
+                    Ok(Some(completion)) => Self::handle_completion(&inner, completion).await,
+                    // channel closed (unreachable in practice — senders live in Inner), or deadline elapsed
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            tracing::debug!(
+                active = Self::has_active_tasks(&inner),
+                "reap driver drain phase complete"
+            );
         });
+    }
+
+    /// Returns `true` if any task is in `Running` or `Restarting` state.
+    fn has_active_tasks(inner: &Arc<Inner>) -> bool {
+        let state = inner.state.lock();
+        state.tasks.values().any(|e| {
+            matches!(
+                e.status,
+                TaskStatus::Running | TaskStatus::Restarting { .. }
+            )
+        })
     }
 
     /// Process a single task completion event.
@@ -791,6 +835,15 @@ impl TaskSupervisor {
     /// under lock; Phase 2 sleeps with exponential backoff without a lock;
     /// Phase 3 spawns the next instance and updates the registry.
     async fn handle_completion(inner: &Arc<Inner>, completion: Completion) {
+        // Short-circuit: once cancellation has fired, never schedule restarts.
+        // Without this, Restart-policy tasks re-register as Running, causing
+        // has_active_tasks() to stay true and the drain loop to spin until timeout.
+        if inner.cancel.is_cancelled() {
+            let mut state = inner.state.lock();
+            state.tasks.remove(&completion.name);
+            return;
+        }
+
         let Some((attempt, max, delay)) = Self::classify_completion(inner, &completion) else {
             return;
         };
@@ -1507,6 +1560,46 @@ mod tests {
         assert!(
             sup.cancellation_token().is_cancelled(),
             "token must be cancelled after shutdown"
+        );
+    }
+
+    /// Regression test for #3161: after `shutdown_all`, all tasks must be reaped
+    /// even when they complete *after* the cancel signal.
+    ///
+    /// The yield loop forces the reap driver to observe cancel and exit phase-1
+    /// before the tasks send their completions — reliably reproducing the race.
+    #[tokio::test]
+    async fn test_shutdown_drains_post_cancel_completions() {
+        let cancel = CancellationToken::new();
+        let sup = TaskSupervisor::new(cancel.clone());
+
+        for name in [
+            "loop-1", "loop-2", "loop-3", "loop-4", "loop-5", "loop-6", "loop-7",
+        ] {
+            let cancel_inner = cancel.clone();
+            sup.spawn(TaskDescriptor {
+                name,
+                restart: RestartPolicy::RunOnce,
+                factory: move || {
+                    let c = cancel_inner.clone();
+                    async move {
+                        c.cancelled().await;
+                        // Yield multiple times so the reap driver observes cancel first.
+                        for _ in 0..64 {
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                },
+            });
+        }
+        assert_eq!(sup.active_count(), 7);
+
+        sup.shutdown_all(Duration::from_secs(2)).await;
+
+        assert_eq!(
+            sup.active_count(),
+            0,
+            "all tasks must be reaped after shutdown (#3161)"
         );
     }
 

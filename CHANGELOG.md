@@ -32,6 +32,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **fix(core): clippy cleanup in test code** — resolved four clippy violations in test-only
+  code: `useless_vec` (array literal instead of `vec!`), `match_like_matches_macro` (`!matches!`
+  macro), `match_wild_err_arm` (named binding in `Err` arm), and `duration_suboptimal_units`
+  (`Duration::from_mins(1)` instead of `from_secs(60)`). No production code changed.
+  Closes [#3160](https://github.com/bug-ops/zeph/issues/3160).
+
+- **fix(core): TaskSupervisor reap driver drains completions after cancel** — the reap driver
+  in `start_reap_driver` previously broke out of its loop after a single `try_recv` when the
+  cancellation token fired, silently dropping completions sent by tasks that observed cancel
+  slightly later. This caused `shutdown_all` to always hit the force-abort timeout
+  (`remaining=1`). The driver now runs a post-cancel drain phase (bounded by
+  `SHUTDOWN_DRAIN_TIMEOUT = 5s`) that continues processing completions until the registry
+  reports no active tasks. `handle_completion` also short-circuits when cancelled to prevent
+  `Restart`-policy tasks from re-registering. The `shutdown timeout` WARN now includes the
+  names of remaining tasks for diagnosis. Closes [#3161](https://github.com/bug-ops/zeph/issues/3161).
+
 - **fix(tools): `invoke_skill` and `load_skill` are now exempt from the utility gate** —
   `UtilityScoringConfig::default()` previously set `exempt_tools` to an empty list, causing
   the utility scorer to block `invoke_skill` calls with `Retrieve` or `Respond` verdicts

@@ -1869,14 +1869,16 @@ mod tests {
             git_hash: None,
             category: None,
         };
-        let skills = vec![make_meta("blocked-skill"), make_meta("allowed-skill")];
+        let skills = [make_meta("blocked-skill"), make_meta("allowed-skill")];
 
         // Apply the same filter logic used in the catalog-building path.
         let catalog: Vec<_> = skills
             .iter()
-            .filter(|s| match trust_map.get(s.name.as_str()) {
-                Some(SkillTrustLevel::Blocked) => false,
-                _ => true,
+            .filter(|s| {
+                !matches!(
+                    trust_map.get(s.name.as_str()),
+                    Some(SkillTrustLevel::Blocked)
+                )
             })
             .collect();
 

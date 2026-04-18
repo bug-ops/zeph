@@ -2840,7 +2840,7 @@ pub mod agent_tests {
         {
             Ok(Ok(())) => {}
             Ok(Err(e)) => panic!("terminal save failed: {e}"),
-            Err(_) => panic!("terminal save timed out"),
+            Err(e) => panic!("terminal save timed out after 5s: {e}"),
         }
         drop(persistence);
 
@@ -3088,6 +3088,7 @@ mod compaction_e2e {
 
     // ── /plan handler unit tests ─────────────────────────────────────────────
 
+    #[cfg(feature = "scheduler")]
     use zeph_orchestration::{
         GraphStatus, PlanCommand, TaskGraph, TaskNode, TaskResult, TaskStatus,
     };
@@ -3103,6 +3104,7 @@ mod compaction_e2e {
         agent
     }
 
+    #[cfg(feature = "scheduler")]
     fn make_simple_graph(status: GraphStatus) -> TaskGraph {
         let mut g = TaskGraph::new("test goal");
         let mut node = TaskNode::new(0, "task-0", "do something");
