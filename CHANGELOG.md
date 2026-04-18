@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **fix(channels): Telegram elicitation response map uses raw field names** (#3217) — the
+  `sanitize_field_key` transformation was incorrectly applied to MCP elicitation response map keys
+  in the Telegram channel, causing field names with spaces or dashes to be remapped (e.g.
+  `pass word` → `pass_word`), which broke round-trip fidelity with the MCP server and could cause
+  key collisions. Keys now use the raw `field.name` as specified by the MCP schema; sanitization
+  is retained only for Telegram display labels. Parity restored with the CLI channel.
+
 - **fix(commands): `/plugins` slash command now routed through `CommandRegistry`** (#3215) — added
   `PluginsCommand` handler in `zeph-commands` that delegates to `Agent::handle_plugins` via
   `AgentAccess`. `/plugins overlay|list|add|remove` are now dispatched correctly instead of falling

@@ -791,7 +791,7 @@ impl Channel for TelegramChannel {
                     .await;
                 return Ok(ElicitationResponse::Declined);
             };
-            values.insert(sanitize_field_key(&field.name), value);
+            values.insert(field.name.clone(), value);
         }
 
         Ok(ElicitationResponse::Accepted(serde_json::Value::Object(
@@ -808,23 +808,6 @@ impl Channel for TelegramChannel {
 fn sanitize_markdown(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(c, '*' | '_' | '[' | ']' | '`' | '\x1b'))
-        .collect()
-}
-
-/// Sanitize a field name for use as a JSON key.
-///
-/// Keeps only alphanumeric characters and underscores to prevent injection via
-/// malicious MCP server field names (e.g. keys with special chars that could
-/// confuse downstream consumers).
-///
-/// Note: this can produce collisions when two field names differ only in stripped
-/// characters (e.g. `"pass word"` and `"pass_word"` both map to `"password"`).
-/// In that case the second field silently overwrites the first in the response map.
-/// This is acceptable because Telegram's callback-data limit (64 bytes) means we
-/// cannot use raw field names; a well-formed MCP server must not send colliding keys.
-fn sanitize_field_key(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_alphanumeric() || *c == '_')
         .collect()
 }
 
@@ -1289,6 +1272,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn elicit_field_key_uses_raw_name_not_sanitized() {
+        let server = MockServer::start().await;
+        let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
+
+        // Field name contains a space — the old sanitize_field_key would strip it to "passphrase".
+        let request = ElicitationRequest {
+            server_name: "test-server".to_owned(),
+            message: "Provide credentials".to_owned(),
+            fields: vec![ElicitationField {
+                name: "pass phrase".to_owned(),
+                description: None,
+                field_type: ElicitationFieldType::String,
+                required: true,
+            }],
+        };
+
+        tx.send(plain_message("hunter2")).await.unwrap();
+        let response = channel.elicit(request).await.unwrap();
+
+        match response {
+            ElicitationResponse::Accepted(val) => {
+                assert_eq!(
+                    val["pass phrase"], "hunter2",
+                    "raw field name must be the map key"
+                );
+                assert!(
+                    val.get("passphrase").is_none(),
+                    "sanitized key must not appear in response"
+                );
+            }
+            other => panic!("expected Accepted, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn elicit_cancel_command_returns_cancelled() {
         let server = MockServer::start().await;
         let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
@@ -1326,20 +1344,6 @@ mod tests {
             result.is_err(),
             "expected Err(Elapsed) for elicitation timeout, got recv result"
         );
-    }
-
-    // ---------------------------------------------------------------------------
-    // sanitize_field_key — pure unit test (no network)
-    // ---------------------------------------------------------------------------
-
-    #[test]
-    fn sanitize_field_key_strips_special_chars() {
-        assert_eq!(sanitize_field_key("hello world"), "helloworld");
-        assert_eq!(sanitize_field_key("field-name"), "fieldname");
-        assert_eq!(sanitize_field_key("__ok__"), "__ok__");
-        assert_eq!(sanitize_field_key("a.b.c"), "abc");
-        // Alphanumeric chars and underscores are kept; everything else stripped.
-        assert_eq!(sanitize_field_key("key!@#val"), "keyval");
     }
 
     // ---------------------------------------------------------------------------
