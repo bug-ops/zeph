@@ -726,7 +726,10 @@ mod tests {
 
     #[tokio::test]
     async fn gate_disabled_always_passes() {
-        let config = QualityGateConfig { enabled: false, ..QualityGateConfig::default() };
+        let config = QualityGateConfig {
+            enabled: false,
+            ..QualityGateConfig::default()
+        };
         let gate = QualityGate::new(config);
         let provider = mock_provider();
 
@@ -864,7 +867,7 @@ mod tests {
     async fn gate_llm_timeout_falls_back_to_rule_score() {
         let config = QualityGateConfig {
             enabled: true,
-            threshold: 0.3, // lenient so rule score alone is likely to pass
+            threshold: 0.3,     // lenient so rule score alone is likely to pass
             llm_timeout_ms: 50, // tight timeout
             llm_weight: 0.5,
             ..QualityGateConfig::default()
