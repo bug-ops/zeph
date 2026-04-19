@@ -1890,7 +1890,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent_setup::apply_code_indexer(
             &config.index,
             index_qdrant_ops,
-            index_provider,
+            index_provider.clone(),
             index_pool,
             is_cli,
             Some(agent_status_tx.clone()),
@@ -1910,7 +1910,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent,
         &config.index,
         app.qdrant_ops().cloned(),
-        provider.clone(),
+        index_provider.clone(),
         memory.sqlite().pool().clone(),
     );
     let agent = if let Some(search_executor) = agent_setup::build_search_code_executor(
