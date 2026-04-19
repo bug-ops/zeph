@@ -177,6 +177,10 @@ impl TafcConfig {
     }
 }
 
+fn default_utility_exempt_tools() -> Vec<String> {
+    vec!["invoke_skill".to_string(), "load_skill".to_string()]
+}
+
 fn default_utility_threshold() -> f32 {
     0.1
 }
@@ -225,7 +229,7 @@ pub struct UtilityScoringConfig {
     /// Tool names that bypass the utility gate unconditionally (case-insensitive).
     /// Auto-populated with file-read tools when `MagicDocs` is enabled. User-specified
     /// entries are preserved and merged additively with any auto-populated names.
-    #[serde(default)]
+    #[serde(default = "default_utility_exempt_tools")]
     pub exempt_tools: Vec<String>,
 }
 
@@ -238,7 +242,7 @@ impl Default for UtilityScoringConfig {
             cost_weight: default_utility_cost_weight(),
             redundancy_weight: default_utility_redundancy_weight(),
             uncertainty_bonus: default_utility_uncertainty_bonus(),
-            exempt_tools: vec!["invoke_skill".to_string(), "load_skill".to_string()],
+            exempt_tools: default_utility_exempt_tools(),
         }
     }
 }
@@ -1280,6 +1284,32 @@ mod tests {
         assert!(
             cfg.exempt_tools.contains(&"load_skill".to_string()),
             "UtilityScoringConfig default exempt_tools must contain load_skill"
+        );
+    }
+
+    #[test]
+    fn utility_partial_toml_exempt_tools_uses_default_not_empty_vec() {
+        // Regression: #[serde(default)] on exempt_tools called Vec::default() (empty)
+        // instead of the struct-level Default which sets ["invoke_skill", "load_skill"].
+        let toml_str = r"
+            [utility]
+            enabled = true
+            threshold = 0.1
+        ";
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert!(
+            config
+                .utility
+                .exempt_tools
+                .contains(&"invoke_skill".to_string()),
+            "partial [tools.utility] TOML must populate exempt_tools with invoke_skill"
+        );
+        assert!(
+            config
+                .utility
+                .exempt_tools
+                .contains(&"load_skill".to_string()),
+            "partial [tools.utility] TOML must populate exempt_tools with load_skill"
         );
     }
 }
