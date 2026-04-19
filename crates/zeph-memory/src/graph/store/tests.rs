@@ -3780,9 +3780,9 @@ async fn insert_or_supersede_only_one_active_head_after_supersession() {
     );
 }
 
-/// A supersede chain that would exceed SUPERSEDE_DEPTH_CAP must return SupersedeDepthExceeded.
-/// We also verify check_supersede_depth() itself returns SupersedeCycle when the CTE reports
-/// depth > cap — simulated here by testing that check_supersede_depth on a non-existent edge
+/// A supersede chain that would exceed `SUPERSEDE_DEPTH_CAP` must return `SupersedeDepthExceeded`.
+/// We also verify `check_supersede_depth()` itself returns `SupersedeCycle` when the CTE reports
+/// depth > cap — simulated here by testing that `check_supersede_depth` on a non-existent edge
 /// returns depth 0 gracefully.
 #[tokio::test]
 async fn check_supersede_depth_returns_zero_for_root_edge() {

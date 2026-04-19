@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.19.3] - 2026-04-19
+
 ### Added
 
 - **feat(memory): ClawVM-style typed page compaction for token-budget-aware context management** (#3221) —
@@ -4623,7 +4625,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.19.2...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.19.3...HEAD
+[0.19.3]: https://github.com/bug-ops/zeph/compare/v0.19.2...v0.19.3
 [0.19.2]: https://github.com/bug-ops/zeph/compare/v0.19.1...v0.19.2
 [0.19.1]: https://github.com/bug-ops/zeph/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/bug-ops/zeph/compare/v0.18.6...v0.19.0

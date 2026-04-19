@@ -3598,7 +3598,7 @@ mod subgoal_extraction_tests {
 
 #[cfg(test)]
 mod compact_end_tool_pair_tests {
-    use zeph_llm::provider::{Message, MessagePart, Role};
+    use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
     use super::super::super::Agent;
     use crate::agent::tests::agent_tests::MockChannel;
@@ -3612,7 +3612,7 @@ mod compact_end_tool_pair_tests {
                 name: "shell".into(),
                 input: serde_json::json!({}),
             }],
-            metadata: Default::default(),
+            metadata: MessageMetadata::default(),
         }
     }
 
@@ -3625,7 +3625,7 @@ mod compact_end_tool_pair_tests {
                 content: "ok".into(),
                 is_error: false,
             }],
-            metadata: Default::default(),
+            metadata: MessageMetadata::default(),
         }
     }
 
@@ -3634,7 +3634,7 @@ mod compact_end_tool_pair_tests {
             role,
             content: text.into(),
             parts: vec![MessagePart::Text { text: text.into() }],
-            metadata: Default::default(),
+            metadata: MessageMetadata::default(),
         }
     }
 
@@ -3643,7 +3643,7 @@ mod compact_end_tool_pair_tests {
             role: Role::System,
             content: "system".into(),
             parts: vec![],
-            metadata: Default::default(),
+            metadata: MessageMetadata::default(),
         }
     }
 
@@ -3690,7 +3690,7 @@ mod compact_end_tool_pair_tests {
                 content: "ok2".into(),
                 is_error: false,
             }],
-            metadata: Default::default(),
+            metadata: MessageMetadata::default(),
         };
         // [sys, user, tool_use, tool_result, tool_result2, assistant_reply]
         // preserve_tail=2 → compact_end=4

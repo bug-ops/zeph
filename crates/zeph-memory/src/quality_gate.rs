@@ -726,8 +726,7 @@ mod tests {
 
     #[tokio::test]
     async fn gate_disabled_always_passes() {
-        let mut config = QualityGateConfig::default();
-        config.enabled = false;
+        let config = QualityGateConfig { enabled: false, ..QualityGateConfig::default() };
         let gate = QualityGate::new(config);
         let provider = mock_provider();
 
@@ -737,9 +736,11 @@ mod tests {
 
     #[tokio::test]
     async fn gate_admits_novel_clean_content() {
-        let mut config = QualityGateConfig::default();
-        config.enabled = true;
-        config.threshold = 0.3; // lenient threshold for rule-only test
+        let config = QualityGateConfig {
+            enabled: true,
+            threshold: 0.3, // lenient threshold for rule-only test
+            ..QualityGateConfig::default()
+        };
         let gate = QualityGate::new(config);
         let provider = mock_provider();
 
@@ -756,12 +757,14 @@ mod tests {
 
     #[tokio::test]
     async fn gate_rejects_pronoun_only_at_low_threshold() {
-        let mut config = QualityGateConfig::default();
-        config.enabled = true;
-        config.threshold = 0.75; // strict threshold
-        config.reference_completeness_weight = 0.9;
-        config.information_value_weight = 0.05;
-        config.contradiction_weight = 0.05;
+        let config = QualityGateConfig {
+            enabled: true,
+            threshold: 0.75, // strict threshold
+            reference_completeness_weight: 0.9,
+            information_value_weight: 0.05,
+            contradiction_weight: 0.05,
+            ..QualityGateConfig::default()
+        };
         let gate = QualityGate::new(config);
         let provider = mock_provider();
 
@@ -776,9 +779,11 @@ mod tests {
 
     #[test]
     fn quality_gate_counts_rejections() {
-        let mut config = QualityGateConfig::default();
-        config.enabled = true;
-        config.threshold = 0.99; // reject almost everything
+        let config = QualityGateConfig {
+            enabled: true,
+            threshold: 0.99, // reject almost everything
+            ..QualityGateConfig::default()
+        };
         let gate = QualityGate::new(config);
 
         // Manually record a rejection.
@@ -793,9 +798,11 @@ mod tests {
     /// Embed error → fail-open: gate must admit the write (return `None`).
     #[tokio::test]
     async fn gate_fail_open_on_embed_error() {
-        let mut config = QualityGateConfig::default();
-        config.enabled = true;
-        config.threshold = 0.5;
+        let config = QualityGateConfig {
+            enabled: true,
+            threshold: 0.5,
+            ..QualityGateConfig::default()
+        };
         let gate = QualityGate::new(config);
 
         // Provider that returns an embed error.
@@ -819,13 +826,15 @@ mod tests {
     /// Pre-populated `recent_embeddings` with an identical vector triggers `Redundant` rejection.
     #[tokio::test]
     async fn gate_rejects_redundant_with_populated_embeddings() {
-        let mut config = QualityGateConfig::default();
-        config.enabled = true;
-        config.threshold = 0.5;
-        // Heavy weight on information_value so redundancy dominates the score.
-        config.information_value_weight = 0.9;
-        config.reference_completeness_weight = 0.05;
-        config.contradiction_weight = 0.05;
+        let config = QualityGateConfig {
+            enabled: true,
+            threshold: 0.5,
+            // Heavy weight on information_value so redundancy dominates the score.
+            information_value_weight: 0.9,
+            reference_completeness_weight: 0.05,
+            contradiction_weight: 0.05,
+            ..QualityGateConfig::default()
+        };
         let gate = QualityGate::new(config);
 
         // MockProvider returns the same fixed embedding for every call.
@@ -853,11 +862,13 @@ mod tests {
     /// and still returns a result (pass or reject based on rule score alone).
     #[tokio::test]
     async fn gate_llm_timeout_falls_back_to_rule_score() {
-        let mut config = QualityGateConfig::default();
-        config.enabled = true;
-        config.threshold = 0.3; // lenient so rule score alone is likely to pass
-        config.llm_timeout_ms = 50; // tight timeout
-        config.llm_weight = 0.5;
+        let config = QualityGateConfig {
+            enabled: true,
+            threshold: 0.3, // lenient so rule score alone is likely to pass
+            llm_timeout_ms: 50, // tight timeout
+            llm_weight: 0.5,
+            ..QualityGateConfig::default()
+        };
         let gate = QualityGate::new(config);
 
         // Chat provider with 600ms delay — will exceed the 50ms timeout.
