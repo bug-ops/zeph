@@ -38,6 +38,8 @@ pub struct MockProvider {
     pub name_override: Option<String>,
     /// When true, `embed()` returns `LlmError::InvalidInput` regardless of `supports_embeddings`.
     pub embed_invalid_input: bool,
+    /// When true, `chat_with_tools()` returns `LlmError::InvalidInput`.
+    pub tool_chat_invalid_input: bool,
     /// Tracks how many times `embed()` was called. Useful for verifying embed reuse.
     pub embed_call_count: Arc<std::sync::atomic::AtomicU64>,
     /// Milliseconds to sleep inside `embed()` before returning. Used to simulate slow providers.
@@ -63,6 +65,7 @@ impl Default for MockProvider {
             models: vec![],
             name_override: None,
             embed_invalid_input: false,
+            tool_chat_invalid_input: false,
             embed_call_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             embed_delay_ms: 0,
             fixed_entropy: None,
@@ -103,6 +106,14 @@ impl MockProvider {
     pub fn with_embed_invalid_input(mut self) -> Self {
         self.embed_invalid_input = true;
         self.supports_embeddings = true;
+        self
+    }
+
+    /// Make `chat_with_tools()` return `LlmError::InvalidInput` (simulates HTTP 400 on a
+    /// malformed message sequence). Enables testing the router's tool fallback loop guard.
+    #[must_use]
+    pub fn with_tool_chat_invalid_input(mut self) -> Self {
+        self.tool_chat_invalid_input = true;
         self
     }
 
@@ -287,6 +298,12 @@ impl LlmProvider for MockProvider {
         _tools: &[ToolDefinition],
     ) -> Result<ChatResponse, crate::LlmError> {
         *self.tool_call_count.lock().unwrap() += 1;
+        if self.tool_chat_invalid_input {
+            return Err(crate::LlmError::InvalidInput {
+                provider: self.name().to_owned(),
+                message: "invalid message sequence".into(),
+            });
+        }
         let queued = self.tool_responses.lock().unwrap().pop_front();
         if let Some(response) = queued {
             return Ok(response);

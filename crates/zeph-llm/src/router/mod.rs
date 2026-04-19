@@ -1845,6 +1845,14 @@ impl LlmProvider for RouterProvider {
                             false,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                         );
+                        if e.is_invalid_input() {
+                            tracing::warn!(
+                                provider = p.name(),
+                                error = %e,
+                                "chat_with_tools: invalid input, not retrying on other providers"
+                            );
+                            return Err(e);
+                        }
                         if e.is_rate_limited() {
                             router.record_availability(p.name(), false, 0);
                         }
@@ -3287,6 +3295,53 @@ mod tests {
         let err = r.embed("test").await.unwrap_err();
 
         // The error must carry p1's name, proving p2 was never reached.
+        assert!(
+            matches!(&err, LlmError::InvalidInput { provider, .. } if provider == "p1"),
+            "expected InvalidInput from p1, got {err:?}"
+        );
+    }
+
+    // ── InvalidInput chat_with_tools break tests ───────────────────────────────
+
+    /// When a provider returns `InvalidInput` from `chat_with_tools()`, the router must break
+    /// the fallback loop immediately and return `InvalidInput` — not `NoProviders`.
+    #[tokio::test]
+    async fn chat_with_tools_invalid_input_breaks_loop_and_returns_invalid_input() {
+        use crate::mock::MockProvider;
+        use crate::provider::ToolDefinition;
+
+        let p = AnyProvider::Mock(MockProvider::default().with_tool_chat_invalid_input());
+        let r = RouterProvider::new(vec![p]).with_thompson(None);
+        let err = r
+            .chat_with_tools(&[], &[] as &[ToolDefinition])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, LlmError::InvalidInput { .. }),
+            "expected InvalidInput, got {err:?}"
+        );
+    }
+
+    /// When a provider returns `InvalidInput` from `chat_with_tools()`, the router must NOT
+    /// fall through to the next provider.
+    #[tokio::test]
+    async fn chat_with_tools_invalid_input_does_not_fall_through_to_second_provider() {
+        use crate::mock::MockProvider;
+        use crate::provider::ToolDefinition;
+
+        let p1 = AnyProvider::Mock(
+            MockProvider::default()
+                .with_tool_chat_invalid_input()
+                .with_name("p1"),
+        );
+        let p2 = AnyProvider::Mock(MockProvider::default().with_name("p2"));
+
+        let r = RouterProvider::new(vec![p1, p2]);
+        let err = r
+            .chat_with_tools(&[], &[] as &[ToolDefinition])
+            .await
+            .unwrap_err();
+
         assert!(
             matches!(&err, LlmError::InvalidInput { provider, .. } if provider == "p1"),
             "expected InvalidInput from p1, got {err:?}"

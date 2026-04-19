@@ -962,6 +962,14 @@ impl LlmProvider for OpenAiProvider {
             return Err(LlmError::RateLimited);
         }
 
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            tracing::warn!("OpenAI tool chat 400 bad request: {text}");
+            return Err(LlmError::InvalidInput {
+                provider: self.name().to_owned(),
+                message: text,
+            });
+        }
+
         if !status.is_success() {
             tracing::error!("OpenAI API error {status}: {text}");
             return Err(LlmError::Other(format!(

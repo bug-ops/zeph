@@ -719,17 +719,23 @@ impl<C: Channel> Agent<C> {
         // the LLM. Stale notes are cleared unconditionally each iteration so they
         // never accumulate when no new notes were produced.
         // Role::System ensures they are skipped by tool-pair summarization.
+        //
+        // Skip injection when the last non-System message contains ToolResult parts:
+        // OpenAI rejects a System message placed between Assistant(tool_calls) and
+        // User(tool_results) with HTTP 400.
         if self.session.lsp_hooks.is_some() {
             self.remove_lsp_messages();
-            let tc = std::sync::Arc::clone(&self.metrics.token_counter);
-            if let Some(ref mut lsp) = self.session.lsp_hooks
-                && let Some(note_text) = lsp.drain_notes(&tc)
-            {
-                self.push_message(zeph_llm::provider::Message::from_legacy(
-                    zeph_llm::provider::Role::System,
-                    &note_text,
-                ));
-                self.recompute_prompt_tokens();
+            if !last_msg_has_tool_results(&self.msg.messages) {
+                let tc = std::sync::Arc::clone(&self.metrics.token_counter);
+                if let Some(ref mut lsp) = self.session.lsp_hooks
+                    && let Some(note_text) = lsp.drain_notes(&tc)
+                {
+                    self.push_message(zeph_llm::provider::Message::from_legacy(
+                        zeph_llm::provider::Role::System,
+                        &note_text,
+                    ));
+                    self.recompute_prompt_tokens();
+                }
             }
         }
 
@@ -3135,6 +3141,21 @@ fn skipped_output(
     }
 }
 
+/// Returns `true` when the last non-System message in `messages` contains at least one
+/// `ToolResult` part. Used to detect an active pending tool chain: injecting a System message
+/// at that point would violate the `OpenAI` message ordering constraint (HTTP 400).
+fn last_msg_has_tool_results(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .rev()
+        .find(|m| m.role != Role::System)
+        .is_some_and(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolResult { .. }))
+        })
+}
+
 // T-CRIT-02: handle_focus_tool tests — happy path, error paths, checkpoint pinning (S5 fix).
 #[cfg(test)]
 mod tests {
@@ -3142,7 +3163,9 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
-    use zeph_llm::provider::{ChatResponse, Message, Role};
+    use zeph_llm::provider::{ChatResponse, Message, MessageMetadata, MessagePart, Role};
+
+    use super::last_msg_has_tool_results;
 
     use crate::agent::Agent;
     use crate::agent::tests::agent_tests::{
@@ -3493,6 +3516,84 @@ mod tests {
             recorder.llm_count.load(Ordering::Relaxed),
             1,
             "record_chat_metrics_and_compact must call observe_llm_latency once"
+        );
+    }
+
+    #[test]
+    fn last_msg_has_tool_results_detects_pending_tool_chain() {
+        let tool_result_msg = Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![MessagePart::ToolResult {
+                tool_use_id: "id1".to_owned(),
+                content: String::new(),
+                is_error: false,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            Message::from_legacy(Role::User, "hello"),
+            Message::from_legacy(Role::Assistant, "response"),
+            tool_result_msg,
+        ];
+        assert!(
+            last_msg_has_tool_results(&messages),
+            "must return true when last non-System message has ToolResult"
+        );
+    }
+
+    #[test]
+    fn last_msg_has_tool_results_false_when_last_is_text() {
+        let messages = vec![
+            Message::from_legacy(Role::User, "hello"),
+            Message::from_legacy(Role::Assistant, "response"),
+        ];
+        assert!(
+            !last_msg_has_tool_results(&messages),
+            "must return false when last non-System message has no ToolResult"
+        );
+    }
+
+    #[test]
+    fn last_msg_has_tool_results_ignores_trailing_system() {
+        let tool_result_msg = Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![MessagePart::ToolResult {
+                tool_use_id: "id2".to_owned(),
+                content: String::new(),
+                is_error: false,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        let messages = vec![
+            tool_result_msg,
+            Message::from_legacy(Role::System, "lsp note"),
+        ];
+        assert!(
+            last_msg_has_tool_results(&messages),
+            "must look past trailing System messages to find ToolResult"
+        );
+    }
+
+    #[test]
+    fn last_msg_has_tool_results_empty_slice_returns_false() {
+        assert!(
+            !last_msg_has_tool_results(&[]),
+            "empty slice must return false"
+        );
+    }
+
+    #[test]
+    fn last_msg_has_tool_results_only_system_messages_returns_false() {
+        let messages = vec![
+            Message::from_legacy(Role::System, "system prompt"),
+            Message::from_legacy(Role::System, "lsp note"),
+        ];
+        assert!(
+            !last_msg_has_tool_results(&messages),
+            "slice with only System messages must return false"
         );
     }
 }
