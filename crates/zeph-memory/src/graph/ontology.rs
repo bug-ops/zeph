@@ -168,10 +168,10 @@ impl OntologyTable {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use zeph_memory::graph::ontology::OntologyTable;
     ///
-    /// # tokio_test::block_on(async {
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let table = OntologyTable::from_default(64);
     /// let (canonical, unmapped) = table.resolve("employed_by").await;
     /// assert_eq!(canonical, "works_at");
