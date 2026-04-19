@@ -1064,7 +1064,7 @@ pub(crate) fn apply_code_retrieval<C: Channel>(agent: Agent<C>, config: &IndexCo
 }
 
 /// Construct a [`zeph_index::retriever::CodeRetriever`] and wire it onto the agent so
-/// [`zeph_core::agent::state::IndexState::fetch_code_rag`] returns hits.
+/// automatic code RAG context injection returns results on every agent turn.
 ///
 /// Returns the agent unchanged when any of:
 /// - `config.enabled = false`
