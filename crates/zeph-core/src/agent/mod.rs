@@ -1425,10 +1425,12 @@ impl<C: Channel> Agent<C> {
         #[cfg(feature = "self-check")]
         if let Some(pipeline) = self.quality.clone() {
             self.run_self_check_for_turn(pipeline, turn.id().0).await;
-            // Flush any chunk appended by the self-check hook (e.g. flag_marker).
-            // No-op when the hook did not append anything (pending_chunks = false).
-            let _ = self.channel.flush_chunks().await;
         }
+        // Flush pending response chunks and emit ResponseEnd exactly once per turn.
+        // send() no longer emits ResponseEnd — flush_chunks() is the sole emitter.
+        // When self-check appends a flag_marker chunk, this single call covers both
+        // the main response and the marker, preventing the double response_end of #3243.
+        let _ = self.channel.flush_chunks().await;
 
         // Collect llm_chat_ms and tool_exec_ms from MetricsState.pending_timings (accumulated
         // by the tool execution chain) into turn.metrics so end_turn can flush them.

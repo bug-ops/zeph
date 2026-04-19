@@ -36,7 +36,7 @@ pub struct JsonCliChannel {
     auto: bool,
     /// True iff at least one `ResponseChunk` has been emitted since the last
     /// `ResponseEnd`. `ResponseEnd` must never be emitted when this is `false`.
-    /// Both `send()` and `flush_chunks()` always reset this flag to `false`.
+    /// Both `send()` and `send_chunk()` set this to `true`; `flush_chunks()` resets it to `false`.
     pending_chunks: bool,
 }
 
@@ -131,8 +131,7 @@ impl Channel for JsonCliChannel {
 
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::ResponseChunk { text });
-        self.sink.emit(&JsonEvent::ResponseEnd);
-        self.pending_chunks = false;
+        self.pending_chunks = true;
         Ok(())
     }
 
@@ -298,28 +297,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_resets_pending_and_subsequent_flush_is_noop() {
-        // send_chunk then send: ResponseEnd is emitted by send; flush_chunks after must be no-op.
+    async fn send_sets_pending_and_flush_emits_end() {
+        // send() only emits ResponseChunk; flush_chunks() is the sole emitter of ResponseEnd.
         let (sink, read) = make_test_sink();
         let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
         ch.send_chunk("a").await.unwrap();
         ch.send("b").await.unwrap();
-        let before_flush = read().len();
+        // No ResponseEnd yet — pending_chunks is still true after send()
+        assert!(
+            !read()
+                .iter()
+                .any(|l| event_field(l, "event") == "response_end"),
+            "send() must not emit ResponseEnd"
+        );
         ch.flush_chunks().await.unwrap();
+        let lines = read();
         assert_eq!(
-            read().len(),
-            before_flush,
-            "flush_chunks must be no-op after send()"
+            lines
+                .iter()
+                .filter(|l| event_field(l, "event") == "response_end")
+                .count(),
+            1,
+            "flush_chunks must emit exactly one ResponseEnd; got: {lines:?}"
         );
     }
 
     #[tokio::test]
-    async fn send_after_send_chunk_emits_single_end() {
-        // send_chunk("a") + send("b") => chunk(a), chunk(b), response_end — no duplicate end.
+    async fn send_after_send_chunk_then_flush_emits_single_end() {
+        // send_chunk("a") + send("b") + flush => chunk(a), chunk(b), response_end.
         let (sink, read) = make_test_sink();
         let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
         ch.send_chunk("a").await.unwrap();
         ch.send("b").await.unwrap();
+        ch.flush_chunks().await.unwrap();
         let lines = read();
         assert_eq!(
             lines.len(),
@@ -332,11 +342,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn two_sequential_sends_emit_two_ends() {
+    async fn two_sequential_sends_with_flush_emit_two_ends() {
+        // Each send+flush pair emits exactly one ResponseEnd.
         let (sink, read) = make_test_sink();
         let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
         ch.send("first").await.unwrap();
+        ch.flush_chunks().await.unwrap();
         ch.send("second").await.unwrap();
+        ch.flush_chunks().await.unwrap();
         let lines = read();
         // chunk, end, chunk, end
         assert_eq!(lines.len(), 4);
@@ -398,6 +411,27 @@ mod tests {
         let (sink, _) = make_test_sink();
         let ch = JsonCliChannel::new(sink, false);
         assert!(ch.supports_exit());
+    }
+
+    #[tokio::test]
+    async fn send_then_marker_chunk_then_flush_emits_single_end() {
+        // Regression for #3243: send() + send_chunk(marker) + flush_chunks() must emit exactly
+        // one response_end. Previously send() emitted ResponseEnd, then flush_chunks() emitted
+        // a second one when MARCH self-check appended a flag_marker chunk.
+        let (sink, read) = make_test_sink();
+        let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
+        ch.send("The answer is 42.").await.unwrap();
+        ch.send_chunk(" [flag]").await.unwrap();
+        ch.flush_chunks().await.unwrap();
+        let lines = read();
+        let end_count = lines
+            .iter()
+            .filter(|l| event_field(l, "event") == "response_end")
+            .count();
+        assert_eq!(
+            end_count, 1,
+            "expected exactly one response_end; got {end_count} in: {lines:?}"
+        );
     }
 
     #[tokio::test]
