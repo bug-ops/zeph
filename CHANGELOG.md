@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **fix(index): wire `CodeRetriever` into `IndexState` for automatic code RAG injection** (#3236) —
+  `IndexState.retriever` was always `None` because no call path ever set it; added
+  `AgentBuilder::with_code_retriever` and `apply_code_rag_retriever` helper wired from `runner.rs`.
+  Code RAG context injection is now active when `index.enabled = true`, `budget_ratio > 0`, a
+  Qdrant backend is available, and `mcp_enabled = false`.
+
 - **fix(channels): Telegram elicitation response map uses raw field names** (#3217) — the
   `sanitize_field_key` transformation was incorrectly applied to MCP elicitation response map keys
   in the Telegram channel, causing field names with spaces or dashes to be remapped (e.g.

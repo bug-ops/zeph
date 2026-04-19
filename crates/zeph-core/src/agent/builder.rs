@@ -979,6 +979,42 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Wire a shared [`zeph_index::retriever::CodeRetriever`] used by the context assembler to
+    /// inject retrieved code chunks into the agent prompt.
+    ///
+    /// When unset, `fetch_code_rag` returns `Ok(None)` and no code RAG context is added to
+    /// prompts. Typically called by the binary's agent setup after the semantic code store has
+    /// been initialised.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// # use std::sync::Arc;
+    /// # use zeph_core::agent::AgentBuilder;
+    /// # fn demo(builder: AgentBuilder<impl zeph_core::Channel>,
+    /// #        retriever: Arc<zeph_index::retriever::CodeRetriever>) {
+    /// let _ = builder.with_code_retriever(retriever);
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn with_code_retriever(
+        mut self,
+        retriever: std::sync::Arc<zeph_index::retriever::CodeRetriever>,
+    ) -> Self {
+        self.index.retriever = Some(retriever);
+        self
+    }
+
+    /// Returns `true` when a [`zeph_index::retriever::CodeRetriever`] has been wired via
+    /// [`Self::with_code_retriever`].
+    ///
+    /// Primarily used by tests in external crates to assert wiring without accessing the
+    /// `pub(crate)` `IndexState` field directly.
+    #[must_use]
+    pub fn has_code_retriever(&self) -> bool {
+        self.index.retriever.is_some()
+    }
+
     // ---- Debug & Diagnostics ----
 
     /// Enable debug dump mode, writing LLM requests/responses and raw tool output to `dumper`.

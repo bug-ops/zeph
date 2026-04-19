@@ -88,6 +88,13 @@ pub enum IndexError {
     #[error("integer conversion failed: {0}")]
     IntConversion(#[from] TryFromIntError),
 
+    /// Embedding call timed out.
+    ///
+    /// Raised by [`crate::retriever::CodeRetriever`] when `provider.embed()` does not
+    /// complete within the configured `embed_timeout_secs`.
+    #[error("embedding timed out after {0}s")]
+    EmbedTimeout(u64),
+
     /// Generic catch-all error for cases that do not fit the variants above.
     ///
     /// Used internally for errors like a panicking background thread (e.g., the

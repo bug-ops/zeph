@@ -82,6 +82,9 @@ pub struct RetrievalConfig {
     pub score_threshold: f32,
     /// Maximum fraction of `available_tokens` allocated to code chunks (0.0–1.0).
     pub budget_ratio: f32,
+    /// Maximum seconds to wait for `provider.embed()` before returning
+    /// [`crate::error::IndexError::EmbedTimeout`]. Defaults to `10`.
+    pub embed_timeout_secs: u64,
 }
 
 impl Default for RetrievalConfig {
@@ -90,6 +93,7 @@ impl Default for RetrievalConfig {
             max_chunks: 12,
             score_threshold: 0.25,
             budget_ratio: 0.40,
+            embed_timeout_secs: 10,
         }
     }
 }
@@ -166,6 +170,7 @@ impl CodeRetriever {
     /// # Errors
     ///
     /// Returns an error if the embedding call or Qdrant search fails.
+    #[tracing::instrument(name = "index.retriever.retrieve", skip(self), fields(%query, available_tokens))]
     pub async fn retrieve(&self, query: &str, available_tokens: usize) -> Result<RetrievedCode> {
         let strategy = classify_query(query);
 
@@ -235,13 +240,23 @@ impl CodeRetriever {
         })
     }
 
+    #[tracing::instrument(name = "index.retriever.semantic_search", skip(self), fields(%query, token_budget))]
     async fn semantic_search(
         &self,
         query: &str,
         token_budget: usize,
         language_filter: Option<String>,
     ) -> Result<Vec<SearchHit>> {
-        let query_vector = self.provider.embed(query).await?;
+        let timeout = std::time::Duration::from_secs(self.config.embed_timeout_secs);
+        let query_vector = tokio::time::timeout(timeout, self.provider.embed(query))
+            .await
+            .map_err(|_| {
+                tracing::warn!(
+                    embed_timeout_secs = self.config.embed_timeout_secs,
+                    "embedding timed out"
+                );
+                crate::error::IndexError::EmbedTimeout(self.config.embed_timeout_secs)
+            })??;
 
         let mut hits = self
             .store

@@ -1906,6 +1906,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(not(feature = "tui"))]
     let _ = index_progress_rx;
     let agent = agent_setup::apply_code_retrieval(agent, &config.index);
+    let agent = agent_setup::apply_code_rag_retriever(
+        agent,
+        &config.index,
+        app.qdrant_ops().cloned(),
+        provider.clone(),
+        memory.sqlite().pool().clone(),
+    );
     let agent = if let Some(search_executor) = agent_setup::build_search_code_executor(
         config,
         app.qdrant_ops().cloned(),

@@ -1063,6 +1063,54 @@ pub(crate) fn apply_code_retrieval<C: Channel>(agent: Agent<C>, config: &IndexCo
     }
 }
 
+/// Construct a [`zeph_index::retriever::CodeRetriever`] and wire it onto the agent so
+/// [`zeph_core::agent::state::IndexState::fetch_code_rag`] returns hits.
+///
+/// Returns the agent unchanged when any of:
+/// - `config.enabled = false`
+/// - `config.mcp_enabled = true` (MCP pull-based mode replaces static injection)
+/// - `qdrant_ops.is_none()` (no vector backend available)
+/// - `config.budget_ratio <= 0.0`
+pub(crate) fn apply_code_rag_retriever<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    config: &IndexConfig,
+    qdrant_ops: Option<QdrantOps>,
+    provider: zeph_llm::any::AnyProvider,
+    pool: zeph_db::DbPool,
+) -> zeph_core::agent::Agent<C> {
+    if !config.enabled || config.budget_ratio <= 0.0 {
+        return agent;
+    }
+    if config.mcp_enabled {
+        tracing::debug!("code RAG retriever skipped: mcp_enabled=true, using MCP pull-based mode");
+        return agent;
+    }
+    let Some(ops) = qdrant_ops else {
+        tracing::debug!("code RAG retriever skipped: no qdrant ops");
+        return agent;
+    };
+
+    let store = CodeStore::with_ops(ops, pool);
+    let retrieval_config = zeph_index::retriever::RetrievalConfig {
+        max_chunks: config.max_chunks,
+        score_threshold: config.score_threshold,
+        budget_ratio: config.budget_ratio,
+        ..zeph_index::retriever::RetrievalConfig::default()
+    };
+    let retriever = std::sync::Arc::new(zeph_index::retriever::CodeRetriever::new(
+        store,
+        std::sync::Arc::new(provider),
+        retrieval_config,
+    ));
+    tracing::info!(
+        max_chunks = config.max_chunks,
+        score_threshold = config.score_threshold,
+        budget_ratio = config.budget_ratio,
+        "code RAG retriever wired"
+    );
+    agent.with_code_retriever(retriever)
+}
+
 pub(crate) fn build_search_code_executor(
     config: &Config,
     qdrant_ops: Option<QdrantOps>,
@@ -1460,5 +1508,61 @@ mod tests {
         };
         let result = apply_code_retrieval(agent, &config);
         drop(result);
+    }
+
+    #[tokio::test]
+    async fn apply_code_rag_retriever_disabled_is_noop() {
+        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let agent = make_agent();
+        let config = IndexConfig {
+            enabled: false,
+            ..IndexConfig::default()
+        };
+        let result = apply_code_rag_retriever(agent, &config, None, offline_provider(), pool);
+        assert!(
+            !result.has_code_retriever(),
+            "disabled index must leave retriever None"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_code_rag_retriever_no_qdrant_is_noop() {
+        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let agent = make_agent();
+        let config = IndexConfig {
+            enabled: true,
+            budget_ratio: 0.4,
+            ..IndexConfig::default()
+        };
+        let result = apply_code_rag_retriever(agent, &config, None, offline_provider(), pool);
+        assert!(
+            !result.has_code_retriever(),
+            "missing qdrant ops must leave retriever None"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_code_rag_retriever_mcp_enabled_is_noop() {
+        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let agent = make_agent();
+        let config = IndexConfig {
+            enabled: true,
+            mcp_enabled: true,
+            budget_ratio: 0.4,
+            ..IndexConfig::default()
+        };
+        let qdrant = QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let result =
+            apply_code_rag_retriever(agent, &config, Some(qdrant), offline_provider(), pool);
+        assert!(
+            !result.has_code_retriever(),
+            "mcp_enabled must leave retriever None"
+        );
     }
 }

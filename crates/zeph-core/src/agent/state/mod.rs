@@ -663,6 +663,7 @@ impl McpState {
 }
 
 impl IndexState {
+    #[tracing::instrument(name = "core.index.fetch_code_rag", skip(self), fields(%query, token_budget))]
     pub(crate) async fn fetch_code_rag(
         &self,
         query: &str,
