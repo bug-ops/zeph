@@ -250,6 +250,39 @@ content_type_prior = 0.15   # Role-based prior (user messages score higher)
 
 The `fast_path_margin` short-circuits the admission check for clearly novel messages, reducing embedding lookups on low-similarity content. When `admission_provider` is set, borderline cases (similarity near `threshold`) are escalated to an LLM for a binary admit/reject decision; without it, the threshold comparison is the sole gate.
 
+## ClawVM Typed Pages and MemReader Quality Gate
+
+Context compaction produces pages of different types — tool outputs, conversation turns, memory excerpts, system context — each with distinct fidelity requirements. ClawVM (Compact Low-Alignment View Machine) classifies every compacted page into a `PageType` enum and enforces per-type `PageInvariant` traits at compaction boundaries. This ensures that tool outputs preserve call/result pairs, conversation turns preserve multi-part messages, and memory excerpts preserve citations.
+
+**Page types:**
+
+| Type | Content | Invariant |
+|------|---------|-----------|
+| `ToolOutput` | Single tool result | No orphaned ToolUse/ToolResult pairs |
+| `ConversationTurn` | User or assistant message | Multipart structure intact (text, tool calls, etc.) |
+| `MemoryExcerpt` | Recalled or injected memory | Citation completeness, no dangling references |
+| `SystemContext` | Project context, instructions | No truncation of logical sections |
+
+When a page is compacted, Zeph appends an audit record to a bounded async sink, allowing external systems to verify that invariants were enforced.
+
+MemReader quality gate scores candidate memories on three dimensions before admitting them into the vector store:
+
+1. **Information value** — cosine similarity vs. recent context (avoid duplicates)
+2. **Reference completeness** — pronoun/deictic heuristic (is meaning clear without context?)
+3. **Contradiction risk** — graph edge conflicts (does it contradict known facts?)
+
+The gate is fail-open: if embedding, LLM, or graph queries error out, neutral defaults are used and the message is admitted. Enable it in `[memory.quality_gate]`:
+
+```toml
+[memory.quality_gate]
+enabled = true
+information_value_threshold = 0.3       # Skip admission if similarity exceeds this
+reference_completeness_threshold = 0.5  # Require non-empty pronouns in content
+contradiction_risk_threshold = 0.7      # Flag if graph edges show conflict
+```
+
+Quality gate operates downstream of A-MAC admission, making both gates independent and composable.
+
 ### RL-Based Admission Strategy
 
 The default `heuristic` strategy uses static weights and an optional LLM call for the `future_utility` factor. The `rl` strategy replaces the `future_utility` LLM call with a trained logistic regression model that learns from actual recall outcomes.

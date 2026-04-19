@@ -177,3 +177,29 @@ Active subgoal messages (tier 1.0) have their MIG reduction capped so they are n
 - `subgoal` and `SideQuest` strategies must never be active simultaneously — hard error at startup
 - NEVER evict Active-tier messages by scoring — their relevance is 1.0 (protected)
 - NEVER run subgoal extraction synchronously in the tool loop — only between turns
+
+## Hard Compaction Post-Processing: Orphaned `tool_result` Strip
+
+After hard compaction the message list is drained and rebuilt. A `tool_result` message
+references a prior `tool_use` by id. When the drain removes the originating `tool_use`
+(e.g., the turn that produced it was summarized or evicted) the `tool_result` becomes
+**orphaned** — its reference id points to a message no longer in the list. Sending an
+orphaned `tool_result` to any provider causes a request validation error (Claude: 400,
+OpenAI: 422).
+
+Fix (#3256): after `apply_hard_compaction()` and after any `apply_deferred_summaries()`
+step, run `strip_orphaned_tool_results(messages)`:
+
+```
+strip_orphaned_tool_results(messages: &mut Vec<Message>)
+    collect_set of all tool_use ids present in messages
+    remove any message where role == tool_result AND tool_use_id NOT IN that set
+```
+
+### Key Invariants
+
+- `strip_orphaned_tool_results` runs after EVERY hard compaction event — no exceptions
+- The strip runs AFTER `apply_deferred_summaries` (deferred insertions may add new tool_use messages)
+- Removing an orphaned `tool_result` is silent (no WARN) unless `--debug-dump` is active
+- This is a correctness invariant, not a heuristic — a single orphaned `tool_result` causes a provider 400/422 error
+- NEVER send a `tool_result` whose `tool_use_id` is absent from the message list

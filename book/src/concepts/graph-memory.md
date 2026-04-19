@@ -535,6 +535,58 @@ Episode boundaries are the foundation for temporal reasoning over the knowledge 
 
 No configuration is required — episode tracking is always active when `memory.graph.enabled = true`.
 
+## APEX-MEM: Append-Only Property Graph with Temporal Supersession
+
+APEX-MEM (Append-only PrEperty graph with eXtensional semantics) replaces the mutable edge model with an immutable, timestamped audit trail. Facts do not get deleted or updated; instead, when new information contradicts an existing edge, a **supersession** is recorded: the old edge remains in the table with an `expired_at` timestamp and a `supersedes_id` pointer, and a new edge is inserted with the current timestamp.
+
+This design preserves the full history of belief states while providing efficient queries for "what do we believe now?". The supersession chain depth is capped at 64 hops to prevent unbounded traversal on extremely long chains of corrections.
+
+**Supersession Example:**
+
+```
+Turn 1: User says "I prefer vim"
+  → Edge A (active): user prefers vim (valid_from: T0, valid_until: NULL, expired_at: NULL)
+
+Turn 2: User says "Actually, I switched to neovim"
+  → Edge A (inactive): user prefers vim (valid_from: T0, valid_until: T2, expired_at: T2, supersedes_id: NULL)
+  → Edge B (active): user prefers neovim (valid_from: T2, valid_until: NULL, expired_at: NULL, supersedes_id: A.id)
+```
+
+Both edges are stored. Queries for "current user preferences" skip expired edges; queries for "user preference history" see both.
+
+### Conflict Resolution
+
+When a graph extraction LLM produces a fact that logically conflicts with an existing active edge, a `ConflictResolver` evaluates the conflict using three strategies:
+
+| Strategy | Behavior | Use Case |
+|----------|----------|----------|
+| `recency` | Newer fact supersedes older | Default; works when timestamps indicate truth |
+| `confidence` | Higher-confidence fact wins; same confidence = recency | When LLM confidence scores differ |
+| `llm` | Escalate to an LLM call for binary resolution | Rare; high-stakes conflicts requiring manual arbitration |
+
+The default `recency` strategy is fast (no extra API call) and suitable for most use cases. Set `conflict_resolution_strategy` to change:
+
+```toml
+[memory.graph]
+conflict_resolution_strategy = "recency"  # "recency", "confidence", or "llm" (default: "recency")
+```
+
+Conflicts are defined as edges where `(source_entity_id, target_entity_id)` match an active edge, indicating the same relationship exists but with different relation semantics or contradictory facts.
+
+### Ontology Normalization
+
+The graph extraction LLM may use varying relation names (`prefers`, `prefer`, `preferred`, `likes`) for semantically identical relationships. An `OntologyTable` with LRU caching normalizes predicate names:
+
+```
+Input relation: "prefers"
+Canonical form: "prefers"  (cached after first normalization)
+
+Input relation: "prefer"
+Cached normalization: "prefers"  (next call returns immediately)
+```
+
+The cache holds 4096 entries with O(1) lookup. When cache misses occur (rare, on novel predicates), an LLM call produces the canonical form and caches the result. The cache is guarded by ArcSwap, allowing non-blocking reads during background normalization.
+
 ## Advanced Tuning
 
 The following fields under `[memory.graph]` control performance and resource usage. They rarely need adjustment in typical deployments.

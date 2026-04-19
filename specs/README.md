@@ -34,6 +34,9 @@ Spec IDs (001–044) follow a logical grouping:
 - **035–037**: Observability and configuration (profiling/tracing instrumentation, Prometheus metrics export, config schema)
 - **038–041**: Infrastructure and security (vault, background task supervisor, content sanitizer, experiments)
 - **042–044**: Foundation crates (slash command registry, shared primitives, subagent lifecycle)
+- **045**: Agent interoperability protocol gap analysis
+- **046**: MARCH Proposer+Checker quality pipeline
+- **047**: CLI execution modes (--bare, --json, -y, /loop, /recap)
 
 ---
 
@@ -64,7 +67,7 @@ Spec IDs (001–044) follow a logical grouping:
 | `005-skills/spec.md` | SKILL.md format, registry, matching, hot-reload, skill trust governance, two-stage matching, Wilson score confidence intervals, hub install pipeline, agent-invocable skills (`invoke_skill`) | `zeph-skills` |
 | `006-tools/spec.md` | ToolExecutor, CompositeExecutor, TAFC, schema filter, result cache, dependency graph, tool invocation phase taxonomy, native `tool_use` only; `invoke_skill`/`load_skill` utility-gate exemption | `zeph-tools` |
 | `007-channels/spec.md` | Channel trait, AnyChannel dispatch, streaming, channel feature parity | `zeph-channels` |
-| `008-mcp/spec.md` | MCP client, server lifecycle, semantic tool discovery, per-message pruning cache, injection detection, tool collision detection, caller identity propagation, tool quota, structured error codes, OAP authorization | `zeph-mcp` |
+| `008-mcp/spec.md` | MCP client, server lifecycle, semantic tool discovery, per-message pruning cache, injection detection, tool collision detection, caller identity propagation, tool quota, structured error codes, OAP authorization, elicitation (2025-06-18) | `zeph-mcp` |
 | `009-orchestration/spec.md` | DAG planner, DagScheduler, AgentRouter, /plan command, plan template cache, VMAO adaptive replanning, cascade-aware DAG routing, VeriMAP predicate gate, AdaptOrch topology advisor, CoE entropy routing, graph persistence in scheduler loop | `zeph-orchestration` |
 | `010-security/spec.md` | Vault, shell sandbox, content isolation, SSRF protection, IPI defense, PII NER circuit breaker, cross-tool injection correlation, AgentRFC protocol audit, MCP→ACP boundary enforcement, credential env-var scrubbing, file permission hardening (`fs_secure`), Seatbelt deny-first secret-path rules | cross-cutting |
 | `010-security/010-5-egress-logging.md` | Egress logging sub-spec: `EgressEvent` per outbound HTTP call, `AuditEntry.correlation_id`, bounded mpsc telemetry (256 + drop counter), TUI Security panel surface | `zeph-tools`, `zeph-core`, `zeph-tui` |
@@ -105,3 +108,6 @@ Spec IDs (001–044) follow a logical grouping:
 | `043-zeph-common/spec.md` | Shared primitives: `Secret` (zeroize-on-drop), `ToolName` (Arc<str>), `SessionId` (UUID v4), `ToolDefinition`, `SkillTrustLevel`, `PolicyLlmClient`; no `zeph-*` peer dependencies | `zeph-common` |
 | `044-subagent-lifecycle/spec.md` | Full `zeph-subagent` crate: `SubAgentDef` parsing, `SubAgentManager` spawning and concurrency cap, `PermissionGrants` TTL, `FilteredToolExecutor` policy gate, transcript JSONL persistence, lifecycle hooks, memory injection | `zeph-subagent` |
 | `045-interop-protocol-gaps/spec.md` | Agent interoperability protocol gap analysis (arXiv:2505.02279): capability matrix for MCP, ACP, A2A, ANP vs. Zeph; protocol selection guidance; ANP as P4 research; ACP re-negotiation as P3 follow-up | cross-cutting |
+| `046-march-quality/spec.md` | MARCH Proposer+Checker self-check pipeline: post-response factual consistency, information-asymmetry checker, `self-check` feature flag, per-turn `MarchVerdict`, Prometheus metrics (#3226) | `zeph-core` |
+| `047-cli-modes/spec.md` | CLI execution modes: `--bare` (skip scheduler/indexer/eviction), `--json` (JSONL event stream), `-y` (auto-approve), `/loop` command (supervised loop with inline errors), `/recap` command (#3170, #3218) | `zeph-channels`, binary |
+| `008-mcp/008-4-elicitation.md` | MCP server-driven elicitation (protocol 2025-06-18): `elicitation/create` routing to active channel, sensitive field warnings, Sandboxed trust hard-reject, Telegram timeout, URL field decline (#3218) | `zeph-mcp`, `zeph-channels` |

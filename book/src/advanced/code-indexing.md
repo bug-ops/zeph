@@ -264,6 +264,31 @@ score_threshold = 0.25
 budget_ratio = 0.40
 ```
 
+## Automatic Code RAG Injection
+
+When `[index]` is enabled with a `Qdrant` backend available and `mcp_enabled = false`, code context is automatically injected at context-assembly time. The retriever queries the code chunk collection using the current user message as the retrieval key, fetches the top-scoring chunks up to `budget_ratio` of the available context window, and appends them to the prompt as a `<code_context>` block.
+
+**Activation conditions:**
+
+- `[index] enabled = true`
+- `[index.retrieval] budget_ratio > 0`
+- Qdrant is available and accessible
+- MCP tool exposure is disabled (`mcp_enabled = false`; when both are enabled, MCP tools take priority to avoid duplication)
+
+**Example context injection:**
+
+When you write "implement a cache invalidation function", the agent's context assembly:
+
+1. Embeds "implement a cache invalidation function" using the configured embedding model
+2. Queries Qdrant's `zeph_code_chunks` collection for semantically relevant code
+3. Fetches up to `max_chunks = 12` results with `score_threshold >= 0.25`
+4. Packs chunks into a `<code_context>` block (up to 40% of available tokens)
+5. Injects the block into the prompt
+
+The retrieval is fail-open: if embedding, Qdrant queries, or scoring errors occur, the injection is silently skipped and the turn continues. No special tooling is required from the agent.
+
+Use `budget_ratio = 0` to disable automatic injection while keeping the code index available for manual MCP tool queries via `symbol_definition`, `find_text_references`, etc.
+
 ## Supported Languages
 
 All tree-sitter grammars are compiled into every build. Language sub-features on `zeph-index` (`lang-rust`, `lang-python`, `lang-js`, `lang-go`, `lang-config`) are all enabled by default and cannot be individually disabled in the standard build.

@@ -416,6 +416,13 @@ edge_history_limit = 100               # Max historical edge versions per source
 # inhibition_threshold = 0.8          # Lateral inhibition threshold (default: 0.8)
 # max_activated_nodes = 50            # Cap on activated nodes (default: 50)
 
+[memory.quality_gate]
+# enabled = false                              # Enable write quality gate (default: false)
+# information_value_threshold = 0.3            # Cosine similarity vs recent context (default: 0.3)
+# reference_completeness_threshold = 0.5       # Pronoun/deictic completeness heuristic (default: 0.5)
+# contradiction_risk_threshold = 0.7           # Graph edge conflict risk (default: 0.7)
+# Fail-open contract: embed/LLM/graph errors yield neutral defaults. Requires graph memory for contradiction scoring.
+
 [session.recap]
 on_resume = true              # Auto-generate recap when resuming a stored conversation (default: true)
 # recap_provider = ""           # Provider name for recap generation; empty = primary provider (default: "")
@@ -714,6 +721,24 @@ output_dir = "/absolute/path/to/debug"  # Optional override; omit to use the pla
 # cron = "0 3 * * *"                       # 5-field cron expression (default: daily 03:00)
 # max_experiments_per_run = 20             # Cap per scheduled run (default: 20)
 # max_wall_time_secs = 1800               # Wall-time cap per run (default: 1800)
+
+[quality]
+self_check = false                         # Enable MARCH Proposer+Checker self-check pipeline (default: false)
+# trigger = "always"                       # "always", "smart", or "manual" (default: "always")
+# latency_budget_ms = 5000                 # Per-turn budget for self-check in milliseconds (default: 5000)
+# per_call_timeout_ms = 3000              # Timeout per LLM call (proposer/checker) in milliseconds (default: 3000)
+# max_assertions = 10                      # Max atomic assertions extracted by Proposer (default: 10)
+# min_evidence = 0.6                       # Min evidence confidence from Checker [0.0-1.0] (default: 0.6)
+# flag_marker = "--- MARCH CHECK"          # Marker appended to response when check completes (default: "--- MARCH CHECK")
+
+[cli]
+# bare = false                             # Strip to essentials for scripted usage (default: false)
+# json = false                             # Emit JSONL events to stdout (default: false)
+# auto = false                             # Skip tool confirmation prompts (default: false)
+
+[cli.loop]
+min_interval_secs = 5                      # Minimum loop interval in seconds (default: 5)
+max_iterations = 1000                      # Max repetitions before loop auto-stops (default: 1000)
 ```
 
 ### Provider Entry Fields

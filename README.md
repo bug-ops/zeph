@@ -6,7 +6,7 @@
   [![Crates.io](https://img.shields.io/crates/v/zeph)](https://crates.io/crates/zeph)
   [![docs](https://img.shields.io/badge/docs-book-blue)](https://bug-ops.github.io/zeph/)
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
-  [![Tests](https://img.shields.io/badge/tests-8647-brightgreen)](https://github.com/bug-ops/zeph/actions)
+  [![Tests](https://img.shields.io/badge/tests-8506-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![Crates](https://img.shields.io/badge/crates-25-orange)](https://github.com/bug-ops/zeph/tree/main/crates)
   [![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
@@ -43,14 +43,14 @@ zeph               # start the agent
 ## Feature Highlights
 
 - [x] **[Self-learning skills](https://bug-ops.github.io/zeph/advanced/self-learning.html)** — Agent-as-a-Judge feedback detection (fast regex path + rate-limited LLM path), Wilson score Bayesian ranking promotes skills that actually work, autonomous skill evolution triggered by clustered failures, RL-based SleepGate admission control prevents noise from polluting long-term memory
-- [x] **[Graph memory with SYNAPSE](https://bug-ops.github.io/zeph/concepts/graph-memory.html)** — five typed edge categories (Causal, Temporal, Semantic, CoOccurrence, Hierarchical) via MAGMA; spreading activation retrieval with hop-by-hop decay and lateral inhibition surfaces multi-hop connections; community detection clusters entities by topic; BFS recall injected alongside vector results each turn
+- [x] **[Graph memory with SYNAPSE](https://bug-ops.github.io/zeph/concepts/graph-memory.html)** — five typed edge categories (Causal, Temporal, Semantic, CoOccurrence, Hierarchical) via MAGMA; APEX-MEM append-only property graph with temporal supersession and ontology normalization; spreading activation retrieval with hop-by-hop decay and lateral inhibition surfaces multi-hop connections; community detection clusters entities by topic; BFS recall injected alongside vector results each turn
 - [x] **[Skills-first architecture](https://bug-ops.github.io/zeph/concepts/skills.html)** — YAML+Markdown skill files, hot-reload on edit, BM25+cosine hybrid retrieval with RRF fusion, Bayesian re-ranking
-- [x] **[Context engineering](https://bug-ops.github.io/zeph/advanced/context.html)** — three-tier compaction pipeline, HiAgent subgoal-aware eviction, failure-driven compression guidelines (ACON, ICLR 2026), Memex tool-output archival
-- [x] **[Semantic memory](https://bug-ops.github.io/zeph/concepts/memory.html)** — SQLite or PostgreSQL + Qdrant, MMR re-ranking, temporal decay, semantic response cache
+- [x] **[Context engineering](https://bug-ops.github.io/zeph/advanced/context.html)** — three-tier compaction pipeline, HiAgent subgoal-aware eviction, ClawVM typed pages with per-type fidelity invariants and compaction audit, failure-driven compression guidelines (ACON, ICLR 2026), Memex tool-output archival
+- [x] **[Semantic memory](https://bug-ops.github.io/zeph/concepts/memory.html)** — SQLite or PostgreSQL + Qdrant, MMR re-ranking, temporal decay, semantic response cache; MemReader quality gate scores writes on information value, reference completeness, and contradiction risk before long-term persistence
 - [x] **[Multi-model orchestration](https://bug-ops.github.io/zeph/advanced/complexity-triage.html)** — complexity triage routing (Simple/Medium/Complex/Expert), Thompson Sampling, cascade cost tiers, PILOT LinUCB bandit
 - [x] **[Hybrid inference](https://bug-ops.github.io/zeph/concepts/providers.html)** — Ollama, Claude, OpenAI, Gemini, any OpenAI-compatible API, or fully local via Candle (GGUF)
 - [x] **[Task orchestration](https://bug-ops.github.io/zeph/concepts/task-orchestration.html)** — DAG-based task graphs with LLM goal decomposition, parallel execution, plan template caching
-- [x] **[MCP client](https://bug-ops.github.io/zeph/guides/mcp.html)** — full tool exposure, OAuth 2.1 + PKCE for remote servers, 17-pattern injection detection, per-session tool quota, OAP authorization
+- [x] **[MCP client](https://bug-ops.github.io/zeph/guides/mcp.html)** — full tool exposure, OAuth 2.1 + PKCE for remote servers, 17-pattern injection detection, per-session tool quota, OAP authorization; server-driven elicitation routes structured credential/confirmation requests to the active channel
 - [x] **[Security sandbox](https://bug-ops.github.io/zeph/reference/security.html)** — age-encrypted vault, shell sandbox, file read sandbox, SSRF protection, PII filter, exfiltration guards
 - [x] **[ACP server](https://bug-ops.github.io/zeph/advanced/acp.html)** — stdio, HTTP+SSE, WebSocket transports for IDE integration (Zed, VS Code, Helix)
 - [x] **[A2A protocol](https://bug-ops.github.io/zeph/advanced/a2a.html)** — agent-to-agent delegation over JSON-RPC 2.0 with IBCT capability tokens
@@ -59,7 +59,9 @@ zeph               # start the agent
 - [x] **[Multi-channel I/O](https://bug-ops.github.io/zeph/advanced/channels.html)** — CLI, Telegram, TUI, Discord, Slack — all with streaming, voice, and vision input
 - [x] **[OS sandbox](https://bug-ops.github.io/zeph/reference/security.html#sandbox)** — macOS Seatbelt + Linux Landlock isolation for tool execution; VIGIL verify-before-commit security gate; egress network logging
 - [x] **[Plugin system](https://bug-ops.github.io/zeph/advanced/plugins.html)** — install/remove skill packages via `zeph plugin add <url>`; runtime config overlay merge with tighten-only safety rules; hub install pipeline with trust escalation filter
-- [x] **[Session recap](https://bug-ops.github.io/zeph/advanced/sessions.html)** — `/recap` command and configurable auto-summary shown on session resume
+- [x] **[Session recap](https://bug-ops.github.io/zeph/advanced/sessions.html)** — `/recap` command and configurable auto-summary shown on session resume; `/loop` for repeating a prompt on a fixed schedule within a session
+- [x] **[MARCH self-check](https://bug-ops.github.io/zeph/advanced/quality.html)** — post-response factual consistency via Proposer+Checker LLM pipeline; extracts assertions, verifies against retrieved memory evidence, appends a flag marker on contradiction; configurable trigger, latency budget, and per-assertion timeout
+- [x] **[Scripted / CI mode](https://bug-ops.github.io/zeph/guides/scripted.html)** — `--bare` skips memory init, skill loading, and watcher registration; `--json` emits newline-delimited JSON events for programmatic consumption; `-y` auto-confirms tool approvals
 - [x] **[LSP integration](https://bug-ops.github.io/zeph/guides/lsp.html)** — compiler-level code intelligence via rust-analyzer, pyright, gopls and others: type info, diagnostics, call hierarchy, safe rename, references — injected automatically into context after file writes and reads
 - [x] **[Code indexing](https://bug-ops.github.io/zeph/advanced/code-indexing.html)** — tree-sitter AST-based indexing (Rust, Python, JS, TS, Go), semantic search, repo map generation
 - [x] **[Document RAG](https://bug-ops.github.io/zeph/advanced/document-loaders.html)** — ingest `.txt`, `.md`, `.pdf` into Qdrant with automatic retrieval per turn

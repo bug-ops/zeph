@@ -156,6 +156,33 @@ When a server sends `elicitation/create`:
 - `elicitation_warn_sensitive_fields = true` (default) logs a warning when field names match secret patterns before prompting.
 - See [Elicitation Security](../reference/security/mcp.md#elicitation-security) for the full security model.
 
+## Session Recap on Resume
+
+When resuming a stored conversation via `zeph` (without `--config-path` specifying a new database), Zeph can auto-generate a recap of the prior session to refresh context. This is helpful for long sessions where context was compacted or when returning to a project days later.
+
+Enable auto-recap in `[session.recap]`:
+
+```toml
+[session.recap]
+on_resume = true              # Auto-generate recap on resume (default: true)
+recap_provider = "fast"       # Provider for recap generation; empty = primary
+max_tokens = 500              # Max tokens for the recap summary (default: 500)
+max_input_messages = 50       # Max prior messages included in recap (default: 50)
+```
+
+You can also request a recap on-demand during an active session via the `/recap` slash command:
+
+```bash
+> /recap
+```
+
+A recap is skipped if:
+- A session summary already exists in SQLite (from prior hard compaction or auto-recap at shutdown)
+- `max_input_messages = 0` (disabled)
+- The recap LLM call times out (5-second timeout, logged as a warning, does not break the turn)
+
+Recap context is shown as a visible system message so you can review what was recalled before resuming active work.
+
 ## MCP Roots Protocol
 
 Zeph implements the MCP Roots protocol, which allows MCP servers to discover the project root directory and workspace structure. When a server requests roots, Zeph responds with the current working directory and any configured project paths.

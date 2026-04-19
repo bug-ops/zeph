@@ -487,10 +487,48 @@ Enable debug dump mid-session without restarting.
 
 See [Debug Dump](../advanced/debug-dump.md) for the file layout and how to read dumps.
 
+### `/loop`
+
+Repeat a prompt at fixed intervals. Useful for continuous monitoring, periodic tasks, or testing.
+
+| Subcommand | Description |
+|------------|-------------|
+| `/loop <PROMPT> every <N> <UNIT>` | Start repeating the prompt every N time units (`seconds`, `minutes`, `hours`) |
+| `/loop stop` | Cancel the active loop |
+| `/loop status` | Show current loop state |
+
+```bash
+> /loop Check for new errors every 30 seconds
+> /loop status
+> /loop stop
+```
+
+Time constraints:
+- Minimum interval: 5 seconds
+- Prompts starting with `/` are rejected to prevent slash-command injection
+- Default max iterations: 1000 (configurable via `[cli.loop] max_iterations`)
+
+### `/recap`
+
+Generate an on-demand summary of the current conversation. Useful for understanding context in long sessions.
+
+| Subcommand | Description |
+|------------|-------------|
+| `/recap` | Generate and display a session summary |
+
+```bash
+> /recap
+```
+
+Configuration: Set `[session.recap]` in your config to control which LLM provider and whether to auto-recap on session resume.
+
 ## Global Options
 
 | Flag | Description |
 |------|-------------|
+| `--bare` | Strip the agent to essentials for scripted/CI usage: skips memory initialization, scheduler startup, skill loading, and watcher registration. Faster startup, suitable for piping and non-interactive workflows. Incompatible with `--tui`, `--acp`, and messaging channels |
+| `--json` | Emit structured JSONL events to stdout (boot, chunk, response_end, tool_call, tool_result, cost, error) for programmatic integration. All tool output is redacted. Incompatible with `--tui`, `--acp`, and messaging channels. Tracing redirected to stderr |
+| `-y` / `--auto` | Enable full autonomy: skip all tool confirmation prompts. Shell blocklist and adversarial policy enforcement remain active. Use in trusted scripted environments |
 | `--tui` | Run with the TUI dashboard (requires the `tui` feature) |
 | `--daemon` | Run as headless background agent with A2A endpoint (requires `a2a` feature). See [Daemon Mode](../guides/daemon-mode.md) |
 | `--acp` | Run as ACP server over stdio for IDE embedding (requires `acp` feature) |

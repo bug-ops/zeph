@@ -93,6 +93,32 @@ strategy                    = "hybrid"
 routing_classifier_provider = "fast"
 ```
 
+## MemReader quality gate
+
+`QualityGate` (`[memory.quality_gate]`) scores each `remember()` call on three dimensions before long-term persistence:
+
+| Dimension | Description |
+|-----------|-------------|
+| Information value | Embedding cosine similarity vs. recent context — low similarity = novel content |
+| Reference completeness | Pronoun/deictic heuristic — "he/she/they/it/this" without referents reduces score |
+| Contradiction risk | Graph edge conflict check — contradicts an existing edge → reduces score |
+
+Writes whose composite score falls below `threshold` are rejected. The gate is **fail-open** — embed errors or LLM timeouts count as admitted. Rejection rates are tracked per-reason as rolling metrics.
+
+```toml
+[memory.quality_gate]
+enabled                       = false    # opt-in (default: false)
+threshold                     = 0.5      # 0.0–1.0; higher = stricter
+information_value_weight      = 0.4
+reference_completeness_weight = 0.4
+contradiction_weight          = 0.2
+llm_weight                    = 0.3      # fraction of score from LLM judge (0.0 = rule-only)
+llm_timeout_ms                = 500      # LLM judge timeout; fallback to rule score on expiry
+```
+
+> [!TIP]
+> Start with `threshold = 0.3` and `llm_weight = 0.0` (rule-only) to observe rejection rates before enabling the LLM judge.
+
 ## A-MAC adaptive admission control
 
 `AdaptiveAdmissionController` (`[memory.admission]`) gates memory writes using a learned relevance threshold. Each candidate message is scored by embedding similarity against recent context; messages below the threshold are dropped before Qdrant upsert, reducing noise in semantic recall.
@@ -292,6 +318,7 @@ The `graph` module provides SQLite-backed entity-relationship tracking:
 - **GraphFact** — retrieval-side type with composite scoring for context injection; includes `valid_from` field for recency-aware scoring when `temporal_decay_rate > 0`
 - **`graph_recall`** — query-time retrieval: splits the query into words, matches seed entities via FTS5 full-text index with BM25 ranking (including aliases), runs BFS up to `max_hops`, builds `GraphFact` structs with hop-distance-weighted composite scores, deduplicates by canonical name, and returns the top-K facts for context injection
 - **Embedding-based entity resolution** — when `use_embedding_resolution = true`, entities are deduplicated via cosine similarity in Qdrant with a two-threshold approach (auto-merge at >= 0.85, LLM disambiguation at >= 0.70, new entity below); integrated after alias and canonical-name lookup steps; falls back to create-new on failure
+- **APEX-MEM append-only property graph** — migration 075 adds a `supersedes` column (append-only pointer to the prior head edge) and a `canonical_relation` column (normalized predicate). Superseded edges are never deleted; `insert_or_supersede` atomically creates the new head and links it to the prior. `check_supersede_depth` (recursive CTE, depth-capped at `SUPERSEDE_DEPTH_CAP`) detects runaway supersession chains. `OntologyTable` (ArcSwap + LRU-4096 cache) normalizes relation predicates with LLM fallback. `ConflictResolver` resolves contradictory edges via `recency`, `confidence`, or `llm` strategy. The `edge_reassertions` table records byte-identical reassertions for provenance.
 
 `GraphStore` provides CRUD methods over five SQLite tables (`graph_entities`, `graph_entity_aliases`, `graph_edges`, `graph_communities`, `graph_metadata`). Schema is created by migrations 021, 023, and 024.
 

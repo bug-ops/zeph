@@ -37,6 +37,7 @@ For detailed information on specific areas, refer to the child specs below.
 | [[008-1-lifecycle]] | Server Connection | Startup, health monitoring, automatic restart, graceful shutdown |
 | [[008-2-discovery]] | Tool Discovery | Semantic registry, namespacing, collision detection, per-message pruning |
 | [[008-3-security]] | Security & Auth | OAuth 2.1, SSRF protection, tool allowlisting, trust levels |
+| [[008-4-elicitation]] | Server-Driven Elicitation | MCP 2025-06-18 elicitation/create routing, sensitive field warnings, Sandboxed rejection |
 
 ---
 
