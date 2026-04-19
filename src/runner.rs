@@ -1916,7 +1916,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = if let Some(search_executor) = agent_setup::build_search_code_executor(
         config,
         app.qdrant_ops().cloned(),
-        provider.clone(),
+        index_provider.clone(),
         memory.sqlite().pool().clone(),
         Some(std::sync::Arc::clone(&mcp_manager)),
     ) {
