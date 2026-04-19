@@ -138,5 +138,5 @@ This is planned for a future `--no-quality-check` CLI flag.
 ## See Also
 
 - [Configuration Reference — Quality Section](../reference/configuration.md#quality)
-- [Memory & Context — Cross-Session Recall](memory.md#semantic-memory)
-- [LLM Providers](concepts/providers.md) — provider selection and routing
+- [Memory & Context — Cross-Session Recall](../concepts/memory.md#semantic-memory)
+- [LLM Providers](../concepts/providers.md) — provider selection and routing
