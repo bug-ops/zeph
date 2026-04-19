@@ -29,3 +29,4 @@ pub mod manager;
 pub mod microcompact;
 pub mod slot;
 pub mod summarization;
+pub mod typed_page;

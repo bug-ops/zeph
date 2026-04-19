@@ -84,6 +84,7 @@ pub mod eviction;
 pub mod graph;
 pub mod in_memory_store;
 pub mod qdrant_ops;
+pub mod quality_gate;
 pub mod response_cache;
 pub mod router;
 pub mod semantic;

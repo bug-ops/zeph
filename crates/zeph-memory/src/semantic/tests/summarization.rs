@@ -337,6 +337,7 @@ async fn summarize_fails_when_provider_chat_fails() {
         last_qdrant_warn: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
         admission_control: None,
+        quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     };
@@ -402,6 +403,7 @@ async fn summarize_fallback_to_plain_text_when_structured_fails() {
         last_qdrant_warn: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
         admission_control: None,
+        quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     };
@@ -552,6 +554,7 @@ async fn make_embed_memory_with_threshold(threshold: f32) -> super::super::Seman
         last_qdrant_warn: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
         admission_control: None,
+        quality_gate: None,
         key_facts_dedup_threshold: threshold,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     }
@@ -645,6 +648,7 @@ async fn store_key_facts_fail_open_on_search_error() {
         last_qdrant_warn: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
         admission_control: None,
+        quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     };

@@ -13,9 +13,12 @@ description = "Context budget, manager, compaction strategy, and assembler for t
 readme = "README.md"
 
 [dependencies]
+blake3.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
 regex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
@@ -25,7 +28,7 @@ zeph-llm.workspace = true
 zeph-memory.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

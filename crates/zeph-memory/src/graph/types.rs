@@ -194,6 +194,12 @@ pub struct Edge {
     /// ID of the edge that superseded this one during Kumiho belief revision.
     /// `None` for active edges and for edges invalidated by legacy exact-match dedup.
     pub superseded_by: Option<i64>,
+    /// Canonical (ontology-normalized) relation. Equals `relation` when no ontology is loaded.
+    /// Added by APEX-MEM migration 075.
+    pub canonical_relation: String,
+    /// ID of the prior active edge that this edge replaced in the supersede chain.
+    /// `None` for the chain root. Added by APEX-MEM migration 075.
+    pub supersedes: Option<i64>,
 }
 
 /// A Louvain-detected community (cluster) of related entities.

@@ -50,6 +50,7 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
         last_qdrant_warn: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
         admission_control: None,
+        quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     }
@@ -135,6 +136,7 @@ async fn effective_embed_provider_routes_to_dedicated_embed_provider() {
         last_qdrant_warn: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
         admission_control: None,
+        quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     };
@@ -524,6 +526,7 @@ async fn store_correction_embedding_sqlite_clean_db_roundtrip() {
         last_qdrant_warn: Arc::new(AtomicU64::new(0)),
         tier_boost_semantic: 1.3,
         admission_control: None,
+        quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
     };

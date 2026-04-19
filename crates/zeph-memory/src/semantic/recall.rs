@@ -368,6 +368,15 @@ impl SemanticMemory {
             }
         }
 
+        if let Some(gate) = &self.quality_gate
+            && gate
+                .evaluate(content, self.effective_embed_provider(), &[])
+                .await
+                .is_some()
+        {
+            return Ok(None);
+        }
+
         let message_id = self
             .sqlite
             .save_message(conversation_id, role, content)
@@ -414,6 +423,15 @@ impl SemanticMemory {
             if !decision.admitted {
                 return Ok((None, false));
             }
+        }
+
+        if let Some(gate) = &self.quality_gate
+            && gate
+                .evaluate(content, self.effective_embed_provider(), &[])
+                .await
+                .is_some()
+        {
+            return Ok((None, false));
         }
 
         let message_id = self
@@ -1495,6 +1513,7 @@ mod tests {
             last_qdrant_warn: Arc::new(AtomicU64::new(0)),
             tier_boost_semantic: 1.3,
             admission_control: None,
+            quality_gate: None,
             key_facts_dedup_threshold: 0.95,
             embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         }

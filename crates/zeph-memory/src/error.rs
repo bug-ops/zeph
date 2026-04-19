@@ -55,4 +55,12 @@ pub enum MemoryError {
 
     #[error("operation timed out: {0}")]
     Timeout(String),
+
+    /// Returned when inserting a supersede pointer would form a cycle in the chain.
+    #[error("supersede cycle detected at edge id={0}")]
+    SupersedeCycle(i64),
+
+    /// Returned when the supersede chain depth would exceed [`crate::graph::conflict::SUPERSEDE_DEPTH_CAP`].
+    #[error("supersede chain depth cap exceeded at edge id={0}")]
+    SupersedeDepthExceeded(i64),
 }

@@ -112,6 +112,9 @@ pub struct SemanticMemory {
     pub(crate) last_qdrant_warn: Arc<AtomicU64>,
     /// A-MAC admission control gate. When `Some`, each `remember()` call is evaluated.
     pub(crate) admission_control: Option<Arc<AdmissionControl>>,
+    /// Write quality gate. When `Some`, evaluated in `remember()`/`remember_with_parts()`
+    /// after A-MAC admission and before persistence.
+    pub(crate) quality_gate: Option<Arc<crate::quality_gate::QualityGate>>,
     /// Cosine similarity threshold for skipping near-duplicate key facts (0.0–1.0).
     /// When a new fact's nearest neighbour in `zeph_key_facts` has score >= this value,
     /// the fact is considered a duplicate and not inserted.  Default: `0.95`.
@@ -222,6 +225,7 @@ impl SemanticMemory {
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
             last_qdrant_warn: Arc::new(AtomicU64::new(0)),
             admission_control: None,
+            quality_gate: None,
             key_facts_dedup_threshold: 0.95,
             embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         })
@@ -270,6 +274,7 @@ impl SemanticMemory {
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
             last_qdrant_warn: Arc::new(AtomicU64::new(0)),
             admission_control: None,
+            quality_gate: None,
             key_facts_dedup_threshold: 0.95,
             embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         })
@@ -349,6 +354,17 @@ impl SemanticMemory {
         self
     }
 
+    /// Attach a write quality gate that scores each `remember()` call before persisting.
+    ///
+    /// When set, the gate is evaluated after A-MAC admission. A `Some(reason)` result from
+    /// [`crate::quality_gate::QualityGate::evaluate`] causes the write to be skipped
+    /// and `Ok(None)` / `Ok((None, false))` to be returned.
+    #[must_use]
+    pub fn with_quality_gate(mut self, gate: Arc<crate::quality_gate::QualityGate>) -> Self {
+        self.quality_gate = Some(gate);
+        self
+    }
+
     /// Set the cosine similarity threshold used to skip near-duplicate key facts on insert.
     ///
     /// When a candidate fact's nearest neighbour in `zeph_key_facts` has a score ≥ this value,
@@ -412,6 +428,7 @@ impl SemanticMemory {
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
             last_qdrant_warn: Arc::new(AtomicU64::new(0)),
             admission_control: None,
+            quality_gate: None,
             key_facts_dedup_threshold: 0.95,
             embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         }
@@ -479,6 +496,7 @@ impl SemanticMemory {
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
             last_qdrant_warn: Arc::new(AtomicU64::new(0)),
             admission_control: None,
+            quality_gate: None,
             key_facts_dedup_threshold: 0.95,
             embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         })

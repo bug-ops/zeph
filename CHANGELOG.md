@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **feat(memory): ClawVM-style typed page compaction for token-budget-aware context management** (#3221) —
+  introduces `TypedPage` (BLAKE3 content-hash id), `PageType` enum (ToolOutput, ConversationTurn,
+  MemoryExcerpt, SystemContext), per-type `PageInvariant` implementations, `InvariantRegistry`,
+  and `CompactionAuditSink` (bounded async mpsc) in `zeph-context`. `ContextAssembler::gather()`
+  classifies every context slot into a typed page, enforces minimum-fidelity invariants at
+  compaction boundaries, and appends an audit record per compacted page.
+
+- **feat(memory): MemReader write quality gate — score-based admission before long-term memory persistence** (#3222) —
+  new `QualityGate` in `zeph-memory` scores each `remember()` call on three dimensions:
+  information value (embedding cosine similarity vs recent context), reference completeness
+  (pronoun/deictic heuristic), and contradiction risk (graph edge conflict check). Writes below
+  the configurable threshold are rejected; rejection rate is tracked as a rolling metric.
+  Gate is fail-open and disabled by default (`[memory.quality_gate]` TOML section).
+  Wired into `SemanticMemory::remember()` and `remember_with_parts()` after A-MAC admission.
+
+- **feat(memory): APEX-MEM append-only property graph with temporal supersession for MAGMA** (#3223) —
+  extends `graph_edges` schema with `supersedes` (append-only pointer to prior head) and
+  `canonical_relation` (normalized predicate) columns via migration 075. Adds `edge_reassertions`
+  table for byte-identical reassertion provenance. New `OntologyTable` (ArcSwap + LRU-4096 cache)
+  normalizes relation predicates with LLM fallback. New `ConflictResolver` (recency / confidence /
+  llm strategies) resolves contradictory edges in SYNAPSE recall. `insert_or_supersede` and
+  `check_supersede_depth` (recursive CTE, depth-capped) added to `GraphStore`.
+
 ### Fixed
 
 - **fix(index): wire `CodeRetriever` into `IndexState` for automatic code RAG injection** (#3236) —

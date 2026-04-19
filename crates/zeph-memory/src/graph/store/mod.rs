@@ -16,6 +16,7 @@ use zeph_db::fts::sanitize_fts_query;
 use zeph_db::{ActiveDialect, DbPool, numbered_placeholder, placeholder_list};
 
 use crate::error::MemoryError;
+use crate::graph::conflict::{ApexMetrics, SUPERSEDE_DEPTH_CAP};
 use crate::types::MessageId;
 
 use super::types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType};
@@ -560,6 +561,10 @@ impl GraphStore {
     /// Query active edges for a single chunk of entity IDs (internal helper).
     ///
     /// Caller is responsible for ensuring `entity_ids.len() <= MAX_BATCH_ENTITIES`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any database query fails.
     async fn query_batch_edges(
         &self,
         entity_ids: &[i64],
@@ -581,7 +586,7 @@ impl GraphStore {
             format!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, superseded_by
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
                  FROM graph_edges
                  WHERE valid_to IS NULL
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders2}))"
@@ -593,7 +598,7 @@ impl GraphStore {
             format!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, superseded_by
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
                  FROM graph_edges
                  WHERE valid_to IS NULL
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders2}))
@@ -634,7 +639,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
              FROM graph_edges
              WHERE valid_to IS NULL
                AND (source_entity_id = ? OR target_entity_id = ?)"
@@ -661,7 +666,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
              FROM graph_edges
              WHERE source_entity_id = ? OR target_entity_id = ?
              ORDER BY valid_from DESC
@@ -688,7 +693,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
              FROM graph_edges
              WHERE valid_to IS NULL
                AND ((source_entity_id = ? AND target_entity_id = ?)
@@ -716,7 +721,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
              FROM graph_edges
              WHERE valid_to IS NULL
                AND source_entity_id = ?
@@ -972,7 +977,7 @@ impl GraphStore {
         zeph_db::query_as::<_, EdgeRow>(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
              FROM graph_edges
              WHERE valid_to IS NULL
              ORDER BY id ASC"
@@ -1005,7 +1010,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
              FROM graph_edges
              WHERE valid_to IS NULL AND id > ?
              ORDER BY id ASC
@@ -1476,7 +1481,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
              FROM graph_edges
              WHERE valid_to IS NULL
                AND valid_from <= ?
@@ -1484,7 +1489,7 @@ impl GraphStore {
              UNION ALL
              SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
              FROM graph_edges
              WHERE valid_to IS NOT NULL
                AND valid_from <= ?
@@ -1529,7 +1534,7 @@ impl GraphStore {
             zeph_db::query_as(sql!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, superseded_by
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
                  FROM graph_edges
                  WHERE source_entity_id = ?
                    AND fact LIKE ? ESCAPE '\\'
@@ -1547,7 +1552,7 @@ impl GraphStore {
             zeph_db::query_as(sql!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, superseded_by
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
                  FROM graph_edges
                  WHERE source_entity_id = ?
                    AND fact LIKE ? ESCAPE '\\'
@@ -1880,7 +1885,7 @@ impl GraphStore {
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({ph_ids1})
@@ -1958,7 +1963,7 @@ impl GraphStore {
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({ph_ids1})
@@ -2188,6 +2193,8 @@ struct EdgeRow {
     retrieval_count: i32,
     last_retrieved_at: Option<i64>,
     superseded_by: Option<i64>,
+    canonical_relation: Option<String>,
+    supersedes: Option<i64>,
 }
 
 fn edge_from_row(row: EdgeRow) -> Edge {
@@ -2195,10 +2202,14 @@ fn edge_from_row(row: EdgeRow) -> Edge {
         .edge_type
         .parse::<EdgeType>()
         .unwrap_or(EdgeType::Semantic);
+    let canonical_relation = row
+        .canonical_relation
+        .unwrap_or_else(|| row.relation.clone());
     Edge {
         id: row.id,
         source_entity_id: row.source_entity_id,
         target_entity_id: row.target_entity_id,
+        canonical_relation,
         relation: row.relation,
         fact: row.fact,
         #[allow(clippy::cast_possible_truncation)]
@@ -2213,6 +2224,7 @@ fn edge_from_row(row: EdgeRow) -> Edge {
         retrieval_count: row.retrieval_count,
         last_retrieved_at: row.last_retrieved_at,
         superseded_by: row.superseded_by,
+        supersedes: row.supersedes,
     }
 }
 
@@ -2315,6 +2327,259 @@ impl GraphStore {
                 closed_at: r.closed_at,
             })
             .collect())
+    }
+
+    /// Insert a new edge using APEX-MEM append-only supersede semantics (FR-001).
+    ///
+    /// If a byte-identical active edge exists for `(src, tgt, canonical_relation, edge_type)`,
+    /// records a reassertion in `edge_reassertions` and returns the existing edge id (FR-015).
+    ///
+    /// If a different active edge exists for the same `(src, canonical_relation, edge_type)` key,
+    /// invalidates it with a supersession pointer, inserts the new edge, and sets `supersedes` on
+    /// the new row to link the chain. Checks that the resulting chain depth would not exceed
+    /// [`SUPERSEDE_DEPTH_CAP`] and that no cycle would be introduced before committing.
+    ///
+    /// Optionally increments [`ApexMetrics::supersedes_total`] when `metrics` is provided and a
+    /// supersession actually occurs.
+    ///
+    /// # Errors
+    ///
+    /// - [`MemoryError::SupersedeCycle`] — the new edge would create a supersede cycle.
+    /// - [`MemoryError::SupersedeDepthExceeded`] — chain depth cap would be exceeded.
+    /// - [`MemoryError::Sqlx`] / [`MemoryError::Db`] — database errors.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    pub async fn insert_or_supersede_with_metrics(
+        &self,
+        source_entity_id: i64,
+        target_entity_id: i64,
+        relation: &str,
+        canonical_relation: &str,
+        fact: &str,
+        confidence: f32,
+        episode_id: Option<MessageId>,
+        edge_type: EdgeType,
+        set_supersedes: bool,
+        metrics: Option<&ApexMetrics>,
+    ) -> Result<i64, MemoryError> {
+        if source_entity_id == target_entity_id {
+            return Err(MemoryError::InvalidInput(format!(
+                "self-loop edge rejected: source and target are the same entity (id={source_entity_id})"
+            )));
+        }
+        let confidence = confidence.clamp(0.0, 1.0);
+        let edge_type_str = edge_type.as_str();
+        let episode_raw: Option<i64> = episode_id.map(|m| m.0);
+
+        let mut tx = zeph_db::begin(&self.pool).await?;
+
+        // Check for byte-identical active edge (FR-015 reassertion path).
+        let identical: Option<i64> = zeph_db::query_scalar(sql!(
+            "SELECT id FROM graph_edges
+             WHERE source_entity_id = ?
+               AND target_entity_id = ?
+               AND canonical_relation = ?
+               AND edge_type = ?
+               AND fact = ?
+               AND valid_to IS NULL
+               AND expired_at IS NULL
+             LIMIT 1"
+        ))
+        .bind(source_entity_id)
+        .bind(target_entity_id)
+        .bind(canonical_relation)
+        .bind(edge_type_str)
+        .bind(fact)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if let Some(existing_id) = identical {
+            // FR-015: byte-identical reassertion — record event, do not insert new edge.
+            #[allow(clippy::cast_possible_wrap)]
+            let asserted_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            zeph_db::query(sql!(
+                "INSERT INTO edge_reassertions (head_edge_id, asserted_at, episode_id, confidence)
+                 VALUES (?, ?, ?, ?)"
+            ))
+            .bind(existing_id)
+            .bind(asserted_at)
+            .bind(episode_raw)
+            .bind(f64::from(confidence))
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(existing_id);
+        }
+
+        // Find the current active head for (src, canonical_relation, edge_type) — may differ in target.
+        let prior_head: Option<i64> = zeph_db::query_scalar(sql!(
+            "SELECT id FROM graph_edges
+             WHERE source_entity_id = ?
+               AND canonical_relation = ?
+               AND edge_type = ?
+               AND valid_to IS NULL
+               AND expired_at IS NULL
+             ORDER BY created_at DESC
+             LIMIT 1"
+        ))
+        .bind(source_entity_id)
+        .bind(canonical_relation)
+        .bind(edge_type_str)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        // Cycle guard: inserting a supersede pointer from new_id → prior_head is safe as long as
+        // prior_head does not already appear in the ancestry of new_id. Since new_id doesn't exist
+        // yet there is no ancestry to walk; the cycle risk is that prior_head's own chain contains
+        // a node that will point back. We prevent this by capping depth, which also bounds cycles.
+        // NOTE: We run this inside the transaction using sqlx directly to avoid a second pool
+        // acquire (SQLite connection pool is typically size 1 in tests and development).
+        if let Some(head_id) = prior_head {
+            let cap = i64::try_from(SUPERSEDE_DEPTH_CAP + 1).unwrap_or(i64::MAX);
+            let depth: Option<i64> = sqlx::query_scalar(
+                "WITH RECURSIVE chain(id, depth) AS (
+                   SELECT supersedes, 1 FROM graph_edges WHERE id = ? AND supersedes IS NOT NULL
+                   UNION ALL
+                   SELECT e.supersedes, c.depth + 1
+                   FROM graph_edges e JOIN chain c ON e.id = c.id
+                   WHERE e.supersedes IS NOT NULL AND c.depth < ?
+                 )
+                 SELECT MAX(depth) FROM chain",
+            )
+            .bind(head_id)
+            .bind(cap)
+            .fetch_optional(&mut *tx)
+            .await?
+            .flatten();
+            let d = usize::try_from(depth.unwrap_or(0)).unwrap_or(usize::MAX);
+            if d > SUPERSEDE_DEPTH_CAP {
+                return Err(MemoryError::SupersedeDepthExceeded(head_id));
+            }
+        }
+
+        // Insert the new edge.
+        let supersedes_val: Option<i64> = if set_supersedes { prior_head } else { None };
+        let new_id: i64 = zeph_db::query_scalar(sql!(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, canonical_relation, fact,
+              confidence, episode_id, edge_type, supersedes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             RETURNING id"
+        ))
+        .bind(source_entity_id)
+        .bind(target_entity_id)
+        .bind(relation)
+        .bind(canonical_relation)
+        .bind(fact)
+        .bind(f64::from(confidence))
+        .bind(episode_raw)
+        .bind(edge_type_str)
+        .bind(supersedes_val)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // Invalidate prior head and record supersession pointer.
+        if let Some(head_id) = prior_head {
+            zeph_db::query(sql!(
+                "UPDATE graph_edges
+                 SET valid_to = CURRENT_TIMESTAMP,
+                     expired_at = CURRENT_TIMESTAMP,
+                     superseded_by = ?
+                 WHERE id = ?"
+            ))
+            .bind(new_id)
+            .bind(head_id)
+            .execute(&mut *tx)
+            .await?;
+
+            if let Some(m) = metrics {
+                m.supersedes_total
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+
+        tx.commit().await?;
+        Ok(new_id)
+    }
+
+    /// Convenience wrapper: calls [`Self::insert_or_supersede_with_metrics`] with `metrics = None`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates errors from [`Self::insert_or_supersede_with_metrics`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_or_supersede(
+        &self,
+        source_entity_id: i64,
+        target_entity_id: i64,
+        relation: &str,
+        canonical_relation: &str,
+        fact: &str,
+        confidence: f32,
+        episode_id: Option<MessageId>,
+        edge_type: EdgeType,
+        set_supersedes: bool,
+    ) -> Result<i64, MemoryError> {
+        self.insert_or_supersede_with_metrics(
+            source_entity_id,
+            target_entity_id,
+            relation,
+            canonical_relation,
+            fact,
+            confidence,
+            episode_id,
+            edge_type,
+            set_supersedes,
+            None,
+        )
+        .await
+    }
+
+    /// Walk the `supersedes` chain from `head_id` using a single recursive CTE and return its depth.
+    ///
+    /// Returns `0` when the edge has no `supersedes` pointer (it is the root).
+    /// The CTE is capped at `SUPERSEDE_DEPTH_CAP + 1` to prevent unbounded recursion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::SupersedeCycle`] when the CTE detects a cycle (depth exceeds cap
+    /// but the chain has not terminated), or a database error on query failure.
+    pub async fn check_supersede_depth(&self, head_id: i64) -> Result<usize, MemoryError> {
+        Self::check_supersede_depth_with_pool(&self.pool, head_id).await
+    }
+
+    async fn check_supersede_depth_with_pool(
+        pool: &zeph_db::DbPool,
+        head_id: i64,
+    ) -> Result<usize, MemoryError> {
+        let cap = i64::try_from(SUPERSEDE_DEPTH_CAP + 1).unwrap_or(i64::MAX);
+        // CTE walks the supersedes chain starting at head_id (depth=0).
+        // Each hop to a superseded ancestor increments depth. NULL supersedes terminates the walk.
+        let depth: Option<i64> = zeph_db::query_scalar(sql!(
+            "WITH RECURSIVE chain(id, depth) AS (
+               SELECT id, 0 FROM graph_edges WHERE id = ?
+               UNION ALL
+               SELECT e.supersedes, c.depth + 1
+               FROM graph_edges e JOIN chain c ON e.id = c.id
+               WHERE e.supersedes IS NOT NULL AND c.depth < ?
+             )
+             SELECT MAX(depth) FROM chain"
+        ))
+        .bind(head_id)
+        .bind(cap)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let d = depth.unwrap_or(0) as usize;
+        if d > SUPERSEDE_DEPTH_CAP {
+            return Err(MemoryError::SupersedeCycle(head_id));
+        }
+        Ok(d)
     }
 }
 

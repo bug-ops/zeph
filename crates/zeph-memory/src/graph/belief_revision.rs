@@ -267,6 +267,8 @@ mod tests {
             retrieval_count: 0,
             last_retrieved_at: None,
             superseded_by: None,
+            canonical_relation: relation.to_string(),
+            supersedes: None,
         }
     }
 
