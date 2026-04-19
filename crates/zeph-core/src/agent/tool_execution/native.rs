@@ -799,7 +799,6 @@ impl<C: Channel> Agent<C> {
             if cleaned.contains(MAX_TOKENS_TRUNCATION_MARKER) {
                 let _ = self.channel.send_stop_hint(StopHint::MaxTokens).await;
             }
-            self.channel.flush_chunks().await?;
             return Ok(Some(()));
         }
 
