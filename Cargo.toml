@@ -198,7 +198,7 @@ bench      = ["dep:zeph-bench"]
 
 # === Individual feature flags ===
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server", "zeph-a2a?/ibct"]
-acp = ["dep:zeph-acp", "zeph-acp/unstable-session-close", "zeph-acp/unstable-session-fork", "zeph-acp/unstable-session-resume", "zeph-acp/unstable-elicitation", "zeph-acp/unstable-logout"]
+acp = ["dep:zeph-acp", "zeph-acp/unstable-session-close", "zeph-acp/unstable-session-fork", "zeph-acp/unstable-session-resume", "zeph-acp/unstable-elicitation", "zeph-acp/unstable-logout", "zeph-acp/unstable-auth-methods", "zeph-acp/unstable-message-id", "zeph-acp/unstable-session-add-dirs"]
 acp-http = ["acp", "dep:axum", "zeph-acp/acp-http"]
 candle = ["zeph-llm/candle", "zeph-core/candle"]
 classifiers = ["candle", "zeph-llm/classifiers", "zeph-sanitizer/classifiers", "zeph-core/classifiers"]

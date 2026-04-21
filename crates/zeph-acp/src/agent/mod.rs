@@ -2282,5 +2282,7 @@ use helpers::{
     session_update_to_event, xml_escape,
 };
 
+pub(crate) mod handlers;
+
 #[cfg(test)]
 mod tests;

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Add `zeph-acp` handler module scaffolding for ACP 0.11 migration (PR 1, epic #3265)
+- Add `unstable-auth-methods`, `unstable-message-id`, `unstable-session-add-dirs`, `unstable-boolean-config` optional features to `zeph-acp`
+
 ## [0.19.3] - 2026-04-19
 
 ### Added

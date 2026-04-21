@@ -31,6 +31,10 @@ unstable-session-model = ["agent-client-protocol/unstable_session_model"]
 # Exposes schema types (ElicitationRequest, etc.); SDK methods not yet wired in agent-client-protocol 0.10.3.
 unstable-elicitation = ["agent-client-protocol/unstable_elicitation"]
 unstable-logout = ["agent-client-protocol/unstable_logout"]
+unstable-auth-methods = ["agent-client-protocol/unstable_auth_methods"]
+unstable-boolean-config = ["agent-client-protocol/unstable_boolean_config"]
+unstable-message-id = ["agent-client-protocol/unstable_message_id"]
+unstable-session-add-dirs = ["agent-client-protocol/unstable_session_additional_directories"]
 
 [dependencies]
 agent-client-protocol = { workspace = true }
