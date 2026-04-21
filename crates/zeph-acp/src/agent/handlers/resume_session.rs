@@ -10,7 +10,6 @@ use agent_client_protocol as acp;
 use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `session/resume` request.
-#[allow(dead_code)]
 pub(crate) async fn handle_resume_session(
     req: acp::schema::ResumeSessionRequest,
     responder: acp::Responder<acp::schema::ResumeSessionResponse>,

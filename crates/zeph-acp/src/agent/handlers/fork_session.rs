@@ -10,7 +10,6 @@ use agent_client_protocol as acp;
 use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `session/fork` request.
-#[allow(dead_code)]
 pub(crate) async fn handle_fork_session(
     req: acp::schema::ForkSessionRequest,
     responder: acp::Responder<acp::schema::ForkSessionResponse>,

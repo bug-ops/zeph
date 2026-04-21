@@ -10,7 +10,6 @@ use agent_client_protocol as acp;
 use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `logout` request.
-#[allow(dead_code)]
 pub(crate) async fn handle_logout(
     req: acp::schema::LogoutRequest,
     responder: acp::Responder<acp::schema::LogoutResponse>,

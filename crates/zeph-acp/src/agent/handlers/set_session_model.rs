@@ -10,7 +10,6 @@ use agent_client_protocol as acp;
 use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `session/set_model` request.
-#[allow(dead_code)]
 pub(crate) async fn handle_set_session_model(
     req: acp::schema::SetSessionModelRequest,
     responder: acp::Responder<acp::schema::SetSessionModelResponse>,

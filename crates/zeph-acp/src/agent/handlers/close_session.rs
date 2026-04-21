@@ -10,7 +10,6 @@ use agent_client_protocol as acp;
 use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `session/close` request.
-#[allow(dead_code)]
 pub(crate) async fn handle_close_session(
     req: acp::schema::CloseSessionRequest,
     responder: acp::Responder<acp::schema::CloseSessionResponse>,

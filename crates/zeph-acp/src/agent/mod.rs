@@ -2532,10 +2532,21 @@ pub(crate) mod handlers;
 /// ).await
 /// # }
 /// ```
+#[allow(clippy::too_many_lines)]
 pub async fn run_agent(
     state: Arc<ZephAcpAgentState>,
     transport: impl acp::ConnectTo<acp::Agent>,
 ) -> acp::Result<()> {
+    #[cfg(feature = "unstable-session-close")]
+    use handlers::close_session;
+    #[cfg(feature = "unstable-session-fork")]
+    use handlers::fork_session;
+    #[cfg(feature = "unstable-logout")]
+    use handlers::logout;
+    #[cfg(feature = "unstable-session-resume")]
+    use handlers::resume_session;
+    #[cfg(feature = "unstable-session-model")]
+    use handlers::set_session_model;
     use handlers::{
         authenticate, cancel, dispatch, initialize, list_sessions, load_session, new_session,
         prompt, set_session_config_option, set_session_mode,
@@ -2561,7 +2572,7 @@ pub async fn run_agent(
         }};
     }
 
-    acp::Agent
+    let builder = acp::Agent
         .builder()
         .on_receive_request(
             req_handler!(initialize::handle_initialize),
@@ -2598,7 +2609,35 @@ pub async fn run_agent(
         .on_receive_notification(
             notif_handler!(cancel::handle_cancel),
             acp::on_receive_notification!(),
-        )
+        );
+
+    #[cfg(feature = "unstable-session-close")]
+    let builder = builder.on_receive_request(
+        req_handler!(close_session::handle_close_session),
+        acp::on_receive_request!(),
+    );
+    #[cfg(feature = "unstable-session-fork")]
+    let builder = builder.on_receive_request(
+        req_handler!(fork_session::handle_fork_session),
+        acp::on_receive_request!(),
+    );
+    #[cfg(feature = "unstable-session-resume")]
+    let builder = builder.on_receive_request(
+        req_handler!(resume_session::handle_resume_session),
+        acp::on_receive_request!(),
+    );
+    #[cfg(feature = "unstable-session-model")]
+    let builder = builder.on_receive_request(
+        req_handler!(set_session_model::handle_set_session_model),
+        acp::on_receive_request!(),
+    );
+    #[cfg(feature = "unstable-logout")]
+    let builder = builder.on_receive_request(
+        req_handler!(logout::handle_logout),
+        acp::on_receive_request!(),
+    );
+
+    builder
         .on_receive_dispatch(
             {
                 let s = Arc::clone(&state);
