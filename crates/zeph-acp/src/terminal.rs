@@ -135,11 +135,11 @@ pub struct AcpShellExecutor {
 }
 
 impl AcpShellExecutor {
-    /// Create the executor and its `LocalSet`-side handler future.
+    /// Create the executor and its background handler future.
     ///
-    /// Spawn the returned future inside the same `LocalSet` that owns `conn`.
-    /// The handler drives terminal create/execute/release requests forwarded
-    /// from the `bash` and `bash_stdin` tools.
+    /// Spawn the returned future with `tokio::spawn`; it drives terminal
+    /// create/execute/release requests forwarded from the `bash` and
+    /// `bash_stdin` tools.
     pub fn new(
         conn: Arc<acp::ConnectionTo<acp::Client>>,
         session_id: acp::schema::SessionId,

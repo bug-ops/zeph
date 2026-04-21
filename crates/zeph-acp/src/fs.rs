@@ -89,7 +89,7 @@ pub struct AcpFileExecutor {
 }
 
 impl AcpFileExecutor {
-    /// Create the executor and the `LocalSet`-side handler future.
+    /// Create the executor and its background handler future.
     ///
     /// `can_read` / `can_write` gate which tool definitions are advertised.
     /// `permission_gate` is used to request user confirmation before writing files.
