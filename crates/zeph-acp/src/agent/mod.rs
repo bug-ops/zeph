@@ -2613,5 +2613,18 @@ pub async fn run_agent(
         .await
 }
 
+/// Compile-time assertions that ACP state and executors are `Send + Sync`.
+const _: () = {
+    #[allow(clippy::used_underscore_items)]
+    fn assert_send_sync<T: Send + Sync>() {}
+    fn check_send_sync() {
+        assert_send_sync::<ZephAcpAgentState>();
+        assert_send_sync::<crate::fs::AcpFileExecutor>();
+        assert_send_sync::<crate::terminal::AcpShellExecutor>();
+        assert_send_sync::<crate::permission::AcpPermissionGate>();
+    }
+    let _ = check_send_sync;
+};
+
 #[cfg(any())] // ACP 0.10 tests disabled — rewrite for 0.11 tracked in #3267
 mod tests;
