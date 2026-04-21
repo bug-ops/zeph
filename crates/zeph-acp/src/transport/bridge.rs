@@ -36,14 +36,25 @@ pub fn spawn_acp_connection(
 ) -> (DuplexStream, DuplexStream) {
     let (client_w, agent_r) = tokio::io::duplex(BRIDGE_BUFFER_SIZE);
     let (agent_w, client_r) = tokio::io::duplex(BRIDGE_BUFFER_SIZE);
-    tokio::spawn(async move {
-        let writer = agent_w.compat_write();
-        let reader = agent_r.compat();
-        if let Err(e) =
-            crate::transport::stdio::serve_connection(spawner, server_config, writer, reader).await
-        {
-            tracing::error!("ACP bridge connection error: {e}");
-        }
+    // Agent session futures are !Send (spawn_local calls inside run_agent).
+    // A dedicated thread with its own current-thread runtime provides the LocalSet
+    // context without requiring Send on the async block.
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio current-thread runtime");
+        let local = tokio::task::LocalSet::new();
+        rt.block_on(local.run_until(async move {
+            let writer = agent_w.compat_write();
+            let reader = agent_r.compat();
+            if let Err(e) =
+                crate::transport::stdio::serve_connection(spawner, server_config, writer, reader)
+                    .await
+            {
+                tracing::error!("ACP bridge connection error: {e}");
+            }
+        }));
     });
     (client_r, client_w)
 }

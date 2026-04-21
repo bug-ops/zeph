@@ -561,7 +561,7 @@ async fn discovery_returns_expected_json_fields() {
     // protocol_version must be the integer value of ProtocolVersion::LATEST (1).
     assert_eq!(
         json["protocol_version"],
-        serde_json::json!(agent_client_protocol::ProtocolVersion::LATEST)
+        serde_json::json!(agent_client_protocol::schema::ProtocolVersion::LATEST)
     );
 }
 

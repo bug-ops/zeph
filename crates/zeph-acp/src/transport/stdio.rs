@@ -6,8 +6,9 @@
 //! The IDE spawns the agent binary and communicates over the process's stdin/stdout
 //! pipes using newline-delimited JSON-RPC 2.0 frames (the ACP wire format).
 //!
-//! `ZephAcpAgentState` is `Send + Sync`, so no dedicated thread or `LocalSet` is
-//! required — the ACP handler loop runs directly on the caller's async task.
+//! Agent session tasks are spawned via `tokio::task::spawn_local` because `Agent<LoopbackChannel>`
+//! is `!Send` (async method bodies hold internal references across await points). Both
+//! `serve_stdio` and `serve_connection` wrap `run_agent` in a `LocalSet` to satisfy this.
 //!
 //! # SECURITY(layer-2): Session binding limitation
 //!
@@ -128,12 +129,15 @@ pub async fn serve_stdio(
 
     let state = build_agent_state(spawner, server_config).await;
 
-    run_agent(
-        state,
-        acp::ByteStreams::new(stdout, tokio::io::stdin().compat()),
-    )
-    .await
-    .map_err(|e| AcpError::Transport(e.to_string()))
+    // Agent session tasks use spawn_local (agent futures are !Send), so the
+    // dispatcher loop must run within a LocalSet.
+    tokio::task::LocalSet::new()
+        .run_until(run_agent(
+            state,
+            acp::ByteStreams::new(stdout, tokio::io::stdin().compat()),
+        ))
+        .await
+        .map_err(|e| AcpError::Transport(e.to_string()))
 }
 
 /// Run the ACP server over arbitrary async byte streams.

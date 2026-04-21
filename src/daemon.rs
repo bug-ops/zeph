@@ -513,7 +513,7 @@ pub(crate) async fn run_daemon(
             config.memory.category.clone(),
         )
         .with_embedding_provider(embedding_provider)
-        .maybe_init_tool_schema_filter(&config.agent.tool_filter, &provider),
+        .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), provider.clone()),
     )
     .await;
 

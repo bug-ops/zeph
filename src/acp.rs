@@ -637,6 +637,7 @@ async fn spawn_acp_agent(
     let scheduler_custom_tx = d.scheduler_custom_tx.clone();
 
     let hooks_config = d.hooks_config.clone();
+    let tool_filter_config = d.tool_filter_config.clone();
 
     // Per-session receivers: each session gets its own mpsc::Receiver forwarded from the
     // shared broadcast senders. The CancellationToken is derived from the AcpContext cancel
@@ -772,7 +773,7 @@ async fn spawn_acp_agent(
         .with_focus_and_sidequest_config(d.focus_config.clone(), d.sidequest_config.clone())
         .with_trajectory_and_category_config(d.trajectory_config.clone(), d.category_config.clone())
         .with_embedding_provider(d.embedding_provider.clone())
-        .maybe_init_tool_schema_filter(&d.tool_filter_config, &provider),
+        .maybe_init_tool_schema_filter(tool_filter_config, provider.clone()),
     )
     .await;
 

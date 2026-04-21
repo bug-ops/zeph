@@ -899,8 +899,8 @@ impl<C: Channel> Agent<C> {
     /// Gracefully degrades: returns `self` unchanged if embedding is unsupported or fails.
     pub async fn maybe_init_tool_schema_filter(
         mut self,
-        config: &crate::config::ToolFilterConfig,
-        provider: &zeph_llm::any::AnyProvider,
+        config: crate::config::ToolFilterConfig,
+        provider: zeph_llm::any::AnyProvider,
     ) -> Self {
         use zeph_llm::provider::LlmProvider;
 
@@ -908,12 +908,13 @@ impl<C: Channel> Agent<C> {
             return self;
         }
 
-        let always_on_set: std::collections::HashSet<&str> =
-            config.always_on.iter().map(String::as_str).collect();
+        let always_on_set: std::collections::HashSet<String> =
+            config.always_on.iter().cloned().collect();
         let defs = self.tool_executor.tool_definitions_erased();
-        let filterable: Vec<&zeph_tools::registry::ToolDef> = defs
+        let filterable: Vec<(String, String)> = defs
             .iter()
             .filter(|d| !always_on_set.contains(d.id.as_ref()))
+            .map(|d| (d.id.as_ref().to_owned(), d.description.as_ref().to_owned()))
             .collect();
 
         if filterable.is_empty() {
@@ -922,12 +923,12 @@ impl<C: Channel> Agent<C> {
         }
 
         let mut embeddings = Vec::with_capacity(filterable.len());
-        for def in &filterable {
-            let text = format!("{}: {}", def.id, def.description);
+        for (id, description) in filterable {
+            let text = format!("{id}: {description}");
             match provider.embed(&text).await {
                 Ok(emb) => {
                     embeddings.push(zeph_tools::ToolEmbedding {
-                        tool_id: def.id.as_ref().into(),
+                        tool_id: id.as_str().into(),
                         embedding: emb,
                     });
                 }
@@ -950,7 +951,7 @@ impl<C: Channel> Agent<C> {
         );
 
         let filter = zeph_tools::ToolSchemaFilter::new(
-            config.always_on.clone(),
+            config.always_on,
             config.top_k,
             config.min_description_words,
             embeddings,

@@ -317,7 +317,7 @@ pub type AgentSpawner = Arc<
             LoopbackChannel,
             Option<AcpContext>,
             SessionContext,
-        ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>
+        ) -> Pin<Box<dyn std::future::Future<Output = ()> + 'static>>
         + Send
         + Sync
         + 'static,
@@ -1066,7 +1066,7 @@ impl ZephAcpAgentState {
         };
 
         let spawner = Arc::clone(&self.spawner);
-        tokio::spawn(async move {
+        tokio::task::spawn_local(async move {
             (spawner)(channel, Some(acp_ctx), session_ctx).await;
         });
 
@@ -1310,7 +1310,7 @@ impl ZephAcpAgentState {
         };
 
         let spawner = Arc::clone(&self.spawner);
-        tokio::spawn(async move {
+        tokio::task::spawn_local(async move {
             (spawner)(channel, Some(acp_ctx), session_ctx).await;
         });
 
@@ -1480,7 +1480,7 @@ impl ZephAcpAgentState {
         };
 
         let spawner = Arc::clone(&self.spawner);
-        tokio::spawn(async move {
+        tokio::task::spawn_local(async move {
             (spawner)(channel, Some(acp_ctx), session_ctx).await;
         });
 
@@ -1594,7 +1594,7 @@ impl ZephAcpAgentState {
         };
 
         let spawner = Arc::clone(&self.spawner);
-        tokio::spawn(async move {
+        tokio::task::spawn_local(async move {
             (spawner)(channel, Some(acp_ctx), session_ctx).await;
         });
 
