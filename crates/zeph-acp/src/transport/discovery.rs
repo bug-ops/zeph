@@ -34,7 +34,7 @@ pub async fn discovery_handler(State(state): State<AcpHttpState>) -> impl IntoRe
         "name": state.server_config.agent_name,
         "version": state.server_config.agent_version,
         "protocol": "acp",
-        "protocol_version": acp::ProtocolVersion::LATEST,
+        "protocol_version": acp::schema::ProtocolVersion::LATEST,
         "transports": {
             "http_sse": { "url": "/acp" },
             "websocket": { "url": "/acp/ws" },

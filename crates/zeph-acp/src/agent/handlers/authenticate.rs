@@ -2,17 +2,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Handler for `authenticate` (ACP method `"authenticate"`).
-//!
-//! # PR 2 contract
-//!
-//! ```ignore
-//! pub(crate) async fn handle_authenticate(
-//!     req: acp::schema::AuthenticateRequest,
-//!     responder: acp::Responder<acp::schema::AuthenticateResponse>,
-//!     cx: acp::ConnectionTo<acp::Client>,
-//!     state: Arc<ZephAcpAgentState>,
-//! ) -> acp::Result<()>
-//! ```
-//!
-//! Validates credentials supplied by the client and responds with an
-//! authentication token or an error if authentication fails.
+
+use std::sync::Arc;
+
+use agent_client_protocol as acp;
+
+use crate::agent::ZephAcpAgentState;
+
+/// Handle an ACP `authenticate` request.
+pub(crate) async fn handle_authenticate(
+    req: acp::schema::AuthenticateRequest,
+    responder: acp::Responder<acp::schema::AuthenticateResponse>,
+    _cx: acp::ConnectionTo<acp::Client>,
+    state: Arc<ZephAcpAgentState>,
+) -> acp::Result<()> {
+    let resp = state.do_authenticate(req).await?;
+    responder.respond(resp)
+}

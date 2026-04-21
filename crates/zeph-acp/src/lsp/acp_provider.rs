@@ -9,10 +9,8 @@
 //! client→agent. `AcpLspProvider` uses `conn.ext_method()` (the `acp::Client` trait)
 //! to send these outbound requests.
 //!
-use std::sync::Arc;
 use std::time::Duration;
 
-use acp::Client as _;
 use agent_client_protocol as acp;
 use tokio::sync::{mpsc, oneshot};
 
@@ -63,16 +61,13 @@ impl AcpLspProvider {
     /// - `request_timeout_secs` — per-request timeout for `ext_method` calls.
     /// - `max_references` — truncation limit for `lsp/references` results.
     /// - `max_workspace_symbols` — truncation limit for `lsp/workspaceSymbol` results.
-    pub fn new<C>(
-        conn: std::rc::Rc<C>,
+    pub fn new(
+        conn: std::sync::Arc<acp::ConnectionTo<acp::Client>>,
         ide_supports_lsp: bool,
         request_timeout_secs: u64,
         max_references: usize,
         max_workspace_symbols: usize,
-    ) -> (Self, impl std::future::Future<Output = ()>)
-    where
-        C: acp::Client + 'static,
-    {
+    ) -> (Self, impl std::future::Future<Output = ()>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let handler = async move { run_lsp_handler(conn, rx).await };
         (
@@ -111,10 +106,10 @@ impl AcpLspProvider {
     }
 }
 
-async fn run_lsp_handler<C>(conn: std::rc::Rc<C>, mut rx: mpsc::UnboundedReceiver<LspRequest>)
-where
-    C: acp::Client + 'static,
-{
+async fn run_lsp_handler(
+    conn: std::sync::Arc<acp::ConnectionTo<acp::Client>>,
+    mut rx: mpsc::UnboundedReceiver<LspRequest>,
+) {
     while let Some(request) = rx.recv().await {
         match request {
             LspRequest::ExtMethod {
@@ -123,15 +118,14 @@ where
                 reply,
             } => {
                 let result = async {
-                    let raw = serde_json::value::to_raw_value(&params)
+                    let req = acp::UntypedMessage::new(method, params)
                         .map_err(|e| AcpError::ClientError(e.to_string()))?;
-                    let req = acp::ExtRequest::new(method, Arc::from(raw));
                     let result = conn
-                        .ext_method(req)
+                        .send_request(req)
+                        .block_task()
                         .await
                         .map_err(|e| AcpError::ClientError(e.to_string()))?;
-                    serde_json::from_str(result.0.get())
-                        .map_err(|e| AcpError::ClientError(e.to_string()))
+                    serde_json::from_value(result).map_err(|e| AcpError::ClientError(e.to_string()))
                 }
                 .await;
                 let _ = reply.send(result);

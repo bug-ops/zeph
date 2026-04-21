@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **feat(acp): migrate `zeph-acp` to ACP 0.11 builder API** (#3267, PR 2, epic #3265) —
+  bumps `agent-client-protocol` to 0.11.1 and adds `agent-client-protocol-tokio = "0.11.1"`;
+  renames `ZephAcpAgent` → `ZephAcpAgentState` and removes all `!Send` constraints
+  (`LocalSet`, `Rc`, `RefCell` eliminated); replaces `impl acp::Agent` with `run_agent()`
+  using the `Agent.builder()` pattern; rewrites `stdio.rs` to use `acp::ByteStreams`;
+  updates all executors to use `Arc<ConnectionTo<Client>>`; switches outbound ext-method
+  calls from `ExtRequest` to `UntypedMessage`; gates ACP 0.10-era tests with `#[cfg(any())]`.
+
 ### Added
 
 - Add `zeph-acp` handler module scaffolding for ACP 0.11 migration (PR 1, epic #3265)

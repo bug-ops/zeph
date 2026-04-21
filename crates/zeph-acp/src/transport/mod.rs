@@ -3,9 +3,9 @@
 
 //! ACP transport layer — stdio, HTTP+SSE, and WebSocket.
 //!
-//! Each transport variant drives the same [`ZephAcpAgent`] via the `agent-client-protocol`
-//! JSON-RPC connection. The agent implementation is `!Send`, so every connection runs on a
-//! dedicated current-thread tokio runtime inside an OS thread.
+//! Each transport variant drives the same [`ZephAcpAgentState`] via the `agent-client-protocol`
+//! JSON-RPC connection. The agent state is `Send + Sync`, so connections run on the standard
+//! multi-thread tokio runtime.
 //!
 //! # Entry points
 //!
@@ -15,15 +15,11 @@
 //! | HTTP + SSE | [`acp_router`] (feature `acp-http`) |
 //! | WebSocket | part of [`acp_router`] (feature `acp-http`) |
 //!
-//! [`ZephAcpAgent`]: crate::agent::ZephAcpAgent
-
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use agent_client_protocol as acp;
+//! [`ZephAcpAgentState`]: crate::agent::ZephAcpAgentState
 
 #[cfg(feature = "acp-http")]
 pub mod auth;
+#[cfg(feature = "acp-http")]
 pub mod bridge;
 #[cfg(feature = "acp-http")]
 pub mod discovery;
@@ -57,10 +53,6 @@ pub struct ReadyNotification {
     /// Absolute path to the log file, if file logging is configured.
     pub log_file: Option<String>,
 }
-
-/// Shared slot populated after `AgentSideConnection::new` so `new_session` can access
-/// the connection to build ACP tool adapters.
-pub(crate) type ConnSlot = Rc<RefCell<Option<Rc<acp::AgentSideConnection>>>>;
 
 /// Thread-safe, shared list of available model identifiers advertised in `new_session`.
 pub type SharedAvailableModels = std::sync::Arc<parking_lot::RwLock<Vec<String>>>;

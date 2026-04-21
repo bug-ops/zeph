@@ -19,7 +19,6 @@ default = [
     "unstable-session-resume",
     "unstable-session-usage",
     "unstable-session-model",
-    "unstable-elicitation",
     "unstable-logout",
 ]
 acp-http = ["dep:axum", "dep:blake3", "dep:dashmap", "dep:async-stream", "dep:tower-http", "dep:subtle", "dep:tower"]
@@ -28,8 +27,8 @@ unstable-session-fork = ["agent-client-protocol/unstable_session_fork"]
 unstable-session-resume = ["agent-client-protocol/unstable_session_resume"]
 unstable-session-usage = ["agent-client-protocol/unstable_session_usage"]
 unstable-session-model = ["agent-client-protocol/unstable_session_model"]
-# Exposes schema types (ElicitationRequest, etc.); SDK methods not yet wired in agent-client-protocol 0.10.3.
-unstable-elicitation = ["agent-client-protocol/unstable_elicitation"]
+# Elicitation types are part of the stable schema in acp 0.11; no feature gate needed.
+unstable-elicitation = []
 unstable-logout = ["agent-client-protocol/unstable_logout"]
 unstable-auth-methods = ["agent-client-protocol/unstable_auth_methods"]
 unstable-boolean-config = ["agent-client-protocol/unstable_boolean_config"]
@@ -38,8 +37,8 @@ unstable-session-add-dirs = ["agent-client-protocol/unstable_session_additional_
 
 [dependencies]
 agent-client-protocol = { workspace = true }
+agent-client-protocol-tokio = { workspace = true }
 async-stream = { workspace = true, optional = true }
-async-trait.workspace = true
 axum = { workspace = true, features = ["ws"], optional = true }
 base64.workspace = true
 blake3 = { workspace = true, optional = true }
@@ -72,10 +71,11 @@ zeph-tools.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]
-tempfile.workspace = true
-tower = { workspace = true, features = ["util"] }
+async-trait = { workspace = true }
 axum = { workspace = true, features = ["ws"] }
+tempfile.workspace = true
 tokio-tungstenite = { workspace = true, features = ["connect"] }
+tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true
