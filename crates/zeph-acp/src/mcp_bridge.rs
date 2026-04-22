@@ -37,11 +37,11 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 /// # Examples
 ///
 /// ```
-/// use agent_client_protocol as acp;
+/// use agent_client_protocol::schema::{McpServer, McpServerStdio};
 /// use zeph_acp::acp_mcp_servers_to_entries;
 ///
 /// let servers = vec![
-///     acp::schema::McpServer::Stdio(acp::McpServerStdio::new("my-server", "/usr/bin/my-mcp")),
+///     McpServer::Stdio(McpServerStdio::new("my-server", "/usr/bin/my-mcp")),
 /// ];
 /// let entries = acp_mcp_servers_to_entries(&servers);
 /// assert_eq!(entries.len(), 1);
