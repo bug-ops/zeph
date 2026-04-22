@@ -18,7 +18,7 @@ related:
 
 > [!info]
 > ACP transports, session management, permissions, fork/resume,
-> capability advertisement, agent-client-protocol 0.11.x / schema 0.12.0 compatibility.
+> capability advertisement, agent-client-protocol 0.11.1 / schema 0.12.0 compatibility.
 
 ## Sources
 
@@ -69,6 +69,15 @@ AcpSessionManager
 - **LRU eviction**: oldest unused session is dropped when capacity is reached
 - Session fork: create a new session branching from an existing session at a given turn
 - Session resume: reconnect to an existing session by ID
+
+### Agent Spawner Contract (0.11.1)
+
+Agent sessions use the `Agent.builder()` / `run_agent()` pattern introduced in
+`agent-client-protocol 0.11.1`. Session state that was previously `Rc<RefCell<...>>` is now
+`Arc`-wrapped, but session tasks are still launched via `tokio::task::spawn_local` inside a
+`LocalSet` — the `AgentSpawner` closure returns `Pin<Box<dyn Future<Output = ()> + 'static>>`
+(`!Send`). The 0.11.1 migration changed the external builder API shape, not the LocalSet
+concurrency model.
 
 ## Permission Model
 
@@ -214,7 +223,7 @@ ACP server advertises its capabilities in the `initialize` response and via the 
 
 ### Protocol Version
 
-Uses `agent-client-protocol 0.11.x` / `schema 0.12.0`.
+Uses `agent-client-protocol 0.11.1` / `schema 0.12.0`.
 
 ### Current Model in SessionInfoUpdate
 
@@ -235,7 +244,7 @@ Cross-reference: `specs/045-interop-protocol-gaps/spec.md`
 
 ### ACP Baseline vs. arXiv:2505.02279 Survey
 
-Zeph's ACP implementation is based on `agent-client-protocol = "0.11"` (workspace `Cargo.toml`).
+Zeph's ACP implementation is based on `agent-client-protocol = "0.11.1"` (workspace `Cargo.toml`).
 
 The survey (arXiv:2505.02279) describes ACP's capability advertisement and re-negotiation
 model as a differentiating feature vs. MCP and A2A.

@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- ACP: migrated to agent-client-protocol 0.11.1 builder API (`Agent.builder()` / `run_agent()` pattern); `Rc<RefCell>` replaced with `Arc`; added handler tracing spans; config schema extensions (additional_directories, auth_methods, message_ids_enabled)
+
 - **`zeph-acp`**: integration tests rewritten for ACP 0.11 builder API using `acp::Client.connect_with`
   and `serve_connection`; `#[cfg(any())]` gate removed; 6 real loopback tests cover initialize,
   new_session, cancel, unknown ext method, load_session error, and session list (#3269, PR 3).
