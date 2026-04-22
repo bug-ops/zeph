@@ -1,0 +1,7 @@
+# Fixture representing a user config from the pre-PR4 (v0.19 era).
+# Contains [acp] with existing fields but is missing the three new PR4 fields:
+# additional_directories, auth_methods, message_ids_enabled.
+[acp]
+enabled = true
+agent_name = "zeph"
+transport = "stdio"

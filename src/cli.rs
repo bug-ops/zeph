@@ -47,6 +47,26 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "TOKEN")]
     pub(crate) acp_auth_token: Option<String>,
 
+    /// Additional directory ACP clients may reference in session requests (repeatable, overrides config)
+    #[cfg(feature = "acp")]
+    #[arg(long = "acp-additional-dir", value_name = "PATH")]
+    pub(crate) acp_additional_dir: Vec<PathBuf>,
+
+    /// Auth method to advertise in ACP initialize response (only "agent" accepted in MVP)
+    #[cfg(feature = "acp")]
+    #[arg(long = "acp-auth-method", value_name = "METHOD", value_parser = ["agent"])]
+    pub(crate) acp_auth_method: Vec<String>,
+
+    /// Enable echoing of PromptRequest.message_id in responses and chunks
+    #[cfg(feature = "acp")]
+    #[arg(long = "acp-message-ids", overrides_with = "no_acp_message_ids")]
+    pub(crate) acp_message_ids: bool,
+
+    /// Disable echoing of PromptRequest.message_id in responses and chunks
+    #[cfg(feature = "acp")]
+    #[arg(long = "no-acp-message-ids", overrides_with = "acp_message_ids")]
+    pub(crate) no_acp_message_ids: bool,
+
     /// Connect TUI to a remote daemon via A2A SSE (requires tui + a2a features)
     #[cfg(all(feature = "tui", feature = "a2a"))]
     #[arg(long, value_name = "URL")]

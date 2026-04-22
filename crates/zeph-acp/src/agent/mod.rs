@@ -376,6 +376,13 @@ pub(crate) struct SessionEntry {
     /// after `tool_call_update` notifications are sent (ACP requires the terminal to
     /// remain alive until after the notification that embeds it).
     pub(crate) shell_executor: Option<AcpShellExecutor>,
+    /// Message-id captured at the start of a `do_prompt` turn.
+    ///
+    /// The existing one-in-flight-prompt invariant (enforced by `output_rx.lock().take()` at
+    /// line ~1142) guarantees at most one concurrent writer, so a plain `Mutex<Option<String>>`
+    /// is sufficient without parking_lot.
+    #[cfg(feature = "unstable-message-id")]
+    pub(crate) current_message_id: std::sync::Mutex<Option<String>>,
 }
 
 impl SessionEntry {
@@ -442,6 +449,12 @@ pub struct ZephAcpAgentState {
     pub(crate) diagnostics_cache: Arc<RwLock<DiagnosticsCache>>,
     /// Cancellation token for the idle reaper task.
     reaper_cancel: CancellationToken,
+    /// Canonicalized allowlist of directories ACP clients may reference in session requests.
+    additional_directories_allow: Vec<std::path::PathBuf>,
+    /// Auth methods to advertise in the `initialize` response. MVP: always `[Agent]`.
+    auth_methods_config: Vec<zeph_core::config::AcpAuthMethod>,
+    /// When `true`, echo `PromptRequest.message_id` through responses and chunks.
+    message_ids_enabled: bool,
 }
 
 /// Backward-compatible alias.
@@ -475,7 +488,37 @@ impl ZephAcpAgentState {
             lsp_config,
             diagnostics_cache: Arc::new(RwLock::new(DiagnosticsCache::new(max_diag_files))),
             reaper_cancel: CancellationToken::new(),
+            additional_directories_allow: Vec::new(),
+            auth_methods_config: vec![zeph_core::config::AcpAuthMethod::Agent],
+            message_ids_enabled: true,
         }
+    }
+
+    /// Configure the additional-directories allowlist policy.
+    #[must_use]
+    pub fn with_additional_directories(
+        mut self,
+        dirs: Vec<zeph_core::config::AdditionalDir>,
+    ) -> Self {
+        self.additional_directories_allow = dirs
+            .into_iter()
+            .map(|d| d.as_path().to_path_buf())
+            .collect();
+        self
+    }
+
+    /// Configure auth methods advertised in `initialize`.
+    #[must_use]
+    pub fn with_auth_methods(mut self, methods: Vec<zeph_core::config::AcpAuthMethod>) -> Self {
+        self.auth_methods_config = methods;
+        self
+    }
+
+    /// Configure message-id echo behaviour.
+    #[must_use]
+    pub fn with_message_ids_enabled(mut self, enabled: bool) -> Self {
+        self.message_ids_enabled = enabled;
+        self
     }
 
     /// Configure LSP extension settings.
@@ -926,11 +969,19 @@ impl ZephAcpAgentState {
                 .logout(acp::schema::LogoutCapabilities::default()),
         );
 
+        let auth_methods: Vec<acp::schema::AuthMethod> = self
+            .auth_methods_config
+            .iter()
+            .map(|m| match m {
+                zeph_core::config::AcpAuthMethod::Agent => acp::schema::AuthMethod::Agent(
+                    acp::schema::AuthMethodAgent::new("zeph", "Zeph"),
+                ),
+            })
+            .collect();
+
         Ok(
             acp::schema::InitializeResponse::new(acp::schema::ProtocolVersion::LATEST)
-                .auth_methods(vec![acp::schema::AuthMethod::Agent(
-                    acp::schema::AuthMethodAgent::new("zeph", "Zeph"),
-                )])
+                .auth_methods(auth_methods)
                 .agent_info(
                     acp::schema::Implementation::new(&self.agent_name, &self.agent_version)
                         .title(title),
@@ -996,6 +1047,8 @@ impl ZephAcpAgentState {
         args: acp::schema::NewSessionRequest,
         cx: &acp::ConnectionTo<acp::Client>,
     ) -> acp::Result<acp::schema::NewSessionResponse> {
+        #[cfg(feature = "unstable-session-add-dirs")]
+        self.validate_additional_directories(&args.additional_directories)?;
         // LRU eviction: find and remove the oldest idle (non-busy) session when at limit.
         if self.sessions.lock().len() >= self.max_sessions {
             let evict_id = {
@@ -1110,11 +1163,21 @@ impl ZephAcpAgentState {
     }
 
     #[tracing::instrument(skip_all, name = "acp.handler.prompt", fields(session_id = %args.session_id))]
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn do_prompt(
         &self,
         args: acp::schema::PromptRequest,
     ) -> acp::Result<acp::schema::PromptResponse> {
         tracing::debug!(session_id = %args.session_id, "ACP prompt");
+
+        // Capture message_id; written to per-session slot only AFTER output_rx take succeeds
+        // to prevent stale id from leaking when a prompt is rejected as "already in progress".
+        #[cfg(feature = "unstable-message-id")]
+        let turn_message_id: Option<String> = if self.message_ids_enabled {
+            args.message_id.clone()
+        } else {
+            None
+        };
 
         // Capture session cwd for file:// boundary enforcement.
         let session_cwd = self
@@ -1155,6 +1218,14 @@ impl ZephAcpAgentState {
                     acp::Error::internal_error().data("prompt already in progress")
                 })?;
             entry.touch();
+            // Write message_id here — output_rx take succeeded, prompt will proceed.
+            #[cfg(feature = "unstable-message-id")]
+            if let Some(ref mid) = turn_message_id {
+                *entry
+                    .current_message_id
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = Some(mid.clone());
+            }
             (entry.input_tx.clone(), rx)
         };
 
@@ -1210,7 +1281,27 @@ impl ZephAcpAgentState {
             self.maybe_generate_session_title(&args.session_id, &text);
         }
 
-        Ok(acp::schema::PromptResponse::new(stop_reason))
+        // Clear per-turn message-id slot now that the turn is complete.
+        #[cfg(feature = "unstable-message-id")]
+        if let Some(entry) = self.sessions.lock().get(&args.session_id) {
+            *entry
+                .current_message_id
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = None;
+        }
+
+        #[cfg(feature = "unstable-message-id")]
+        let resp = {
+            let r = acp::schema::PromptResponse::new(stop_reason);
+            if let Some(mid) = turn_message_id.as_ref() {
+                r.user_message_id(mid.clone())
+            } else {
+                r
+            }
+        };
+        #[cfg(not(feature = "unstable-message-id"))]
+        let resp = acp::schema::PromptResponse::new(stop_reason);
+        Ok(resp)
     }
 
     #[allow(clippy::unused_async)]
@@ -1243,6 +1334,8 @@ impl ZephAcpAgentState {
         args: acp::schema::LoadSessionRequest,
         cx: &acp::ConnectionTo<acp::Client>,
     ) -> acp::Result<acp::schema::LoadSessionResponse> {
+        #[cfg(feature = "unstable-session-add-dirs")]
+        self.validate_additional_directories(&args.additional_directories)?;
         if self.sessions.lock().contains_key(&args.session_id) {
             return Ok(acp::schema::LoadSessionResponse::new());
         }
@@ -1404,6 +1497,8 @@ impl ZephAcpAgentState {
         args: acp::schema::ForkSessionRequest,
         cx: &acp::ConnectionTo<acp::Client>,
     ) -> acp::Result<acp::schema::ForkSessionResponse> {
+        #[cfg(feature = "unstable-session-add-dirs")]
+        self.validate_additional_directories(&args.additional_directories)?;
         let in_memory = self.sessions.lock().contains_key(&args.session_id);
 
         if !in_memory {
@@ -1525,6 +1620,8 @@ impl ZephAcpAgentState {
         args: acp::schema::ResumeSessionRequest,
         cx: &acp::ConnectionTo<acp::Client>,
     ) -> acp::Result<acp::schema::ResumeSessionResponse> {
+        #[cfg(feature = "unstable-session-add-dirs")]
+        self.validate_additional_directories(&args.additional_directories)?;
         if self.sessions.lock().contains_key(&args.session_id) {
             return Ok(acp::schema::ResumeSessionResponse::new());
         }
@@ -1724,6 +1821,44 @@ impl ZephAcpAgentState {
         }
 
         Ok(acp::schema::SetSessionModeResponse::new())
+    }
+
+    /// Validate `requested` paths against the configured allowlist.
+    ///
+    /// Each requested path is canonicalized and checked with `Path::starts_with` (component-aware)
+    /// against every entry in `self.additional_directories_allow`. Returns an `invalid_params`
+    /// error if any path is not covered by the allowlist.
+    #[cfg(feature = "unstable-session-add-dirs")]
+    fn validate_additional_directories(
+        &self,
+        requested: &[std::path::PathBuf],
+    ) -> acp::Result<Vec<std::path::PathBuf>> {
+        if requested.is_empty() {
+            return Ok(Vec::new());
+        }
+        if self.additional_directories_allow.is_empty() {
+            return Err(acp::Error::invalid_params()
+                .data("additional_directories not permitted: allowlist is empty"));
+        }
+        let mut out = Vec::with_capacity(requested.len());
+        for p in requested {
+            let canon = std::fs::canonicalize(p).map_err(|e| {
+                acp::Error::invalid_params()
+                    .data(format!("cannot canonicalize {}: {e}", p.display()))
+            })?;
+            let allowed = self
+                .additional_directories_allow
+                .iter()
+                .any(|allow| canon.starts_with(allow));
+            if !allowed {
+                return Err(acp::Error::invalid_params().data(format!(
+                    "{} is not in the additional_directories allowlist",
+                    canon.display()
+                )));
+            }
+            out.push(canon);
+        }
+        Ok(out)
     }
 
     #[cfg(feature = "unstable-session-model")]
@@ -2147,6 +2282,13 @@ impl ZephAcpAgentState {
         let mut rx = output_rx;
         let mut cancelled = false;
         let mut stop_hint: Option<StopHint> = None;
+        // Capture turn message_id once per drain to avoid re-locking sessions per event.
+        #[cfg(feature = "unstable-message-id")]
+        let turn_mid: Option<String> = self
+            .sessions
+            .lock()
+            .get(session_id)
+            .and_then(|e| e.current_message_id.lock().ok().and_then(|g| g.clone()));
         loop {
             let event = if let Some(ref signal) = cancel_signal {
                 tokio::select! {
@@ -2180,6 +2322,10 @@ impl ZephAcpAgentState {
                         }
                     });
                 }
+                #[cfg(feature = "unstable-message-id")]
+                let update = apply_message_id_to_chunk(update, turn_mid.as_deref());
+                #[cfg(not(feature = "unstable-message-id"))]
+                let update = update;
                 let notification =
                     acp::schema::SessionNotification::new(session_id.clone(), update);
                 if let Err(e) = self.send_notification(session_id, notification).await {
@@ -2373,6 +2519,8 @@ impl ZephAcpAgentState {
             thinking_enabled: AtomicBool::new(false),
             auto_approve_level: Mutex::new("suggest".to_owned()),
             shell_executor,
+            #[cfg(feature = "unstable-message-id")]
+            current_message_id: std::sync::Mutex::new(None),
         }
     }
 
@@ -2677,6 +2825,30 @@ pub async fn run_agent(
         .await
 }
 
+/// Attach `message_id` to `AgentMessageChunk`, `UserMessageChunk`, and `AgentThoughtChunk`
+/// updates when a message id is present for this turn.
+#[cfg(feature = "unstable-message-id")]
+fn apply_message_id_to_chunk(
+    update: acp::schema::SessionUpdate,
+    message_id: Option<&str>,
+) -> acp::schema::SessionUpdate {
+    let Some(mid) = message_id else {
+        return update;
+    };
+    match update {
+        acp::schema::SessionUpdate::AgentMessageChunk(chunk) => {
+            acp::schema::SessionUpdate::AgentMessageChunk(chunk.message_id(mid.to_owned()))
+        }
+        acp::schema::SessionUpdate::UserMessageChunk(chunk) => {
+            acp::schema::SessionUpdate::UserMessageChunk(chunk.message_id(mid.to_owned()))
+        }
+        acp::schema::SessionUpdate::AgentThoughtChunk(chunk) => {
+            acp::schema::SessionUpdate::AgentThoughtChunk(chunk.message_id(mid.to_owned()))
+        }
+        other => other,
+    }
+}
+
 /// Compile-time assertions that ACP state and executors are `Send + Sync`.
 const _: () = {
     #[allow(clippy::used_underscore_items)]
@@ -2692,3 +2864,53 @@ const _: () = {
 
 #[cfg(any())] // ACP 0.10 tests disabled — rewrite for 0.11 tracked in #3267
 mod tests;
+
+#[cfg(all(test, feature = "unstable-message-id"))]
+mod message_id_tests {
+    use super::*;
+
+    fn agent_chunk(text: &str) -> acp::schema::SessionUpdate {
+        acp::schema::SessionUpdate::AgentMessageChunk(acp::schema::ContentChunk::new(
+            text.to_owned().into(),
+        ))
+    }
+
+    fn user_chunk(text: &str) -> acp::schema::SessionUpdate {
+        acp::schema::SessionUpdate::UserMessageChunk(acp::schema::ContentChunk::new(
+            text.to_owned().into(),
+        ))
+    }
+
+    #[test]
+    fn apply_sets_message_id_on_agent_chunk() {
+        let update = agent_chunk("hello");
+        let result = apply_message_id_to_chunk(update, Some("msg-001"));
+        if let acp::schema::SessionUpdate::AgentMessageChunk(chunk) = result {
+            assert_eq!(chunk.message_id, Some("msg-001".to_owned()));
+        } else {
+            panic!("expected AgentMessageChunk");
+        }
+    }
+
+    #[test]
+    fn apply_sets_message_id_on_user_chunk() {
+        let update = user_chunk("hi");
+        let result = apply_message_id_to_chunk(update, Some("msg-002"));
+        if let acp::schema::SessionUpdate::UserMessageChunk(chunk) = result {
+            assert_eq!(chunk.message_id, Some("msg-002".to_owned()));
+        } else {
+            panic!("expected UserMessageChunk");
+        }
+    }
+
+    #[test]
+    fn apply_none_message_id_is_noop() {
+        let update = agent_chunk("hello");
+        let result = apply_message_id_to_chunk(update, None);
+        if let acp::schema::SessionUpdate::AgentMessageChunk(chunk) = result {
+            assert_eq!(chunk.message_id, None);
+        } else {
+            panic!("expected AgentMessageChunk");
+        }
+    }
+}

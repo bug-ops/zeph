@@ -140,7 +140,10 @@ pub use subagent::{
     ToolPolicy,
 };
 pub use telemetry::{TelemetryBackend, TelemetryConfig};
-pub use ui::{AcpConfig, AcpLspConfig, AcpTransport, TuiConfig};
+pub use ui::{
+    AcpAuthMethod, AcpConfig, AcpLspConfig, AcpTransport, AdditionalDir, AdditionalDirError,
+    TuiConfig,
+};
 pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 pub use vigil::VigilConfig;
 

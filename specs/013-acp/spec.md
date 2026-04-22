@@ -18,7 +18,7 @@ related:
 
 > [!info]
 > ACP transports, session management, permissions, fork/resume,
-> capability advertisement, agent-client-protocol 0.10.3 compatibility.
+> capability advertisement, agent-client-protocol 0.11.x / schema 0.12.0 compatibility.
 
 ## Sources
 
@@ -91,6 +91,30 @@ AcpPermissionGate (TOML-backed, SQLite-persisted)
 - Terminal forwarding: tool output streams back to IDE terminal
 - File tools: read/write/list within session working directory
 - MCP passthrough: MCP tools are forwarded to ACP client via `mcp_passthrough` capability
+
+## Configuration
+
+ACP behavior is configured via the `[acp]` section in `config.toml`. The following fields
+are available in PR4+:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Enable ACP server |
+| `agent_name` | String | `"zeph"` | Agent name advertised to clients |
+| `transport` | String | `"stdio"` | Transport: `stdio`, `http`, `ws`, `both` |
+| `additional_directories` | `Vec<String>` | `[]` | **Request-side allowlist.** Paths a client may pass in `sessionInit.additionalDirectories`. Paths not in this list are rejected at session start. This is NOT a protocol advertisement — it is a server-side gate. |
+| `auth_methods` | `Vec<String>` | `["agent"]` | Accepted authentication methods. MVP: only `"agent"` is valid. Unknown values are rejected at deserialization. |
+| `message_ids_enabled` | bool | `true` | Echo client-supplied `message_id` in `PromptResponse.user_message_id` and all streamed chunks. |
+
+### Key Invariants
+
+- `additional_directories` is a **request-side allowlist**: paths requested by the client must be
+  a prefix of a configured allowed path; requests with non-allowed paths are rejected with
+  `AcpError::PermissionDenied` at session start — never silently ignored
+- `auth_methods` must only contain `"agent"` for MVP; unknown variants cause a hard deserialization
+  error at startup to prevent misconfigured deployments from silently accepting unexpected auth
+- When `message_ids_enabled = true`, every `PromptResponse` and every streamed chunk must carry the
+  originating `message_id` — partial echo (response but not chunks, or vice versa) is a bug
 
 ## Unstable Features (feature: `acp-unstable`)
 
@@ -182,7 +206,7 @@ ACP server advertises its capabilities in the `initialize` response and via the 
 {
   "name": "...",
   "version": "...",
-  "protocol": "acp/0.10.3",
+  "protocol": "acp/0.12.0",
   "capabilities": ["tools", "memory", "streaming"],
   "authMethods": ["bearer"]
 }
@@ -190,7 +214,7 @@ ACP server advertises its capabilities in the `initialize` response and via the 
 
 ### Protocol Version
 
-Uses `agent-client-protocol 0.10.3` / `schema 0.11.3`.
+Uses `agent-client-protocol 0.11.x` / `schema 0.12.0`.
 
 ### Current Model in SessionInfoUpdate
 
@@ -211,12 +235,12 @@ Cross-reference: `specs/045-interop-protocol-gaps/spec.md`
 
 ### ACP Baseline vs. arXiv:2505.02279 Survey
 
-Zeph's ACP implementation is based on `agent-client-protocol = "0.10"` (workspace `Cargo.toml`).
+Zeph's ACP implementation is based on `agent-client-protocol = "0.11"` (workspace `Cargo.toml`).
 
 The survey (arXiv:2505.02279) describes ACP's capability advertisement and re-negotiation
 model as a differentiating feature vs. MCP and A2A.
 
-**Capability re-negotiation status: Unverified.** The `agent-client-protocol` 0.10 SDK
+**Capability re-negotiation status: Unverified.** The `agent-client-protocol` 0.11 SDK
 includes capability fields in the session handshake message. However, dynamic re-negotiation
 during an active session (i.e., client and agent updating mutually advertised capabilities
 mid-session without reconnecting) has not been confirmed tested in Zeph's `AcpSessionManager`.

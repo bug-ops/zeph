@@ -190,6 +190,9 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                 vault_backend.as_deref(),
                 vault_key.as_deref(),
                 vault_path.as_deref(),
+                Vec::new(),
+                Vec::new(),
+                None,
             ))
             .await
         }
@@ -213,6 +216,9 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                     vault_backend.as_deref(),
                     vault_key.as_deref(),
                     vault_path.as_deref(),
+                    Vec::new(),
+                    Vec::new(),
+                    None,
                 ) => result,
                 result = run_acp_http_server(
                     config_path.as_deref(),
@@ -467,11 +473,21 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(feature = "acp")]
     if cli.acp {
+        let cli_message_ids = if cli.acp_message_ids {
+            Some(true)
+        } else if cli.no_acp_message_ids {
+            Some(false)
+        } else {
+            None
+        };
         return Box::pin(run_acp_server(
             cli.config.as_deref(),
             cli.vault.as_deref(),
             cli.vault_key.as_deref(),
             cli.vault_path.as_deref(),
+            cli.acp_additional_dir,
+            cli.acp_auth_method,
+            cli_message_ids,
         ))
         .await;
     }

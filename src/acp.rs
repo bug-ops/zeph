@@ -173,6 +173,12 @@ struct SharedAgentDeps {
     acp_provider_factory: Option<zeph_acp::ProviderFactory>,
     /// Project rule file paths to advertise in session `_meta`.
     acp_project_rules: Vec<PathBuf>,
+    /// Allowlist of directories ACP clients may reference in session requests.
+    acp_additional_directories: Vec<zeph_core::config::AdditionalDir>,
+    /// Auth methods to advertise in the `initialize` response.
+    acp_auth_methods: Vec<zeph_core::config::AcpAuthMethod>,
+    /// When `true`, echo `PromptRequest.message_id` through responses and chunks.
+    acp_message_ids_enabled: bool,
     /// Resolves current per-plugin skill dirs at hot-reload time.
     plugin_dirs_supplier: std::sync::Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>,
 
@@ -555,6 +561,9 @@ async fn build_acp_deps(
         sqlite_path: crate::db_url::resolve_db_url(config).to_owned(),
         acp_provider_factory: Some(build_acp_provider_factory(config)),
         acp_project_rules,
+        acp_additional_directories: config.acp.additional_directories.clone(),
+        acp_auth_methods: config.acp.auth_methods.clone(),
+        acp_message_ids_enabled: config.acp.message_ids_enabled,
         plugin_dirs_supplier: std::sync::Arc::new(plugin_dirs_supplier),
         #[cfg(feature = "scheduler")]
         scheduler_executor,
@@ -1222,6 +1231,9 @@ pub(crate) async fn run_acp_server(
     vault_backend: Option<&str>,
     vault_key: Option<&std::path::Path>,
     vault_path: Option<&std::path::Path>,
+    cli_additional_dirs: Vec<std::path::PathBuf>,
+    cli_auth_methods: Vec<String>,
+    cli_message_ids: Option<bool>,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
@@ -1236,6 +1248,44 @@ pub(crate) async fn run_acp_server(
     let available_models = std::sync::Arc::clone(&deps.acp_available_models);
     let provider = deps.provider.clone();
     warm_model_caches(provider, available_models).await;
+
+    // Apply CLI overrides to config-derived values.
+    let effective_additional_dirs = if cli_additional_dirs.is_empty() {
+        deps.acp_additional_directories.clone()
+    } else {
+        cli_additional_dirs
+            .into_iter()
+            .map(|p| {
+                zeph_core::config::AdditionalDir::parse(p.clone())
+                    .map_err(|e| anyhow::anyhow!("invalid --acp-additional-dir {:?}: {}", p, e))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
+    };
+    let effective_auth_methods = if cli_auth_methods.is_empty() {
+        let methods = deps.acp_auth_methods.clone();
+        anyhow::ensure!(
+            !methods.is_empty(),
+            "acp.auth_methods must not be empty; set at least one method (e.g. \"agent\")"
+        );
+        methods
+    } else {
+        let methods: Vec<_> = cli_auth_methods
+            .iter()
+            .map(|m| match m.as_str() {
+                "agent" => Ok(zeph_core::config::AcpAuthMethod::Agent),
+                other => Err(anyhow::anyhow!(
+                    "unknown --acp-auth-method {:?}; accepted values: agent",
+                    other
+                )),
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        anyhow::ensure!(
+            !methods.is_empty(),
+            "--acp-auth-method list must not be empty after parsing"
+        );
+        methods
+    };
+    let effective_message_ids = cli_message_ids.unwrap_or(deps.acp_message_ids_enabled);
 
     let mcp_manager_for_acp = Arc::clone(&deps.mcp_manager);
     let server_config = zeph_acp::AcpServerConfig {
@@ -1259,6 +1309,9 @@ pub(crate) async fn run_acp_server(
             pid: std::process::id(),
             log_file: deps.acp_log_file.clone(),
         }),
+        additional_directories: effective_additional_dirs,
+        auth_methods: effective_auth_methods,
+        message_ids_enabled: effective_message_ids,
     };
 
     let shared = Arc::new(deps);
@@ -1324,6 +1377,9 @@ pub(crate) async fn run_acp_http_server(
         max_history: app.config().memory.sessions.max_history,
         sqlite_path: Some(crate::db_url::resolve_db_url(app.config()).to_owned()),
         ready_notification: None,
+        additional_directories: app.config().acp.additional_directories.clone(),
+        auth_methods: app.config().acp.auth_methods.clone(),
+        message_ids_enabled: app.config().acp.message_ids_enabled,
     };
     let shared_deps: Arc<RwLock<Option<Arc<SharedAgentDeps>>>> = Arc::new(RwLock::new(None));
     let shared_deps_for_spawner = Arc::clone(&shared_deps);

@@ -3517,4 +3517,28 @@ prompt_cache_ttl = "1h"
         assert_eq!(result.added_count, 0);
         assert_eq!(result.output, src);
     }
+
+    // ── acp PR4 migration ─────────────────────────────────────────────────────
+
+    #[test]
+    fn migrate_adds_pr4_acp_keys_commented() {
+        let migrator = ConfigMigrator::new();
+        let input = include_str!("../tests/fixtures/acp_pr4_v0_19.toml");
+        let out = migrator.migrate(input).expect("migrate");
+        assert!(
+            out.output.contains("# additional_directories = []"),
+            "expected commented additional_directories; got:\n{}",
+            out.output
+        );
+        assert!(
+            out.output.contains("# auth_methods = [\"agent\"]"),
+            "expected commented auth_methods; got:\n{}",
+            out.output
+        );
+        assert!(
+            out.output.contains("# message_ids_enabled = true"),
+            "expected commented message_ids_enabled; got:\n{}",
+            out.output
+        );
+    }
 }

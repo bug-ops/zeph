@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::path::{Component, Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 use crate::defaults::default_true;
@@ -70,6 +72,163 @@ fn default_lsp_max_symbols() -> usize {
 }
 fn default_lsp_call_timeout_secs() -> u64 {
     5
+}
+
+/// Auth methods recognised by Zeph's ACP handler.
+///
+/// PR 4 MVP restricts this to `Agent` only. Future variants (`EnvVar`, `Terminal`) will
+/// be added in follow-up issues with their sub-struct payloads.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_config::AcpAuthMethod;
+/// use serde_json;
+///
+/// let m: AcpAuthMethod = serde_json::from_str(r#""agent""#).unwrap();
+/// assert_eq!(m, AcpAuthMethod::Agent);
+/// assert!(serde_json::from_str::<AcpAuthMethod>(r#""envvar""#).is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AcpAuthMethod {
+    /// Vault-backed agent auth — the sole supported method in PR 4.
+    Agent,
+}
+
+impl<'de> serde::Deserialize<'de> for AcpAuthMethod {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        match s.as_str() {
+            "agent" => Ok(Self::Agent),
+            other => Err(serde::de::Error::unknown_variant(other, &["agent"])),
+        }
+    }
+}
+
+fn default_acp_auth_methods() -> Vec<AcpAuthMethod> {
+    vec![AcpAuthMethod::Agent]
+}
+
+/// Error returned when parsing an [`AdditionalDir`] fails.
+#[derive(Debug, thiserror::Error)]
+pub enum AdditionalDirError {
+    /// The raw path contains a `..` component.
+    #[error("path `{0}` contains `..` traversal")]
+    Traversal(PathBuf),
+    /// The canonical path is a reserved system or credentials location.
+    #[error("path `{0}` is a reserved system or credentials directory")]
+    Reserved(PathBuf),
+    /// `std::fs::canonicalize` failed.
+    #[error("failed to canonicalize `{path}`: {source}")]
+    Canonicalize {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// A single entry in the `acp.additional_directories` policy allowlist.
+///
+/// Constructed via [`Self::parse`], which:
+/// 1. Rejects any path containing a `..` component (component-aware check).
+/// 2. Expands a leading `~` to the user's home directory.
+/// 3. Calls `std::fs::canonicalize`.
+/// 4. Rejects paths prefixed by `/proc`, `/sys`, `{HOME}/.ssh`, `{HOME}/.gnupg`, or `{HOME}/.aws`.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_config::AdditionalDir;
+///
+/// let dir = AdditionalDir::parse("/tmp/workspace").unwrap();
+/// assert!(dir.as_path().is_absolute());
+/// assert!(AdditionalDir::parse("/proc/self").is_err());
+/// ```
+#[derive(Clone, PartialEq, Eq)]
+pub struct AdditionalDir(PathBuf);
+
+impl AdditionalDir {
+    /// Parse and validate a raw path as a policy allowlist entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdditionalDirError`] on traversal, reserved prefix, or canonicalization failure.
+    pub fn parse(raw: impl Into<PathBuf>) -> Result<Self, AdditionalDirError> {
+        let raw: PathBuf = raw.into();
+
+        // Expand leading `~`.
+        let expanded = if raw.starts_with("~") {
+            let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+            home.join(raw.strip_prefix("~").unwrap_or(&raw))
+        } else {
+            raw.clone()
+        };
+
+        // Reject `..` components (component-aware, not string-based).
+        for component in expanded.components() {
+            if component == Component::ParentDir {
+                return Err(AdditionalDirError::Traversal(raw));
+            }
+        }
+
+        let canon =
+            std::fs::canonicalize(&expanded).map_err(|e| AdditionalDirError::Canonicalize {
+                path: raw.clone(),
+                source: e,
+            })?;
+
+        // Reject reserved locations.
+        let reserved = reserved_prefixes();
+        for prefix in &reserved {
+            if canon.starts_with(prefix) {
+                return Err(AdditionalDirError::Reserved(canon));
+            }
+        }
+
+        Ok(Self(canon))
+    }
+
+    /// Returns the canonicalized path.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+fn reserved_prefixes() -> Vec<PathBuf> {
+    let mut prefixes = vec![PathBuf::from("/proc"), PathBuf::from("/sys")];
+    if let Some(home) = dirs::home_dir() {
+        prefixes.push(home.join(".ssh"));
+        prefixes.push(home.join(".gnupg"));
+        prefixes.push(home.join(".aws"));
+    }
+    prefixes
+}
+
+impl std::fmt::Debug for AdditionalDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AdditionalDir({:?})", self.0)
+    }
+}
+
+impl std::fmt::Display for AdditionalDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.display())
+    }
+}
+
+impl Serialize for AdditionalDir {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.0.to_string_lossy().serialize(s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AdditionalDir {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Self::parse(s).map_err(serde::de::Error::custom)
+    }
 }
 
 /// TUI (terminal user interface) configuration, nested under `[tui]` in TOML.
@@ -161,6 +320,31 @@ pub struct AcpConfig {
     /// LSP extension configuration (`[acp.lsp]`).
     #[serde(default)]
     pub lsp: AcpLspConfig,
+    /// Allowlist of workspace directories that ACP clients may reference in session requests.
+    ///
+    /// Paths are canonicalized at config load; traversal (`..`) and reserved locations
+    /// (`/proc`, `/sys`, `~/.ssh`, `~/.gnupg`, `~/.aws`) are rejected with an error.
+    /// An empty list means clients may not request any additional directories beyond the
+    /// session `cwd`.
+    ///
+    /// This is a **policy** allowlist, not a protocol advertisement: the agent never returns
+    /// `additional_directories` in any response; instead it validates each session request's
+    /// `additional_directories` field against this list and rejects with `invalid_params`
+    /// on any violation.
+    #[serde(default)]
+    pub additional_directories: Vec<AdditionalDir>,
+    /// Auth methods advertised in the ACP `initialize` response.
+    ///
+    /// PR 4 MVP accepts only `"agent"`. Config load fails on any other value so drift
+    /// from the schema is detected at startup rather than silently ignored.
+    #[serde(default = "default_acp_auth_methods")]
+    pub auth_methods: Vec<AcpAuthMethod>,
+    /// Echo `PromptRequest.message_id` onto `PromptResponse.user_message_id` and every
+    /// streamed chunk, enabling IDE-side correlation.
+    ///
+    /// Requires the `unstable-message-id` feature. Default: `true`.
+    #[serde(default = "default_true")]
+    pub message_ids_enabled: bool,
 }
 
 impl Default for AcpConfig {
@@ -179,6 +363,9 @@ impl Default for AcpConfig {
             auth_token: None,
             discovery_enabled: default_acp_discovery_enabled(),
             lsp: AcpLspConfig::default(),
+            additional_directories: Vec::new(),
+            auth_methods: default_acp_auth_methods(),
+            message_ids_enabled: true,
         }
     }
 }
@@ -202,6 +389,9 @@ impl std::fmt::Debug for AcpConfig {
             )
             .field("discovery_enabled", &self.discovery_enabled)
             .field("lsp", &self.lsp)
+            .field("additional_directories", &self.additional_directories)
+            .field("auth_methods", &self.auth_methods)
+            .field("message_ids_enabled", &self.message_ids_enabled)
             .finish()
     }
 }
@@ -337,6 +527,76 @@ impl Default for LspConfig {
             call_timeout_secs: default_lsp_call_timeout_secs(),
             diagnostics: DiagnosticsConfig::default(),
             hover: HoverConfig::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acp_auth_method_unknown_variant_fails() {
+        assert!(serde_json::from_str::<AcpAuthMethod>(r#""bearer""#).is_err());
+        assert!(serde_json::from_str::<AcpAuthMethod>(r#""envvar""#).is_err());
+        assert!(serde_json::from_str::<AcpAuthMethod>(r#""Agent""#).is_err());
+    }
+
+    #[test]
+    fn acp_auth_method_known_variant_succeeds() {
+        let m = serde_json::from_str::<AcpAuthMethod>(r#""agent""#).unwrap();
+        assert_eq!(m, AcpAuthMethod::Agent);
+    }
+
+    #[test]
+    fn additional_dir_rejects_dotdot_traversal() {
+        let result = AdditionalDir::parse(std::path::PathBuf::from("/tmp/../etc"));
+        assert!(
+            matches!(result, Err(AdditionalDirError::Traversal(_))),
+            "expected Traversal, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn additional_dir_rejects_proc() {
+        // /proc must exist on Linux CI; skip on macOS if not present.
+        if !std::path::Path::new("/proc").exists() {
+            return;
+        }
+        let result = AdditionalDir::parse(std::path::PathBuf::from("/proc/self"));
+        assert!(
+            matches!(result, Err(AdditionalDirError::Reserved(_))),
+            "expected Reserved, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn additional_dir_rejects_ssh() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_owned());
+        let ssh = std::path::PathBuf::from(format!("{home}/.ssh"));
+        if !ssh.exists() {
+            return;
+        }
+        let result = AdditionalDir::parse(ssh.clone());
+        assert!(
+            matches!(result, Err(AdditionalDirError::Reserved(_))),
+            "expected Reserved for {ssh:?}, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn additional_dir_accepts_tmp() {
+        let tmp = std::env::temp_dir();
+        // tempdir always exists; /tmp is not reserved.
+        match AdditionalDir::parse(tmp.clone()) {
+            Ok(dir) => {
+                // canonicalized path stored correctly
+                assert!(dir.as_path().is_absolute());
+            }
+            Err(AdditionalDirError::Canonicalize { .. }) => {
+                // temp_dir may be a symlink that canonicalizes to something else — acceptable
+            }
+            Err(e) => panic!("unexpected error for {tmp:?}: {e:?}"),
         }
     }
 }

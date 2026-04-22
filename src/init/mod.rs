@@ -59,6 +59,9 @@ pub(crate) struct WizardState {
     pub(crate) acp_enabled: bool,
     pub(crate) acp_agent_name: String,
     pub(crate) acp_agent_version: String,
+    pub(crate) acp_additional_directories: Vec<std::path::PathBuf>,
+    pub(crate) acp_auth_methods: Vec<zeph_config::AcpAuthMethod>,
+    pub(crate) acp_message_ids_enabled: bool,
     pub(crate) thinking: Option<ThinkingConfig>,
     pub(crate) enable_extended_context: bool,
     pub(crate) agents_default_permission_mode: Option<PermissionMode>,
@@ -262,6 +265,9 @@ impl Default for WizardState {
             acp_enabled: false,
             acp_agent_name: String::new(),
             acp_agent_version: String::new(),
+            acp_additional_directories: Vec::new(),
+            acp_auth_methods: vec![zeph_config::AcpAuthMethod::Agent],
+            acp_message_ids_enabled: true,
             thinking: None,
             enable_extended_context: false,
             agents_default_permission_mode: None,
@@ -1015,10 +1021,27 @@ fn apply_daemon_config(config: &mut Config, state: &WizardState) {
 
 fn apply_acp_config(config: &mut Config, state: &WizardState) {
     if state.acp_enabled {
+        let additional_directories: Vec<zeph_config::AdditionalDir> = state
+            .acp_additional_directories
+            .iter()
+            .filter_map(|p| {
+                zeph_config::AdditionalDir::parse(p)
+                    .map_err(|e| {
+                        eprintln!(
+                            "Warning: skipping invalid ACP directory {}: {e}",
+                            p.display()
+                        );
+                    })
+                    .ok()
+            })
+            .collect();
         config.acp = AcpConfig {
             enabled: true,
             agent_name: state.acp_agent_name.clone(),
             agent_version: state.acp_agent_version.clone(),
+            additional_directories,
+            auth_methods: state.acp_auth_methods.clone(),
+            message_ids_enabled: state.acp_message_ids_enabled,
             ..AcpConfig::default()
         };
     }
@@ -1114,6 +1137,29 @@ fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
             .with_prompt("Agent version")
             .default(state.acp_agent_version.clone())
             .interact_text()?;
+
+        let dirs_input: String = Input::new()
+            .with_prompt(
+                "Allowlisted additional directories for ACP sessions \
+                 (comma-separated paths; empty = none)",
+            )
+            .default(String::new())
+            .allow_empty(true)
+            .interact_text()?;
+        state.acp_additional_directories = dirs_input
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .collect();
+
+        // PR 4 MVP: only "agent" is offered; kept as a prompt for discoverability.
+        state.acp_auth_methods = vec![zeph_config::AcpAuthMethod::Agent];
+
+        state.acp_message_ids_enabled = Confirm::new()
+            .with_prompt("Echo PromptRequest.message_id in responses/chunks (IDE correlation)?")
+            .default(true)
+            .interact()?;
     }
 
     println!();

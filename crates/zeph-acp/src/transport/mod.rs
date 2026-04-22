@@ -116,6 +116,12 @@ pub struct AcpServerConfig {
     pub sqlite_path: Option<String>,
     /// Optional startup notification emitted as the first stdio JSON-RPC frame.
     pub ready_notification: Option<ReadyNotification>,
+    /// Canonicalized allowlist of directories ACP clients may reference in session requests.
+    pub additional_directories: Vec<zeph_core::config::AdditionalDir>,
+    /// Auth methods to advertise in the `initialize` response.
+    pub auth_methods: Vec<zeph_core::config::AcpAuthMethod>,
+    /// When `true`, echo `PromptRequest.message_id` through responses and chunks.
+    pub message_ids_enabled: bool,
 }
 
 impl Clone for AcpServerConfig {
@@ -137,6 +143,9 @@ impl Clone for AcpServerConfig {
             max_history: self.max_history,
             sqlite_path: self.sqlite_path.clone(),
             ready_notification: self.ready_notification.clone(),
+            additional_directories: self.additional_directories.clone(),
+            auth_methods: self.auth_methods.clone(),
+            message_ids_enabled: self.message_ids_enabled,
         }
     }
 }
@@ -160,6 +169,9 @@ impl Default for AcpServerConfig {
             max_history: 100,
             sqlite_path: None,
             ready_notification: None,
+            additional_directories: Vec::new(),
+            auth_methods: vec![zeph_core::config::AcpAuthMethod::Agent],
+            message_ids_enabled: true,
         }
     }
 }

@@ -798,6 +798,16 @@ broadcast_capacity = 256
 discovery_enabled = true
 # LLM models advertised to the IDE for model switching: ["claude:claude-sonnet-4-5", "ollama:llama3"]
 available_models = []
+# Allowlist of workspace directories ACP clients may reference beyond session cwd.
+# Paths with `..`, /proc, /sys, ~/.ssh, ~/.gnupg, ~/.aws are rejected at config load.
+# Empty = clients may not request any additional directories.
+additional_directories = []
+# Auth methods advertised in the ACP initialize response.
+# MVP only accepts "agent"; unknown values fail startup rather than silently being skipped.
+auth_methods = ["agent"]
+# Echo PromptRequest.message_id onto PromptResponse.user_message_id and chunk events.
+# Requires the `unstable-message-id` feature.
+message_ids_enabled = true
 
 [acp.lsp]
 # Enable LSP code intelligence extension when IDE advertises lsp capability

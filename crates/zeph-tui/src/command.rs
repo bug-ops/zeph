@@ -108,6 +108,10 @@ pub enum TuiCommand {
     SessionClose,
     // Plugin overlay status (#3147)
     PluginListOverlay,
+    // ACP read-only inspection (#3270)
+    AcpDirsList,
+    AcpAuthMethodsView,
+    AcpStatus,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -652,6 +656,27 @@ fn build_extra_commands() -> Vec<CommandEntry> {
         shortcut: None,
         command: TuiCommand::LspStatus,
     });
+    cmds.push(CommandEntry {
+        id: "acp:dirs",
+        label: "ACP: list allowlisted directories (/acp dirs)",
+        category: "acp",
+        shortcut: None,
+        command: TuiCommand::AcpDirsList,
+    });
+    cmds.push(CommandEntry {
+        id: "acp:auth-methods",
+        label: "ACP: list advertised auth methods (/acp auth-methods)",
+        category: "acp",
+        shortcut: None,
+        command: TuiCommand::AcpAuthMethodsView,
+    });
+    cmds.push(CommandEntry {
+        id: "acp:status",
+        label: "ACP: show runtime status and feature flags (/acp status)",
+        category: "acp",
+        shortcut: None,
+        command: TuiCommand::AcpStatus,
+    });
     cmds
 }
 
@@ -756,8 +781,8 @@ mod tests {
     fn extra_registry_has_correct_command_count() {
         // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
         // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status
-        // + 1 forgetting-sweep + 1 predictor-status = 37
-        assert_eq!(extra_command_registry().len(), 39);
+        // + 1 forgetting-sweep + 1 predictor-status + 3 acp = 42
+        assert_eq!(extra_command_registry().len(), 42);
     }
 
     #[test]

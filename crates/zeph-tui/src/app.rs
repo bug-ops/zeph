@@ -1709,6 +1709,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute_plan_graph_command(&mut self, cmd: TuiCommand) {
         match cmd {
             TuiCommand::PlanStatus => {
@@ -1797,6 +1798,18 @@ impl App {
             TuiCommand::PluginListOverlay => {
                 let _ = self.user_input_tx.try_send("/plugins overlay".to_owned());
             }
+            TuiCommand::AcpDirsList => {
+                self.push_system_message("Querying ACP runtime...".to_owned());
+                let _ = self.user_input_tx.try_send("/acp dirs".to_owned());
+            }
+            TuiCommand::AcpAuthMethodsView => {
+                self.push_system_message("Querying ACP runtime...".to_owned());
+                let _ = self.user_input_tx.try_send("/acp auth-methods".to_owned());
+            }
+            TuiCommand::AcpStatus => {
+                self.push_system_message("Querying ACP runtime...".to_owned());
+                let _ = self.user_input_tx.try_send("/acp status".to_owned());
+            }
             _ => {}
         }
     }
@@ -1844,6 +1857,11 @@ impl App {
             [cmd, "close"] if cmd.eq_ignore_ascii_case("/session") => {
                 Some(TuiCommand::SessionClose)
             }
+            [cmd, "dirs"] if cmd.eq_ignore_ascii_case("/acp") => Some(TuiCommand::AcpDirsList),
+            [cmd, "auth-methods"] if cmd.eq_ignore_ascii_case("/acp") => {
+                Some(TuiCommand::AcpAuthMethodsView)
+            }
+            [cmd, "status"] if cmd.eq_ignore_ascii_case("/acp") => Some(TuiCommand::AcpStatus),
             _ => None,
         }
     }

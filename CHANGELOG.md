@@ -39,6 +39,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Add `zeph-acp` handler module scaffolding for ACP 0.11 migration (PR 1, epic #3265)
 - Add `unstable-auth-methods`, `unstable-message-id`, `unstable-session-add-dirs`, `unstable-boolean-config` optional features to `zeph-acp`
+- **feat(acp): `additional_directories` request-side allowlist** (#3270, PR 4) — `AcpConfig.additional_directories` (Vec of validated paths); `AdditionalDir` newtype with traversal and reserved-prefix checks; `validate_additional_directories` rejects session requests with non-allowed paths at session start; feature-gated by `unstable-session-add-dirs`
+- **feat(acp): `auth_methods` strict config** (#3270, PR 4) — `AcpConfig.auth_methods` with custom `Deserialize` that rejects unknown variants at startup; MVP accepts `"agent"` only; `AcpAuthMethod` enum; feature-gated by `unstable-auth-methods`; `initialize` response built dynamically from config
+- **feat(acp): `message_ids_enabled` echo** (#3270, PR 4) — `AcpConfig.message_ids_enabled`; client `message_id` stored per-session via `std::sync::Mutex<Option<String>>`; echoed on `PromptResponse.user_message_id` and all streamed chunks via `apply_message_id_to_chunk`; feature-gated by `unstable-message-id`
+- **feat(cli): ACP config overrides** (#3270, PR 4) — `--acp-additional-dir <PATH>` (repeatable), `--acp-auth-method <METHOD>` (repeatable, validated), `--acp-message-ids` / `--no-acp-message-ids` boolean pair; CLI overrides take precedence over config file values
+- **feat(tui): ACP read-only commands** (#3270, PR 4) — `/acp dirs`, `/acp auth-methods`, `/acp status` slash commands in TUI command palette; all are read-only status queries
+- **feat(init): ACP wizard prompts** (#3270, PR 4) — `--init` wizard `step_acp` extended with prompts for additional_directories, auth_methods preset, and message_ids_enabled toggle
+- **feat(config): ACP migration fixture** (#3270, PR 4) — `migrate_adds_pr4_acp_keys_commented` test verifies pre-PR4 configs are upgraded with commented-out new keys
+
+### Fixed
+
+- **fix(acp): stale `current_message_id` leak across turns** (#3270, review fix) — `do_prompt` previously wrote `current_message_id` before the `output_rx.take()` check; if a prompt was rejected as "already in progress" the slot held the stale id from the failed request; moved write to after successful `output_rx.take()`
+- **fix(acp): empty `auth_methods = []` silently fell back to default** (#3270, review fix) — empty list in config or from CLI now causes a hard error at startup; operator intent is honoured rather than silently replaced
+- **fix(acp): invalid CLI `--acp-additional-dir`/`--acp-auth-method` silently dropped** (#3270, review fix) — changed `filter_map(...).ok()` to map errors and return early via `?`; binary now exits non-zero on invalid CLI input
+- **perf(acp): per-event `sessions.lock()` re-read of `current_message_id`** (#3270, review fix) — captured `turn_mid` once at drain start instead of re-locking per chunk event
 
 ## [0.19.3] - 2026-04-19
 
