@@ -1256,8 +1256,9 @@ pub(crate) async fn run_acp_server(
         cli_additional_dirs
             .into_iter()
             .map(|p| {
-                zeph_core::config::AdditionalDir::parse(p.clone())
-                    .map_err(|e| anyhow::anyhow!("invalid --acp-additional-dir {}: {e}", p.display()))
+                zeph_core::config::AdditionalDir::parse(p.clone()).map_err(|e| {
+                    anyhow::anyhow!("invalid --acp-additional-dir {}: {e}", p.display())
+                })
             })
             .collect::<anyhow::Result<Vec<_>>>()?
     };
