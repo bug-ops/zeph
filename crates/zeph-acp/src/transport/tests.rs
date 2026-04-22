@@ -50,6 +50,7 @@ fn test_state() -> AcpHttpState {
             max_history: 100,
             sqlite_path: None,
             ready_notification: None,
+            ..Default::default()
         },
     )
     .with_ready(true)
@@ -75,6 +76,7 @@ fn state_with_max_sessions(max: usize) -> AcpHttpState {
             max_history: 100,
             sqlite_path: None,
             ready_notification: None,
+            ..Default::default()
         },
     )
     .with_ready(true)
@@ -344,6 +346,7 @@ fn state_with_auth(token: &str) -> AcpHttpState {
             max_history: 100,
             sqlite_path: None,
             ready_notification: None,
+            ..Default::default()
         },
     )
     .with_ready(true)
@@ -470,6 +473,7 @@ async fn health_returns_503_when_not_ready() {
             max_history: 100,
             sqlite_path: None,
             ready_notification: None,
+            ..Default::default()
         },
     );
     let router = acp_router(state);
@@ -509,6 +513,7 @@ async fn acp_post_returns_503_when_server_not_ready() {
             max_history: 100,
             sqlite_path: None,
             ready_notification: None,
+            ..Default::default()
         },
     );
     let router = acp_router(state);
@@ -607,6 +612,7 @@ async fn discovery_disabled_returns_404() {
             max_history: 100,
             sqlite_path: None,
             ready_notification: None,
+            ..Default::default()
         },
     );
     let router = acp_router(state);
@@ -680,6 +686,7 @@ async fn agent_json_disabled_returns_404() {
             max_history: 100,
             sqlite_path: None,
             ready_notification: None,
+            ..Default::default()
         },
     );
     let router = acp_router(state);
@@ -721,6 +728,7 @@ async fn reaper_removes_expired_connections() {
             max_history: 100,
             sqlite_path: None,
             ready_notification: None,
+            ..Default::default()
         },
     );
 
