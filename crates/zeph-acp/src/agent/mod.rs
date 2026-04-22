@@ -1287,7 +1287,7 @@ impl ZephAcpAgentState {
             *entry
                 .current_message_id
                 .lock()
-                .unwrap_or_else(|p| p.into_inner()) = None;
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
 
         #[cfg(feature = "unstable-message-id")]
