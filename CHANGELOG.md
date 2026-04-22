@@ -18,6 +18,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`zeph-acp`**: integration tests rewritten for ACP 0.11 builder API using `acp::Client.connect_with`
+  and `serve_connection`; `#[cfg(any())]` gate removed; 6 real loopback tests cover initialize,
+  new_session, cancel, unknown ext method, load_session error, and session list (#3269, PR 3).
+- **`zeph-acp`**: add `acp.session.agent_loop` tracing spans (`.instrument(span)`) to all four
+  `spawn_local` sites in `agent/mod.rs` (`do_new_session`, `do_load_session`, `do_fork_session`,
+  `do_resume_session`) for per-session observability in local Chrome JSON traces.
+- **`zeph-acp`**: refresh `AgentSpawner` doc comment to accurately describe `LocalSet` requirement
+  and `!Send` constraint.
+
 - **feat(acp): migrate `zeph-acp` to ACP 0.11 builder API** (#3267, PR 2, epic #3265) —
   bumps `agent-client-protocol` to 0.11.1 and adds `agent-client-protocol-tokio = "0.11.1"`;
   renames `ZephAcpAgent` → `ZephAcpAgentState` and removes all `!Send` constraints

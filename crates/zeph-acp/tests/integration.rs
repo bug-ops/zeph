@@ -1,680 +1,349 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// TODO(pr3): rewrite integration tests for ACP 0.11 API — tracked in #3267
-#[cfg(any())]
-mod disabled {
+//! Integration tests for the ACP 0.11 server (`zeph-acp`) using in-process loopback transports.
+//!
+//! These tests exercise the full ACP protocol stack: `serve_connection` → `run_agent` →
+//! request handlers, driven by a real `acp::Client` over a `tokio::io::duplex` byte stream.
+//! Each test runs inside a `tokio::task::LocalSet` because the agent session futures are `!Send`.
 
-    use std::path::PathBuf;
-    use std::sync::Arc;
+use std::sync::Arc;
 
-    use acp::Agent as _;
-    use agent_client_protocol as acp;
-    use serde_json::value::RawValue;
-    use tokio::io::AsyncBufReadExt;
-    use tokio::io::duplex;
-    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-    use zeph_acp::{AcpServerConfig, AgentSpawner, SessionContext, serve_connection};
-    use zeph_core::channel::LoopbackChannel;
+use agent_client_protocol as acp;
+use tempfile::TempDir;
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+use zeph_acp::{AcpServerConfig, AgentSpawner, serve_connection};
+use zeph_core::channel::Channel as _;
 
-    fn shared_models(models: Vec<String>) -> zeph_acp::transport::SharedAvailableModels {
-        std::sync::Arc::new(parking_lot::RwLock::new(models))
+/// Minimal no-op spawner — drops the channel immediately.
+fn noop_spawner() -> AgentSpawner {
+    Arc::new(|channel, _ctx, _session| {
+        Box::pin(async move {
+            drop(channel);
+        })
+    })
+}
+
+/// Spawner that reads one user message then sends `Flush`, completing the turn with `EndTurn`.
+fn echo_spawner() -> AgentSpawner {
+    Arc::new(|mut channel, _ctx, _session| {
+        Box::pin(async move {
+            // Consume the user message so `do_prompt` can proceed.
+            let _ = channel.recv().await;
+            // Signal end of turn: drain_agent_events exits on Flush.
+            let _ = channel.flush_chunks().await;
+        })
+    })
+}
+
+/// Minimal server config for tests.
+fn test_config(name: &str) -> AcpServerConfig {
+    AcpServerConfig {
+        agent_name: name.to_owned(),
+        agent_version: "0.0.1".to_owned(),
+        max_sessions: 8,
+        ..AcpServerConfig::default()
     }
+}
 
-    /// No-op ACP client for testing.
-    struct NoopClient;
+/// Creates an in-process duplex transport pair.
+/// Returns `(server_writer, server_reader, client_writer, client_reader)`.
+fn duplex_pair() -> (
+    impl futures::AsyncWrite + Unpin + Send + 'static,
+    impl futures::AsyncRead + Unpin + Send + 'static,
+    impl futures::AsyncWrite + Unpin + Send + 'static,
+    impl futures::AsyncRead + Unpin + Send + 'static,
+) {
+    let (s_tok, c_tok) = tokio::io::duplex(64 * 1024);
+    // DuplexStream implements both AsyncRead and AsyncWrite directly.
+    // Use split to produce non-Clone halves that satisfy `Send + 'static`.
+    let (s_read, s_write) = tokio::io::split(s_tok);
+    let (c_read, c_write) = tokio::io::split(c_tok);
+    (
+        s_write.compat_write(),
+        s_read.compat(),
+        c_write.compat_write(),
+        c_read.compat(),
+    )
+}
 
-    #[async_trait::async_trait(?Send)]
-    impl acp::Client for NoopClient {
-        async fn request_permission(
-            &self,
-            _args: acp::RequestPermissionRequest,
-        ) -> acp::Result<acp::RequestPermissionResponse> {
-            Ok(acp::RequestPermissionResponse::new(
-                acp::RequestPermissionOutcome::Cancelled,
-            ))
-        }
+/// Creates a temporary working directory for tests that need a real filesystem path.
+fn temp_workdir() -> TempDir {
+    tempfile::tempdir().expect("failed to create temp dir")
+}
 
-        async fn session_notification(&self, _args: acp::SessionNotification) -> acp::Result<()> {
-            Ok(())
-        }
-    }
-
-    fn make_echo_spawner() -> AgentSpawner {
-        Arc::new(|_channel: LoopbackChannel, _ctx, _session_ctx: SessionContext| Box::pin(async {}))
-    }
-
-    fn make_server_config() -> AcpServerConfig {
-        AcpServerConfig {
-            agent_name: "test-agent".to_owned(),
-            agent_version: "0.0.1".to_owned(),
-            max_sessions: 4,
-            session_idle_timeout_secs: 1800,
-            permission_file: None,
-            provider_factory: None,
-            available_models: shared_models(Vec::new()),
-            mcp_manager: None,
-            auth_bearer_token: None,
-            discovery_enabled: true,
-            terminal_timeout_secs: 120,
-            project_rules: Vec::new(),
-            title_max_chars: 60,
-            max_history: 100,
-            sqlite_path: None,
-            ready_notification: None,
-        }
-    }
-
-    fn assert_send<T: Send>(value: T) -> T {
-        value
-    }
-
-    #[tokio::test]
-    async fn initialize_handshake() {
-        let (client_stream, server_stream) = duplex(65536);
-        let (client_read, client_write) = tokio::io::split(client_stream);
-        let (server_read, server_write) = tokio::io::split(server_stream);
-
-        let spawner = make_echo_spawner();
-        let server_config = make_server_config();
-
-        let server_fut = serve_connection(
-            spawner,
-            server_config,
-            server_write.compat_write(),
-            server_read.compat(),
-        );
-
-        let client_fut = async {
-            let local = tokio::task::LocalSet::new();
-            local
-                .run_until(async {
-                    let (client_conn, io_fut) = acp::ClientSideConnection::new(
-                        NoopClient,
-                        client_write.compat_write(),
-                        client_read.compat(),
-                        |fut| {
-                            tokio::task::spawn_local(fut);
-                        },
-                    );
-                    tokio::task::spawn_local(async move {
-                        let _ = io_fut.await;
-                    });
-
-                    let resp = client_conn
-                        .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
-                        .await
-                        .expect("initialize failed");
-
-                    assert!(resp.agent_info.is_some());
-                    let info = resp.agent_info.unwrap();
-                    assert_eq!(info.name, "test-agent");
-                    assert_eq!(info.version, "0.0.1");
-                })
-                .await;
-        };
-
-        tokio::select! {
-            res = server_fut => {
-                // Server can exit normally after client disconnects
-                let _ = res;
+#[tokio::test(flavor = "current_thread")]
+async fn initialize_handshake() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                let resp = cx
+                    .send_request(acp::schema::InitializeRequest::new(
+                        acp::schema::ProtocolVersion::LATEST,
+                    ))
+                    .block_task()
+                    .await?;
+                assert!(resp.agent_info.is_some(), "agent_info missing");
+                let info = resp.agent_info.unwrap();
+                assert_eq!(info.name, "test-agent");
+                assert_eq!(info.version, "0.0.1");
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "initialize failed: {result:?}");
+                }
             }
-            () = client_fut => {}
-        }
-    }
+        })
+        .await;
+}
 
-    #[tokio::test]
-    async fn stdio_ready_notification_is_first_frame() {
-        let (client_stream, server_stream) = duplex(65536);
-        let (server_read, server_write) = tokio::io::split(server_stream);
+#[tokio::test(flavor = "current_thread")]
+async fn new_session_returns_session_id() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
 
-        let mut server_config = make_server_config();
-        server_config.ready_notification = Some(zeph_acp::transport::ReadyNotification {
-            version: "0.0.1".to_owned(),
-            pid: 4242,
-            log_file: Some("/tmp/zeph.log".to_owned()),
-        });
+                let resp = cx
+                    .send_request(acp::schema::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?;
 
-        let server_fut = serve_connection(
-            make_echo_spawner(),
-            server_config,
-            server_write.compat_write(),
-            server_read.compat(),
-        );
-
-        let client_fut = async move {
-            let mut lines = tokio::io::BufReader::new(client_stream).lines();
-            let first = lines.next_line().await.expect("read ready line");
-            let json: serde_json::Value =
-                serde_json::from_str(first.as_deref().expect("ready notification line")).unwrap();
-            assert_eq!(json["jsonrpc"], "2.0");
-            assert_eq!(json["method"], "zeph/ready");
-            assert_eq!(json["params"]["version"], "0.0.1");
-            assert_eq!(json["params"]["pid"], 4242);
-            assert_eq!(json["params"]["log_file"], "/tmp/zeph.log");
-        };
-
-        tokio::select! {
-            res = server_fut => {
-                let _ = res;
+                assert!(
+                    !resp.session_id.0.is_empty(),
+                    "session_id must not be empty"
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "new_session failed: {result:?}");
+                }
             }
-            () = client_fut => {}
-        }
-    }
+        })
+        .await;
+}
 
-    #[tokio::test]
-    async fn serve_connection_future_is_send() {
-        let (_client_stream, server_stream) = duplex(65536);
-        let (server_read, server_write) = tokio::io::split(server_stream);
-        let fut = serve_connection(
-            make_echo_spawner(),
-            make_server_config(),
-            server_write.compat_write(),
-            server_read.compat(),
-        );
-        let _fut = assert_send(fut);
-    }
+#[tokio::test(flavor = "current_thread")]
+async fn cancel_notification_does_not_panic() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
 
-    #[tokio::test]
-    async fn new_session_and_cancel() {
-        let (client_stream, server_stream) = duplex(65536);
-        let (client_read, client_write) = tokio::io::split(client_stream);
-        let (server_read, server_write) = tokio::io::split(server_stream);
+                let session_resp = cx
+                    .send_request(acp::schema::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?;
 
-        let spawner = make_echo_spawner();
-        let server_config = make_server_config();
-
-        let server_fut = serve_connection(
-            spawner,
-            server_config,
-            server_write.compat_write(),
-            server_read.compat(),
-        );
-
-        let client_fut = async {
-            let local = tokio::task::LocalSet::new();
-            local
-                .run_until(async {
-                    let (client_conn, io_fut) = acp::ClientSideConnection::new(
-                        NoopClient,
-                        client_write.compat_write(),
-                        client_read.compat(),
-                        |fut| {
-                            tokio::task::spawn_local(fut);
-                        },
-                    );
-                    tokio::task::spawn_local(async move {
-                        let _ = io_fut.await;
-                    });
-
-                    client_conn
-                        .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
-                        .await
-                        .expect("initialize failed");
-
-                    let session_resp = client_conn
-                        .new_session(acp::NewSessionRequest::new(PathBuf::from(".")))
-                        .await
-                        .expect("new_session failed");
-
-                    let session_id = session_resp.session_id.clone();
-                    assert!(!session_id.to_string().is_empty());
-
-                    client_conn
-                        .cancel(acp::CancelNotification::new(session_id))
-                        .await
-                        .expect("cancel failed");
-                })
-                .await;
-        };
-
-        tokio::select! {
-            res = server_fut => {
-                let _ = res;
+                cx.send_notification(acp::schema::CancelNotification::new(
+                    session_resp.session_id,
+                ))?;
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "cancel notification failed: {result:?}");
+                }
             }
-            () = client_fut => {}
-        }
-    }
-
-    #[tokio::test]
-    async fn serve_connection_can_run_on_tokio_spawn() {
-        let (client_stream, server_stream) = duplex(65536);
-        let (client_read, client_write) = tokio::io::split(client_stream);
-        let (server_read, server_write) = tokio::io::split(server_stream);
-
-        let server = tokio::spawn(serve_connection(
-            make_echo_spawner(),
-            make_server_config(),
-            server_write.compat_write(),
-            server_read.compat(),
-        ));
-
-        let client_fut = async {
-            let local = tokio::task::LocalSet::new();
-            local
-                .run_until(async {
-                    let (client_conn, io_fut) = acp::ClientSideConnection::new(
-                        NoopClient,
-                        client_write.compat_write(),
-                        client_read.compat(),
-                        |fut| {
-                            tokio::task::spawn_local(fut);
-                        },
-                    );
-                    tokio::task::spawn_local(async move {
-                        let _ = io_fut.await;
-                    });
-
-                    client_conn
-                        .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
-                        .await
-                        .expect("initialize failed");
-                })
-                .await;
-        };
-
-        client_fut.await;
-        let _ = server.await.expect("server task panicked");
-    }
-
-    // ── E2E: Custom methods via JSON-RPC transport ───────────────────────────────
-
-    fn raw_json(json: &str) -> Arc<RawValue> {
-        Arc::from(RawValue::from_string(json.to_owned()).unwrap())
-    }
-
-    /// Helper: set up client+server duplex, initialize, and run `test_fn` with the client connection.
-    async fn with_initialized_client<F, Fut>(test_fn: F)
-    where
-        F: FnOnce(acp::ClientSideConnection) -> Fut + 'static,
-        Fut: std::future::Future<Output = ()>,
-    {
-        let (client_stream, server_stream) = duplex(65536);
-        let (client_read, client_write) = tokio::io::split(client_stream);
-        let (server_read, server_write) = tokio::io::split(server_stream);
-
-        let server_fut = serve_connection(
-            make_echo_spawner(),
-            make_server_config(),
-            server_write.compat_write(),
-            server_read.compat(),
-        );
-
-        let client_fut = async {
-            let local = tokio::task::LocalSet::new();
-            local
-                .run_until(async {
-                    let (client_conn, io_fut) = acp::ClientSideConnection::new(
-                        NoopClient,
-                        client_write.compat_write(),
-                        client_read.compat(),
-                        |fut| {
-                            tokio::task::spawn_local(fut);
-                        },
-                    );
-                    tokio::task::spawn_local(async move {
-                        let _ = io_fut.await;
-                    });
-
-                    client_conn
-                        .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
-                        .await
-                        .expect("initialize failed");
-
-                    test_fn(client_conn).await;
-                })
-                .await;
-        };
-
-        tokio::select! {
-            res = server_fut => { let _ = res; }
-            () = client_fut => {}
-        }
-    }
-
-    #[tokio::test]
-    async fn e2e_session_list_empty() {
-        with_initialized_client(|conn| async move {
-            let resp = conn
-                .ext_method(acp::ExtRequest::new("_session/list", raw_json("{}")))
-                .await
-                .expect("ext_method failed");
-            let parsed: serde_json::Value = serde_json::from_str(resp.0.get()).unwrap();
-            assert!(parsed["sessions"].as_array().unwrap().is_empty());
         })
         .await;
-    }
+}
 
-    #[tokio::test]
-    async fn e2e_session_list_includes_created_session() {
-        with_initialized_client(|conn| async move {
-            let session = conn
-                .new_session(acp::NewSessionRequest::new(PathBuf::from(".")))
-                .await
-                .expect("new_session failed");
-            let sid = session.session_id.to_string();
-
-            let resp = conn
-                .ext_method(acp::ExtRequest::new("_session/list", raw_json("{}")))
-                .await
-                .expect("ext_method failed");
-            let parsed: serde_json::Value = serde_json::from_str(resp.0.get()).unwrap();
-            let sessions = parsed["sessions"].as_array().unwrap();
-            assert!(sessions.iter().any(|s| s["session_id"] == sid));
-        })
-        .await;
-    }
-
-    #[tokio::test]
-    async fn e2e_session_delete_and_verify() {
-        with_initialized_client(|conn| async move {
-            let session = conn
-                .new_session(acp::NewSessionRequest::new(PathBuf::from(".")))
-                .await
-                .expect("new_session failed");
-            let sid = session.session_id.to_string();
-
-            let json = format!(r#"{{"session_id":"{sid}"}}"#);
-            let resp = conn
-                .ext_method(acp::ExtRequest::new("_session/delete", raw_json(&json)))
-                .await
-                .expect("ext_method failed");
-            let parsed: serde_json::Value = serde_json::from_str(resp.0.get()).unwrap();
-            assert_eq!(parsed["deleted"], true);
-
-            // Verify session no longer in list.
-            let list_resp = conn
-                .ext_method(acp::ExtRequest::new("_session/list", raw_json("{}")))
-                .await
-                .expect("ext_method failed");
-            let list: serde_json::Value = serde_json::from_str(list_resp.0.get()).unwrap();
-            assert!(
-                !list["sessions"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|s| s["session_id"] == sid)
-            );
-        })
-        .await;
-    }
-
-    #[tokio::test]
-    async fn e2e_agent_tools_returns_list() {
-        with_initialized_client(|conn| async move {
-            let resp = conn
-                .ext_method(acp::ExtRequest::new(
-                    "_agent/tools",
-                    raw_json(r#"{"session_id":"any"}"#),
+#[tokio::test(flavor = "current_thread")]
+async fn unknown_ext_method_returns_null() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
                 ))
-                .await
-                .expect("ext_method failed");
-            let parsed: serde_json::Value = serde_json::from_str(resp.0.get()).unwrap();
-            assert!(!parsed["tools"].as_array().unwrap().is_empty());
+                .block_task()
+                .await?;
+
+                let raw_params =
+                    Arc::from(serde_json::value::RawValue::from_string("{}".to_owned()).unwrap());
+                let resp = cx
+                    .send_request(acp::ClientRequest::ExtMethodRequest(
+                        acp::schema::ExtRequest::new("_unknown_method", raw_params),
+                    ))
+                    .block_task()
+                    .await?;
+
+                assert_eq!(
+                    resp.to_string(),
+                    "null",
+                    "unknown ext method must return null"
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "ext_method failed: {result:?}");
+                }
+            }
         })
         .await;
-    }
+}
 
-    #[tokio::test]
-    async fn e2e_working_dir_update_and_path_traversal() {
-        with_initialized_client(|conn| async move {
-            let session = conn
-                .new_session(acp::NewSessionRequest::new(PathBuf::from(".")))
-                .await
-                .expect("new_session failed");
-            let sid = session.session_id.to_string();
-
-            // Valid path update.
-            let json = format!(r#"{{"session_id":"{sid}","path":"/tmp/workspace"}}"#);
-            let resp = conn
-                .ext_method(acp::ExtRequest::new(
-                    "_agent/working_dir/update",
-                    raw_json(&json),
+#[tokio::test(flavor = "current_thread")]
+async fn load_session_unknown_id_returns_error() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
                 ))
-                .await
-                .expect("ext_method failed");
-            let parsed: serde_json::Value = serde_json::from_str(resp.0.get()).unwrap();
-            assert_eq!(parsed["updated"], true);
+                .block_task()
+                .await?;
 
-            // Path traversal must be rejected.
-            let bad_json = format!(r#"{{"session_id":"{sid}","path":"../../etc/passwd"}}"#);
-            let err = conn
-                .ext_method(acp::ExtRequest::new(
-                    "_agent/working_dir/update",
-                    raw_json(&bad_json),
+                let err = cx
+                    .send_request(acp::schema::LoadSessionRequest::new(
+                        "non-existent-session-id",
+                        workdir.path(),
+                    ))
+                    .block_task()
+                    .await;
+
+                assert!(
+                    err.is_err(),
+                    "load_session of unknown id must return an error"
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "client connection failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_list_contains_created_sessions() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
                 ))
-                .await;
-            assert!(err.is_err());
+                .block_task()
+                .await?;
+
+                // Create two sessions so the list is non-trivially non-empty.
+                let id_a = cx
+                    .send_request(acp::schema::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+                let id_b = cx
+                    .send_request(acp::schema::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                let resp = cx
+                    .send_request(acp::schema::ListSessionsRequest::new())
+                    .block_task()
+                    .await?;
+
+                let ids: Vec<&acp::schema::SessionId> =
+                    resp.sessions.iter().map(|s| &s.session_id).collect();
+                assert!(ids.contains(&&id_a), "session A not in list: {ids:?}");
+                assert!(ids.contains(&&id_b), "session B not in list: {ids:?}");
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "list_sessions failed: {result:?}");
+                }
+            }
         })
         .await;
-    }
+}
 
-    #[tokio::test]
-    async fn e2e_session_import_export_roundtrip() {
-        with_initialized_client(|conn| async move {
-            // Import events.
-            let import_json = r#"{"events":[{"event_type":"user_message","payload":"hello"}]}"#;
-            let resp = conn
-                .ext_method(acp::ExtRequest::new(
-                    "_session/import",
-                    raw_json(import_json),
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_round_trip_returns_end_turn() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            // echo_spawner reads the message and signals Flush so drain_agent_events exits.
+            let server_fut = serve_connection(echo_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
                 ))
-                .await
-                .expect("import failed");
-            let import_resp: serde_json::Value = serde_json::from_str(resp.0.get()).unwrap();
-            let new_sid = import_resp["session_id"].as_str().unwrap();
-            assert!(!new_sid.is_empty());
+                .block_task()
+                .await?;
 
-            // Export (no store, so events will be empty — but method should succeed).
-            let export_json = format!(r#"{{"session_id":"{new_sid}"}}"#);
-            let resp = conn
-                .ext_method(acp::ExtRequest::new(
-                    "_session/export",
-                    raw_json(&export_json),
-                ))
-                .await
-                .expect("export failed");
-            let export_resp: serde_json::Value = serde_json::from_str(resp.0.get()).unwrap();
-            assert_eq!(export_resp["session_id"], new_sid);
-            assert!(export_resp["exported_at"].as_str().is_some());
+                let session_id = cx
+                    .send_request(acp::schema::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                let content = vec![acp::schema::ContentBlock::Text(
+                    acp::schema::TextContent::new("hello"),
+                )];
+                let resp = cx
+                    .send_request(acp::schema::PromptRequest::new(session_id, content))
+                    .block_task()
+                    .await?;
+
+                assert_eq!(
+                    resp.stop_reason,
+                    acp::schema::StopReason::EndTurn,
+                    "expected EndTurn, got {:?}",
+                    resp.stop_reason,
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "prompt round-trip failed: {result:?}");
+                }
+            }
         })
         .await;
-    }
-
-    #[tokio::test]
-    async fn e2e_unknown_ext_method_returns_null() {
-        with_initialized_client(|conn| async move {
-            let resp = conn
-                .ext_method(acp::ExtRequest::new("unknown/method", raw_json("{}")))
-                .await
-                .expect("ext_method failed");
-            assert_eq!(resp.0.get(), "null");
-        })
-        .await;
-    }
-
-    #[tokio::test]
-    async fn e2e_initialize_returns_auth_hint_and_load_session() {
-        let (client_stream, server_stream) = duplex(65536);
-        let (client_read, client_write) = tokio::io::split(client_stream);
-        let (server_read, server_write) = tokio::io::split(server_stream);
-
-        let server_fut = serve_connection(
-            make_echo_spawner(),
-            make_server_config(),
-            server_write.compat_write(),
-            server_read.compat(),
-        );
-
-        let client_fut = async {
-            let local = tokio::task::LocalSet::new();
-            local
-                .run_until(async {
-                    let (client_conn, io_fut) = acp::ClientSideConnection::new(
-                        NoopClient,
-                        client_write.compat_write(),
-                        client_read.compat(),
-                        |fut| {
-                            tokio::task::spawn_local(fut);
-                        },
-                    );
-                    tokio::task::spawn_local(async move {
-                        let _ = io_fut.await;
-                    });
-
-                    let resp = client_conn
-                        .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
-                        .await
-                        .expect("initialize failed");
-
-                    // Verify auth_hint in meta.
-                    let meta = resp.meta.expect("meta should be present");
-                    assert!(meta.contains_key("auth_hint"));
-
-                    // Verify load_session capability.
-                    assert!(resp.agent_capabilities.load_session);
-                })
-                .await;
-        };
-
-        tokio::select! {
-            res = server_fut => { let _ = res; }
-            () = client_fut => {}
-        }
-    }
-
-    #[tokio::test]
-    async fn e2e_new_session_includes_available_modes() {
-        with_initialized_client(|conn| async move {
-            let resp = conn
-                .new_session(acp::NewSessionRequest::new(PathBuf::from(".")))
-                .await
-                .expect("new_session failed");
-            let modes = resp
-                .modes
-                .expect("modes field must be present in new_session response");
-            assert_eq!(modes.current_mode_id.0.as_ref(), "code");
-            assert_eq!(modes.available_modes.len(), 3);
-            let ids: Vec<&str> = modes
-                .available_modes
-                .iter()
-                .map(|m| m.id.0.as_ref())
-                .collect();
-            assert!(ids.contains(&"code"));
-            assert!(ids.contains(&"architect"));
-            assert!(ids.contains(&"ask"));
-        })
-        .await;
-    }
-
-    #[tokio::test]
-    async fn e2e_set_session_mode_success() {
-        with_initialized_client(|conn| async move {
-            let session = conn
-                .new_session(acp::NewSessionRequest::new(PathBuf::from(".")))
-                .await
-                .expect("new_session failed");
-
-            conn.set_session_mode(acp::SetSessionModeRequest::new(
-                session.session_id,
-                "architect",
-            ))
-            .await
-            .expect("set_session_mode failed");
-        })
-        .await;
-    }
-
-    #[tokio::test]
-    async fn e2e_set_session_mode_rejects_invalid_mode() {
-        with_initialized_client(|conn| async move {
-            let session = conn
-                .new_session(acp::NewSessionRequest::new(PathBuf::from(".")))
-                .await
-                .expect("new_session failed");
-
-            let err = conn
-                .set_session_mode(acp::SetSessionModeRequest::new(
-                    session.session_id,
-                    "nonexistent-mode",
-                ))
-                .await;
-            assert!(err.is_err(), "unknown mode must be rejected");
-        })
-        .await;
-    }
-
-    #[tokio::test]
-    async fn e2e_set_session_mode_rejects_unknown_session() {
-        with_initialized_client(|conn| async move {
-            let err = conn
-                .set_session_mode(acp::SetSessionModeRequest::new(
-                    acp::SessionId::new("no-such-session"),
-                    "code",
-                ))
-                .await;
-            assert!(err.is_err(), "unknown session must be rejected");
-        })
-        .await;
-    }
-
-    #[cfg(feature = "unstable-logout")]
-    #[tokio::test]
-    async fn initialize_advertises_logout_capability() {
-        let (client_stream, server_stream) = duplex(65536);
-        let (client_read, client_write) = tokio::io::split(client_stream);
-        let (server_read, server_write) = tokio::io::split(server_stream);
-
-        let server_fut = serve_connection(
-            make_echo_spawner(),
-            make_server_config(),
-            server_write.compat_write(),
-            server_read.compat(),
-        );
-
-        let client_fut = async {
-            let local = tokio::task::LocalSet::new();
-            local
-                .run_until(async {
-                    let (client_conn, io_fut) = acp::ClientSideConnection::new(
-                        NoopClient,
-                        client_write.compat_write(),
-                        client_read.compat(),
-                        |fut| {
-                            tokio::task::spawn_local(fut);
-                        },
-                    );
-                    tokio::task::spawn_local(async move {
-                        let _ = io_fut.await;
-                    });
-
-                    let resp = client_conn
-                        .initialize(acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
-                        .await
-                        .expect("initialize failed");
-
-                    assert!(
-                        resp.agent_capabilities.auth.logout.is_some(),
-                        "logout capability must be advertised"
-                    );
-                })
-                .await;
-        };
-
-        tokio::select! {
-            res = server_fut => { let _ = res; }
-            () = client_fut => {}
-        }
-    }
-
-    #[cfg(feature = "unstable-logout")]
-    #[tokio::test]
-    async fn logout_returns_ok() {
-        with_initialized_client(|conn| async move {
-            conn.logout(acp::LogoutRequest::default())
-                .await
-                .expect("logout must return Ok");
-        })
-        .await;
-    }
-} // mod disabled
+}

@@ -32,6 +32,7 @@ use zeph_mcp::manager::ServerEntry;
 use zeph_memory::ConversationId;
 use zeph_memory::store::SqliteStore;
 
+use tracing::Instrument as _;
 use zeph_tools::is_private_ip;
 
 use crate::fs::AcpFileExecutor;
@@ -296,8 +297,10 @@ pub struct AcpContext {
 ///
 /// Each invocation creates an independent agent with its own conversation history,
 /// enabling true multi-session isolation. The future is `'static` but not `Send`
-/// (`Agent<LoopbackChannel>` holds non-`Send` references across `.await`); always
-/// schedule via `tokio::task::spawn_local` inside a `LocalSet`.
+/// (`Agent<LoopbackChannel>` holds non-`Send` references across `.await`); scheduled
+/// via `tokio::task::spawn_local` inside a `LocalSet`. The ACP transport runtime
+/// (`serve_stdio`/`serve_connection`) already wraps the dispatcher in a `LocalSet`,
+/// so handler code may call `spawn_local` directly without additional setup.
 ///
 /// # Examples
 ///
@@ -549,45 +552,49 @@ impl ZephAcpAgentState {
     /// Tracked via a `tokio::spawn` (not `cx.spawn`) because it must survive
     /// individual connection teardowns in HTTP/WS mode.
     pub fn start_idle_reaper(&self) {
-        let _span = tracing::info_span!("acp.session.reap");
         let sessions = Arc::clone(&self.sessions);
         let idle_timeout = self.idle_timeout;
         let cancel = self.reaper_cancel.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_mins(1));
-            interval.tick().await; // skip first tick
-            loop {
-                tokio::select! {
-                    biased;
-                    () = cancel.cancelled() => break,
-                    _ = interval.tick() => {}
-                }
-                let now_ms = u64::try_from(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis(),
-                )
-                .unwrap_or(u64::MAX);
-                let idle_timeout_ms = u64::try_from(idle_timeout.as_millis()).unwrap_or(u64::MAX);
-                let expired: Vec<acp::schema::SessionId> = sessions
-                    .lock()
-                    .iter()
-                    .filter(|(_, e)| {
-                        let idle_ms =
-                            now_ms.saturating_sub(e.last_active_ms.load(Ordering::Relaxed));
-                        e.output_rx.lock().is_some() && idle_ms > idle_timeout_ms
-                    })
-                    .map(|(id, _)| id.clone())
-                    .collect();
-                for id in expired {
-                    if let Some(entry) = sessions.lock().remove(&id) {
-                        entry.cancel_signal.notify_one();
-                        tracing::debug!(session_id = %id, "evicted idle ACP session (timeout)");
+        let span = tracing::info_span!("acp.session.reap");
+        tokio::spawn(
+            async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_mins(1));
+                interval.tick().await; // skip first tick
+                loop {
+                    tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => break,
+                        _ = interval.tick() => {}
+                    }
+                    let now_ms = u64::try_from(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis(),
+                    )
+                    .unwrap_or(u64::MAX);
+                    let idle_timeout_ms =
+                        u64::try_from(idle_timeout.as_millis()).unwrap_or(u64::MAX);
+                    let expired: Vec<acp::schema::SessionId> = sessions
+                        .lock()
+                        .iter()
+                        .filter(|(_, e)| {
+                            let idle_ms =
+                                now_ms.saturating_sub(e.last_active_ms.load(Ordering::Relaxed));
+                            e.output_rx.lock().is_some() && idle_ms > idle_timeout_ms
+                        })
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    for id in expired {
+                        if let Some(entry) = sessions.lock().remove(&id) {
+                            entry.cancel_signal.notify_one();
+                            tracing::debug!(session_id = %id, "evicted idle ACP session (timeout)");
+                        }
                     }
                 }
             }
-        });
+            .instrument(span),
+        );
     }
 
     /// Cancel the idle reaper task.
@@ -845,11 +852,11 @@ async fn resolve_conversation_id(
 /// Handler implementations — called from `run_agent` handler closures.
 impl ZephAcpAgentState {
     #[allow(clippy::unused_async)]
+    #[tracing::instrument(skip_all, name = "acp.handler.initialize")]
     pub(crate) async fn do_initialize(
         &self,
         args: acp::schema::InitializeRequest,
     ) -> acp::Result<acp::schema::InitializeResponse> {
-        let _span = tracing::info_span!("acp.handler.initialize");
         tracing::debug!("ACP initialize");
         *self.client_caps.write() = args.client_capabilities;
         let title = format!("{} AI Agent", self.agent_name);
@@ -933,11 +940,11 @@ impl ZephAcpAgentState {
         )
     }
 
+    #[tracing::instrument(skip_all, name = "acp.handler.dispatch")]
     pub(crate) async fn do_ext_method(
         &self,
         args: acp::schema::ExtRequest,
     ) -> acp::Result<acp::schema::ExtResponse> {
-        let _span = tracing::info_span!("acp.handler.dispatch");
         if let Some(fut) = crate::custom::dispatch(self, &args) {
             return fut.await;
         }
@@ -963,31 +970,32 @@ impl ZephAcpAgentState {
     }
 
     #[allow(clippy::unused_async)]
+    #[tracing::instrument(skip_all, name = "acp.handler.authenticate")]
     pub(crate) async fn do_authenticate(
         &self,
         _args: acp::schema::AuthenticateRequest,
     ) -> acp::Result<acp::schema::AuthenticateResponse> {
-        let _span = tracing::info_span!("acp.handler.authenticate");
         Ok(acp::schema::AuthenticateResponse::default())
     }
 
     #[cfg(feature = "unstable-logout")]
     #[allow(clippy::unused_async, dead_code)]
+    #[tracing::instrument(skip_all, name = "acp.handler.logout")]
     pub(crate) async fn do_logout(
         &self,
         _args: acp::schema::LogoutRequest,
     ) -> acp::Result<acp::schema::LogoutResponse> {
-        let _span = tracing::info_span!("acp.handler.logout");
         tracing::debug!("ACP logout (no-op: vault-based auth)");
         Ok(acp::schema::LogoutResponse::default())
     }
 
+    #[allow(clippy::too_many_lines)]
+    #[tracing::instrument(skip_all, name = "acp.handler.new_session")]
     pub(crate) async fn do_new_session(
         &self,
         args: acp::schema::NewSessionRequest,
         cx: &acp::ConnectionTo<acp::Client>,
     ) -> acp::Result<acp::schema::NewSessionResponse> {
-        let _span = tracing::info_span!("acp.handler.new_session");
         // LRU eviction: find and remove the oldest idle (non-busy) session when at limit.
         if self.sessions.lock().len() >= self.max_sessions {
             let evict_id = {
@@ -1046,7 +1054,7 @@ impl ZephAcpAgentState {
         let cx_drain = cx.clone();
         cx.spawn(async move {
             while let Some((notif, ack)) = notify_rx.recv().await {
-                let _span = tracing::info_span!("acp.session.notify");
+                let _enter = tracing::info_span!("acp.session.notify").entered();
                 if cx_drain.send_notification(notif).is_err() {
                     tracing::warn!("session_notification send failed; drainer exiting");
                     break;
@@ -1067,9 +1075,13 @@ impl ZephAcpAgentState {
         };
 
         let spawner = Arc::clone(&self.spawner);
-        tokio::task::spawn_local(async move {
-            (spawner)(channel, Some(acp_ctx), session_ctx).await;
-        });
+        let span = tracing::info_span!("acp.session.agent_loop", session_id = %session_id);
+        tokio::task::spawn_local(
+            async move {
+                (spawner)(channel, Some(acp_ctx), session_ctx).await;
+            }
+            .instrument(span),
+        );
 
         let available_models = self.available_models_snapshot();
         let config_options =
@@ -1097,11 +1109,11 @@ impl ZephAcpAgentState {
         Ok(resp)
     }
 
+    #[tracing::instrument(skip_all, name = "acp.handler.prompt", fields(session_id = %args.session_id))]
     pub(crate) async fn do_prompt(
         &self,
         args: acp::schema::PromptRequest,
     ) -> acp::Result<acp::schema::PromptResponse> {
-        let _span = tracing::info_span!("acp.handler.prompt", session_id = %args.session_id);
         tracing::debug!(session_id = %args.session_id, "ACP prompt");
 
         // Capture session cwd for file:// boundary enforcement.
@@ -1202,8 +1214,8 @@ impl ZephAcpAgentState {
     }
 
     #[allow(clippy::unused_async)]
+    #[tracing::instrument(skip_all, name = "acp.handler.cancel", fields(session_id = %args.session_id))]
     pub(crate) async fn do_cancel(&self, args: acp::schema::CancelNotification) -> acp::Result<()> {
-        let _span = tracing::info_span!("acp.handler.cancel", session_id = %args.session_id);
         tracing::debug!(session_id = %args.session_id, "ACP cancel");
         if let Some(entry) = self.sessions.lock().get(&args.session_id) {
             entry.cancel_signal.notify_one();
@@ -1213,11 +1225,11 @@ impl ZephAcpAgentState {
 
     #[cfg(feature = "unstable-session-close")]
     #[allow(clippy::unused_async, dead_code)]
+    #[tracing::instrument(skip_all, name = "acp.handler.close_session", fields(session_id = %args.session_id))]
     pub(crate) async fn do_close_session(
         &self,
         args: acp::schema::CloseSessionRequest,
     ) -> acp::Result<acp::schema::CloseSessionResponse> {
-        let _span = tracing::info_span!("acp.handler.close_session", session_id = %args.session_id);
         tracing::debug!(session_id = %args.session_id, "ACP session closed");
         if let Some(entry) = self.sessions.lock().remove(&args.session_id) {
             entry.cancel_signal.notify_one();
@@ -1225,12 +1237,12 @@ impl ZephAcpAgentState {
         Ok(acp::schema::CloseSessionResponse::default())
     }
 
+    #[tracing::instrument(skip_all, name = "acp.handler.load_session", fields(session_id = %args.session_id))]
     pub(crate) async fn do_load_session(
         &self,
         args: acp::schema::LoadSessionRequest,
         cx: &acp::ConnectionTo<acp::Client>,
     ) -> acp::Result<acp::schema::LoadSessionResponse> {
-        let _span = tracing::info_span!("acp.handler.load_session", session_id = %args.session_id);
         if self.sessions.lock().contains_key(&args.session_id) {
             return Ok(acp::schema::LoadSessionResponse::new());
         }
@@ -1292,7 +1304,7 @@ impl ZephAcpAgentState {
         let cx_drain = cx.clone();
         cx.spawn(async move {
             while let Some((notif, ack)) = notify_rx.recv().await {
-                let _span = tracing::info_span!("acp.session.notify");
+                let _enter = tracing::info_span!("acp.session.notify").entered();
                 if cx_drain.send_notification(notif).is_err() {
                     tracing::warn!("session_notification send failed; drainer exiting");
                     break;
@@ -1311,9 +1323,13 @@ impl ZephAcpAgentState {
         };
 
         let spawner = Arc::clone(&self.spawner);
-        tokio::task::spawn_local(async move {
-            (spawner)(channel, Some(acp_ctx), session_ctx).await;
-        });
+        let span = tracing::info_span!("acp.session.agent_loop", session_id = %args.session_id);
+        tokio::task::spawn_local(
+            async move {
+                (spawner)(channel, Some(acp_ctx), session_ctx).await;
+            }
+            .instrument(span),
+        );
 
         self.replay_session_events(&args.session_id, events).await;
 
@@ -1326,11 +1342,11 @@ impl ZephAcpAgentState {
         Ok(load_resp)
     }
 
+    #[tracing::instrument(skip_all, name = "acp.handler.list_sessions")]
     pub(crate) async fn do_list_sessions(
         &self,
         args: acp::schema::ListSessionsRequest,
     ) -> acp::Result<acp::schema::ListSessionsResponse> {
-        let _span = tracing::info_span!("acp.handler.list_sessions");
         let mut result: std::collections::HashMap<String, acp::schema::SessionInfo> = {
             let sessions = self.sessions.lock();
             sessions
@@ -1381,13 +1397,13 @@ impl ZephAcpAgentState {
     }
 
     #[cfg(feature = "unstable-session-fork")]
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::too_many_lines)]
+    #[tracing::instrument(skip_all, name = "acp.handler.fork_session")]
     pub(crate) async fn do_fork_session(
         &self,
         args: acp::schema::ForkSessionRequest,
         cx: &acp::ConnectionTo<acp::Client>,
     ) -> acp::Result<acp::schema::ForkSessionResponse> {
-        let _span = tracing::info_span!("acp.handler.fork_session");
         let in_memory = self.sessions.lock().contains_key(&args.session_id);
 
         if !in_memory {
@@ -1481,9 +1497,13 @@ impl ZephAcpAgentState {
         };
 
         let spawner = Arc::clone(&self.spawner);
-        tokio::task::spawn_local(async move {
-            (spawner)(channel, Some(acp_ctx), session_ctx).await;
-        });
+        let span = tracing::info_span!("acp.session.agent_loop", session_id = %new_id);
+        tokio::task::spawn_local(
+            async move {
+                (spawner)(channel, Some(acp_ctx), session_ctx).await;
+            }
+            .instrument(span),
+        );
 
         let available_models = self.available_models_snapshot();
         let config_options =
@@ -1499,12 +1519,12 @@ impl ZephAcpAgentState {
 
     #[cfg(feature = "unstable-session-resume")]
     #[allow(dead_code)]
+    #[tracing::instrument(skip_all, name = "acp.handler.resume_session")]
     pub(crate) async fn do_resume_session(
         &self,
         args: acp::schema::ResumeSessionRequest,
         cx: &acp::ConnectionTo<acp::Client>,
     ) -> acp::Result<acp::schema::ResumeSessionResponse> {
-        let _span = tracing::info_span!("acp.handler.resume_session");
         if self.sessions.lock().contains_key(&args.session_id) {
             return Ok(acp::schema::ResumeSessionResponse::new());
         }
@@ -1595,19 +1615,23 @@ impl ZephAcpAgentState {
         };
 
         let spawner = Arc::clone(&self.spawner);
-        tokio::task::spawn_local(async move {
-            (spawner)(channel, Some(acp_ctx), session_ctx).await;
-        });
+        let span = tracing::info_span!("acp.session.agent_loop", session_id = %args.session_id);
+        tokio::task::spawn_local(
+            async move {
+                (spawner)(channel, Some(acp_ctx), session_ctx).await;
+            }
+            .instrument(span),
+        );
 
         Ok(acp::schema::ResumeSessionResponse::new())
     }
 
     #[allow(clippy::unused_async)]
+    #[tracing::instrument(skip_all, name = "acp.handler.set_session_config_option")]
     pub(crate) async fn do_set_session_config_option(
         &self,
         args: acp::schema::SetSessionConfigOptionRequest,
     ) -> acp::Result<acp::schema::SetSessionConfigOptionResponse> {
-        let _span = tracing::info_span!("acp.handler.set_session_config_option");
         let config_id = args.config_id.0.clone();
         #[cfg(not(feature = "unstable-boolean-config"))]
         let value_str: std::sync::Arc<str> = args.value.0.clone();
@@ -1670,11 +1694,11 @@ impl ZephAcpAgentState {
         ))
     }
 
+    #[tracing::instrument(skip_all, name = "acp.handler.set_session_mode")]
     pub(crate) async fn do_set_session_mode(
         &self,
         args: acp::schema::SetSessionModeRequest,
     ) -> acp::Result<acp::schema::SetSessionModeResponse> {
-        let _span = tracing::info_span!("acp.handler.set_session_mode");
         let valid_ids: &[&str] = &["code", "architect", "ask"];
         let mode_str = args.mode_id.0.as_ref();
         if !valid_ids.contains(&mode_str) {
@@ -1704,11 +1728,11 @@ impl ZephAcpAgentState {
 
     #[cfg(feature = "unstable-session-model")]
     #[allow(clippy::unused_async, dead_code)]
+    #[tracing::instrument(skip_all, name = "acp.handler.set_session_model")]
     pub(crate) async fn do_set_session_model(
         &self,
         args: acp::schema::SetSessionModelRequest,
     ) -> acp::Result<acp::schema::SetSessionModelResponse> {
-        let _span = tracing::info_span!("acp.handler.set_session_model");
         let model_id: &str = &args.model_id.0;
 
         let Some(ref factory) = self.provider_factory else {
