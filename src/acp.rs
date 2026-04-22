@@ -1257,7 +1257,7 @@ pub(crate) async fn run_acp_server(
             .into_iter()
             .map(|p| {
                 zeph_core::config::AdditionalDir::parse(p.clone())
-                    .map_err(|e| anyhow::anyhow!("invalid --acp-additional-dir {:?}: {}", p, e))
+                    .map_err(|e| anyhow::anyhow!("invalid --acp-additional-dir {}: {e}", p.display()))
             })
             .collect::<anyhow::Result<Vec<_>>>()?
     };
@@ -1274,8 +1274,7 @@ pub(crate) async fn run_acp_server(
             .map(|m| match m.as_str() {
                 "agent" => Ok(zeph_core::config::AcpAuthMethod::Agent),
                 other => Err(anyhow::anyhow!(
-                    "unknown --acp-auth-method {:?}; accepted values: agent",
-                    other
+                    "unknown --acp-auth-method {other:?}; accepted values: agent"
                 )),
             })
             .collect::<anyhow::Result<Vec<_>>>()?;

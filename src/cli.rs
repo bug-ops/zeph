@@ -57,12 +57,12 @@ pub(crate) struct Cli {
     #[arg(long = "acp-auth-method", value_name = "METHOD", value_parser = ["agent"])]
     pub(crate) acp_auth_method: Vec<String>,
 
-    /// Enable echoing of PromptRequest.message_id in responses and chunks
+    /// Enable echoing of `PromptRequest.message_id` in responses and chunks
     #[cfg(feature = "acp")]
     #[arg(long = "acp-message-ids", overrides_with = "no_acp_message_ids")]
     pub(crate) acp_message_ids: bool,
 
-    /// Disable echoing of PromptRequest.message_id in responses and chunks
+    /// Disable echoing of `PromptRequest.message_id` in responses and chunks
     #[cfg(feature = "acp")]
     #[arg(long = "no-acp-message-ids", overrides_with = "acp_message_ids")]
     pub(crate) no_acp_message_ids: bool,
