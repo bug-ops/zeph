@@ -56,9 +56,15 @@ use serde::Serialize;
 use zeph_memory::store::{AcpSessionInfo, SqliteStore};
 
 #[cfg(feature = "acp-http")]
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+#[cfg(feature = "acp-http")]
 use crate::agent::SendAgentSpawner;
 #[cfg(feature = "acp-http")]
-use crate::transport::{AcpServerConfig, bridge::spawn_acp_connection};
+use crate::transport::AcpServerConfig;
+
+#[cfg(feature = "acp-http")]
+const BRIDGE_BUFFER_SIZE: usize = 64 * 1024;
 
 #[cfg(feature = "acp-http")]
 fn now_secs() -> u64 {
@@ -295,6 +301,38 @@ pub async fn health_handler(State(state): State<AcpHttpState>) -> impl IntoRespo
     (status, Json(body))
 }
 
+/// Spawn an in-process ACP agent connection on a dedicated thread.
+///
+/// Agent futures are `!Send` (they call `spawn_local` internally), so each connection
+/// runs on its own current-thread Tokio runtime inside a `LocalSet`. Returns two
+/// `DuplexStream`s: `(reader, writer)` from the caller's perspective.
+#[cfg(feature = "acp-http")]
+pub(crate) fn spawn_agent_connection(
+    spawner: crate::agent::SendAgentSpawner,
+    server_config: AcpServerConfig,
+) -> (DuplexStream, DuplexStream) {
+    let (client_w, agent_r) = tokio::io::duplex(BRIDGE_BUFFER_SIZE);
+    let (agent_w, client_r) = tokio::io::duplex(BRIDGE_BUFFER_SIZE);
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio current-thread runtime for ACP agent");
+        let local = tokio::task::LocalSet::new();
+        rt.block_on(local.run_until(async move {
+            let writer = agent_w.compat_write();
+            let reader = agent_r.compat();
+            if let Err(e) =
+                crate::transport::stdio::serve_connection(spawner, server_config, writer, reader)
+                    .await
+            {
+                tracing::error!("ACP agent connection error: {e}");
+            }
+        }));
+    });
+    (client_r, client_w)
+}
+
 /// Create a new HTTP+SSE connection.
 ///
 /// # Errors
@@ -309,7 +347,7 @@ pub(crate) fn create_connection(
     }
 
     let (reader, writer) =
-        spawn_acp_connection(state.spawner.clone(), (*state.server_config).clone());
+        spawn_agent_connection(state.spawner.clone(), (*state.server_config).clone());
 
     let (tx, _) = broadcast::channel(256);
     let tx2 = tx.clone();

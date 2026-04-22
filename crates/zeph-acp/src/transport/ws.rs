@@ -40,9 +40,7 @@ use tokio::sync::mpsc;
 use std::sync::atomic::AtomicU64;
 
 #[cfg(feature = "acp-http")]
-use crate::transport::bridge::spawn_acp_connection;
-#[cfg(feature = "acp-http")]
-use crate::transport::http::{AcpHttpState, ConnectionHandle};
+use crate::transport::http::{AcpHttpState, ConnectionHandle, spawn_agent_connection};
 
 #[cfg(feature = "acp-http")]
 const WS_MAX_MESSAGE_SIZE: usize = 1_048_576; // 1 MiB
@@ -112,7 +110,7 @@ async fn handle_ws(socket: WebSocket, state: AcpHttpState) {
     register_ws_session(&state, &session_id);
 
     let (reader, mut writer) =
-        spawn_acp_connection(state.spawner.clone(), (*state.server_config).clone());
+        spawn_agent_connection(state.spawner.clone(), (*state.server_config).clone());
 
     let (mut ws_tx, mut ws_rx) = socket.split();
 

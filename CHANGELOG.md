@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **`zeph-acp`**: `AgentSpawner` future bound no longer requires `Send` — spawner closures
+  produce `Pin<Box<dyn Future<Output = ()> + 'static>>` (no `+ Send`); all agent sessions
+  now run on `spawn_local` inside a `LocalSet`. Callers that previously required `Send` on
+  the spawner future must be updated.
+- **`zeph-acp`**: `transport::bridge` module removed — bridge logic is now inline in
+  `transport::http::spawn_agent_connection`; update any direct imports of
+  `crate::transport::bridge`.
+
 ### Changed
 
 - **feat(acp): migrate `zeph-acp` to ACP 0.11 builder API** (#3267, PR 2, epic #3265) —

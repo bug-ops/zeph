@@ -207,42 +207,22 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
         }
         #[cfg(feature = "acp-http")]
         AcpTransport::Both => {
-            Box::pin(tokio::task::LocalSet::new().run_until(async move {
-                let mut http_task = tokio::task::spawn_local({
-                    let config_path = config_path.clone();
-                    let vault_backend = vault_backend.clone();
-                    let vault_key = vault_key.clone();
-                    let vault_path = vault_path.clone();
-                    async move {
-                        Box::pin(run_acp_http_server(
-                            config_path.as_deref(),
-                            vault_backend.as_deref(),
-                            vault_key.as_deref(),
-                            vault_path.as_deref(),
-                            None,
-                            None,
-                        ))
-                        .await
-                    }
-                });
-
-                tokio::select! {
-                    result = run_acp_server(
-                        config_path.as_deref(),
-                        vault_backend.as_deref(),
-                        vault_key.as_deref(),
-                        vault_path.as_deref(),
-                    ) => {
-                        http_task.abort();
-                        result
-                    }
-                    join = &mut http_task => match join {
-                        Ok(result) => result,
-                        Err(err) => Err(err.into()),
-                    },
-                }
-            }))
-            .await
+            tokio::select! {
+                result = run_acp_server(
+                    config_path.as_deref(),
+                    vault_backend.as_deref(),
+                    vault_key.as_deref(),
+                    vault_path.as_deref(),
+                ) => result,
+                result = run_acp_http_server(
+                    config_path.as_deref(),
+                    vault_backend.as_deref(),
+                    vault_key.as_deref(),
+                    vault_path.as_deref(),
+                    None,
+                    None,
+                ) => result,
+            }
         }
         #[cfg(not(feature = "acp-http"))]
         AcpTransport::Http | AcpTransport::Both => {
