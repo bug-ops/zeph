@@ -7,8 +7,9 @@
 //! pipes using newline-delimited JSON-RPC 2.0 frames (the ACP wire format).
 //!
 //! Agent session tasks are spawned via `tokio::task::spawn_local` because `Agent<LoopbackChannel>`
-//! is `!Send` (async method bodies hold internal references across await points). Both
-//! `serve_stdio` and `serve_connection` wrap `run_agent` in a `LocalSet` to satisfy this.
+//! is `!Send` (async method bodies hold internal references across await points). `serve_stdio`
+//! wraps `run_agent` in a `LocalSet` directly. `serve_connection` requires the caller to provide
+//! an enclosing `LocalSet`; the HTTP transport satisfies this with a per-connection thread.
 //!
 //! # SECURITY(layer-2): Session binding limitation
 //!
@@ -143,7 +144,12 @@ pub async fn serve_stdio(
 /// Run the ACP server over arbitrary async byte streams.
 ///
 /// Extracted from [`serve_stdio`] to allow integration tests to use
-/// `tokio::io::duplex` or similar in-process transports.
+/// `tokio::io::duplex` or similar in-process transports. The caller must
+/// ensure this future runs inside a `tokio::task::LocalSet` (or equivalent)
+/// because agent session tasks are spawned via `spawn_local`.
+///
+/// The HTTP transport satisfies this requirement by running each connection
+/// on a dedicated thread with a `current_thread` runtime and `LocalSet`.
 ///
 /// # Errors
 ///
@@ -159,7 +165,8 @@ where
     R: futures::AsyncRead + Unpin + Send + 'static,
 {
     let state = build_agent_state(spawner, server_config).await;
-    run_agent(state, acp::ByteStreams::new(writer, reader))
+    tokio::task::LocalSet::new()
+        .run_until(run_agent(state, acp::ByteStreams::new(writer, reader)))
         .await
         .map_err(|e| AcpError::Transport(e.to_string()))
 }

@@ -295,8 +295,9 @@ pub struct AcpContext {
 /// then drives the agent loop to completion.
 ///
 /// Each invocation creates an independent agent with its own conversation history,
-/// enabling true multi-session isolation. The future must be `'static` so it can be
-/// handed to `tokio::spawn` after the `ZephAcpAgentState` was made `Send + Sync`.
+/// enabling true multi-session isolation. The future is `'static` but not `Send`
+/// (`Agent<LoopbackChannel>` holds non-`Send` references across `.await`); always
+/// schedule via `tokio::task::spawn_local` inside a `LocalSet`.
 ///
 /// # Examples
 ///
