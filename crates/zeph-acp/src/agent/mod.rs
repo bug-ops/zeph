@@ -380,7 +380,7 @@ pub(crate) struct SessionEntry {
     ///
     /// The existing one-in-flight-prompt invariant (enforced by `output_rx.lock().take()` at
     /// line ~1142) guarantees at most one concurrent writer, so a plain `Mutex<Option<String>>`
-    /// is sufficient without parking_lot.
+    /// is sufficient without `parking_lot`.
     #[cfg(feature = "unstable-message-id")]
     pub(crate) current_message_id: std::sync::Mutex<Option<String>>,
 }
@@ -1224,7 +1224,7 @@ impl ZephAcpAgentState {
                 *entry
                     .current_message_id
                     .lock()
-                    .unwrap_or_else(|p| p.into_inner()) = Some(mid.clone());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(mid.clone());
             }
             (entry.input_tx.clone(), rx)
         };
