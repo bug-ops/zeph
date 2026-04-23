@@ -34,8 +34,7 @@
 //!     ..SubagentConfig::default()
 //! };
 //!
-//! let handle = spawn_subagent(cfg).await?;
-//! let outcome = run_session(handle, "hello").await?;
+//! let outcome = run_session(cfg, "hello").await?;
 //! println!("{}", outcome.text);
 //! # Ok(())
 //! # }

@@ -366,7 +366,7 @@ pub(crate) enum AcpCommand {
         #[arg(long, short)]
         prompt: Option<String>,
 
-        /// Working directory for the subprocess (sets both process_cwd and session_cwd)
+        /// Working directory for the subprocess (sets both `process_cwd` and `session_cwd`)
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
 
