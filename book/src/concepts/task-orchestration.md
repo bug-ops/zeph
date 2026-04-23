@@ -89,7 +89,7 @@ Graph state is persisted to the `task_graphs` SQLite table (migration `022_task_
 | `list` | List stored graphs, newest first |
 | `delete` | Remove a graph by `GraphId` |
 
-The `RawGraphStore` trait abstracts the storage backend; `SqliteGraphStore` in `zeph-memory` is the default implementation.
+The `RawGraphStore` trait abstracts the storage backend; `TaskGraphStore` in `zeph-memory` is the default implementation.
 
 ## LLM Planner
 

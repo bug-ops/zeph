@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Raw graph persistence trait and [`DbGraphStore`] implementation.
+//! Raw graph persistence trait and [`TaskGraphStore`] implementation.
 //!
 //! The trait operates on opaque JSON strings to avoid a dependency cycle
 //! (`zeph-core` → `zeph-memory` → `zeph-core`). `zeph-core` wraps this
@@ -75,22 +75,19 @@ pub trait RawGraphStore: Send + Sync {
 
 /// Database-backed implementation of [`RawGraphStore`].
 #[derive(Debug, Clone)]
-pub struct DbGraphStore {
+pub struct TaskGraphStore {
     pool: DbPool,
 }
 
-/// Backward-compatible alias.
-pub type SqliteGraphStore = DbGraphStore;
-
-impl DbGraphStore {
-    /// Create a new [`DbGraphStore`] backed by the given pool.
+impl TaskGraphStore {
+    /// Create a new [`TaskGraphStore`] backed by the given pool.
     #[must_use]
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
 
-impl RawGraphStore for DbGraphStore {
+impl RawGraphStore for TaskGraphStore {
     async fn save_graph(
         &self,
         id: &str,
@@ -171,9 +168,9 @@ mod tests {
     use super::*;
     use crate::store::DbStore;
 
-    async fn make_store() -> DbGraphStore {
+    async fn make_store() -> TaskGraphStore {
         let db = DbStore::new(":memory:").await.expect("DbStore");
-        DbGraphStore::new(db.pool().clone())
+        TaskGraphStore::new(db.pool().clone())
     }
 
     #[tokio::test]

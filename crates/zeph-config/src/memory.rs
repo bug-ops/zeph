@@ -1128,40 +1128,6 @@ fn default_low_density_budget() -> f32 {
     0.3
 }
 
-/// Configuration for the performance-floor compression ratio predictor (#2460).
-///
-/// When `enabled = true`, before hard compaction the predictor selects the most aggressive
-/// compression ratio that keeps the predicted probe score above `probe.hard_fail_threshold`.
-/// Requires enough training data (`min_samples`) before activating — during cold start the
-/// predictor returns `None` and default behavior applies.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct CompressionPredictorConfig {
-    /// Enable the adaptive compression ratio predictor. Default: `false`.
-    pub enabled: bool,
-    /// Minimum training samples before the predictor activates. Default: `10`.
-    pub min_samples: u64,
-    /// Candidate compression ratios evaluated from most to least aggressive.
-    /// Default: `[0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]`.
-    pub candidate_ratios: Vec<f32>,
-    /// Retrain the model after this many new samples. Default: `5`.
-    pub retrain_interval: u64,
-    /// Maximum training samples to retain (sliding window). Default: `200`.
-    pub max_training_samples: usize,
-}
-
-impl Default for CompressionPredictorConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            min_samples: 10,
-            candidate_ratios: vec![0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
-            retrain_interval: 5,
-            max_training_samples: 200,
-        }
-    }
-}
-
 /// Configuration for the `SleepGate` forgetting sweep (#2397).
 ///
 /// When `enabled = true`, a background loop periodically decays importance scores
@@ -1246,9 +1212,6 @@ pub struct CompressionConfig {
     /// Must sum to 1.0 with `high_density_budget`. Default: `0.3`.
     #[serde(default = "default_low_density_budget")]
     pub low_density_budget: f32,
-    /// Performance-floor compression ratio predictor (#2460).
-    #[serde(default)]
-    pub predictor: CompressionPredictorConfig,
 }
 
 fn default_sidequest_interval_turns() -> u32 {

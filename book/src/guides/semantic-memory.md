@@ -157,7 +157,7 @@ interval_secs = 86400          # Run every 24 hours (default)
 retention_threshold = 0.30     # Score below which entries are forgotten (default: 0.30)
 ```
 
-SleepGate scores entries on recency, access frequency, and semantic density. A built-in compression predictor preserves load-bearing entries even if their retention score is low.
+SleepGate scores entries on recency, access frequency, and semantic density. Entries with low retention scores are soft-deleted.
 
 Forgotten entries are soft-deleted — removed from the vector index but retained in SQLite for potential restoration.
 

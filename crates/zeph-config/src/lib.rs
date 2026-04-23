@@ -111,9 +111,9 @@ pub use learning::{DetectorMode, LearningConfig};
 pub use logging::{LogRotation, LoggingConfig};
 pub use memory::{
     AdmissionConfig, AdmissionStrategy, AdmissionWeights, AutoDreamConfig, BeliefRevisionConfig,
-    CategoryConfig, CompressionConfig, CompressionPredictorConfig, CompressionStrategy,
-    ContextStrategy, DigestConfig, DocumentConfig, ForgettingConfig, GraphConfig, MagicDocsConfig,
-    MemoryConfig, MicrocompactConfig, NoteLinkingConfig, PersonaConfig, PruningStrategy, RpeConfig,
+    CategoryConfig, CompressionConfig, CompressionStrategy, ContextStrategy, DigestConfig,
+    DocumentConfig, ForgettingConfig, GraphConfig, MagicDocsConfig, MemoryConfig,
+    MicrocompactConfig, NoteLinkingConfig, PersonaConfig, PruningStrategy, RpeConfig,
     SemanticConfig, SessionsConfig, SidequestConfig, StoreRoutingConfig, StoreRoutingStrategy,
     TierConfig, TrajectoryConfig, TreeConfig, VectorBackend,
 };

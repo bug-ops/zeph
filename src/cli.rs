@@ -405,8 +405,6 @@ pub(crate) enum MemoryCommand {
     },
     /// Run the `SleepGate` forgetting sweep once and print the result
     ForgettingSweep,
-    /// Show compression predictor status (sample count, weights summary)
-    PredictorStatus,
     /// Show trajectory memory statistics (entry count by kind)
     Trajectory,
     /// Show memory tree statistics (node count by level)

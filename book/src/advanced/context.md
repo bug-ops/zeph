@@ -513,28 +513,6 @@ and per-question score into a single object per question for easy inspection.
 | `last_probe_verdict` | Most recent verdict (Pass/SoftFail/HardFail/Error) |
 | `last_probe_score` | Most recent probe score in [0.0, 1.0] |
 
-### Compression Ratio Predictor
-
-The compression ratio predictor (`[memory.compression.predictor]`) is an adaptive component that selects the most aggressive compression ratio that is still expected to keep the compaction probe score above the configured `probe.hard_fail_threshold`. Rather than compressing with a fixed ratio, it learns from historical compaction outcomes and adjusts its candidate selection over time.
-
-**How it works:**
-
-1. After each hard compaction event, the probe score and the compression ratio used are recorded as a training sample.
-2. Once at least `min_samples` observations have been collected, the predictor evaluates candidate ratios from most to least aggressive. It returns the first candidate whose predicted probe score exceeds `probe.hard_fail_threshold`.
-3. If no candidate passes the floor, the predictor returns `None` and the default compaction behavior applies.
-4. The internal model is retrained after every `retrain_interval` new samples, using a sliding window of `max_training_samples` observations.
-
-```toml
-[memory.compression.predictor]
-enabled = false              # Enable the adaptive compression ratio predictor (default: false)
-min_samples = 10             # Minimum training samples before the predictor activates
-candidate_ratios = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]  # Evaluated most-to-least aggressive
-retrain_interval = 5         # Retrain after this many new samples
-max_training_samples = 200   # Sliding window size for training data
-```
-
-Requires the compaction probe to be enabled (`[memory.compression.probe] enabled = true`) — the predictor uses probe scores as its training signal.
-
 ### Compaction Loop Prevention
 
 `maybe_compact()` tracks whether compaction is making progress. The `compaction_exhausted` flag is set permanently when any of the following conditions are detected after a hard-tier attempt:

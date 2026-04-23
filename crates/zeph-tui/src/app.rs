@@ -1778,9 +1778,6 @@ impl App {
             TuiCommand::ForgettingSweep => {
                 let _ = self.user_input_tx.try_send("/forgetting-sweep".to_owned());
             }
-            TuiCommand::PredictorStatus => {
-                let _ = self.user_input_tx.try_send("/predictor-status".to_owned());
-            }
             TuiCommand::TrajectoryStats => {
                 let _ = self.user_input_tx.try_send("/memory trajectory".to_owned());
             }

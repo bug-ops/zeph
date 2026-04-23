@@ -213,8 +213,6 @@ pub(crate) struct WizardState {
     pub(crate) budget_hint_enabled: bool,
     // SleepGate forgetting sweep (#2397)
     pub(crate) forgetting_enabled: bool,
-    // Compression ratio predictor (#2460)
-    pub(crate) compression_predictor_enabled: bool,
     // Time-based microcompact (#2699)
     pub(crate) microcompact_enabled: bool,
     pub(crate) microcompact_gap_threshold_minutes: u32,
@@ -381,7 +379,6 @@ impl Default for WizardState {
             sandbox_allow_write: Vec::new(),
             budget_hint_enabled: true,
             forgetting_enabled: false,
-            compression_predictor_enabled: false,
             microcompact_enabled: false,
             microcompact_gap_threshold_minutes: 60,
             autodream_enabled: false,
@@ -991,7 +988,6 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     }
 
     config.memory.forgetting.enabled = state.forgetting_enabled;
-    config.memory.compression.predictor.enabled = state.compression_predictor_enabled;
     config.memory.microcompact.enabled = state.microcompact_enabled;
     config.memory.microcompact.gap_threshold_minutes = state.microcompact_gap_threshold_minutes;
     config.memory.autodream.enabled = state.autodream_enabled;

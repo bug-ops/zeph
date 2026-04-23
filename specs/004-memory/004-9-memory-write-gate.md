@@ -39,7 +39,6 @@ related:
 | File | Contents |
 |---|---|
 | `crates/zeph-memory/src/admission.rs` | Existing A-MAC importance scorer |
-| `crates/zeph-memory/src/admission_rl.rs` | RL-tuned weights |
 | `crates/zeph-memory/src/facade.rs` | `SemanticMemory::remember()` entry point |
 | `crates/zeph-memory/src/router.rs` | Memory routing decisions |
 | `crates/zeph-memory/src/types.rs` | `Message`, `MessagePart` definitions |

@@ -69,7 +69,7 @@ When a goal is decomposed into a task graph, the resulting structure is cached a
 ## Integration points
 
 - `zeph-core` integrates `DagScheduler` and `LlmPlanner` into the agent loop via the `orchestration` module
-- `zeph-memory::RawGraphStore` / `SqliteGraphStore` persists graph state
+- `zeph-memory::RawGraphStore` / `TaskGraphStore` persists graph state
 - `zeph-sanitizer::ContentSanitizer` wraps cross-task context before injection
 - `zeph-subagent::SubAgentManager::spawn_for_task()` spawns sub-agents per task
 

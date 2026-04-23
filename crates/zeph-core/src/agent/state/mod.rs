@@ -492,8 +492,9 @@ pub(crate) struct OrchestrationState {
     /// `OrchestrationConfig::persistence_enabled` is `false`. When `Some`, the
     /// scheduler loop snapshots the graph once per tick and `/plan resume <id>`
     /// rehydrates from disk.
-    pub(crate) graph_persistence:
-        Option<zeph_orchestration::GraphPersistence<zeph_memory::store::graph_store::DbGraphStore>>,
+    pub(crate) graph_persistence: Option<
+        zeph_orchestration::GraphPersistence<zeph_memory::store::graph_store::TaskGraphStore>,
+    >,
 }
 
 /// Groups instruction hot-reload state.

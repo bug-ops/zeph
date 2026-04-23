@@ -66,7 +66,7 @@ pub(crate) fn handle_migrate_config(
     let forgetting_result = migrate_forgetting_config(&after_budget_hint)?;
     let after_forgetting = forgetting_result.output;
 
-    // Step 9: add commented-out [memory.compression.predictor] block if absent (#2460).
+    // Step 9: strip obsolete [memory.compression.predictor] section (#3251).
     let predictor_result = migrate_compression_predictor_config(&after_forgetting)?;
     let after_predictor = predictor_result.output;
 
@@ -161,7 +161,7 @@ pub(crate) fn handle_migrate_config(
         }
         if predictor_result.added_count > 0 {
             eprintln!(
-                "Predictor migration: added commented-out [memory.compression.predictor] block."
+                "Predictor migration: removed obsolete [memory.compression.predictor] section."
             );
         }
         if microcompact_result.added_count > 0 {

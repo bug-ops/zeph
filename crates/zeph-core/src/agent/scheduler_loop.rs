@@ -24,7 +24,7 @@ use super::tool_execution;
 /// requires an integration test with an artificially stalled pool.
 pub(super) async fn save_graph_snapshot(
     persistence: &zeph_orchestration::GraphPersistence<
-        zeph_memory::store::graph_store::DbGraphStore,
+        zeph_memory::store::graph_store::TaskGraphStore,
     >,
     graph: zeph_orchestration::TaskGraph,
 ) {

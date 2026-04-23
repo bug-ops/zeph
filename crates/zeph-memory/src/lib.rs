@@ -64,11 +64,9 @@
 //! | `postgres` | Enable PostgreSQL support via `zeph-db`. |
 
 pub mod admission;
-pub mod admission_rl;
 pub mod anchored_summary;
 pub mod compaction_probe;
 pub mod compression_guidelines;
-pub mod compression_predictor;
 pub mod consolidation;
 pub mod document;
 pub mod facade;
@@ -109,9 +107,6 @@ pub use compression_guidelines::CompressionGuidelinesConfig;
 pub use compression_guidelines::{
     build_guidelines_update_prompt, sanitize_guidelines, start_guidelines_updater,
     truncate_to_token_budget, update_guidelines_once,
-};
-pub use compression_predictor::{
-    CompressionFeatures, CompressionModelWeights, CompressionPredictor,
 };
 pub use consolidation::{
     ConsolidationConfig, ConsolidationResult, TopologyOp, run_consolidation_sweep,

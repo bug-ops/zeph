@@ -234,14 +234,6 @@ pub(super) fn step_context_compression(state: &mut WizardState) -> anyhow::Resul
         .default(false)
         .interact()?;
 
-    state.compression_predictor_enabled = Confirm::new()
-        .with_prompt(
-            "Enable compression ratio predictor? \
-             (adaptive compaction quality, requires enough probe data to activate)",
-        )
-        .default(false)
-        .interact()?;
-
     let strategy_options = &[
         "reactive (oldest-first, default)",
         "task_aware (keyword relevance scoring)",

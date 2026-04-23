@@ -1653,20 +1653,19 @@ pub fn migrate_forgetting_config(toml_src: &str) -> Result<MigrationResult, Migr
     })
 }
 
-/// Add a commented-out `[memory.compression.predictor]` block if absent (#2460).
+/// Strip any existing `[memory.compression.predictor]` section from the config (#3251).
 ///
-/// All predictor fields have `#[serde(default)]` so existing configs parse without changes.
-///
-/// # Errors
-///
-/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+/// The compression predictor feature was removed. This migration cleans up both active
+/// and commented-out sections that previous `--migrate-config` runs may have injected.
+/// The function is a pure string operation and always returns `Ok`.
 pub fn migrate_compression_predictor_config(
     toml_src: &str,
 ) -> Result<MigrationResult, MigrateError> {
-    // Idempotency: comments are invisible to toml_edit, so check the raw source.
-    if toml_src.contains("[memory.compression.predictor]")
-        || toml_src.contains("# [memory.compression.predictor]")
-    {
+    // Strip any [memory.compression.predictor] section (active or commented-out) that
+    // prior migrate-config runs may have injected. The feature is removed (#3251).
+    let has_active = toml_src.contains("[memory.compression.predictor]");
+    let has_commented = toml_src.contains("# [memory.compression.predictor]");
+    if !has_active && !has_commented {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             added_count: 0,
@@ -1674,24 +1673,33 @@ pub fn migrate_compression_predictor_config(
         });
     }
 
-    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
-    if !doc.contains_key("memory") {
-        return Ok(MigrationResult {
-            output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
-        });
+    // Remove lines that belong to the section header variants and their key lines.
+    // A line belongs to the section when the section header has been seen and the
+    // line is not a new `[section]` header (excluding the predictor header itself).
+    let mut output_lines: Vec<&str> = Vec::new();
+    let mut in_predictor = false;
+    for line in toml_src.lines() {
+        let trimmed = line.trim();
+        // Detect active or commented-out section header.
+        if trimmed == "[memory.compression.predictor]"
+            || trimmed == "# [memory.compression.predictor]"
+        {
+            in_predictor = true;
+            continue;
+        }
+        // Any new `[section]` header (not commented-out) ends the predictor block.
+        if in_predictor && trimmed.starts_with('[') && !trimmed.starts_with("# [") {
+            in_predictor = false;
+        }
+        if !in_predictor {
+            output_lines.push(line);
+        }
     }
-
-    let comment = "\n# Performance-floor compression ratio predictor (#2460). Disabled by default.\n\
-         # [memory.compression.predictor]\n\
-         # enabled = false\n\
-         # min_samples = 10                                             # cold-start threshold\n\
-         # candidate_ratios = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]\n\
-         # retrain_interval = 5\n\
-         # max_training_samples = 200\n";
-    let raw = doc.to_string();
-    let output = format!("{raw}{comment}");
+    // Preserve trailing newline if original had one.
+    let mut output = output_lines.join("\n");
+    if toml_src.ends_with('\n') {
+        output.push('\n');
+    }
 
     Ok(MigrationResult {
         output,
@@ -3264,13 +3272,38 @@ trust_level = "untrusted"
     }
 
     #[test]
-    fn migrate_compression_predictor_idempotent_on_commented_output() {
-        let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
+    fn migrate_compression_predictor_strips_active_section() {
+        let base = "[memory]\ndb_path = \"test\"\n[memory.compression.predictor]\nenabled = false\nmin_samples = 10\n[memory.other]\nfoo = 1\n";
+        let result = migrate_compression_predictor_config(base).unwrap();
+        assert!(!result.output.contains("[memory.compression.predictor]"));
+        assert!(!result.output.contains("min_samples"));
+        assert!(result.output.contains("[memory.other]"));
+        assert_eq!(result.added_count, 1);
+    }
+
+    #[test]
+    fn migrate_compression_predictor_strips_commented_section() {
+        let base = "[memory]\ndb_path = \"test\"\n# [memory.compression.predictor]\n# enabled = false\n[memory.other]\nfoo = 1\n";
+        let result = migrate_compression_predictor_config(base).unwrap();
+        assert!(!result.output.contains("compression.predictor"));
+        assert!(result.output.contains("[memory.other]"));
+    }
+
+    #[test]
+    fn migrate_compression_predictor_idempotent() {
+        let base = "[memory]\ndb_path = \"test\"\n[memory.compression.predictor]\nenabled = false\n[memory.other]\nfoo = 1\n";
         let first = migrate_compression_predictor_config(base).unwrap();
-        assert_eq!(first.added_count, 1);
         let second = migrate_compression_predictor_config(&first.output).unwrap();
-        assert_eq!(second.added_count, 0, "second run must not double-append");
         assert_eq!(second.output, first.output);
+        assert_eq!(second.added_count, 0);
+    }
+
+    #[test]
+    fn migrate_compression_predictor_noop_when_absent() {
+        let base = "[memory]\ndb_path = \"test\"\n";
+        let result = migrate_compression_predictor_config(base).unwrap();
+        assert_eq!(result.output, base);
+        assert_eq!(result.added_count, 0);
     }
 
     #[test]

@@ -16,12 +16,6 @@ SleepGate runs on a configurable interval (default: every 24 hours). Each pass:
 
 Soft-deleted entries are marked in SQLite and removed from the vector index, but the underlying data remains in SQLite. They can be restored manually if needed.
 
-## Compression Predictor
-
-Before deleting a candidate, SleepGate runs a performance-floor compression predictor that estimates whether removing the embedding would degrade recall quality for recent queries. The predictor replays the last N queries against the index with and without the candidate and measures the recall delta.
-
-Entries flagged as **load-bearing** by the predictor are preserved regardless of their retention score. This prevents SleepGate from removing embeddings that are infrequently accessed but critical for specific query patterns.
-
 ## Configuration
 
 ```toml

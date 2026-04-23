@@ -1476,7 +1476,7 @@ impl<C: Channel> Agent<C> {
         }
         if let Some(memory) = self.memory_state.persistence.memory.as_ref() {
             let pool = memory.sqlite().pool().clone();
-            let store = zeph_memory::store::graph_store::DbGraphStore::new(pool);
+            let store = zeph_memory::store::graph_store::TaskGraphStore::new(pool);
             self.orchestration.graph_persistence =
                 Some(zeph_orchestration::GraphPersistence::new(store));
         }
@@ -1830,7 +1830,6 @@ mod tests {
             focus_scorer_provider: zeph_config::ProviderName::default(),
             high_density_budget: 0.7,
             low_density_budget: 0.3,
-            predictor: Default::default(),
         };
         let agent = make_agent().with_compression(compression);
         assert!(

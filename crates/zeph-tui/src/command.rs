@@ -90,8 +90,6 @@ pub enum TuiCommand {
     TafcStatus,
     // SleepGate forgetting sweep
     ForgettingSweep,
-    // Compression ratio predictor
-    PredictorStatus,
     // Trajectory-informed memory (#2498)
     TrajectoryStats,
     // TiMem memory tree (#2262)
@@ -444,13 +442,6 @@ fn build_infra_commands() -> Vec<CommandEntry> {
             command: TuiCommand::ForgettingSweep,
         },
         CommandEntry {
-            id: "memory:predictor-status",
-            label: "Show compression predictor status (/predictor-status)",
-            category: "memory",
-            shortcut: None,
-            command: TuiCommand::PredictorStatus,
-        },
-        CommandEntry {
             id: "memory:trajectory",
             label: "Show trajectory memory statistics (/memory trajectory)",
             category: "memory",
@@ -781,8 +772,8 @@ mod tests {
     fn extra_registry_has_correct_command_count() {
         // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
         // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status
-        // + 1 forgetting-sweep + 1 predictor-status + 3 acp = 42
-        assert_eq!(extra_command_registry().len(), 42);
+        // + 1 forgetting-sweep + 3 acp = 41
+        assert_eq!(extra_command_registry().len(), 41);
     }
 
     #[test]

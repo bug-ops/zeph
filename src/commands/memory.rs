@@ -22,7 +22,6 @@ pub(crate) async fn handle_memory_command(
         MemoryCommand::ForgettingSweep => cmd_forgetting_sweep(&sqlite, &config).await?,
         MemoryCommand::Trajectory => cmd_trajectory(&sqlite).await?,
         MemoryCommand::Tree => cmd_tree(&sqlite).await?,
-        MemoryCommand::PredictorStatus => cmd_predictor_status(&sqlite, &config).await?,
     }
 
     Ok(())
@@ -140,37 +139,5 @@ async fn cmd_tree(sqlite: &zeph_memory::store::SqliteStore) -> anyhow::Result<()
     println!("Memory tree statistics:");
     println!("  Total nodes:             {total}");
     println!("  Unconsolidated leaves:   {leaves}");
-    Ok(())
-}
-
-async fn cmd_predictor_status(
-    sqlite: &zeph_memory::store::SqliteStore,
-    config: &zeph_core::config::Config,
-) -> anyhow::Result<()> {
-    let sample_count = sqlite
-        .count_compression_training_records()
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to query training records: {e}"))?;
-    let weights_json = sqlite
-        .load_compression_predictor_weights()
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to load weights: {e}"))?;
-    let min_samples = config.memory.compression.predictor.min_samples;
-    println!("Compression predictor status:");
-    println!("  Training samples: {sample_count}");
-    println!("  Min samples for activation: {min_samples}");
-    println!(
-        "  Active: {}",
-        if sample_count >= 0 && sample_count.unsigned_abs() >= min_samples {
-            "yes"
-        } else {
-            "no (cold start)"
-        }
-    );
-    if weights_json.is_some() {
-        println!("  Weights: saved");
-    } else {
-        println!("  Weights: not yet trained");
-    }
     Ok(())
 }

@@ -29,8 +29,6 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 
 **GAAMA episode nodes** extend the graph memory with episode-typed entities that capture temporal context boundaries — start/end timestamps and associated entity sets — enabling episodic recall alongside semantic and graph retrieval.
 
-**Compression predictor** (`compression_predictor`) estimates whether a compaction pass will produce a net context savings before invoking the LLM, avoiding wasted inference on messages that are already dense.
-
 ## Key modules
 
 | Module | Description |
@@ -56,7 +54,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `token_counter` | `TokenCounter` — tiktoken-based (cl100k_base) token counting with DashMap cache (10k cap), OpenAI tool schema formula, 64KB input guard with chars/4 fallback |
 | `routing` | `MemoryRouter` trait and `HeuristicRouter` — query-aware routing to Keyword, Semantic, or Hybrid backends |
 | `sqlite::overflow` | `tool_overflow` SQLite table (migration 031) — stores large tool outputs keyed by UUID; `SqliteStore::save_overflow` / `SqliteStore::cleanup_overflow` replace the old filesystem backend; `ON DELETE CASCADE` removes overflow rows when the parent conversation is deleted |
-| `sqlite::graph_store` | `RawGraphStore` trait and `SqliteGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); `GraphSummary` metadata type; used by `zeph-core::orchestration::GraphPersistence` for typed serialization |
+| `sqlite::graph_store` | `RawGraphStore` trait and `TaskGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); `GraphSummary` metadata type; used by `zeph-core::orchestration::GraphPersistence` for typed serialization |
 | `graph` | `GraphStore`, `Entity`, `EntityAlias`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal, entity canonicalization, community detection via label propagation, and graph eviction |
 | `graph::activation` | `SpreadingActivation` — SYNAPSE spreading activation engine: hop-by-hop energy decay (lambda), edge-type filtering, lateral inhibition, configurable timeout; `ActivatedNode`, `ActivatedFact`, `SpreadingActivationParams` |
 | `graph::extractor` | `GraphExtractor` — LLM-powered entity/relation extraction via structured output; `EntityResolver` for dedup and supersession |
@@ -65,7 +63,6 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `compaction_probe` | `CompactionProbeConfig`, `validate_compaction` — post-compaction quality validation via probe question generation and answer scoring |
 | `sqlite::experiments` | `ExperimentResultRow`, `NewExperimentResult`, `SessionSummaryRow` — SQLite persistence for experiment results and session summaries (feature-gated: `experiments`) |
 | `forgetting` | `SleepGate` — background forgetting sweep that soft-deletes messages below `forgetting_floor`; configurable interval and floor threshold via `[memory.forgetting]` |
-| `compression_predictor` | Performance-floor compression predictor — estimates compaction savings before invoking the LLM |
 | `consolidation` | Background memory consolidation — promotes/demotes entries between tiers based on access patterns |
 | `tiers` | `MemScene` tiered memory — hot working memory, episodic scene buffer, and long-term archive with background consolidation |
 | `scenes` | Scene buffer management for episodic memory |

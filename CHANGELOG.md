@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- `admission_rl` module (RL-based admission classifier, never wired into production) (#3250). SQLite table `admission_rl_weights` remains (migrations are append-only).
+- `compression_predictor` module and `CompressionPredictorConfig` config field (linear regression compaction predictor, never called in production) (#3251). SQLite tables `compression_predictor_training` and `compression_predictor_weights` remain (append-only).
+- CLI subcommand `zeph memory predictor-status` (backed by removed module) (#3251).
+- TUI command `predictor-status` (backed by removed module) (#3251).
+- `SqliteGraphStore` type alias — use `TaskGraphStore` instead (#3253).
+
+### Changed
+
+- `DbGraphStore` renamed to `TaskGraphStore` in `zeph-memory` for clarity (previously confused with knowledge-graph `GraphStore`). This is a breaking API change for external callers. (#3253).
+- `migrate_compression_predictor_config` now strips any `[memory.compression.predictor]` section (active or commented-out) from user configs instead of adding it, to clean up stale sections injected by previous `--migrate-config` runs (#3251).
+
 ### Breaking Changes
 
 - **`zeph-acp`**: `AgentSpawner` future bound no longer requires `Send` — spawner closures

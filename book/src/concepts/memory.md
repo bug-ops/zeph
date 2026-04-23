@@ -472,8 +472,6 @@ interval_secs = 86400          # Run forgetting pass every N seconds (default: 8
 retention_threshold = 0.30     # Composite score below which entries are forgotten (default: 0.30)
 ```
 
-SleepGate also integrates a performance-floor compression predictor that estimates whether removing a candidate embedding would degrade recall quality for recent queries. Entries that the predictor flags as load-bearing are preserved regardless of their retention score.
-
 Forgotten entries are soft-deleted (marked in SQLite, removed from the vector index) and can be restored manually if needed.
 
 ## Multi-Vector Chunking

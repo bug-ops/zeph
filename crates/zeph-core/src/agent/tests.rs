@@ -2748,7 +2748,7 @@ pub mod agent_tests {
         // Reuse the shared in-memory DB via SemanticMemory — migrations are already applied.
         let memory = make_gp_memory().await;
         let pool = memory.sqlite().pool().clone();
-        let store_a = zeph_memory::store::graph_store::DbGraphStore::new(pool.clone());
+        let store_a = zeph_memory::store::graph_store::TaskGraphStore::new(pool.clone());
         let persistence_a = GraphPersistence::new(store_a);
 
         let node = TaskNode {
@@ -2770,7 +2770,7 @@ pub mod agent_tests {
         persistence_a.save(&graph).await.unwrap();
 
         // Second persistence handle on the same pool — simulates "new agent" rehydrating.
-        let store_b = zeph_memory::store::graph_store::DbGraphStore::new(pool);
+        let store_b = zeph_memory::store::graph_store::TaskGraphStore::new(pool);
         let persistence_b = GraphPersistence::new(store_b);
 
         let loaded = persistence_b
@@ -2796,7 +2796,7 @@ pub mod agent_tests {
 
         let memory = make_gp_memory().await;
         let pool = memory.sqlite().pool().clone();
-        let store = zeph_memory::store::graph_store::DbGraphStore::new(pool.clone());
+        let store = zeph_memory::store::graph_store::TaskGraphStore::new(pool.clone());
         let persistence = GraphPersistence::new(store);
 
         let graph = TaskGraph {
@@ -2808,7 +2808,7 @@ pub mod agent_tests {
         // Mirrors what save_graph_snapshot does (bounded save call).
         persistence.save(&graph).await.unwrap();
 
-        let store2 = zeph_memory::store::graph_store::DbGraphStore::new(pool);
+        let store2 = zeph_memory::store::graph_store::TaskGraphStore::new(pool);
         let persistence2 = GraphPersistence::new(store2);
         let loaded = persistence2.load(&graph_id).await.unwrap();
         assert!(
@@ -2825,7 +2825,7 @@ pub mod agent_tests {
 
         let memory = make_gp_memory().await;
         let pool = memory.sqlite().pool().clone();
-        let store = zeph_memory::store::graph_store::DbGraphStore::new(pool.clone());
+        let store = zeph_memory::store::graph_store::TaskGraphStore::new(pool.clone());
         let persistence = GraphPersistence::new(store);
 
         let graph = TaskGraph {
@@ -2844,7 +2844,7 @@ pub mod agent_tests {
         }
         drop(persistence);
 
-        let store2 = zeph_memory::store::graph_store::DbGraphStore::new(pool);
+        let store2 = zeph_memory::store::graph_store::TaskGraphStore::new(pool);
         let persistence2 = GraphPersistence::new(store2);
         let loaded = persistence2
             .load(&graph_id)
