@@ -1345,8 +1345,7 @@ pub(crate) async fn run_acp_http_server(
 
     let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
     log_acp_runtime_paths(app.config(), app.config_path());
-    let bind_addr = bind_override
-        .map_or_else(|| app.config().acp.http_bind.clone(), str::to_owned);
+    let bind_addr = bind_override.map_or_else(|| app.config().acp.http_bind.clone(), str::to_owned);
 
     // CLI flag overrides config/env values for auth token.
     let auth_bearer_token = auth_token_override.or(app.config().acp.auth_token.clone());
