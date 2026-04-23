@@ -1657,7 +1657,10 @@ pub fn migrate_forgetting_config(toml_src: &str) -> Result<MigrationResult, Migr
 ///
 /// The compression predictor feature was removed. This migration cleans up both active
 /// and commented-out sections that previous `--migrate-config` runs may have injected.
-/// The function is a pure string operation and always returns `Ok`.
+/// # Errors
+///
+/// This function is a pure string operation and always returns `Ok`. The `Result`
+/// return type is kept for API consistency with other migration functions.
 pub fn migrate_compression_predictor_config(
     toml_src: &str,
 ) -> Result<MigrationResult, MigrateError> {
