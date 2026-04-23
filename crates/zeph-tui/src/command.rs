@@ -783,8 +783,8 @@ mod tests {
     fn extra_registry_has_correct_command_count() {
         // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
         // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status
-        // + 1 forgetting-sweep + 1 predictor-status + 3 acp = 43
-        assert_eq!(extra_command_registry().len(), 43);
+        // + 1 forgetting-sweep + 3 acp = 42
+        assert_eq!(extra_command_registry().len(), 42);
     }
 
     #[test]
