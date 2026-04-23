@@ -187,7 +187,7 @@ application. Violations return `ConfigError::Validation`.
 2. For each known section not present in input, append the section as
    commented-out defaults with a `# Added by migrate-config` comment.
 3. Preserve all existing values verbatim — no mutation of user config.
-4. Return `MigrationResult { output: String, added_count: usize, changes: Vec<String> }`.
+4. Return `MigrationResult { output: String, changed_count: usize, sections_changed: Vec<String> }`.
 
 **Invariants:**
 - WHEN a section is already present THE SYSTEM SHALL NOT modify its values.

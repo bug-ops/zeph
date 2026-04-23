@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING (config):** Renamed `MigrationResult::added_count` → `changed_count` and `sections_added` → `sections_changed` to reflect that migrations now report both additions and removals (#3282).
 - `DbGraphStore` renamed to `TaskGraphStore` in `zeph-memory` for clarity (previously confused with knowledge-graph `GraphStore`). This is a breaking API change for external callers. (#3253).
 - `migrate_compression_predictor_config` now strips any `[memory.compression.predictor]` section (active or commented-out) from user configs instead of adding it, to clean up stale sections injected by previous `--migrate-config` runs (#3251).
 

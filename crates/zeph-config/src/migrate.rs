@@ -63,10 +63,10 @@ pub enum MigrateError {
 pub struct MigrationResult {
     /// The migrated TOML document as a string.
     pub output: String,
-    /// Number of top-level keys or sub-keys added as comments.
-    pub added_count: usize,
-    /// Names of top-level sections that were added.
-    pub sections_added: Vec<String>,
+    /// Number of top-level keys or sub-keys modified (added or removed) during migration.
+    pub changed_count: usize,
+    /// Names of top-level sections that were modified (added or removed).
+    pub sections_changed: Vec<String>,
 }
 
 /// Migrates a user config by adding missing parameters as commented-out entries.
@@ -110,8 +110,8 @@ impl ConfigMigrator {
             .map_err(MigrateError::Reference)?;
         let mut user_doc = user_toml.parse::<DocumentMut>()?;
 
-        let mut added_count = 0usize;
-        let mut sections_added: Vec<String> = Vec::new();
+        let mut changed_count = 0usize;
+        let mut sections_changed: Vec<String> = Vec::new();
         // Collected scalar/sub-table comment lines to insert after rendering.
         // Each entry: (section_key, comment_line).
         let mut pending_comments: Vec<(String, String)> = Vec::new();
@@ -125,7 +125,7 @@ impl ConfigMigrator {
                     if let Some(user_table) = user_doc.get_mut(key).and_then(Item::as_table_mut) {
                         let (n, comments) =
                             merge_table_commented(user_table, ref_table, key, user_toml);
-                        added_count += n;
+                        changed_count += n;
                         pending_comments.extend(comments);
                     }
                 } else {
@@ -136,17 +136,17 @@ impl ConfigMigrator {
                     }
                     let commented = commented_table_block(key, ref_table);
                     if !commented.is_empty() {
-                        sections_added.push(key.to_owned());
+                        sections_changed.push(key.to_owned());
                     }
-                    added_count += 1;
+                    changed_count += 1;
                 }
             } else {
                 // Top-level scalar/array key.
                 if !user_doc.contains_key(key) {
                     let raw = format_commented_item(key, ref_item);
                     if !raw.is_empty() {
-                        sections_added.push(format!("__scalar__{key}"));
-                        added_count += 1;
+                        sections_changed.push(format!("__scalar__{key}"));
+                        changed_count += 1;
                     }
                 }
             }
@@ -165,7 +165,7 @@ impl ConfigMigrator {
         }
 
         // Append missing sections as raw commented text at the end.
-        for key in &sections_added {
+        for key in &sections_changed {
             if let Some(scalar_key) = key.strip_prefix("__scalar__") {
                 if let Some(ref_item) = reference_doc.get(scalar_key) {
                     let raw = format_commented_item(scalar_key, ref_item);
@@ -188,16 +188,16 @@ impl ConfigMigrator {
         // Reorder top-level sections by canonical order.
         output = reorder_sections(&output, CANONICAL_ORDER);
 
-        // Resolve sections_added to only real section names (not scalars).
-        let sections_added_clean: Vec<String> = sections_added
+        // Resolve sections_changed to only real section names (not scalars).
+        let sections_changed_clean: Vec<String> = sections_changed
             .into_iter()
             .filter(|k| !k.starts_with("__scalar__"))
             .collect();
 
         Ok(MigrationResult {
             output,
-            added_count,
-            sections_added: sections_added_clean,
+            changed_count,
+            sections_changed: sections_changed_clean,
         })
     }
 }
@@ -828,8 +828,8 @@ pub fn migrate_llm_to_providers(toml_src: &str) -> Result<MigrationResult, Migra
             // No [llm] section at all — nothing to migrate.
             return Ok(MigrationResult {
                 output: toml_src.to_owned(),
-                added_count: 0,
-                sections_added: Vec::new(),
+                changed_count: 0,
+                sections_changed: Vec::new(),
             });
         }
     };
@@ -871,8 +871,8 @@ pub fn migrate_llm_to_providers(toml_src: &str) -> Result<MigrationResult, Migra
         // Already in new format (or empty).
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -952,8 +952,8 @@ pub fn migrate_llm_to_providers(toml_src: &str) -> Result<MigrationResult, Migra
         // Nothing to convert; return as-is.
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -994,8 +994,8 @@ pub fn migrate_llm_to_providers(toml_src: &str) -> Result<MigrationResult, Migra
 
     Ok(MigrationResult {
         output,
-        added_count: provider_blocks.len(),
-        sections_added: vec!["llm.providers".to_owned()],
+        changed_count: provider_blocks.len(),
+        sections_changed: vec!["llm.providers".to_owned()],
     })
 }
 
@@ -1138,8 +1138,8 @@ pub fn migrate_stt_to_provider(toml_src: &str) -> Result<MigrationResult, Migrat
     if stt_model.is_none() && stt_base_url.is_none() {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1273,8 +1273,8 @@ pub fn migrate_stt_to_provider(toml_src: &str) -> Result<MigrationResult, Migrat
 
     Ok(MigrationResult {
         output: doc.to_string(),
-        added_count: 1,
-        sections_added: vec!["llm.providers.stt_model".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["llm.providers.stt_model".to_owned()],
     })
 }
 
@@ -1304,8 +1304,8 @@ pub fn migrate_planner_model_to_provider(toml_src: &str) -> Result<MigrationResu
     let Some(old_model) = old_value else {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     };
 
@@ -1342,8 +1342,8 @@ pub fn migrate_planner_model_to_provider(toml_src: &str) -> Result<MigrationResu
 
     Ok(MigrationResult {
         output: doc.to_string(),
-        added_count: 1,
-        sections_added: vec!["orchestration.planner_provider".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["orchestration.planner_provider".to_owned()],
     })
 }
 
@@ -1367,8 +1367,8 @@ pub fn migrate_mcp_trust_levels(toml_src: &str) -> Result<MigrationResult, Migra
     let Some(mcp) = doc.get_mut("mcp").and_then(toml_edit::Item::as_table_mut) else {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     };
 
@@ -1378,8 +1378,8 @@ pub fn migrate_mcp_trust_levels(toml_src: &str) -> Result<MigrationResult, Migra
     else {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     };
 
@@ -1404,8 +1404,8 @@ pub fn migrate_mcp_trust_levels(toml_src: &str) -> Result<MigrationResult, Migra
 
     Ok(MigrationResult {
         output: doc.to_string(),
-        added_count: added,
-        sections_added: if added > 0 {
+        changed_count: added,
+        sections_changed: if added > 0 {
             vec!["mcp.servers.trust_level".to_owned()]
         } else {
             Vec::new()
@@ -1445,8 +1445,8 @@ pub fn migrate_agent_retry_to_tools_retry(toml_src: &str) -> Result<MigrationRes
     if max_retries.is_none() && budget_secs.is_none() {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1469,7 +1469,7 @@ pub fn migrate_agent_retry_to_tools_retry(toml_src: &str) -> Result<MigrationRes
             "[tools.retry] is not a table",
         ))?;
 
-    let mut added_count = 0usize;
+    let mut changed_count = 0usize;
 
     if let Some(retries) = max_retries
         && !retry_table.contains_key("max_attempts")
@@ -1478,7 +1478,7 @@ pub fn migrate_agent_retry_to_tools_retry(toml_src: &str) -> Result<MigrationRes
             "max_attempts",
             toml_edit::value(i64::try_from(retries).unwrap_or(2)),
         );
-        added_count += 1;
+        changed_count += 1;
     }
 
     if let Some(secs) = budget_secs
@@ -1488,10 +1488,10 @@ pub fn migrate_agent_retry_to_tools_retry(toml_src: &str) -> Result<MigrationRes
             "budget_secs",
             toml_edit::value(i64::try_from(secs).unwrap_or(30)),
         );
-        added_count += 1;
+        changed_count += 1;
     }
 
-    if added_count > 0 {
+    if changed_count > 0 {
         eprintln!(
             "Migration: [agent].max_tool_retries / max_retry_duration_secs migrated to \
              [tools.retry].max_attempts / budget_secs. Old fields preserved for compatibility."
@@ -1500,8 +1500,8 @@ pub fn migrate_agent_retry_to_tools_retry(toml_src: &str) -> Result<MigrationRes
 
     Ok(MigrationResult {
         output: doc.to_string(),
-        added_count,
-        sections_added: if added_count > 0 {
+        changed_count,
+        sections_changed: if changed_count > 0 {
             vec!["tools.retry".to_owned()]
         } else {
             Vec::new()
@@ -1522,8 +1522,8 @@ pub fn migrate_database_url(toml_src: &str) -> Result<MigrationResult, MigrateEr
     if toml_src.contains("database_url") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1543,8 +1543,8 @@ pub fn migrate_database_url(toml_src: &str) -> Result<MigrationResult, MigrateEr
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["memory.database_url".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["memory.database_url".to_owned()],
     })
 }
 
@@ -1561,8 +1561,8 @@ pub fn migrate_shell_transactional(toml_src: &str) -> Result<MigrationResult, Mi
     if toml_src.contains("transactional") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1576,8 +1576,8 @@ pub fn migrate_shell_transactional(toml_src: &str) -> Result<MigrationResult, Mi
         // No [tools.shell] section — nothing to annotate; new configs will get defaults.
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1592,8 +1592,8 @@ pub fn migrate_shell_transactional(toml_src: &str) -> Result<MigrationResult, Mi
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["tools.shell.transactional".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["tools.shell.transactional".to_owned()],
     })
 }
 
@@ -1607,8 +1607,8 @@ pub fn migrate_agent_budget_hint(toml_src: &str) -> Result<MigrationResult, Migr
     if toml_src.contains("budget_hint_enabled") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1616,8 +1616,8 @@ pub fn migrate_agent_budget_hint(toml_src: &str) -> Result<MigrationResult, Migr
     if !doc.contains_key("agent") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1628,8 +1628,8 @@ pub fn migrate_agent_budget_hint(toml_src: &str) -> Result<MigrationResult, Migr
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["agent.budget_hint_enabled".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["agent.budget_hint_enabled".to_owned()],
     })
 }
 
@@ -1646,8 +1646,8 @@ pub fn migrate_forgetting_config(toml_src: &str) -> Result<MigrationResult, Migr
     if toml_src.contains("[memory.forgetting]") || toml_src.contains("# [memory.forgetting]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1655,8 +1655,8 @@ pub fn migrate_forgetting_config(toml_src: &str) -> Result<MigrationResult, Migr
     if !doc.contains_key("memory") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1674,8 +1674,8 @@ pub fn migrate_forgetting_config(toml_src: &str) -> Result<MigrationResult, Migr
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["memory.forgetting".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["memory.forgetting".to_owned()],
     })
 }
 
@@ -1697,8 +1697,8 @@ pub fn migrate_compression_predictor_config(
     if !has_active && !has_commented {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1732,8 +1732,8 @@ pub fn migrate_compression_predictor_config(
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["memory.compression.predictor".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["memory.compression.predictor".to_owned()],
     })
 }
 
@@ -1747,8 +1747,8 @@ pub fn migrate_microcompact_config(toml_src: &str) -> Result<MigrationResult, Mi
     if toml_src.contains("[memory.microcompact]") || toml_src.contains("# [memory.microcompact]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1756,8 +1756,8 @@ pub fn migrate_microcompact_config(toml_src: &str) -> Result<MigrationResult, Mi
     if !doc.contains_key("memory") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1771,8 +1771,8 @@ pub fn migrate_microcompact_config(toml_src: &str) -> Result<MigrationResult, Mi
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["memory.microcompact".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["memory.microcompact".to_owned()],
     })
 }
 
@@ -1786,8 +1786,8 @@ pub fn migrate_autodream_config(toml_src: &str) -> Result<MigrationResult, Migra
     if toml_src.contains("[memory.autodream]") || toml_src.contains("# [memory.autodream]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1795,8 +1795,8 @@ pub fn migrate_autodream_config(toml_src: &str) -> Result<MigrationResult, Migra
     if !doc.contains_key("memory") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1812,8 +1812,8 @@ pub fn migrate_autodream_config(toml_src: &str) -> Result<MigrationResult, Migra
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["memory.autodream".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["memory.autodream".to_owned()],
     })
 }
 
@@ -1830,8 +1830,8 @@ pub fn migrate_magic_docs_config(toml_src: &str) -> Result<MigrationResult, Migr
     if doc.contains_key("magic_docs") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1850,8 +1850,8 @@ pub fn migrate_magic_docs_config(toml_src: &str) -> Result<MigrationResult, Migr
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["magic_docs".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["magic_docs".to_owned()],
     })
 }
 
@@ -1869,8 +1869,8 @@ pub fn migrate_telemetry_config(toml_src: &str) -> Result<MigrationResult, Migra
     if doc.contains_key("telemetry") || toml_src.contains("# [telemetry]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1891,8 +1891,8 @@ pub fn migrate_telemetry_config(toml_src: &str) -> Result<MigrationResult, Migra
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["telemetry".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["telemetry".to_owned()],
     })
 }
 
@@ -1909,8 +1909,8 @@ pub fn migrate_supervisor_config(toml_src: &str) -> Result<MigrationResult, Migr
     if toml_src.contains("[agent.supervisor]") || toml_src.contains("# [agent.supervisor]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1921,8 +1921,8 @@ pub fn migrate_supervisor_config(toml_src: &str) -> Result<MigrationResult, Migr
     if !doc.contains_key("agent") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1938,8 +1938,8 @@ pub fn migrate_supervisor_config(toml_src: &str) -> Result<MigrationResult, Migr
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["agent.supervisor".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["agent.supervisor".to_owned()],
     })
 }
 
@@ -1957,8 +1957,8 @@ pub fn migrate_otel_filter(toml_src: &str) -> Result<MigrationResult, MigrateErr
     if toml_src.contains("otel_filter") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1969,8 +1969,8 @@ pub fn migrate_otel_filter(toml_src: &str) -> Result<MigrationResult, MigrateErr
     if !doc.contains_key("telemetry") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -1983,8 +1983,8 @@ pub fn migrate_otel_filter(toml_src: &str) -> Result<MigrationResult, MigrateErr
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["telemetry.otel_filter".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["telemetry.otel_filter".to_owned()],
     })
 }
 
@@ -1997,8 +1997,8 @@ pub fn migrate_egress_config(toml_src: &str) -> Result<MigrationResult, MigrateE
     if toml_src.contains("[tools.egress]") || toml_src.contains("tools.egress") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -2014,8 +2014,8 @@ pub fn migrate_egress_config(toml_src: &str) -> Result<MigrationResult, MigrateE
     output.push_str(comment);
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["tools.egress".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["tools.egress".to_owned()],
     })
 }
 
@@ -2028,8 +2028,8 @@ pub fn migrate_vigil_config(toml_src: &str) -> Result<MigrationResult, MigrateEr
     if toml_src.contains("[security.vigil]") || toml_src.contains("security.vigil") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -2046,8 +2046,8 @@ pub fn migrate_vigil_config(toml_src: &str) -> Result<MigrationResult, MigrateEr
     output.push_str(comment);
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["security.vigil".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["security.vigil".to_owned()],
     })
 }
 
@@ -2074,8 +2074,8 @@ pub fn migrate_sandbox_config(toml_src: &str) -> Result<MigrationResult, Migrate
     if already_present || toml_src.contains("# [tools.sandbox]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -2094,8 +2094,8 @@ pub fn migrate_sandbox_config(toml_src: &str) -> Result<MigrationResult, Migrate
     output.push_str(comment);
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["tools.sandbox".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["tools.sandbox".to_owned()],
     })
 }
 
@@ -2112,8 +2112,8 @@ pub fn migrate_orchestration_persistence(toml_src: &str) -> Result<MigrationResu
     if toml_src.contains("persistence_enabled") || toml_src.contains("# persistence_enabled") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -2121,8 +2121,8 @@ pub fn migrate_orchestration_persistence(toml_src: &str) -> Result<MigrationResu
     if !toml_src.contains("[orchestration]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -2136,8 +2136,8 @@ pub fn migrate_orchestration_persistence(toml_src: &str) -> Result<MigrationResu
     );
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["orchestration.persistence_enabled".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["orchestration.persistence_enabled".to_owned()],
     })
 }
 
@@ -2153,8 +2153,8 @@ pub fn migrate_session_recap_config(toml_src: &str) -> Result<MigrationResult, M
     if toml_src.contains("[session.recap]") || toml_src.contains("# [session.recap]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -2169,8 +2169,8 @@ pub fn migrate_session_recap_config(toml_src: &str) -> Result<MigrationResult, M
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["session.recap".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["session.recap".to_owned()],
     })
 }
 
@@ -2186,8 +2186,8 @@ pub fn migrate_mcp_elicitation_config(toml_src: &str) -> Result<MigrationResult,
     if toml_src.contains("elicitation_enabled") || toml_src.contains("# elicitation_enabled") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -2195,8 +2195,8 @@ pub fn migrate_mcp_elicitation_config(toml_src: &str) -> Result<MigrationResult,
     if !toml_src.contains("[mcp]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -2204,8 +2204,8 @@ pub fn migrate_mcp_elicitation_config(toml_src: &str) -> Result<MigrationResult,
     if !toml_src.contains("[mcp]\n") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -2218,8 +2218,8 @@ pub fn migrate_mcp_elicitation_config(toml_src: &str) -> Result<MigrationResult,
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["mcp.elicitation".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["mcp.elicitation".to_owned()],
     })
 }
 
@@ -2241,8 +2241,8 @@ pub fn migrate_quality_config(toml_src: &str) -> Result<MigrationResult, Migrate
     {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
-            added_count: 0,
-            sections_added: Vec::new(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
         });
     }
 
@@ -2264,8 +2264,8 @@ pub fn migrate_quality_config(toml_src: &str) -> Result<MigrationResult, Migrate
 
     Ok(MigrationResult {
         output,
-        added_count: 1,
-        sections_added: vec!["quality".to_owned()],
+        changed_count: 1,
+        sections_changed: vec!["quality".to_owned()],
     })
 }
 
@@ -2285,7 +2285,7 @@ mod tests {
         let migrator = ConfigMigrator::new();
         let result = migrator.migrate("").expect("migrate empty");
         // Should have added sections since reference is non-empty.
-        assert!(result.added_count > 0 || !result.sections_added.is_empty());
+        assert!(result.changed_count > 0 || !result.sections_changed.is_empty());
         // Output should mention at least agent section.
         assert!(
             result.output.contains("[agent]") || result.output.contains("# [agent]"),
@@ -2465,25 +2465,25 @@ name = "Test"
         let migrator = ConfigMigrator::new();
         let result = migrator.migrate(reference).expect("migrate reference");
         assert_eq!(
-            result.added_count, 0,
-            "migrating the canonical reference should add nothing (added_count = {})",
-            result.added_count
+            result.changed_count, 0,
+            "migrating the canonical reference should add nothing (changed_count = {})",
+            result.changed_count
         );
         assert!(
-            result.sections_added.is_empty(),
-            "migrating the canonical reference should report no sections_added: {:?}",
-            result.sections_added
+            result.sections_changed.is_empty(),
+            "migrating the canonical reference should report no sections_changed: {:?}",
+            result.sections_changed
         );
     }
 
     #[test]
-    fn empty_config_added_count_is_positive() {
+    fn empty_config_changed_count_is_positive() {
         // Stricter variant of empty_config_gets_sections_as_comments.
         let migrator = ConfigMigrator::new();
         let result = migrator.migrate("").expect("migrate empty");
         assert!(
-            result.added_count > 0,
-            "empty config must report added_count > 0"
+            result.changed_count > 0,
+            "empty config must report changed_count > 0"
         );
     }
 
@@ -2541,7 +2541,7 @@ name = "Test"
     fn migrate_llm_no_llm_section_is_noop() {
         let src = "[agent]\nname = \"Zeph\"\n";
         let result = migrate_llm_to_providers(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -2554,7 +2554,7 @@ type = "ollama"
 model = "qwen3:8b"
 "#;
         let result = migrate_llm_to_providers(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
     }
 
     #[test]
@@ -2728,7 +2728,7 @@ type = "ollama"
     fn stt_migration_no_stt_section_returns_unchanged() {
         let src = "[llm]\n\n[[llm.providers]]\ntype = \"openai\"\nname = \"quality\"\nmodel = \"gpt-5.4\"\n";
         let result = migrate_stt_to_provider(src).unwrap();
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -2736,7 +2736,7 @@ type = "ollama"
     fn stt_migration_no_model_or_base_url_returns_unchanged() {
         let src = "[llm]\n\n[[llm.providers]]\ntype = \"openai\"\nname = \"quality\"\n\n[llm.stt]\nprovider = \"quality\"\nlanguage = \"en\"\n";
         let result = migrate_stt_to_provider(src).unwrap();
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
     }
 
     #[test]
@@ -2755,7 +2755,7 @@ model = "gpt-4o-mini-transcribe"
 language = "en"
 "#;
         let result = migrate_stt_to_provider(src).unwrap();
-        assert_eq!(result.added_count, 1);
+        assert_eq!(result.changed_count, 1);
         // stt_model should appear in providers entry.
         assert!(
             result.output.contains("stt_model"),
@@ -2903,7 +2903,7 @@ planner_model = "gpt-4o"
 max_tasks = 20
 "#;
         let result = migrate_planner_model_to_provider(input).expect("migration must succeed");
-        assert_eq!(result.added_count, 1, "added_count must be 1");
+        assert_eq!(result.changed_count, 1, "changed_count must be 1");
         assert!(
             !result.output.contains("planner_model = "),
             "planner_model key must be removed from output"
@@ -2931,8 +2931,8 @@ max_tasks = 20
 ";
         let result = migrate_planner_model_to_provider(input).expect("migration must succeed");
         assert_eq!(
-            result.added_count, 0,
-            "added_count must be 0 when field is absent"
+            result.changed_count, 0,
+            "changed_count must be 0 when field is absent"
         );
         assert_eq!(
             result.output, input,
@@ -2982,14 +2982,14 @@ args = ["-y", "other-mcp"]
 "#;
         let result = migrate_mcp_trust_levels(src).expect("migrate");
         assert_eq!(
-            result.added_count, 2,
+            result.changed_count, 2,
             "both entries must get trust_level added"
         );
         assert!(
             result
-                .sections_added
+                .sections_changed
                 .contains(&"mcp.servers.trust_level".to_owned()),
-            "sections_added must report mcp.servers.trust_level"
+            "sections_changed must report mcp.servers.trust_level"
         );
         // Both entries must now contain trust_level = "trusted"
         let occurrences = result.output.matches("trust_level = \"trusted\"").count();
@@ -3015,7 +3015,7 @@ command = "npx"
         let result = migrate_mcp_trust_levels(src).expect("migrate");
         // Only srv-b has no trust_level, so only 1 entry should be updated
         assert_eq!(
-            result.added_count, 1,
+            result.changed_count, 1,
             "only entry without trust_level gets updated"
         );
         // srv-a's sandboxed value must not be overwritten
@@ -3034,8 +3034,8 @@ command = "npx"
     fn migrate_mcp_trust_levels_no_mcp_section_is_noop() {
         let src = "[agent]\nname = \"Zeph\"\n";
         let result = migrate_mcp_trust_levels(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
-        assert!(result.sections_added.is_empty());
+        assert_eq!(result.changed_count, 0);
+        assert!(result.sections_changed.is_empty());
         assert_eq!(result.output, src);
     }
 
@@ -3043,8 +3043,8 @@ command = "npx"
     fn migrate_mcp_trust_levels_no_servers_is_noop() {
         let src = "[mcp]\nallowed_commands = [\"npx\"]\n";
         let result = migrate_mcp_trust_levels(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
-        assert!(result.sections_added.is_empty());
+        assert_eq!(result.changed_count, 0);
+        assert!(result.sections_changed.is_empty());
         assert_eq!(result.output, src);
     }
 
@@ -3060,18 +3060,18 @@ id = "srv-b"
 trust_level = "untrusted"
 "#;
         let result = migrate_mcp_trust_levels(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
-        assert!(result.sections_added.is_empty());
+        assert_eq!(result.changed_count, 0);
+        assert!(result.sections_changed.is_empty());
     }
 
     #[test]
     fn migrate_database_url_adds_comment_when_absent() {
         let src = "[memory]\nsqlite_path = \"/tmp/zeph.db\"\n";
         let result = migrate_database_url(src).expect("migrate");
-        assert_eq!(result.added_count, 1);
+        assert_eq!(result.changed_count, 1);
         assert!(
             result
-                .sections_added
+                .sections_changed
                 .contains(&"memory.database_url".to_owned())
         );
         assert!(result.output.contains("# database_url = \"\""));
@@ -3081,8 +3081,8 @@ trust_level = "untrusted"
     fn migrate_database_url_is_noop_when_present() {
         let src = "[memory]\nsqlite_path = \"/tmp/zeph.db\"\ndatabase_url = \"postgres://localhost/zeph\"\n";
         let result = migrate_database_url(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
-        assert!(result.sections_added.is_empty());
+        assert_eq!(result.changed_count, 0);
+        assert!(result.sections_changed.is_empty());
         assert_eq!(result.output, src);
     }
 
@@ -3090,7 +3090,7 @@ trust_level = "untrusted"
     fn migrate_database_url_creates_memory_section_when_absent() {
         let src = "[agent]\nname = \"Zeph\"\n";
         let result = migrate_database_url(src).expect("migrate");
-        assert_eq!(result.added_count, 1);
+        assert_eq!(result.changed_count, 1);
         assert!(result.output.contains("# database_url = \"\""));
     }
 
@@ -3100,11 +3100,11 @@ trust_level = "untrusted"
     fn migrate_agent_budget_hint_adds_comment_to_existing_agent_section() {
         let src = "[agent]\nname = \"Zeph\"\n";
         let result = migrate_agent_budget_hint(src).expect("migrate");
-        assert_eq!(result.added_count, 1);
+        assert_eq!(result.changed_count, 1);
         assert!(result.output.contains("budget_hint_enabled"));
         assert!(
             result
-                .sections_added
+                .sections_changed
                 .contains(&"agent.budget_hint_enabled".to_owned())
         );
     }
@@ -3113,7 +3113,7 @@ trust_level = "untrusted"
     fn migrate_agent_budget_hint_no_agent_section_is_noop() {
         let src = "[llm]\nmodel = \"gpt-4o\"\n";
         let result = migrate_agent_budget_hint(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -3121,7 +3121,7 @@ trust_level = "untrusted"
     fn migrate_agent_budget_hint_already_present_is_noop() {
         let src = "[agent]\nname = \"Zeph\"\nbudget_hint_enabled = true\n";
         let result = migrate_agent_budget_hint(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -3129,8 +3129,8 @@ trust_level = "untrusted"
     fn migrate_telemetry_config_empty_config_appends_comment_block() {
         let src = "[agent]\nname = \"Zeph\"\n";
         let result = migrate_telemetry_config(src).expect("migrate");
-        assert_eq!(result.added_count, 1);
-        assert_eq!(result.sections_added, vec!["telemetry"]);
+        assert_eq!(result.changed_count, 1);
+        assert_eq!(result.sections_changed, vec!["telemetry"]);
         assert!(
             result.output.contains("# [telemetry]"),
             "expected commented-out [telemetry] block in output"
@@ -3145,7 +3145,7 @@ trust_level = "untrusted"
     fn migrate_telemetry_config_existing_section_is_noop() {
         let src = "[agent]\nname = \"Zeph\"\n\n[telemetry]\nenabled = true\n";
         let result = migrate_telemetry_config(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -3154,7 +3154,7 @@ trust_level = "untrusted"
         // Idempotency: if the comment block was already added, don't append again.
         let src = "[agent]\nname = \"Zeph\"\n\n# [telemetry]\n# enabled = false\n";
         let result = migrate_telemetry_config(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -3165,7 +3165,7 @@ trust_level = "untrusted"
         // Real key present — must not modify.
         let src = "[telemetry]\nenabled = true\notel_filter = \"debug\"\n";
         let result = migrate_otel_filter(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -3174,7 +3174,7 @@ trust_level = "untrusted"
         // Commented-out key already present — idempotent.
         let src = "[telemetry]\nenabled = true\n# otel_filter = \"info\"\n";
         let result = migrate_otel_filter(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -3183,7 +3183,7 @@ trust_level = "untrusted"
         // [telemetry] absent — must not inject into wrong location.
         let src = "[agent]\nname = \"Zeph\"\n";
         let result = migrate_otel_filter(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
         assert!(!result.output.contains("otel_filter"));
     }
@@ -3192,8 +3192,8 @@ trust_level = "untrusted"
     fn migrate_otel_filter_injects_within_telemetry_section() {
         let src = "[telemetry]\nenabled = true\n\n[agent]\nname = \"Zeph\"\n";
         let result = migrate_otel_filter(src).expect("migrate");
-        assert_eq!(result.added_count, 1);
-        assert_eq!(result.sections_added, vec!["telemetry.otel_filter"]);
+        assert_eq!(result.changed_count, 1);
+        assert_eq!(result.sections_changed, vec!["telemetry.otel_filter"]);
         assert!(
             result.output.contains("otel_filter"),
             "otel_filter comment must appear"
@@ -3214,7 +3214,7 @@ trust_level = "untrusted"
     fn sandbox_migration_adds_commented_section_when_absent() {
         let src = "[agent]\nname = \"Z\"\n";
         let result = migrate_sandbox_config(src).expect("migrate sandbox");
-        assert_eq!(result.added_count, 1);
+        assert_eq!(result.changed_count, 1);
         assert!(result.output.contains("# [tools.sandbox]"));
         assert!(result.output.contains("# profile = \"workspace\""));
     }
@@ -3223,14 +3223,14 @@ trust_level = "untrusted"
     fn sandbox_migration_noop_when_section_present() {
         let src = "[tools.sandbox]\nenabled = true\n";
         let result = migrate_sandbox_config(src).expect("migrate sandbox");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
     }
 
     #[test]
     fn sandbox_migration_noop_when_dotted_key_present() {
         let src = "[tools]\nsandbox = { enabled = true }\n";
         let result = migrate_sandbox_config(src).expect("migrate sandbox");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
     }
 
     #[test]
@@ -3238,7 +3238,7 @@ trust_level = "untrusted"
         // Comments mentioning tools.sandbox must NOT suppress insertion.
         let src = "# tools.sandbox was planned for #3070\n[agent]\nname = \"Z\"\n";
         let result = migrate_sandbox_config(src).expect("migrate sandbox");
-        assert_eq!(result.added_count, 1);
+        assert_eq!(result.changed_count, 1);
     }
 
     #[test]
@@ -3254,9 +3254,9 @@ trust_level = "untrusted"
     fn sandbox_migration_idempotent_on_own_output() {
         let base = "[agent]\nmodel = \"test\"\n";
         let first = migrate_sandbox_config(base).unwrap();
-        assert_eq!(first.added_count, 1);
+        assert_eq!(first.changed_count, 1);
         let second = migrate_sandbox_config(&first.output).unwrap();
-        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.changed_count, 0, "second run must not double-append");
         assert_eq!(second.output, first.output);
     }
 
@@ -3264,9 +3264,9 @@ trust_level = "untrusted"
     fn migrate_agent_budget_hint_idempotent_on_commented_output() {
         let base = "[agent]\nname = \"Zeph\"\n";
         let first = migrate_agent_budget_hint(base).unwrap();
-        assert_eq!(first.added_count, 1);
+        assert_eq!(first.changed_count, 1);
         let second = migrate_agent_budget_hint(&first.output).unwrap();
-        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.changed_count, 0, "second run must not double-append");
         assert_eq!(second.output, first.output);
     }
 
@@ -3274,9 +3274,9 @@ trust_level = "untrusted"
     fn migrate_forgetting_config_idempotent_on_commented_output() {
         let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
         let first = migrate_forgetting_config(base).unwrap();
-        assert_eq!(first.added_count, 1);
+        assert_eq!(first.changed_count, 1);
         let second = migrate_forgetting_config(&first.output).unwrap();
-        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.changed_count, 0, "second run must not double-append");
         assert_eq!(second.output, first.output);
     }
 
@@ -3284,9 +3284,9 @@ trust_level = "untrusted"
     fn migrate_microcompact_config_idempotent_on_commented_output() {
         let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
         let first = migrate_microcompact_config(base).unwrap();
-        assert_eq!(first.added_count, 1);
+        assert_eq!(first.changed_count, 1);
         let second = migrate_microcompact_config(&first.output).unwrap();
-        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.changed_count, 0, "second run must not double-append");
         assert_eq!(second.output, first.output);
     }
 
@@ -3294,9 +3294,9 @@ trust_level = "untrusted"
     fn migrate_autodream_config_idempotent_on_commented_output() {
         let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
         let first = migrate_autodream_config(base).unwrap();
-        assert_eq!(first.added_count, 1);
+        assert_eq!(first.changed_count, 1);
         let second = migrate_autodream_config(&first.output).unwrap();
-        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.changed_count, 0, "second run must not double-append");
         assert_eq!(second.output, first.output);
     }
 
@@ -3307,7 +3307,7 @@ trust_level = "untrusted"
         assert!(!result.output.contains("[memory.compression.predictor]"));
         assert!(!result.output.contains("min_samples"));
         assert!(result.output.contains("[memory.other]"));
-        assert_eq!(result.added_count, 1);
+        assert_eq!(result.changed_count, 1);
     }
 
     #[test]
@@ -3324,7 +3324,7 @@ trust_level = "untrusted"
         let first = migrate_compression_predictor_config(base).unwrap();
         let second = migrate_compression_predictor_config(&first.output).unwrap();
         assert_eq!(second.output, first.output);
-        assert_eq!(second.added_count, 0);
+        assert_eq!(second.changed_count, 0);
     }
 
     #[test]
@@ -3332,16 +3332,16 @@ trust_level = "untrusted"
         let base = "[memory]\ndb_path = \"test\"\n";
         let result = migrate_compression_predictor_config(base).unwrap();
         assert_eq!(result.output, base);
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
     }
 
     #[test]
     fn migrate_database_url_idempotent_on_commented_output() {
         let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
         let first = migrate_database_url(base).unwrap();
-        assert_eq!(first.added_count, 1);
+        assert_eq!(first.changed_count, 1);
         let second = migrate_database_url(&first.output).unwrap();
-        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.changed_count, 0, "second run must not double-append");
         assert_eq!(second.output, first.output);
     }
 
@@ -3349,9 +3349,9 @@ trust_level = "untrusted"
     fn migrate_shell_transactional_idempotent_on_commented_output() {
         let base = "[tools]\n[tools.shell]\nallow_list = []\n";
         let first = migrate_shell_transactional(base).unwrap();
-        assert_eq!(first.added_count, 1);
+        assert_eq!(first.changed_count, 1);
         let second = migrate_shell_transactional(&first.output).unwrap();
-        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.changed_count, 0, "second run must not double-append");
         assert_eq!(second.output, first.output);
     }
 
@@ -3359,9 +3359,9 @@ trust_level = "untrusted"
     fn migrate_otel_filter_idempotent_on_commented_output() {
         let base = "[telemetry]\nenabled = true\n";
         let first = migrate_otel_filter(base).unwrap();
-        assert_eq!(first.added_count, 1);
+        assert_eq!(first.changed_count, 1);
         let second = migrate_otel_filter(&first.output).unwrap();
-        assert_eq!(second.added_count, 0, "second run must not double-append");
+        assert_eq!(second.changed_count, 0, "second run must not double-append");
         assert_eq!(second.output, first.output);
     }
 
@@ -3411,9 +3411,9 @@ enabled = true
         let first = migrator.migrate(base).expect("first migrate");
         let second = migrator.migrate(&first.output).expect("second migrate");
         assert_eq!(
-            second.added_count, 0,
+            second.changed_count, 0,
             "second run of ConfigMigrator::migrate must add 0 entries, got {}",
-            second.added_count
+            second.changed_count
         );
         assert_eq!(
             first.output, second.output,
@@ -3488,8 +3488,12 @@ prompt_cache_ttl = "1h"
     fn migrate_session_recap_adds_block_when_absent() {
         let src = "[agent]\nname = \"Zeph\"\n";
         let result = migrate_session_recap_config(src).expect("migrate");
-        assert_eq!(result.added_count, 1);
-        assert!(result.sections_added.contains(&"session.recap".to_owned()));
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result
+                .sections_changed
+                .contains(&"session.recap".to_owned())
+        );
         assert!(result.output.contains("# [session.recap]"));
         assert!(result.output.contains("on_resume = true"));
     }
@@ -3498,7 +3502,7 @@ prompt_cache_ttl = "1h"
     fn migrate_session_recap_idempotent_on_commented_block() {
         let src = "[agent]\nname = \"Zeph\"\n# [session.recap]\n# on_resume = true\n";
         let result = migrate_session_recap_config(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -3506,7 +3510,7 @@ prompt_cache_ttl = "1h"
     fn migrate_session_recap_idempotent_on_active_section() {
         let src = "[agent]\nname = \"Zeph\"\n[session.recap]\non_resume = false\n";
         let result = migrate_session_recap_config(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -3516,10 +3520,10 @@ prompt_cache_ttl = "1h"
     fn migrate_mcp_elicitation_adds_keys_when_absent() {
         let src = "[mcp]\nallowed_commands = []\n";
         let result = migrate_mcp_elicitation_config(src).expect("migrate");
-        assert_eq!(result.added_count, 1);
+        assert_eq!(result.changed_count, 1);
         assert!(
             result
-                .sections_added
+                .sections_changed
                 .contains(&"mcp.elicitation".to_owned())
         );
         assert!(result.output.contains("# elicitation_enabled = false"));
@@ -3530,7 +3534,7 @@ prompt_cache_ttl = "1h"
     fn migrate_mcp_elicitation_idempotent_when_key_present() {
         let src = "[mcp]\nelicitation_enabled = true\n";
         let result = migrate_mcp_elicitation_config(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -3538,7 +3542,7 @@ prompt_cache_ttl = "1h"
     fn migrate_mcp_elicitation_skips_when_no_mcp_section() {
         let src = "[agent]\nname = \"Zeph\"\n";
         let result = migrate_mcp_elicitation_config(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -3547,7 +3551,7 @@ prompt_cache_ttl = "1h"
         // Edge case: `[mcp]` at EOF with no `\n` — replacen would be a no-op.
         let src = "[mcp]";
         let result = migrate_mcp_elicitation_config(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -3557,8 +3561,8 @@ prompt_cache_ttl = "1h"
     fn migrate_quality_adds_block_when_absent() {
         let src = "[agent]\nname = \"Zeph\"\n";
         let result = migrate_quality_config(src).expect("migrate");
-        assert_eq!(result.added_count, 1);
-        assert!(result.sections_added.contains(&"quality".to_owned()));
+        assert_eq!(result.changed_count, 1);
+        assert!(result.sections_changed.contains(&"quality".to_owned()));
         assert!(result.output.contains("# [quality]"));
         assert!(result.output.contains("self_check = false"));
         assert!(result.output.contains("trigger = \"has_retrieval\""));
@@ -3568,7 +3572,7 @@ prompt_cache_ttl = "1h"
     fn migrate_quality_idempotent_on_commented_block() {
         let src = "[agent]\nname = \"Zeph\"\n# [quality]\n# self_check = false\n";
         let result = migrate_quality_config(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 
@@ -3576,7 +3580,7 @@ prompt_cache_ttl = "1h"
     fn migrate_quality_idempotent_on_active_section() {
         let src = "[agent]\nname = \"Zeph\"\n[quality]\nself_check = true\n";
         let result = migrate_quality_config(src).expect("migrate");
-        assert_eq!(result.added_count, 0);
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }
 

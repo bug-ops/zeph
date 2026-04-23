@@ -47,7 +47,7 @@
 //! let user_toml = std::fs::read_to_string("config.toml").unwrap();
 //! let migrator = ConfigMigrator::new();
 //! let result = migrator.migrate(&user_toml).expect("migration failed");
-//! println!("Added {} new parameters", result.added_count);
+//! println!("Added {} new parameters", result.changed_count);
 //! std::fs::write("config.toml", &result.output).unwrap();
 //! ```
 

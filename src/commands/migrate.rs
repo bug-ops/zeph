@@ -128,103 +128,103 @@ pub(crate) fn handle_migrate_config(
 
     if diff {
         print_diff(&input, &result.output);
-        if stt_result.added_count > 0 {
+        if stt_result.changed_count > 0 {
             eprintln!("STT migration: moved model/base_url to [[llm.providers]] entry.");
         }
-        if planner_result.added_count > 0 {
+        if planner_result.changed_count > 0 {
             eprintln!(
                 "Planner migration: planner_model renamed to planner_provider (value commented out)."
             );
         }
-        if trust_result.added_count > 0 {
+        if trust_result.changed_count > 0 {
             eprintln!(
                 "MCP trust migration: added trust_level = \"trusted\" to {} [[mcp.servers]] entries.",
-                trust_result.added_count
+                trust_result.changed_count
             );
         }
-        if retry_result.added_count > 0 {
+        if retry_result.changed_count > 0 {
             eprintln!("Retry migration: [agent] retry fields migrated to [tools.retry].");
         }
-        if db_url_result.added_count > 0 {
+        if db_url_result.changed_count > 0 {
             eprintln!("Database URL migration: added database_url placeholder under [memory].");
         }
-        if shell_txn_result.added_count > 0 {
+        if shell_txn_result.changed_count > 0 {
             eprintln!(
                 "Shell transactional migration: added commented-out transactional fields to [tools.shell]."
             );
         }
-        if budget_hint_result.added_count > 0 {
+        if budget_hint_result.changed_count > 0 {
             eprintln!("Budget hint migration: added commented-out budget_hint_enabled to [agent].");
         }
-        if forgetting_result.added_count > 0 {
+        if forgetting_result.changed_count > 0 {
             eprintln!("Forgetting migration: added commented-out [memory.forgetting] section.");
         }
-        if predictor_result.added_count > 0 {
+        if predictor_result.changed_count > 0 {
             eprintln!(
                 "Predictor migration: removed obsolete [memory.compression.predictor] section."
             );
         }
-        if microcompact_result.added_count > 0 {
+        if microcompact_result.changed_count > 0 {
             eprintln!("Microcompact migration: added commented-out [memory.microcompact] block.");
         }
-        if autodream_result.added_count > 0 {
+        if autodream_result.changed_count > 0 {
             eprintln!("autoDream migration: added commented-out [memory.autodream] block.");
         }
-        if magic_docs_result.added_count > 0 {
+        if magic_docs_result.changed_count > 0 {
             eprintln!("MagicDocs migration: added commented-out [magic_docs] block.");
         }
-        if telemetry_result.added_count > 0 {
+        if telemetry_result.changed_count > 0 {
             eprintln!("Telemetry migration: added commented-out [telemetry] block.");
         }
-        if supervisor_result.added_count > 0 {
+        if supervisor_result.changed_count > 0 {
             eprintln!("Supervisor migration: added commented-out [agent.supervisor] block.");
         }
-        if otel_filter_result.added_count > 0 {
+        if otel_filter_result.changed_count > 0 {
             eprintln!(
                 "OTLP filter migration: added commented-out otel_filter key under [telemetry]."
             );
         }
-        if egress_result.added_count > 0 {
+        if egress_result.changed_count > 0 {
             eprintln!("Egress migration: added commented-out [tools.egress] block.");
         }
-        if vigil_result.added_count > 0 {
+        if vigil_result.changed_count > 0 {
             eprintln!("VIGIL migration: added commented-out [security.vigil] block.");
         }
-        if sandbox_result.added_count > 0 {
+        if sandbox_result.changed_count > 0 {
             eprintln!("Sandbox migration: added commented-out [tools.sandbox] block.");
         }
-        if orch_persistence_result.added_count > 0 {
+        if orch_persistence_result.changed_count > 0 {
             eprintln!(
                 "Orchestration persistence migration: \
                  added commented-out persistence_enabled under [orchestration]."
             );
         }
-        if session_recap_result.added_count > 0 {
+        if session_recap_result.changed_count > 0 {
             eprintln!("Session recap migration: added commented-out [session.recap] block.");
         }
-        if mcp_elicitation_result.added_count > 0 {
+        if mcp_elicitation_result.changed_count > 0 {
             eprintln!(
                 "MCP elicitation migration: added commented-out elicitation keys under [mcp]."
             );
         }
-        if quality_result.added_count > 0 {
+        if quality_result.changed_count > 0 {
             eprintln!("Quality migration: added commented-out [quality] block.");
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",
-            result.added_count,
-            result.sections_added.len()
+            result.changed_count,
+            result.sections_changed.len()
         );
     } else if in_place {
         atomic_write(config_path, &result.output)?;
         eprintln!(
             "Config migrated in-place: {} ({} entries added, sections: {})",
             config_path.display(),
-            result.added_count,
-            if result.sections_added.is_empty() {
+            result.changed_count,
+            if result.sections_changed.is_empty() {
                 "none".to_owned()
             } else {
-                result.sections_added.join(", ")
+                result.sections_changed.join(", ")
             }
         );
     } else {
