@@ -3224,14 +3224,14 @@ mod tests {
         agent
     }
 
-    /// Helper: call handle_focus_tool and flush the pending checkpoint into agent history,
-    /// simulating the deferred insertion that execute_tool_calls_batch performs (#3262).
+    /// Helper: call `handle_focus_tool` and flush the pending checkpoint into agent history,
+    /// simulating the deferred insertion that `execute_tool_calls_batch` performs (#3262).
     fn call_focus_tool(
         agent: &mut Agent<MockChannel>,
         tool_name: &str,
-        input: serde_json::Value,
+        input: &serde_json::Value,
     ) -> String {
-        let (result, maybe_checkpoint) = agent.handle_focus_tool(tool_name, &input);
+        let (result, maybe_checkpoint) = agent.handle_focus_tool(tool_name, input);
         if let Some(cp) = maybe_checkpoint {
             agent.push_message(cp);
         }
@@ -3242,7 +3242,7 @@ mod tests {
     fn start_focus_happy_path_inserts_pinned_checkpoint() {
         let mut agent = make_agent();
         let input = serde_json::json!({"scope": "reading auth files"});
-        let result = call_focus_tool(&mut agent, "start_focus", input);
+        let result = call_focus_tool(&mut agent, "start_focus", &input);
 
         assert!(
             !result.starts_with("[error]"),
@@ -3338,12 +3338,12 @@ mod tests {
         call_focus_tool(
             &mut agent,
             "start_focus",
-            serde_json::json!({"scope": "first"}),
+            &serde_json::json!({"scope": "first"}),
         );
         let result = call_focus_tool(
             &mut agent,
             "start_focus",
-            serde_json::json!({"scope": "second"}),
+            &serde_json::json!({"scope": "second"}),
         );
         assert!(
             result.starts_with("[error]"),
@@ -3357,7 +3357,7 @@ mod tests {
         let result = call_focus_tool(
             &mut agent,
             "complete_focus",
-            serde_json::json!({"summary": "done"}),
+            &serde_json::json!({"summary": "done"}),
         );
         assert!(
             result.starts_with("[error]"),
@@ -3371,7 +3371,7 @@ mod tests {
         call_focus_tool(
             &mut agent,
             "start_focus",
-            serde_json::json!({"scope": "test"}),
+            &serde_json::json!({"scope": "test"}),
         );
         // Add some messages in the focus window
         agent
@@ -3381,7 +3381,7 @@ mod tests {
         let result = call_focus_tool(
             &mut agent,
             "complete_focus",
-            serde_json::json!({"summary": "learned stuff"}),
+            &serde_json::json!({"summary": "learned stuff"}),
         );
         assert!(
             !result.starts_with("[error]"),
@@ -3403,7 +3403,7 @@ mod tests {
         call_focus_tool(
             &mut agent,
             "start_focus",
-            serde_json::json!({"scope": "test"}),
+            &serde_json::json!({"scope": "test"}),
         );
         // Remove checkpoint by hand to simulate marker eviction
         agent
@@ -3413,7 +3413,7 @@ mod tests {
         let result = call_focus_tool(
             &mut agent,
             "complete_focus",
-            serde_json::json!({"summary": "done"}),
+            &serde_json::json!({"summary": "done"}),
         );
         assert!(
             result.starts_with("[error]"),
@@ -3427,7 +3427,7 @@ mod tests {
         call_focus_tool(
             &mut agent,
             "start_focus",
-            serde_json::json!({"scope": "test"}),
+            &serde_json::json!({"scope": "test"}),
         );
         let before_len = agent.msg.messages.len();
         // Add 3 messages in the focus window
@@ -3440,7 +3440,7 @@ mod tests {
         call_focus_tool(
             &mut agent,
             "complete_focus",
-            serde_json::json!({"summary": "done"}),
+            &serde_json::json!({"summary": "done"}),
         );
         // Messages after complete_focus: [system prompt, knowledge block] at minimum
         // Checkpoint + bracketed messages must be gone
@@ -3456,7 +3456,11 @@ mod tests {
         // handle_focus_tool itself does not enforce it — the LLM decides when to call.
         let mut agent = make_agent();
         agent.focus.config.min_messages_per_focus = 100; // very high, but tool doesn't check
-        let result = call_focus_tool(&mut agent, "start_focus", serde_json::json!({"scope": "x"}));
+        let result = call_focus_tool(
+            &mut agent,
+            "start_focus",
+            &serde_json::json!({"scope": "x"}),
+        );
         assert!(
             !result.starts_with("[error]"),
             "tool must not enforce min_messages_per_focus: {result}"

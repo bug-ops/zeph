@@ -3597,6 +3597,237 @@ mod subgoal_extraction_tests {
 }
 
 #[cfg(test)]
+mod orphan_tool_result_tests {
+    use super::super::super::Agent;
+
+    // T-ORPHAN-01: compact_context_with_budget must not produce an orphan ToolResult when
+    // the boundary lands exactly on a ToolUse/ToolResult pair.
+    // Regression guard for #3257: adjust_compact_end_for_tool_pairs must absorb the pair.
+    #[tokio::test]
+    async fn compact_context_with_budget_no_orphan_tool_result() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+
+        // 6 messages (including agent system prompt at idx 0):
+        // [0] system (agent prompt, added by Agent::new)
+        // [1] user "hello"
+        // [2] assistant "hi"
+        // [3] user "ask"
+        // [4] assistant with ToolUse "t1"
+        // [5] user with ToolResult "t1"   ← tail preserved
+        //
+        // preserve_tail=1, so raw=5; messages[5] is ToolResult-only (Role::User) →
+        // adjust absorbs it → end=4; messages[4] is ToolUse-only assistant → absorb → end=3.
+        // to_compact = messages[1..3] = 2 messages drained; summary inserted at idx 1.
+        // Without the helper, messages[5] (ToolResult) would become idx 2 after drain —
+        // orphaned after the summary — and assert_no_orphan_tool_results would fail.
+
+        let mut agent = Agent::new(
+            mock_provider(vec!["SUMMARY".to_string()]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.context_manager.compaction_preserve_tail = 1;
+        agent.memory_state.compaction.structured_summaries = false;
+
+        // Append messages after the agent system prompt (idx 0).
+        agent.msg.messages.push(Message {
+            role: Role::User,
+            content: "hello".into(),
+            parts: vec![MessagePart::Text {
+                text: "hello".into(),
+            }],
+            metadata: MessageMetadata::default(),
+        });
+        agent.msg.messages.push(Message {
+            role: Role::Assistant,
+            content: "hi".into(),
+            parts: vec![MessagePart::Text { text: "hi".into() }],
+            metadata: MessageMetadata::default(),
+        });
+        agent.msg.messages.push(Message {
+            role: Role::User,
+            content: "ask".into(),
+            parts: vec![MessagePart::Text { text: "ask".into() }],
+            metadata: MessageMetadata::default(),
+        });
+        agent.msg.messages.push(Message {
+            role: Role::Assistant,
+            content: String::new(),
+            parts: vec![MessagePart::ToolUse {
+                id: "t1".into(),
+                name: "shell".into(),
+                input: serde_json::json!({}),
+            }],
+            metadata: MessageMetadata::default(),
+        });
+        agent.msg.messages.push(Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "result".into(),
+                is_error: false,
+            }],
+            metadata: MessageMetadata::default(),
+        });
+
+        assert_eq!(agent.msg.messages.len(), 6, "precondition: 6 messages");
+
+        let result = agent.compact_context_with_budget(None).await;
+        assert!(
+            result.is_ok(),
+            "compact_context_with_budget must succeed: {result:?}"
+        );
+
+        // After compaction: messages[5]=ToolResult is absorbed into tail (end moves 5→4).
+        // messages[3]=user-text so preceding is NOT ToolUse → no extra absorption.
+        // compact_end=4; drained messages[1..4] = 3 messages; summary inserted at idx 1.
+        // Final: [0]=agent-sys, [1]=summary, [2]=ToolUse, [3]=ToolResult. Total = 4.
+        assert_eq!(
+            agent.msg.messages.len(),
+            4,
+            "should compact 3 msgs + insert summary"
+        );
+        assert_eq!(agent.msg.messages[1].role, Role::System, "summary at idx 1");
+        assert!(
+            agent.msg.messages[1]
+                .content
+                .starts_with("[conversation summary —"),
+            "summary marker: {:?}",
+            &agent.msg.messages[1].content[..agent.msg.messages[1].content.len().min(60)]
+        );
+
+        assert_no_orphan_tool_results(&agent.msg.messages);
+    }
+
+    // T-ORPHAN-02: hard compaction (LLM path) with a multi-turn transcript that ends in a
+    // ToolUse/ToolResult pair must not orphan the ToolResult — e2e regression for #3258/#3255.
+    #[tokio::test]
+    async fn compact_context_hard_compaction_no_orphan_tool_result_e2e() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+
+        // 11 messages total (idx 0 = agent system prompt from Agent::new):
+        // [0]  system  (agent prompt)
+        // [1]  user    "turn 1"
+        // [2]  assistant "reply 1"
+        // [3]  user    "turn 2"
+        // [4]  assistant ToolUse "t1"
+        // [5]  user    ToolResult "t1"
+        // [6]  user    "turn 3"
+        // [7]  assistant "reply 3"
+        // [8]  user    "turn 4"
+        // [9]  assistant ToolUse "t_last"
+        // [10] user    ToolResult "t_last"   ← the orphaned position from bug #3255
+        //
+        // preserve_tail=1 → raw=10; messages[10]=ToolResult-only user → absorb → end=9;
+        // messages[9]=ToolUse-only assistant → absorb → end=8.
+        // Without the helper, ToolResult at [10] would end up orphaned after drain.
+
+        let mut agent = Agent::new(
+            mock_provider(vec!["SUMMARY".to_string()]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.context_manager.compaction_preserve_tail = 1;
+        agent.memory_state.compaction.structured_summaries = false;
+
+        let text = |role: Role, s: &str| Message {
+            role,
+            content: s.into(),
+            parts: vec![MessagePart::Text { text: s.into() }],
+            metadata: MessageMetadata::default(),
+        };
+        let tool_use = |id: &str| Message {
+            role: Role::Assistant,
+            content: String::new(),
+            parts: vec![MessagePart::ToolUse {
+                id: id.into(),
+                name: "shell".into(),
+                input: serde_json::json!({}),
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        let tool_result = |id: &str| Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![MessagePart::ToolResult {
+                tool_use_id: id.into(),
+                content: "ok".into(),
+                is_error: false,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+
+        agent.msg.messages.push(text(Role::User, "turn 1"));
+        agent.msg.messages.push(text(Role::Assistant, "reply 1"));
+        agent.msg.messages.push(text(Role::User, "turn 2"));
+        agent.msg.messages.push(tool_use("t1"));
+        agent.msg.messages.push(tool_result("t1"));
+        agent.msg.messages.push(text(Role::User, "turn 3"));
+        agent.msg.messages.push(text(Role::Assistant, "reply 3"));
+        agent.msg.messages.push(text(Role::User, "turn 4"));
+        agent.msg.messages.push(tool_use("t_last"));
+        agent.msg.messages.push(tool_result("t_last"));
+
+        assert_eq!(agent.msg.messages.len(), 11, "precondition: 11 messages");
+
+        let result = agent.compact_context_with_budget(None).await;
+        assert!(
+            result.is_ok(),
+            "compact_context_with_budget must succeed: {result:?}"
+        );
+
+        assert_eq!(agent.msg.messages[1].role, Role::System, "summary at idx 1");
+        assert!(
+            agent.msg.messages[1]
+                .content
+                .starts_with("[conversation summary —"),
+            "summary marker: {:?}",
+            &agent.msg.messages[1].content[..agent.msg.messages[1].content.len().min(60)]
+        );
+
+        assert!(
+            agent.msg.messages.len() < 11,
+            "compaction must have reduced message count (got {})",
+            agent.msg.messages.len()
+        );
+        assert_no_orphan_tool_results(&agent.msg.messages);
+    }
+
+    fn assert_no_orphan_tool_results(messages: &[zeph_llm::provider::Message]) {
+        use zeph_llm::provider::MessagePart;
+        for (i, msg) in messages.iter().enumerate() {
+            for part in &msg.parts {
+                if let MessagePart::ToolResult { tool_use_id, .. } = part {
+                    assert!(i > 0, "orphan ToolResult at idx 0: no preceding message");
+                    let matched = messages[i - 1]
+                        .parts
+                        .iter()
+                        .any(|p| matches!(p, MessagePart::ToolUse { id, .. } if id == tool_use_id));
+                    assert!(
+                        matched,
+                        "orphan ToolResult at idx {i} (tool_use_id={tool_use_id:?}): \
+                         preceding message has no matching ToolUse"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod compact_end_tool_pair_tests {
     use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
