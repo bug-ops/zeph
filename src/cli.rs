@@ -326,6 +326,12 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: DbCommand,
     },
+    /// ACP sub-agent client commands
+    #[cfg(feature = "acp")]
+    Acp {
+        #[command(subcommand)]
+        command: AcpCommand,
+    },
     /// Run preflight connectivity and configuration checks
     Doctor {
         /// Emit results as JSON (`schema_version` = 1)
@@ -344,6 +350,43 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: zeph_bench::BenchCommand,
     },
+}
+
+/// ACP sub-agent client subcommands.
+#[cfg(feature = "acp")]
+#[derive(Subcommand)]
+pub(crate) enum AcpCommand {
+    /// Run a one-shot prompt against an ACP sub-agent and print the response
+    RunAgent {
+        /// Shell command to spawn the sub-agent (e.g. "cargo run -- --acp")
+        #[arg(long, short)]
+        command: String,
+
+        /// Prompt text to send
+        #[arg(long, short)]
+        prompt: Option<String>,
+
+        /// Working directory for the subprocess (sets both process_cwd and session_cwd)
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+
+        /// Handshake + session timeout in seconds
+        #[arg(long, default_value = "600")]
+        timeout: u64,
+    },
+    /// Sub-agent preset management
+    Subagent {
+        #[command(subcommand)]
+        command: AcpSubagentCommand,
+    },
+}
+
+/// Sub-agent preset subcommands.
+#[cfg(feature = "acp")]
+#[derive(Subcommand)]
+pub(crate) enum AcpSubagentCommand {
+    /// List configured sub-agent presets
+    List,
 }
 
 /// Database subcommands.

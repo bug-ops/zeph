@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(feature = "acp")]
+pub(crate) mod acp;
 pub(crate) mod agents;
 #[cfg(feature = "bench")]
 pub(crate) mod bench;

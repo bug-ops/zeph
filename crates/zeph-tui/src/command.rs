@@ -15,7 +15,7 @@
 /// let cmd = TuiCommand::SkillList;
 /// assert_eq!(cmd, TuiCommand::SkillList);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiCommand {
     // Existing view commands
     SkillList,
@@ -110,6 +110,8 @@ pub enum TuiCommand {
     AcpDirsList,
     AcpAuthMethodsView,
     AcpStatus,
+    // ACP sub-agent delegation (#3272)
+    SubagentSpawn { command: String },
 }
 
 /// Metadata for a single entry in the command palette.
@@ -668,6 +670,15 @@ fn build_extra_commands() -> Vec<CommandEntry> {
         shortcut: None,
         command: TuiCommand::AcpStatus,
     });
+    cmds.push(CommandEntry {
+        id: "acp:subagent-spawn",
+        label: "ACP: spawn a sub-agent (/subagent spawn <cmd>)",
+        category: "acp",
+        shortcut: None,
+        command: TuiCommand::SubagentSpawn {
+            command: String::new(),
+        },
+    });
     cmds
 }
 
@@ -772,8 +783,8 @@ mod tests {
     fn extra_registry_has_correct_command_count() {
         // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
         // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status
-        // + 1 forgetting-sweep + 3 acp = 41
-        assert_eq!(extra_command_registry().len(), 41);
+        // + 1 forgetting-sweep + 1 predictor-status + 3 acp = 43
+        assert_eq!(extra_command_registry().len(), 43);
     }
 
     #[test]

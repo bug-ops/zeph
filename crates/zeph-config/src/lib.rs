@@ -141,8 +141,8 @@ pub use subagent::{
 };
 pub use telemetry::{TelemetryBackend, TelemetryConfig};
 pub use ui::{
-    AcpAuthMethod, AcpConfig, AcpLspConfig, AcpTransport, AdditionalDir, AdditionalDirError,
-    TuiConfig,
+    AcpAuthMethod, AcpConfig, AcpLspConfig, AcpSubagentsConfig, AcpTransport, AdditionalDir,
+    AdditionalDirError, SubagentPresetConfig, TuiConfig,
 };
 pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 pub use vigil::VigilConfig;

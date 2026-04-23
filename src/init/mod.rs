@@ -62,6 +62,7 @@ pub(crate) struct WizardState {
     pub(crate) acp_additional_directories: Vec<std::path::PathBuf>,
     pub(crate) acp_auth_methods: Vec<zeph_config::AcpAuthMethod>,
     pub(crate) acp_message_ids_enabled: bool,
+    pub(crate) acp_subagents_enabled: bool,
     pub(crate) thinking: Option<ThinkingConfig>,
     pub(crate) enable_extended_context: bool,
     pub(crate) agents_default_permission_mode: Option<PermissionMode>,
@@ -266,6 +267,7 @@ impl Default for WizardState {
             acp_additional_directories: Vec::new(),
             acp_auth_methods: vec![zeph_config::AcpAuthMethod::Agent],
             acp_message_ids_enabled: true,
+            acp_subagents_enabled: false,
             thinking: None,
             enable_extended_context: false,
             agents_default_permission_mode: None,
@@ -1037,6 +1039,10 @@ fn apply_acp_config(config: &mut Config, state: &WizardState) {
             additional_directories,
             auth_methods: state.acp_auth_methods.clone(),
             message_ids_enabled: state.acp_message_ids_enabled,
+            subagents: zeph_config::AcpSubagentsConfig {
+                enabled: state.acp_subagents_enabled,
+                ..zeph_config::AcpSubagentsConfig::default()
+            },
             ..AcpConfig::default()
         };
     }
@@ -1154,6 +1160,14 @@ fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
         state.acp_message_ids_enabled = Confirm::new()
             .with_prompt("Echo PromptRequest.message_id in responses/chunks (IDE correlation)?")
             .default(true)
+            .interact()?;
+
+        state.acp_subagents_enabled = Confirm::new()
+            .with_prompt(
+                "Enable ACP sub-agent delegation? \
+                 (allows `zeph acp run-agent` to spawn child ACP agents)",
+            )
+            .default(false)
             .interact()?;
     }
 

@@ -69,6 +69,7 @@
 //! ```
 
 pub mod agent;
+pub mod client;
 pub(crate) mod custom;
 pub mod error;
 pub mod fs;
@@ -79,6 +80,9 @@ pub mod terminal;
 pub mod transport;
 
 pub use agent::{AcpContext, AgentSpawner, ProviderFactory, SessionContext, run_agent};
+pub use client::{
+    AcpClientError, RunOutcome, SubagentConfig, SubagentHandle, run_session, spawn_subagent,
+};
 pub use error::AcpError;
 pub use fs::AcpFileExecutor;
 pub use lsp::{AcpLspProvider, DiagnosticsCache, LspProvider};

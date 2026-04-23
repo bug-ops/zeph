@@ -268,6 +268,55 @@ pub enum AcpTransport {
     Both,
 }
 
+/// Configuration for a named sub-agent preset in `[[acp.subagents.presets]]`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct SubagentPresetConfig {
+    /// Identifier used to reference this preset by name.
+    pub name: String,
+    /// Shell command string to spawn the sub-agent (e.g. `"cargo run -- --acp"`).
+    pub command: String,
+    /// Optional working directory for the spawned subprocess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+    /// Timeout in seconds for the `initialize` + `session/new` handshake. Default: 30.
+    #[serde(default = "default_subagent_handshake_timeout_secs")]
+    pub handshake_timeout_secs: u64,
+    /// Timeout in seconds for a single prompt round-trip. Default: 600.
+    #[serde(default = "default_subagent_prompt_timeout_secs")]
+    pub prompt_timeout_secs: u64,
+}
+
+/// Configuration block for the `[acp.subagents]` TOML section.
+///
+/// # Example
+///
+/// ```toml
+/// [acp.subagents]
+/// enabled = true
+///
+/// [[acp.subagents.presets]]
+/// name = "inner"
+/// command = "cargo run --quiet -- --acp"
+/// ```
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AcpSubagentsConfig {
+    /// Whether sub-agent spawning is enabled at runtime. Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Named presets available via CLI (`zeph acp subagent list`) and TUI palette.
+    #[serde(default)]
+    pub presets: Vec<SubagentPresetConfig>,
+}
+
+fn default_subagent_handshake_timeout_secs() -> u64 {
+    30
+}
+
+fn default_subagent_prompt_timeout_secs() -> u64 {
+    600
+}
+
 /// ACP (Agent Communication Protocol) server configuration, nested under `[acp]` in TOML.
 ///
 /// When `enabled = true`, Zeph exposes an ACP endpoint that IDE integrations (e.g. Zed, VS Code)
@@ -353,6 +402,9 @@ pub struct AcpConfig {
     /// Requires the `unstable-message-id` feature. Default: `true`.
     #[serde(default = "default_true")]
     pub message_ids_enabled: bool,
+    /// Sub-agent delegation configuration (`[acp.subagents]`).
+    #[serde(default)]
+    pub subagents: AcpSubagentsConfig,
 }
 
 impl Default for AcpConfig {
@@ -374,6 +426,7 @@ impl Default for AcpConfig {
             additional_directories: Vec::new(),
             auth_methods: default_acp_auth_methods(),
             message_ids_enabled: true,
+            subagents: AcpSubagentsConfig::default(),
         }
     }
 }
@@ -400,6 +453,7 @@ impl std::fmt::Debug for AcpConfig {
             .field("additional_directories", &self.additional_directories)
             .field("auth_methods", &self.auth_methods)
             .field("message_ids_enabled", &self.message_ids_enabled)
+            .field("subagents", &self.subagents)
             .finish()
     }
 }

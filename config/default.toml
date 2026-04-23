@@ -817,6 +817,16 @@ max_workspace_symbols = 50
 # Timeout in seconds for LSP extension method calls
 request_timeout_secs = 10
 
+[acp.subagents]
+# Enable ACP sub-agent delegation (allows `zeph acp run-agent` to spawn child ACP agents)
+enabled = false
+# Named presets for one-shot delegation (list with [[acp.subagents.presets]])
+# [[acp.subagents.presets]]
+# name = "inner"
+# command = "cargo run --quiet -- --acp"
+# handshake_timeout_secs = 30
+# prompt_timeout_secs = 600
+
 [agents]
 # Enable sub-agent spawning (required for /agent commands and multi-agent workflows)
 enabled = false

@@ -34,6 +34,8 @@ use crate::acp::run_acp_http_server;
 #[cfg(feature = "acp")]
 use crate::acp::{print_acp_manifest, run_acp_server};
 use crate::cli::{Command, DbCommand};
+#[cfg(feature = "acp")]
+use crate::commands::acp::handle_acp_command;
 use crate::commands::agents::handle_agents_command;
 use crate::commands::classifiers::handle_classifiers_command;
 use crate::commands::memory::handle_memory_command;
@@ -241,6 +243,9 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                 vault_backend.as_deref(),
                 vault_key.as_deref(),
                 vault_path.as_deref(),
+                Vec::new(),
+                Vec::new(),
+                None,
             ))
             .await
         }
@@ -401,6 +406,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         #[cfg(feature = "scheduler")]
         Some(Command::Schedule { command: sched_cmd }) => {
             return handle_schedule_command(sched_cmd, cli.config.as_deref()).await;
+        }
+        #[cfg(feature = "acp")]
+        Some(Command::Acp { command: acp_cmd }) => {
+            return handle_acp_command(acp_cmd).await;
         }
         #[cfg(feature = "acp")]
         Some(Command::Sessions { command: sess_cmd }) => {

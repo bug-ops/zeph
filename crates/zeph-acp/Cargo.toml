@@ -51,6 +51,7 @@ parking_lot.workspace = true
 reqwest = { workspace = true, features = ["rustls", "stream"] }
 rmcp.workspace = true
 schemars.workspace = true
+shell-words.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 subtle = { workspace = true, optional = true }
@@ -63,6 +64,7 @@ tower-http = { workspace = true, features = ["cors", "limit"], optional = true }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeph-common.workspace = true
+zeph-config.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true

@@ -59,6 +59,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **feat(acp): ACP client sub-agent** (#3272) — `zeph-acp` gains a `client` module with `SubagentConfig`, `SubagentHandle`, `spawn_subagent`, and `run_session`; spawns an ACP-compatible child process via `tokio::process::Command` with `env_clear()` + whitelist so no `ZEPH_*` secrets leak; biased `tokio::select!` in the driver loop allows `session/cancel` to preempt in-flight reads within one poll cycle; `drain_until_stop` collects text chunks and exposes `StopReason` via `RunOutcome`; 11 unit tests cover env isolation, cwd, error display, and config helpers.
+- **feat(cli): `zeph acp run-agent` command** (#3272) — new `acp run-agent --command <CMD> [--prompt <TEXT>] [--cwd <DIR>] [--timeout <SECS>]` sub-command for one-shot sub-agent delegation; reads prompt from stdin when `--prompt` is omitted; feature-gated behind `acp`.
+- **feat(cli): `zeph acp subagent list` command** (#3272) — stub command that directs the user to configure sub-agent presets in `[acp.subagents]`.
+
 - Add `zeph-acp` handler module scaffolding for ACP 0.11 migration (PR 1, epic #3265)
 - Add `unstable-auth-methods`, `unstable-message-id`, `unstable-session-add-dirs`, `unstable-boolean-config` optional features to `zeph-acp`
 - **feat(acp): `additional_directories` request-side allowlist** (#3270, PR 4) — `AcpConfig.additional_directories` (Vec of validated paths); `AdditionalDir` newtype with traversal and reserved-prefix checks; `validate_additional_directories` rejects session requests with non-allowed paths at session start; feature-gated by `unstable-session-add-dirs`

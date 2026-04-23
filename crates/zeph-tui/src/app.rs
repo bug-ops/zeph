@@ -1605,7 +1605,7 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(entry) = palette.selected_entry() {
-                    let cmd = entry.command;
+                    let cmd = entry.command.clone();
                     self.execute_command(cmd);
                 }
                 self.command_palette = None;
@@ -1791,7 +1791,7 @@ impl App {
             TuiCommand::PluginRemove => self.prefill_input("/plugins remove "),
             TuiCommand::SessionSwitchNext
             | TuiCommand::SessionSwitchPrev
-            | TuiCommand::SessionClose => self.try_switch(cmd),
+            | TuiCommand::SessionClose => self.try_switch(&cmd),
             TuiCommand::PluginListOverlay => {
                 let _ = self.user_input_tx.try_send("/plugins overlay".to_owned());
             }
@@ -1807,13 +1807,22 @@ impl App {
                 self.push_system_message("Querying ACP runtime...".to_owned());
                 let _ = self.user_input_tx.try_send("/acp status".to_owned());
             }
+            TuiCommand::SubagentSpawn { command } => {
+                if command.is_empty() {
+                    self.prefill_input("/subagent spawn ");
+                } else {
+                    let _ = self
+                        .user_input_tx
+                        .try_send(format!("/subagent spawn {command}"));
+                }
+            }
             _ => {}
         }
     }
 
     /// Handle a session switch or close command, blocking when a modal with a response channel
     /// is open (would deadlock the agent's `confirm()`/`elicit()` call if dismissed silently).
-    fn try_switch(&mut self, cmd: TuiCommand) {
+    fn try_switch(&mut self, cmd: &TuiCommand) {
         if self.confirm_state.is_some() || self.elicitation_state.is_some() {
             self.push_system_message(
                 "Resolve the current confirmation dialog before switching sessions.".to_owned(),
@@ -1859,6 +1868,11 @@ impl App {
                 Some(TuiCommand::AcpAuthMethodsView)
             }
             [cmd, "status"] if cmd.eq_ignore_ascii_case("/acp") => Some(TuiCommand::AcpStatus),
+            [cmd, "spawn", rest @ ..] if cmd.eq_ignore_ascii_case("/subagent") => {
+                Some(TuiCommand::SubagentSpawn {
+                    command: rest.join(" "),
+                })
+            }
             _ => None,
         }
     }
