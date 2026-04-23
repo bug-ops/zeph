@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod acp_commands;
 mod agent_access_impl;
 pub(crate) mod agent_supervisor;
 mod autodream;
@@ -932,6 +933,7 @@ impl<C: Channel> Agent<C> {
             > = if session_reg_missed {
                 use zeph_commands::CommandRegistry;
                 use zeph_commands::handlers::{
+                    acp::AcpCommand,
                     agent_cmd::AgentCommand,
                     compaction::{CompactCommand, NewConversationCommand, RecapCommand},
                     experiment::ExperimentCommand,
@@ -979,6 +981,7 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(PlanCommand);
                 agent_reg.register(LoopCommand);
                 agent_reg.register(PluginsCommand);
+                agent_reg.register(AcpCommand);
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut agent_null_sink,

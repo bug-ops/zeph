@@ -176,6 +176,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         feature_gate: None,
     },
     CommandInfo {
+        name: "/acp",
+        args: "[dirs | auth-methods | status]",
+        description: "Inspect ACP server configuration",
+        category: SlashCategory::Integration,
+        feature_gate: Some("acp"),
+    },
+    CommandInfo {
         name: "/mcp",
         args: "[add|list|tools|remove]",
         description: "Manage MCP servers",

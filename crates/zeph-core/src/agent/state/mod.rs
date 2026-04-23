@@ -237,6 +237,8 @@ pub(crate) struct RuntimeConfig {
     pub(crate) supervisor_config: crate::config::TaskSupervisorConfig,
     /// Session recap config (#3064).
     pub(crate) recap_config: zeph_config::RecapConfig,
+    /// ACP server configuration snapshot for `/acp` slash-command display.
+    pub(crate) acp_config: zeph_config::AcpConfig,
     /// Set to `true` after the auto-recap is emitted at session resume (#3144).
     ///
     /// Used by `/recap` to skip a redundant LLM call when no new messages have
@@ -881,6 +883,7 @@ impl Default for RuntimeConfig {
             layers: Vec::new(),
             supervisor_config: crate::config::TaskSupervisorConfig::default(),
             recap_config: zeph_config::RecapConfig::default(),
+            acp_config: zeph_config::AcpConfig::default(),
             auto_recap_shown: false,
             msg_count_at_resume: 0,
         }

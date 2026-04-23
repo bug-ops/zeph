@@ -1268,6 +1268,13 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Stores the ACP configuration snapshot for `/acp` slash-command display.
+    #[must_use]
+    pub fn with_acp_config(mut self, config: zeph_config::AcpConfig) -> Self {
+        self.runtime.acp_config = config;
+        self
+    }
+
     /// Returns a handle that can cancel the current in-flight operation.
     /// The returned `Notify` is stable across messages — callers invoke
     /// `notify_waiters()` to cancel whatever operation is running.

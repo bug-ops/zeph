@@ -2271,6 +2271,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     // Wire supervisor config so concurrency limits and turn-boundary abort are applied (#2883).
     let agent = agent.with_supervisor_config(&config.agent.supervisor);
+    let agent = agent.with_acp_config(config.acp.clone());
 
     #[cfg(feature = "self-check")]
     let agent = {

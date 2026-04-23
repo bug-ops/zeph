@@ -853,6 +853,18 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         })
     }
 
+    // ----- /acp -----
+
+    fn handle_acp<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.handle_acp_as_string(args)
+                .map_err(|e| CommandError::new(e.to_string()))
+        })
+    }
+
     // ----- /loop -----
 
     fn handle_loop<'a>(

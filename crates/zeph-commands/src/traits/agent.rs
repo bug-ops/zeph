@@ -391,6 +391,21 @@ pub trait AgentAccess: Send {
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
 
+    // ----- /acp -----
+
+    /// Handle `/acp [dirs|auth-methods|status]` and return a user-visible result.
+    ///
+    /// Subcommands: `dirs` (`additional_directories` allowlist), `auth-methods`, `status`.
+    /// No subcommand or empty args returns a short help text.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when an unknown subcommand is passed.
+    fn handle_acp<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
     // ----- /loop -----
 
     /// Handle `/loop <prompt> every <N> <unit>` or `/loop stop`.
@@ -607,6 +622,13 @@ impl AgentAccess for NullAgent {
     }
 
     fn handle_plugins<'a>(
+        &'a mut self,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn handle_acp<'a>(
         &'a mut self,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {

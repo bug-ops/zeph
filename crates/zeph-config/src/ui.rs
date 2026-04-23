@@ -106,6 +106,14 @@ impl<'de> serde::Deserialize<'de> for AcpAuthMethod {
     }
 }
 
+impl std::fmt::Display for AcpAuthMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Agent => f.write_str("agent"),
+        }
+    }
+}
+
 fn default_acp_auth_methods() -> Vec<AcpAuthMethod> {
     vec![AcpAuthMethod::Agent]
 }

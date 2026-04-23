@@ -9,6 +9,7 @@
 //! [`CommandHandler<CommandContext>`]: crate::CommandHandler
 //! [`CommandContext`]: crate::context::CommandContext
 
+pub mod acp;
 pub mod agent_cmd;
 pub mod compaction;
 pub mod debug;

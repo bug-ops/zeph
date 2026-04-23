@@ -92,6 +92,7 @@ fn make_runtime_config() -> RuntimeConfig {
         layers: Vec::new(),
         supervisor_config: crate::config::TaskSupervisorConfig::default(),
         recap_config: zeph_config::RecapConfig::default(),
+        acp_config: zeph_config::AcpConfig::default(),
         auto_recap_shown: false,
         msg_count_at_resume: 0,
     }
