@@ -126,15 +126,7 @@ embedding_model = "qwen3-embedding"
 # chat_template = "chatml"              # llama3, chatml, mistral, phi3, raw
 # device = "cpu"                        # auto, cpu, metal, cuda
 
-# Multi-provider with task-based routing example:
-#
-# [llm]
-# routing = "task"
-#
-# [llm.routes]
-# coding = ["claude", "ollama"]
-# creative = ["claude"]
-# general = ["ollama", "claude"]
+# Multi-provider example:
 #
 # [[llm.providers]]
 # name = "ollama"

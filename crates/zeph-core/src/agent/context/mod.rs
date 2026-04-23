@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-pub(super) mod assembler;
+#[cfg(test)]
+pub(super) mod assembler_helpers;
 mod assembly;
 #[cfg(feature = "self-check")]
 pub(crate) mod retrieved;

@@ -98,7 +98,7 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::super::error::AgentError> {
         self.remove_recall_messages();
 
-        let (msg, _score) = super::assembler::fetch_semantic_recall(
+        let (msg, _score) = super::assembler_helpers::fetch_semantic_recall(
             &self.memory_state,
             query,
             token_budget,
@@ -319,7 +319,7 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::super::error::AgentError> {
         self.remove_cross_session_messages();
 
-        if let Some(msg) = super::assembler::fetch_cross_session(
+        if let Some(msg) = super::assembler_helpers::fetch_cross_session(
             &self.memory_state,
             query,
             token_budget,
@@ -342,7 +342,7 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::super::error::AgentError> {
         self.remove_summary_messages();
 
-        if let Some(msg) = super::assembler::fetch_summaries(
+        if let Some(msg) = super::assembler_helpers::fetch_summaries(
             &self.memory_state,
             token_budget,
             &self.metrics.token_counter,
@@ -1533,19 +1533,19 @@ mod tests {
 
     #[test]
     fn effective_recall_timeout_ms_nonzero_returns_unchanged() {
-        let result = crate::agent::context::assembler::effective_recall_timeout_ms(500);
+        let result = crate::agent::context::assembler_helpers::effective_recall_timeout_ms(500);
         assert_eq!(result, 500, "non-zero value must pass through unchanged");
     }
 
     #[test]
     fn effective_recall_timeout_ms_nonzero_large_returns_unchanged() {
-        let result = crate::agent::context::assembler::effective_recall_timeout_ms(5000);
+        let result = crate::agent::context::assembler_helpers::effective_recall_timeout_ms(5000);
         assert_eq!(result, 5000);
     }
 
     #[test]
     fn effective_recall_timeout_ms_zero_clamps_to_100() {
-        let result = crate::agent::context::assembler::effective_recall_timeout_ms(0);
+        let result = crate::agent::context::assembler_helpers::effective_recall_timeout_ms(0);
         assert_eq!(
             result, 100,
             "zero recall_timeout_ms must be clamped to 100ms"
@@ -1556,7 +1556,7 @@ mod tests {
     fn spreading_activation_default_timeout_is_nonzero() {
         // Ensures the default used in production is not accidentally set to zero —
         // which would always trigger the zero-clamp warn path in effective_recall_timeout_ms.
-        let result = crate::agent::context::assembler::effective_recall_timeout_ms(
+        let result = crate::agent::context::assembler_helpers::effective_recall_timeout_ms(
             zeph_config::memory::SpreadingActivationConfig::default().recall_timeout_ms,
         );
         assert!(

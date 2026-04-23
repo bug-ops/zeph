@@ -1558,7 +1558,7 @@ async fn test_prepare_context_no_scrub_when_redact_disabled() {
 
 #[test]
 fn correction_prompt_does_not_replay_bad_path_commands() {
-    let note = crate::agent::context::assembler::format_correction_note(
+    let note = super::assembler_helpers::format_correction_note(
         "cd /Users/m/dev/zeph && grep -n \"acp\" Cargo.toml | head -40",
         "Use the current repository and avoid hard-coded absolute paths.",
     );
@@ -3208,7 +3208,7 @@ async fn fetch_graph_facts_returns_none_when_graph_config_disabled() {
     let cid = memory.sqlite().create_conversation().await.unwrap();
     let mem_state = make_mem_state(std::sync::Arc::new(memory), cid, false);
     let tc = std::sync::Arc::new(zeph_memory::TokenCounter::new());
-    let result = crate::agent::context::assembler::fetch_graph_facts(&mem_state, "test", 1000, &tc)
+    let result = super::assembler_helpers::fetch_graph_facts(&mem_state, "test", 1000, &tc)
         .await
         .unwrap();
     assert!(result.is_none());
@@ -3220,7 +3220,7 @@ async fn fetch_graph_facts_returns_none_when_budget_zero() {
     let cid = memory.sqlite().create_conversation().await.unwrap();
     let mem_state = make_mem_state(std::sync::Arc::new(memory), cid, true);
     let tc = std::sync::Arc::new(zeph_memory::TokenCounter::new());
-    let result = crate::agent::context::assembler::fetch_graph_facts(&mem_state, "test", 0, &tc)
+    let result = super::assembler_helpers::fetch_graph_facts(&mem_state, "test", 0, &tc)
         .await
         .unwrap();
     assert!(result.is_none());
@@ -3232,7 +3232,7 @@ async fn fetch_graph_facts_returns_none_when_graph_is_empty() {
     let cid = memory.sqlite().create_conversation().await.unwrap();
     let mem_state = make_mem_state(std::sync::Arc::new(memory), cid, true);
     let tc = std::sync::Arc::new(zeph_memory::TokenCounter::new());
-    let result = crate::agent::context::assembler::fetch_graph_facts(&mem_state, "rust", 1000, &tc)
+    let result = super::assembler_helpers::fetch_graph_facts(&mem_state, "rust", 1000, &tc)
         .await
         .unwrap();
     assert!(result.is_none(), "empty graph must return None");
@@ -3592,7 +3592,7 @@ async fn fetch_graph_facts_returns_some_with_entities_and_has_prefix() {
 
     let mem_state = make_mem_state(std::sync::Arc::new(memory), cid, true);
     let tc = std::sync::Arc::new(zeph_memory::TokenCounter::new());
-    let result = crate::agent::context::assembler::fetch_graph_facts(&mem_state, "rust", 2000, &tc)
+    let result = super::assembler_helpers::fetch_graph_facts(&mem_state, "rust", 2000, &tc)
         .await
         .unwrap();
     assert!(result.is_some());

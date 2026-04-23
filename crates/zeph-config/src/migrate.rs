@@ -626,17 +626,16 @@ fn migrate_compatible_provider(llm: &toml_edit::Table) -> Vec<String> {
     blocks
 }
 
-// Returns (provider_blocks, routing, routes_block)
+// Returns (provider_blocks, routing)
 #[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
 fn migrate_orchestrator_provider(
     llm: &toml_edit::Table,
     model: &Option<String>,
     base_url: &Option<String>,
     embedding_model: &Option<String>,
-) -> (Vec<String>, Option<String>, Option<String>) {
+) -> (Vec<String>, Option<String>) {
     let mut blocks = Vec::new();
-    let routing = Some("task".to_owned());
-    let mut routes_block = None;
+    let routing = None;
     if let Some(orch) = llm.get("orchestrator").and_then(toml_edit::Item::as_table) {
         let default_name = orch
             .get("default")
@@ -648,20 +647,6 @@ fn migrate_orchestrator_provider(
             .and_then(toml_edit::Item::as_str)
             .unwrap_or("")
             .to_owned();
-        if let Some(routes) = orch.get("routes").and_then(toml_edit::Item::as_table) {
-            let mut rb = "[llm.routes]\n".to_owned();
-            for (key, val) in routes {
-                if let Some(arr) = val.as_array() {
-                    let items: Vec<String> = arr
-                        .iter()
-                        .filter_map(toml_edit::Value::as_str)
-                        .map(|s| format!("\"{s}\""))
-                        .collect();
-                    rb.push_str(&format!("{key} = [{}]\n", items.join(", ")));
-                }
-            }
-            routes_block = Some(rb);
-        }
         if let Some(providers) = orch.get("providers").and_then(toml_edit::Item::as_table) {
             for (name, pcfg_item) in providers {
                 let Some(pcfg) = pcfg_item.as_table() else {
@@ -715,7 +700,7 @@ fn migrate_orchestrator_provider(
             }
         }
     }
-    (blocks, routing, routes_block)
+    (blocks, routing)
 }
 
 // Returns (provider_blocks, routing)
@@ -792,6 +777,35 @@ fn migrate_router_provider(
 /// `[[llm.providers]]` array format.
 ///
 /// If the config does not contain legacy LLM keys, it is returned unchanged.
+/// Removes `routing = "task"` and `[llm.routes]` block lines from a raw TOML string.
+///
+/// Used as a pre-pass before `migrate_llm_to_providers` when the removed variant is detected.
+fn strip_task_routing_keys(toml_src: &str) -> String {
+    let mut in_routes_block = false;
+    let mut out = Vec::new();
+    for line in toml_src.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[llm.routes]" {
+            in_routes_block = true;
+            continue;
+        }
+        if in_routes_block {
+            // Exit the routes block when we hit the next section header.
+            if trimmed.starts_with('[') {
+                in_routes_block = false;
+            } else {
+                continue;
+            }
+        }
+        // Strip bare `routing = "task"` assignment.
+        if trimmed.starts_with("routing") && trimmed.contains("\"task\"") {
+            continue;
+        }
+        out.push(line);
+    }
+    out.join("\n")
+}
+
 /// Creates a `.bak` backup at `backup_path` before writing.
 ///
 /// # Errors
@@ -819,6 +833,25 @@ pub fn migrate_llm_to_providers(toml_src: &str) -> Result<MigrationResult, Migra
             });
         }
     };
+
+    // Pre-check: `routing = "task"` was removed as unimplemented (#3248).
+    // Detect on the input document before any block transforms.
+    if llm.get("routing").and_then(toml_edit::Item::as_str) == Some("task") {
+        let routes_count = llm
+            .get("routes")
+            .and_then(toml_edit::Item::as_table)
+            .map_or(0, toml_edit::Table::len);
+        let msg = format!(
+            "routing = \"task\" is no longer supported and has been removed (#3248). \
+             {routes_count} route(s) in [llm.routes] will be dropped. \
+             Falling back to default single-provider routing."
+        );
+        tracing::warn!("{msg}");
+        eprintln!("WARNING: {msg}");
+        // Strip the removed keys and re-run migration on the cleaned source.
+        let cleaned = strip_task_routing_keys(toml_src);
+        return migrate_llm_to_providers(&cleaned);
+    }
 
     let has_provider_field = llm.contains_key("provider");
     let has_cloud = llm.contains_key("cloud");
@@ -873,7 +906,6 @@ pub fn migrate_llm_to_providers(toml_src: &str) -> Result<MigrationResult, Migra
     // Collect provider entries as inline TOML strings.
     let mut provider_blocks: Vec<String> = Vec::new();
     let mut routing: Option<String> = None;
-    let mut routes_block: Option<String> = None;
 
     match provider_str {
         "ollama" => {
@@ -897,11 +929,10 @@ pub fn migrate_llm_to_providers(toml_src: &str) -> Result<MigrationResult, Migra
             provider_blocks.extend(migrate_compatible_provider(llm));
         }
         "orchestrator" => {
-            let (blocks, r, rb) =
+            let (blocks, r) =
                 migrate_orchestrator_provider(llm, &model, &base_url, &embedding_model);
             provider_blocks.extend(blocks);
             routing = r;
-            routes_block = rb;
         }
         "router" => {
             let (blocks, r) = migrate_router_provider(llm, &model, &base_url, &embedding_model);
@@ -951,11 +982,6 @@ pub fn migrate_llm_to_providers(toml_src: &str) -> Result<MigrationResult, Migra
         }
     }
     new_llm.push('\n');
-
-    if let Some(rb) = routes_block {
-        new_llm.push_str(&rb);
-        new_llm.push('\n');
-    }
 
     for block in &provider_blocks {
         new_llm.push_str(block);

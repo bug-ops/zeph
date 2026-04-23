@@ -25,6 +25,8 @@ related:
 > **Date**: 2026-03-22 (updated 2026-03-26)
 > **Crates**: `zeph-config`, `zeph-core` (bootstrap/provider.rs)
 
+> **Amendment (#3248, 2026-04-23)**: `LlmRoutingStrategy::Task` and `LlmConfig::routes` were removed as unimplemented. Any spec section referencing `routing = "task"` or `[llm.routes]` is superseded — treat those values as unset. The `--migrate-config` command emits a warning and drops the keys automatically.
+
 ## 1. Overview
 
 > This is the **canonical reference** for the `[[llm.providers]]` registry pattern.

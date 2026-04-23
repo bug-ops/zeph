@@ -304,10 +304,6 @@ pub struct LlmConfig {
     #[serde(default, skip_serializing_if = "is_routing_none")]
     pub routing: LlmRoutingStrategy,
 
-    /// Task-based routes (only used when `routing = "task"`).
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub routes: std::collections::HashMap<String, Vec<String>>,
-
     #[serde(default = "default_embedding_model_opt")]
     pub embedding_model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -966,8 +962,6 @@ pub enum LlmRoutingStrategy {
     Thompson,
     /// Cascade: try cheapest provider first, escalate on degenerate output.
     Cascade,
-    /// Task-based routing using `[llm.routes]` map.
-    Task,
     /// Complexity triage routing: pre-classify each request, delegate to appropriate tier.
     Triage,
     /// PILOT: `LinUCB` contextual bandit with online learning and budget-aware reward.

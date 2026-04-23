@@ -624,7 +624,6 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.llm = LlmConfig {
         providers,
         routing,
-        routes: std::collections::HashMap::new(),
         embedding_model: state
             .embedding_model
             .clone()

@@ -49,8 +49,6 @@ use ollama_rs::generation::tools::{ToolFunctionInfo, ToolInfo, ToolType};
 use ollama_rs::models::ModelOptions;
 use tokio_stream::StreamExt;
 
-use ollama_rs::generation::parameters::LogprobsData as OllamaLogprobsData;
-
 use crate::provider::{
     ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart,
     Role, ToolDefinition, ToolUseRequest,
@@ -82,8 +80,6 @@ pub struct OllamaProvider {
     vision_model: Option<String>,
     generation_overrides: Option<GenerationOverrides>,
     usage: UsageTracker,
-    /// When `true`, `chat_with_extras` requests logprobs and computes entropy.
-    coe_enabled: bool,
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -125,15 +121,7 @@ impl OllamaProvider {
             vision_model: None,
             generation_overrides: None,
             usage: UsageTracker::default(),
-            coe_enabled: false,
         }
-    }
-
-    /// Enable `CoE` logprobs collection for `chat_with_extras`.
-    #[must_use]
-    pub fn with_coe(mut self) -> Self {
-        self.coe_enabled = true;
-        self
     }
 
     /// Override generation parameters (temperature, top-p, top-k) for this provider.
@@ -300,32 +288,7 @@ impl LlmProvider for OllamaProvider {
         &self,
         messages: &[Message],
     ) -> Result<(String, ChatExtras), LlmError> {
-        if !self.coe_enabled {
-            return Ok((self.chat(messages).await?, ChatExtras::default()));
-        }
-        let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
-        let mut request =
-            ChatMessageRequest::new(self.model.clone(), ollama_messages).logprobs(true);
-        if let Some(ref ov) = self.generation_overrides {
-            request = apply_generation_overrides(request, ov);
-        }
-        let response =
-            self.client.send_chat_messages(request).await.map_err(|e| {
-                LlmError::Other(format!("Ollama chat_with_extras request failed: {e}"))
-            })?;
-        if let Some(ref fd) = response.final_data {
-            self.usage.record_usage(fd.prompt_eval_count, fd.eval_count);
-        }
-        let entropy = response
-            .logprobs
-            .as_deref()
-            .filter(|lp| !lp.is_empty())
-            .map(|lp: &[OllamaLogprobsData]| {
-                #[allow(clippy::cast_precision_loss)]
-                let n = lp.len() as f64;
-                -lp.iter().map(|t| t.logprob).sum::<f64>() / n
-            });
-        Ok((response.message.content, ChatExtras { entropy }))
+        Ok((self.chat(messages).await?, ChatExtras::default()))
     }
 
     #[cfg_attr(

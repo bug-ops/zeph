@@ -29,6 +29,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `transport::http::spawn_agent_connection`; update any direct imports of
   `crate::transport::bridge`.
 
+### Removed
+
+- Remove `LlmRoutingStrategy::Task` unimplemented variant and associated `LlmConfig::routes` field (#3248); `--migrate-config` warns and drops the keys automatically
+- Remove unreachable per-provider `coe_enabled`/`with_coe` logprobs branches from `OllamaProvider`, `OpenAiProvider`, `CompatibleProvider` (#3249)
+- Move test-only context/assembler.rs helpers into `assembler_helpers` test module in `zeph-core` (#3254)
+
 ### Changed
 
 - ACP: migrated to agent-client-protocol 0.11.1 builder API (`Agent.builder()` / `run_agent()` pattern); `Rc<RefCell>` replaced with `Arc`; added handler tracing spans; config schema extensions (additional_directories, auth_methods, message_ids_enabled)

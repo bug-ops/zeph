@@ -2,14 +2,13 @@
 
 > **Tip:** For simple fallback chains with adaptive routing (Thompson Sampling or EMA), use `routing = "cascade"` or `routing = "thompson"` in `[llm]` instead. See [Adaptive Inference](adaptive-inference.md).
 
-Route tasks to different LLM providers based on content classification. Each task type maps to a provider chain with automatic fallback. Use a multi-provider setup to combine local and cloud models — for example, embeddings via Ollama and chat via Claude.
+> **Note:** `routing = "task"` was removed as unimplemented in #3248. If your config uses it, `--migrate-config` will drop it with a warning and fall back to default single-provider routing.
+
+Use a multi-provider setup to combine local and cloud models — for example, embeddings via Ollama and chat via Claude. Provider selection is controlled via `default = true` and `embed = true` markers.
 
 ## Configuration
 
 ```toml
-[llm]
-routing = "task"   # task-based routing
-
 [[llm.providers]]
 name = "ollama"
 type = "ollama"
@@ -45,27 +44,6 @@ Each `[[llm.providers]]` entry supports:
 
 - `default = true` — provider used for chat when no other routing rule matches
 - `embed = true` — provider used for all embedding operations (skill matching, semantic memory)
-
-## Task Classification
-
-Task types are classified via keyword heuristics:
-
-| Task Type | Keywords |
-|-----------|----------|
-| `coding` | code, function, debug, refactor, implement |
-| `creative` | write, story, poem, creative |
-| `analysis` | analyze, compare, evaluate |
-| `translation` | translate, convert language |
-| `summarization` | summarize, summary, tldr |
-| `general` | everything else |
-
-## Fallback Chains
-
-Routes define provider preference order. If the first provider fails, the next one in the list is tried automatically.
-
-```toml
-coding = ["local", "cloud"]  # try local first, fallback to cloud
-```
 
 ## Capability Delegation
 

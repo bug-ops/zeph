@@ -200,9 +200,6 @@ See [Adaptive Inference](../advanced/adaptive-inference.md) for Thompson Samplin
 <strong>Prerequisites:</strong> Ollama running with at least two models pulled (<code>qwen3:8b</code> and <code>qwen3:14b</code>).</summary>
 
 ```toml
-[llm]
-routing = "task"   # route by task type
-
 [[llm.providers]]
 name = "planner"
 type = "ollama"
@@ -228,8 +225,7 @@ confirm_before_execute = true
 backend = "env"
 ```
 
-> **Note:** `[orchestration]` (lowercase) enables `/plan` CLI commands. `routing = "task"` in `[llm]`
-> routes LLM calls between providers by task type. The two settings are independent.
+> **Note:** `[orchestration]` (lowercase) enables `/plan` CLI commands. `routing = "task"` was removed as unimplemented — see [Model Orchestrator](../advanced/orchestrator.md) for current multi-provider setup options.
 
 See [Task Orchestration](../concepts/task-orchestration.md) and [Model Orchestrator](../advanced/orchestrator.md).
 

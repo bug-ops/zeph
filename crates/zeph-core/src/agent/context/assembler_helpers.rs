@@ -1,37 +1,23 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Context assembly helpers for the Zeph agent.
-//!
-//! This module provides utility functions for fetching individual context slots
-//! (summaries, cross-session context, semantic recall, etc.) used by
-//! `Agent::prepare_context` and test helpers.
-//!
-//! The top-level gather logic is in [`zeph_context::assembler::ContextAssembler`].
-
-#[cfg(test)]
 use zeph_llm::provider::{Message, MessagePart, Role};
-#[cfg(test)]
 use zeph_memory::TokenCounter;
 
-#[cfg(test)]
-use super::super::error::AgentError;
-#[cfg(test)]
-use super::super::{
+use crate::agent::context::truncate_chars;
+use crate::agent::error::AgentError;
+use crate::agent::{
     CROSS_SESSION_PREFIX, GRAPH_FACTS_PREFIX, MemoryState, RECALL_PREFIX, SUMMARY_PREFIX,
 };
-#[cfg(test)]
 use crate::redact::scrub_content;
 
-#[cfg(test)]
 pub(super) fn format_correction_note(_original_output: &str, correction_text: &str) -> String {
     format!(
         "- Past user correction: \"{}\"",
-        super::truncate_chars(&scrub_content(correction_text), 200)
+        truncate_chars(&scrub_content(correction_text), 200)
     )
 }
 
-#[cfg(test)]
 pub(super) fn effective_recall_timeout_ms(configured: u64) -> u64 {
     if configured == 0 {
         tracing::warn!(
@@ -44,7 +30,6 @@ pub(super) fn effective_recall_timeout_ms(configured: u64) -> u64 {
     }
 }
 
-#[cfg(test)]
 pub(super) async fn fetch_graph_facts(
     memory_state: &MemoryState,
     query: &str,
@@ -150,7 +135,6 @@ pub(super) async fn fetch_graph_facts(
     Ok(Some(Message::from_legacy(Role::System, body)))
 }
 
-#[cfg(test)]
 pub(super) async fn fetch_semantic_recall(
     memory_state: &MemoryState,
     query: &str,
@@ -218,7 +202,6 @@ pub(super) async fn fetch_semantic_recall(
     }
 }
 
-#[cfg(test)]
 pub(super) async fn fetch_summaries(
     memory_state: &MemoryState,
     token_budget: usize,
@@ -264,7 +247,6 @@ pub(super) async fn fetch_summaries(
     }
 }
 
-#[cfg(test)]
 pub(super) async fn fetch_cross_session(
     memory_state: &MemoryState,
     query: &str,

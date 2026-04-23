@@ -100,13 +100,6 @@ impl CompatibleProvider {
         self
     }
 
-    /// Enable `CoE` logprobs collection for `chat_with_extras`.
-    #[must_use]
-    pub fn with_coe(mut self) -> Self {
-        self.inner = self.inner.with_coe();
-        self
-    }
-
     /// Forward MCP tool output schemas as JSON hints appended to tool descriptions.
     ///
     /// Delegates to the inner [`OpenAiProvider`]. When `enabled` is `false` the call is a no-op.

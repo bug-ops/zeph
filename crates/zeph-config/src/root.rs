@@ -156,7 +156,6 @@ impl Default for Config {
             llm: LlmConfig {
                 providers: Vec::new(),
                 routing: crate::providers::LlmRoutingStrategy::None,
-                routes: std::collections::HashMap::new(),
                 embedding_model: get_default_embedding_model(),
                 candle: None,
                 stt: None,

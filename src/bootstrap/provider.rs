@@ -384,14 +384,6 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
                     .with_embed_concurrency(embed_concurrency),
             )))
         }
-        LlmRoutingStrategy::Task => {
-            // Task-based routing is not yet implemented; fall back to single provider.
-            tracing::warn!(
-                "routing = \"task\" is not yet implemented; \
-                 falling back to single provider from pool"
-            );
-            build_single_provider_from_pool(pool, config)
-        }
         LlmRoutingStrategy::Triage => build_triage_provider(pool, config),
     }
 }
