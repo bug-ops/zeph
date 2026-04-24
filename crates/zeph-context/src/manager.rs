@@ -313,7 +313,7 @@ impl ContextManager {
     /// Returns `Some((threshold_tokens, max_summary_tokens))` when proactive compression
     /// should be triggered, `None` otherwise.
     ///
-    /// For [`CompressionStrategy::Focus`], the threshold is the soft-compaction fraction
+    /// For `CompressionStrategy::Focus`, the threshold is the soft-compaction fraction
     /// of the budget (same gate used by mid-iteration soft compaction). The
     /// `max_summary_tokens` element is unused on the Focus path — the auto-consolidation
     /// function uses `FocusConfig.max_knowledge_tokens / 2` instead.

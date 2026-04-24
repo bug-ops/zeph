@@ -166,25 +166,19 @@ pub(crate) fn handle_migrate_config(
         migrate_memory_hebbian_consolidation_config(&after_memory_hebbian)?;
     let after_hebbian_consolidation = hebbian_consolidation_result.output;
 
-<<<<<<< HEAD
     // Step 32: add commented-out [[hooks.turn_complete]] block if absent (#3308).
     let hooks_turn_complete_result =
         migrate_hooks_turn_complete_config(&after_hebbian_consolidation)?;
     let after_hooks_turn_complete = hooks_turn_complete_result.output;
 
-    // Step 33: add missing default keys as commented-out entries.
-    let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_hooks_turn_complete)?;
-=======
-    // Step 32: inject auto_consolidate_min_window into [agent.focus] if absent (#3313).
+    // Step 33: inject auto_consolidate_min_window into [agent.focus] if absent (#3313).
     let focus_window_result =
-        migrate_focus_auto_consolidate_min_window(&after_hebbian_consolidation)?;
+        migrate_focus_auto_consolidate_min_window(&after_hooks_turn_complete)?;
     let after_focus_window = focus_window_result.output;
 
-    // Step 33: add missing default keys as commented-out entries.
+    // Step 34: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
     let result = migrator.migrate(&after_focus_window)?;
->>>>>>> 4a167f7e (feat(core,a2a): Focus strategy auto-consolidation and MMA2A AgentCard capabilities)
 
     if diff {
         print_diff(&input, &result.output);
@@ -307,17 +301,16 @@ pub(crate) fn handle_migrate_config(
                  spliced HL-F3/F4 consolidation fields into [memory.hebbian] (#3345)."
             );
         }
-<<<<<<< HEAD
         if hooks_turn_complete_result.changed_count > 0 {
             eprintln!(
                 "Hooks turn_complete migration: \
                  added commented-out [[hooks.turn_complete]] block (#3308)."
-=======
+            );
+        }
         if focus_window_result.changed_count > 0 {
             eprintln!(
                 "Focus migration: added commented-out \
                  auto_consolidate_min_window to [agent.focus] (#3313)."
->>>>>>> 4a167f7e (feat(core,a2a): Focus strategy auto-consolidation and MMA2A AgentCard capabilities)
             );
         }
         eprintln!(
