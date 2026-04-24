@@ -16,7 +16,7 @@
 //!
 //! To avoid a circular crate dependency (`zeph-memory` ↔ `zeph-skills`), skill
 //! generation is delegated to [`SkillWriter`], a trait that callers in
-//! `zeph-core` implement using [`zeph_skills::generator::SkillGenerator`].
+//! `zeph-core` implement using `zeph_skills::generator::SkillGenerator`.
 //! This keeps `zeph-memory` free of a direct `zeph-skills` dependency.
 
 use std::collections::HashSet;
@@ -95,7 +95,7 @@ impl Default for PromotionConfig {
 
 /// Trait for writing a generated SKILL.md to disk.
 ///
-/// Implemented in `zeph-core` using [`zeph_skills::generator::SkillGenerator`].
+/// Implemented in `zeph-core` using `zeph_skills::generator::SkillGenerator`.
 /// Defined here to avoid a circular crate dependency.
 ///
 /// # Contract
