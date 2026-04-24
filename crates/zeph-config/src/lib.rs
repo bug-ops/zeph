@@ -114,9 +114,9 @@ pub use logging::{LogRotation, LoggingConfig};
 pub use memory::{
     AdmissionConfig, AdmissionStrategy, AdmissionWeights, AutoDreamConfig, BeliefRevisionConfig,
     CategoryConfig, CompressionConfig, CompressionStrategy, ContextFormat, ContextStrategy,
-    DigestConfig, DocumentConfig, ForgettingConfig, GraphConfig, MagicDocsConfig, MemoryConfig,
-    MicrocompactConfig, NoteLinkingConfig, PersonaConfig, PruningStrategy, ReasoningConfig,
-    RetrievalConfig, RpeConfig, SemanticConfig, SessionsConfig, SidequestConfig,
+    DigestConfig, DocumentConfig, ForgettingConfig, GraphConfig, HebbianConfig, MagicDocsConfig,
+    MemoryConfig, MicrocompactConfig, NoteLinkingConfig, PersonaConfig, PruningStrategy,
+    ReasoningConfig, RetrievalConfig, RpeConfig, SemanticConfig, SessionsConfig, SidequestConfig,
     StoreRoutingConfig, StoreRoutingStrategy, TierConfig, TrajectoryConfig, TreeConfig,
     VectorBackend,
 };

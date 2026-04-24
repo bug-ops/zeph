@@ -1661,3 +1661,67 @@ async fn save_message_does_not_truncate_small_content() {
 
     assert_eq!(row.0, content);
 }
+
+// ── MM-F4: filter_out_preserved_episode_ids ───────────────────────────────────
+
+#[tokio::test]
+async fn test_filter_out_preserved_episode_ids_empty_input() {
+    let store = test_store().await;
+    let result = store.filter_out_preserved_episode_ids(&[]).await.unwrap();
+    assert!(result.is_empty(), "empty input must produce empty output");
+}
+
+#[tokio::test]
+async fn test_filter_out_preserved_episode_ids_no_summaries_returns_all() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    let id1 = store.save_message(cid, "user", "msg1").await.unwrap();
+    let id2 = store.save_message(cid, "assistant", "msg2").await.unwrap();
+    let id3 = store.save_message(cid, "user", "msg3").await.unwrap();
+
+    let result = store
+        .filter_out_preserved_episode_ids(&[id1, id2, id3])
+        .await
+        .unwrap();
+    // No summaries → all three IDs are safe to delete.
+    let mut result_sorted = result.clone();
+    result_sorted.sort();
+    assert_eq!(
+        result_sorted,
+        vec![id1, id2, id3],
+        "all IDs must be returned when no summaries exist"
+    );
+}
+
+#[tokio::test]
+async fn test_filter_out_preserved_episode_ids_removes_covered_ids() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    let id1 = store.save_message(cid, "user", "msg1").await.unwrap();
+    let id2 = store.save_message(cid, "user", "msg2").await.unwrap();
+    let id3 = store.save_message(cid, "user", "msg3").await.unwrap();
+    let id4 = store.save_message(cid, "user", "msg4").await.unwrap();
+    let id5 = store.save_message(cid, "user", "msg5").await.unwrap();
+
+    // Summary spans messages 2–4; they must be preserved.
+    store
+        .save_summary(cid, "summary text", Some(id2), Some(id4), 50)
+        .await
+        .unwrap();
+
+    let result = store
+        .filter_out_preserved_episode_ids(&[id1, id2, id3, id4, id5])
+        .await
+        .unwrap();
+
+    let mut result_sorted = result.clone();
+    result_sorted.sort();
+    // Only id1 and id5 are outside the summary range.
+    assert_eq!(
+        result_sorted,
+        vec![id1, id5],
+        "summary-covered IDs must be removed from the safe-to-delete set"
+    );
+}

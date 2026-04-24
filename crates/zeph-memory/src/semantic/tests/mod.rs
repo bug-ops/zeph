@@ -3,6 +3,7 @@
 
 mod algorithms;
 mod graph;
+mod query_bias;
 mod recall;
 mod summarization;
 
@@ -59,6 +60,12 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
         search_prompt_template: String::new(),
         depth_below_limit_warned: Arc::new(AtomicBool::new(false)),
         missing_placeholder_warned: Arc::new(AtomicBool::new(false)),
+        query_bias_correction: false,
+        query_bias_profile_weight: 0.25,
+        profile_centroid: tokio::sync::RwLock::new(None),
+        profile_centroid_ttl_secs: 300,
+        hebbian_enabled: false,
+        hebbian_lr: 0.1,
     }
 }
 
@@ -151,6 +158,12 @@ async fn effective_embed_provider_routes_to_dedicated_embed_provider() {
         search_prompt_template: String::new(),
         depth_below_limit_warned: Arc::new(AtomicBool::new(false)),
         missing_placeholder_warned: Arc::new(AtomicBool::new(false)),
+        query_bias_correction: false,
+        query_bias_profile_weight: 0.25,
+        profile_centroid: tokio::sync::RwLock::new(None),
+        profile_centroid_ttl_secs: 300,
+        hebbian_enabled: false,
+        hebbian_lr: 0.1,
     };
 
     assert!(
@@ -547,6 +560,12 @@ async fn store_correction_embedding_sqlite_clean_db_roundtrip() {
         search_prompt_template: String::new(),
         depth_below_limit_warned: Arc::new(AtomicBool::new(false)),
         missing_placeholder_warned: Arc::new(AtomicBool::new(false)),
+        query_bias_correction: false,
+        query_bias_profile_weight: 0.25,
+        profile_centroid: tokio::sync::RwLock::new(None),
+        profile_centroid_ttl_secs: 300,
+        hebbian_enabled: false,
+        hebbian_lr: 0.1,
     };
 
     memory

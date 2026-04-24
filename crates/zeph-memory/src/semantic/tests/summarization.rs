@@ -346,6 +346,12 @@ async fn summarize_fails_when_provider_chat_fails() {
         depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         reasoning: None,
+        query_bias_correction: false,
+        query_bias_profile_weight: 0.25,
+        profile_centroid: tokio::sync::RwLock::new(None),
+        profile_centroid_ttl_secs: 300,
+        hebbian_enabled: false,
+        hebbian_lr: 0.1,
     };
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -418,6 +424,12 @@ async fn summarize_fallback_to_plain_text_when_structured_fails() {
         depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         reasoning: None,
+        query_bias_correction: false,
+        query_bias_profile_weight: 0.25,
+        profile_centroid: tokio::sync::RwLock::new(None),
+        profile_centroid_ttl_secs: 300,
+        hebbian_enabled: false,
+        hebbian_lr: 0.1,
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -575,6 +587,12 @@ async fn make_embed_memory_with_threshold(threshold: f32) -> super::super::Seman
         depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         reasoning: None,
+        query_bias_correction: false,
+        query_bias_profile_weight: 0.25,
+        profile_centroid: tokio::sync::RwLock::new(None),
+        profile_centroid_ttl_secs: 300,
+        hebbian_enabled: false,
+        hebbian_lr: 0.1,
     }
 }
 
@@ -675,6 +693,12 @@ async fn store_key_facts_fail_open_on_search_error() {
         depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         reasoning: None,
+        query_bias_correction: false,
+        query_bias_profile_weight: 0.25,
+        profile_centroid: tokio::sync::RwLock::new(None),
+        profile_centroid_ttl_secs: 300,
+        hebbian_enabled: false,
+        hebbian_lr: 0.1,
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();

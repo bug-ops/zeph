@@ -269,6 +269,7 @@ mod tests {
             superseded_by: None,
             canonical_relation: relation.to_string(),
             supersedes: None,
+            weight: 1.0,
         }
     }
 

@@ -38,7 +38,9 @@ mod tests;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
+use std::time::Instant;
 
+use tokio::sync::RwLock;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 
@@ -79,10 +81,37 @@ pub use tree_consolidation::{
 };
 pub use write_buffer::{BufferedWrite, WriteBuffer};
 
+/// Cached profile centroid for query-bias correction (MM-F3, #3341).
+///
+/// Stored inside `SemanticMemory::profile_centroid` under an `RwLock`. Expires after
+/// `profile_centroid_ttl_secs` seconds; a miss is non-sticky (next call retries).
+#[derive(Debug, Clone)]
+pub(crate) struct CachedCentroid {
+    /// The centroid vector (unweighted mean of persona-fact embeddings).
+    pub vector: Vec<f32>,
+    /// Wall-clock instant when this centroid was computed.
+    pub computed_at: Instant,
+}
+
+/// Classification of a user query's self-referential intent (MM-F3, #3341).
+///
+/// Used to decide whether query-bias correction should shift the embedding
+/// towards the user's profile centroid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueryIntent {
+    /// Query contains first-person language — likely about the user themselves.
+    FirstPerson,
+    /// Query is about an external topic; no bias shift applied.
+    Other,
+}
+
 /// High-level semantic memory orchestrator combining `SQLite` and Qdrant.
 ///
 /// Instantiate via [`SemanticMemory::new`] or the `AppBuilder` integration.
 /// All fields are `pub(crate)` — callers interact through the inherent method API.
+// TODO(review): Refactor the five bool flags into two-variant enums to satisfy
+// clippy::struct_excessive_bools. Left for a follow-up to avoid scope creep.
+#[allow(clippy::struct_excessive_bools)]
 pub struct SemanticMemory {
     pub(crate) sqlite: SqliteStore,
     pub(crate) qdrant: Option<Arc<EmbeddingStore>>,
@@ -147,6 +176,21 @@ pub struct SemanticMemory {
     pub(crate) depth_below_limit_warned: Arc<std::sync::atomic::AtomicBool>,
     /// Fires `tracing::warn!` once per instance when `search_prompt_template` has no `{query}`.
     pub(crate) missing_placeholder_warned: Arc<std::sync::atomic::AtomicBool>,
+    /// Enable query-bias correction towards the user profile centroid (MM-F3, #3341).
+    pub(crate) query_bias_correction: bool,
+    /// Blend weight for query-bias correction (MM-F3, #3341). Clamped to `[0.0, 1.0]`.
+    pub(crate) query_bias_profile_weight: f32,
+    /// Cached profile centroid computed from persona-fact embeddings (MM-F3, #3341).
+    ///
+    /// Protected by `RwLock` to allow concurrent reads. Never holds the lock across `.await`
+    /// (await-discipline rule #4). TTL-bounded; miss is non-sticky.
+    pub(crate) profile_centroid: RwLock<Option<CachedCentroid>>,
+    /// Time-to-live for the profile centroid cache in seconds (MM-F3, #3341). Default: 300.
+    pub(crate) profile_centroid_ttl_secs: u64,
+    /// Opt-in master switch for Hebbian edge-weight reinforcement (HL-F2, #3344).
+    pub(crate) hebbian_enabled: bool,
+    /// Weight increment applied per recall traversal when `hebbian_enabled = true` (HL-F2, #3344).
+    pub(crate) hebbian_lr: f32,
 }
 
 impl SemanticMemory {
@@ -256,6 +300,12 @@ impl SemanticMemory {
             search_prompt_template: String::new(),
             depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            query_bias_correction: true,
+            query_bias_profile_weight: 0.25,
+            profile_centroid: RwLock::new(None),
+            profile_centroid_ttl_secs: 300,
+            hebbian_enabled: false,
+            hebbian_lr: 0.1,
         })
     }
 
@@ -311,6 +361,12 @@ impl SemanticMemory {
             search_prompt_template: String::new(),
             depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            query_bias_correction: true,
+            query_bias_profile_weight: 0.25,
+            profile_centroid: RwLock::new(None),
+            profile_centroid_ttl_secs: 300,
+            hebbian_enabled: false,
+            hebbian_lr: 0.1,
         })
     }
 
@@ -432,6 +488,166 @@ impl SemanticMemory {
     pub fn with_key_facts_dedup_threshold(mut self, threshold: f32) -> Self {
         self.key_facts_dedup_threshold = threshold;
         self
+    }
+
+    /// Configure query-bias correction (MM-F3, #3341).
+    ///
+    /// When `enabled` is `true`, first-person queries are biased towards the user profile centroid.
+    /// `profile_weight` controls the blend strength and is clamped to `[0.0, 1.0]`.
+    /// `centroid_ttl_secs` controls how long the centroid cache stays valid.
+    #[must_use]
+    pub fn with_query_bias(
+        mut self,
+        enabled: bool,
+        profile_weight: f32,
+        centroid_ttl_secs: u64,
+    ) -> Self {
+        self.query_bias_correction = enabled;
+        self.query_bias_profile_weight = profile_weight.clamp(0.0, 1.0);
+        self.profile_centroid_ttl_secs = centroid_ttl_secs;
+        self
+    }
+
+    /// Configure Hebbian edge-weight reinforcement (HL-F2, #3344).
+    ///
+    /// When `enabled` is `true`, `lr` is added to the `weight` column of each traversed
+    /// edge after every recall. `lr = 0.0` with `enabled = true` logs a WARN.
+    #[must_use]
+    pub fn with_hebbian(mut self, enabled: bool, lr: f32) -> Self {
+        let lr = lr.max(0.0);
+        if enabled && lr == 0.0 {
+            tracing::warn!("hebbian enabled with lr=0.0 — no reinforcement will occur");
+        }
+        self.hebbian_enabled = enabled;
+        self.hebbian_lr = lr;
+        self
+    }
+
+    /// Classify a query's intent for query-bias correction (MM-F3, #3341).
+    ///
+    /// Returns [`QueryIntent::FirstPerson`] when the query contains self-referential language
+    /// (first-person pronouns). Otherwise returns [`QueryIntent::Other`].
+    pub(crate) fn classify_query_intent(query: &str) -> QueryIntent {
+        if persona::contains_self_referential_language(query) {
+            QueryIntent::FirstPerson
+        } else {
+            QueryIntent::Other
+        }
+    }
+
+    /// Apply query-bias correction to an embedding (MM-F3, #3341).
+    ///
+    /// Returns the embedding unchanged if `query_bias_correction` is `false`,
+    /// if the query is not first-person, or if the profile centroid is unavailable.
+    /// Logs a single WARN on dimension mismatch and returns the original embedding.
+    pub(crate) async fn apply_query_bias(&self, query: &str, embedding: Vec<f32>) -> Vec<f32> {
+        if !self.query_bias_correction {
+            return embedding;
+        }
+        if Self::classify_query_intent(query) != QueryIntent::FirstPerson {
+            return embedding;
+        }
+        let Some(centroid) = self.profile_centroid_cached().await else {
+            return embedding;
+        };
+        if centroid.len() != embedding.len() {
+            tracing::warn!(
+                centroid_dim = centroid.len(),
+                query_dim = embedding.len(),
+                "query-bias: dimension mismatch between profile centroid and query embedding — skipping bias"
+            );
+            return embedding;
+        }
+        let w = self.query_bias_profile_weight;
+        embedding
+            .iter()
+            .zip(centroid.iter())
+            .map(|(&q, &c)| (1.0 - w) * q + w * c)
+            .collect()
+    }
+
+    /// Return the cached profile centroid, recomputing if stale or absent (MM-F3, #3341).
+    ///
+    /// Holds the read lock only to check freshness; releases it before any `.await`.
+    /// On compute failure, preserves the previous cache value (non-sticky miss).
+    pub(crate) async fn profile_centroid_cached(&self) -> Option<Vec<f32>> {
+        // Fast path: check freshness under read lock without holding it across await.
+        {
+            let guard = self.profile_centroid.read().await;
+            if let Some(c) = &*guard
+                && c.computed_at.elapsed().as_secs() < self.profile_centroid_ttl_secs
+            {
+                return Some(c.vector.clone());
+            }
+        }
+        // Slow path: recompute. Guard is dropped before this point.
+        let computed = self.compute_profile_centroid().await;
+        let mut guard = self.profile_centroid.write().await;
+        match computed {
+            Some(v) => {
+                *guard = Some(CachedCentroid {
+                    vector: v.clone(),
+                    computed_at: Instant::now(),
+                });
+                Some(v)
+            }
+            None => {
+                // Do not overwrite a valid (but stale) cache on failure — serve stale over nothing.
+                guard.as_ref().map(|c| c.vector.clone())
+            }
+        }
+    }
+
+    /// Compute the profile centroid from persona-fact embeddings (MM-F3, #3341).
+    ///
+    /// Returns `None` when the persona table is empty or embedding fails.
+    /// Uses `load_persona_facts(0.0)` (all non-superseded facts) for the centroid basis.
+    async fn compute_profile_centroid(&self) -> Option<Vec<f32>> {
+        let facts = match self.sqlite.load_persona_facts(0.0).await {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(error = %e, "query-bias: failed to load persona facts");
+                return None;
+            }
+        };
+        if facts.is_empty() {
+            return None;
+        }
+        let provider = self.effective_embed_provider();
+        let texts: Vec<String> = facts.iter().map(|f| f.content.clone()).collect();
+        let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+        for text in &texts {
+            match provider.embed(text).await {
+                Ok(v) => embeddings.push(v),
+                Err(e) => {
+                    tracing::warn!(error = %e, "query-bias: failed to embed persona fact — skipping");
+                }
+            }
+        }
+        if embeddings.is_empty() {
+            return None;
+        }
+        let dim = embeddings[0].len();
+        let mut centroid = vec![0.0f32; dim];
+        for emb in &embeddings {
+            if emb.len() != dim {
+                tracing::warn!(
+                    expected = dim,
+                    got = emb.len(),
+                    "query-bias: persona embedding dimension mismatch — skipping fact"
+                );
+                continue;
+            }
+            for (c, &v) in centroid.iter_mut().zip(emb.iter()) {
+                *c += v;
+            }
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let n = embeddings.len() as f32;
+        for c in &mut centroid {
+            *c /= n;
+        }
+        Some(centroid)
     }
 
     /// Configure retrieval depth and search prompt template (MM-F1/F2, #3340).
@@ -581,6 +797,12 @@ impl SemanticMemory {
             search_prompt_template: String::new(),
             depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            query_bias_correction: true,
+            query_bias_profile_weight: 0.25,
+            profile_centroid: RwLock::new(None),
+            profile_centroid_ttl_secs: 300,
+            hebbian_enabled: false,
+            hebbian_lr: 0.1,
         }
     }
 
@@ -655,6 +877,12 @@ impl SemanticMemory {
             search_prompt_template: String::new(),
             depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            query_bias_correction: true,
+            query_bias_profile_weight: 0.25,
+            profile_centroid: RwLock::new(None),
+            profile_centroid_ttl_secs: 300,
+            hebbian_enabled: false,
+            hebbian_lr: 0.1,
         })
     }
 

@@ -586,7 +586,7 @@ impl GraphStore {
             format!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
                  FROM graph_edges
                  WHERE valid_to IS NULL
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders2}))"
@@ -598,7 +598,7 @@ impl GraphStore {
             format!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
                  FROM graph_edges
                  WHERE valid_to IS NULL
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders2}))
@@ -639,7 +639,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
              FROM graph_edges
              WHERE valid_to IS NULL
                AND (source_entity_id = ? OR target_entity_id = ?)"
@@ -666,7 +666,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
              FROM graph_edges
              WHERE source_entity_id = ? OR target_entity_id = ?
              ORDER BY valid_from DESC
@@ -693,7 +693,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
              FROM graph_edges
              WHERE valid_to IS NULL
                AND ((source_entity_id = ? AND target_entity_id = ?)
@@ -721,7 +721,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
              FROM graph_edges
              WHERE valid_to IS NULL
                AND source_entity_id = ?
@@ -977,7 +977,7 @@ impl GraphStore {
         zeph_db::query_as::<_, EdgeRow>(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
              FROM graph_edges
              WHERE valid_to IS NULL
              ORDER BY id ASC"
@@ -1010,7 +1010,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
              FROM graph_edges
              WHERE valid_to IS NULL AND id > ?
              ORDER BY id ASC
@@ -1350,6 +1350,51 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Increment `weight` on the set of edges traversed during the current recall (HL-F2, #3344).
+    ///
+    /// Mirrors [`Self::record_edge_retrieval`] in shape: same `MAX_BATCH = 490` chunking,
+    /// same `WHERE id IN (…) AND valid_to IS NULL` filter (defensive — traversed edges should
+    /// already be active, but this prevents reinforcing tombstoned edges).
+    ///
+    /// No-op when `edge_ids` is empty or `delta == 0.0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `UPDATE` fails.
+    #[tracing::instrument(
+        name = "memory.graph.hebbian_increment",
+        skip_all,
+        fields(edge_count = edge_ids.len())
+    )]
+    pub async fn apply_hebbian_increment(
+        &self,
+        edge_ids: &[i64],
+        delta: f32,
+    ) -> Result<(), MemoryError> {
+        // MAX_BATCH chosen to stay under SQLite's 999 host-parameter limit
+        // ($1 = delta, $2..$N+1 = edge ids — 1 + 490 = 491 params per chunk).
+        const MAX_BATCH: usize = 490;
+        if edge_ids.is_empty() || delta == 0.0 {
+            return Ok(());
+        }
+        for chunk in edge_ids.chunks(MAX_BATCH) {
+            let edge_placeholders = placeholder_list(2, chunk.len());
+            let sql = format!(
+                "UPDATE graph_edges \
+                 SET weight = weight + $1 \
+                 WHERE id IN ({edge_placeholders}) \
+                   AND valid_to IS NULL"
+            );
+            let mut q = zeph_db::query(&sql);
+            q = q.bind(f64::from(delta));
+            for id in chunk {
+                q = q.bind(*id);
+            }
+            q.execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
     /// Apply multiplicative decay to `retrieval_count` for un-retrieved active edges.
     ///
     /// Only edges with `retrieval_count > 0` and `last_retrieved_at < (now - interval_secs)`
@@ -1481,7 +1526,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
              FROM graph_edges
              WHERE valid_to IS NULL
                AND valid_from <= ?
@@ -1489,7 +1534,7 @@ impl GraphStore {
              UNION ALL
              SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
              FROM graph_edges
              WHERE valid_to IS NOT NULL
                AND valid_from <= ?
@@ -1534,7 +1579,7 @@ impl GraphStore {
             zeph_db::query_as(sql!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
                  FROM graph_edges
                  WHERE source_entity_id = ?
                    AND fact LIKE ? ESCAPE '\\'
@@ -1552,7 +1597,7 @@ impl GraphStore {
             zeph_db::query_as(sql!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
                  FROM graph_edges
                  WHERE source_entity_id = ?
                    AND fact LIKE ? ESCAPE '\\'
@@ -1885,7 +1930,7 @@ impl GraphStore {
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({ph_ids1})
@@ -1963,7 +2008,7 @@ impl GraphStore {
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({ph_ids1})
@@ -2195,6 +2240,8 @@ struct EdgeRow {
     superseded_by: Option<i64>,
     canonical_relation: Option<String>,
     supersedes: Option<i64>,
+    // Hebbian reinforcement weight (HL-F1, #3344). SQLite REAL maps to f64 via sqlx.
+    weight: f64,
 }
 
 fn edge_from_row(row: EdgeRow) -> Edge {
@@ -2225,6 +2272,8 @@ fn edge_from_row(row: EdgeRow) -> Edge {
         last_retrieved_at: row.last_retrieved_at,
         superseded_by: row.superseded_by,
         supersedes: row.supersedes,
+        #[allow(clippy::cast_possible_truncation)]
+        weight: row.weight as f32,
     }
 }
 

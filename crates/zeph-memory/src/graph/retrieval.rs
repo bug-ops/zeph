@@ -35,7 +35,7 @@ use super::types::{EdgeType, GraphFact};
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub async fn graph_recall(
     store: &GraphStore,
     embeddings: Option<&crate::embedding_store::EmbeddingStore>,
@@ -46,6 +46,8 @@ pub async fn graph_recall(
     at_timestamp: Option<&str>,
     temporal_decay_rate: f64,
     edge_types: &[EdgeType],
+    hebbian_enabled: bool,
+    hebbian_lr: f32,
 ) -> Result<Vec<GraphFact>, MemoryError> {
     // graph_recall has no SpreadingActivationParams — use spec defaults.
     const DEFAULT_STRUCTURAL_WEIGHT: f32 = 0.4;
@@ -138,6 +140,15 @@ pub async fn graph_recall(
             && let Err(e) = store.record_edge_retrieval(&traversed_edge_ids).await
         {
             tracing::warn!(error = %e, "graph_recall: failed to record edge retrieval");
+        }
+        // HL-F2: Hebbian weight reinforcement (fire-and-forget).
+        if hebbian_enabled
+            && !traversed_edge_ids.is_empty()
+            && let Err(e) = store
+                .apply_hebbian_increment(&traversed_edge_ids, hebbian_lr)
+                .await
+        {
+            tracing::warn!(error = %e, "graph_recall: hebbian increment failed");
         }
     }
 
@@ -367,6 +378,7 @@ pub(crate) async fn find_seed_entities(
 /// # Errors
 ///
 /// Returns an error if any database query fails.
+#[allow(clippy::too_many_arguments)]
 pub async fn graph_recall_activated(
     store: &GraphStore,
     embeddings: Option<&EmbeddingStore>,
@@ -375,6 +387,8 @@ pub async fn graph_recall_activated(
     limit: usize,
     params: SpreadingActivationParams,
     edge_types: &[EdgeType],
+    hebbian_enabled: bool,
+    hebbian_lr: f32,
 ) -> Result<Vec<ActivatedFact>, MemoryError> {
     if limit == 0 {
         return Ok(Vec::new());
@@ -409,6 +423,13 @@ pub async fn graph_recall_activated(
         && let Err(e) = store.record_edge_retrieval(&edge_ids).await
     {
         tracing::warn!(error = %e, "graph_recall_activated: failed to record edge retrieval");
+    }
+    // HL-F2: Hebbian weight reinforcement (fire-and-forget).
+    if hebbian_enabled
+        && !edge_ids.is_empty()
+        && let Err(e) = store.apply_hebbian_increment(&edge_ids, hebbian_lr).await
+    {
+        tracing::warn!(error = %e, "graph_recall_activated: hebbian increment failed");
     }
 
     // Sort by activation score descending and truncate to limit.
@@ -457,9 +478,21 @@ mod tests {
     async fn graph_recall_empty_graph_returns_empty() {
         let store = setup_store().await;
         let provider = mock_provider();
-        let result = graph_recall(&store, None, &provider, "anything", 10, 2, None, 0.0, &[])
-            .await
-            .unwrap();
+        let result = graph_recall(
+            &store,
+            None,
+            &provider,
+            "anything",
+            10,
+            2,
+            None,
+            0.0,
+            &[],
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         assert!(result.is_empty());
     }
 
@@ -467,9 +500,21 @@ mod tests {
     async fn graph_recall_zero_limit_returns_empty() {
         let store = setup_store().await;
         let provider = mock_provider();
-        let result = graph_recall(&store, None, &provider, "user", 0, 2, None, 0.0, &[])
-            .await
-            .unwrap();
+        let result = graph_recall(
+            &store,
+            None,
+            &provider,
+            "user",
+            0,
+            2,
+            None,
+            0.0,
+            &[],
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         assert!(result.is_empty());
     }
 
@@ -491,9 +536,21 @@ mod tests {
 
         let provider = mock_provider();
         // "Ali" matches "Alice" via LIKE
-        let result = graph_recall(&store, None, &provider, "Ali neovim", 10, 2, None, 0.0, &[])
-            .await
-            .unwrap();
+        let result = graph_recall(
+            &store,
+            None,
+            &provider,
+            "Ali neovim",
+            10,
+            2,
+            None,
+            0.0,
+            &[],
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         assert!(!result.is_empty());
         assert_eq!(result[0].relation, "uses");
     }
@@ -524,9 +581,21 @@ mod tests {
 
         let provider = mock_provider();
         // max_hops=1: only the A→B edge should be reachable from A
-        let result = graph_recall(&store, None, &provider, "Alp", 10, 1, None, 0.0, &[])
-            .await
-            .unwrap();
+        let result = graph_recall(
+            &store,
+            None,
+            &provider,
+            "Alp",
+            10,
+            1,
+            None,
+            0.0,
+            &[],
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         // Should find A→B edge, but not B→C (which is hop 2 from A)
         assert!(result.iter().all(|f| f.hop_distance <= 1));
     }
@@ -549,9 +618,21 @@ mod tests {
 
         let provider = mock_provider();
         // Both "Ali" and "Bob" match and BFS from both seeds yields the same edge
-        let result = graph_recall(&store, None, &provider, "Ali Bob", 10, 2, None, 0.0, &[])
-            .await
-            .unwrap();
+        let result = graph_recall(
+            &store,
+            None,
+            &provider,
+            "Ali Bob",
+            10,
+            2,
+            None,
+            0.0,
+            &[],
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
 
         // Should not have duplicate (Alice, knows, Bob) entries
         let mut seen = std::collections::HashSet::new();
@@ -588,9 +669,21 @@ mod tests {
             .unwrap();
 
         let provider = mock_provider();
-        let result = graph_recall(&store, None, &provider, "Alp", 10, 2, None, 0.0, &[])
-            .await
-            .unwrap();
+        let result = graph_recall(
+            &store,
+            None,
+            &provider,
+            "Alp",
+            10,
+            2,
+            None,
+            0.0,
+            &[],
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
 
         // First result should have higher composite score than second
         assert!(result.len() >= 2);
@@ -630,9 +723,21 @@ mod tests {
         }
 
         let provider = mock_provider();
-        let result = graph_recall(&store, None, &provider, "Roo", 3, 2, None, 0.0, &[])
-            .await
-            .unwrap();
+        let result = graph_recall(
+            &store,
+            None,
+            &provider,
+            "Roo",
+            3,
+            2,
+            None,
+            0.0,
+            &[],
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         assert!(result.len() <= 3);
     }
 
@@ -670,6 +775,8 @@ mod tests {
             Some("2026-01-01 00:00:00"),
             0.0,
             &[],
+            false,
+            0.0,
         )
         .await
         .unwrap();
@@ -703,9 +810,21 @@ mod tests {
         let provider = mock_provider();
 
         // Querying at 2026 (after valid_to) → no edge
-        let result_current = graph_recall(&store, None, &provider, "Ali", 10, 2, None, 0.0, &[])
-            .await
-            .unwrap();
+        let result_current = graph_recall(
+            &store,
+            None,
+            &provider,
+            "Ali",
+            10,
+            2,
+            None,
+            0.0,
+            &[],
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         assert!(
             result_current.is_empty(),
             "expired edge should be invisible at current time"
@@ -722,6 +841,8 @@ mod tests {
             Some("2020-06-01 00:00:00"),
             0.0,
             &[],
+            false,
+            0.0,
         )
         .await
         .unwrap();
@@ -777,9 +898,21 @@ mod tests {
         // "hub" query matches the Hub entity via FTS5; it has no community so cap doesn't apply.
         // The community-capped entities are targets, not seeds — so this tests the bypass path
         // (None community => unlimited). Use a query that matches the community entities.
-        let result = graph_recall(&store, None, &provider, "entity", 10, 2, None, 0.0, &[])
-            .await
-            .unwrap();
+        let result = graph_recall(
+            &store,
+            None,
+            &provider,
+            "entity",
+            10,
+            2,
+            None,
+            0.0,
+            &[],
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         // The key invariant: result must not be empty even with cap < total seeds
         assert!(
             !result.is_empty(),
@@ -828,6 +961,8 @@ mod tests {
             None,
             0.0,
             &[],
+            false,
+            0.0,
         )
         .await
         .unwrap();
@@ -863,12 +998,125 @@ mod tests {
 
         let provider = mock_provider();
         // With decay_rate=0.0 order must be identical to composite_score ordering.
-        let result = graph_recall(&store, None, &provider, "Alp", 10, 2, None, 0.0, &[])
-            .await
-            .unwrap();
+        let result = graph_recall(
+            &store,
+            None,
+            &provider,
+            "Alp",
+            10,
+            2,
+            None,
+            0.0,
+            &[],
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         assert!(result.len() >= 2);
         let s0 = result[0].composite_score();
         let s1 = result[1].composite_score();
         assert!(s0 >= s1, "expected sorted desc: {s0} >= {s1}");
+    }
+
+    // ── HL-F2: Hebbian weight reinforcement via graph_recall ──────────────────
+
+    #[tokio::test]
+    async fn test_graph_recall_hebbian_enabled_increments_weight() {
+        let store = setup_store().await;
+        let provider = mock_provider();
+
+        let user = store
+            .upsert_entity("Alice", "Alice", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tool = store
+            .upsert_entity("Vim", "Vim", EntityType::Tool, None)
+            .await
+            .unwrap();
+        let eid = store
+            .insert_edge(user, tool, "uses", "Alice uses Vim", 0.9, None)
+            .await
+            .unwrap();
+
+        // Confirm default weight before recall.
+        let weight_before: f64 = sqlx::query_scalar("SELECT weight FROM graph_edges WHERE id = ?")
+            .bind(eid)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert!((weight_before - 1.0).abs() < 1e-6);
+
+        // Recall with hebbian_enabled=true and lr=0.5.
+        let _ = graph_recall(
+            &store,
+            None,
+            &provider,
+            "Alice Vim",
+            10,
+            2,
+            None,
+            0.0,
+            &[],
+            true,
+            0.5,
+        )
+        .await
+        .unwrap();
+
+        let weight_after: f64 = sqlx::query_scalar("SELECT weight FROM graph_edges WHERE id = ?")
+            .bind(eid)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert!(
+            weight_after > weight_before,
+            "weight must increase after hebbian recall, before={weight_before} after={weight_after}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_graph_recall_hebbian_disabled_no_weight_change() {
+        let store = setup_store().await;
+        let provider = mock_provider();
+
+        let user = store
+            .upsert_entity("Bob", "Bob", EntityType::Person, None)
+            .await
+            .unwrap();
+        let tool = store
+            .upsert_entity("Emacs", "Emacs", EntityType::Tool, None)
+            .await
+            .unwrap();
+        let eid = store
+            .insert_edge(user, tool, "uses", "Bob uses Emacs", 0.9, None)
+            .await
+            .unwrap();
+
+        let _ = graph_recall(
+            &store,
+            None,
+            &provider,
+            "Bob Emacs",
+            10,
+            2,
+            None,
+            0.0,
+            &[],
+            false,
+            0.5,
+        )
+        .await
+        .unwrap();
+
+        let weight_after: f64 = sqlx::query_scalar("SELECT weight FROM graph_edges WHERE id = ?")
+            .bind(eid)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert!(
+            (weight_after - 1.0).abs() < 1e-6,
+            "weight must remain 1.0 when hebbian is disabled, got {weight_after}"
+        );
     }
 }

@@ -337,6 +337,12 @@ async fn memory_with_in_memory_vector_store() -> (
         depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         reasoning: None,
+        query_bias_correction: false,
+        query_bias_profile_weight: 0.25,
+        profile_centroid: tokio::sync::RwLock::new(None),
+        profile_centroid_ttl_secs: 300,
+        hebbian_enabled: false,
+        hebbian_lr: 0.1,
     };
 
     (memory, embedding_store)

@@ -887,6 +887,20 @@ pub struct MemoryConfig {
     /// and injected before the LLM call.
     #[serde(default)]
     pub reasoning: ReasoningConfig,
+    /// Hebbian edge-weight reinforcement configuration (HL-F1/F2, #3344).
+    ///
+    /// When `enabled = true`, the weight of each `graph_edges` row is incremented
+    /// by `hebbian_lr` every time that edge is traversed during a recall. Default: disabled.
+    ///
+    /// # Example (TOML)
+    ///
+    /// ```toml
+    /// [memory.hebbian]
+    /// enabled = true
+    /// hebbian_lr = 0.1
+    /// ```
+    #[serde(default)]
+    pub hebbian: HebbianConfig,
 }
 
 fn default_crossover_turn_threshold() -> u32 {
@@ -1099,7 +1113,7 @@ pub enum ContextFormat {
 /// # search_prompt_template = ""
 /// # context_format = "structured"
 /// ```
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RetrievalConfig {
     /// Number of ANN candidates fetched from the vector store before keyword merge,
@@ -1127,6 +1141,79 @@ pub struct RetrievalConfig {
     /// See [`ContextFormat`] for the exact rendering and token-cost implications.
     /// Default: `Structured`.
     pub context_format: ContextFormat,
+    /// Enable query-bias correction towards the user's profile centroid (MM-F3, #3341).
+    ///
+    /// When `true` and the query is classified as first-person, the query embedding is
+    /// shifted towards the centroid of persona-fact embeddings. This nudges recall results
+    /// towards persona-relevant content for self-referential queries.
+    ///
+    /// Default: `true` (low blast-radius: no-op when the persona table is empty).
+    #[serde(default = "default_query_bias_correction")]
+    pub query_bias_correction: bool,
+    /// Blend weight for query-bias correction (MM-F3, #3341).
+    ///
+    /// Controls how much the query embedding shifts towards the profile centroid.
+    /// `0.0` = no shift; `1.0` = full centroid. Clamped to `[0.0, 1.0]`. Default: `0.25`.
+    #[serde(default = "default_query_bias_profile_weight")]
+    pub query_bias_profile_weight: f32,
+    /// Centroid TTL in seconds (MM-F3, #3341).
+    ///
+    /// The profile centroid computed from persona facts is cached for this many seconds.
+    /// After expiry it is recomputed on the next first-person query. Default: 300 (5 min).
+    #[serde(default = "default_query_bias_centroid_ttl_secs")]
+    pub query_bias_centroid_ttl_secs: u64,
+}
+
+fn default_query_bias_correction() -> bool {
+    true
+}
+
+fn default_query_bias_profile_weight() -> f32 {
+    0.25
+}
+
+fn default_query_bias_centroid_ttl_secs() -> u64 {
+    300
+}
+
+impl Default for RetrievalConfig {
+    fn default() -> Self {
+        Self {
+            depth: 0,
+            search_prompt_template: String::new(),
+            context_format: ContextFormat::default(),
+            query_bias_correction: default_query_bias_correction(),
+            query_bias_profile_weight: default_query_bias_profile_weight(),
+            query_bias_centroid_ttl_secs: default_query_bias_centroid_ttl_secs(),
+        }
+    }
+}
+
+/// Hebbian edge-weight reinforcement configuration (HL-F1/F2, #3344).
+///
+/// Controls opt-in Hebbian learning on knowledge-graph edges. When enabled, every
+/// recall traversal increments the `weight` column of the traversed edges, building
+/// a usage-frequency signal into the graph.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct HebbianConfig {
+    /// Master switch. When `false`, no `weight` updates are written to the database.
+    /// Default: `false`.
+    pub enabled: bool,
+    /// Weight increment per co-activation (HL-F2, #3344).
+    ///
+    /// Typical range: `0.01`–`0.5`. A value of `0.0` is accepted but logs a `WARN` at
+    /// startup when `enabled = true`. Default: `0.1`.
+    pub hebbian_lr: f32,
+}
+
+impl Default for HebbianConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hebbian_lr: 0.1,
+        }
+    }
 }
 
 /// Compression strategy for active context compression (#1161).

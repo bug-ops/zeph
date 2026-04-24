@@ -359,6 +359,14 @@ importance_weight = 0.15
 #                                 #             ~2–3× more tokens per entry than plain;
 #                                 #             raise memory.recall_tokens proportionally.
 #                                 # plain:      legacy `- [role] content` format (pre-#3340).
+# query_bias_correction = true    # MM-F3 (#3341): shift first-person queries toward the user profile centroid.
+#                                 # No-op when the persona table is empty. Default: true.
+# query_bias_profile_weight = 0.25  # blend weight in [0.0, 1.0]; 0.0 = no shift, 1.0 = full centroid.
+# query_bias_centroid_ttl_secs = 300  # seconds before the profile centroid cache is recomputed (5 min).
+
+# [memory.hebbian]                       # HL-F1/F2 (#3344) Hebbian edge reinforcement
+# enabled = false                        # opt-in master switch; no DB writes when false
+# hebbian_lr = 0.1                       # weight increment per co-activation (typical range 0.01–0.5)
 
 # Code RAG: AST-based code indexing and hybrid retrieval
 # Requires Qdrant for semantic retrieval; tree-sitter grammars are always available

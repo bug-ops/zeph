@@ -270,9 +270,27 @@ async fn run_eviction_phase1(
     // Sort ascending by score — lowest scores (most forgettable) first.
     scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    let ids_to_delete: Vec<MessageId> = scored.into_iter().take(excess).map(|(_, id)| id).collect();
+    let candidates_to_delete: Vec<MessageId> =
+        scored.into_iter().take(excess).map(|(_, id)| id).collect();
+    let candidate_count = candidates_to_delete.len();
+    // MM-F4: always protect messages referenced by summaries (data-integrity invariant, #3341).
+    // `ids_to_delete` is the post-filter set; it may be smaller than `candidate_count` when
+    // summary-anchored messages are present. The return value reflects **actually soft-deleted**
+    // messages, not the original candidate count.
+    let ids_to_delete = store
+        .filter_out_preserved_episode_ids(&candidates_to_delete)
+        .await?;
+    let preserved = candidate_count - ids_to_delete.len();
+    if preserved > 0 {
+        tracing::debug!(
+            preserved,
+            deleted = ids_to_delete.len(),
+            "eviction phase 1: {preserved} candidate(s) preserved by summary anchor"
+        );
+    }
     store.soft_delete_messages(&ids_to_delete).await?;
 
+    // Returns the number of messages actually soft-deleted (post-filter), not the candidate count.
     Ok(ids_to_delete.len())
 }
 
@@ -428,6 +446,55 @@ mod tests {
             config.max_entries, 0,
             "eviction must be disabled by default"
         );
+    }
+
+    // ── MM-F4: eviction preserves summary-anchored messages ───────────────────
+
+    #[tokio::test]
+    async fn test_eviction_preserves_summary_anchored_messages() {
+        use crate::store::SqliteStore;
+
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let cid = store.create_conversation().await.unwrap();
+
+        // Insert 6 messages (max_entries=3 → 3 excess candidates).
+        let ids: Vec<_> = (0..6)
+            .map(|_| async { store.save_message(cid, "user", "msg").await.unwrap() })
+            .collect();
+        let mut msg_ids = Vec::new();
+        for f in ids {
+            msg_ids.push(f.await);
+        }
+
+        // Anchor messages 1–3 inside a summary range.
+        store
+            .save_summary(cid, "summary", Some(msg_ids[0]), Some(msg_ids[2]), 30)
+            .await
+            .unwrap();
+
+        let policy = EbbinghausPolicy::default();
+        // Trigger eviction: 6 messages, max_entries=3.
+        let deleted = run_eviction_phase1(&store, &policy, 3).await.unwrap();
+
+        // At most 3 were eligible for deletion; summary-anchored (0–2) must survive.
+        // Only messages 3–5 (outside summary range) may be deleted.
+        assert!(
+            deleted <= 3,
+            "at most 3 messages can be deleted, got {deleted}"
+        );
+
+        for &anchored in &msg_ids[0..=2] {
+            let is_deleted: Option<String> =
+                sqlx::query_scalar("SELECT deleted_at FROM messages WHERE id = ?")
+                    .bind(anchored)
+                    .fetch_one(store.pool())
+                    .await
+                    .unwrap();
+            assert!(
+                is_deleted.is_none(),
+                "summary-anchored message {anchored:?} must not be soft-deleted"
+            );
+        }
     }
 
     #[test]

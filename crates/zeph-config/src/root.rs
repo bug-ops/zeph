@@ -254,6 +254,7 @@ impl Default for Config {
                 compression_spectrum: crate::features::CompressionSpectrumConfig::default(),
                 retrieval: crate::memory::RetrievalConfig::default(),
                 reasoning: crate::memory::ReasoningConfig::default(),
+                hebbian: crate::memory::HebbianConfig::default(),
             },
             telegram: None,
             discord: None,

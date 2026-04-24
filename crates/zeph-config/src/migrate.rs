@@ -2511,13 +2511,16 @@ pub fn migrate_memory_retrieval_config(toml_src: &str) -> Result<MigrationResult
         });
     }
 
-    let comment = "\n# [memory.retrieval] — MemMachine-inspired retrieval tuning (#3340).\n\
+    let comment = "\n# [memory.retrieval] — MemMachine-inspired retrieval tuning (#3340, #3341).\n\
          # [memory.retrieval]\n\
          # depth = 0                          # ANN candidates fetched from the vector store, directly.\n\
          #                                    # 0 = legacy behavior (recall_limit * 2). Set to an explicit\n\
          #                                    # value >= recall_limit * 2 to enlarge the candidate pool.\n\
          # search_prompt_template = \"\"        # embedding query template; {query} = raw user query; empty = identity\n\
-         # context_format = \"structured\"      # structured | plain — memory snippet rendering format\n";
+         # context_format = \"structured\"      # structured | plain — memory snippet rendering format\n\
+         # query_bias_correction = true        # shift first-person queries towards user profile centroid (MM-F3)\n\
+         # query_bias_profile_weight = 0.25    # blend weight [0.0, 1.0]; 0.0 = off, 1.0 = full centroid\n\
+         # query_bias_centroid_ttl_secs = 300  # seconds before profile centroid cache is recomputed\n";
     let output = format!("{toml_src}{comment}");
 
     Ok(MigrationResult {
@@ -2568,6 +2571,40 @@ pub fn migrate_memory_reasoning_config(toml_src: &str) -> Result<MigrationResult
         output,
         changed_count: 1,
         sections_changed: vec!["memory.reasoning".to_owned()],
+    })
+}
+
+/// Append a commented-out `[memory.hebbian]` block to `toml_src` when it is absent (HL-F1/F2, #3344).
+///
+/// Idempotent: if a `[memory.hebbian]` or `# [memory.hebbian]` line already exists,
+/// the input is returned unchanged with `changed_count = 0`.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the migration
+/// function convention for use in chained pipelines.
+pub fn migrate_memory_hebbian_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src
+        .lines()
+        .any(|l| l.trim() == "[memory.hebbian]" || l.trim() == "# [memory.hebbian]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [memory.hebbian]                       # HL-F1/F2 (#3344) Hebbian edge reinforcement\n\
+         # [memory.hebbian]\n\
+         # enabled = false                        # opt-in master switch; no DB writes when false\n\
+         # hebbian_lr = 0.1                       # weight increment per co-activation (0.01–0.5)\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.hebbian".to_owned()],
     })
 }
 

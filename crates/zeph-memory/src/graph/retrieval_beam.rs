@@ -40,6 +40,8 @@ pub async fn graph_recall_beam(
     max_hops: u32,
     edge_types: &[EdgeType],
     temporal_decay_rate: f64,
+    hebbian_enabled: bool,
+    hebbian_lr: f32,
 ) -> Result<Vec<GraphFact>, MemoryError> {
     let _span = tracing::info_span!("memory.graph.beam", query_len = query.len()).entered();
 
@@ -141,6 +143,13 @@ pub async fn graph_recall_beam(
     if let Err(e) = store.record_edge_retrieval(&edge_ids).await {
         tracing::warn!(error = %e, "graph_recall_beam: failed to record edge retrieval");
     }
+    // HL-F2: Hebbian weight reinforcement (fire-and-forget).
+    if hebbian_enabled
+        && !edge_ids.is_empty()
+        && let Err(e) = store.apply_hebbian_increment(&edge_ids, hebbian_lr).await
+    {
+        tracing::warn!(error = %e, "graph_recall_beam: hebbian increment failed");
+    }
 
     // Convert to GraphFact, dedup, sort, truncate.
     let mut facts: Vec<GraphFact> = Vec::new();
@@ -216,9 +225,21 @@ mod tests {
     async fn beam_empty_graph_returns_empty() {
         let store = setup_store().await;
         let provider = mock_provider();
-        let result = graph_recall_beam(&store, None, &provider, "anything", 10, 5, 2, &[], 0.0)
-            .await
-            .unwrap();
+        let result = graph_recall_beam(
+            &store,
+            None,
+            &provider,
+            "anything",
+            10,
+            5,
+            2,
+            &[],
+            0.0,
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         assert!(result.is_empty());
     }
 
@@ -226,9 +247,21 @@ mod tests {
     async fn beam_zero_limit_returns_empty() {
         let store = setup_store().await;
         let provider = mock_provider();
-        let result = graph_recall_beam(&store, None, &provider, "anything", 0, 5, 2, &[], 0.0)
-            .await
-            .unwrap();
+        let result = graph_recall_beam(
+            &store,
+            None,
+            &provider,
+            "anything",
+            0,
+            5,
+            2,
+            &[],
+            0.0,
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         assert!(result.is_empty());
     }
 
@@ -249,9 +282,21 @@ mod tests {
             .unwrap();
 
         let provider = mock_provider();
-        let result = graph_recall_beam(&store, None, &provider, "Alice", 10, 5, 2, &[], 0.0)
-            .await
-            .unwrap();
+        let result = graph_recall_beam(
+            &store,
+            None,
+            &provider,
+            "Alice",
+            10,
+            5,
+            2,
+            &[],
+            0.0,
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         assert!(!result.is_empty());
     }
 }

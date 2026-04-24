@@ -330,6 +330,7 @@ mod tests {
             last_retrieved_at: None,
             superseded_by: None,
             supersedes: None,
+            weight: 1.0,
         }
     }
 

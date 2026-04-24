@@ -344,6 +344,17 @@ impl AppBuilder {
             &self.config.memory.retrieval.search_prompt_template,
         );
 
+        memory = memory.with_query_bias(
+            self.config.memory.retrieval.query_bias_correction,
+            self.config.memory.retrieval.query_bias_profile_weight,
+            self.config.memory.retrieval.query_bias_centroid_ttl_secs,
+        );
+
+        memory = memory.with_hebbian(
+            self.config.memory.hebbian.enabled,
+            self.config.memory.hebbian.hebbian_lr,
+        );
+
         if self.config.memory.semantic.enabled && memory.is_vector_store_connected().await {
             tracing::info!("semantic memory enabled, vector store connected");
         }

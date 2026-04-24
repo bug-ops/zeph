@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- HL-F1: `Edge.weight: f32` field (default `1.0`) for Hebbian reinforcement in the graph store
+  (`crates/zeph-memory`). SQLite migration 077 adds `graph_edges.weight REAL NOT NULL DEFAULT 1.0`
+  and the `idx_summaries_message_range` partial index. Postgres is out of scope pending resolution
+  of the 069–076 migration drift (#3344).
+- HL-F2: Hebbian update on recall — `GraphStore::apply_hebbian_increment` increments edge weights
+  for traversed edges; wired fire-and-forget into all four graph retrieval paths. Controlled by
+  `[memory.hebbian] enabled = false` (opt-in) and `hebbian_lr = 0.1` (#3344).
+- MM-F3: Query-bias correction — first-person queries are shifted toward the user's profile centroid
+  embedding before vector search. `[memory.retrieval] query_bias_correction = true` and
+  `query_bias_profile_weight = 0.25` control the blend. Centroid is cached in a TTL-bounded
+  `RwLock<Option<CachedCentroid>>` (default 300 s); computation failure is non-sticky and
+  falls through to the previous cache or no-op (#3341).
+- MM-F4: Episode preservation is now unconditional (data-integrity invariant): the eviction sweep
+  calls `MessageStore::filter_out_preserved_episode_ids` to exclude any message ID that falls within
+  a summary's `[first_message_id, last_message_id]` range before soft-deleting. No config flag
+  required (#3341).
+
 ### Fixed
 
 - `Notifier::fire_test()` now checks the master `notifications.enabled` switch first; if

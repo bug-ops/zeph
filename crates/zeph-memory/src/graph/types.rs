@@ -200,6 +200,12 @@ pub struct Edge {
     /// ID of the prior active edge that this edge replaced in the supersede chain.
     /// `None` for the chain root. Added by APEX-MEM migration 075.
     pub supersedes: Option<i64>,
+    /// Hebbian reinforcement weight (HL-F1, #3344).
+    ///
+    /// Starts at `1.0` for all edges; incremented by `hebbian_lr` on each recall
+    /// traversal when `[memory.hebbian] enabled = true`. Higher weight signals
+    /// frequently co-activated relationships.
+    pub weight: f32,
 }
 
 /// A Louvain-detected community (cluster) of related entities.

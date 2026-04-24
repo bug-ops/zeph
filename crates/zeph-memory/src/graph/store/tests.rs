@@ -3814,3 +3814,162 @@ async fn check_supersede_depth_returns_zero_for_root_edge() {
     let depth = gs.check_supersede_depth(edge_id).await.unwrap();
     assert_eq!(depth, 0, "root edge with no supersedes pointer has depth 0");
 }
+
+// ── HL-F1: Edge.weight field ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_insert_edge_default_weight_is_one() {
+    let gs = setup().await;
+    let src = gs
+        .upsert_entity("A", "A", EntityType::Person, None)
+        .await
+        .unwrap();
+    let tgt = gs
+        .upsert_entity("B", "B", EntityType::Person, None)
+        .await
+        .unwrap();
+    let eid = gs
+        .insert_edge(src, tgt, "knows", "A knows B", 0.9, None)
+        .await
+        .unwrap();
+
+    let weight: f64 = sqlx::query_scalar(sql!("SELECT weight FROM graph_edges WHERE id = ?1"))
+        .bind(eid)
+        .fetch_one(&gs.pool)
+        .await
+        .unwrap();
+    assert!(
+        (weight - 1.0).abs() < 1e-6,
+        "default weight must be 1.0, got {weight}"
+    );
+}
+
+#[tokio::test]
+async fn test_edge_weight_persists_after_update() {
+    let gs = setup().await;
+    let src = gs
+        .upsert_entity("C", "C", EntityType::Person, None)
+        .await
+        .unwrap();
+    let tgt = gs
+        .upsert_entity("D", "D", EntityType::Person, None)
+        .await
+        .unwrap();
+    let eid = gs
+        .insert_edge(src, tgt, "likes", "C likes D", 0.8, None)
+        .await
+        .unwrap();
+
+    gs.apply_hebbian_increment(&[eid], 0.1_f32).await.unwrap();
+
+    let weight: f64 = sqlx::query_scalar(sql!("SELECT weight FROM graph_edges WHERE id = ?1"))
+        .bind(eid)
+        .fetch_one(&gs.pool)
+        .await
+        .unwrap();
+    // Default 1.0 + delta 0.1 = 1.1; use tolerance for f32→f64 round-trip.
+    assert!(
+        (weight - 1.1).abs() < 1e-5,
+        "weight after increment must be ~1.1, got {weight}"
+    );
+}
+
+// ── HL-F2: apply_hebbian_increment ────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_apply_hebbian_increment_empty_ids_is_noop() {
+    let gs = setup().await;
+    // Empty slice must return Ok without touching the DB.
+    gs.apply_hebbian_increment(&[], 0.5_f32).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_apply_hebbian_increment_zero_delta_is_noop() {
+    let gs = setup().await;
+    let src = gs
+        .upsert_entity("E", "E", EntityType::Person, None)
+        .await
+        .unwrap();
+    let tgt = gs
+        .upsert_entity("F", "F", EntityType::Person, None)
+        .await
+        .unwrap();
+    let eid = gs
+        .insert_edge(src, tgt, "rel", "fact", 0.5, None)
+        .await
+        .unwrap();
+
+    gs.apply_hebbian_increment(&[eid], 0.0_f32).await.unwrap();
+
+    let weight: f64 = sqlx::query_scalar(sql!("SELECT weight FROM graph_edges WHERE id = ?1"))
+        .bind(eid)
+        .fetch_one(&gs.pool)
+        .await
+        .unwrap();
+    assert!(
+        (weight - 1.0).abs() < 1e-6,
+        "zero delta must leave weight unchanged at 1.0, got {weight}"
+    );
+}
+
+#[tokio::test]
+async fn test_apply_hebbian_increment_updates_weight() {
+    let gs = setup().await;
+    let src = gs
+        .upsert_entity("G", "G", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let tgt = gs
+        .upsert_entity("H", "H", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let eid = gs
+        .insert_edge(src, tgt, "rel", "fact", 0.7, None)
+        .await
+        .unwrap();
+
+    gs.apply_hebbian_increment(&[eid], 0.5_f32).await.unwrap();
+
+    let weight: f64 = sqlx::query_scalar(sql!("SELECT weight FROM graph_edges WHERE id = ?1"))
+        .bind(eid)
+        .fetch_one(&gs.pool)
+        .await
+        .unwrap();
+    assert!(
+        (weight - 1.5).abs() < 1e-5,
+        "weight must increase by delta=0.5 to ~1.5, got {weight}"
+    );
+}
+
+#[tokio::test]
+async fn test_apply_hebbian_increment_skips_invalidated_edges() {
+    let gs = setup().await;
+    let src = gs
+        .upsert_entity("I", "I", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let tgt = gs
+        .upsert_entity("J", "J", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let eid = gs
+        .insert_edge(src, tgt, "rel", "fact", 0.6, None)
+        .await
+        .unwrap();
+
+    // Invalidate the edge — sets valid_to IS NOT NULL.
+    gs.invalidate_edge(eid).await.unwrap();
+
+    gs.apply_hebbian_increment(&[eid], 0.5_f32).await.unwrap();
+
+    // Weight must remain at the default 1.0 — WHERE valid_to IS NULL guard skips tombstoned edges.
+    let weight: f64 = sqlx::query_scalar(sql!("SELECT weight FROM graph_edges WHERE id = ?1"))
+        .bind(eid)
+        .fetch_one(&gs.pool)
+        .await
+        .unwrap();
+    assert!(
+        (weight - 1.0).abs() < 1e-6,
+        "invalidated edge must not have weight incremented, got {weight}"
+    );
+}

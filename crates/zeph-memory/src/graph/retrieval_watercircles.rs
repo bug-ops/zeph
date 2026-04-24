@@ -42,6 +42,8 @@ pub async fn graph_recall_watercircles(
     ring_limit: usize,
     edge_types: &[EdgeType],
     temporal_decay_rate: f64,
+    hebbian_enabled: bool,
+    hebbian_lr: f32,
 ) -> Result<Vec<GraphFact>, MemoryError> {
     let _span = tracing::info_span!("memory.graph.watercircles", query_len = query.len()).entered();
 
@@ -144,6 +146,15 @@ pub async fn graph_recall_watercircles(
                     "graph_recall_watercircles: failed to record edge retrieval"
                 );
             }
+            // HL-F2: Hebbian weight reinforcement (fire-and-forget).
+            if hebbian_enabled
+                && !traversed_ids.is_empty()
+                && let Err(e) = store
+                    .apply_hebbian_increment(&traversed_ids, hebbian_lr)
+                    .await
+            {
+                tracing::warn!(error = %e, "graph_recall_watercircles: hebbian increment failed");
+            }
         }
 
         // Sort ring by score, cap, then add to global list (deduplicating).
@@ -196,10 +207,21 @@ mod tests {
     async fn watercircles_empty_graph_returns_empty() {
         let store = setup_store().await;
         let provider = mock_provider();
-        let result =
-            graph_recall_watercircles(&store, None, &provider, "anything", 10, 2, 0, &[], 0.0)
-                .await
-                .unwrap();
+        let result = graph_recall_watercircles(
+            &store,
+            None,
+            &provider,
+            "anything",
+            10,
+            2,
+            0,
+            &[],
+            0.0,
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         assert!(result.is_empty());
     }
 
@@ -207,10 +229,21 @@ mod tests {
     async fn watercircles_zero_limit_returns_empty() {
         let store = setup_store().await;
         let provider = mock_provider();
-        let result =
-            graph_recall_watercircles(&store, None, &provider, "anything", 0, 2, 0, &[], 0.0)
-                .await
-                .unwrap();
+        let result = graph_recall_watercircles(
+            &store,
+            None,
+            &provider,
+            "anything",
+            0,
+            2,
+            0,
+            &[],
+            0.0,
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         assert!(result.is_empty());
     }
 
@@ -237,9 +270,21 @@ mod tests {
                 .unwrap();
         }
         let provider = mock_provider();
-        let result = graph_recall_watercircles(&store, None, &provider, "Root", 5, 2, 0, &[], 0.0)
-            .await
-            .unwrap();
+        let result = graph_recall_watercircles(
+            &store,
+            None,
+            &provider,
+            "Root",
+            5,
+            2,
+            0,
+            &[],
+            0.0,
+            false,
+            0.0,
+        )
+        .await
+        .unwrap();
         assert!(result.len() <= 5, "limit must be respected");
     }
 }

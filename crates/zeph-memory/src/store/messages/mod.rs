@@ -7,7 +7,7 @@ use zeph_common;
 use zeph_db::ActiveDialect;
 use zeph_db::fts::sanitize_fts_query;
 #[allow(unused_imports)]
-use zeph_db::{begin_write, sql};
+use zeph_db::{begin_write, placeholder_list, sql};
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, MessageVisibility, Role};
 
 use super::SqliteStore;
@@ -944,6 +944,54 @@ impl SqliteStore {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Filter `candidate_ids` to retain only IDs that are NOT covered by any
+    /// summary's `[first_message_id, last_message_id]` range (MM-F4, #3341).
+    ///
+    /// Returns the **safe-to-delete** subset: candidate IDs that do not fall inside
+    /// any summary range. This enforces the data-integrity invariant that raw episodes
+    /// referenced by a summary can never be soft-deleted by the eviction sweep.
+    ///
+    /// Batched at `MAX_BATCH = 490` placeholders per chunk to stay under the `SQLite`
+    /// 999-parameter limit. The `idx_summaries_message_range` partial index (migration 077)
+    /// makes the inner `NOT EXISTS` range probe efficient.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError`] if the underlying query fails.
+    pub async fn filter_out_preserved_episode_ids(
+        &self,
+        candidate_ids: &[MessageId],
+    ) -> Result<Vec<MessageId>, crate::error::MemoryError> {
+        const MAX_BATCH: usize = 490;
+        if candidate_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut safe_to_delete: Vec<MessageId> = Vec::with_capacity(candidate_ids.len());
+        for chunk in candidate_ids.chunks(MAX_BATCH) {
+            let placeholders = placeholder_list(1, chunk.len());
+            let sql = format!(
+                "SELECT m.id \
+                   FROM messages m \
+                  WHERE m.id IN ({placeholders}) \
+                    AND NOT EXISTS ( \
+                          SELECT 1 \
+                            FROM summaries s \
+                           WHERE s.first_message_id IS NOT NULL \
+                             AND s.last_message_id IS NOT NULL \
+                             AND m.id >= s.first_message_id \
+                             AND m.id <= s.last_message_id \
+                        )"
+            );
+            let mut q = zeph_db::query_as::<_, (MessageId,)>(&sql);
+            for &id in chunk {
+                q = q.bind(id);
+            }
+            let rows: Vec<(MessageId,)> = q.fetch_all(&self.pool).await?;
+            safe_to_delete.extend(rows.into_iter().map(|(id,)| id));
+        }
+        Ok(safe_to_delete)
     }
 
     /// Mark a set of soft-deleted messages as Qdrant-cleaned.

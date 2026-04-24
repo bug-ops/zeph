@@ -761,6 +761,7 @@ impl SemanticMemory {
         {
             let embed_input = self.apply_search_prompt(query);
             let query_vector = self.effective_embed_provider().embed(&embed_input).await?;
+            let query_vector = self.apply_query_bias(query, query_vector).await;
             let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
             qdrant.ensure_collection(vector_size).await?;
             qdrant
@@ -809,6 +810,7 @@ impl SemanticMemory {
         }
         let embed_input = self.apply_search_prompt(query);
         let query_vector = self.effective_embed_provider().embed(&embed_input).await?;
+        let query_vector = self.apply_query_bias(query, query_vector).await;
         let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
         qdrant.ensure_collection(vector_size).await?;
         qdrant
@@ -1277,6 +1279,8 @@ impl SemanticMemory {
             at_timestamp,
             temporal_decay_rate,
             edge_types,
+            self.hebbian_enabled,
+            self.hebbian_lr,
         )
         .await?;
 
@@ -1325,6 +1329,8 @@ impl SemanticMemory {
             limit,
             params,
             edge_types,
+            self.hebbian_enabled,
+            self.hebbian_lr,
         )
         .await?;
 
@@ -1363,6 +1369,8 @@ impl SemanticMemory {
             max_hops,
             edge_types,
             temporal_decay_rate,
+            self.hebbian_enabled,
+            self.hebbian_lr,
         )
         .await
     }
@@ -1396,6 +1404,8 @@ impl SemanticMemory {
             ring_limit,
             edge_types,
             temporal_decay_rate,
+            self.hebbian_enabled,
+            self.hebbian_lr,
         )
         .await
     }
@@ -1429,6 +1439,8 @@ impl SemanticMemory {
             max_hops,
             edge_types,
             temporal_decay_rate,
+            self.hebbian_enabled,
+            self.hebbian_lr,
         )
         .await
     }
@@ -1633,6 +1645,12 @@ mod tests {
             depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             reasoning: None,
+            query_bias_correction: false,
+            query_bias_profile_weight: 0.25,
+            profile_centroid: tokio::sync::RwLock::new(None),
+            profile_centroid_ttl_secs: 300,
+            hebbian_enabled: false,
+            hebbian_lr: 0.1,
         }
     }
 
