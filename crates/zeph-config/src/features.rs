@@ -152,8 +152,10 @@ fn default_scheduler_daemon_pid_file() -> String {
     {
         dirs::state_dir()
             .or_else(dirs::data_local_dir)
-            .map(|d| d.join("zeph").join("zeph.pid"))
-            .unwrap_or_else(|| std::path::PathBuf::from("~/.zeph/zeph.pid"))
+            .map_or_else(
+                || std::path::PathBuf::from("~/.zeph/zeph.pid"),
+                |d| d.join("zeph").join("zeph.pid"),
+            )
             .to_string_lossy()
             .into_owned()
     }
@@ -175,8 +177,10 @@ fn default_scheduler_daemon_log_file() -> String {
     {
         dirs::state_dir()
             .or_else(dirs::data_local_dir)
-            .map(|d| d.join("zeph").join("zeph.log"))
-            .unwrap_or_else(|| std::path::PathBuf::from("~/.zeph/zeph.log"))
+            .map_or_else(
+                || std::path::PathBuf::from("~/.zeph/zeph.log"),
+                |d| d.join("zeph").join("zeph.log"),
+            )
             .to_string_lossy()
             .into_owned()
     }
