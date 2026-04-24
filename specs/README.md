@@ -64,6 +64,9 @@ Spec IDs (001–044) follow a logical grouping:
 | `004-memory/004-7-memory-apex-magma.md` | APEX-MEM append-only MAGMA: edge supersession, ontology normalization, SYNAPSE conflict resolution (#3223) | `zeph-memory` |
 | `004-memory/004-8-memory-typed-pages.md` | ClawVM typed page compaction: PageType classification, minimum-fidelity invariants, compaction audit log (#3221) | `zeph-context`, `zeph-memory` |
 | `004-memory/004-9-memory-write-gate.md` | MemReader write quality gate: three-signal scorer, rule-based MVP, optional LLM scoring (#3222) | `zeph-memory` |
+| `004-memory/004-10-memory-memmachine-retrieval.md` | MemMachine retrieval-depth-first memory: retrieval depth config, search prompt templates, query bias correction, episode preservation (#3325) | `zeph-memory` |
+| `004-memory/004-11-memory-hela-mem.md` | HeLa-Mem Hebbian learning: edge weight reinforcement, periodic consolidation, spreading activation retrieval (#3324) | `zeph-memory` |
+| `004-memory/004-12-memory-reasoning-bank.md` | ReasoningBank: self-judge + distillation pipeline, strategy embedding store, context preamble injection (#3312) | `zeph-memory`, `zeph-core` |
 | `005-skills/spec.md` | SKILL.md format, registry, matching, hot-reload, skill trust governance, two-stage matching, Wilson score confidence intervals, hub install pipeline, agent-invocable skills (`invoke_skill`) | `zeph-skills` |
 | `006-tools/spec.md` | ToolExecutor, CompositeExecutor, TAFC, schema filter, result cache, dependency graph, tool invocation phase taxonomy, native `tool_use` only; `invoke_skill`/`load_skill` utility-gate exemption | `zeph-tools` |
 | `007-channels/spec.md` | Channel trait, AnyChannel dispatch, streaming, channel feature parity | `zeph-channels` |
