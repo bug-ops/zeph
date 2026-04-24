@@ -1141,3 +1141,70 @@ sweep_batch_size = 100
 # provider = ""
 # Maximum recent messages included for fresh-generation path (no cached digest)
 # max_input_messages = 20
+
+# ── Lifecycle hooks ────────────────────────────────────────────────────────────
+# Hooks fire at named lifecycle points. Each hook specifies an action (shell
+# command or MCP tool dispatch) plus timeout and fail_closed settings.
+#
+# action types:
+#   type = "command"  — run a shell command via sh -c
+#   type = "mcp_tool" — call an MCP server tool directly (no subprocess)
+#
+# Available events:
+#   [[hooks.cwd_changed]]      — agent's working directory changed
+#   [[hooks.permission_denied]] — a tool call was blocked by a RuntimeLayer check
+#   [hooks.file_changed]       — watched filesystem paths changed (see watch_paths)
+
+# ── hooks.cwd_changed ─────────────────────────────────────────────────────────
+# Fired each time the agent changes its working directory.
+# Env vars set for command hooks: ZEPH_NEW_CWD (new path), ZEPH_OLD_CWD (previous path).
+#
+# [[hooks.cwd_changed]]
+# type = "command"
+# command = "echo 'cwd changed to $ZEPH_NEW_CWD'"
+# timeout_secs = 10
+# fail_closed = false
+#
+# MCP tool dispatch variant — call a server tool instead of a subprocess:
+# [[hooks.cwd_changed]]
+# type = "mcp_tool"
+# server = "my-server"   # must match a name in [[mcp.servers]]
+# tool = "on_cwd_changed"
+# timeout_secs = 10
+# fail_closed = false
+
+# ── hooks.permission_denied ───────────────────────────────────────────────────
+# Fired when a tool call is blocked by a RuntimeLayer::before_tool check (#3303).
+# Env vars set for command hooks:
+#   ZEPH_DENIED_TOOL  — name of the blocked tool
+#   ZEPH_DENY_REASON  — human-readable reason string from the layer
+#
+# [[hooks.permission_denied]]
+# type = "command"
+# command = "echo 'denied: $ZEPH_DENIED_TOOL ($ZEPH_DENY_REASON)'"
+# timeout_secs = 5
+# fail_closed = false
+#
+# MCP tool dispatch variant — log denials to an audit server without a subprocess:
+# [[hooks.permission_denied]]
+# type = "mcp_tool"
+# server = "policy-server"  # must match a name in [[mcp.servers]]
+# tool = "audit_denied"
+# timeout_secs = 10
+# fail_closed = false
+# # Optional static arguments passed to the tool as JSON:
+# [hooks.permission_denied.args]
+# severity = "high"
+
+# ── hooks.file_changed ────────────────────────────────────────────────────────
+# Watches paths on disk and fires hooks when changes are detected.
+# Paths are resolved relative to the working directory at startup.
+#
+# [hooks.file_changed]
+# watch_paths = ["src/", "Cargo.toml"]
+# debounce_ms = 500   # default: 500
+# [[hooks.file_changed.hooks]]
+# type = "command"
+# command = "cargo check"
+# timeout_secs = 30
+# fail_closed = false

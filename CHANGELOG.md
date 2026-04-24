@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `McpDispatch` trait in `zeph-subagent` decouples hook execution from `zeph-mcp` — implementors are wired by `zeph-core` at call sites.
 - `/subagent spawn <command>` slash command is now intercepted in the core agent loop and works in CLI, piped, and bare modes — previously fell through to the LLM (#3302). Without ACP support, the command returns a clear "not available" message. `AcpSubagentSpawnFn` callback type bridges `zeph-core` ↔ `zeph-acp` without a direct crate dependency.
 - `LayerDenial` struct replaces the bare `BeforeToolResult` type alias: layers now carry an explicit `reason: String` that is propagated into the `ZEPH_DENY_REASON` hook env var (#3310). The previously hardcoded `"blocked by before_tool layer"` string is removed.
+- `config/default.toml` now includes commented examples for all lifecycle hook events: `[[hooks.cwd_changed]]`, `[[hooks.permission_denied]]`, and `[hooks.file_changed]`, covering both `type = "command"` and `type = "mcp_tool"` action variants (#3323).
 
 ### Changed
 
