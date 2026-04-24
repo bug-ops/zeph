@@ -1375,6 +1375,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     let skill_paths = app.skill_paths_for_registry();
+    // Cloned so the original can be moved into `with_skill_reload` while the copy is used
+    // later for proactive exploration and promotion engine output directory resolution.
+    let skill_paths_for_features = skill_paths.clone();
     let plugin_dirs_supplier = app.plugin_dirs_supplier();
 
     let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
@@ -2004,6 +2007,62 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent.with_hooks_config(&config.hooks);
     let agent = agent.with_channel_skills(channel_skills_config);
     let agent = agent.with_learning(config.skills.learning.clone());
+
+    // Wire SkillEvaluator — enabled in both normal and bare mode (quality gate only).
+    let skill_evaluator = crate::bootstrap::skills::build_skill_evaluator(config, &provider);
+    let (eval_weights, eval_threshold) = if let Some(ref _eval) = skill_evaluator {
+        let eval_cfg = &config.skills.evaluation;
+        (
+            zeph_skills::evaluator::EvaluationWeights {
+                correctness: eval_cfg.weight_correctness,
+                reusability: eval_cfg.weight_reusability,
+                specificity: eval_cfg.weight_specificity,
+            },
+            eval_cfg.quality_threshold,
+        )
+    } else {
+        (
+            zeph_skills::evaluator::EvaluationWeights::default(),
+            0.60_f32,
+        )
+    };
+    if skill_evaluator.is_some() {
+        tracing::info!(
+            threshold = eval_threshold,
+            "skills.evaluation: enabled (threshold={threshold})",
+            threshold = eval_threshold
+        );
+    }
+    let agent = agent.with_skill_evaluator(skill_evaluator.clone(), eval_weights, eval_threshold);
+
+    // Wire ProactiveExplorer — gated on !bare to avoid background tasks in minimal sessions.
+    let agent = if exec_mode.bare {
+        agent
+    } else {
+        agent_setup::apply_proactive_explorer(
+            agent,
+            config,
+            &provider,
+            skill_evaluator.clone(),
+            &skill_paths_for_features,
+        )
+    };
+
+    // Wire PromotionEngine — gated on !bare to avoid background tasks in minimal sessions.
+    let agent = if exec_mode.bare {
+        agent
+    } else {
+        agent_setup::apply_promotion_engine(
+            agent,
+            config,
+            &provider,
+            skill_evaluator,
+            eval_weights,
+            eval_threshold,
+            &skill_paths_for_features,
+        )
+    };
+
     let judge_provider = app.build_judge_provider();
     let agent = if let Some(jp) = judge_provider {
         agent.with_judge_provider(jp)

@@ -118,6 +118,15 @@ pub(crate) struct SkillState {
     pub(crate) generation_output_dir: Option<std::path::PathBuf>,
     /// Provider name for `/skill create` generation. Empty = primary.
     pub(crate) generation_provider_name: String,
+    /// Optional quality-gate evaluator for generated SKILL.md files (#3319).
+    ///
+    /// When `Some`, the evaluator is attached to every `SkillGenerator` instance so that
+    /// generated skills are scored before being written to disk.
+    pub(crate) skill_evaluator: Option<std::sync::Arc<zeph_skills::evaluator::SkillEvaluator>>,
+    /// Weights for the evaluator composite score — forwarded to `SkillGenerator::with_evaluator`.
+    pub(crate) eval_weights: zeph_skills::evaluator::EvaluationWeights,
+    /// Minimum composite score required to accept a generated skill (forwarded to the generator).
+    pub(crate) eval_threshold: f32,
 }
 
 pub(crate) struct McpState {
@@ -948,6 +957,9 @@ impl SkillState {
             rl_warmup_updates: 50,
             generation_output_dir: None,
             generation_provider_name: String::new(),
+            skill_evaluator: None,
+            eval_weights: zeph_skills::evaluator::EvaluationWeights::default(),
+            eval_threshold: 0.60,
         }
     }
 }

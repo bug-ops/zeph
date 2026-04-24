@@ -1326,6 +1326,113 @@ pub(crate) fn apply_mcp_discovery<C: Channel>(
     agent.with_mcp_discovery(strategy, params, discovery_provider)
 }
 
+/// Wire a [`zeph_skills::proactive::ProactiveExplorer`] onto the agent from config.
+///
+/// Resolves the generation provider, builds the explorer, and calls
+/// [`Agent::with_proactive_explorer`]. Returns the agent unchanged when
+/// `config.skills.proactive_exploration.enabled = false`.
+pub(crate) fn apply_proactive_explorer<C: zeph_core::channel::Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    config: &zeph_core::config::Config,
+    primary: &zeph_llm::any::AnyProvider,
+    evaluator: Option<std::sync::Arc<zeph_skills::evaluator::SkillEvaluator>>,
+    skills_paths: &[std::path::PathBuf],
+) -> zeph_core::agent::Agent<C> {
+    let exp_cfg = &config.skills.proactive_exploration;
+    if !exp_cfg.enabled {
+        return agent;
+    }
+
+    let output_dir = if let Some(ref dir) = exp_cfg.output_dir {
+        std::path::PathBuf::from(dir)
+    } else if let Some(first) = skills_paths.first() {
+        first.join("generated")
+    } else {
+        crate::bootstrap::skills::managed_skills_dir().join("generated")
+    };
+
+    let provider = if exp_cfg.provider.is_empty() {
+        primary.clone()
+    } else {
+        match crate::bootstrap::create_named_provider(&exp_cfg.provider, config) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    provider = %exp_cfg.provider,
+                    error = %e,
+                    "proactive exploration provider resolution failed, falling back to primary"
+                );
+                primary.clone()
+            }
+        }
+    };
+
+    let generator = zeph_skills::SkillGenerator::new(provider, output_dir.clone());
+    let explorer = zeph_skills::proactive::ProactiveExplorer::new(
+        generator,
+        evaluator,
+        output_dir,
+        exp_cfg.max_chars,
+        exp_cfg.timeout_ms,
+        exp_cfg.excluded_domains.clone(),
+    );
+    tracing::info!("skills.proactive_exploration: enabled");
+    agent.with_proactive_explorer(Some(std::sync::Arc::new(explorer)))
+}
+
+/// Wire a [`zeph_memory::compression::promotion::PromotionEngine`] onto the agent from config.
+///
+/// Resolves the output directory and skill writer, then calls
+/// [`Agent::with_promotion_engine`]. Returns the agent unchanged when
+/// `config.memory.compression_spectrum.enabled = false` or when no `SkillWriter`
+/// could be built (missing provider or skills paths).
+pub(crate) fn apply_promotion_engine<C: zeph_core::channel::Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    config: &zeph_core::config::Config,
+    primary: &zeph_llm::any::AnyProvider,
+    evaluator: Option<std::sync::Arc<zeph_skills::evaluator::SkillEvaluator>>,
+    eval_weights: zeph_skills::evaluator::EvaluationWeights,
+    eval_threshold: f32,
+    skills_paths: &[std::path::PathBuf],
+) -> zeph_core::agent::Agent<C> {
+    let spectrum_cfg = &config.memory.compression_spectrum;
+    if !spectrum_cfg.enabled {
+        return agent;
+    }
+
+    let output_dir = if let Some(ref dir) = spectrum_cfg.promotion_output_dir {
+        std::path::PathBuf::from(dir)
+    } else if let Some(first) = skills_paths.first() {
+        first.join("promoted")
+    } else {
+        crate::bootstrap::skills::managed_skills_dir().join("promoted")
+    };
+
+    let Some(writer) = crate::bootstrap::skills::build_skill_writer(
+        config,
+        primary,
+        evaluator,
+        eval_weights,
+        eval_threshold,
+        skills_paths,
+    ) else {
+        return agent;
+    };
+
+    let promotion_config = zeph_memory::compression::promotion::PromotionConfig {
+        min_occurrences: spectrum_cfg.min_occurrences,
+        min_sessions: spectrum_cfg.min_sessions,
+        cluster_threshold: spectrum_cfg.cluster_threshold,
+    };
+    let engine = zeph_memory::compression::promotion::PromotionEngine::new(
+        writer,
+        promotion_config,
+        output_dir,
+    );
+    tracing::info!("memory.compression_spectrum: enabled");
+    agent.with_promotion_engine(Some(std::sync::Arc::new(engine)))
+}
+
 /// Build a `SandboxPolicy` from the TOML `[tools.sandbox]` config section.
 pub(crate) fn sandbox_policy_from_config(
     cfg: &zeph_tools::config::SandboxConfig,

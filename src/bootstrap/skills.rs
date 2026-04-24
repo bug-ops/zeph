@@ -4,6 +4,8 @@
 pub use zeph_core::provider_factory::effective_embedding_model;
 
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
 use zeph_llm::any::AnyProvider;
 use zeph_memory::QdrantOps;
 use zeph_memory::semantic::SemanticMemory;
@@ -105,4 +107,167 @@ pub fn managed_skills_dir() -> PathBuf {
 /// canonical source of truth used by both the CLI and the TUI path in `zeph-core`.
 pub fn plugins_dir() -> PathBuf {
     zeph_plugins::PluginManager::default_plugins_dir()
+}
+
+/// Build a [`zeph_skills::evaluator::SkillEvaluator`] from `[skills.evaluation]` config.
+///
+/// Returns `None` when `config.skills.evaluation.enabled = false`.
+/// On provider resolution failure falls back to `primary` and logs a warning.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// # use zeph_llm::any::AnyProvider;
+/// # use zeph_core::config::Config;
+/// # use std::path::Path;
+/// # let config = Config::load(Path::new("/nonexistent")).unwrap();
+/// # let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+/// let evaluator = crate::bootstrap::skills::build_skill_evaluator(&config, &provider);
+/// ```
+pub fn build_skill_evaluator(
+    config: &Config,
+    primary: &AnyProvider,
+) -> Option<Arc<zeph_skills::evaluator::SkillEvaluator>> {
+    let eval_cfg = &config.skills.evaluation;
+    if !eval_cfg.enabled {
+        return None;
+    }
+
+    let critic = if eval_cfg.provider.is_empty() {
+        primary.clone()
+    } else {
+        match crate::bootstrap::create_named_provider(&eval_cfg.provider, config) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    provider = %eval_cfg.provider,
+                    error = %e,
+                    "skill evaluator provider resolution failed, falling back to primary"
+                );
+                primary.clone()
+            }
+        }
+    };
+
+    let weights = zeph_skills::evaluator::EvaluationWeights {
+        correctness: eval_cfg.weight_correctness,
+        reusability: eval_cfg.weight_reusability,
+        specificity: eval_cfg.weight_specificity,
+    };
+
+    Some(Arc::new(zeph_skills::evaluator::SkillEvaluator::new(
+        critic,
+        weights,
+        eval_cfg.quality_threshold,
+        eval_cfg.fail_open_on_error,
+        eval_cfg.timeout_ms,
+    )))
+}
+
+/// `SkillWriter` implementation that delegates to a `SkillGenerator`.
+///
+/// Bridges `zeph-memory`'s `SkillWriter` trait (which cannot depend on `zeph-skills`)
+/// to the concrete `SkillGenerator` in `zeph-skills`. Defined in the binary crate to
+/// avoid the circular dependency `zeph-memory` ↔ `zeph-skills`.
+struct GeneratorSkillWriter {
+    /// Provider used to build a fresh `SkillGenerator` per call.
+    provider: AnyProvider,
+    /// Output directory for generated SKILL.md files.
+    output_dir: PathBuf,
+    /// Optional quality gate — forwarded to the generator via `with_evaluator`.
+    evaluator: Option<Arc<zeph_skills::evaluator::SkillEvaluator>>,
+    /// Evaluation weights forwarded to `with_evaluator`.
+    eval_weights: zeph_skills::evaluator::EvaluationWeights,
+    /// Evaluation threshold forwarded to `with_evaluator`.
+    eval_threshold: f32,
+}
+
+impl zeph_memory::compression::promotion::SkillWriter for GeneratorSkillWriter {
+    fn write_skill(
+        &self,
+        description: String,
+        signature: String,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async move {
+            let generator =
+                zeph_skills::SkillGenerator::new(self.provider.clone(), self.output_dir.clone());
+            let generator = if let Some(ref eval) = self.evaluator {
+                generator.with_evaluator(Arc::clone(eval), self.eval_weights, self.eval_threshold)
+            } else {
+                generator
+            };
+
+            let req = zeph_skills::SkillGenerationRequest {
+                description: description.clone(),
+                category: None,
+                allowed_tools: vec![],
+            };
+            let generated = generator.generate(req).await.map_err(|e| e.to_string())?;
+
+            // Use the signature as idempotency key: skip write if skill dir already exists.
+            let skill_dir = self.output_dir.join(format!(
+                "promoted-pattern-{}",
+                &signature[..12.min(signature.len())]
+            ));
+            if skill_dir.exists() {
+                return Ok(());
+            }
+
+            generator
+                .approve_and_save(&generated)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+    }
+}
+
+/// Build an `Arc<dyn SkillWriter>` backed by a `SkillGenerator`.
+///
+/// Returns `None` when the promotion engine is disabled or the output directory cannot be
+/// determined. On provider resolution failure falls back to `primary`.
+pub fn build_skill_writer(
+    config: &Config,
+    primary: &AnyProvider,
+    evaluator: Option<Arc<zeph_skills::evaluator::SkillEvaluator>>,
+    eval_weights: zeph_skills::evaluator::EvaluationWeights,
+    eval_threshold: f32,
+    skills_paths: &[PathBuf],
+) -> Option<Arc<dyn zeph_memory::compression::promotion::SkillWriter>> {
+    let spectrum_cfg = &config.memory.compression_spectrum;
+    if !spectrum_cfg.enabled {
+        return None;
+    }
+
+    let output_dir = if let Some(ref dir) = spectrum_cfg.promotion_output_dir {
+        PathBuf::from(dir)
+    } else if let Some(first) = skills_paths.first() {
+        first.join("promoted")
+    } else {
+        managed_skills_dir().join("promoted")
+    };
+
+    let provider = if spectrum_cfg.promotion_provider.is_empty() {
+        primary.clone()
+    } else {
+        match crate::bootstrap::create_named_provider(&spectrum_cfg.promotion_provider, config) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    provider = %spectrum_cfg.promotion_provider,
+                    error = %e,
+                    "promotion provider resolution failed, falling back to primary"
+                );
+                primary.clone()
+            }
+        }
+    };
+
+    Some(Arc::new(GeneratorSkillWriter {
+        provider,
+        output_dir,
+        evaluator,
+        eval_weights,
+        eval_threshold,
+    }))
 }

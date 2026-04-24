@@ -128,6 +128,15 @@ impl<C: Channel> Agent<C> {
         let generation_provider =
             self.resolve_background_provider(&self.skill_state.generation_provider_name.clone());
         let generator = zeph_skills::SkillGenerator::new(generation_provider, output_dir.clone());
+        let generator = if let Some(ref eval) = self.skill_state.skill_evaluator {
+            generator.with_evaluator(
+                std::sync::Arc::clone(eval),
+                self.skill_state.eval_weights,
+                self.skill_state.eval_threshold,
+            )
+        } else {
+            generator
+        };
         let request = zeph_skills::SkillGenerationRequest {
             description: description.to_owned(),
             category: None,

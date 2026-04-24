@@ -1838,6 +1838,26 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach a quality-gate evaluator for generated SKILL.md files (#3319).
+    ///
+    /// When set, every `SkillGenerator` used by the agent (including `/skill create`) scores
+    /// generated skills through the critic LLM before writing them to disk. Skills below the
+    /// configured threshold are rejected.
+    ///
+    /// Pass `None` to disable (default).
+    #[must_use]
+    pub fn with_skill_evaluator(
+        mut self,
+        evaluator: Option<std::sync::Arc<zeph_skills::evaluator::SkillEvaluator>>,
+        weights: zeph_skills::evaluator::EvaluationWeights,
+        threshold: f32,
+    ) -> Self {
+        self.skill_state.skill_evaluator = evaluator;
+        self.skill_state.eval_weights = weights;
+        self.skill_state.eval_threshold = threshold;
+        self
+    }
+
     /// Attach a proactive world-knowledge explorer (#3320).
     ///
     /// When set, the agent will classify each incoming query and trigger background skill
