@@ -1934,9 +1934,15 @@ impl App {
 
     fn format_cost_stats(&self) -> String {
         use std::fmt::Write as _;
+        let cps_line = match self.metrics.cost_cps_cents {
+            Some(cps) => format!("\n  CPS: ${:.4}", cps / 100.0),
+            None => String::new(),
+        };
         let mut out = format!(
-            "Cost:\n  Spent: ${:.4}\n  Prompt tokens: {}\n  Completion tokens: {}\n  Total tokens: {}\n  Cache read: {}\n  Cache creation: {}",
+            "Cost:\n  Spent: ${:.4}{}\n  Successful tasks today: {}\n  Prompt tokens: {}\n  Completion tokens: {}\n  Total tokens: {}\n  Cache read: {}\n  Cache creation: {}",
             self.metrics.cost_spent_cents / 100.0,
+            cps_line,
+            self.metrics.cost_successful_tasks,
             self.metrics.prompt_tokens,
             self.metrics.completion_tokens,
             self.metrics.total_tokens,

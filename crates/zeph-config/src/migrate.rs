@@ -3708,6 +3708,78 @@ prompt_cache_ttl = "1h"
         assert_eq!(result.output, src);
     }
 
+    // ── migrate_acp_subagents_config ─────────────────────────────────────────
+
+    #[test]
+    fn migrate_acp_subagents_adds_block_when_absent() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_acp_subagents_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result
+                .sections_changed
+                .contains(&"acp.subagents".to_owned())
+        );
+        assert!(result.output.contains("# [acp.subagents]"));
+        assert!(result.output.contains("enabled = false"));
+    }
+
+    #[test]
+    fn migrate_acp_subagents_idempotent_on_existing_block() {
+        let src = "[agent]\nname = \"Zeph\"\n# [acp.subagents]\n# enabled = false\n";
+        let result = migrate_acp_subagents_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    // ── migrate_hooks_permission_denied_config ────────────────────────────────
+
+    #[test]
+    fn migrate_hooks_permission_denied_adds_block_when_absent() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_hooks_permission_denied_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result
+                .sections_changed
+                .contains(&"hooks.permission_denied".to_owned())
+        );
+        assert!(result.output.contains("# [[hooks.permission_denied]]"));
+        assert!(result.output.contains("ZEPH_TOOL"));
+    }
+
+    #[test]
+    fn migrate_hooks_permission_denied_idempotent_on_existing_block() {
+        let src = "[agent]\nname = \"Zeph\"\n# [[hooks.permission_denied]]\n# type = \"command\"\n";
+        let result = migrate_hooks_permission_denied_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    // ── migrate_memory_graph_config ───────────────────────────────────────────
+
+    #[test]
+    fn migrate_memory_graph_adds_block_when_absent() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_memory_graph_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result
+                .sections_changed
+                .contains(&"memory.graph.retrieval".to_owned())
+        );
+        assert!(result.output.contains("retrieval_strategy"));
+        assert!(result.output.contains("# [memory.graph.beam_search]"));
+    }
+
+    #[test]
+    fn migrate_memory_graph_idempotent_on_existing_block() {
+        let src = "[agent]\nname = \"Zeph\"\n# [memory.graph.beam_search]\n# beam_width = 10\n";
+        let result = migrate_memory_graph_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
     // ── acp PR4 migration ─────────────────────────────────────────────────────
 
     #[test]
