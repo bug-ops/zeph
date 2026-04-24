@@ -9,11 +9,16 @@ pub mod belief_revision;
 pub mod community;
 pub mod conflict;
 pub mod entity_lock;
+pub mod experience;
 pub mod extractor;
 pub mod ontology;
 pub mod resolver;
 pub mod retrieval;
+pub mod retrieval_astar;
+pub mod retrieval_beam;
+pub mod retrieval_watercircles;
 pub mod rpe;
+pub mod strategy_classifier;
 
 pub use store::GraphStore;
 pub use types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType, Episode, GraphFact};

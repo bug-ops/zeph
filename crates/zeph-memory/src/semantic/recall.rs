@@ -1330,6 +1330,111 @@ impl SemanticMemory {
         Ok(results)
     }
 
+    /// Retrieve graph facts via A* shortest-path traversal.
+    ///
+    /// Delegates to [`crate::graph::retrieval_astar::graph_recall_astar`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying graph query fails.
+    pub async fn recall_graph_astar(
+        &self,
+        query: &str,
+        limit: usize,
+        max_hops: u32,
+        temporal_decay_rate: f64,
+        edge_types: &[crate::graph::EdgeType],
+    ) -> Result<Vec<crate::graph::types::GraphFact>, MemoryError> {
+        let Some(store) = &self.graph_store else {
+            return Ok(Vec::new());
+        };
+        crate::graph::retrieval_astar::graph_recall_astar(
+            store,
+            self.qdrant.as_deref(),
+            &self.provider,
+            query,
+            limit,
+            max_hops,
+            edge_types,
+            temporal_decay_rate,
+        )
+        .await
+    }
+
+    /// Retrieve graph facts via `WaterCircles` concentric BFS.
+    ///
+    /// Delegates to [`crate::graph::retrieval_watercircles::graph_recall_watercircles`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying graph query fails.
+    pub async fn recall_graph_watercircles(
+        &self,
+        query: &str,
+        limit: usize,
+        max_hops: u32,
+        ring_limit: usize,
+        temporal_decay_rate: f64,
+        edge_types: &[crate::graph::EdgeType],
+    ) -> Result<Vec<crate::graph::types::GraphFact>, MemoryError> {
+        let Some(store) = &self.graph_store else {
+            return Ok(Vec::new());
+        };
+        crate::graph::retrieval_watercircles::graph_recall_watercircles(
+            store,
+            self.qdrant.as_deref(),
+            &self.provider,
+            query,
+            limit,
+            max_hops,
+            ring_limit,
+            edge_types,
+            temporal_decay_rate,
+        )
+        .await
+    }
+
+    /// Retrieve graph facts via beam search.
+    ///
+    /// Delegates to [`crate::graph::retrieval_beam::graph_recall_beam`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying graph query fails.
+    pub async fn recall_graph_beam(
+        &self,
+        query: &str,
+        limit: usize,
+        beam_width: usize,
+        max_hops: u32,
+        temporal_decay_rate: f64,
+        edge_types: &[crate::graph::EdgeType],
+    ) -> Result<Vec<crate::graph::types::GraphFact>, MemoryError> {
+        let Some(store) = &self.graph_store else {
+            return Ok(Vec::new());
+        };
+        crate::graph::retrieval_beam::graph_recall_beam(
+            store,
+            self.qdrant.as_deref(),
+            &self.provider,
+            query,
+            limit,
+            beam_width,
+            max_hops,
+            edge_types,
+            temporal_decay_rate,
+        )
+        .await
+    }
+
+    /// Classify query intent and return the strategy name for hybrid dispatch.
+    ///
+    /// Returns one of: `"astar"`, `"watercircles"`, `"beam_search"`, `"synapse"`.
+    /// Falls back to `"synapse"` on any LLM error.
+    pub async fn classify_graph_strategy(&self, query: &str) -> String {
+        crate::graph::strategy_classifier::classify_retrieval_strategy(&self.provider, query).await
+    }
+
     /// Increment access count and update `last_accessed` for a batch of message IDs.
     ///
     /// Skips the update if `message_ids` is empty to avoid an invalid `IN ()` clause.

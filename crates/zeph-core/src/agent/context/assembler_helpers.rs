@@ -50,22 +50,40 @@ pub(super) async fn fetch_graph_facts(
     let mut body = String::from(GRAPH_FACTS_PREFIX);
     let mut tokens_so_far = tc.count_tokens(&body);
 
-    if sa_config.enabled {
-        let sa_params = zeph_memory::graph::SpreadingActivationParams {
-            decay_lambda: sa_config.decay_lambda,
-            max_hops: sa_config.max_hops,
-            activation_threshold: sa_config.activation_threshold,
-            inhibition_threshold: sa_config.inhibition_threshold,
-            max_activated_nodes: sa_config.max_activated_nodes,
-            temporal_decay_rate,
-            seed_structural_weight: sa_config.seed_structural_weight,
-            seed_community_cap: sa_config.seed_community_cap,
-        };
-        let timeout_ms = effective_recall_timeout_ms(sa_config.recall_timeout_ms);
-        let recall_fut = memory.recall_graph_activated(query, recall_limit, sa_params, &edge_types);
-        let activated_facts =
-            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), recall_fut)
-                .await
+    let max_hops = memory_state.extraction.graph_config.max_hops;
+    let graph_config = &memory_state.extraction.graph_config;
+
+    // Resolve the effective retrieval strategy: spreading_activation.enabled takes precedence
+    // for backward compatibility, then fall through to retrieval_strategy.
+    use zeph_config::memory::GraphRetrievalStrategy;
+    let effective_strategy = if sa_config.enabled {
+        GraphRetrievalStrategy::Synapse
+    } else {
+        graph_config.retrieval_strategy
+    };
+
+    let _span = tracing::info_span!("memory.graph.dispatch", ?effective_strategy).entered();
+
+    match effective_strategy {
+        GraphRetrievalStrategy::Synapse => {
+            let sa_params = zeph_memory::graph::SpreadingActivationParams {
+                decay_lambda: sa_config.decay_lambda,
+                max_hops: sa_config.max_hops,
+                activation_threshold: sa_config.activation_threshold,
+                inhibition_threshold: sa_config.inhibition_threshold,
+                max_activated_nodes: sa_config.max_activated_nodes,
+                temporal_decay_rate,
+                seed_structural_weight: sa_config.seed_structural_weight,
+                seed_community_cap: sa_config.seed_community_cap,
+            };
+            let timeout_ms = effective_recall_timeout_ms(sa_config.recall_timeout_ms);
+            let recall_fut =
+                memory.recall_graph_activated(query, recall_limit, sa_params, &edge_types);
+            let activated_facts = match tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                recall_fut,
+            )
+            .await
             {
                 Ok(Ok(facts)) => facts,
                 Ok(Err(e)) => {
@@ -78,53 +96,247 @@ pub(super) async fn fetch_graph_facts(
                 }
             };
 
-        if activated_facts.is_empty() {
-            return Ok(None);
-        }
-
-        for f in &activated_facts {
-            let fact_text = f.edge.fact.replace(['\n', '\r', '<', '>'], " ");
-            let line = format!(
-                "- {} (confidence: {:.2}, activation: {:.2})\n",
-                fact_text, f.edge.confidence, f.activation_score
-            );
-            let line_tokens = tc.count_tokens(&line);
-            if tokens_so_far + line_tokens > budget_tokens {
-                break;
+            if activated_facts.is_empty() {
+                return Ok(None);
             }
-            body.push_str(&line);
-            tokens_so_far += line_tokens;
+            for f in &activated_facts {
+                let fact_text = f.edge.fact.replace(['\n', '\r', '<', '>'], " ");
+                let line = format!(
+                    "- {} (confidence: {:.2}, activation: {:.2})\n",
+                    fact_text, f.edge.confidence, f.activation_score
+                );
+                let line_tokens = tc.count_tokens(&line);
+                if tokens_so_far + line_tokens > budget_tokens {
+                    break;
+                }
+                body.push_str(&line);
+                tokens_so_far += line_tokens;
+            }
         }
-    } else {
-        let max_hops = memory_state.extraction.graph_config.max_hops;
-        let facts = memory
-            .recall_graph(
-                query,
-                recall_limit,
-                max_hops,
-                None,
-                temporal_decay_rate,
-                &edge_types,
+        GraphRetrievalStrategy::Bfs => {
+            let facts = memory
+                .recall_graph(
+                    query,
+                    recall_limit,
+                    max_hops,
+                    None,
+                    temporal_decay_rate,
+                    &edge_types,
+                )
+                .await
+                .map_err(|e| {
+                    tracing::warn!("graph BFS recall failed: {e:#}");
+                    AgentError::Memory(e)
+                })?;
+            if facts.is_empty() {
+                return Ok(None);
+            }
+            for f in &facts {
+                let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
+                let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
+                let line_tokens = tc.count_tokens(&line);
+                if tokens_so_far + line_tokens > budget_tokens {
+                    break;
+                }
+                body.push_str(&line);
+                tokens_so_far += line_tokens;
+            }
+        }
+        GraphRetrievalStrategy::AStar => {
+            let facts = memory
+                .recall_graph_astar(
+                    query,
+                    recall_limit,
+                    max_hops,
+                    temporal_decay_rate,
+                    &edge_types,
+                )
+                .await
+                .map_err(|e| {
+                    tracing::warn!("graph A* recall failed: {e:#}");
+                    AgentError::Memory(e)
+                })?;
+            if facts.is_empty() {
+                return Ok(None);
+            }
+            for f in &facts {
+                let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
+                let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
+                let line_tokens = tc.count_tokens(&line);
+                if tokens_so_far + line_tokens > budget_tokens {
+                    break;
+                }
+                body.push_str(&line);
+                tokens_so_far += line_tokens;
+            }
+        }
+        GraphRetrievalStrategy::WaterCircles => {
+            let ring_limit = graph_config.watercircles.ring_limit;
+            let facts = memory
+                .recall_graph_watercircles(
+                    query,
+                    recall_limit,
+                    max_hops,
+                    ring_limit,
+                    temporal_decay_rate,
+                    &edge_types,
+                )
+                .await
+                .map_err(|e| {
+                    tracing::warn!("graph WaterCircles recall failed: {e:#}");
+                    AgentError::Memory(e)
+                })?;
+            if facts.is_empty() {
+                return Ok(None);
+            }
+            for f in &facts {
+                let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
+                let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
+                let line_tokens = tc.count_tokens(&line);
+                if tokens_so_far + line_tokens > budget_tokens {
+                    break;
+                }
+                body.push_str(&line);
+                tokens_so_far += line_tokens;
+            }
+        }
+        GraphRetrievalStrategy::BeamSearch => {
+            let beam_width = graph_config.beam_search.beam_width;
+            let facts = memory
+                .recall_graph_beam(
+                    query,
+                    recall_limit,
+                    beam_width,
+                    max_hops,
+                    temporal_decay_rate,
+                    &edge_types,
+                )
+                .await
+                .map_err(|e| {
+                    tracing::warn!("graph beam search recall failed: {e:#}");
+                    AgentError::Memory(e)
+                })?;
+            if facts.is_empty() {
+                return Ok(None);
+            }
+            for f in &facts {
+                let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
+                let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
+                let line_tokens = tc.count_tokens(&line);
+                if tokens_so_far + line_tokens > budget_tokens {
+                    break;
+                }
+                body.push_str(&line);
+                tokens_so_far += line_tokens;
+            }
+        }
+        GraphRetrievalStrategy::Hybrid => {
+            // LLM classifies the query then dispatches to the selected strategy.
+            // Timeout prevents unbounded wait if the classifier LLM is slow.
+            const CLASSIFIER_TIMEOUT_MS: u64 = 2_000;
+            let classified = tokio::time::timeout(
+                std::time::Duration::from_millis(CLASSIFIER_TIMEOUT_MS),
+                memory.classify_graph_strategy(query),
             )
             .await
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    "hybrid strategy classifier timed out after {CLASSIFIER_TIMEOUT_MS}ms, \
+                     falling back to synapse"
+                );
+                "synapse".to_owned()
+            });
+            tracing::debug!(classified_strategy = %classified, "hybrid dispatch: classified");
+            let facts = match classified.as_str() {
+                "astar" => {
+                    memory
+                        .recall_graph_astar(
+                            query,
+                            recall_limit,
+                            max_hops,
+                            temporal_decay_rate,
+                            &edge_types,
+                        )
+                        .await
+                }
+                "watercircles" => {
+                    let ring_limit = graph_config.watercircles.ring_limit;
+                    memory
+                        .recall_graph_watercircles(
+                            query,
+                            recall_limit,
+                            max_hops,
+                            ring_limit,
+                            temporal_decay_rate,
+                            &edge_types,
+                        )
+                        .await
+                }
+                "beam_search" => {
+                    let beam_width = graph_config.beam_search.beam_width;
+                    memory
+                        .recall_graph_beam(
+                            query,
+                            recall_limit,
+                            beam_width,
+                            max_hops,
+                            temporal_decay_rate,
+                            &edge_types,
+                        )
+                        .await
+                }
+                // "synapse" or any fallback
+                _ => {
+                    let sa_params = zeph_memory::graph::SpreadingActivationParams {
+                        decay_lambda: sa_config.decay_lambda,
+                        max_hops: sa_config.max_hops,
+                        activation_threshold: sa_config.activation_threshold,
+                        inhibition_threshold: sa_config.inhibition_threshold,
+                        max_activated_nodes: sa_config.max_activated_nodes,
+                        temporal_decay_rate,
+                        seed_structural_weight: sa_config.seed_structural_weight,
+                        seed_community_cap: sa_config.seed_community_cap,
+                    };
+                    memory
+                        .recall_graph_activated(query, recall_limit, sa_params, &edge_types)
+                        .await
+                        .map(|activated| {
+                            activated
+                                .into_iter()
+                                .map(|f| zeph_memory::graph::types::GraphFact {
+                                    entity_name: f.edge.source_entity_id.to_string(),
+                                    relation: f.edge.relation.clone(),
+                                    target_name: f.edge.target_entity_id.to_string(),
+                                    fact: f.edge.fact.clone(),
+                                    entity_match_score: f.activation_score,
+                                    hop_distance: 0,
+                                    confidence: f.edge.confidence,
+                                    valid_from: Some(f.edge.valid_from.clone()),
+                                    edge_type: f.edge.edge_type,
+                                    retrieval_count: f.edge.retrieval_count,
+                                })
+                                .collect()
+                        })
+                }
+            }
             .map_err(|e| {
-                tracing::warn!("graph recall failed: {e:#}");
+                tracing::warn!("hybrid graph recall failed: {e:#}");
                 AgentError::Memory(e)
             })?;
 
-        if facts.is_empty() {
-            return Ok(None);
-        }
-
-        for f in &facts {
-            let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
-            let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
-            let line_tokens = tc.count_tokens(&line);
-            if tokens_so_far + line_tokens > budget_tokens {
-                break;
+            if facts.is_empty() {
+                return Ok(None);
             }
-            body.push_str(&line);
-            tokens_so_far += line_tokens;
+            for f in &facts {
+                let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
+                let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
+                let line_tokens = tc.count_tokens(&line);
+                if tokens_so_far + line_tokens > budget_tokens {
+                    break;
+                }
+                body.push_str(&line);
+                tokens_so_far += line_tokens;
+            }
         }
     }
 

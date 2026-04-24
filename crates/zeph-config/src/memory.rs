@@ -1263,6 +1263,100 @@ impl Default for SidequestConfig {
     }
 }
 
+/// Graph retrieval strategy for `[memory.graph]`.
+///
+/// Selects the algorithm used to traverse the knowledge graph during recall.
+/// The default (`synapse`) preserves existing SYNAPSE spreading-activation behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphRetrievalStrategy {
+    /// SYNAPSE spreading activation (default, existing behavior).
+    #[default]
+    Synapse,
+    /// Hop-limited BFS traversal (pre-SYNAPSE behavior).
+    Bfs,
+    /// A* shortest-path traversal via petgraph.
+    #[serde(rename = "astar")]
+    AStar,
+    /// Concentric BFS expanding outward from seed nodes.
+    WaterCircles,
+    /// Beam search: keep top-K candidates per hop.
+    BeamSearch,
+    /// Dynamic: LLM classifier selects strategy per query.
+    Hybrid,
+}
+
+fn default_beam_width() -> usize {
+    10
+}
+
+/// Beam search retrieval configuration for `[memory.graph.beam_search]`.
+///
+/// Controls the width of the beam during graph traversal: how many top candidates
+/// are retained at each hop.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BeamSearchConfig {
+    /// Number of top candidates kept per hop. Default: `10`.
+    #[serde(default = "default_beam_width")]
+    pub beam_width: usize,
+}
+
+impl Default for BeamSearchConfig {
+    fn default() -> Self {
+        Self {
+            beam_width: default_beam_width(),
+        }
+    }
+}
+
+/// `WaterCircles` BFS configuration for `[memory.graph.watercircles]`.
+///
+/// Controls ring-by-ring concentric BFS traversal from seed nodes.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct WaterCirclesConfig {
+    /// Max facts per ring (hop). `0` = auto (`limit / max_hops`). Default: `0`.
+    #[serde(default)]
+    pub ring_limit: usize,
+}
+
+fn default_evolution_sweep_interval() -> usize {
+    50
+}
+
+fn default_confidence_prune_threshold() -> f32 {
+    0.1
+}
+
+/// Experience memory configuration for `[memory.graph.experience]`.
+///
+/// Controls recording of tool execution outcomes and graph evolution sweeps.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExperienceConfig {
+    /// Enable experience memory recording. Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Enable graph evolution sweep (prune self-loops + low-confidence edges). Default: `false`.
+    #[serde(default)]
+    pub evolution_sweep_enabled: bool,
+    /// Confidence threshold below which zero-retrieval edges are pruned. Default: `0.1`.
+    #[serde(default = "default_confidence_prune_threshold")]
+    pub confidence_prune_threshold: f32,
+    /// Number of turns between evolution sweeps. Default: `50`.
+    #[serde(default = "default_evolution_sweep_interval")]
+    pub evolution_sweep_interval: usize,
+}
+
+impl Default for ExperienceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            evolution_sweep_enabled: false,
+            confidence_prune_threshold: default_confidence_prune_threshold(),
+            evolution_sweep_interval: default_evolution_sweep_interval(),
+        }
+    }
+}
+
 /// Configuration for the knowledge graph memory subsystem (`[memory.graph]` TOML section).
 ///
 /// # Security
@@ -1340,6 +1434,24 @@ pub struct GraphConfig {
     /// with lateral inhibition and temporal decay instead of BFS.
     #[serde(default)]
     pub spreading_activation: SpreadingActivationConfig,
+    /// Graph retrieval strategy. Default: `synapse` (preserves existing behavior).
+    ///
+    /// When `spreading_activation.enabled = true` and `retrieval_strategy` is `synapse`,
+    /// SYNAPSE spreading activation is used. Set to `bfs` to revert to hop-limited BFS.
+    #[serde(default)]
+    pub retrieval_strategy: GraphRetrievalStrategy,
+    /// Named LLM provider for hybrid strategy classification. Empty = use default provider.
+    #[serde(default)]
+    pub strategy_classifier_provider: String,
+    /// Beam search configuration.
+    #[serde(default)]
+    pub beam_search: BeamSearchConfig,
+    /// `WaterCircles` BFS configuration.
+    #[serde(default)]
+    pub watercircles: WaterCirclesConfig,
+    /// Experience memory configuration.
+    #[serde(default)]
+    pub experience: ExperienceConfig,
     /// A-MEM link weight decay: multiplicative factor applied to `retrieval_count`
     /// for un-retrieved edges each decay pass. Range: `(0.0, 1.0]`. Default: `0.95`.
     #[serde(
@@ -1399,6 +1511,11 @@ impl Default for GraphConfig {
             edge_history_limit: default_graph_edge_history_limit(),
             note_linking: NoteLinkingConfig::default(),
             spreading_activation: SpreadingActivationConfig::default(),
+            retrieval_strategy: GraphRetrievalStrategy::default(),
+            strategy_classifier_provider: String::new(),
+            beam_search: BeamSearchConfig::default(),
+            watercircles: WaterCirclesConfig::default(),
+            experience: ExperienceConfig::default(),
             link_weight_decay_lambda: default_link_weight_decay_lambda(),
             link_weight_decay_interval_secs: default_link_weight_decay_interval_secs(),
             belief_revision: BeliefRevisionConfig::default(),

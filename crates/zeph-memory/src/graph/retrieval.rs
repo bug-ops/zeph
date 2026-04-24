@@ -231,7 +231,7 @@ async fn seed_embedding_fallback(
     true
 }
 
-async fn find_seed_entities(
+pub(crate) async fn find_seed_entities(
     store: &GraphStore,
     embeddings: Option<&EmbeddingStore>,
     provider: &zeph_llm::any::AnyProvider,
