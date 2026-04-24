@@ -37,6 +37,7 @@ pub(super) enum CompactionOutcome {
 pub(super) const PERSONA_PREFIX: &str = "[Persona context]\n";
 pub(super) const TRAJECTORY_PREFIX: &str = "[Past experience]\n";
 pub(super) const TREE_MEMORY_PREFIX: &str = "[Memory summary]\n";
+pub(super) const REASONING_PREFIX: &str = "[Reasoning Strategy]\n";
 
 impl<C: Channel> Agent<C> {
     pub(super) fn compaction_tier(&self) -> super::context_manager::CompactionTier {

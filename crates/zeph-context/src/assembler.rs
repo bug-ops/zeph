@@ -66,6 +66,8 @@ pub struct PreparedContext {
     pub trajectory_hints: Option<Message>,
     /// `TiMem` tree memory summary.
     pub tree_memory: Option<Message>,
+    /// Distilled reasoning strategies from the `ReasoningBank` (#3343).
+    pub reasoning_hints: Option<Message>,
     /// Whether the memory-first context strategy is active for this turn.
     pub memory_first: bool,
     /// Token budget for recent conversation history (passed to trim step in apply).
@@ -103,6 +105,7 @@ impl ContextAssembler {
                 persona_facts: None,
                 trajectory_hints: None,
                 tree_memory: None,
+                reasoning_hints: None,
                 memory_first: false,
                 recent_history_budget: 0,
             });
@@ -242,6 +245,15 @@ impl ContextAssembler {
                     .map(ContextSlot::TreeMemory)
             }));
         }
+        if memory.reasoning_config.enabled && memory.reasoning_config.context_budget_tokens > 0 {
+            fetchers.push(Box::pin(async {
+                let rbudget = memory.reasoning_config.context_budget_tokens;
+                let top_k = memory.reasoning_config.top_k;
+                fetch_reasoning_strategies(memory, query, rbudget, top_k, tc)
+                    .await
+                    .map(ContextSlot::ReasoningStrategies)
+            }));
+        }
 
         let mut prepared = PreparedContext {
             graph_facts: None,
@@ -255,6 +267,7 @@ impl ContextAssembler {
             persona_facts: None,
             trajectory_hints: None,
             tree_memory: None,
+            reasoning_hints: None,
             memory_first,
             recent_history_budget: alloc.recent_history,
         };
@@ -275,6 +288,7 @@ impl ContextAssembler {
                     ContextSlot::PersonaFacts(msg) => prepared.persona_facts = msg,
                     ContextSlot::TrajectoryHints(msg) => prepared.trajectory_hints = msg,
                     ContextSlot::TreeMemory(msg) => prepared.tree_memory = msg,
+                    ContextSlot::ReasoningStrategies(msg) => prepared.reasoning_hints = msg,
                 },
                 Err(e) => return Err(e),
             }
@@ -527,6 +541,67 @@ pub(crate) async fn fetch_tree_memory(
 
     if body == crate::slot::TREE_MEMORY_PREFIX {
         return Ok(None);
+    }
+
+    Ok(Some(Message::from_legacy(Role::System, body)))
+}
+
+pub(crate) async fn fetch_reasoning_strategies(
+    memory: &ContextMemoryView,
+    query: &str,
+    budget_tokens: usize,
+    top_k: usize,
+    tc: &TokenCounter,
+) -> Result<Option<Message>, ContextError> {
+    // S1: enforce the ≤500-token spec cap documented in ReasoningConfig.
+    let budget_tokens = budget_tokens.min(500);
+    if budget_tokens == 0 {
+        return Ok(None);
+    }
+    let Some(ref mem) = memory.memory else {
+        return Ok(None);
+    };
+
+    let strategies = mem
+        .retrieve_reasoning_strategies(query, top_k)
+        .await
+        .map_err(ContextError::Memory)?;
+
+    if strategies.is_empty() {
+        return Ok(None);
+    }
+
+    let mut body = String::from(crate::slot::REASONING_PREFIX);
+    let mut tokens_so_far = tc.count_tokens(&body);
+    let mut injected_ids: Vec<String> = Vec::new();
+
+    for s in strategies.iter().take(top_k) {
+        // S-Med1: sanitize distilled summaries to prevent stored injection payloads
+        // from reaching the system prompt (mirrors fetch_graph_facts scrub pattern).
+        let safe_summary = s.summary.replace(['\n', '\r', '<', '>'], " ");
+        let line = format!("- [{}] {}\n", s.outcome.as_str(), safe_summary);
+        let line_tokens = tc.count_tokens(&line);
+        if tokens_so_far + line_tokens > budget_tokens {
+            break;
+        }
+        body.push_str(&line);
+        tokens_so_far += line_tokens;
+        injected_ids.push(s.id.clone());
+    }
+
+    if body == crate::slot::REASONING_PREFIX {
+        return Ok(None);
+    }
+
+    // C4 split: mark_used only for strategies that made it past budget truncation.
+    // P2-1: fire-and-forget — mark_used does not need to block the context build path.
+    if let Some(ref reasoning) = mem.reasoning {
+        let reasoning = reasoning.clone();
+        tokio::spawn(async move {
+            if let Err(e) = reasoning.mark_used(&injected_ids).await {
+                tracing::warn!(error = %e, "reasoning: mark_used failed");
+            }
+        });
     }
 
     Ok(Some(Message::from_legacy(Role::System, body)))
@@ -823,7 +898,8 @@ mod tests {
     use super::*;
     use crate::input::ContextMemoryView;
     use zeph_config::{
-        ContextStrategy, DocumentConfig, GraphConfig, PersonaConfig, TrajectoryConfig, TreeConfig,
+        ContextStrategy, DocumentConfig, GraphConfig, PersonaConfig, ReasoningConfig,
+        TrajectoryConfig, TreeConfig,
     };
     use zeph_memory::TokenCounter;
 
@@ -840,6 +916,7 @@ mod tests {
             document_config: DocumentConfig::default(),
             persona_config: PersonaConfig::default(),
             trajectory_config: TrajectoryConfig::default(),
+            reasoning_config: ReasoningConfig::default(),
             tree_config: TreeConfig::default(),
         }
     }
@@ -998,6 +1075,30 @@ mod tests {
         let view = empty_view();
         let tc = TokenCounter::new();
         let result = fetch_cross_session(&view, "test", 1000, &tc).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    // ── fetch_reasoning_strategies ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_reasoning_strategies_returns_none_when_memory_is_none() {
+        let mut view = empty_view();
+        view.reasoning_config.enabled = true;
+        let tc = TokenCounter::new();
+        let result = fetch_reasoning_strategies(&view, "query", 1000, 3, &tc)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_reasoning_strategies_returns_none_when_budget_zero() {
+        let mut view = empty_view();
+        view.reasoning_config.enabled = true;
+        let tc = TokenCounter::new();
+        let result = fetch_reasoning_strategies(&view, "query", 0, 3, &tc)
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 }

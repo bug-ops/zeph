@@ -72,6 +72,7 @@ pub mod consolidation;
 pub mod document;
 pub mod facade;
 pub mod forgetting;
+pub mod reasoning;
 pub mod scenes;
 pub mod tiers;
 
@@ -143,6 +144,10 @@ pub use graph::{
     RpeRouter, RpeSignal, extract_candidate_entities,
 };
 pub use qdrant_ops::QdrantOps;
+pub use reasoning::{
+    Outcome, ProcessTurnConfig, ReasoningMemory, ReasoningStrategy, SelfJudgeOutcome,
+    distill_strategy, process_turn as process_reasoning_turn, run_self_judge,
+};
 pub use response_cache::ResponseCache;
 pub use router::{
     AsyncMemoryRouter, HeuristicRouter, HybridRouter, LlmRouter, MemoryRoute, MemoryRouter,

@@ -352,6 +352,8 @@ impl AppBuilder {
             memory = self.attach_graph_stores(memory, db_path).await?;
         }
 
+        memory = self.attach_reasoning_memory(memory, provider).await;
+
         if self.config.memory.admission.enabled {
             memory = memory.with_admission_control(self.build_admission_control());
         }
@@ -413,6 +415,78 @@ impl AppBuilder {
         }
 
         Ok(memory)
+    }
+
+    /// Attach [`zeph_memory::ReasoningMemory`] to the `SemanticMemory` when `memory.reasoning.enabled`.
+    ///
+    /// Uses the main `SQLite` pool from `SemanticMemory` so no additional pool is needed.
+    /// When Qdrant is configured, the `QdrantOps` is cloned and passed as the vector store
+    /// for embedding-similarity retrieval. The `reasoning_strategies` collection is created
+    /// at startup with the correct vector dimension probed from `provider`.
+    pub async fn attach_reasoning_memory(
+        &self,
+        memory: SemanticMemory,
+        provider: &AnyProvider,
+    ) -> SemanticMemory {
+        if !self.config.memory.reasoning.enabled {
+            return memory;
+        }
+
+        let pool = memory.sqlite().pool().clone();
+
+        // Wire Qdrant vector store when available so retrieval is live (C1 fix).
+        let vector_store: Option<std::sync::Arc<dyn zeph_memory::VectorStore>> = if let Some(ops) =
+            &self.qdrant_ops
+        {
+            let ops_arc: std::sync::Arc<dyn zeph_memory::VectorStore> = Arc::new(ops.clone());
+
+            // Ensure the reasoning_strategies collection exists with the correct vector size.
+            // Best-effort: a failure here is logged and Qdrant falls back to SQLite-only mode.
+            if provider.supports_embeddings() {
+                match provider.embed("dimension probe").await {
+                    Ok(probe) => {
+                        let vector_size = u64::try_from(probe.len()).unwrap_or(1536);
+                        if let Err(e) = ops
+                            .ensure_collection(
+                                zeph_memory::reasoning::REASONING_COLLECTION,
+                                vector_size,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                collection = zeph_memory::reasoning::REASONING_COLLECTION,
+                                "reasoning: ensure_collection failed — Qdrant retrieval disabled"
+                            );
+                        } else {
+                            tracing::info!(
+                                collection = zeph_memory::reasoning::REASONING_COLLECTION,
+                                vector_size,
+                                "reasoning: Qdrant collection ready"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "reasoning: embed probe failed — cannot ensure Qdrant collection"
+                        );
+                    }
+                }
+            }
+
+            Some(ops_arc)
+        } else {
+            None
+        };
+
+        let reasoning = Arc::new(zeph_memory::ReasoningMemory::new(pool, vector_store));
+        let mem = memory.with_reasoning(reasoning);
+        tracing::info!(
+            qdrant_wired = self.qdrant_ops.is_some(),
+            "reasoning bank enabled, ReasoningMemory attached"
+        );
+        mem
     }
 
     /// Build a minimal ephemeral memory for bare mode.

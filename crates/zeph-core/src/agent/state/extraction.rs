@@ -33,6 +33,8 @@ pub(crate) struct MemoryExtractionState {
     pub(crate) trajectory_config: zeph_config::TrajectoryConfig,
     /// Category-aware memory configuration (#2428).
     pub(crate) category_config: zeph_config::CategoryConfig,
+    /// `ReasoningBank` configuration (#3342).
+    pub(crate) reasoning_config: zeph_config::ReasoningConfig,
 }
 
 impl MemoryExtractionState {

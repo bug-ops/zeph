@@ -1719,6 +1719,7 @@ impl<C: Channel> Agent<C> {
             persona_config,
             trajectory_config,
             category_config,
+            reasoning_config,
             tree_config,
             microcompact_config,
             autodream_config,
@@ -1778,6 +1779,7 @@ impl<C: Channel> Agent<C> {
         self.memory_state.extraction.persona_config = persona_config;
         self.memory_state.extraction.trajectory_config = trajectory_config;
         self.memory_state.extraction.category_config = category_config;
+        self.memory_state.extraction.reasoning_config = reasoning_config;
         self.memory_state.subsystems.tree_config = tree_config;
         self.memory_state.subsystems.microcompact_config = microcompact_config;
         self.memory_state.subsystems.autodream_config = autodream_config;

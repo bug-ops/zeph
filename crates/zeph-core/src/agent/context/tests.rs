@@ -3198,6 +3198,7 @@ fn make_mem_state(
             persona_config: crate::config::PersonaConfig::default(),
             trajectory_config: crate::config::TrajectoryConfig::default(),
             category_config: crate::config::CategoryConfig::default(),
+            reasoning_config: zeph_config::ReasoningConfig::default(),
         },
         subsystems: MemorySubsystemState::default(),
     }

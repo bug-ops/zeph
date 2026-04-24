@@ -601,6 +601,17 @@ impl<C: Channel> Agent<C> {
         if has_tool_result_parts {
             self.enqueue_trajectory_extraction_task();
         }
+
+        // ReasoningBank distillation: runs only after the final assistant message of a turn
+        // (C2 fix: skip intermediate tool-call messages). A message with ToolUse parts is an
+        // intermediate step; the final assistant message has no ToolUse parts.
+        // S-Med1: skip if injection patterns detected — mirrors graph extraction guard.
+        let has_tool_use_parts = parts
+            .iter()
+            .any(|p| matches!(p, MessagePart::ToolUse { .. }));
+        if role == Role::Assistant && !has_tool_use_parts && !has_injection_flags {
+            self.enqueue_reasoning_extraction_task();
+        }
     }
 
     /// Enqueue background summarization via the supervisor (S1 fix: no shared `AtomicUsize`).
@@ -1021,6 +1032,65 @@ impl<C: Channel> Agent<C> {
                     conversation_id,
                     "trajectory extraction complete"
                 );
+            },
+        );
+    }
+
+    /// Enqueue reasoning strategy distillation via supervisor (background, fire-and-forget).
+    ///
+    /// Mirrors [`Self::enqueue_trajectory_extraction_task`]. Runs after every assistant turn
+    /// when `memory.reasoning.enabled = true` and a `ReasoningMemory` is attached.
+    fn enqueue_reasoning_extraction_task(&mut self) {
+        let cfg = self.memory_state.extraction.reasoning_config.clone();
+        if !cfg.enabled {
+            return;
+        }
+
+        let Some(memory) = &self.memory_state.persistence.memory else {
+            return;
+        };
+
+        let Some(reasoning) = memory.reasoning.clone() else {
+            return;
+        };
+
+        let tail_start = self.msg.messages.len().saturating_sub(cfg.max_messages);
+        let turn_messages: Vec<zeph_llm::provider::Message> =
+            self.msg.messages[tail_start..].to_vec();
+
+        if turn_messages.len() < cfg.min_messages {
+            return;
+        }
+
+        let extract_provider = self.resolve_background_provider(cfg.extract_provider.as_str());
+        let distill_provider = self.resolve_background_provider(cfg.distill_provider.as_str());
+        let embed_provider = self.provider.clone();
+        let store_limit = cfg.store_limit;
+        let extraction_timeout = std::time::Duration::from_secs(cfg.extraction_timeout_secs);
+        let distill_timeout = std::time::Duration::from_secs(cfg.distill_timeout_secs);
+
+        self.lifecycle.supervisor.spawn(
+            super::agent_supervisor::TaskClass::Enrichment,
+            "reasoning_extraction",
+            async move {
+                if let Err(e) = zeph_memory::process_reasoning_turn(
+                    &reasoning,
+                    &extract_provider,
+                    &distill_provider,
+                    &embed_provider,
+                    &turn_messages,
+                    zeph_memory::ProcessTurnConfig {
+                        store_limit,
+                        extraction_timeout,
+                        distill_timeout,
+                    },
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, "reasoning: process_turn failed");
+                }
+
+                tracing::debug!("reasoning extraction complete");
             },
         );
     }

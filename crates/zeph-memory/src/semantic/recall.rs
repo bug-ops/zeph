@@ -1632,6 +1632,7 @@ mod tests {
             search_prompt_template: String::new(),
             depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            reasoning: None,
         }
     }
 

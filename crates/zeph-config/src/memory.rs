@@ -878,6 +878,15 @@ pub struct MemoryConfig {
     /// ```
     #[serde(default)]
     pub retrieval: RetrievalConfig,
+    /// `ReasoningBank`: distilled reasoning strategy memory (#3342).
+    ///
+    /// When `reasoning.enabled = true`, each completed agent turn is evaluated by a self-judge
+    /// LLM call; successful and failed reasoning chains are compressed into short, generalizable
+    /// strategy summaries stored in `reasoning_strategies` (`SQLite`) and a matching Qdrant
+    /// collection. Top-k strategies are retrieved by embedding similarity at context-build time
+    /// and injected before the LLM call.
+    #[serde(default)]
+    pub reasoning: ReasoningConfig,
 }
 
 fn default_crossover_turn_threshold() -> u32 {
@@ -2480,5 +2489,71 @@ mod tests {
         let toml = "strategy = \"focus\"\nfocus_scorer_provider = \"fast\"";
         let cfg: CompressionConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.focus_scorer_provider.as_str(), "fast");
+    }
+}
+
+/// `ReasoningBank`: distilled reasoning strategy memory configuration (#3342).
+///
+/// When `enabled = true`, each completed agent turn is evaluated by a self-judge LLM call.
+/// Successful and failed reasoning chains are compressed into short, generalizable strategy
+/// summaries. At context-build time, top-k strategies are retrieved by embedding similarity
+/// and injected into the prompt preamble.
+///
+/// All LLM work (self-judge, distillation) runs asynchronously — never on the turn thread.
+///
+/// # Example
+///
+/// ```toml
+/// [memory.reasoning]
+/// enabled = true
+/// extract_provider = "fast"
+/// distill_provider = "fast"
+/// top_k = 3
+/// store_limit = 1000
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ReasoningConfig {
+    /// Enable the reasoning-bank pipeline. Default: `false`.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for the self-judge step.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    pub extract_provider: ProviderName,
+    /// Provider name from `[[llm.providers]]` for the distillation step.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    pub distill_provider: ProviderName,
+    /// Number of strategies retrieved per turn for context injection. Default: `3`.
+    pub top_k: usize,
+    /// Maximum stored strategies; oldest unused are evicted when limit is reached. Default: `1000`.
+    pub store_limit: usize,
+    /// Maximum number of recent messages passed to the self-judge LLM. Default: `6`.
+    pub max_messages: usize,
+    /// Per-message content truncation limit (chars) before building the judge transcript. Default: `2000`.
+    pub max_message_chars: usize,
+    /// Maximum token budget for injected reasoning strategies in context. Default: `500`.
+    pub context_budget_tokens: usize,
+    /// Minimum number of messages required before self-judge fires. Default: `2`.
+    pub min_messages: usize,
+    /// Timeout in seconds for the self-judge LLM call. Default: `30`.
+    pub extraction_timeout_secs: u64,
+    /// Timeout in seconds for the distillation LLM call. Default: `30`.
+    pub distill_timeout_secs: u64,
+}
+
+impl Default for ReasoningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            extract_provider: ProviderName::default(),
+            distill_provider: ProviderName::default(),
+            top_k: 3,
+            store_limit: 1000,
+            max_messages: 6,
+            max_message_chars: 2000,
+            context_budget_tokens: 500,
+            min_messages: 2,
+            extraction_timeout_secs: 30,
+            distill_timeout_secs: 30,
+        }
     }
 }

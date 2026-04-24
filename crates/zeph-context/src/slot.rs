@@ -36,6 +36,8 @@ pub enum ContextSlot {
     TrajectoryHints(Option<Message>),
     /// `TiMem` tree summary nodes recalled for context (#2262).
     TreeMemory(Option<Message>),
+    /// Distilled reasoning strategies recalled for the current turn (#3343).
+    ReasoningStrategies(Option<Message>),
 }
 
 /// Return type from `compact_context()` that distinguishes between successful compaction,
@@ -58,6 +60,8 @@ pub enum CompactionOutcome {
 pub const PERSONA_PREFIX: &str = "[Persona context]\n";
 /// Prefix prepended to trajectory-hint injections.
 pub const TRAJECTORY_PREFIX: &str = "[Past experience]\n";
+/// Prefix prepended to reasoning-strategy injections.
+pub const REASONING_PREFIX: &str = "[Reasoning Strategy]\n";
 /// Prefix prepended to `TiMem` tree memory injections.
 pub const TREE_MEMORY_PREFIX: &str = "[Memory summary]\n";
 

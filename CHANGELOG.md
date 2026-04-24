@@ -59,6 +59,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Secrets are redacted via `scrub_content` before any payload leaves the process.
   `zeph notify test` CLI subcommand and `/notify-test` slash command fire a test notification.
   New `[notifications]` config section with commented defaults in `default.toml`.
+- **ReasoningBank** (#3342, #3343): distilled reasoning strategy memory. After each assistant turn
+  a fire-and-forget three-stage pipeline (self-judge → distillation → store) extracts a ≤3-sentence
+  strategy summary and writes it to a new `reasoning_strategies` SQLite table. At context-build time
+  top-k strategies are retrieved by embedding similarity and injected into the prompt preamble. LRU
+  eviction with hot-row protection (configurable `store_limit`, `HOT_STRATEGY_USE_COUNT = 10`) keeps
+  the table bounded. Fully opt-in: `memory.reasoning.enabled = false` by default. New migration:
+  `crates/zeph-db/migrations/sqlite/077_reasoning_strategies.sql`.
 - CPS (cost per successful task) metric in `CostTracker`: `record_successful_task()`, `cps()`,
   and `successful_tasks()` methods; daily reset consistent with existing cost reset (#2194).
 - `cost_cps_cents: Option<f64>` and `cost_successful_tasks: u64` fields in `AgentMetrics`;

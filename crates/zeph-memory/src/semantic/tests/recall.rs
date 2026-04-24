@@ -76,6 +76,7 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         search_prompt_template: String::new(),
         depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        reasoning: None,
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();

@@ -11,7 +11,9 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use zeph_config::{DocumentConfig, GraphConfig, PersonaConfig, TrajectoryConfig, TreeConfig};
+use zeph_config::{
+    DocumentConfig, GraphConfig, PersonaConfig, ReasoningConfig, TrajectoryConfig, TreeConfig,
+};
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::{ConversationId, TokenCounter};
 
@@ -93,6 +95,8 @@ pub struct ContextMemoryView {
     pub persona_config: PersonaConfig,
     /// Trajectory-informed memory configuration.
     pub trajectory_config: TrajectoryConfig,
+    /// `ReasoningBank` configuration (#3343).
+    pub reasoning_config: ReasoningConfig,
 
     // ── subsystem fields ──────────────────────────────────────────────────────
     /// `TiMem` temporal-hierarchical memory tree configuration.

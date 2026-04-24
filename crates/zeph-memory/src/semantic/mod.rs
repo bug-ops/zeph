@@ -40,6 +40,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 
 use zeph_llm::any::AnyProvider;
+use zeph_llm::provider::LlmProvider as _;
 
 use crate::admission::AdmissionControl;
 use crate::embedding_store::EmbeddingStore;
@@ -110,6 +111,10 @@ pub struct SemanticMemory {
     ///
     /// `Some` when `memory.graph.experience.enabled = true` at bootstrap.
     pub experience: Option<Arc<crate::graph::experience::ExperienceStore>>,
+    /// `ReasoningBank` store for distilled reasoning strategies (#3342).
+    ///
+    /// `Some` when `memory.reasoning.enabled = true` at bootstrap.
+    pub reasoning: Option<Arc<crate::reasoning::ReasoningMemory>>,
     pub(crate) community_detection_failures: Arc<AtomicU64>,
     pub(crate) graph_extraction_count: Arc<AtomicU64>,
     pub(crate) graph_extraction_failures: Arc<AtomicU64>,
@@ -238,6 +243,7 @@ impl SemanticMemory {
             token_counter: Arc::new(TokenCounter::new()),
             graph_store: None,
             experience: None,
+            reasoning: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
@@ -292,6 +298,7 @@ impl SemanticMemory {
             token_counter: Arc::new(TokenCounter::new()),
             graph_store: None,
             experience: None,
+            reasoning: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
@@ -328,6 +335,17 @@ impl SemanticMemory {
         store: Arc<crate::graph::experience::ExperienceStore>,
     ) -> Self {
         self.experience = Some(store);
+        self
+    }
+
+    /// Attach a [`ReasoningMemory`](crate::reasoning::ReasoningMemory) store for
+    /// distilled reasoning strategy storage and retrieval (#3342).
+    ///
+    /// When set, [`SemanticMemory::retrieve_reasoning_strategies`] uses this store for
+    /// embedding-similarity lookups. When `None`, retrieval returns an empty vec.
+    #[must_use]
+    pub fn with_reasoning(mut self, store: Arc<crate::reasoning::ReasoningMemory>) -> Self {
+        self.reasoning = Some(store);
         self
     }
 
@@ -550,6 +568,7 @@ impl SemanticMemory {
             token_counter,
             graph_store: None,
             experience: None,
+            reasoning: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
@@ -623,6 +642,7 @@ impl SemanticMemory {
             token_counter: Arc::new(TokenCounter::new()),
             graph_store: None,
             experience: None,
+            reasoning: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
@@ -751,5 +771,34 @@ impl SemanticMemory {
                 }
             })
             .collect())
+    }
+
+    /// Retrieve top-k reasoning strategies by embedding similarity to `query`.
+    ///
+    /// Returns an empty vec when reasoning memory is not attached, Qdrant is unavailable,
+    /// or the provider does not support embeddings.
+    ///
+    /// This method is **pure** — it does not increment `use_count` or `last_used_at`.
+    /// Call [`crate::reasoning::ReasoningMemory::mark_used`] with the ids of strategies
+    /// actually injected into the prompt (after budget truncation).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if embedding generation or the vector search fails.
+    pub async fn retrieve_reasoning_strategies(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::reasoning::ReasoningStrategy>, MemoryError> {
+        let Some(reasoning) = &self.reasoning else {
+            return Ok(Vec::new());
+        };
+        if !self.effective_embed_provider().supports_embeddings() {
+            return Ok(Vec::new());
+        }
+        let embedding = self.effective_embed_provider().embed(query).await?;
+        reasoning
+            .retrieve_by_embedding(&embedding, limit as u64)
+            .await
     }
 }

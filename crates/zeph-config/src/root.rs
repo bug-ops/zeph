@@ -253,6 +253,7 @@ impl Default for Config {
                 key_facts_dedup_threshold: 0.95,
                 compression_spectrum: crate::features::CompressionSpectrumConfig::default(),
                 retrieval: crate::memory::RetrievalConfig::default(),
+                reasoning: crate::memory::ReasoningConfig::default(),
             },
             telegram: None,
             discord: None,

@@ -80,6 +80,10 @@ impl<C: Channel> Agent<C> {
         self.remove_by_prefix(Role::System, super::TREE_MEMORY_PREFIX);
     }
 
+    pub(in crate::agent) fn remove_reasoning_strategies_messages(&mut self) {
+        self.remove_by_prefix(Role::System, super::REASONING_PREFIX);
+    }
+
     /// Remove previously injected LSP context notes from the message history.
     ///
     /// Called before injecting fresh notes each turn so stale diagnostics/hover
@@ -426,6 +430,11 @@ impl<C: Channel> Agent<C> {
         self.remove_persona_facts_messages();
         self.remove_trajectory_hints_messages();
         self.remove_tree_memory_messages();
+        // S3: only scan for the reasoning prefix when the feature is enabled; with
+        // enabled=false the prefix is never injected so the scan is always a no-op.
+        if self.memory_state.extraction.reasoning_config.enabled {
+            self.remove_reasoning_strategies_messages();
+        }
 
         // #3320 — Proactive world-knowledge exploration (feature-gated).
         // NOTE: newly generated skills are available *next* turn; this turn we
@@ -506,6 +515,7 @@ impl<C: Channel> Agent<C> {
             document_config: self.memory_state.extraction.document_config.clone(),
             persona_config: self.memory_state.extraction.persona_config.clone(),
             trajectory_config: self.memory_state.extraction.trajectory_config.clone(),
+            reasoning_config: self.memory_state.extraction.reasoning_config.clone(),
             tree_config: self.memory_state.subsystems.tree_config.clone(),
         };
         let correction_config =
@@ -661,6 +671,18 @@ impl<C: Channel> Agent<C> {
                     .await,
             );
             tracing::debug!("injected tree memory summary into context");
+        }
+
+        if let Some(msg) = prepared
+            .reasoning_hints
+            .filter(|_| self.msg.messages.len() > 1)
+        {
+            self.msg.messages.insert(
+                1,
+                self.sanitize_memory_message(msg, MemorySourceHint::ExternalContent)
+                    .await,
+            );
+            tracing::debug!("injected reasoning strategies into context");
         }
 
         if let Some(text) = prepared.code_context {

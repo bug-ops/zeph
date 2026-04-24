@@ -336,6 +336,7 @@ async fn memory_with_in_memory_vector_store() -> (
         search_prompt_template: String::new(),
         depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        reasoning: None,
     };
 
     (memory, embedding_store)
