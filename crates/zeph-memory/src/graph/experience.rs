@@ -57,6 +57,11 @@ impl ExperienceStore {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        skip_all,
+        name = "memory.experience.record",
+        fields(tool_name, outcome)
+    )]
     pub async fn record_tool_outcome(
         &self,
         session_id: &str,
@@ -66,7 +71,6 @@ impl ExperienceStore {
         detail: Option<&str>,
         error_ctx: Option<&str>,
     ) -> Result<i64, MemoryError> {
-        let _span = tracing::info_span!("memory.experience.record", tool_name, outcome).entered();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs().cast_signed());
@@ -146,13 +150,12 @@ impl ExperienceStore {
     /// # Errors
     ///
     /// Returns [`MemoryError`] if any database operation fails.
+    #[tracing::instrument(skip_all, name = "memory.experience.sweep")]
     pub async fn evolution_sweep(
         &self,
         graph_store: &GraphStore,
         confidence_threshold: f32,
     ) -> Result<EvolutionSweepStats, MemoryError> {
-        let _span = tracing::info_span!("memory.experience.sweep").entered();
-
         let self_loops = zeph_db::query(sql!(
             "DELETE FROM graph_edges WHERE source_entity_id = target_entity_id"
         ))

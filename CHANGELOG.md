@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Wire `ExperienceStore` into the agent tool loop and per-turn evolution sweep (#3318): tool
+  outcomes are recorded fire-and-forget via `TaskClass::Telemetry`; evolution sweep runs every N
+  user turns; both gates on `memory.graph.experience.enabled` with zero overhead when disabled.
 - `--bare` mode now skips MCP `connect_all` and the background refresh task, gateway server spawn,
   and `agent.with_graph_config()` activation — all three were previously unconditional (#3298).
   Bare mode is a minimal LLM round-trip with no external service dependencies as documented.

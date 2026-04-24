@@ -1553,6 +1553,54 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Experience memory: evolution sweep (fire-and-forget). Runs every N user turns,
+        // gated on graph + experience config, and only when both stores are attached.
+        {
+            let cfg = &self.memory_state.extraction.graph_config.experience;
+            if cfg.enabled
+                && cfg.evolution_sweep_enabled
+                && cfg.evolution_sweep_interval > 0
+                && self
+                    .sidequest
+                    .turn_counter
+                    .checked_rem(cfg.evolution_sweep_interval as u64)
+                    == Some(0)
+                && let Some(memory) = self.memory_state.persistence.memory.as_ref()
+                && let (Some(exp), Some(graph)) =
+                    (memory.experience.as_ref(), memory.graph_store.as_ref())
+            {
+                let exp = std::sync::Arc::clone(exp);
+                let graph = std::sync::Arc::clone(graph);
+                let threshold = cfg.confidence_prune_threshold;
+                let turn = self.sidequest.turn_counter;
+                let accepted = self.lifecycle.supervisor.spawn(
+                    agent_supervisor::TaskClass::Telemetry,
+                    "experience-sweep",
+                    async move {
+                        match exp.evolution_sweep(graph.as_ref(), threshold).await {
+                            Ok(stats) => tracing::info!(
+                                turn,
+                                self_loops = stats.pruned_self_loops,
+                                low_confidence = stats.pruned_low_confidence,
+                                "evolution sweep complete",
+                            ),
+                            Err(e) => tracing::warn!(
+                                turn,
+                                error = %e,
+                                "evolution sweep failed",
+                            ),
+                        }
+                    },
+                );
+                if !accepted {
+                    tracing::warn!(
+                        turn = self.sidequest.turn_counter,
+                        "experience-sweep dropped (telemetry class at capacity)",
+                    );
+                }
+            }
+        }
+
         // Cache-expiry warning (#2715): notify user when prompt cache has likely expired.
         if let Some(warning) = self.cache_expiry_warning() {
             tracing::info!(warning, "cache expiry warning");

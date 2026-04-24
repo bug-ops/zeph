@@ -344,23 +344,7 @@ impl AppBuilder {
         }
 
         if self.config.memory.graph.enabled {
-            // Open a dedicated pool for graph operations to prevent pool starvation.
-            // Community detection and spreading activation can saturate the shared message pool
-            // (pool_size=5), causing pool.acquire() cancellation and semaphore drift in sqlx 0.8.
-            let graph_pool = zeph_db::DbConfig {
-                url: db_path.to_string(),
-                max_connections: self.config.memory.graph.pool_size,
-                pool_size: self.config.memory.graph.pool_size,
-            }
-            .connect()
-            .await
-            .map_err(|e| BootstrapError::Memory(e.to_string()))?;
-            let store = Arc::new(GraphStore::new(graph_pool));
-            memory = memory.with_graph_store(store);
-            tracing::info!(
-                pool_size = self.config.memory.graph.pool_size,
-                "graph memory enabled, GraphStore attached with dedicated pool"
-            );
+            memory = self.attach_graph_stores(memory, db_path).await?;
         }
 
         if self.config.memory.admission.enabled {
@@ -373,6 +357,55 @@ impl AppBuilder {
 
         memory =
             memory.with_key_facts_dedup_threshold(self.config.memory.key_facts_dedup_threshold);
+
+        Ok(memory)
+    }
+
+    /// Attach `GraphStore` and optionally `ExperienceStore` to the in-progress `SemanticMemory`.
+    ///
+    /// Opens a dedicated pool for graph operations to prevent pool starvation from community
+    /// detection and spreading activation. When `experience.enabled`, the pool is shared with
+    /// `ExperienceStore` (both are DB-maintenance workloads on graph tables).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BootstrapError::Memory`] if the pool cannot be opened.
+    async fn attach_graph_stores(
+        &self,
+        memory: SemanticMemory,
+        db_path: &str,
+    ) -> Result<SemanticMemory, BootstrapError> {
+        // Open a dedicated pool — community detection can saturate the shared message pool
+        // (pool_size=5), causing pool.acquire() cancellation and semaphore drift in sqlx 0.8.
+        let graph_pool = zeph_db::DbConfig {
+            url: db_path.to_string(),
+            max_connections: self.config.memory.graph.pool_size,
+            pool_size: self.config.memory.graph.pool_size,
+        }
+        .connect()
+        .await
+        .map_err(|e| BootstrapError::Memory(e.to_string()))?;
+
+        // Clone the pool so ExperienceStore can share it when enabled.
+        // sqlx Pool is cheaply cloneable (internally Arc-backed).
+        let store = Arc::new(GraphStore::new(graph_pool.clone()));
+        let mut memory = memory.with_graph_store(store);
+        tracing::info!(
+            pool_size = self.config.memory.graph.pool_size,
+            "graph memory enabled, GraphStore attached with dedicated pool"
+        );
+
+        if self.config.memory.graph.experience.enabled {
+            let exp_store = Arc::new(zeph_memory::ExperienceStore::new(graph_pool));
+            memory = memory.with_experience_store(exp_store);
+            let exp_cfg = &self.config.memory.graph.experience;
+            tracing::info!(
+                evolution_sweep_enabled = exp_cfg.evolution_sweep_enabled,
+                evolution_sweep_interval = exp_cfg.evolution_sweep_interval,
+                confidence_prune_threshold = exp_cfg.confidence_prune_threshold,
+                "experience memory enabled",
+            );
+        }
 
         Ok(memory)
     }

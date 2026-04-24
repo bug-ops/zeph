@@ -2635,6 +2635,69 @@ impl<C: Channel> Agent<C> {
                     .record_quality_outcome(self.provider.name(), true);
             }
 
+            // Experience memory: record tool outcome (fire-and-forget). Skip when
+            // conversation_id is None (pre-persistence turn) to avoid collisions on a
+            // synthetic session_id across agent starts.
+            if let Some(memory) = self.memory_state.persistence.memory.as_ref()
+                && let Some(experience) = memory.experience.as_ref()
+                && let Some(conversation_id) = self.memory_state.persistence.conversation_id
+            {
+                let (outcome, detail, error_ctx): (&'static str, Option<String>, Option<String>) =
+                    if vigil_blocked {
+                        (
+                            "blocked",
+                            Some("vigil".to_owned()),
+                            Some(truncate_utf8(&llm_content, 256)),
+                        )
+                    } else if is_error {
+                        (
+                            "error",
+                            tool_err_category.as_ref().map(|c| format!("{c:?}")),
+                            Some(truncate_utf8(&llm_content, 256)),
+                        )
+                    } else if tool_succeeded {
+                        ("success", None, None)
+                    } else {
+                        ("unknown", None, None)
+                    };
+
+                let exp = std::sync::Arc::clone(experience);
+                let session_id = conversation_id.0.to_string();
+                let turn = i64::try_from(self.sidequest.turn_counter).unwrap_or(i64::MAX);
+                let tool_name = tc.name.to_string();
+                let accepted = self.lifecycle.supervisor.spawn(
+                    super::super::agent_supervisor::TaskClass::Telemetry,
+                    "experience-record",
+                    async move {
+                        if let Err(e) = exp
+                            .record_tool_outcome(
+                                &session_id,
+                                turn,
+                                &tool_name,
+                                outcome,
+                                detail.as_deref(),
+                                error_ctx.as_deref(),
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                tool = %tool_name,
+                                outcome = %outcome,
+                                error = %e,
+                                "experience: record_tool_outcome failed",
+                            );
+                        }
+                    },
+                );
+                if !accepted {
+                    tracing::warn!(
+                        tool = %tc.name,
+                        outcome = %outcome,
+                        "experience-record dropped (telemetry class at capacity)",
+                    );
+                }
+            }
+
             result_parts.push(MessagePart::ToolResult {
                 tool_use_id: tc.id.clone(),
                 content: llm_content,
@@ -3200,6 +3263,20 @@ fn skipped_output(
         raw_response: None,
         claim_source: None,
     }
+}
+
+/// Truncate `s` to at most `max_bytes` bytes on a valid UTF-8 char boundary.
+///
+/// Never panics: if `s` is shorter than `max_bytes`, it is returned as-is.
+fn truncate_utf8(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_owned();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_owned()
 }
 
 /// Returns `true` when the last non-System message in `messages` contains at least one

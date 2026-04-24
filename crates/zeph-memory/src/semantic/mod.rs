@@ -106,6 +106,10 @@ pub struct SemanticMemory {
     pub(crate) tier_boost_semantic: f64,
     pub token_counter: Arc<TokenCounter>,
     pub graph_store: Option<Arc<crate::graph::GraphStore>>,
+    /// Experience store for tool-outcome telemetry and per-turn evolution sweeps.
+    ///
+    /// `Some` when `memory.graph.experience.enabled = true` at bootstrap.
+    pub experience: Option<Arc<crate::graph::experience::ExperienceStore>>,
     pub(crate) community_detection_failures: Arc<AtomicU64>,
     pub(crate) graph_extraction_count: Arc<AtomicU64>,
     pub(crate) graph_extraction_failures: Arc<AtomicU64>,
@@ -220,6 +224,7 @@ impl SemanticMemory {
             tier_boost_semantic: 1.3,
             token_counter: Arc::new(TokenCounter::new()),
             graph_store: None,
+            experience: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
@@ -269,6 +274,7 @@ impl SemanticMemory {
             tier_boost_semantic: 1.3,
             token_counter: Arc::new(TokenCounter::new()),
             graph_store: None,
+            experience: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
@@ -287,6 +293,20 @@ impl SemanticMemory {
     #[must_use]
     pub fn with_graph_store(mut self, store: Arc<crate::graph::GraphStore>) -> Self {
         self.graph_store = Some(store);
+        self
+    }
+
+    /// Attach an [`ExperienceStore`](crate::graph::experience::ExperienceStore) for tool-outcome
+    /// telemetry and per-turn evolution sweeps.
+    ///
+    /// When set, the agent records one row per tool invocation in `experience_nodes` and
+    /// periodically runs `evolution_sweep` to prune low-confidence and self-loop edges.
+    #[must_use]
+    pub fn with_experience_store(
+        mut self,
+        store: Arc<crate::graph::experience::ExperienceStore>,
+    ) -> Self {
+        self.experience = Some(store);
         self
     }
 
@@ -423,6 +443,7 @@ impl SemanticMemory {
             tier_boost_semantic: 1.3,
             token_counter,
             graph_store: None,
+            experience: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
@@ -491,6 +512,7 @@ impl SemanticMemory {
             tier_boost_semantic: 1.3,
             token_counter: Arc::new(TokenCounter::new()),
             graph_store: None,
+            experience: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),

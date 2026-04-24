@@ -1612,6 +1612,7 @@ mod tests {
             importance_weight: 0.15,
             token_counter: Arc::new(crate::token_counter::TokenCounter::new()),
             graph_store: None,
+            experience: None,
             community_detection_failures: Arc::new(AtomicU64::new(0)),
             graph_extraction_count: Arc::new(AtomicU64::new(0)),
             graph_extraction_failures: Arc::new(AtomicU64::new(0)),
