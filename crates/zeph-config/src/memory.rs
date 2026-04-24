@@ -862,6 +862,22 @@ pub struct MemoryConfig {
     /// Controls three-tier retrieval policy and background skill-promotion engine.
     #[serde(default)]
     pub compression_spectrum: crate::features::CompressionSpectrumConfig,
+    /// MemMachine-inspired retrieval-stage tuning (#3340).
+    ///
+    /// Controls ANN candidate depth, search-prompt formatting, and the shape of memory snippets
+    /// injected into agent context. Separate from `SemanticConfig` because these knobs apply
+    /// uniformly across graph, hybrid, and vector-only recall paths.
+    ///
+    /// # Example (TOML)
+    ///
+    /// ```toml
+    /// [memory.retrieval]
+    /// depth = 40
+    /// search_prompt_template = ""
+    /// context_format = "structured"
+    /// ```
+    #[serde(default)]
+    pub retrieval: RetrievalConfig,
 }
 
 fn default_crossover_turn_threshold() -> u32 {
@@ -1030,6 +1046,78 @@ impl Default for SemanticConfig {
             embed_provider: None,
         }
     }
+}
+
+/// Memory snippet rendering format injected into agent context (MM-F5, #3340).
+///
+/// Controls how each recalled memory entry is presented in the assembled prompt.
+/// Flipping this value does not affect stored content — `SQLite` rows and Qdrant points
+/// always contain the raw message text. The format is applied exclusively during
+/// context assembly and is never persisted.
+///
+/// # Token cost
+///
+/// `Structured` headers add roughly 2–3× more tokens per entry than `Plain`.
+/// Consider raising `memory.recall_tokens` proportionally when switching to `Structured`.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextFormat {
+    /// Emit a labeled header per snippet:
+    /// `[Memory | <source> | <date> | relevance: <score>]` followed by the content.
+    ///
+    /// This is the default. Gives the LLM structured provenance metadata for each recalled
+    /// memory without re-parsing the recall body.
+    #[default]
+    Structured,
+    /// Legacy plain format: `- [role] content` per snippet, byte-identical to pre-#3340.
+    ///
+    /// Use `Plain` when downstream consumers rely on the old format or when token budget
+    /// is tight and provenance headers are not needed.
+    Plain,
+}
+
+/// Retrieval-stage tuning for semantic memory (MemMachine-inspired, #3340).
+///
+/// Controls ANN candidate depth, search-prompt template, and memory snippet rendering.
+/// Nested under `[memory.retrieval]` in TOML.  All fields have defaults so existing
+/// configs parse unchanged.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.retrieval]
+/// # depth = 0          # 0 = legacy (recall_limit * 2); set ≥ 1 to override directly
+/// # search_prompt_template = ""
+/// # context_format = "structured"
+/// ```
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RetrievalConfig {
+    /// Number of ANN candidates fetched from the vector store before keyword merge,
+    /// temporal decay, and MMR re-ranking.
+    ///
+    /// - `0` (default): legacy behavior — `recall_limit * 2` candidates, byte-identical
+    ///   to pre-#3340 deployments.
+    /// - `≥ 1`: the configured value is passed directly to `qdrant.search` /
+    ///   `keyword_search`. Set to at least `recall_limit * 2` to match the legacy pool
+    ///   size, or higher for better MMR diversity.
+    ///
+    /// A value below `recall_limit` triggers a one-shot WARN because the ANN pool
+    /// cannot saturate the requested top-k.
+    pub depth: u32,
+    /// Template applied to the raw user query before embedding.
+    ///
+    /// Supports a single `{query}` placeholder which is replaced with the raw query string.
+    /// Empty string (default) = identity: the query is embedded as-is.
+    ///
+    /// Applied **only** at query-side embedding sites — stored content (summaries, documents)
+    /// is never wrapped.  Use this for asymmetric embedding models (e.g. E5 `"query: {query}"`).
+    pub search_prompt_template: String,
+    /// Shape of memory snippets injected into agent context.
+    ///
+    /// See [`ContextFormat`] for the exact rendering and token-cost implications.
+    /// Default: `Structured`.
+    pub context_format: ContextFormat,
 }
 
 /// Compression strategy for active context compression (#1161).

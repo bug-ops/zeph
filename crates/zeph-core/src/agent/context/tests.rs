@@ -3172,6 +3172,7 @@ fn make_mem_state(
             tool_call_cutoff: 6,
             unsummarized_count: 0,
             last_recall_confidence: None,
+            context_format: zeph_config::ContextFormat::default(),
         },
         compaction: MemoryCompactionState {
             summarization_threshold: 100,

@@ -10,11 +10,12 @@ use zeph_core::config::migrate::{
     migrate_compression_predictor_config, migrate_database_url, migrate_egress_config,
     migrate_forgetting_config, migrate_hooks_permission_denied_config, migrate_magic_docs_config,
     migrate_mcp_elicitation_config, migrate_mcp_trust_levels, migrate_memory_graph_config,
-    migrate_microcompact_config, migrate_orchestration_persistence, migrate_otel_filter,
-    migrate_planner_model_to_provider, migrate_quality_config, migrate_sandbox_config,
-    migrate_sandbox_egress_filter, migrate_scheduler_daemon_config, migrate_session_recap_config,
-    migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
-    migrate_telemetry_config, migrate_vigil_config,
+    migrate_memory_retrieval_config, migrate_microcompact_config,
+    migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
+    migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
+    migrate_scheduler_daemon_config, migrate_session_recap_config, migrate_shell_transactional,
+    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
+    migrate_vigil_config,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -144,9 +145,13 @@ pub(crate) fn handle_migrate_config(
     let scheduler_daemon_result = migrate_scheduler_daemon_config(&after_memory_graph)?;
     let after_scheduler_daemon = scheduler_daemon_result.output;
 
-    // Step 28: add missing default keys as commented-out entries.
+    // Step 28: add commented-out [memory.retrieval] block if absent (#3340).
+    let memory_retrieval_result = migrate_memory_retrieval_config(&after_scheduler_daemon)?;
+    let after_memory_retrieval = memory_retrieval_result.output;
+
+    // Step 29: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_scheduler_daemon)?;
+    let result = migrator.migrate(&after_memory_retrieval)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -254,6 +259,11 @@ pub(crate) fn handle_migrate_config(
         }
         if scheduler_daemon_result.changed_count > 0 {
             eprintln!("Scheduler daemon migration: added commented-out [scheduler.daemon] block.");
+        }
+        if memory_retrieval_result.changed_count > 0 {
+            eprintln!(
+                "Memory retrieval migration: added commented-out [memory.retrieval] block (#3340)."
+            );
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

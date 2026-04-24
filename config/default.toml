@@ -345,6 +345,21 @@ importance_weight = 0.15
 # Defaults to the main provider when unset.
 # embed_provider = "ollama-embed"
 
+# MemMachine-inspired retrieval-stage tuning (#3340). Applies to all recall paths.
+# [memory.retrieval]
+# depth = 0                 # ANN candidates fetched from the vector store, directly.
+#                           # 0 = legacy behavior (recall_limit * 2). Set to an explicit
+#                           # value >= recall_limit * 2 to enlarge the candidate pool
+#                           # and improve MMR diversity / keyword merge coverage.
+#                           # Typical tuned value: 40–80 (for recall_limit = 5–10).
+# search_prompt_template = ""  # Template applied to the raw query before embedding.
+#                              # Supports a single {query} placeholder. Empty = identity.
+#                              # Example for E5 models: "query: {query}"
+# context_format = "structured"  # structured: per-entry headers [Memory | source | date | relevance]
+#                                 #             ~2–3× more tokens per entry than plain;
+#                                 #             raise memory.recall_tokens proportionally.
+#                                 # plain:      legacy `- [role] content` format (pre-#3340).
+
 # Code RAG: AST-based code indexing and hybrid retrieval
 # Requires Qdrant for semantic retrieval; tree-sitter grammars are always available
 [index]

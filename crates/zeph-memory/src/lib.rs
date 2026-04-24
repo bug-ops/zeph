@@ -154,9 +154,9 @@ pub use scenes::{
 };
 pub use semantic::{
     BufferedWrite, EmbedContext, ExtractionResult, ExtractionStats, GraphExtractionConfig,
-    LinkingStats, NoteLinkingConfig, PersonaExtractionConfig, StructuredSummary, TrajectoryEntry,
-    TrajectoryExtractionConfig, TreeConsolidationConfig, TreeConsolidationResult, WriteBuffer,
-    build_summarization_prompt, contains_self_referential_language, extract_and_store,
+    LinkingStats, NoteLinkingConfig, PersonaExtractionConfig, RecalledMessage, StructuredSummary,
+    TrajectoryEntry, TrajectoryExtractionConfig, TreeConsolidationConfig, TreeConsolidationResult,
+    WriteBuffer, build_summarization_prompt, contains_self_referential_language, extract_and_store,
     extract_persona_facts, extract_trajectory_entries, link_memory_notes,
     run_tree_consolidation_sweep, start_tree_consolidation_loop,
 };

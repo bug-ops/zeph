@@ -339,6 +339,11 @@ impl AppBuilder {
             self.config.memory.semantic.importance_weight,
         );
 
+        memory = memory.with_retrieval_options(
+            self.config.memory.retrieval.depth,
+            &self.config.memory.retrieval.search_prompt_template,
+        );
+
         if self.config.memory.semantic.enabled && memory.is_vector_store_connected().await {
             tracing::info!("semantic memory enabled, vector store connected");
         }

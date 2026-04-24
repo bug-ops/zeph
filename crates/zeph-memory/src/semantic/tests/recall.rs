@@ -72,6 +72,10 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        retrieval_depth: 0,
+        search_prompt_template: String::new(),
+        depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -627,4 +631,71 @@ async fn admission_without_dedicated_provider_uses_embed_provider() {
         result.is_some(),
         "admission without dedicated provider must admit when threshold=0.0"
     );
+}
+
+// ── effective_depth tests (MM-F1, #3340) ──────────────────────────────────────
+
+#[tokio::test]
+async fn effective_depth_legacy_sentinel_returns_limit_times_two() {
+    let memory = test_semantic_memory(false).await;
+    // depth = 0 (default) → legacy behavior
+    assert_eq!(memory.effective_depth(10), 20);
+    assert_eq!(memory.effective_depth(5), 10);
+}
+
+#[tokio::test]
+async fn effective_depth_configured_returns_exact_value_when_ge_limit() {
+    let memory = test_semantic_memory(false)
+        .await
+        .with_retrieval_options(15, "");
+    assert_eq!(memory.effective_depth(10), 15);
+}
+
+#[tokio::test]
+async fn effective_depth_configured_returns_exact_value_when_below_limit() {
+    // depth < limit: WARN fires once, value returned unchanged
+    let memory = test_semantic_memory(false)
+        .await
+        .with_retrieval_options(5, "");
+    assert_eq!(memory.effective_depth(10), 5);
+}
+
+// ── apply_search_prompt tests (MM-F2, #3340) ──────────────────────────────────
+
+#[test]
+fn apply_search_prompt_empty_template_returns_raw_query() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let memory = rt.block_on(test_semantic_memory(false));
+    assert_eq!(memory.apply_search_prompt("hello"), "hello");
+}
+
+#[test]
+fn apply_search_prompt_substitutes_placeholder() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let memory = rt
+        .block_on(test_semantic_memory(false))
+        .with_retrieval_options(0, "query: {query}");
+    assert_eq!(
+        memory.apply_search_prompt("rust async"),
+        "query: rust async"
+    );
+}
+
+#[test]
+fn apply_search_prompt_substitutes_all_occurrences() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let memory = rt
+        .block_on(test_semantic_memory(false))
+        .with_retrieval_options(0, "{query}/{query}");
+    assert_eq!(memory.apply_search_prompt("foo"), "foo/foo");
+}
+
+#[test]
+fn apply_search_prompt_missing_placeholder_returns_raw_query() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let memory = rt
+        .block_on(test_semantic_memory(false))
+        .with_retrieval_options(0, "no placeholder here");
+    // warn fires, raw query returned
+    assert_eq!(memory.apply_search_prompt("hello"), "hello");
 }

@@ -2488,6 +2488,44 @@ pub fn migrate_scheduler_daemon_config(toml_src: &str) -> Result<MigrationResult
     })
 }
 
+/// Add a commented-out `[memory.retrieval]` block if the config lacks it (#3340).
+///
+/// MemMachine-inspired retrieval-stage tuning: ANN candidate depth, search-prompt template,
+/// and context snippet format. All fields have defaults so existing configs parse unchanged;
+/// this migration surfaces the section for discoverability.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the migration
+/// function convention for use in chained pipelines.
+pub fn migrate_memory_retrieval_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src
+        .lines()
+        .any(|l| l.trim() == "[memory.retrieval]" || l.trim() == "# [memory.retrieval]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [memory.retrieval] — MemMachine-inspired retrieval tuning (#3340).\n\
+         # [memory.retrieval]\n\
+         # depth = 0                          # ANN candidates fetched from the vector store, directly.\n\
+         #                                    # 0 = legacy behavior (recall_limit * 2). Set to an explicit\n\
+         #                                    # value >= recall_limit * 2 to enlarge the candidate pool.\n\
+         # search_prompt_template = \"\"        # embedding query template; {query} = raw user query; empty = identity\n\
+         # context_format = \"structured\"      # structured | plain — memory snippet rendering format\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.retrieval".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -3898,6 +3936,39 @@ prompt_cache_ttl = "1h"
     fn migrate_scheduler_daemon_idempotent_on_existing_block() {
         let src = "[agent]\nname = \"Zeph\"\n# [scheduler.daemon]\n# tick_secs = 60\n";
         let result = migrate_scheduler_daemon_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    // ── migrate_memory_retrieval_config ──────────────────────────────────────
+
+    #[test]
+    fn migrate_memory_retrieval_adds_block_when_absent() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_memory_retrieval_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result
+                .sections_changed
+                .contains(&"memory.retrieval".to_owned())
+        );
+        assert!(result.output.contains("# [memory.retrieval]"));
+        assert!(result.output.contains("depth = 0"));
+        assert!(result.output.contains("context_format"));
+    }
+
+    #[test]
+    fn migrate_memory_retrieval_idempotent_on_active_section() {
+        let src = "[memory.retrieval]\ndepth = 40\n";
+        let result = migrate_memory_retrieval_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_memory_retrieval_idempotent_on_commented_section() {
+        let src = "[agent]\nname = \"Zeph\"\n# [memory.retrieval]\n# depth = 0\n";
+        let result = migrate_memory_retrieval_config(src).expect("migrate");
         assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }

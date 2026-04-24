@@ -7,7 +7,7 @@ mod recall;
 mod summarization;
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use zeph_llm::LlmProvider;
 use zeph_llm::any::AnyProvider;
@@ -54,6 +54,10 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
         quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        retrieval_depth: 0,
+        search_prompt_template: String::new(),
+        depth_below_limit_warned: Arc::new(AtomicBool::new(false)),
+        missing_placeholder_warned: Arc::new(AtomicBool::new(false)),
     }
 }
 
@@ -141,6 +145,10 @@ async fn effective_embed_provider_routes_to_dedicated_embed_provider() {
         quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        retrieval_depth: 0,
+        search_prompt_template: String::new(),
+        depth_below_limit_warned: Arc::new(AtomicBool::new(false)),
+        missing_placeholder_warned: Arc::new(AtomicBool::new(false)),
     };
 
     assert!(
@@ -532,6 +540,10 @@ async fn store_correction_embedding_sqlite_clean_db_roundtrip() {
         quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        retrieval_depth: 0,
+        search_prompt_template: String::new(),
+        depth_below_limit_warned: Arc::new(AtomicBool::new(false)),
+        missing_placeholder_warned: Arc::new(AtomicBool::new(false)),
     };
 
     memory

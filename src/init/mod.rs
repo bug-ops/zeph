@@ -735,6 +735,24 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         _ => zeph_core::config::ContextStrategy::FullHistory,
     };
 
+    // MM-F1/F2/F5 retrieval tuning defaults — no interactive question needed;
+    // all fields have sensible defaults. Surfaced here per CLAUDE.md rule #4.
+    println!(
+        "  retrieval: depth={} template={} context_format={:?}",
+        if config.memory.retrieval.depth == 0 {
+            "legacy (limit*2)".to_owned()
+        } else {
+            config.memory.retrieval.depth.to_string()
+        },
+        if config.memory.retrieval.search_prompt_template.is_empty() {
+            "none"
+        } else {
+            "custom"
+        },
+        config.memory.retrieval.context_format,
+    );
+    println!("  (edit config.toml to override [memory.retrieval])");
+
     match state.channel {
         ChannelChoice::Cli => {}
         ChannelChoice::Telegram => {

@@ -36,7 +36,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with `#[serde(default)]` — all disabled by default; existing configs parse unchanged.
 - `MemoryError::Promotion` variant in `zeph-memory` for promotion scan failures (thiserror,
   no anyhow in library crates).
-
+- `[memory.retrieval]` config section: `depth` (ANN candidate count, `0` = legacy `recall_limit * 2`),
+  `search_prompt_template` (query-side embedding template with `{query}` placeholder),
+  `context_format` (`structured` / `plain` — memory snippet rendering in agent context).
+  MemMachine MM-F1/F2/F5 (#3340).
 - CPS (cost per successful task) metric in `CostTracker`: `record_successful_task()`, `cps()`,
   and `successful_tasks()` methods; daily reset consistent with existing cost reset (#2194).
 - `cost_cps_cents: Option<f64>` and `cost_successful_tasks: u64` fields in `AgentMetrics`;

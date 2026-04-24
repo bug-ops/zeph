@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use zeph_config::ContextFormat;
 use zeph_memory::semantic::SemanticMemory;
 
 /// `SQLite` connection, conversation tracking, history limits, recall budget, and autosave policy.
@@ -39,6 +40,10 @@ pub(crate) struct MemoryPersistenceState {
     /// Used by MAR (Memory-Augmented Routing) to bias the bandit toward cheap providers
     /// when memory confidence is high. Reset to `None` at the start of each turn.
     pub(crate) last_recall_confidence: Option<f32>,
+    /// Memory snippet rendering format for context assembly (MM-F5, #3340).
+    ///
+    /// Applied exclusively in `assembler_helpers::fetch_semantic_recall` — never persisted.
+    pub(crate) context_format: ContextFormat,
 }
 
 impl Default for MemoryPersistenceState {
@@ -54,6 +59,7 @@ impl Default for MemoryPersistenceState {
             tool_call_cutoff: 6,
             unsummarized_count: 0,
             last_recall_confidence: None,
+            context_format: ContextFormat::default(),
         }
     }
 }

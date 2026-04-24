@@ -746,7 +746,7 @@ impl SemanticMemory {
 
         let keyword_results = match self
             .sqlite
-            .keyword_search(query, limit * 2, conversation_id)
+            .keyword_search(query, self.effective_depth(limit), conversation_id)
             .await
         {
             Ok(results) => results,
@@ -759,10 +759,13 @@ impl SemanticMemory {
         let vector_results = if let Some(qdrant) = &self.qdrant
             && self.effective_embed_provider().supports_embeddings()
         {
-            let query_vector = self.effective_embed_provider().embed(query).await?;
+            let embed_input = self.apply_search_prompt(query);
+            let query_vector = self.effective_embed_provider().embed(&embed_input).await?;
             let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
             qdrant.ensure_collection(vector_size).await?;
-            qdrant.search(&query_vector, limit * 2, filter).await?
+            qdrant
+                .search(&query_vector, self.effective_depth(limit), filter)
+                .await?
         } else {
             Vec::new()
         };
@@ -788,7 +791,7 @@ impl SemanticMemory {
         conversation_id: Option<ConversationId>,
     ) -> Result<Vec<(MessageId, f64)>, MemoryError> {
         self.sqlite
-            .keyword_search(query, limit * 2, conversation_id)
+            .keyword_search(query, self.effective_depth(limit), conversation_id)
             .await
     }
 
@@ -804,10 +807,13 @@ impl SemanticMemory {
         if !self.effective_embed_provider().supports_embeddings() {
             return Ok(Vec::new());
         }
-        let query_vector = self.effective_embed_provider().embed(query).await?;
+        let embed_input = self.apply_search_prompt(query);
+        let query_vector = self.effective_embed_provider().embed(&embed_input).await?;
         let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
         qdrant.ensure_collection(vector_size).await?;
-        qdrant.search(&query_vector, limit * 2, filter).await
+        qdrant
+            .search(&query_vector, self.effective_depth(limit), filter)
+            .await
     }
 
     /// Merge raw keyword and vector results, apply weighted scoring, temporal decay, and MMR
@@ -1622,6 +1628,10 @@ mod tests {
             quality_gate: None,
             key_facts_dedup_threshold: 0.95,
             embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+            retrieval_depth: 0,
+            search_prompt_template: String::new(),
+            depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 

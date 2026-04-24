@@ -119,6 +119,17 @@ impl<C: Channel> Agent<C> {
 
     // ---- Memory Formatting ----
 
+    /// Configure the memory snippet rendering format for context assembly (MM-F5, #3340).
+    ///
+    /// `context_format` controls whether recalled memory entries include structured provenance
+    /// headers (`Structured`) or use the legacy `- [role] content` format (`Plain`).
+    /// The format is applied render-only — it is never persisted.
+    #[must_use]
+    pub fn with_retrieval_config(mut self, context_format: zeph_config::ContextFormat) -> Self {
+        self.memory_state.persistence.context_format = context_format;
+        self
+    }
+
     /// Configure memory formatting: compression guidelines, digest, and context strategy.
     #[must_use]
     pub fn with_memory_formatting_config(

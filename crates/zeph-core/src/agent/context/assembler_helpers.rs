@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use zeph_config::ContextFormat;
 use zeph_llm::provider::{Message, MessagePart, Role};
 use zeph_memory::TokenCounter;
 
@@ -381,18 +382,17 @@ pub(super) async fn fetch_semantic_recall(
     recall_text.push_str(RECALL_PREFIX);
     let mut tokens_used = tc.count_tokens(&recall_text);
 
+    let context_format = memory_state.persistence.context_format;
     for item in &recalled {
         if item.message.content.starts_with("[skipped]")
             || item.message.content.starts_with("[stopped]")
         {
             continue;
         }
-        let role_label = match item.message.role {
-            Role::User => "user",
-            Role::Assistant => "assistant",
-            Role::System => "system",
+        let entry = match context_format {
+            ContextFormat::Structured => format_structured_recall_entry(item),
+            ContextFormat::Plain => format_plain_recall_entry(item),
         };
-        let entry = format!("- [{}] {}\n", role_label, item.message.content);
         let entry_tokens = tc.count_tokens(&entry);
         if tokens_used + entry_tokens > token_budget {
             break;
@@ -412,6 +412,38 @@ pub(super) async fn fetch_semantic_recall(
     } else {
         Ok((None, None))
     }
+}
+
+fn format_plain_recall_entry(item: &zeph_memory::RecalledMessage) -> String {
+    let role_label = match item.message.role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::System => "system",
+    };
+    format!("- [{}] {}\n", role_label, item.message.content)
+}
+
+fn format_structured_recall_entry(item: &zeph_memory::RecalledMessage) -> String {
+    let source = match item.message.role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::System => "system",
+    };
+    // Use compacted_at as a proxy for message age when available; otherwise "unknown".
+    // A full timestamp lookup from SQLite would require an async DB call in the assembler
+    // and is deferred to a future enhancement (TODO: enhance when message timestamps are
+    // propagated into RecalledMessage).
+    let date = item
+        .message
+        .metadata
+        .compacted_at
+        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+    format!(
+        "[Memory | {} | {} | relevance: {:.2}]\n{}\n",
+        source, date, item.score, item.message.content
+    )
 }
 
 pub(super) async fn fetch_summaries(

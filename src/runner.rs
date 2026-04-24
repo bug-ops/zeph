@@ -1723,6 +1723,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.context_strategy,
         config.memory.crossover_turn_threshold,
     )
+    .with_retrieval_config(config.memory.retrieval.context_format)
     .with_focus_and_sidequest_config(config.agent.focus.clone(), config.memory.sidequest.clone())
     .with_trajectory_and_category_config(
         config.memory.trajectory.clone(),

@@ -248,6 +248,7 @@ impl Default for Config {
                 autodream: crate::memory::AutoDreamConfig::default(),
                 key_facts_dedup_threshold: 0.95,
                 compression_spectrum: crate::features::CompressionSpectrumConfig::default(),
+                retrieval: crate::memory::RetrievalConfig::default(),
             },
             telegram: None,
             discord: None,

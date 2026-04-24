@@ -129,6 +129,19 @@ pub struct SemanticMemory {
     /// `JoinSet` requires `&mut self` for `spawn`. Capacity is capped at
     /// `MAX_EMBED_BG_TASKS`; tasks that exceed the limit are dropped with a debug log.
     pub(crate) embed_tasks: Mutex<tokio::task::JoinSet<()>>,
+    /// ANN candidate count fetched from the vector store before reranking (MM-F1, #3340).
+    ///
+    /// `0` = legacy behavior (`recall_limit * 2`). `≥ 1` = direct count.
+    pub(crate) retrieval_depth: u32,
+    /// Template applied to raw user queries before embedding (MM-F2, #3340).
+    ///
+    /// Empty string = identity (pass raw query through). Applied at query-side embed sites only;
+    /// never applied to stored content (summaries, documents).
+    pub(crate) search_prompt_template: String,
+    /// Fires `tracing::warn!` once per instance when `retrieval_depth < recall_limit`.
+    pub(crate) depth_below_limit_warned: Arc<std::sync::atomic::AtomicBool>,
+    /// Fires `tracing::warn!` once per instance when `search_prompt_template` has no `{query}`.
+    pub(crate) missing_placeholder_warned: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SemanticMemory {
@@ -233,6 +246,10 @@ impl SemanticMemory {
             quality_gate: None,
             key_facts_dedup_threshold: 0.95,
             embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+            retrieval_depth: 0,
+            search_prompt_template: String::new(),
+            depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -283,6 +300,10 @@ impl SemanticMemory {
             quality_gate: None,
             key_facts_dedup_threshold: 0.95,
             embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+            retrieval_depth: 0,
+            search_prompt_template: String::new(),
+            depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -395,6 +416,91 @@ impl SemanticMemory {
         self
     }
 
+    /// Configure retrieval depth and search prompt template (MM-F1/F2, #3340).
+    ///
+    /// `depth` is the number of ANN candidates fetched from the vector store before keyword merge
+    /// and MMR re-ranking.  `0` = legacy behavior (`recall_limit * 2`).  `≥ 1` = exact count.
+    ///
+    /// `search_prompt_template` is applied to the raw user query before embedding.  Supports a
+    /// single `{query}` placeholder.  Empty string = identity.
+    #[must_use]
+    pub fn with_retrieval_options(
+        mut self,
+        depth: u32,
+        search_prompt_template: impl Into<String>,
+    ) -> Self {
+        self.retrieval_depth = depth;
+        self.search_prompt_template = search_prompt_template.into();
+        self
+    }
+
+    /// Effective ANN candidate count for a given requested final limit (MM-F1, #3340).
+    ///
+    /// - `retrieval_depth == 0`: legacy behavior, returns `limit * 2`.
+    /// - `retrieval_depth >= 1`: returns the configured depth directly.
+    ///
+    /// When `retrieval_depth < limit`, a one-shot WARN fires because the ANN pool cannot
+    /// saturate the requested top-k.  When `limit <= retrieval_depth < limit * 2`, an INFO
+    /// fires per call noting the smaller-than-legacy pool.
+    pub(crate) fn effective_depth(&self, limit: usize) -> usize {
+        use std::sync::atomic::Ordering;
+
+        let depth = self.retrieval_depth as usize;
+        if depth == 0 {
+            return limit.saturating_mul(2);
+        }
+        if depth < limit {
+            if !self.depth_below_limit_warned.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    retrieval_depth = depth,
+                    recall_limit = limit,
+                    "memory.retrieval.depth < recall_limit; ANN pool cannot saturate top-k — consider raising depth"
+                );
+            }
+        } else if depth < limit.saturating_mul(2) {
+            tracing::info!(
+                retrieval_depth = depth,
+                recall_limit = limit,
+                legacy_default = limit.saturating_mul(2),
+                "memory.retrieval.depth is below legacy limit*2; ANN pool will be smaller than pre-#3340"
+            );
+        } else {
+            tracing::debug!(
+                retrieval_depth = depth,
+                recall_limit = limit,
+                "recall: using configured ANN depth"
+            );
+        }
+        depth
+    }
+
+    /// Apply the configured search prompt template to a raw query (MM-F2, #3340).
+    ///
+    /// Returns `query` as-is when the template is empty or has no `{query}` placeholder.
+    /// A one-shot WARN fires when the template is non-empty but missing the placeholder.
+    pub(crate) fn apply_search_prompt(&self, query: &str) -> String {
+        use std::sync::atomic::Ordering;
+
+        let template = &self.search_prompt_template;
+        if template.is_empty() {
+            return query.to_owned();
+        }
+        if !template.contains("{query}") {
+            if !self
+                .missing_placeholder_warned
+                .swap(true, Ordering::Relaxed)
+            {
+                tracing::warn!(
+                    template = template.as_str(),
+                    "memory.retrieval.search_prompt_template has no {{query}} placeholder — \
+                     using raw query as-is"
+                );
+            }
+            return query.to_owned();
+        }
+        template.replace("{query}", query)
+    }
+
     /// Attach a dedicated embedding provider for write-path and backfill operations.
     ///
     /// When set, all batch embedding calls (backfill, `remember`) route through this provider
@@ -452,6 +558,10 @@ impl SemanticMemory {
             quality_gate: None,
             key_facts_dedup_threshold: 0.95,
             embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+            retrieval_depth: 0,
+            search_prompt_template: String::new(),
+            depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -521,6 +631,10 @@ impl SemanticMemory {
             quality_gate: None,
             key_facts_dedup_threshold: 0.95,
             embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+            retrieval_depth: 0,
+            search_prompt_template: String::new(),
+            depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 

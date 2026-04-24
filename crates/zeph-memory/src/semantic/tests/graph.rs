@@ -332,6 +332,10 @@ async fn memory_with_in_memory_vector_store() -> (
         quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        retrieval_depth: 0,
+        search_prompt_template: String::new(),
+        depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     (memory, embedding_store)

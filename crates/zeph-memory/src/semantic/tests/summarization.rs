@@ -341,6 +341,10 @@ async fn summarize_fails_when_provider_chat_fails() {
         quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        retrieval_depth: 0,
+        search_prompt_template: String::new(),
+        depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -408,6 +412,10 @@ async fn summarize_fallback_to_plain_text_when_structured_fails() {
         quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        retrieval_depth: 0,
+        search_prompt_template: String::new(),
+        depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -560,6 +568,10 @@ async fn make_embed_memory_with_threshold(threshold: f32) -> super::super::Seman
         quality_gate: None,
         key_facts_dedup_threshold: threshold,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        retrieval_depth: 0,
+        search_prompt_template: String::new(),
+        depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     }
 }
 
@@ -655,6 +667,10 @@ async fn store_key_facts_fail_open_on_search_error() {
         quality_gate: None,
         key_facts_dedup_threshold: 0.95,
         embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        retrieval_depth: 0,
+        search_prompt_template: String::new(),
+        depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
