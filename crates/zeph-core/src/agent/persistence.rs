@@ -1064,10 +1064,12 @@ impl<C: Channel> Agent<C> {
 
         let extract_provider = self.resolve_background_provider(cfg.extract_provider.as_str());
         let distill_provider = self.resolve_background_provider(cfg.distill_provider.as_str());
-        let embed_provider = self.provider.clone();
+        let embed_provider = memory.effective_embed_provider().clone();
         let store_limit = cfg.store_limit;
         let extraction_timeout = std::time::Duration::from_secs(cfg.extraction_timeout_secs);
         let distill_timeout = std::time::Duration::from_secs(cfg.distill_timeout_secs);
+        let self_judge_window = cfg.self_judge_window;
+        let min_assistant_chars = cfg.min_assistant_chars;
 
         self.lifecycle.supervisor.spawn(
             super::agent_supervisor::TaskClass::Enrichment,
@@ -1083,6 +1085,8 @@ impl<C: Channel> Agent<C> {
                         store_limit,
                         extraction_timeout,
                         distill_timeout,
+                        self_judge_window,
+                        min_assistant_chars,
                     },
                 )
                 .await

@@ -2574,6 +2574,100 @@ pub fn migrate_memory_reasoning_config(toml_src: &str) -> Result<MigrationResult
     })
 }
 
+/// Insert commented-out `self_judge_window` and `min_assistant_chars` keys under an existing
+/// `[memory.reasoning]` block when they are absent (#3383).
+///
+/// Configs that lack a `[memory.reasoning]` section are returned unchanged (the
+/// [`migrate_memory_reasoning_config`] step is responsible for adding the section).
+/// Idempotent when either key is already present.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the migration
+/// function convention for use in chained pipelines.
+pub fn migrate_memory_reasoning_judge_config(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    let has_section = toml_src.lines().any(|l| l.trim() == "[memory.reasoning]");
+    if !has_section {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Check if both keys are already present (active or commented).
+    let has_window = toml_src.lines().any(|l| {
+        let t = l.trim().trim_start_matches('#').trim();
+        t.starts_with("self_judge_window")
+    });
+    let has_min_chars = toml_src.lines().any(|l| {
+        let t = l.trim().trim_start_matches('#').trim();
+        t.starts_with("min_assistant_chars")
+    });
+    if has_window && has_min_chars {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Append the new keys after the last line belonging to [memory.reasoning].
+    // Strategy: find the last line of the [memory.reasoning] block (before the next section
+    // header) and insert the commented-out keys after it.
+    let lines: Vec<&str> = toml_src.lines().collect();
+    let mut section_start = None;
+    let mut insert_after = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim() == "[memory.reasoning]" {
+            section_start = Some(i);
+        }
+        if let Some(start) = section_start {
+            let trimmed = line.trim();
+            // A new top-level section header ends the current section.
+            if i > start && trimmed.starts_with('[') && !trimmed.starts_with("[[") {
+                break;
+            }
+            insert_after = Some(i);
+        }
+    }
+
+    let Some(insert_idx) = insert_after else {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    };
+
+    let mut new_lines: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    let mut additions = Vec::new();
+    if !has_window {
+        additions.push(
+            "# self_judge_window = 2   # max recent messages passed to self-judge (#3383)"
+                .to_owned(),
+        );
+    }
+    if !has_min_chars {
+        additions.push(
+            "# min_assistant_chars = 50  # skip self-judge for short replies (#3383)".to_owned(),
+        );
+    }
+    for (offset, line) in additions.iter().enumerate() {
+        new_lines.insert(insert_idx + 1 + offset, line.clone());
+    }
+
+    let output = new_lines.join("\n") + if toml_src.ends_with('\n') { "\n" } else { "" };
+    Ok(MigrationResult {
+        output,
+        changed_count: additions.len(),
+        sections_changed: vec!["memory.reasoning".to_owned()],
+    })
+}
+
 /// Append a commented-out `[memory.hebbian]` block to `toml_src` when it is absent (HL-F1/F2, #3344).
 ///
 /// Idempotent: if a `[memory.hebbian]` or `# [memory.hebbian]` line already exists,

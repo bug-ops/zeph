@@ -621,6 +621,13 @@ pub struct ProcessTurnConfig {
     pub extraction_timeout: Duration,
     /// Timeout for the distillation LLM call.
     pub distill_timeout: Duration,
+    /// Maximum number of recent messages sliced from the turn history before passing
+    /// to the self-judge evaluator. Narrowing the window prevents digest/recap messages
+    /// from prior sessions from confusing the classifier. Default: `2`.
+    pub self_judge_window: usize,
+    /// Minimum character count in the last assistant message to trigger self-judge.
+    /// Short or trivial responses (greetings, one-word answers) are skipped. Default: `50`.
+    pub min_assistant_chars: usize,
 }
 
 /// Run the full extraction pipeline for a single turn.
@@ -646,8 +653,30 @@ pub async fn process_turn(
         store_limit,
         extraction_timeout,
         distill_timeout,
+        self_judge_window,
+        min_assistant_chars,
     } = cfg;
-    let Some(outcome) = run_self_judge(extract_provider, messages, extraction_timeout).await else {
+
+    // Narrow the message window to reduce noise from session digests and welcome-back
+    // messages that span prior sessions, which can confuse the self-judge classifier.
+    let judge_messages = if messages.len() > self_judge_window {
+        &messages[messages.len() - self_judge_window..]
+    } else {
+        messages
+    };
+
+    // Skip self-judge when the last assistant response is too short to be meaningful.
+    let last_assistant_chars = judge_messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::Assistant)
+        .map_or(0, |m| m.content.len());
+    if last_assistant_chars < min_assistant_chars {
+        return Ok(());
+    }
+
+    let Some(outcome) = run_self_judge(extract_provider, judge_messages, extraction_timeout).await
+    else {
         return Ok(());
     };
 
@@ -1154,6 +1183,8 @@ mod tests {
             store_limit: 100,
             extraction_timeout: std::time::Duration::from_secs(1),
             distill_timeout: std::time::Duration::from_secs(1),
+            self_judge_window: 2,
+            min_assistant_chars: 0,
         };
         let result = process_turn(&mem, &provider, &provider, &provider, &[], cfg).await;
         assert!(

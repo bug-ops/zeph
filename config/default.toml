@@ -1169,6 +1169,8 @@ sweep_batch_size = 100
 # max_messages = 6
 # min_messages = 2
 # max_message_chars = 2000
+# self_judge_window = 2    # max recent messages to self-judge evaluator (#3383)
+# min_assistant_chars = 50 # skip self-judge for short replies (#3383)
 #
 # [learning]
 # feedback_provider = "fast" # SLM: three-class classification

@@ -2660,6 +2660,13 @@ pub struct ReasoningConfig {
     pub extraction_timeout_secs: u64,
     /// Timeout in seconds for the distillation LLM call. Default: `30`.
     pub distill_timeout_secs: u64,
+    /// Maximum number of recent messages passed to the self-judge evaluator.
+    /// Narrowing to the last user+assistant pair improves classification accuracy.
+    /// Default: `2`.
+    pub self_judge_window: usize,
+    /// Minimum characters in the assistant response to trigger self-judge.
+    /// Short or trivial responses are skipped. Default: `50`.
+    pub min_assistant_chars: usize,
 }
 
 impl Default for ReasoningConfig {
@@ -2676,6 +2683,8 @@ impl Default for ReasoningConfig {
             min_messages: 2,
             extraction_timeout_secs: 30,
             distill_timeout_secs: 30,
+            self_judge_window: 2,
+            min_assistant_chars: 50,
         }
     }
 }

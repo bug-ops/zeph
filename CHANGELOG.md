@@ -76,6 +76,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   entries, causing the probe to fail and `ensure_collection("reasoning_strategies")` to never be
   called. The fix passes `build_memory_embed_provider()` result into `attach_reasoning_memory` and
   falls back to the primary provider when no dedicated embed provider is configured (#3375).
+- ReasoningBank extraction pipeline now passes the dedicated embed provider (from
+  `SemanticMemory::effective_embed_provider()`) to `process_reasoning_turn` instead of the primary
+  routing provider. This eliminates the Qdrant dimension mismatch (768 vs 1536) that caused every
+  upsert to fail and left `embedded_at = NULL` indefinitely (#3382).
+- ReasoningBank self-judge now evaluates only the last `self_judge_window` messages (default: 2,
+  i.e. the final user+assistant exchange) instead of the full conversation tail. Added a
+  `min_assistant_chars` guard (default: 50) to skip trivial short responses. Together these
+  changes eliminate false `Failure` outcomes caused by multi-session context confusing the
+  evaluator model (#3383).
 
 - `--bare` mode now skips the file change watcher: `with_hooks_config` is no longer called
   unconditionally in `runner.rs` — it is guarded by `!exec_mode.bare`, preventing background

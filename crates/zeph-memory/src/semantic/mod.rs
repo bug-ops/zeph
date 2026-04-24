@@ -749,7 +749,7 @@ impl SemanticMemory {
     /// Returns the provider to use for embedding calls.
     ///
     /// Returns the dedicated embed provider when configured, falling back to the main provider.
-    pub(crate) fn effective_embed_provider(&self) -> &AnyProvider {
+    pub fn effective_embed_provider(&self) -> &AnyProvider {
         self.embed_provider.as_ref().unwrap_or(&self.provider)
     }
 
