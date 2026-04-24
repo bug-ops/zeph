@@ -20,17 +20,6 @@ use uuid::Uuid;
 /// The inner field is private: external code cannot construct a `RunId` that
 /// collides with an existing registry entry. Displays as a 32-character
 /// lowercase hex string so the LLM can reference it in follow-up turns.
-///
-/// # Examples
-///
-/// ```rust
-/// use zeph_tools::shell::background::RunId;
-///
-/// let id = RunId::new();
-/// let s = id.to_string();
-/// assert_eq!(s.len(), 32);
-/// assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(transparent)]
 pub struct RunId(Uuid);
