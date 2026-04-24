@@ -1146,10 +1146,11 @@ sweep_batch_size = 100
 # top_k = 3               # strategies injected per turn
 # store_limit = 1000       # max rows in reasoning_strategies table
 # context_budget_tokens = 500
-# extraction_timeout_secs = 10
-# distill_timeout_secs = 10
+# extraction_timeout_secs = 30
+# distill_timeout_secs = 30
 # max_messages = 6
 # min_messages = 2
+# max_message_chars = 2000
 #
 # [learning]
 # feedback_provider = "fast" # SLM: three-class classification

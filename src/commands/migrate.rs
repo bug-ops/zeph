@@ -10,7 +10,7 @@ use zeph_core::config::migrate::{
     migrate_compression_predictor_config, migrate_database_url, migrate_egress_config,
     migrate_forgetting_config, migrate_hooks_permission_denied_config, migrate_magic_docs_config,
     migrate_mcp_elicitation_config, migrate_mcp_trust_levels, migrate_memory_graph_config,
-    migrate_memory_retrieval_config, migrate_microcompact_config,
+    migrate_memory_reasoning_config, migrate_memory_retrieval_config, migrate_microcompact_config,
     migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
     migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
     migrate_scheduler_daemon_config, migrate_session_recap_config, migrate_shell_transactional,
@@ -149,9 +149,13 @@ pub(crate) fn handle_migrate_config(
     let memory_retrieval_result = migrate_memory_retrieval_config(&after_scheduler_daemon)?;
     let after_memory_retrieval = memory_retrieval_result.output;
 
-    // Step 29: add missing default keys as commented-out entries.
+    // Step 29: add commented-out [memory.reasoning] block if absent (#3369).
+    let memory_reasoning_result = migrate_memory_reasoning_config(&after_memory_retrieval)?;
+    let after_memory_reasoning = memory_reasoning_result.output;
+
+    // Step 30: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_memory_retrieval)?;
+    let result = migrator.migrate(&after_memory_reasoning)?;
 
     if diff {
         print_diff(&input, &result.output);

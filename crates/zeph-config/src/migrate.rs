@@ -2527,6 +2527,50 @@ pub fn migrate_memory_retrieval_config(toml_src: &str) -> Result<MigrationResult
     })
 }
 
+/// Add a commented-out `[memory.reasoning]` block if the config lacks it (#3369).
+///
+/// `ReasoningBank` distilled strategy memory was added in v0.19.3 (commit b99b2d30).
+/// All fields have defaults so existing configs parse unchanged; this migration
+/// surfaces the section for discoverability.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the migration
+/// function convention for use in chained pipelines.
+pub fn migrate_memory_reasoning_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src
+        .lines()
+        .any(|l| l.trim() == "[memory.reasoning]" || l.trim() == "# [memory.reasoning]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [memory.reasoning] — ReasoningBank: distilled strategy memory (#3369).\n\
+         # [memory.reasoning]\n\
+         # enabled = false\n\
+         # extract_provider = \"\"         # SLM: self-judge (JSON response) — leave blank to use primary\n\
+         # distill_provider = \"\"         # SLM: strategy distillation — leave blank to use primary\n\
+         # top_k = 3                      # strategies injected per turn\n\
+         # store_limit = 1000             # max rows in reasoning_strategies table\n\
+         # context_budget_tokens = 500\n\
+         # extraction_timeout_secs = 30\n\
+         # distill_timeout_secs = 30\n\
+         # max_messages = 6\n\
+         # min_messages = 2\n\
+         # max_message_chars = 2000\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.reasoning".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -3996,5 +4040,31 @@ prompt_cache_ttl = "1h"
             "expected commented message_ids_enabled; got:\n{}",
             out.output
         );
+    }
+
+    // ── migrate_memory_reasoning_config ──────────────────────────────────────
+
+    #[test]
+    fn migrate_memory_reasoning_adds_block_when_absent() {
+        let input = "[agent]\nmodel = \"gpt-4o\"\n";
+        let result = migrate_memory_reasoning_config(input).unwrap();
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result
+                .sections_changed
+                .contains(&"memory.reasoning".to_owned())
+        );
+        assert!(result.output.contains("# [memory.reasoning]"));
+        assert!(result.output.contains("extraction_timeout_secs = 30"));
+        assert!(result.output.contains("max_message_chars = 2000"));
+    }
+
+    #[test]
+    fn migrate_memory_reasoning_idempotent_on_existing_block() {
+        let input = "[agent]\nmodel = \"gpt-4o\"\n# [memory.reasoning]\n# enabled = false\n";
+        let result = migrate_memory_reasoning_config(input).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert!(result.sections_changed.is_empty());
+        assert_eq!(result.output, input);
     }
 }
