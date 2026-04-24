@@ -66,6 +66,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `FocusConfig.auto_consolidate_min_window = 0` no longer triggers LLM on every compress call:
   `Config::validate()` now rejects zero with a clear error, and `FocusState::should_auto_consolidate()`
   returns `false` until the configured number of turns has elapsed (default 4) (#3387).
+- ML injection classifier no longer fires false positives on internal Zeph tool outputs
+  (`invoke_skill`, `load_skill`, `memory_save`, `memory_search`, `compress_context`,
+  `complete_focus`, `start_focus`, `schedule_periodic`, `schedule_deferred`, `cancel_task`).
+  These tools produce only Zeph-generated text; the DeBERTa ML classifier is now bypassed
+  for them while the pattern-based sanitizer continues to run for telemetry. An adversarial-
+  MCP guard ensures that colon-namespaced tool names (e.g. `server:invoke_skill`) are never
+  matched against the allowlist (#3384).
 - `Notifier::fire_test()` now checks the master `notifications.enabled` switch first; if
   disabled, it returns an error instead of silently firing a test notification (#3364).
 - Fixed misleading comment in `drain_background_completions()`: the overflow branch drops

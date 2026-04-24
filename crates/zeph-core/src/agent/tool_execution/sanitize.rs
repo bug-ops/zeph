@@ -11,6 +11,45 @@ fn is_policy_blocked_output(body: &str) -> bool {
     body.contains("[tool_error]") && body.contains("category: policy_blocked")
 }
 
+/// Tools whose outputs are produced exclusively by Zeph's own code paths and cannot
+/// carry attacker-controlled injection payloads. The `DeBERTa` ML classifier is bypassed
+/// for these tools because innocuous internal error strings (e.g. "skill not found: exit")
+/// trigger high-confidence false positives (#3384).
+///
+/// Safety invariant: only non-namespaced names are listed here. MCP tools use a
+/// `server:tool` format and are routed to `ContentSourceKind::McpResponse` before this
+/// check is reached, so they are never mistakenly matched.
+///
+/// `read_overflow` is intentionally excluded: its success path replays stored external
+/// tool output and must remain subject to ML classification.
+///
+/// NOTE: if you add a new first-party tool, update this list. See also the overlapping
+/// lists in `zeph-tools/src/config.rs::AdversarialPolicyConfig::default_exempt_tools`,
+/// `zeph-config/src/vigil.rs`, and `zeph-common/src/quarantine.rs` — each serves a
+/// different policy but must stay consistent.
+#[cfg(feature = "classifiers")]
+const INTERNAL_TOOLS: &[&str] = &[
+    "invoke_skill",
+    "load_skill",
+    "memory_save",
+    "memory_search",
+    "compress_context",
+    "complete_focus",
+    "start_focus",
+    "schedule_periodic",
+    "schedule_deferred",
+    "cancel_task",
+];
+
+/// Returns `true` only for non-MCP, Zeph-internal tools that cannot carry injection payloads.
+///
+/// The colon guard ensures a malicious MCP server cannot register a bare `invoke_skill`
+/// tool name and bypass ML classification — MCP tools always use `server:tool` naming.
+#[cfg(feature = "classifiers")]
+fn is_internal_tool(tool_name: &str) -> bool {
+    !tool_name.contains(':') && INTERNAL_TOOLS.contains(&tool_name)
+}
+
 impl<C: Channel> Agent<C> {
     /// Sanitize tool output body before inserting it into the LLM message history.
     ///
@@ -93,7 +132,8 @@ impl<C: Channel> Agent<C> {
                         | zeph_sanitizer::MemorySourceHint::LlmSummary
                 )
             ) || is_policy_blocked_output(body)
-                || is_utility_gate_synthetic;
+                || is_utility_gate_synthetic
+                || is_internal_tool(tool_name);
             if !skip_ml && self.security.sanitizer.has_classifier_backend() {
                 let ml_verdict = self.security.sanitizer.classify_injection(body).await;
                 match ml_verdict {
@@ -236,5 +276,58 @@ impl<C: Channel> Agent<C> {
         let body = self.apply_guardrail_to_tool_output(body, tool_name).await;
 
         (body, has_injection_flags)
+    }
+}
+
+#[cfg(all(test, feature = "classifiers"))]
+mod tests {
+    use super::is_internal_tool;
+
+    #[test]
+    fn internal_tool_allowlist_covers_all_zeph_tools() {
+        for name in [
+            "invoke_skill",
+            "load_skill",
+            "memory_save",
+            "memory_search",
+            "compress_context",
+            "complete_focus",
+            "start_focus",
+            "schedule_periodic",
+            "schedule_deferred",
+            "cancel_task",
+        ] {
+            assert!(
+                is_internal_tool(name),
+                "{name} must be in internal allowlist"
+            );
+        }
+    }
+
+    #[test]
+    fn external_and_mcp_tools_not_in_allowlist() {
+        for name in [
+            "shell",
+            "web-scrape",
+            "fetch",
+            "read_overflow",
+            "github:list_issues",
+            "my-server:invoke_skill",
+            "mcp:invoke_skill",
+        ] {
+            assert!(
+                !is_internal_tool(name),
+                "{name} must NOT be in internal allowlist"
+            );
+        }
+    }
+
+    #[test]
+    fn colon_namespaced_names_always_excluded() {
+        // An adversarial MCP server cannot bypass classification by registering a tool
+        // with the same bare name as an internal tool.
+        assert!(!is_internal_tool("server:invoke_skill"));
+        assert!(!is_internal_tool("attacker:memory_save"));
+        assert!(!is_internal_tool("x:cancel_task"));
     }
 }
