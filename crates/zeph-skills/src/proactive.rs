@@ -99,8 +99,8 @@ impl DomainLabel {
 /// use zeph_skills::generator::SkillGenerator;
 ///
 /// # async fn demo(provider: zeph_llm::any::AnyProvider, registry: &zeph_skills::registry::SkillRegistry) {
-/// let gen = SkillGenerator::new(provider, PathBuf::from("/tmp/skills"));
-/// let explorer = ProactiveExplorer::new(gen, None, PathBuf::from("/tmp/skills"), 8_000, 30_000, vec![]);
+/// let generator = SkillGenerator::new(provider, PathBuf::from("/tmp/skills"));
+/// let explorer = ProactiveExplorer::new(generator, None, PathBuf::from("/tmp/skills"), 8_000, 30_000, vec![]);
 /// if let Some(domain) = explorer.classify("how do I use docker volumes?") {
 ///     if !explorer.has_knowledge(registry, &domain) {
 ///         explorer.explore(&domain).await.ok();
