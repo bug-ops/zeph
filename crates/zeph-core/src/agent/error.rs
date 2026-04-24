@@ -59,6 +59,12 @@ impl AgentError {
         }
         false
     }
+
+    /// Returns true if this error is `LlmError::NoProviders` (all configured backends unavailable).
+    #[must_use]
+    pub fn is_no_providers(&self) -> bool {
+        matches!(self, Self::Llm(zeph_llm::LlmError::NoProviders))
+    }
 }
 
 #[cfg(test)]
@@ -121,5 +127,17 @@ mod tests {
     fn agent_error_non_llm_variant_not_beta_rejected() {
         let e = AgentError::Other("something went wrong".into());
         assert!(!e.is_beta_header_rejected());
+    }
+
+    #[test]
+    fn agent_error_detects_no_providers() {
+        let e = AgentError::Llm(zeph_llm::LlmError::NoProviders);
+        assert!(e.is_no_providers());
+    }
+
+    #[test]
+    fn agent_error_non_no_providers_returns_false() {
+        let e = AgentError::Other("other".into());
+        assert!(!e.is_no_providers());
     }
 }

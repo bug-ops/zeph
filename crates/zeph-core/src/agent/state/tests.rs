@@ -205,6 +205,56 @@ fn feedback_state_detector_returns_none_for_neutral_input() {
 }
 
 // ------------------------------------------------------------------
+// LifecycleState — no_providers backoff field added in #3357
+// ------------------------------------------------------------------
+
+#[test]
+fn lifecycle_state_last_no_providers_at_starts_none() {
+    use crate::agent::state::LifecycleState;
+    let state = LifecycleState::new();
+    assert!(
+        state.last_no_providers_at.is_none(),
+        "last_no_providers_at must be None at startup — backoff is inactive until a NoProviders error occurs (#3357)"
+    );
+}
+
+#[test]
+fn lifecycle_state_last_no_providers_at_elapsed_check() {
+    use std::time::{Duration, Instant};
+    // Simulate the backoff gate logic used in advance_context_lifecycle_guarded.
+    // When last_no_providers_at was set very recently, providers_recently_failed must be true.
+    let backoff_secs = 2u64;
+    let last_no_providers_at: Option<Instant> = Some(Instant::now());
+    let providers_recently_failed =
+        last_no_providers_at.is_some_and(|t| t.elapsed().as_secs() < backoff_secs);
+    assert!(
+        providers_recently_failed,
+        "a just-set last_no_providers_at must trigger the backoff gate"
+    );
+
+    // When last_no_providers_at is old enough, the gate must be open.
+    let old_instant = Instant::now() - Duration::from_secs(backoff_secs + 1);
+    let old_no_providers: Option<Instant> = Some(old_instant);
+    let gate_open = !old_no_providers.is_some_and(|t| t.elapsed().as_secs() < backoff_secs);
+    assert!(
+        gate_open,
+        "an expired last_no_providers_at must not block context preparation"
+    );
+}
+
+#[test]
+fn lifecycle_state_last_no_providers_at_none_means_gate_open() {
+    let backoff_secs = 2u64;
+    let last_no_providers_at: Option<std::time::Instant> = None;
+    let providers_recently_failed =
+        last_no_providers_at.is_some_and(|t| t.elapsed().as_secs() < backoff_secs);
+    assert!(
+        !providers_recently_failed,
+        "None last_no_providers_at must not trigger the backoff gate"
+    );
+}
+
+// ------------------------------------------------------------------
 // CompressionState (context-compression feature gate)
 // ------------------------------------------------------------------
 #[test]

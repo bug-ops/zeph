@@ -933,12 +933,15 @@ pub(crate) async fn apply_code_indexer(
                 ..IndexerConfig::default()
             },
         );
-        let base_indexer = if let Some(ref sup) = supervisor {
-            base_indexer.with_spawner(std::sync::Arc::new(sup.clone())
-                as std::sync::Arc<dyn zeph_common::BlockingSpawner>)
-        } else {
-            base_indexer
-        };
+        // NOTE: intentionally NOT attaching the TaskSupervisor as BlockingSpawner for the
+        // indexer's per-file chunk tasks. The supervisor's `spawn_blocking_named` wraps each
+        // blocking task in a `tokio::spawn(async { semaphore.acquire().await; ... })` — with
+        // 971+ files this queues up hundreds of async tasks competing with the agent turn
+        // for tokio worker threads (#3357).
+        // Plain `tokio::task::spawn_blocking` (the fallback when spawner = None) routes
+        // CPU-heavy chunk work to the dedicated blocking thread pool, keeping async workers free.
+        // TODO(review): re-enable via a lightweight atomic counter rather than BlockingSpawner
+        // once the dependency cycle is resolved (#2961).
         let indexer = std::sync::Arc::new(base_indexer);
         anyhow::Ok(indexer)
     };

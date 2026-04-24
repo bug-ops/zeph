@@ -29,6 +29,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - OAuth deferred MCP connection is no longer spawned in `--bare` mode. The spawn guard in
   `runner.rs` now checks `!exec_mode.bare` before calling `connect_oauth_deferred`, preventing
   live MCP connections from being established when no external services should be contacted (#3358).
+- Agent no longer stalls for 14+ seconds when embed providers are rate-limited or unavailable
+  during context preparation (#3357). `advance_context_lifecycle` is now wrapped with a
+  configurable wall-clock timeout (`[timeouts] context_prep_timeout_secs`, default 30 s);
+  the turn proceeds with a degraded (cached) context when it expires instead of blocking.
+- Prevent busy-wait loop when all LLM backends return `no providers available` (#3357).
+  After a `NoProviders` error the agent records the failure timestamp and sleeps for
+  `[timeouts] no_providers_backoff_secs` (default 2 s) before returning the error to the
+  channel. On the next turn, context preparation is skipped if providers are still within
+  the backoff window, avoiding a full re-run of memory recall / embedding against known-down
+  backends.
+- Background indexer chunk tasks no longer compete with the agent's async worker threads
+  (#3357). `spawn_blocking_named` through `TaskSupervisor` was wrapping each chunk task in
+  an async `tokio::spawn` semaphore-waiter, flooding the async thread pool for large repos.
+  The indexer now falls back to plain `tokio::task::spawn_blocking`, routing CPU-heavy
+  chunk work to the dedicated blocking thread pool.
 - Wire `ExperienceStore` into the agent tool loop and per-turn evolution sweep (#3318): tool
   outcomes are recorded fire-and-forget via `TaskClass::Telemetry`; evolution sweep runs every N
   user turns; both gates on `memory.graph.experience.enabled` with zero overhead when disabled.

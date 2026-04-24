@@ -1363,7 +1363,7 @@ impl<C: Channel> Agent<C> {
 
         let t_ctx = std::time::Instant::now();
         tracing::debug!("turn timing: prepare_context start");
-        self.advance_context_lifecycle(&text, trimmed).await;
+        self.advance_context_lifecycle_guarded(&text, trimmed).await;
         turn.metrics_mut().timings.prepare_context_ms =
             u64::try_from(t_ctx.elapsed().as_millis()).unwrap_or(u64::MAX);
         tracing::debug!(
@@ -1408,6 +1408,19 @@ impl<C: Channel> Agent<C> {
             // Detach any in-flight learning tasks before mutating message state.
             self.learning_engine.learning_tasks.detach_all();
             tracing::error!("Response processing failed: {e:#}");
+
+            // Record provider failure timestamp so the next turn can skip
+            // expensive context preparation while providers are known-down.
+            if e.is_no_providers() {
+                self.lifecycle.last_no_providers_at = Some(std::time::Instant::now());
+                let backoff_secs = self.runtime.timeouts.no_providers_backoff_secs;
+                tracing::warn!(
+                    backoff_secs,
+                    "no providers available; backing off before next turn"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+            }
+
             let user_msg = format!("Error: {e:#}");
             self.channel.send(&user_msg).await?;
             self.msg.messages.pop();
@@ -1573,6 +1586,43 @@ impl<C: Channel> Agent<C> {
         self.push_classifier_metrics();
 
         Ok(false)
+    }
+
+    /// Run `advance_context_lifecycle` with provider-health gating and a wall-clock timeout.
+    ///
+    /// Skips context preparation entirely when providers failed on the previous turn and the
+    /// `no_providers_backoff_secs` window has not yet elapsed. When providers are available,
+    /// wraps the call with `context_prep_timeout_secs` to prevent a stall when embed backends
+    /// are rate-limited or unavailable (#3357).
+    async fn advance_context_lifecycle_guarded(&mut self, text: &str, trimmed: &str) {
+        let backoff_secs = self.runtime.timeouts.no_providers_backoff_secs;
+        let prep_timeout_secs = self.runtime.timeouts.context_prep_timeout_secs;
+
+        // Skip expensive memory recall / embedding when providers are known-down.
+        let providers_recently_failed = self
+            .lifecycle
+            .last_no_providers_at
+            .is_some_and(|t| t.elapsed().as_secs() < backoff_secs);
+
+        if providers_recently_failed {
+            tracing::warn!(
+                backoff_secs,
+                "skipping context preparation: providers were unavailable on last turn"
+            );
+            return;
+        }
+
+        let timeout_dur = std::time::Duration::from_secs(prep_timeout_secs);
+        match tokio::time::timeout(timeout_dur, self.advance_context_lifecycle(text, trimmed)).await
+        {
+            Ok(()) => {}
+            Err(_elapsed) => {
+                tracing::warn!(
+                    timeout_secs = prep_timeout_secs,
+                    "context preparation timed out; proceeding with degraded context"
+                );
+            }
+        }
     }
 
     #[cfg_attr(

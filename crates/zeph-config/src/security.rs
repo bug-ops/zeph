@@ -80,6 +80,14 @@ fn default_llm_request_timeout() -> u64 {
     600
 }
 
+fn default_context_prep_timeout() -> u64 {
+    30
+}
+
+fn default_no_providers_backoff_secs() -> u64 {
+    2
+}
+
 /// Skill trust policy configuration, nested under `[skills.trust]` in TOML.
 ///
 /// Controls how trust levels are assigned to skills at load time based on their
@@ -245,6 +253,19 @@ pub struct TimeoutConfig {
     /// Default: `8`.
     #[serde(default = "default_max_parallel_tools")]
     pub max_parallel_tools: usize,
+    /// Maximum wall-clock time (seconds) allowed for `advance_context_lifecycle` (memory recall,
+    /// graph retrieval, proactive compression, context assembly) before it is aborted and the
+    /// agent proceeds with a degraded (cached) context.
+    ///
+    /// Setting this too low may skip useful memory recall; setting it too high blocks the agent
+    /// when embed providers are rate-limited or unavailable. Default: `30`.
+    #[serde(default = "default_context_prep_timeout")]
+    pub context_prep_timeout_secs: u64,
+    /// How long to wait (seconds) before retrying a turn after the previous turn ended with
+    /// `no providers available`. Prevents a busy-wait loop when all LLM backends are down.
+    /// Default: `2`.
+    #[serde(default = "default_no_providers_backoff_secs")]
+    pub no_providers_backoff_secs: u64,
 }
 
 impl Default for TimeoutConfig {
@@ -255,6 +276,8 @@ impl Default for TimeoutConfig {
             embedding_seconds: default_embedding_timeout(),
             a2a_seconds: default_a2a_timeout(),
             max_parallel_tools: default_max_parallel_tools(),
+            context_prep_timeout_secs: default_context_prep_timeout(),
+            no_providers_backoff_secs: default_no_providers_backoff_secs(),
         }
     }
 }
@@ -349,5 +372,46 @@ hash_mismatch_level = "quarantined"
         let config: TrustConfig = toml::from_str(toml).expect("deserialize");
         assert!(config.scanner.injection_patterns);
         assert!(!config.scanner.capability_escalation_check);
+    }
+
+    // ------------------------------------------------------------------
+    // TimeoutConfig — new fields added in #3357
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn timeout_config_context_prep_timeout_default() {
+        let cfg = TimeoutConfig::default();
+        assert_eq!(
+            cfg.context_prep_timeout_secs, 30,
+            "context_prep_timeout_secs default must be 30s (#3357)"
+        );
+    }
+
+    #[test]
+    fn timeout_config_no_providers_backoff_default() {
+        let cfg = TimeoutConfig::default();
+        assert_eq!(
+            cfg.no_providers_backoff_secs, 2,
+            "no_providers_backoff_secs default must be 2s (#3357)"
+        );
+    }
+
+    #[test]
+    fn timeout_config_new_fields_deserialize_from_toml() {
+        let toml = r#"
+context_prep_timeout_secs = 60
+no_providers_backoff_secs = 10
+"#;
+        let cfg: TimeoutConfig = toml::from_str(toml).expect("deserialize");
+        assert_eq!(cfg.context_prep_timeout_secs, 60);
+        assert_eq!(cfg.no_providers_backoff_secs, 10);
+    }
+
+    #[test]
+    fn timeout_config_new_fields_default_when_missing_from_toml() {
+        // An empty TOML section must produce the same values as TimeoutConfig::default().
+        let cfg: TimeoutConfig = toml::from_str("").expect("deserialize empty");
+        assert_eq!(cfg.context_prep_timeout_secs, 30);
+        assert_eq!(cfg.no_providers_backoff_secs, 2);
     }
 }
