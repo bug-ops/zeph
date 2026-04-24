@@ -36,6 +36,7 @@
 //!     allow_network: false,
 //!     allow_exec: vec![],
 //!     env_inherit: vec![],
+//!     denied_domains: vec![],
 //! };
 //! let sb = build_sandbox(false)?;
 //! let mut cmd = Command::new("bash");
