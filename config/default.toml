@@ -1044,6 +1044,8 @@ max_files = 7
 # min_messages_per_focus = 8
 # # Maximum tokens the Knowledge block may grow to before trimming old entries (default: 4096)
 # max_knowledge_tokens = 4096
+# # Minimum messages in a low-relevance window before auto-consolidation runs (#3313)
+# auto_consolidate_min_window = 6
 
 # Context-compression feature: SideQuest LLM-driven eviction (#1885)
 # Requires the `context-compression` feature flag to be enabled at compile time.

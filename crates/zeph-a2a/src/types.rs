@@ -268,8 +268,17 @@ pub struct AgentProvider {
 }
 
 /// Boolean flags advertising which A2A protocol extensions an agent supports.
+///
+/// The three protocol-defined fields (`streaming`, `push_notifications`,
+/// `state_transition_history`) are part of the A2A specification. The modality fields
+/// (`images`, `audio`, `files`) are Zeph forward-compatible extensions — they default to
+/// `false` so that peers that do not understand them can safely ignore the fields via
+/// `#[serde(default)]`. If the A2A spec standardises different names for these capabilities
+/// in a future revision, a follow-up PR can add the canonical names without breaking
+/// existing serialised cards.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct AgentCapabilities {
     /// Agent supports `message/stream` for real-time SSE output.
     #[serde(default)]
@@ -280,6 +289,21 @@ pub struct AgentCapabilities {
     /// Agent includes full state-transition history in task responses.
     #[serde(default)]
     pub state_transition_history: bool,
+    /// Agent can receive and send `Part::File` entries with `image/*` media types (#3326).
+    ///
+    /// Defaults to `false`. Set via [`AgentCardBuilder::images`](crate::AgentCardBuilder::images).
+    #[serde(default)]
+    pub images: bool,
+    /// Agent can receive and send `Part::File` entries with `audio/*` media types (#3326).
+    ///
+    /// Defaults to `false`. Set via [`AgentCardBuilder::audio`](crate::AgentCardBuilder::audio).
+    #[serde(default)]
+    pub audio: bool,
+    /// Agent can receive and send non-media file attachments via `Part::File` (#3326).
+    ///
+    /// Defaults to `false`. Set via [`AgentCardBuilder::files`](crate::AgentCardBuilder::files).
+    #[serde(default)]
+    pub files: bool,
 }
 
 /// A discrete skill or capability advertised by an agent in its [`AgentCard`].
@@ -611,6 +635,9 @@ mod tests {
                 streaming: true,
                 push_notifications: false,
                 state_transition_history: false,
+                images: false,
+                audio: false,
+                files: false,
             },
             default_input_modes: vec!["text".into()],
             default_output_modes: vec!["text".into()],
@@ -744,6 +771,41 @@ mod tests {
             metadata: None,
         };
         assert_eq!(msg.all_text_content(), "text-only");
+    }
+
+    #[test]
+    fn agent_capabilities_default_has_no_modalities() {
+        let caps = AgentCapabilities::default();
+        assert!(!caps.images);
+        assert!(!caps.audio);
+        assert!(!caps.files);
+    }
+
+    #[test]
+    fn agent_capabilities_modality_fields_serialize() {
+        let caps = AgentCapabilities {
+            streaming: false,
+            push_notifications: false,
+            state_transition_history: false,
+            images: false,
+            audio: false,
+            files: false,
+        };
+        let json = serde_json::to_string(&caps).unwrap();
+        assert!(json.contains("\"images\":false"));
+        assert!(json.contains("\"audio\":false"));
+        assert!(json.contains("\"files\":false"));
+    }
+
+    #[test]
+    fn deserialize_legacy_capabilities_uses_modality_defaults() {
+        // Old-format JSON with only the core A2A fields — modality fields must default to false.
+        let json = r#"{"streaming": true}"#;
+        let caps: AgentCapabilities = serde_json::from_str(json).unwrap();
+        assert!(caps.streaming);
+        assert!(!caps.images);
+        assert!(!caps.audio);
+        assert!(!caps.files);
     }
 
     trait Not {

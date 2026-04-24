@@ -1424,7 +1424,8 @@ pub struct CompressionConfig {
     /// Default: `false`.
     #[serde(default)]
     pub archive_tool_outputs: bool,
-    /// Provider for Focus strategy segment scoring (#2510).
+    /// Provider for Focus strategy segment scoring and the auto-consolidation extraction
+    /// LLM call (#2510, #3313). Both are cheap/mid-tier tasks, so one provider suffices.
     /// Falls back to the primary provider when empty. Default: `""`.
     pub focus_scorer_provider: ProviderName,
     /// Token-budget fraction for high-density content in density-aware compression (#2481).

@@ -96,6 +96,72 @@ impl AgentCardBuilder {
         self
     }
 
+    /// Declare image-modality capability on the card.
+    ///
+    /// When `on` is `true`, the card advertises that the agent can receive and send
+    /// `Part::File` entries whose `media_type` is in the `image/*` family.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::AgentCardBuilder;
+    ///
+    /// let card = AgentCardBuilder::new("vision-agent", "http://localhost:8080", "1.0.0")
+    ///     .images(true)
+    ///     .build();
+    ///
+    /// assert!(card.capabilities.images);
+    /// ```
+    #[must_use]
+    pub fn images(mut self, on: bool) -> Self {
+        self.capabilities.images = on;
+        self
+    }
+
+    /// Declare audio-modality capability on the card.
+    ///
+    /// When `on` is `true`, the card advertises that the agent can receive and send
+    /// `Part::File` entries whose `media_type` is in the `audio/*` family.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::AgentCardBuilder;
+    ///
+    /// let card = AgentCardBuilder::new("audio-agent", "http://localhost:8080", "1.0.0")
+    ///     .audio(true)
+    ///     .build();
+    ///
+    /// assert!(card.capabilities.audio);
+    /// ```
+    #[must_use]
+    pub fn audio(mut self, on: bool) -> Self {
+        self.capabilities.audio = on;
+        self
+    }
+
+    /// Declare file-attachment capability on the card.
+    ///
+    /// When `on` is `true`, the card advertises that the agent can receive and send
+    /// non-media file attachments via `Part::File` (e.g., documents, archives).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::AgentCardBuilder;
+    ///
+    /// let card = AgentCardBuilder::new("file-agent", "http://localhost:8080", "1.0.0")
+    ///     .files(true)
+    ///     .build();
+    ///
+    /// assert!(card.capabilities.files);
+    /// ```
+    #[must_use]
+    pub fn files(mut self, on: bool) -> Self {
+        self.capabilities.files = on;
+        self
+    }
+
     /// Add a skill to the card. Can be called multiple times to add multiple skills.
     #[must_use]
     pub fn skill(mut self, skill: AgentSkill) -> Self {
@@ -212,6 +278,60 @@ mod tests {
         assert!(json.contains("\"protocolVersion\""));
         assert!(json.contains(crate::A2A_PROTOCOL_VERSION));
         assert_eq!(card.protocol_version, crate::A2A_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn builder_sets_image_capability() {
+        let card = AgentCardBuilder::new("agent", "http://localhost", "0.1.0")
+            .images(true)
+            .build();
+        assert!(card.capabilities.images);
+        assert!(!card.capabilities.audio);
+        assert!(!card.capabilities.files);
+    }
+
+    #[test]
+    fn builder_sets_audio_capability() {
+        let card = AgentCardBuilder::new("agent", "http://localhost", "0.1.0")
+            .audio(true)
+            .build();
+        assert!(card.capabilities.audio);
+        assert!(!card.capabilities.images);
+        assert!(!card.capabilities.files);
+    }
+
+    #[test]
+    fn builder_sets_file_capability() {
+        let card = AgentCardBuilder::new("agent", "http://localhost", "0.1.0")
+            .files(true)
+            .build();
+        assert!(card.capabilities.files);
+        assert!(!card.capabilities.images);
+        assert!(!card.capabilities.audio);
+    }
+
+    #[test]
+    fn card_serializes_modality_fields() {
+        let card = AgentCardBuilder::new("agent", "http://localhost", "0.1.0")
+            .images(true)
+            .build();
+        let json = serde_json::to_string(&card).unwrap();
+        // images was set to true
+        assert!(json.contains("\"images\":true"));
+        // audio and files default to false and must be present
+        assert!(json.contains("\"audio\":false"));
+        assert!(json.contains("\"files\":false"));
+    }
+
+    #[test]
+    fn deserialize_legacy_card_uses_defaults() {
+        // A card from a peer that predates modality fields: modalities must default to false.
+        let json = r#"{"name":"old","description":"","url":"http://x","version":"1","protocolVersion":"0.2.1","capabilities":{"streaming":true}}"#;
+        let card: crate::types::AgentCard = serde_json::from_str(json).unwrap();
+        assert!(card.capabilities.streaming);
+        assert!(!card.capabilities.images);
+        assert!(!card.capabilities.audio);
+        assert!(!card.capabilities.files);
     }
 
     trait Not {

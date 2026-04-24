@@ -86,6 +86,10 @@ fn default_focus_max_knowledge_tokens() -> usize {
     4096
 }
 
+fn default_focus_auto_consolidate_min_window() -> usize {
+    6
+}
+
 fn default_max_tool_retries() -> usize {
     2
 }
@@ -161,6 +165,13 @@ pub struct FocusConfig {
     /// Default: `4096`.
     #[serde(default = "default_focus_max_knowledge_tokens")]
     pub max_knowledge_tokens: usize,
+    /// Minimum messages in a low-relevance window before auto-consolidation runs
+    /// when `[memory.compression]` strategy is `focus` (#3313).
+    ///
+    /// Distinct from `min_messages_per_focus` (which gates manual focus sessions).
+    /// Default: `6`.
+    #[serde(default = "default_focus_auto_consolidate_min_window")]
+    pub auto_consolidate_min_window: usize,
 }
 
 impl Default for FocusConfig {
@@ -171,6 +182,7 @@ impl Default for FocusConfig {
             reminder_interval: default_focus_reminder_interval(),
             min_messages_per_focus: default_focus_min_messages_per_focus(),
             max_knowledge_tokens: default_focus_max_knowledge_tokens(),
+            auto_consolidate_min_window: default_focus_auto_consolidate_min_window(),
         }
     }
 }
@@ -469,5 +481,18 @@ mod tests {
     fn model_spec_as_str() {
         assert_eq!(ModelSpec::Inherit.as_str(), "inherit");
         assert_eq!(ModelSpec::Named("x".to_owned()).as_str(), "x");
+    }
+
+    #[test]
+    fn focus_config_auto_consolidate_min_window_default_is_six() {
+        let cfg = FocusConfig::default();
+        assert_eq!(cfg.auto_consolidate_min_window, 6);
+    }
+
+    #[test]
+    fn focus_config_auto_consolidate_min_window_deserializes() {
+        let toml_str = "auto_consolidate_min_window = 10";
+        let cfg: FocusConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.auto_consolidate_min_window, 10);
     }
 }

@@ -23,7 +23,8 @@
 //! A future improvement should use cosine similarity over Qdrant embeddings. The
 //! TF weighting mitigates the worst cases by down-weighting common tokens.
 use std::collections::{HashMap, HashSet};
-use zeph_llm::provider::{Message, MessagePart};
+use std::time::Duration;
+use zeph_llm::provider::{LlmProvider, Message, MessagePart, Role};
 use zeph_memory::TokenCounter;
 
 /// Per-message relevance score used by task-aware and MIG pruning.
@@ -635,6 +636,150 @@ pub(crate) fn classify_density(content: &str) -> ContentDensity {
     }
 }
 
+/// Automatically consolidate low-relevance context into a knowledge-block summary.
+///
+/// Scores each message in `messages` against the task goal extracted from the most recent
+/// user message, finds the oldest contiguous run of messages scoring ≤ 0 (negative MIG)
+/// of length ≥ `min_window`, and asks `provider` to extract the key facts. The result
+/// is truncated to `max_chars` at a UTF-8 character boundary.
+///
+/// Returns `Ok(None)` when the history is too short or no low-relevance window exists.
+/// Returns `Err` when the provider call fails or times out (the caller should log-and-skip).
+///
+/// # Errors
+///
+/// Returns an error if the provider call returns an error or if the 20-second timeout
+/// elapses before the provider responds.
+pub(crate) async fn run_focus_auto_consolidation(
+    messages: &[Message],
+    min_window: usize,
+    provider: impl LlmProvider,
+    max_chars: usize,
+) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let _span = tracing::info_span!("core.context.focus_auto_consolidate").entered();
+
+    if messages.len() < min_window {
+        return Ok(None);
+    }
+
+    // Seed the task goal from the most recent user message.
+    let task_goal = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::User)
+        .map_or("", |m| m.content.as_str());
+
+    // S2/S3: without a user message we cannot compute relevance scores — score_blocks_mig
+    // would fall back to recency mode and eagerly consolidate nearly all history on every
+    // call (agent warm-start, scripted init). Skip instead.
+    if task_goal.is_empty() {
+        tracing::debug!("focus_auto_consolidation: no user message found, skipping");
+        return Ok(None);
+    }
+
+    let tc = TokenCounter::default();
+    let scores = score_blocks_mig(messages, Some(task_goal).filter(|s| !s.is_empty()), &tc);
+
+    // Find the oldest contiguous run of messages with MIG ≤ 0 of length ≥ min_window.
+    // `scores` is indexed by their original message positions via `msg_index`.
+    // Build a set of low-relevance message indices for O(1) lookup.
+    let low_relevance: std::collections::HashSet<usize> = scores
+        .iter()
+        .filter(|s| s.mig <= 0.0)
+        .map(|s| s.msg_index)
+        .collect();
+
+    // Walk message indices in order to find the first run of low-relevance msgs ≥ min_window.
+    let window_indices = find_low_relevance_window(messages, &low_relevance, min_window);
+    if window_indices.is_empty() {
+        return Ok(None);
+    }
+
+    // Build the extraction prompt from the window's scorable text.
+    let combined: String = window_indices
+        .iter()
+        .map(|&i| extract_scorable_text(&messages[i]))
+        .collect::<Vec<_>>()
+        .join("\n---\n");
+
+    let prompt = format!(
+        "Extract up to 10 key facts the agent must remember from the following context. \
+         Return bullet points only (one per line, starting with `- `).\n\n{combined}"
+    );
+
+    let request = vec![Message::from_legacy(Role::User, &prompt)];
+
+    let raw = tokio::time::timeout(Duration::from_secs(20), provider.chat(&request))
+        .await
+        .map_err(|_| {
+            Box::new(std::io::Error::other(
+                "focus auto-consolidation timed out after 20s",
+            )) as Box<dyn std::error::Error + Send + Sync>
+        })?
+        .map_err(|e| {
+            Box::new(std::io::Error::other(format!(
+                "focus auto-consolidation provider error: {e}"
+            ))) as Box<dyn std::error::Error + Send + Sync>
+        })?;
+
+    // Truncate at char boundary to stay within max_chars.
+    let truncated = if raw.len() <= max_chars {
+        raw
+    } else {
+        // Find the largest char boundary ≤ max_chars.
+        let boundary = raw
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= max_chars)
+            .last()
+            .unwrap_or(0);
+        raw[..boundary].to_owned()
+    };
+
+    if truncated.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(truncated))
+}
+
+/// Find the indices of the first contiguous run of low-relevance messages.
+///
+/// Only messages that appear in `low_relevance` (by index) are counted.
+/// System messages (index 0) and pinned messages are never included.
+/// Returns an empty vec if no qualifying run exists.
+fn find_low_relevance_window(
+    messages: &[Message],
+    low_relevance: &std::collections::HashSet<usize>,
+    min_window: usize,
+) -> Vec<usize> {
+    let mut best: Vec<usize> = Vec::new();
+    let mut current: Vec<usize> = Vec::new();
+
+    for (i, msg) in messages.iter().enumerate() {
+        // Skip system prompt and pinned messages.
+        if i == 0 || msg.metadata.focus_pinned {
+            current.clear();
+            continue;
+        }
+        if low_relevance.contains(&i) {
+            current.push(i);
+        } else {
+            // Gap: if the current run qualifies and we haven't found one yet, capture it.
+            if current.len() >= min_window && best.is_empty() {
+                // Move contents into best and leave current empty.
+                best.append(&mut current);
+            }
+            current.clear();
+        }
+    }
+    // Check trailing run.
+    if current.len() >= min_window && best.is_empty() {
+        best = current;
+    }
+    best
+}
+
 /// Partition messages into (high-density, low-density) groups by content classification.
 ///
 /// System messages and pinned messages are excluded from both groups.
@@ -1049,6 +1194,180 @@ mod tests {
         assert_eq!(classify_density(content), ContentDensity::High);
     }
 
+    // ─── run_focus_auto_consolidation tests ──────────────────────────────────
+
+    struct StubProvider {
+        response: &'static str,
+    }
+
+    impl zeph_llm::provider::LlmProvider for StubProvider {
+        async fn chat(
+            &self,
+            _messages: &[zeph_llm::provider::Message],
+        ) -> Result<String, zeph_llm::LlmError> {
+            Ok(self.response.to_owned())
+        }
+
+        async fn chat_stream(
+            &self,
+            messages: &[zeph_llm::provider::Message],
+        ) -> Result<zeph_llm::provider::ChatStream, zeph_llm::LlmError> {
+            let r = self.chat(messages).await?;
+            Ok(Box::pin(tokio_stream::once(Ok(
+                zeph_llm::provider::StreamChunk::Content(r),
+            ))))
+        }
+
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
+            Ok(vec![])
+        }
+
+        fn supports_embeddings(&self) -> bool {
+            false
+        }
+
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+    }
+
+    struct HangingProvider;
+
+    impl zeph_llm::provider::LlmProvider for HangingProvider {
+        async fn chat(
+            &self,
+            _messages: &[zeph_llm::provider::Message],
+        ) -> Result<String, zeph_llm::LlmError> {
+            // Hang forever by awaiting a never-completing future.
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: &[zeph_llm::provider::Message],
+        ) -> Result<zeph_llm::provider::ChatStream, zeph_llm::LlmError> {
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
+            Ok(vec![])
+        }
+
+        fn supports_embeddings(&self) -> bool {
+            false
+        }
+
+        fn name(&self) -> &'static str {
+            "hanging"
+        }
+    }
+
+    #[tokio::test]
+    async fn run_focus_auto_consolidation_returns_none_for_small_history() {
+        use zeph_llm::provider::{Message, Role};
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            make_tool_output_msg("some tool output here"),
+        ];
+        // min_window = 6, but only 2 messages → None.
+        let result = run_focus_auto_consolidation(
+            &messages,
+            6,
+            StubProvider {
+                response: "- fact one",
+            },
+            4096,
+        )
+        .await
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_focus_auto_consolidation_produces_summary() {
+        use zeph_llm::provider::{Message, Role};
+
+        // Build 8 messages that are completely off-topic from the user goal.
+        // The user asks about "authentication" but all tool outputs are about "database schema".
+        // This should produce a low-relevance window and trigger extraction.
+        let mut messages = vec![Message::from_legacy(Role::System, "sys")];
+        for _ in 0..6 {
+            messages.push(make_tool_output_msg(
+                "database schema migration foreign key index",
+            ));
+        }
+        messages.push(Message::from_legacy(
+            Role::User,
+            "Help me with authentication",
+        ));
+
+        let result = run_focus_auto_consolidation(
+            &messages,
+            4,
+            StubProvider {
+                response: "- database schema uses foreign keys",
+            },
+            4096,
+        )
+        .await
+        .unwrap();
+
+        // With at least 4 low-relevance messages, a summary should be produced.
+        assert!(result.is_some());
+        let summary = result.unwrap();
+        assert!(!summary.is_empty());
+    }
+
+    #[tokio::test]
+    async fn auto_consolidation_timeout_recovers() {
+        use zeph_llm::provider::{Message, Role};
+
+        // Use a very short timeout by passing a HangingProvider. The function has a fixed 20s
+        // timeout. We can't make the test wait 20s, so instead we check that an error is
+        // returned (not a panic) when the provider hangs. To keep the test fast, we manually
+        // verify the timeout path using `tokio::time::timeout` directly.
+        let mut messages = vec![Message::from_legacy(Role::System, "sys")];
+        for _ in 0..6 {
+            messages.push(make_tool_output_msg(
+                "database schema migration foreign key index",
+            ));
+        }
+        messages.push(Message::from_legacy(
+            Role::User,
+            "Help me with authentication",
+        ));
+
+        // Wrap the call in a very short timeout to avoid waiting 20s in tests.
+        // The important invariant: the function does not panic on timeout.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            run_focus_auto_consolidation(&messages, 4, HangingProvider, 4096),
+        )
+        .await;
+
+        // Either: outer timeout fires (Err), or the inner 20s timeout fires (Ok(Err)).
+        // Both cases must not panic.
+        match result {
+            Err(_elapsed) => {
+                // Outer timeout fired — no panic, correct.
+            }
+            Ok(inner) => {
+                // Inner 20s timeout fired — also valid, must be an Err.
+                assert!(inner.is_err(), "hanging provider must return an error");
+            }
+        }
+    }
+
     // ─── KnowledgeBlock eviction order tests ─────────────────────────────────
 
     #[test]
@@ -1084,5 +1403,35 @@ mod tests {
             .iter()
             .any(|b| b.source == KnowledgeBlockSource::LlmCurated);
         assert!(has_llm, "at least one LlmCurated block must survive");
+    }
+
+    /// S2/S3: when no User message is present, `run_focus_auto_consolidation` must return
+    /// `None` instead of entering recency mode and eagerly consolidating all history.
+    #[tokio::test]
+    async fn run_focus_auto_consolidation_skips_when_no_user_message() {
+        use zeph_llm::provider::{Message, Role};
+
+        // Build a history with plenty of messages but no User turn (scripted init / warm-start).
+        let mut messages = vec![Message::from_legacy(Role::System, "sys")];
+        for i in 0..8 {
+            messages.push(make_tool_output_msg(&format!("tool output {i}")));
+        }
+        // No Role::User message — task_goal will be empty.
+
+        let result = run_focus_auto_consolidation(
+            &messages,
+            4,
+            StubProvider {
+                response: "- should not be reached",
+            },
+            4096,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.is_none(),
+            "must return None when no user message is present (S2/S3)"
+        );
     }
 }

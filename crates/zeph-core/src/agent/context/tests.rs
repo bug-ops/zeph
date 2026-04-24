@@ -4388,3 +4388,42 @@ async fn rebuild_system_prompt_omits_memory_save_hint_when_tool_not_used() {
         "session hint must NOT be present when memory_save was not used"
     );
 }
+
+/// Verify that `maybe_proactive_compress` routes to `run_focus_auto_consolidation_pass`
+/// when the strategy is `CompressionStrategy::Focus` and `should_proactively_compress`
+/// returns `Some`.
+///
+/// Because `run_focus_auto_consolidation_pass` immediately returns when
+/// `focus.try_acquire_compression()` succeeds and the message history is shorter than
+/// `min_window`, we can observe routing by confirming: (a) no panic, (b) `Ok(())` returned,
+/// and (c) `compacted_this_turn` is NOT set (Focus does not set it).
+#[tokio::test]
+async fn maybe_proactive_compress_focus_strategy_routes_to_focus_pass() {
+    use zeph_config::CompressionStrategy;
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+    // Configure Focus strategy with a budget so should_proactively_compress fires.
+    agent.context_manager.compression.strategy = CompressionStrategy::Focus;
+    agent.context_manager.budget = Some(ContextBudget::new(100_000, 0.10));
+    // Soft threshold is 60% of 100_000 = 60_000; set tokens above that.
+    agent.providers.cached_prompt_tokens = 70_000;
+
+    // min_window defaults to 6; with only the system message, the pass returns None immediately.
+    let result = agent.maybe_proactive_compress().await;
+
+    assert!(
+        result.is_ok(),
+        "Focus route must not error on small history"
+    );
+    // Focus strategy must NOT set compacted_this_turn (reactive may still fire).
+    assert!(
+        !agent.context_manager.compaction.is_compacted_this_turn(),
+        "Focus must not set compacted_this_turn"
+    );
+}

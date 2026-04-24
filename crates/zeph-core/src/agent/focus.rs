@@ -236,8 +236,7 @@ impl FocusState {
         self.append_knowledge(summary, KnowledgeBlockSource::LlmCurated)
     }
 
-    // TODO(#2510): wire Focus strategy Phase 2 — auto-consolidation path
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Append an auto-consolidated summary (from the Focus strategy auto-consolidation path).
     pub(crate) fn append_auto_knowledge(&mut self, summary: String) -> bool {
         self.append_knowledge(summary, KnowledgeBlockSource::AutoConsolidated)
     }
@@ -288,6 +287,23 @@ impl FocusState {
 impl Default for FocusState {
     fn default() -> Self {
         Self::new(FocusConfig::default())
+    }
+}
+
+/// RAII guard that releases the compression lock on drop.
+///
+/// Holds a clone of the `Arc<AtomicBool>` flag so it can release the lock without
+/// holding a borrow on the parent `FocusState`. This avoids borrow-checker conflicts
+/// when the rest of the function requires `&mut FocusState` (e.g. `append_auto_knowledge`).
+///
+/// Prevents the `compressing` flag from being permanently set to `true` when the
+/// future holding the lock is cancelled at an `.await` point or if a panic propagates
+/// before `release_compression()` is explicitly called.
+pub(crate) struct CompressionGuard(pub(crate) Arc<AtomicBool>);
+
+impl Drop for CompressionGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 

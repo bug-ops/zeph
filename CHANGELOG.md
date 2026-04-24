@@ -54,6 +54,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   calls `MessageStore::filter_out_preserved_episode_ids` to exclude any message ID that falls within
   a summary's `[first_message_id, last_message_id]` range before soft-deleting. No config flag
   required (#3341).
+- feat(a2a): AgentCard modality capability declarations (images/audio/files) (#3326)
+- feat(core): Focus strategy auto-consolidation via `run_focus_auto_consolidation` (#3313)
 
 ### Fixed
 

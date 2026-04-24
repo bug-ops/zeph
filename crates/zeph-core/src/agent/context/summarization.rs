@@ -2051,6 +2051,87 @@ impl<C: Channel> Agent<C> {
         );
     }
 
+    /// Run the Focus strategy auto-consolidation pass.
+    ///
+    /// Acquires the compression guard, clones the relevant message slice, calls
+    /// `run_focus_auto_consolidation`, and appends any resulting summary as an
+    /// `AutoConsolidated` knowledge block. Always releases the guard on exit.
+    /// This is a helper extracted from `maybe_proactive_compress` to stay within the
+    /// 100-line function limit.
+    async fn run_focus_auto_consolidation_pass(
+        &mut self,
+    ) -> Result<(), super::super::error::AgentError> {
+        use crate::agent::compaction_strategy::run_focus_auto_consolidation;
+
+        if !self.focus.try_acquire_compression() {
+            tracing::debug!("focus auto-consolidation skipped — compression already in progress");
+            return Ok(());
+        }
+        // RAII guard: releases the compression lock on drop, even on cancellation or panic.
+        // Clones the Arc so FocusState can still be mutably borrowed later in this scope.
+        let _compression_guard =
+            crate::agent::focus::CompressionGuard(self.focus.compressing.clone());
+
+        let _ = self.channel.send_status("consolidating knowledge...").await;
+
+        let focus_scorer_provider_name = self
+            .context_manager
+            .compression
+            .focus_scorer_provider
+            .as_str()
+            .to_owned();
+
+        // S4: if a provider name is configured but not resolvable, skip rather than silently
+        // burning premium tokens on the primary provider.
+        if !focus_scorer_provider_name.is_empty()
+            && !self.providers.provider_pool.iter().any(|e| {
+                e.effective_name()
+                    .eq_ignore_ascii_case(&focus_scorer_provider_name)
+            })
+        {
+            tracing::error!(
+                provider = %focus_scorer_provider_name,
+                "focus_scorer_provider not found in [[llm.providers]], skipping auto-consolidation"
+            );
+            return Ok(());
+        }
+
+        let focus_provider = self.resolve_background_provider(&focus_scorer_provider_name);
+
+        // Clone a bounded message slice before the await point (Await Discipline §6).
+        let preserve_tail = self.context_manager.compaction_preserve_tail;
+        let slice_end = self.msg.messages.len().saturating_sub(preserve_tail);
+        let messages: Vec<_> = self.msg.messages[..slice_end].to_vec();
+        let max_chars = self.focus.config.max_knowledge_tokens.saturating_mul(4);
+        let min_window = self.focus.config.auto_consolidate_min_window;
+
+        tracing::debug!(
+            min_window,
+            max_chars,
+            cached_tokens = self.providers.cached_prompt_tokens,
+            "focus auto-consolidation starting"
+        );
+
+        let outcome =
+            run_focus_auto_consolidation(&messages, min_window, focus_provider, max_chars).await;
+
+        match outcome {
+            Ok(Some(summary)) => {
+                tracing::info!(
+                    chars = summary.len(),
+                    "focus auto-consolidation produced summary"
+                );
+                self.focus.append_auto_knowledge(summary);
+                self.update_metrics(|m| m.compression_events += 1);
+            }
+            Ok(None) => tracing::debug!("focus auto-consolidation: no qualifying window found"),
+            Err(e) => tracing::warn!("focus auto-consolidation failed: {e}"),
+        }
+
+        let _ = self.channel.send_status("").await;
+        Ok(())
+    }
+
     /// Proactive context compression: fires before reactive compaction when context exceeds
     /// the configured `threshold_tokens`. Mutually exclusive with reactive compaction per turn
     /// (guarded by `compacted_this_turn`).
@@ -2085,6 +2166,17 @@ impl<C: Channel> Agent<C> {
         else {
             return Ok(());
         };
+
+        // Branch on compression strategy: Focus augments with auto-consolidation;
+        // all other proactive-eligible strategies use the LLM compaction path.
+        if matches!(
+            self.context_manager.compression.strategy,
+            crate::config::CompressionStrategy::Focus
+        ) {
+            self.run_focus_auto_consolidation_pass().await?;
+            // Focus augments context — do NOT set compacted_this_turn so reactive may still fire.
+            return Ok(());
+        }
 
         let tokens_before = self.providers.cached_prompt_tokens;
         let _ = self.channel.send_status("compressing context...").await;

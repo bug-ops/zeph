@@ -313,6 +313,11 @@ impl ContextManager {
     /// Returns `Some((threshold_tokens, max_summary_tokens))` when proactive compression
     /// should be triggered, `None` otherwise.
     ///
+    /// For [`CompressionStrategy::Focus`], the threshold is the soft-compaction fraction
+    /// of the budget (same gate used by mid-iteration soft compaction). The
+    /// `max_summary_tokens` element is unused on the Focus path — the auto-consolidation
+    /// function uses `FocusConfig.max_knowledge_tokens / 2` instead.
+    ///
     /// Will return `None` if compaction already happened this turn (CRIT-03 fix).
     #[must_use]
     pub fn should_proactively_compress(&self, current_tokens: u64) -> Option<(usize, usize)> {
@@ -326,6 +331,24 @@ impl ContextManager {
                 max_summary_tokens,
             } if usize::try_from(current_tokens).unwrap_or(usize::MAX) > *threshold_tokens => {
                 Some((*threshold_tokens, *max_summary_tokens))
+            }
+            CompressionStrategy::Focus => {
+                // Focus fires at the soft-compaction threshold (same as tier machinery).
+                let budget = self.budget.as_ref()?.max_tokens();
+                #[allow(
+                    clippy::cast_precision_loss,
+                    clippy::cast_sign_loss,
+                    clippy::cast_possible_truncation
+                )]
+                let threshold = (budget as f32 * self.soft_compaction_threshold) as usize;
+                if usize::try_from(current_tokens).unwrap_or(usize::MAX) > threshold {
+                    // NOTE: the second tuple element (max_summary_tokens) is a placeholder
+                    // on the Focus path — the auto-consolidation function ignores it and uses
+                    // FocusConfig.max_knowledge_tokens / 2 instead.
+                    Some((threshold, threshold / 4))
+                } else {
+                    None
+                }
             }
             _ => None,
         }
@@ -432,5 +455,35 @@ mod tests {
     fn advance_turn_compacted_zero_cooldown_returns_ready() {
         let state = CompactionState::CompactedThisTurn { cooldown: 0 };
         assert_eq!(state.advance_turn(), CompactionState::Ready);
+    }
+
+    #[test]
+    fn should_proactively_compress_focus_fires_above_soft_threshold() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        cm.compression.strategy = CompressionStrategy::Focus;
+        // Default soft threshold is 0.60 → 60_000 tokens.
+        // 75_000 > 60_000 → should fire.
+        let result = cm.should_proactively_compress(75_000);
+        assert!(result.is_some(), "Focus must fire above soft threshold");
+        let (threshold, _) = result.unwrap();
+        assert_eq!(threshold, 60_000);
+    }
+
+    #[test]
+    fn should_proactively_compress_focus_returns_none_below_threshold() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        cm.compression.strategy = CompressionStrategy::Focus;
+        // 50_000 < 60_000 → should not fire.
+        assert!(cm.should_proactively_compress(50_000).is_none());
+    }
+
+    #[test]
+    fn should_proactively_compress_focus_returns_none_without_budget() {
+        let mut cm = ContextManager::new();
+        cm.compression.strategy = CompressionStrategy::Focus;
+        // No budget set → cannot compute threshold → None.
+        assert!(cm.should_proactively_compress(999_999).is_none());
     }
 }

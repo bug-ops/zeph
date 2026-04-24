@@ -2711,6 +2711,54 @@ pub fn migrate_hooks_turn_complete_config(toml_src: &str) -> Result<MigrationRes
     })
 }
 
+/// Inject a commented-out `auto_consolidate_min_window` key into `[agent.focus]` if absent (#3313).
+///
+/// All `FocusConfig` fields have `#[serde(default)]`, so existing configs deserialize without
+/// changes. This step surfaces the new field for users upgrading from older configs.
+///
+/// The comment is inserted *inside* the `[agent.focus]` section using [`insert_after_section`],
+/// so it ends up in the correct table regardless of where that section appears in the file.
+///
+/// Idempotent: if `auto_consolidate_min_window` already appears anywhere in the source,
+/// the input is returned unchanged with `changed_count = 0`.
+/// No-op when `[agent.focus]` is absent or only exists as a comment line.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the migration
+/// function convention for use in chained pipelines.
+pub fn migrate_focus_auto_consolidate_min_window(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("auto_consolidate_min_window") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Only inject when [agent.focus] exists as a live section (not a comment).
+    if !toml_src.lines().any(|l| l.trim() == "[agent.focus]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Minimum messages in a low-relevance window before Focus auto-consolidation \
+         runs (#3313).\n\
+         # auto_consolidate_min_window = 6\n";
+    let output = insert_after_section(toml_src, "agent.focus", comment);
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["agent.focus.auto_consolidate_min_window".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -4232,6 +4280,52 @@ prompt_cache_ttl = "1h"
         let result = migrate_hooks_turn_complete_config(input).unwrap();
         assert_eq!(result.changed_count, 0);
         assert!(result.sections_changed.is_empty());
+        assert_eq!(result.output, input);
+    }
+
+    // ── migrate_focus_auto_consolidate_min_window ──────────────────────────────
+
+    /// S5: the comment must land inside [agent.focus], not after a subsequent section.
+    #[test]
+    fn migrate_focus_auto_consolidate_injects_inside_section() {
+        let input = "[agent.focus]\nenabled = true\n\n[other]\nfoo = 1\n";
+        let result = migrate_focus_auto_consolidate_min_window(input).unwrap();
+        assert_eq!(result.changed_count, 1);
+        let comment_pos = result
+            .output
+            .find("auto_consolidate_min_window")
+            .expect("comment must be present");
+        let other_pos = result
+            .output
+            .find("[other]")
+            .expect("[other] must be present");
+        assert!(
+            comment_pos < other_pos,
+            "auto_consolidate_min_window comment must appear before [other] section"
+        );
+    }
+
+    #[test]
+    fn migrate_focus_auto_consolidate_idempotent() {
+        let input = "[agent.focus]\nenabled = true\nauto_consolidate_min_window = 6\n";
+        let result = migrate_focus_auto_consolidate_min_window(input).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, input);
+    }
+
+    #[test]
+    fn migrate_focus_auto_consolidate_noop_when_section_absent() {
+        let input = "[agent]\nname = \"zeph\"\n";
+        let result = migrate_focus_auto_consolidate_min_window(input).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, input);
+    }
+
+    #[test]
+    fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
+        let input = "[agent]\n# [agent.focus]\n# enabled = false\n";
+        let result = migrate_focus_auto_consolidate_min_window(input).unwrap();
+        assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, input);
     }
 }
