@@ -423,8 +423,8 @@ pub(crate) struct LifecycleState {
     pub(crate) pending_background_completions:
         VecDeque<zeph_tools::shell::background::BackgroundCompletion>,
     /// Receiver end of the dedicated background-completion channel created alongside the
-    /// [`ShellExecutor`]. Polled at the top of each turn to drain completions into
-    /// `pending_background_completions`. `None` when no [`ShellExecutor`] is configured.
+    /// `ShellExecutor`. Polled at the top of each turn to drain completions into
+    /// `pending_background_completions`. `None` when no `ShellExecutor` is configured.
     pub(crate) background_completion_rx:
         Option<tokio::sync::mpsc::Receiver<zeph_tools::BackgroundCompletion>>,
 }

@@ -1124,7 +1124,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Attach the receiver end of the background-completion channel created alongside the
-    /// [`ShellExecutor`].
+    /// `ShellExecutor`.
     ///
     /// The agent drains this channel at the start of each turn and merges any pending
     /// [`zeph_tools::BackgroundCompletion`] entries into the user-role message (single block,
