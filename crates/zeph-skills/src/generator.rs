@@ -7,11 +7,13 @@
 //! validates the result, and optionally writes it to disk for hot-reload pickup.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use crate::error::SkillError;
+use crate::evaluator::{EvaluationWeights, SkillEvaluationRequest, SkillEvaluator, SkillVerdict};
 use crate::loader::{SkillMeta, load_skill_meta_from_str};
 use crate::scanner::scan_skill_body;
 
@@ -121,6 +123,13 @@ pub struct GeneratedSkill {
 pub struct SkillGenerator {
     pub(crate) provider: AnyProvider,
     output_dir: PathBuf,
+    /// Optional evaluator gate. When `Some`, `approve_and_save` runs evaluation
+    /// before writing to disk and returns `Err(SkillError::Invalid)` on rejection.
+    evaluator: Option<Arc<SkillEvaluator>>,
+    /// Weights passed to the evaluator composite calculation.
+    eval_weights: EvaluationWeights,
+    /// Minimum composite score required to accept a generated skill.
+    eval_threshold: f32,
 }
 
 impl SkillGenerator {
@@ -130,7 +139,28 @@ impl SkillGenerator {
         Self {
             provider,
             output_dir,
+            evaluator: None,
+            eval_weights: EvaluationWeights::default(),
+            eval_threshold: 0.60,
         }
+    }
+
+    /// Attach an evaluator gate to this generator.
+    ///
+    /// When set, [`Self::approve_and_save`] will call `evaluator.evaluate` before
+    /// writing the skill to disk. Skills that score below `threshold` are rejected
+    /// with [`SkillError::Invalid`].
+    #[must_use]
+    pub fn with_evaluator(
+        mut self,
+        eval: Arc<SkillEvaluator>,
+        weights: EvaluationWeights,
+        threshold: f32,
+    ) -> Self {
+        self.evaluator = Some(eval);
+        self.eval_weights = weights;
+        self.eval_threshold = threshold;
+        self
     }
 
     /// Generate a SKILL.md candidate from a natural language description.
@@ -192,18 +222,55 @@ impl SkillGenerator {
 
     /// Write an approved `GeneratedSkill` to `output_dir/<name>/SKILL.md`.
     ///
-    /// # Errors
-    ///
-    /// Returns `SkillError::AlreadyExists` if the target directory already exists.
-    /// Returns `SkillError::Io` on filesystem errors.
+    /// When an evaluator is configured (via [`Self::with_evaluator`]), the skill is scored
+    /// before writing. Skills below the threshold are rejected with [`SkillError::Invalid`].
     ///
     /// # Errors
     ///
     /// Returns `SkillError::AlreadyExists` if the skill directory already exists.
+    /// Returns `SkillError::Invalid` if the evaluator rejects the skill.
     /// Returns `SkillError::Io` on filesystem errors.
     pub async fn approve_and_save(&self, skill: &GeneratedSkill) -> Result<PathBuf, SkillError> {
         // Validate name (paranoia — already validated during generation).
         validate_generated_name(&skill.name)?;
+
+        // Evaluator gate (Feature B, #3319).
+        if let Some(ref evaluator) = self.evaluator {
+            let req = SkillEvaluationRequest {
+                name: &skill.name,
+                description: &skill.meta.description,
+                body: &skill.content,
+                original_intent: &skill.meta.description,
+            };
+            match evaluator.evaluate(&req).await? {
+                SkillVerdict::Accept(score) => {
+                    tracing::debug!(
+                        name = %skill.name,
+                        composite = %(score.composite(&self.eval_weights)),
+                        "evaluator accepted skill"
+                    );
+                }
+                SkillVerdict::AcceptOnEvalError(reason) => {
+                    tracing::info!(
+                        name = %skill.name,
+                        %reason,
+                        "evaluator error (fail-open): proceeding with skill write"
+                    );
+                }
+                SkillVerdict::Reject { score, reason } => {
+                    tracing::info!(
+                        name = %skill.name,
+                        composite = %(score.composite(&self.eval_weights)),
+                        %reason,
+                        "evaluator rejected skill"
+                    );
+                    return Err(SkillError::Invalid(format!(
+                        "skill '{name}' rejected by evaluator: {reason}",
+                        name = skill.name
+                    )));
+                }
+            }
+        }
 
         let skill_dir = self.output_dir.join(&skill.name);
         if skill_dir.exists() {

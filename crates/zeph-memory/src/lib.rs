@@ -66,6 +66,7 @@
 pub mod admission;
 pub mod anchored_summary;
 pub mod compaction_probe;
+pub mod compression;
 pub mod compression_guidelines;
 pub mod consolidation;
 pub mod document;
@@ -102,6 +103,12 @@ pub use compaction_probe::{
     CategoryScore, CompactionProbeConfig, CompactionProbeResult, ProbeCategory, ProbeQuestion,
     ProbeVerdict, answer_probe_questions, generate_probe_questions, score_answers,
     validate_compaction,
+};
+pub use compression::{
+    CompressionLevel, RetrievalPolicy,
+    promotion::{
+        PromotionCandidate, PromotionConfig, PromotionEngine, PromotionInput, SkillWriter,
+    },
 };
 pub use compression_guidelines::CompressionGuidelinesConfig;
 pub use compression_guidelines::{

@@ -195,6 +195,8 @@ impl Default for Config {
                 generation_provider: crate::providers::ProviderName::default(),
                 generation_output_dir: None,
                 mining: crate::features::SkillMiningConfig::default(),
+                evaluation: crate::features::SkillEvaluationConfig::default(),
+                proactive_exploration: crate::features::ProactiveExplorationConfig::default(),
             },
             memory: MemoryConfig {
                 sqlite_path: default_sqlite_path_field(),
@@ -245,6 +247,7 @@ impl Default for Config {
                 microcompact: crate::memory::MicrocompactConfig::default(),
                 autodream: crate::memory::AutoDreamConfig::default(),
                 key_facts_dedup_threshold: 0.95,
+                compression_spectrum: crate::features::CompressionSpectrumConfig::default(),
             },
             telegram: None,
             discord: None,

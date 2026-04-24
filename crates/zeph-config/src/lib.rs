@@ -102,9 +102,10 @@ pub use experiment::{
     AdaptOrchConfig, ExperimentConfig, ExperimentSchedule, OrchestrationConfig, PlanCacheConfig,
 };
 pub use features::{
-    CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, ScheduledTaskConfig,
-    ScheduledTaskKind, SchedulerConfig, SchedulerDaemonConfig, SkillMiningConfig, SkillPromptMode,
-    SkillsConfig, TraceConfig, VaultConfig,
+    CompressionSpectrumConfig, CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig,
+    ProactiveExplorationConfig, ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig,
+    SchedulerDaemonConfig, SkillEvaluationConfig, SkillMiningConfig, SkillPromptMode, SkillsConfig,
+    TraceConfig, VaultConfig,
 };
 pub use hooks::{FileChangedConfig, HooksConfig};
 pub use learning::{DetectorMode, LearningConfig};

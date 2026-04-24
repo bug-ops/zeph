@@ -1826,6 +1826,36 @@ impl<C: Channel> Agent<C> {
         self.quality = pipeline;
         self
     }
+
+    /// Attach a proactive world-knowledge explorer (#3320).
+    ///
+    /// When set, the agent will classify each incoming query and trigger background skill
+    /// generation for unknown domains before the context assembly begins.
+    ///
+    /// Pass `None` to disable (default).
+    #[must_use]
+    pub fn with_proactive_explorer(
+        mut self,
+        explorer: Option<std::sync::Arc<zeph_skills::proactive::ProactiveExplorer>>,
+    ) -> Self {
+        self.proactive_explorer = explorer;
+        self
+    }
+
+    /// Attach a compression spectrum promotion engine (#3305).
+    ///
+    /// When set, the agent spawns a background scan task at each turn boundary to look
+    /// for episodic patterns that qualify for automatic skill promotion.
+    ///
+    /// Pass `None` to disable (default).
+    #[must_use]
+    pub fn with_promotion_engine(
+        mut self,
+        engine: Option<std::sync::Arc<zeph_memory::compression::promotion::PromotionEngine>>,
+    ) -> Self {
+        self.promotion_engine = engine;
+        self
+    }
 }
 
 #[cfg(test)]

@@ -187,6 +187,16 @@ pub struct Agent<C: Channel> {
     /// MARCH self-check pipeline, built at startup and rebuilt on provider swap.
     #[cfg(feature = "self-check")]
     pub(super) quality: Option<std::sync::Arc<crate::quality::SelfCheckPipeline>>,
+    /// Proactive world-knowledge explorer (#3320).
+    ///
+    /// `Some` when `config.skills.proactive_exploration.enabled = true`.
+    pub(super) proactive_explorer:
+        Option<std::sync::Arc<zeph_skills::proactive::ProactiveExplorer>>,
+    /// Experience compression spectrum promotion engine (#3305).
+    ///
+    /// `Some` when `config.memory.compression_spectrum.enabled = true`.
+    pub(super) promotion_engine:
+        Option<std::sync::Arc<zeph_memory::compression::promotion::PromotionEngine>>,
 }
 
 /// Control flow signal returned by [`Agent::apply_dispatch_result`].
@@ -321,6 +331,8 @@ impl<C: Channel> Agent<C> {
             tool_state: ToolState::default(),
             #[cfg(feature = "self-check")]
             quality: None,
+            proactive_explorer: None,
+            promotion_engine: None,
         }
     }
 
@@ -1421,6 +1433,8 @@ impl<C: Channel> Agent<C> {
             self.truncate_old_tool_results();
             // MagicDocs: spawn background doc updates if any are due (#2702).
             self.maybe_update_magic_docs();
+            // Compression spectrum: fire-and-forget promotion scan (#3305).
+            self.maybe_spawn_promotion_scan();
         }
         tracing::debug!("turn timing: process_response done");
 
@@ -2790,6 +2804,74 @@ impl<C: Channel> Agent<C> {
         }
 
         let _ = self.channel.send_status("").await;
+    }
+
+    /// If the compression spectrum is enabled and a promotion engine is wired, spawn a
+    /// background scan task.
+    ///
+    /// The task loads the most-recent episodic window from `SemanticMemory`, runs the
+    /// greedy clustering scan, and calls `promote` for each qualifying candidate.
+    ///
+    /// Supervised via [`agent_supervisor::BackgroundSupervisor`] under
+    /// [`agent_supervisor::TaskClass::Enrichment`] — dropped under high load rather than
+    /// blocking the turn.
+    pub(super) fn maybe_spawn_promotion_scan(&mut self) {
+        let Some(engine) = self.promotion_engine.clone() else {
+            return;
+        };
+
+        let Some(memory) = self.memory_state.persistence.memory.clone() else {
+            return;
+        };
+
+        // Use a conservative window cap. The engine's own PromotionConfig thresholds
+        // determine whether a cluster actually qualifies; this is just the DB scan limit.
+        let promotion_window = 200usize;
+
+        let accepted = self.lifecycle.supervisor.spawn(
+            agent_supervisor::TaskClass::Enrichment,
+            "compression_spectrum.promotion_scan",
+            async move {
+                let span = tracing::info_span!("memory.compression.promote.background");
+                let _enter = span.enter();
+
+                let window = match memory.load_promotion_window(promotion_window).await {
+                    Ok(w) => w,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "promotion scan: failed to load window");
+                        return;
+                    }
+                };
+
+                if window.is_empty() {
+                    return;
+                }
+
+                let candidates = match engine.scan(&window).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "promotion scan: clustering failed");
+                        return;
+                    }
+                };
+
+                for candidate in &candidates {
+                    if let Err(e) = engine.promote(candidate).await {
+                        tracing::warn!(
+                            signature = %candidate.signature,
+                            error = %e,
+                            "promotion scan: promote failed"
+                        );
+                    }
+                }
+
+                tracing::info!(candidates = candidates.len(), "promotion scan: complete");
+            },
+        );
+
+        if accepted {
+            tracing::debug!("compression_spectrum: promotion scan task enqueued");
+        }
     }
 }
 /// Thin wrapper that implements [`zeph_subagent::McpDispatch`] over an [`Arc<zeph_mcp::McpManager>`].

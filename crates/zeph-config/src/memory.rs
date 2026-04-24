@@ -857,6 +857,11 @@ pub struct MemoryConfig {
     /// `2.0`) to disable dedup entirely.  Default: `0.95`.
     #[serde(default = "default_key_facts_dedup_threshold")]
     pub key_facts_dedup_threshold: f32,
+    /// Experience compression spectrum (#3305).
+    ///
+    /// Controls three-tier retrieval policy and background skill-promotion engine.
+    #[serde(default)]
+    pub compression_spectrum: crate::features::CompressionSpectrumConfig,
 }
 
 fn default_crossover_turn_threshold() -> u32 {

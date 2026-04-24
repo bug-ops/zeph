@@ -404,6 +404,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Delegates concurrent fetching to [`zeph_context::assembler::ContextAssembler::gather`] and
     /// then calls [`Self::apply_prepared_context`] to mutate the message window.
+    #[allow(clippy::too_many_lines)] // sequential context-assembly pipeline; splitting would reduce readability
     pub(in crate::agent) async fn prepare_context(
         &mut self,
         query: &str,
@@ -425,6 +426,70 @@ impl<C: Channel> Agent<C> {
         self.remove_persona_facts_messages();
         self.remove_trajectory_hints_messages();
         self.remove_tree_memory_messages();
+
+        // #3320 — Proactive world-knowledge exploration (feature-gated).
+        // NOTE: newly generated skills are available *next* turn; this turn we
+        // only trigger generation so it is ready when the user's next query arrives.
+        // See arch spec §1.2 (C2 fix) for the rationale.
+        if let Some(explorer) = self.proactive_explorer.clone()
+            && let Some(domain) = explorer.classify(query)
+        {
+            let already_known = {
+                let registry_guard = self.skill_state.registry.read();
+                explorer.has_knowledge(&registry_guard, &domain)
+            };
+            let excluded = explorer.is_excluded(&domain);
+
+            if !already_known && !excluded {
+                tracing::debug!(domain = %domain.0, query_len = query.len(), "proactive.explore triggered");
+                let timeout_ms = explorer.timeout_ms();
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout_ms),
+                    explorer.explore(&domain),
+                )
+                .await;
+                match result {
+                    Ok(Ok(())) => {
+                        // Re-scan configured skill paths so the new SKILL.md is
+                        // registered. Matcher rebuild happens at the next turn via
+                        // reload_skills(); see documented next-turn visibility invariant.
+                        let reload_paths = self.skill_state.skill_paths.clone();
+                        self.skill_state.registry.write().reload(&reload_paths);
+                        tracing::debug!(domain = %domain.0, "proactive.explore complete, registry reloaded");
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(domain = %domain.0, error = %e, "proactive exploration failed");
+                    }
+                    Err(_) => {
+                        tracing::warn!(domain = %domain.0, timeout_ms, "proactive exploration timed out");
+                    }
+                }
+            }
+        }
+
+        // #3305 — Compression spectrum: compute remaining token ratio and advise recall tiers.
+        //
+        // TODO(review): plumb `active_levels` into `ContextAssemblyInput` so the context
+        // assembler can skip expensive episodic recall when the budget is tight.
+        // Requires a `retrieval_levels: &[CompressionLevel]` field in
+        // `zeph_context::input::ContextAssemblyInput`.  Tracked as non-blocking out-of-scope item.
+        if let Some(ref budget) = self.context_manager.budget {
+            let used = self.providers.cached_prompt_tokens;
+            let max = budget.max_tokens();
+            #[allow(clippy::cast_precision_loss)]
+            let remaining_ratio = if max == 0 {
+                1.0_f32
+            } else {
+                1.0 - (used as f32 / max as f32).clamp(0.0, 1.0)
+            };
+            let policy = zeph_memory::compression::RetrievalPolicy::default();
+            let active_levels = policy.select(remaining_ratio);
+            tracing::debug!(
+                remaining_ratio,
+                active_levels = ?active_levels,
+                "compression_spectrum: retrieval policy selected"
+            );
+        }
 
         let memory_view = zeph_context::input::ContextMemoryView {
             memory: self.memory_state.persistence.memory.clone(),

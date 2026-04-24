@@ -55,12 +55,14 @@ pub mod bm25;
 pub mod bundled;
 pub mod erl;
 pub mod error;
+pub mod evaluator;
 pub mod evolution;
 pub mod generator;
 pub mod loader;
 pub mod manager;
 pub mod matcher;
 pub mod miner;
+pub mod proactive;
 pub mod prompt;
 #[cfg(feature = "qdrant")]
 pub mod qdrant_matcher;
@@ -75,6 +77,10 @@ pub mod watcher;
 
 pub use bundled::bundled_skill_names;
 pub use error::SkillError;
+pub use evaluator::{
+    EvaluationWeights, SkillEvaluationRequest, SkillEvaluator, SkillQualityScore, SkillVerdict,
+};
 pub use generator::{GeneratedSkill, SkillGenerationRequest, SkillGenerator};
 pub use matcher::{IntentClassification, MatchResult, ScoredMatch};
+pub use proactive::{DomainLabel, ProactiveExplorer};
 pub use trust::{SkillSource, SkillTrust, SkillTrustLevel, compute_skill_hash};

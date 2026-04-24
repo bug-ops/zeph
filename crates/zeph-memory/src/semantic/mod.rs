@@ -588,4 +588,54 @@ impl SemanticMemory {
             .count_messages_after(conversation_id, after_id)
             .await
     }
+
+    /// Load recent episodic messages for the promotion-scan window.
+    ///
+    /// Returns up to `max_items` of the most recent non-deleted messages across all
+    /// conversations, with their `conversation_id` for session-count heuristics.
+    ///
+    /// # Embedding note
+    ///
+    /// `embedding` is returned as `None` in this MVP implementation. A future pass
+    /// will join with the Qdrant payload to populate embeddings inline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError`] if the underlying `SQLite` query fails.
+    // TODO(review): populate embeddings by fetching from Qdrant when available.
+    pub async fn load_promotion_window(
+        &self,
+        max_items: usize,
+    ) -> Result<Vec<crate::compression::promotion::PromotionInput>, MemoryError> {
+        use zeph_db::sql;
+
+        let limit = i64::try_from(max_items).unwrap_or(i64::MAX);
+        let rows: Vec<(
+            crate::types::MessageId,
+            crate::types::ConversationId,
+            String,
+        )> = zeph_db::query_as(sql!(
+            "SELECT id, conversation_id, content \
+                 FROM messages \
+                 WHERE deleted_at IS NULL \
+                 ORDER BY id DESC \
+                 LIMIT ?"
+        ))
+        .bind(limit)
+        .fetch_all(self.sqlite.pool())
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(message_id, conversation_id, content)| {
+                crate::compression::promotion::PromotionInput {
+                    message_id,
+                    conversation_id,
+                    content,
+                    // Embeddings not wired yet — scan will skip rows with None.
+                    embedding: None,
+                }
+            })
+            .collect())
+    }
 }

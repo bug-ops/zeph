@@ -293,6 +293,18 @@ impl Config {
             )));
         }
 
+        // Skill evaluation weight-sum validation (#3319).
+        if self.skills.evaluation.enabled {
+            let weight_sum = self.skills.evaluation.weight_correctness
+                + self.skills.evaluation.weight_reusability
+                + self.skills.evaluation.weight_specificity;
+            if (weight_sum - 1.0_f32).abs() > 1e-3 {
+                return Err(ConfigError::Validation(format!(
+                    "skills.evaluation weights must sum to 1.0 (got {weight_sum:.4})"
+                )));
+            }
+        }
+
         self.validate_provider_names()?;
 
         if self.mcp.output_schema_hint_bytes < 64 {
@@ -380,6 +392,18 @@ impl Config {
             (
                 "orchestration.tool_provider",
                 &self.orchestration.tool_provider,
+            ),
+            (
+                "skills.evaluation.provider",
+                &self.skills.evaluation.provider,
+            ),
+            (
+                "skills.proactive_exploration.provider",
+                &self.skills.proactive_exploration.provider,
+            ),
+            (
+                "memory.compression_spectrum.promotion_provider",
+                &self.memory.compression_spectrum.promotion_provider,
             ),
         ];
 

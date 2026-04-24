@@ -288,6 +288,164 @@ pub struct SkillsConfig {
     /// Skill mining configuration.
     #[serde(default)]
     pub mining: SkillMiningConfig,
+    /// External-feedback skill evaluator configuration (#3319).
+    #[serde(default)]
+    pub evaluation: SkillEvaluationConfig,
+    /// Proactive world-knowledge exploration configuration (#3320).
+    #[serde(default)]
+    pub proactive_exploration: ProactiveExplorationConfig,
+}
+
+// --- SkillEvaluationConfig defaults ---
+
+fn default_skill_quality_threshold() -> f32 {
+    0.60
+}
+
+fn default_weight_correctness() -> f32 {
+    0.50
+}
+
+fn default_weight_reusability() -> f32 {
+    0.25
+}
+
+fn default_weight_specificity() -> f32 {
+    0.25
+}
+
+fn default_eval_fail_open() -> bool {
+    true
+}
+
+fn default_skill_eval_timeout_ms() -> u64 {
+    15_000
+}
+
+/// External-feedback skill evaluator configuration, nested under `[skills.evaluation]` in TOML.
+///
+/// When `enabled = true`, generated SKILL.md files are scored by a critic LLM before being
+/// written to disk. Skills below `quality_threshold` are rejected.
+///
+/// # Weights
+///
+/// `weight_correctness + weight_reusability + weight_specificity` must equal `1.0 ± 1e-3`.
+/// Starting defaults (0.50 / 0.25 / 0.25) are intuition-based and will be tuned after
+/// real-world telemetry is collected.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [skills.evaluation]
+/// enabled = true
+/// provider = "fast"
+/// quality_threshold = 0.60
+/// fail_open_on_error = true
+/// timeout_ms = 15000
+/// ```
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SkillEvaluationConfig {
+    /// Enable the evaluator gate. Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Provider name for the critic LLM. Empty = primary provider.
+    #[serde(default)]
+    pub provider: ProviderName,
+    /// Minimum composite score required to accept a generated skill. Default: `0.60`.
+    #[serde(default = "default_skill_quality_threshold")]
+    pub quality_threshold: f32,
+    /// Weight for `correctness` in the composite score. Default: `0.50`.
+    #[serde(default = "default_weight_correctness")]
+    pub weight_correctness: f32,
+    /// Weight for `reusability` in the composite score. Default: `0.25`.
+    #[serde(default = "default_weight_reusability")]
+    pub weight_reusability: f32,
+    /// Weight for `specificity` in the composite score. Default: `0.25`.
+    #[serde(default = "default_weight_specificity")]
+    pub weight_specificity: f32,
+    /// Fail-open policy: accept skill when the evaluator call fails. Default: `true`.
+    #[serde(default = "default_eval_fail_open")]
+    pub fail_open_on_error: bool,
+    /// Maximum wait for the critic LLM in milliseconds. Default: `15000`.
+    #[serde(default = "default_skill_eval_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for SkillEvaluationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: ProviderName::default(),
+            quality_threshold: default_skill_quality_threshold(),
+            weight_correctness: default_weight_correctness(),
+            weight_reusability: default_weight_reusability(),
+            weight_specificity: default_weight_specificity(),
+            fail_open_on_error: default_eval_fail_open(),
+            timeout_ms: default_skill_eval_timeout_ms(),
+        }
+    }
+}
+
+// --- ProactiveExplorationConfig defaults ---
+
+fn default_proactive_max_chars() -> usize {
+    8_000
+}
+
+fn default_proactive_timeout_ms() -> u64 {
+    30_000
+}
+
+/// Proactive world-knowledge exploration configuration, nested under `[skills.proactive_exploration]` in TOML.
+///
+/// When `enabled = true`, the agent inspects each incoming query for a recognisable domain
+/// keyword (rust, python, docker, etc.) and generates a SKILL.md for that domain if one
+/// does not already exist. The skill is written to `output_dir` and registered in the
+/// skill registry; it becomes visible to the matcher on the **next** turn (next-turn
+/// visibility is intentional — see codebase comment in `ProactiveExplorer`).
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [skills.proactive_exploration]
+/// enabled = true
+/// output_dir = "~/.config/zeph/skills/generated"
+/// provider = "fast"
+/// ```
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProactiveExplorationConfig {
+    /// Enable proactive exploration. Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Provider name for skill generation. Empty = primary provider.
+    #[serde(default)]
+    pub provider: ProviderName,
+    /// Directory where generated skills are written. Defaults to first `skills.paths` entry.
+    #[serde(default)]
+    pub output_dir: Option<String>,
+    /// Maximum SKILL.md body size in characters. Default: `8000`.
+    #[serde(default = "default_proactive_max_chars")]
+    pub max_chars: usize,
+    /// Per-exploration timeout in milliseconds. Default: `30000`.
+    #[serde(default = "default_proactive_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Domain names to skip exploration for (e.g. `["rust"]` to suppress auto-generation
+    /// if you maintain your own Rust skill). Default: `[]`.
+    #[serde(default)]
+    pub excluded_domains: Vec<String>,
+}
+
+impl Default for ProactiveExplorationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: ProviderName::default(),
+            output_dir: None,
+            max_chars: default_proactive_max_chars(),
+            timeout_ms: default_proactive_timeout_ms(),
+            excluded_domains: Vec::new(),
+        }
+    }
 }
 
 fn default_max_repos_per_query() -> usize {
@@ -775,6 +933,96 @@ mod tests {
     fn index_config_workspace_root_none_by_default() {
         let cfg: IndexConfig = toml::from_str("enabled = false").unwrap();
         assert!(cfg.workspace_root.is_none());
+    }
+}
+
+// --- CompressionSpectrumConfig defaults ---
+
+fn default_compression_spectrum_promotion_window() -> usize {
+    200
+}
+
+fn default_compression_spectrum_min_occurrences() -> u32 {
+    3
+}
+
+fn default_compression_spectrum_min_sessions() -> u32 {
+    2
+}
+
+fn default_compression_spectrum_cluster_threshold() -> f32 {
+    0.85
+}
+
+fn default_retrieval_low_budget_ratio() -> f32 {
+    0.20
+}
+
+fn default_retrieval_mid_budget_ratio() -> f32 {
+    0.50
+}
+
+/// Experience compression spectrum configuration, nested under `[memory.compression_spectrum]`.
+///
+/// When `enabled = true`, the agent uses a three-tier memory retrieval policy
+/// (Episodic → Procedural → Declarative) keyed on remaining token budget, and
+/// runs a background promotion engine that converts recurring episodic patterns
+/// into generated SKILL.md files.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.compression_spectrum]
+/// enabled = true
+/// promotion_output_dir = "~/.config/zeph/skills/promoted"
+/// promotion_provider = "quality"
+/// ```
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CompressionSpectrumConfig {
+    /// Enable the compression spectrum. Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Directory where promoted SKILL.md files are written.
+    #[serde(default)]
+    pub promotion_output_dir: Option<String>,
+    /// Provider name for SKILL.md generation during promotion. Empty = primary provider.
+    #[serde(default)]
+    pub promotion_provider: ProviderName,
+    /// Maximum number of recent episodic messages to scan for promotion candidates.
+    /// Default: `200`.
+    #[serde(default = "default_compression_spectrum_promotion_window")]
+    pub promotion_window: usize,
+    /// Minimum number of times a pattern must appear across all sessions to be promoted.
+    /// Default: `3`.
+    #[serde(default = "default_compression_spectrum_min_occurrences")]
+    pub min_occurrences: u32,
+    /// Minimum number of distinct sessions containing the pattern. Default: `2`.
+    #[serde(default = "default_compression_spectrum_min_sessions")]
+    pub min_sessions: u32,
+    /// Cosine similarity threshold for clustering episodic messages. Default: `0.85`.
+    #[serde(default = "default_compression_spectrum_cluster_threshold")]
+    pub cluster_threshold: f32,
+    /// Remaining-token ratio below which only episodic recall is used. Default: `0.20`.
+    #[serde(default = "default_retrieval_low_budget_ratio")]
+    pub retrieval_low_budget_ratio: f32,
+    /// Remaining-token ratio below which episodic + procedural recall is used. Default: `0.50`.
+    #[serde(default = "default_retrieval_mid_budget_ratio")]
+    pub retrieval_mid_budget_ratio: f32,
+}
+
+impl Default for CompressionSpectrumConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            promotion_output_dir: None,
+            promotion_provider: ProviderName::default(),
+            promotion_window: default_compression_spectrum_promotion_window(),
+            min_occurrences: default_compression_spectrum_min_occurrences(),
+            min_sessions: default_compression_spectrum_min_sessions(),
+            cluster_threshold: default_compression_spectrum_cluster_threshold(),
+            retrieval_low_budget_ratio: default_retrieval_low_budget_ratio(),
+            retrieval_mid_budget_ratio: default_retrieval_mid_budget_ratio(),
+        }
     }
 }
 

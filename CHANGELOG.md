@@ -17,6 +17,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- External-feedback skill evaluator (`[skills.evaluation]`): generated skills are now scored on
+  correctness, reusability, and specificity by a separate critic LLM call before being written to
+  disk. Weights (default 0.50/0.25/0.25) and pass threshold (default 0.60) are configurable.
+  Defaults to fail-open: if the evaluator errors, the skill is accepted. Spans: `skills.eval.*`
+  (#3319).
+- Proactive world-knowledge exploration (`[skills.proactive_exploration]`): before each LLM call
+  the agent classifies the query domain (keyword-based) and generates a `world-knowledge-{domain}`
+  SKILL.md when none exists. The generated skill is visible from the **next** turn (not the
+  current one — intentional MVP trade-off to keep turn latency bounded). Spans: `core.proactive.*`
+  (#3320).
+- Experience compression spectrum (`[memory.compression_spectrum]`): introduces `CompressionLevel`
+  (Episodic / Procedural / Declarative) and a `RetrievalPolicy` that skips episodic recall when
+  the token budget is below configurable thresholds. A background `PromotionEngine` scans recent
+  episodic memory and promotes repeated patterns to SKILL.md entries (off hot path, via JoinSet).
+  Spans: `memory.compression.*` (#3305).
+- `SkillEvaluationConfig`, `ProactiveExplorationConfig`, `CompressionSpectrumConfig` TOML sections
+  with `#[serde(default)]` — all disabled by default; existing configs parse unchanged.
+- `MemoryError::Promotion` variant in `zeph-memory` for promotion scan failures (thiserror,
+  no anyhow in library crates).
+
 - CPS (cost per successful task) metric in `CostTracker`: `record_successful_task()`, `cps()`,
   and `successful_tasks()` methods; daily reset consistent with existing cost reset (#2194).
 - `cost_cps_cents: Option<f64>` and `cost_successful_tasks: u64` fields in `AgentMetrics`;

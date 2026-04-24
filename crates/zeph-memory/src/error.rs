@@ -63,4 +63,10 @@ pub enum MemoryError {
     /// Returned when the supersede chain depth would exceed [`crate::graph::conflict::SUPERSEDE_DEPTH_CAP`].
     #[error("supersede chain depth cap exceeded at edge id={0}")]
     SupersedeDepthExceeded(i64),
+
+    /// A promotion-scan or promote error (Feature A, #3305).
+    ///
+    /// Wraps errors from clustering, skill generation, evaluator calls, or disk writes.
+    #[error("promotion scan failed: {0}")]
+    Promotion(String),
 }
