@@ -32,6 +32,39 @@ impl Default for NoteLinkingConfig {
     }
 }
 
+/// Runtime config for Hebbian background consolidation (HL-F3/F4, #3345).
+///
+/// Passed to `spawn_consolidation_loop` after being constructed from `HebbianConfig` in the
+/// top-level runner.
+#[derive(Debug, Clone)]
+pub struct HebbianConsolidationConfig {
+    /// How often the consolidation sweep runs, in seconds. `0` disables the loop.
+    pub consolidation_interval_secs: u64,
+    /// Minimum `degree × avg_weight` score for a candidate to qualify.
+    pub consolidation_threshold: f64,
+    /// Maximum candidates processed per sweep.
+    pub max_candidates_per_sweep: usize,
+    /// Re-consolidation cooldown per entity, in seconds.
+    pub consolidation_cooldown_secs: u64,
+    /// LLM prompt timeout per distillation call, in seconds.
+    pub consolidation_prompt_timeout_secs: u64,
+    /// Maximum neighbour summaries passed to the LLM per candidate.
+    pub consolidation_max_neighbors: usize,
+}
+
+impl Default for HebbianConsolidationConfig {
+    fn default() -> Self {
+        Self {
+            consolidation_interval_secs: 3600,
+            consolidation_threshold: 5.0,
+            max_candidates_per_sweep: 10,
+            consolidation_cooldown_secs: 86_400,
+            consolidation_prompt_timeout_secs: 30,
+            consolidation_max_neighbors: 20,
+        }
+    }
+}
+
 /// Runtime config for the consolidation sweep loop.
 #[derive(Debug, Clone)]
 pub struct ConsolidationConfig {

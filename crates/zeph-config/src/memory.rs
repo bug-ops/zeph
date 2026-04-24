@@ -1189,22 +1189,49 @@ impl Default for RetrievalConfig {
     }
 }
 
-/// Hebbian edge-weight reinforcement configuration (HL-F1/F2, #3344).
+/// Hebbian edge-weight reinforcement and consolidation configuration (HL-F1/F2/F3/F4, #3344/#3345).
 ///
 /// Controls opt-in Hebbian learning on knowledge-graph edges. When enabled, every
 /// recall traversal increments the `weight` column of the traversed edges, building
-/// a usage-frequency signal into the graph.
+/// a usage-frequency signal into the graph. The consolidation sub-feature (HL-F3/F4)
+/// runs a background sweep that identifies high-traffic entity clusters and distills
+/// them into `graph_rules` entries via an LLM.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct HebbianConfig {
-    /// Master switch. When `false`, no `weight` updates are written to the database.
-    /// Default: `false`.
+    /// Master switch. When `false`, no `weight` updates are written to the database
+    /// and the consolidation loop does not start. Default: `false`.
     pub enabled: bool,
     /// Weight increment per co-activation (HL-F2, #3344).
     ///
     /// Typical range: `0.01`–`0.5`. A value of `0.0` is accepted but logs a `WARN` at
     /// startup when `enabled = true`. Default: `0.1`.
     pub hebbian_lr: f32,
+    /// How often the consolidation sweep runs, in seconds (HL-F3, #3345).
+    ///
+    /// Set to `0` to disable the consolidation loop while keeping Hebbian updates active.
+    /// Default: `3600` (one hour).
+    pub consolidation_interval_secs: u64,
+    /// Minimum `degree × avg_weight` score for an entity to qualify as a consolidation
+    /// candidate (HL-F3, #3345). Default: `5.0`.
+    pub consolidation_threshold: f64,
+    /// Provider name (from `[[llm.providers]]`) used for cluster distillation (HL-F4, #3345).
+    ///
+    /// Falls back to the main provider when empty or unresolvable. Default: `"fast"`.
+    pub consolidate_provider: String,
+    /// Maximum number of candidates processed per sweep (HL-F3, #3345). Default: `10`.
+    pub max_candidates_per_sweep: usize,
+    /// Minimum seconds between consecutive consolidations of the same entity (HL-F3, #3345).
+    ///
+    /// An entity is skipped if its `consolidated_at` timestamp is within this window.
+    /// Default: `86400` (24 hours).
+    pub consolidation_cooldown_secs: u64,
+    /// LLM prompt timeout for a single distillation call, in seconds (HL-F4, #3345).
+    /// Default: `30`.
+    pub consolidation_prompt_timeout_secs: u64,
+    /// Maximum number of neighbouring entity summaries passed to the LLM per candidate
+    /// (HL-F4, #3345). Default: `20`.
+    pub consolidation_max_neighbors: usize,
 }
 
 impl Default for HebbianConfig {
@@ -1212,6 +1239,13 @@ impl Default for HebbianConfig {
         Self {
             enabled: false,
             hebbian_lr: 0.1,
+            consolidation_interval_secs: 3600,
+            consolidation_threshold: 5.0,
+            consolidate_provider: "fast".to_owned(),
+            max_candidates_per_sweep: 10,
+            consolidation_cooldown_secs: 86_400,
+            consolidation_prompt_timeout_secs: 30,
+            consolidation_max_neighbors: 20,
         }
     }
 }

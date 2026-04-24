@@ -1202,6 +1202,31 @@ impl AppBuilder {
         }
     }
 
+    /// Build a dedicated provider for Hebbian cluster distillation LLM calls (HL-F4, #3345).
+    ///
+    /// Returns `None` when `consolidate_provider` is empty or resolution fails; the
+    /// caller falls back to the primary provider.
+    pub fn build_hebbian_consolidation_provider(&self) -> Option<AnyProvider> {
+        let name = &self.config.memory.hebbian.consolidate_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "Hebbian consolidation provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "Hebbian consolidation provider resolution failed — primary provider will be used"
+                );
+                None
+            }
+        }
+    }
+
     /// Build a dedicated provider for `TiMem` tree consolidation LLM calls (#2262).
     ///
     /// Returns `None` when `consolidation_provider` is empty or resolution fails.

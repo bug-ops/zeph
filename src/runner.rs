@@ -1391,6 +1391,39 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         });
     }
 
+    if config.memory.hebbian.enabled && config.memory.hebbian.consolidation_interval_secs > 0 {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
+        let hebbian_consolidation_cfg = zeph_memory::HebbianConsolidationConfig {
+            consolidation_interval_secs: config.memory.hebbian.consolidation_interval_secs,
+            consolidation_threshold: config.memory.hebbian.consolidation_threshold,
+            max_candidates_per_sweep: config.memory.hebbian.max_candidates_per_sweep,
+            consolidation_cooldown_secs: config.memory.hebbian.consolidation_cooldown_secs,
+            consolidation_prompt_timeout_secs: config
+                .memory
+                .hebbian
+                .consolidation_prompt_timeout_secs,
+            consolidation_max_neighbors: config.memory.hebbian.consolidation_max_neighbors,
+        };
+        let hebbian_provider = app
+            .build_hebbian_consolidation_provider()
+            .unwrap_or_else(|| provider.clone());
+        let status_tx_clone = agent_status_tx.clone();
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(TaskDescriptor {
+            name: "mem-hebbian-consolidation",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::spawn_hebbian_consolidation_loop(
+                    store.clone(),
+                    hebbian_consolidation_cfg.clone(),
+                    hebbian_provider.clone(),
+                    Some(status_tx_clone.clone()),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+
     let skill_paths = app.skill_paths_for_registry();
     // Cloned so the original can be moved into `with_skill_reload` while the copy is used
     // later for proactive exploration and promotion engine output directory resolution.

@@ -54,6 +54,7 @@
 //! - [`consolidation::start_consolidation_loop`] — cross-session fact merging.
 //! - [`tiers::start_tier_promotion_loop`] — Episodic → Semantic promotion.
 //! - [`semantic::start_tree_consolidation_loop`] — hierarchical note consolidation.
+//! - [`hebbian_consolidation::spawn_consolidation_loop`] — HL-F3/F4 cluster distillation.
 //!
 //! # Feature flags
 //!
@@ -72,6 +73,7 @@ pub mod consolidation;
 pub mod document;
 pub mod facade;
 pub mod forgetting;
+pub mod hebbian_consolidation;
 pub mod reasoning;
 pub mod scenes;
 pub mod tiers;
@@ -143,6 +145,11 @@ pub use graph::{
     BeliefRevisionConfig, Community, Edge, EdgeType, Entity, EntityType, GraphFact, GraphStore,
     RpeRouter, RpeSignal, extract_candidate_entities,
 };
+pub use hebbian_consolidation::{
+    GraphRule, HebbianConsolidationCandidate, HebbianConsolidationOutcome,
+    run_consolidation_sweep as run_hebbian_consolidation_sweep,
+    spawn_consolidation_loop as spawn_hebbian_consolidation_loop,
+};
 pub use qdrant_ops::QdrantOps;
 pub use reasoning::{
     Outcome, ProcessTurnConfig, ReasoningMemory, ReasoningStrategy, SelfJudgeOutcome,
@@ -181,3 +188,4 @@ pub use vector_store::{
     FieldCondition, FieldValue, ScoredVectorPoint, VectorFilter, VectorPoint, VectorStore,
     VectorStoreError,
 };
+pub use zeph_common::config::memory::HebbianConsolidationConfig;

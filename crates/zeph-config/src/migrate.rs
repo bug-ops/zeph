@@ -2608,6 +2608,66 @@ pub fn migrate_memory_hebbian_config(toml_src: &str) -> Result<MigrationResult, 
     })
 }
 
+/// Splice missing HL-F3/F4 consolidation fields into an existing `[memory.hebbian]` section
+/// (HL-F3/F4, #3345).
+///
+/// Three branches:
+/// - Section absent → no-op (handled by `migrate_memory_hebbian_config`).
+/// - Section present but missing consolidation fields → append commented-out defaults.
+/// - Section present with all fields → no-op.
+///
+/// # Errors
+///
+/// Infallible in practice; `Result` matches the migration convention.
+pub fn migrate_memory_hebbian_consolidation_config(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    let has_section = toml_src.lines().any(|l| l.trim() == "[memory.hebbian]");
+
+    if !has_section {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Check if all consolidation fields already present (active or commented).
+    let has_interval = toml_src
+        .lines()
+        .any(|l| l.trim().starts_with("consolidation_interval_secs"));
+    let has_threshold = toml_src
+        .lines()
+        .any(|l| l.trim().starts_with("consolidation_threshold"));
+    let has_provider = toml_src
+        .lines()
+        .any(|l| l.trim().starts_with("consolidate_provider"));
+
+    if has_interval && has_threshold && has_provider {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let extra = "\n# HL-F3/F4 consolidation fields (#3345) — splice into existing [memory.hebbian] section:\n\
+        # consolidation_interval_secs = 3600   # how often the sweep runs (0 = disabled)\n\
+        # consolidation_threshold = 5.0        # degree × avg_weight score to qualify\n\
+        # consolidate_provider = \"fast\"        # provider name for LLM distillation\n\
+        # max_candidates_per_sweep = 10\n\
+        # consolidation_cooldown_secs = 86400  # re-consolidation cooldown per entity\n\
+        # consolidation_prompt_timeout_secs = 30\n\
+        # consolidation_max_neighbors = 20\n";
+
+    let output = format!("{toml_src}{extra}");
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.hebbian".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
