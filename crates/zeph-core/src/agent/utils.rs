@@ -267,6 +267,16 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    pub(crate) fn record_successful_task(&self) {
+        if let Some(ref tracker) = self.metrics.cost_tracker {
+            tracker.record_successful_task();
+            self.update_metrics(|m| {
+                m.cost_cps_cents = tracker.cps();
+                m.cost_successful_tasks = tracker.successful_tasks();
+            });
+        }
+    }
+
     /// Inject pre-formatted code context into the message list.
     /// The caller is responsible for retrieving and formatting the text.
     pub fn inject_code_context(&mut self, text: &str) {

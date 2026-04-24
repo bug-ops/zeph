@@ -42,6 +42,7 @@ struct CostState {
     spent_cents: f64,
     day: u32,
     providers: HashMap<String, ProviderUsage>,
+    successful_tasks: u64,
 }
 
 pub struct CostTracker {
@@ -114,6 +115,7 @@ fn reset_if_new_day(state: &mut CostState) {
         state.spent_cents = 0.0;
         state.day = today;
         state.providers.clear();
+        state.successful_tasks = 0;
     }
 }
 
@@ -126,6 +128,7 @@ impl CostTracker {
                 spent_cents: 0.0,
                 day: current_day(),
                 providers: HashMap::new(),
+                successful_tasks: 0,
             })),
             max_daily_cents,
             enabled,
@@ -228,6 +231,35 @@ impl CostTracker {
     pub fn current_spend(&self) -> f64 {
         let state = self.state.lock();
         state.spent_cents
+    }
+
+    /// Increment the successful-task counter.
+    ///
+    /// Call after each turn that completes without error and produces a usable agent response.
+    pub fn record_successful_task(&self) {
+        if !self.enabled {
+            return;
+        }
+        let mut state = self.state.lock();
+        reset_if_new_day(&mut state);
+        state.successful_tasks += 1;
+    }
+
+    /// Returns cost-per-successful-task in cents, or `None` if no tasks recorded yet.
+    #[must_use]
+    pub fn cps(&self) -> Option<f64> {
+        let state = self.state.lock();
+        if state.successful_tasks == 0 {
+            return None;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        Some(state.spent_cents / state.successful_tasks as f64)
+    }
+
+    /// Returns total number of successful tasks recorded today.
+    #[must_use]
+    pub fn successful_tasks(&self) -> u64 {
+        self.state.lock().successful_tasks
     }
 
     /// Returns per-provider breakdown sorted by cost descending.
@@ -479,5 +511,42 @@ mod tests {
             1000,
         );
         assert!(tracker.provider_breakdown().is_empty());
+    }
+
+    #[test]
+    fn cps_none_when_no_tasks() {
+        let tracker = CostTracker::new(true, 100.0);
+        assert!(tracker.cps().is_none());
+        assert_eq!(tracker.successful_tasks(), 0);
+    }
+
+    #[test]
+    fn cps_calculated_correctly() {
+        let tracker = CostTracker::new(true, 100.0);
+        // 0.25 (input) + 1.0 (output) = 1.25 cents
+        record(&tracker, "openai", "gpt-4o", 1000, 1000);
+        tracker.record_successful_task();
+        tracker.record_successful_task();
+        assert_eq!(tracker.successful_tasks(), 2);
+        let cps = tracker.cps().expect("cps should be Some after tasks");
+        // 1.25 / 2 = 0.625
+        assert!((cps - 0.625).abs() < 0.001, "cps={cps}");
+    }
+
+    #[test]
+    fn cps_resets_on_new_day() {
+        let tracker = CostTracker::new(true, 100.0);
+        record(&tracker, "openai", "gpt-4o", 1000, 1000);
+        tracker.record_successful_task();
+        assert_eq!(tracker.successful_tasks(), 1);
+        // Force day change
+        {
+            let mut state = tracker.state.lock();
+            state.day = 0;
+        }
+        // Any state-touching call triggers reset
+        assert!(tracker.check_budget().is_ok());
+        assert_eq!(tracker.successful_tasks(), 0);
+        assert!(tracker.cps().is_none());
     }
 }

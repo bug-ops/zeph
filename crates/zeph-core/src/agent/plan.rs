@@ -488,6 +488,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                             m.total_tokens = m.prompt_tokens + m.completion_tokens;
                         });
                         self.record_cost_and_cache(aggr_prompt, aggr_completion);
+                        self.record_successful_task();
                         self.channel.send(&synthesis).await?;
                     }
                     Err(e) => {
@@ -724,6 +725,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             m.orchestration_graph = Some(snapshot);
         });
         self.record_cost_and_cache(planner_prompt, planner_completion);
+        self.record_successful_task();
 
         let summary = format_plan_summary(&graph);
         if confirm_before_execute {

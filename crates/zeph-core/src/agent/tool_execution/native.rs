@@ -376,6 +376,7 @@ impl<C: Channel> Agent<C> {
                     m.total_tokens = m.prompt_tokens + m.completion_tokens;
                 });
                 self.record_cost_and_cache(final_prompt, final_completion);
+                self.record_successful_task();
                 if let Some(ref recorder) = self.metrics.histogram_recorder {
                     recorder.observe_llm_latency(elapsed);
                 }
@@ -1029,6 +1030,7 @@ impl<C: Channel> Agent<C> {
             }
         });
         self.record_cost_and_cache(final_prompt, final_completion);
+        self.record_successful_task();
 
         if let Some(ref recorder) = self.metrics.histogram_recorder {
             recorder.observe_llm_latency(elapsed);

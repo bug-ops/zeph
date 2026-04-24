@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- CPS (cost per successful task) metric in `CostTracker`: `record_successful_task()`, `cps()`,
+  and `successful_tasks()` methods; daily reset consistent with existing cost reset (#2194).
+- `cost_cps_cents: Option<f64>` and `cost_successful_tasks: u64` fields in `AgentMetrics`;
+  updated after each successful turn in `native.rs` and `plan.rs` (#2194).
+- Qwen-2.5-7B Ollama provider entry (commented) in `.local/config/testing.toml` as `slm-medium`
+  for cost-optimised medium-complexity tasks per arXiv:2510.03847 (#2194).
+- Spec `specs/048-slm-cost-metrics/spec.md` documenting SLM survey findings and CPS metric
+  contract (#2194).
 - Hook actions now support `type = "mcp_tool"` to invoke MCP server tools directly without spawning a subprocess (#3293). Hooks can set `server`, `tool`, and optional `args` fields. Requires the MCP manager to be active; fails according to `fail_closed` if unavailable.
 - New `[hooks.permission_denied]` event fires when a tool execution is short-circuited by a `RuntimeLayer::before_tool` check (#3292). `Command` hooks receive `ZEPH_DENIED_TOOL` and `ZEPH_DENY_REASON` environment variables.
 - `McpDispatch` trait in `zeph-subagent` decouples hook execution from `zeph-mcp` — implementors are wired by `zeph-core` at call sites.

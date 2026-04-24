@@ -272,6 +272,10 @@ pub struct MetricsSnapshot {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub cost_spent_cents: f64,
+    /// Cost per successful task in cents. `None` until at least one task completes.
+    pub cost_cps_cents: Option<f64>,
+    /// Number of successful tasks recorded today.
+    pub cost_successful_tasks: u64,
     /// Per-provider cost breakdown, sorted by cost descending.
     pub provider_cost_breakdown: Vec<(String, crate::cost::ProviderUsage)>,
     pub filter_raw_tokens: u64,
