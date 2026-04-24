@@ -363,13 +363,20 @@ impl AppBuilder {
             memory = self.attach_graph_stores(memory, db_path).await?;
         }
 
-        memory = self.attach_reasoning_memory(memory, provider).await;
+        // Build the dedicated embed provider before attach_reasoning_memory so the
+        // Qdrant collection probe uses it. The primary router excludes embed-only entries
+        // (build_all_pool_providers skips `embed = true`), so passing only `provider`
+        // here would fail the probe with "no providers available" (#3375).
+        let embed_provider = self.build_memory_embed_provider();
+        memory = self
+            .attach_reasoning_memory(memory, provider, embed_provider.as_ref())
+            .await;
 
         if self.config.memory.admission.enabled {
             memory = memory.with_admission_control(self.build_admission_control());
         }
 
-        if let Some(ep) = self.build_memory_embed_provider() {
+        if let Some(ep) = embed_provider {
             memory = memory.with_embed_provider(ep);
         }
 
@@ -433,11 +440,14 @@ impl AppBuilder {
     /// Uses the main `SQLite` pool from `SemanticMemory` so no additional pool is needed.
     /// When Qdrant is configured, the `QdrantOps` is cloned and passed as the vector store
     /// for embedding-similarity retrieval. The `reasoning_strategies` collection is created
-    /// at startup with the correct vector dimension probed from `provider`.
+    /// at startup with the correct vector dimension probed from `embed_provider` when present,
+    /// falling back to `provider`. The dedicated embed provider must be passed here because the
+    /// primary router excludes `embed = true` pool entries and cannot produce embeddings (#3375).
     pub async fn attach_reasoning_memory(
         &self,
         memory: SemanticMemory,
         provider: &AnyProvider,
+        embed_provider: Option<&AnyProvider>,
     ) -> SemanticMemory {
         if !self.config.memory.reasoning.enabled {
             return memory;
@@ -451,10 +461,15 @@ impl AppBuilder {
         {
             let ops_arc: std::sync::Arc<dyn zeph_memory::VectorStore> = Arc::new(ops.clone());
 
+            // Use the dedicated embed provider for the dimension probe when available.
+            // The primary router skips embed-only pool entries, so it cannot produce
+            // embeddings when the config uses a separate embedder (#3375).
+            let probe_provider = embed_provider.unwrap_or(provider);
+
             // Ensure the reasoning_strategies collection exists with the correct vector size.
             // Best-effort: a failure here is logged and Qdrant falls back to SQLite-only mode.
-            if provider.supports_embeddings() {
-                match provider.embed("dimension probe").await {
+            if probe_provider.supports_embeddings() {
+                match probe_provider.embed("dimension probe").await {
                     Ok(probe) => {
                         let vector_size = u64::try_from(probe.len()).unwrap_or(1536);
                         if let Err(e) = ops

@@ -35,6 +35,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Removed dead `TaskClass::BackgroundShell` enum variant from the agent supervisor; `NUM_CLASSES`
   reduced from 3 to 2. Background shell tasks currently use `tokio::spawn` directly (deferred
   to a follow-up, tracked via TODO comment in source) (#3366).
+- `attach_reasoning_memory` now resolves the dedicated embed provider before performing the Qdrant
+  dimension probe. Previously it used the primary LLM router, which excludes `embed = true`
+  entries, causing the probe to fail and `ensure_collection("reasoning_strategies")` to never be
+  called. The fix passes `build_memory_embed_provider()` result into `attach_reasoning_memory` and
+  falls back to the primary provider when no dedicated embed provider is configured (#3375).
 
 - `--bare` mode now skips the file change watcher: `with_hooks_config` is no longer called
   unconditionally in `runner.rs` — it is guarded by `!exec_mode.bare`, preventing background
