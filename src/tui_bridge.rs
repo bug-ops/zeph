@@ -208,6 +208,37 @@ fn spawn_tui_thread(
 }
 
 #[cfg(feature = "tui")]
+fn tui_command_context(config: &zeph_core::config::Config, cli_tafc: bool) -> TuiCommandContext {
+    TuiCommandContext {
+        provider: format!("{:?}", config.llm.effective_provider()),
+        model: config.llm.effective_model().to_owned(),
+        agent_name: config.agent.name.clone(),
+        semantic_enabled: config.memory.semantic.enabled,
+        autonomy_level: format!("{:?}", config.security.autonomy_level),
+        max_tool_iterations: config.agent.max_tool_iterations,
+        tafc_enabled: config.tools.tafc.enabled || cli_tafc,
+        tafc_complexity_threshold: config.tools.tafc.complexity_threshold,
+        sandbox_backend: if config.tools.sandbox.enabled {
+            #[cfg(target_os = "macos")]
+            {
+                Some("macos-seatbelt".to_owned())
+            }
+            #[cfg(all(target_os = "linux", feature = "sandbox"))]
+            {
+                Some("linux-bwrap-landlock".to_owned())
+            }
+            #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "sandbox"))))]
+            {
+                Some("noop".to_owned())
+            }
+        } else {
+            None
+        },
+        sandbox_denied_domains_count: config.tools.sandbox.denied_domains.len(),
+        sandbox_fail_if_unavailable: config.tools.sandbox.fail_if_unavailable,
+    }
+}
+
 pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     agent: zeph_core::agent::Agent<C>,
     mut params: TuiRunParams<'_>,
@@ -264,38 +295,7 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     forwarders.spawn(forward_tui_commands(
         command_rx,
         agent_tx.clone(),
-        TuiCommandContext {
-            provider: format!("{:?}", params.config.llm.effective_provider()),
-            model: params.config.llm.effective_model().to_owned(),
-            agent_name: params.config.agent.name.clone(),
-            semantic_enabled: params.config.memory.semantic.enabled,
-            autonomy_level: format!("{:?}", params.config.security.autonomy_level),
-            max_tool_iterations: params.config.agent.max_tool_iterations,
-            tafc_enabled: params.config.tools.tafc.enabled || params.cli_tafc,
-            tafc_complexity_threshold: params.config.tools.tafc.complexity_threshold,
-            sandbox_backend: if params.config.tools.sandbox.enabled {
-                // Resolve the backend name from the platform — same logic as build_sandbox.
-                #[cfg(target_os = "macos")]
-                {
-                    Some("macos-seatbelt".to_owned())
-                }
-                #[cfg(all(target_os = "linux", feature = "sandbox"))]
-                {
-                    Some("linux-bwrap-landlock".to_owned())
-                }
-                #[cfg(not(any(
-                    target_os = "macos",
-                    all(target_os = "linux", feature = "sandbox")
-                )))]
-                {
-                    Some("noop".to_owned())
-                }
-            } else {
-                None
-            },
-            sandbox_denied_domains_count: params.config.tools.sandbox.denied_domains.len(),
-            sandbox_fail_if_unavailable: params.config.tools.sandbox.fail_if_unavailable,
-        },
+        tui_command_context(params.config, params.cli_tafc),
     ));
 
     if let Some(tool_rx) = params.tool_rx {
