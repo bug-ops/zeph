@@ -165,11 +165,9 @@ pub struct FocusConfig {
     /// Default: `4096`.
     #[serde(default = "default_focus_max_knowledge_tokens")]
     pub max_knowledge_tokens: usize,
-    /// Minimum messages in a low-relevance window before auto-consolidation runs
-    /// when `[memory.compression]` strategy is `focus` (#3313).
+    /// Minimum turns since the last auto-consolidation before the next one fires.
     ///
-    /// Distinct from `min_messages_per_focus` (which gates manual focus sessions).
-    /// Default: `6`.
+    /// Must be >= 1. `Config::validate()` rejects `0` at startup. Default: `6`.
     #[serde(default = "default_focus_auto_consolidate_min_window")]
     pub auto_consolidate_min_window: usize,
 }

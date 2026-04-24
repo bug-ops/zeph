@@ -63,6 +63,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `llm_request_timeout_secs` (600 s), `context_prep_timeout_secs` (30 s), and
   `no_providers_backoff_secs` (2 s). `migrate-config --diff` will now surface these fields for
   existing configs (#3377).
+- `FocusConfig.auto_consolidate_min_window = 0` no longer triggers LLM on every compress call:
+  `Config::validate()` now rejects zero with a clear error, and `FocusState::should_auto_consolidate()`
+  returns `false` until the configured number of turns has elapsed (default 4) (#3387).
 - `Notifier::fire_test()` now checks the master `notifications.enabled` switch first; if
   disabled, it returns an error instead of silently firing a test notification (#3364).
 - Fixed misleading comment in `drain_background_completions()`: the overflow branch drops

@@ -268,6 +268,13 @@ impl Config {
                 "agent.focus.min_messages_per_focus must be >= 1".into(),
             ));
         }
+        if self.agent.focus.auto_consolidate_min_window == 0 {
+            return Err(ConfigError::Validation(
+                "agent.focus.auto_consolidate_min_window must be >= 1 \
+                 (set focus.enabled = false to disable auto-consolidation)"
+                    .into(),
+            ));
+        }
 
         // SideQuest config validation
         if self.memory.sidequest.interval_turns == 0 {
@@ -783,5 +790,23 @@ weight = 0.3
         assert!((skills.disambiguation_threshold - 0.25_f32).abs() < f32::EPSILON);
 
         let _ = wrapped; // silence unused-variable lint
+    }
+
+    #[test]
+    fn focus_auto_consolidate_min_window_zero_rejected() {
+        let mut cfg = Config::default();
+        cfg.agent.focus.auto_consolidate_min_window = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("auto_consolidate_min_window"),
+            "expected auto_consolidate_min_window in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn focus_auto_consolidate_min_window_one_accepted() {
+        let mut cfg = Config::default();
+        cfg.agent.focus.auto_consolidate_min_window = 1;
+        assert!(cfg.validate().is_ok());
     }
 }

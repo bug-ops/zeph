@@ -1042,6 +1042,8 @@ max_files = 7
 # reminder_interval = 15
 # # Minimum bracketed messages before complete_focus is useful (default: 8)
 # min_messages_per_focus = 8
+# # Minimum turns that must elapse between auto-consolidations; must be >= 1 (default: 4)
+# auto_consolidate_min_window = 4
 # # Maximum tokens the Knowledge block may grow to before trimming old entries (default: 4096)
 # max_knowledge_tokens = 4096
 # # Minimum messages in a low-relevance window before auto-consolidation runs (#3313)

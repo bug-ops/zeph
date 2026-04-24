@@ -241,6 +241,33 @@ impl FocusState {
         self.append_knowledge(summary, KnowledgeBlockSource::AutoConsolidated)
     }
 
+    /// Returns `true` if the auto-consolidation window has elapsed and a consolidation pass
+    /// should be triggered, `false` if the minimum turn gap has not yet been reached.
+    ///
+    /// The guard enforces [`FocusConfig::auto_consolidate_min_window`]: a value of `N` means
+    /// at least `N` turns must elapse since the last consolidation before the next one fires.
+    /// `Config::validate()` guarantees `auto_consolidate_min_window >= 1`, so on turn 0 this
+    /// always returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use zeph_config::FocusConfig;
+    /// # use zeph_core::agent::focus::FocusState;
+    /// let config = FocusConfig { auto_consolidate_min_window: 4, ..FocusConfig::default() };
+    /// let mut state = FocusState::new(config);
+    /// assert!(!state.should_auto_consolidate()); // 0 turns elapsed
+    /// for _ in 0..4 { state.tick(); }
+    /// assert!(state.should_auto_consolidate()); // 4 turns elapsed
+    /// ```
+    // TODO(#2510): call this from the agent-loop compression path (Focus strategy Phase 2)
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn should_auto_consolidate(&self) -> bool {
+        self.config.enabled
+            && self.turns_since_focus >= self.config.auto_consolidate_min_window
+            && !self.is_active()
+    }
+
     /// Build the pinned Knowledge block message, or `None` if there is no knowledge yet.
     pub(crate) fn build_knowledge_message(&self) -> Option<Message> {
         if self.knowledge_blocks.is_empty() {
@@ -509,6 +536,53 @@ mod tests {
         assert!(state.active_scope.is_none());
         assert_eq!(state.turns_since_focus, 0);
         assert_eq!(state.turns_since_reminder, 0);
+    }
+
+    // Guard: should_auto_consolidate fires only after min_window turns (#3387).
+    #[test]
+    fn auto_consolidation_skipped_below_min_window() {
+        let config = FocusConfig {
+            enabled: true,
+            auto_consolidate_min_window: 4,
+            ..FocusConfig::default()
+        };
+        let mut state = FocusState::new(config);
+        // 0 turns — must not fire.
+        assert!(!state.should_auto_consolidate());
+        state.tick();
+        state.tick();
+        state.tick();
+        // 3 turns — still below window.
+        assert!(!state.should_auto_consolidate());
+        state.tick();
+        // 4 turns — exactly at window — must fire.
+        assert!(state.should_auto_consolidate());
+    }
+
+    #[test]
+    fn auto_consolidation_suppressed_while_session_active() {
+        let config = FocusConfig {
+            enabled: true,
+            auto_consolidate_min_window: 1,
+            ..FocusConfig::default()
+        };
+        let mut state = FocusState::new(config);
+        state.tick();
+        state.start("active scope".to_string());
+        // Window elapsed but session is active — must not fire.
+        assert!(!state.should_auto_consolidate());
+    }
+
+    #[test]
+    fn auto_consolidation_suppressed_when_disabled() {
+        let config = FocusConfig {
+            enabled: false,
+            auto_consolidate_min_window: 1,
+            ..FocusConfig::default()
+        };
+        let mut state = FocusState::new(config);
+        state.tick();
+        assert!(!state.should_auto_consolidate());
     }
 
     #[test]
