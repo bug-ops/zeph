@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `--bare` mode now skips the file change watcher: `with_hooks_config` is no longer called
+  unconditionally in `runner.rs` — it is guarded by `!exec_mode.bare`, preventing background
+  filesystem watch threads from starting in minimal sessions (#3362).
+- `config/default.toml` `[tools.shell]` section now documents the two background execution
+  fields (`max_background_runs`, `background_timeout_secs`) added in #3328 as commented-out
+  entries, matching the documented defaults (#3363).
+
 - Wire `ExperienceStore` into the agent tool loop and per-turn evolution sweep (#3318): tool
   outcomes are recorded fire-and-forget via `TaskClass::Telemetry`; evolution sweep runs every N
   user turns; both gates on `memory.graph.experience.enabled` with zero overhead when disabled.

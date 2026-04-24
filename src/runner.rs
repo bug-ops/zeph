@@ -2024,7 +2024,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
-    let agent = agent.with_hooks_config(&config.hooks);
+    let agent = if exec_mode.bare {
+        agent
+    } else {
+        agent.with_hooks_config(&config.hooks)
+    };
     let agent = agent.with_channel_skills(channel_skills_config);
     let agent = agent.with_learning(config.skills.learning.clone());
 

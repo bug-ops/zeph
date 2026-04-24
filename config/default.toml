@@ -542,6 +542,10 @@ allowed_paths = []
 allow_network = true
 # Commands that require user confirmation before execution
 confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "drop database", "truncate "]
+# Maximum number of concurrent background shell runs (background = true parameter)
+# max_background_runs = 8
+# Timeout for background runs in seconds (30 min default)
+# background_timeout_secs = 1800
 
 # [tools.file]
 # Per-path read sandbox using glob patterns. Evaluation: deny first, then allow overrides.
