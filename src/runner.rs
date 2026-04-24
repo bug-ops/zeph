@@ -2036,11 +2036,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent.with_tafc_config(tafc_config);
 
     let agent = agent.with_document_config(config.memory.documents.clone());
-    let agent = if exec_mode.bare {
-        agent
-    } else {
-        agent.with_graph_config(config.memory.graph.clone())
-    };
 
     let agent = {
         let mut mgr = zeph_subagent::SubAgentManager::new(config.agents.max_concurrent);
@@ -3163,17 +3158,12 @@ mod tests {
         assert!(!gateway_would_spawn, "gateway must not spawn in bare mode");
     }
 
-    /// `--bare` skips `agent.with_graph_config()` — guard `if exec_mode.bare { agent }` fires.
+    /// `--bare` sets the bare execution mode flag.
     #[test]
-    fn bare_flag_skips_graph_config_guard() {
+    fn bare_flag_sets_execution_mode() {
         let cli = Cli::parse_from(["zeph", "--bare"]);
         let mode =
             crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
-        // Guard: `if exec_mode.bare { agent } else { agent.with_graph_config(...) }`
-        let graph_would_activate = !mode.bare;
-        assert!(
-            !graph_would_activate,
-            "graph memory must not activate in bare mode"
-        );
+        assert!(mode.bare, "bare flag must set execution mode");
     }
 }
