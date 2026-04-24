@@ -3080,7 +3080,10 @@ mod tests {
             crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
         // Guard: `if bare { (Vec::new(), Vec::new()) } else { mcp_manager.connect_all().await }`
         let mcp_would_connect = !mode.bare;
-        assert!(!mcp_would_connect, "MCP connect_all must be skipped in bare mode");
+        assert!(
+            !mcp_would_connect,
+            "MCP connect_all must be skipped in bare mode"
+        );
     }
 
     /// `--bare` suppresses gateway spawn — guards `!exec_mode.bare` prevent both code paths.
@@ -3102,6 +3105,9 @@ mod tests {
             crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
         // Guard: `if exec_mode.bare { agent } else { agent.with_graph_config(...) }`
         let graph_would_activate = !mode.bare;
-        assert!(!graph_would_activate, "graph memory must not activate in bare mode");
+        assert!(
+            !graph_would_activate,
+            "graph memory must not activate in bare mode"
+        );
     }
 }
