@@ -30,6 +30,7 @@ pub(crate) fn sandbox_platform_support() -> (bool, &'static str) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn step_sandbox(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== OS Subprocess Sandbox ==\n");
     println!(
@@ -117,6 +118,34 @@ pub(super) fn step_sandbox(state: &mut WizardState) -> anyhow::Result<()> {
 
     state.sandbox_allow_read = prompt_abs_paths("Additional read-allowed paths")?;
     state.sandbox_allow_write = prompt_abs_paths("Additional write-allowed paths")?;
+
+    // Sandbox egress filter (#3294).
+    println!("\n-- Sandbox egress filter --");
+    println!(
+        "Deny network egress to specific hostnames from sandboxed shell commands.\n\
+         Patterns: exact hostname (\"pastebin.com\") or single-level wildcard (\"*.evil.com\").\n\
+         Enforcement is per-backend: macOS uses Seatbelt rules; Linux overlays /etc/hosts.\n"
+    );
+    let raw_denied: String = Input::new()
+        .with_prompt("Denied domains (comma-separated, empty = none)")
+        .allow_empty(true)
+        .interact_text()?;
+    state.sandbox_denied_domains = raw_denied
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+
+    if !state.sandbox_denied_domains.is_empty() {
+        state.sandbox_fail_if_unavailable = Confirm::new()
+            .with_prompt(
+                "Abort startup when no effective OS sandbox is available? \
+                 (Recommended when denied_domains must be enforced)",
+            )
+            .default(false)
+            .interact()?;
+    }
 
     println!();
     Ok(())

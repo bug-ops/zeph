@@ -128,6 +128,60 @@ fn default_scheduler_max_tasks() -> usize {
     100
 }
 
+fn default_scheduler_daemon_tick_secs() -> u64 {
+    60
+}
+
+fn default_scheduler_daemon_shutdown_grace_secs() -> u64 {
+    30
+}
+
+fn default_scheduler_daemon_pid_file() -> String {
+    // MINOR-4: dirs::state_dir() is None on macOS, so we use platform-specific fallbacks.
+    #[cfg(target_os = "macos")]
+    {
+        dirs::data_local_dir()
+            .map_or_else(
+                || std::path::PathBuf::from("~/.zeph/zeph.pid"),
+                |d| d.join("zeph").join("zeph.pid"),
+            )
+            .to_string_lossy()
+            .into_owned()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        dirs::state_dir()
+            .or_else(dirs::data_local_dir)
+            .map(|d| d.join("zeph").join("zeph.pid"))
+            .unwrap_or_else(|| std::path::PathBuf::from("~/.zeph/zeph.pid"))
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+fn default_scheduler_daemon_log_file() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: ~/Library/Logs/zeph/zeph.log
+        dirs::cache_dir()
+            .map_or_else(
+                || std::path::PathBuf::from("~/.zeph/zeph.log"),
+                |d| d.join("zeph").join("zeph.log"),
+            )
+            .to_string_lossy()
+            .into_owned()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        dirs::state_dir()
+            .or_else(dirs::data_local_dir)
+            .map(|d| d.join("zeph").join("zeph.log"))
+            .unwrap_or_else(|| std::path::PathBuf::from("~/.zeph/zeph.log"))
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
 fn default_gateway_bind() -> String {
     "127.0.0.1".into()
 }
@@ -515,6 +569,65 @@ impl Default for DaemonConfig {
     }
 }
 
+/// Daemon mode configuration for `zeph serve`, nested under `[scheduler.daemon]` in TOML.
+///
+/// Controls the behaviour of the background scheduler process started by `zeph serve`.
+/// The pid file **must be on a local filesystem**; NFS mounts may not provide reliable
+/// exclusive locking.
+///
+/// Log rotation requires `logrotate copytruncate` or a SIGHUP signal; the daemon does
+/// not rotate logs internally (append-only log file).
+///
+/// # Platform defaults
+///
+/// - **macOS**: pid `~/Library/Application Support/zeph/zeph.pid`,
+///   log `~/Library/Caches/zeph/zeph.log`
+/// - **Linux**: pid `$XDG_STATE_HOME/zeph/zeph.pid`,
+///   log `$XDG_STATE_HOME/zeph/zeph.log`
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [scheduler.daemon]
+/// pid_file  = "~/.local/state/zeph/zeph.pid"
+/// log_file  = "~/.local/state/zeph/zeph.log"
+/// catch_up  = true
+/// tick_secs = 60
+/// shutdown_grace_secs = 30
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SchedulerDaemonConfig {
+    /// Path to the PID file. Must reside on a local filesystem for reliable locking.
+    #[serde(default = "default_scheduler_daemon_pid_file")]
+    pub pid_file: String,
+    /// Path to the daemon log file (append-only; rotated externally).
+    #[serde(default = "default_scheduler_daemon_log_file")]
+    pub log_file: String,
+    /// When `true`, fire overdue periodic tasks once on startup before entering the
+    /// regular tick loop. At most one missed occurrence per task is replayed.
+    #[serde(default = "crate::defaults::default_true")]
+    pub catch_up: bool,
+    /// Tick interval in seconds (clamped to `5..=3600`). Default: `60`.
+    #[serde(default = "default_scheduler_daemon_tick_secs")]
+    pub tick_secs: u64,
+    /// Graceful shutdown window in seconds: how long to wait for in-flight tasks
+    /// after a SIGTERM before forcing an exit. Default: `30`.
+    #[serde(default = "default_scheduler_daemon_shutdown_grace_secs")]
+    pub shutdown_grace_secs: u64,
+}
+
+impl Default for SchedulerDaemonConfig {
+    fn default() -> Self {
+        Self {
+            pid_file: default_scheduler_daemon_pid_file(),
+            log_file: default_scheduler_daemon_log_file(),
+            catch_up: true,
+            tick_secs: default_scheduler_daemon_tick_secs(),
+            shutdown_grace_secs: default_scheduler_daemon_shutdown_grace_secs(),
+        }
+    }
+}
+
 /// Cron-based task scheduler configuration, nested under `[scheduler]` in TOML.
 ///
 /// When `enabled = true`, the scheduler runs periodic tasks on a cron schedule.
@@ -548,6 +661,9 @@ pub struct SchedulerConfig {
     /// List of scheduled task definitions.
     #[serde(default)]
     pub tasks: Vec<ScheduledTaskConfig>,
+    /// Daemon lifecycle settings used by `zeph serve` / `zeph stop` / `zeph status`.
+    #[serde(default)]
+    pub daemon: SchedulerDaemonConfig,
 }
 
 impl Default for SchedulerConfig {
@@ -557,6 +673,7 @@ impl Default for SchedulerConfig {
             tick_interval_secs: default_scheduler_tick_interval(),
             max_tasks: default_scheduler_max_tasks(),
             tasks: Vec::new(),
+            daemon: SchedulerDaemonConfig::default(),
         }
     }
 }

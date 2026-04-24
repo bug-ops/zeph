@@ -12,10 +12,18 @@ publish.workspace = true
 description = "Cron-based periodic task scheduler with SQLite persistence for Zeph"
 readme = "README.md"
 
+[features]
+## Enable Unix daemon lifecycle: `PidFile`, `detach_and_run`, and `run_foreground`.
+##
+## Pulls in `rustix` (fs + process features) for advisory file locking.
+## Only meaningful on Unix targets; daemon code is `#[cfg(unix)]`-gated.
+daemon = ["dep:rustix"]
+
 [dependencies]
 chrono = { workspace = true, features = ["std", "clock"] }
 cron.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls"] }
+rustix = { workspace = true, features = ["fs", "process", "std"], optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 semver.workspace = true
@@ -27,6 +35,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 sqlx = { workspace = true, features = ["runtime-tokio-rustls", "sqlite"] }
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock.workspace = true
 

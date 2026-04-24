@@ -256,6 +256,30 @@ fn generate_sb_profile_for_home(policy: &SandboxPolicy, home: &Path) -> String {
         rules.push("(allow network*)".to_owned());
     }
 
+    // Egress deny rules — appended AFTER any (allow network*) so Seatbelt's
+    // last-rule-wins semantics block the listed hosts even when network is allowed.
+    // When network is not allowed at all, these deny rules are redundant but harmless.
+    //
+    // Wildcard patterns `*.example.com` expand to two rules:
+    //   - `(remote host "example.com")` — the apex hostname itself
+    //   - `(remote host-suffix ".example.com")` — all subdomains
+    //
+    // Note: `(remote host "X")` does not match IP literals. Bypass via IP address is
+    // possible. This is acceptable for the MVP threat model (advisory egress filter).
+    for domain in &policy.denied_domains {
+        if let Some(base) = domain.strip_prefix("*.") {
+            let escaped_base = escape_sb(base);
+            let escaped_suffix = escape_sb(domain.strip_prefix('*').unwrap_or(domain));
+            rules.push(format!("(deny network* (remote host \"{escaped_base}\"))"));
+            rules.push(format!(
+                "(deny network* (remote host-suffix \"{escaped_suffix}\"))"
+            ));
+        } else {
+            let escaped = escape_sb(domain);
+            rules.push(format!("(deny network* (remote host \"{escaped}\"))"));
+        }
+    }
+
     rules.join("\n")
 }
 
@@ -599,6 +623,102 @@ mod tests {
             literal_denies >= SECRET_FILES.len(),
             "expected at least {} literal deny rules, got {literal_denies}",
             SECRET_FILES.len()
+        );
+    }
+
+    // -- denied_domains tests (#3294) -------------------------------------------------
+
+    #[test]
+    fn denied_domains_empty_produces_no_deny_network_rule() {
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::NetworkAllowAll,
+            allow_network: true,
+            ..Default::default()
+        };
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
+        assert!(
+            !profile.contains("(deny network* (remote host"),
+            "empty denied_domains must produce no egress deny rules"
+        );
+    }
+
+    #[test]
+    fn denied_domains_exact_appended_after_network_allow() {
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::NetworkAllowAll,
+            allow_network: true,
+            denied_domains: vec!["pastebin.com".to_owned()],
+            ..Default::default()
+        };
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
+        let allow_pos = profile
+            .find("(allow network*)")
+            .expect("allow network* missing");
+        let deny_rule = "(deny network* (remote host \"pastebin.com\"))";
+        let deny_pos = profile.find(deny_rule).expect("deny rule missing");
+        assert!(
+            deny_pos > allow_pos,
+            "deny-domain rule must appear after (allow network*)"
+        );
+    }
+
+    #[test]
+    fn denied_domains_wildcard_emits_host_and_host_suffix_rules() {
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::NetworkAllowAll,
+            allow_network: true,
+            denied_domains: vec!["*.pastebin.com".to_owned()],
+            ..Default::default()
+        };
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
+        assert!(
+            profile.contains("(deny network* (remote host \"pastebin.com\"))"),
+            "wildcard must produce apex host rule"
+        );
+        assert!(
+            profile.contains("(deny network* (remote host-suffix \".pastebin.com\"))"),
+            "wildcard must produce host-suffix rule"
+        );
+    }
+
+    #[test]
+    fn denied_domains_hostile_input_escaped() {
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::NetworkAllowAll,
+            allow_network: true,
+            denied_domains: vec!["host\"with\"quotes.com".to_owned()],
+            ..Default::default()
+        };
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
+        assert!(
+            profile.contains(r#"host\"with\"quotes.com"#),
+            "quotes in domain names must be escaped"
+        );
+        // The profile must not contain bare (unescaped) quotes inside the host name.
+        // We check that the profile does not have the raw domain string with literal quotes.
+        let raw = "host\"with\"quotes.com";
+        assert!(
+            !profile
+                .lines()
+                .any(|l| l.contains("remote host") && l.contains(raw)),
+            "bare unescaped quote must not appear inside a remote host rule"
+        );
+    }
+
+    #[test]
+    fn denied_domains_without_network_allow_still_emitted() {
+        // Deny rules are emitted even when network is not allowed — they are
+        // redundant but harmless (deny-default already blocks all traffic).
+        let policy = SandboxPolicy {
+            profile: SandboxProfile::Workspace,
+            allow_network: false,
+            denied_domains: vec!["example.com".to_owned()],
+            ..Default::default()
+        };
+        let profile = generate_sb_profile_for_home(&policy, &fake_home());
+        assert!(
+            profile.contains("(deny network* (remote host \"example.com\"))"),
+            "deny rule must be present even without (allow network*)"
         );
     }
 

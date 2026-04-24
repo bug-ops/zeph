@@ -89,6 +89,13 @@ pub struct SandboxPolicy {
     pub allow_exec: Vec<PathBuf>,
     /// Environment variable names or prefixes that are inherited by the sandboxed child.
     pub env_inherit: Vec<String>,
+    /// Hostname patterns (exact or `*.suffix`) denied network egress.
+    ///
+    /// Enforcement is per-backend:
+    /// - macOS Seatbelt: `(deny network* (remote host "<host>"))` after `(allow network*)`.
+    /// - Linux bwrap: `/etc/hosts` override resolving the name to `0.0.0.0` (best-effort).
+    /// - [`NoopSandbox`]: ignored (log WARN at construction if non-empty).
+    pub denied_domains: Vec<String>,
 }
 
 impl SandboxPolicy {
@@ -143,6 +150,7 @@ impl Default for SandboxPolicy {
             allow_network: false,
             allow_exec: vec![],
             env_inherit: vec![],
+            denied_domains: vec![],
         }
     }
 }
@@ -241,17 +249,40 @@ pub trait Sandbox: Send + Sync + std::fmt::Debug {
 /// Returns [`SandboxError::Unavailable`] when `strict = true` and the preferred backend
 /// is missing (e.g. `bwrap` not on `PATH`).
 pub fn build_sandbox(strict: bool) -> Result<Box<dyn Sandbox>, SandboxError> {
+    build_sandbox_with_policy(strict, false, false)
+}
+
+/// Construct the best available [`Sandbox`] backend with additional safety options.
+///
+/// Extends [`build_sandbox`] with:
+/// - `fail_if_unavailable`: when `true`, even a successful noop fallback is an error.
+///   Use this when `denied_domains` must be enforced and no effective sandbox exists.
+/// - `denied_domains_present`: when `true` and the noop backend is selected with
+///   `fail_if_unavailable = false`, emits a one-shot `WARN` that the deny list is unenforceable.
+///
+/// # Errors
+///
+/// - [`SandboxError::Unavailable`] when `strict = true` and the preferred backend binary is
+///   missing (same as [`build_sandbox`]).
+/// - [`SandboxError::Unavailable`] when `fail_if_unavailable = true` and noop would be selected.
+pub fn build_sandbox_with_policy(
+    strict: bool,
+    fail_if_unavailable: bool,
+    denied_domains_present: bool,
+) -> Result<Box<dyn Sandbox>, SandboxError> {
     #[cfg(target_os = "macos")]
     {
-        let _ = strict;
+        let _ = (strict, fail_if_unavailable, denied_domains_present);
         Ok(Box::new(MacosSandbox::new()))
     }
 
     #[cfg(all(target_os = "linux", feature = "sandbox"))]
     {
+        let _ = (fail_if_unavailable, denied_domains_present);
         linux::LinuxSandbox::new(strict).map(|s| Box::new(s) as Box<dyn Sandbox>)
     }
 
+    // Noop path: platform without an OS sandbox backend.
     #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "sandbox"))))]
     {
         if strict {
@@ -259,9 +290,24 @@ pub fn build_sandbox(strict: bool) -> Result<Box<dyn Sandbox>, SandboxError> {
                 reason: "OS sandbox not supported on this platform and strict=true".into(),
             });
         }
-        tracing::warn!(
-            "OS sandbox not supported on this platform — running without subprocess isolation"
-        );
+        if fail_if_unavailable {
+            return Err(SandboxError::Unavailable {
+                reason: "noop backend selected but fail_if_unavailable=true; \
+                         OS sandbox is required on this platform"
+                    .into(),
+            });
+        }
+        if denied_domains_present {
+            tracing::warn!(
+                "sandbox.denied_domains is set but the OS sandbox is unavailable on this platform \
+                 — denied domains cannot be enforced; set fail_if_unavailable=true to make this a \
+                 startup error"
+            );
+        } else {
+            tracing::warn!(
+                "OS sandbox not supported on this platform — running without subprocess isolation"
+            );
+        }
         Ok(Box::new(NoopSandbox))
     }
 }
@@ -298,6 +344,7 @@ mod tests {
             allow_network: false,
             allow_exec: vec![],
             env_inherit: vec![],
+            denied_domains: vec![],
         }
         .canonicalized();
 

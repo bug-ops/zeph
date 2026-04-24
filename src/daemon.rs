@@ -323,15 +323,20 @@ pub(crate) async fn run_daemon(
         )
         .with_output_filters(filter_registry);
     if config.tools.sandbox.enabled {
-        match zeph_tools::sandbox::build_sandbox(config.tools.sandbox.strict) {
+        let denied_present = !config.tools.sandbox.denied_domains.is_empty();
+        match zeph_tools::sandbox::build_sandbox_with_policy(
+            config.tools.sandbox.strict,
+            config.tools.sandbox.fail_if_unavailable,
+            denied_present,
+        ) {
             Ok(backend) => {
                 let name = backend.name();
                 let policy = crate::agent_setup::sandbox_policy_from_config(&config.tools.sandbox);
                 shell_executor = shell_executor.with_sandbox(std::sync::Arc::from(backend), policy);
                 tracing::info!(backend = name, "OS sandbox enabled (daemon)");
             }
-            Err(e) if config.tools.sandbox.strict => {
-                panic!("sandbox initialization failed (strict=true): {e}");
+            Err(e) if config.tools.sandbox.strict || config.tools.sandbox.fail_if_unavailable => {
+                panic!("sandbox initialization failed: {e}");
             }
             Err(e) => {
                 tracing::warn!("OS sandbox unavailable, running without isolation: {e}");

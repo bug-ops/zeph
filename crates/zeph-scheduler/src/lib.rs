@@ -88,6 +88,11 @@ mod store;
 mod task;
 pub mod update_check;
 
+#[cfg(all(unix, feature = "daemon"))]
+pub mod daemon;
+#[cfg(all(unix, feature = "daemon"))]
+pub mod pidfile;
+
 pub use error::SchedulerError;
 pub use handlers::CustomTaskHandler;
 pub use sanitize::sanitize_task_prompt;
@@ -96,4 +101,12 @@ pub use store::{JobStore, ScheduledTaskInfo};
 pub use task::{
     ScheduledTask, TaskDescriptor, TaskHandler, TaskKind, TaskMode, normalize_cron_expr,
 };
+
+#[cfg(all(unix, feature = "daemon"))]
+pub use daemon::{
+    DaemonConfig, DaemonStatus, TaskRunSummary, daemon_status, detach_and_run, run_foreground,
+    stop_daemon,
+};
+#[cfg(all(unix, feature = "daemon"))]
+pub use pidfile::PidFile;
 pub use update_check::UpdateCheckHandler;

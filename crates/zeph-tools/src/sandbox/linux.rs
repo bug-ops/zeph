@@ -29,9 +29,13 @@
 //! - `strict = true` (default): returns `SandboxError::Unavailable` → startup aborts.
 //! - `strict = false`: falls back to `NoopSandbox` and logs `WARN`.
 
+use std::io::{Seek as _, Write as _};
 use std::os::fd::OwnedFd;
+use std::os::unix::io::AsRawFd as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+use tempfile::NamedTempFile;
 
 use landlock::{
     Access, AccessFs, BitFlags, PathBeneath, PathFd, RestrictionStatus, Ruleset, RulesetAttr,
@@ -57,6 +61,15 @@ pub struct LinuxSandbox {
     /// slot, `into_raw_fd()` would leave an unowned fd that leaks if spawn fails or panics.
     /// Each `wrap()` call replaces the slot (dropping and closing the previous fd).
     pending_fd: Mutex<Option<OwnedFd>>,
+    /// Keeps the synthetic `/etc/hosts` tempfile alive between `wrap()` and `spawn()`.
+    ///
+    /// When `policy.denied_domains` is non-empty, a synthetic hosts file is written that
+    /// maps denied hostnames to `0.0.0.0`. The file is mounted read-only into the bwrap
+    /// namespace at `/etc/hosts` and must remain on disk until after the child exec.
+    ///
+    /// This is best-effort only: processes using custom DNS clients, IP literals, or HTTP
+    /// proxies can bypass this filter.
+    pending_hosts: Mutex<Option<NamedTempFile>>,
 }
 
 impl LinuxSandbox {
@@ -75,6 +88,7 @@ impl LinuxSandbox {
                     bwrap_path: path,
                     bpf_bytes,
                     pending_fd: Mutex::new(None),
+                    pending_hosts: Mutex::new(None),
                 })
             }
             None if strict => Err(SandboxError::Unavailable {
@@ -121,7 +135,29 @@ impl Sandbox for LinuxSandbox {
         let (owned_fd, fd_num) = write_bytes_to_tmpfd(&self.bpf_bytes)?;
         *self.pending_fd.lock().expect("pending_fd lock poisoned") = Some(owned_fd);
 
-        rewrite_with_bwrap(cmd, &self.bwrap_path, policy, fd_num);
+        // Generate synthetic /etc/hosts when denied_domains is non-empty.
+        // The tempfile is kept alive in pending_hosts until the child execs.
+        let hosts_path = if policy.denied_domains.is_empty() {
+            *self
+                .pending_hosts
+                .lock()
+                .expect("pending_hosts lock poisoned") = None;
+            None
+        } else {
+            let content = generate_hosts_override(&policy.denied_domains);
+            let mut tmp = NamedTempFile::new().map_err(SandboxError::Setup)?;
+            tmp.write_all(content.as_bytes())
+                .map_err(SandboxError::Setup)?;
+            tmp.flush().map_err(SandboxError::Setup)?;
+            let path = tmp.path().to_path_buf();
+            *self
+                .pending_hosts
+                .lock()
+                .expect("pending_hosts lock poisoned") = Some(tmp);
+            Some(path)
+        };
+
+        rewrite_with_bwrap(cmd, &self.bwrap_path, policy, fd_num, hosts_path.as_deref());
 
         Ok(())
     }
@@ -272,24 +308,31 @@ const fn libc_eperm() -> u32 {
 /// NOT `O_CLOEXEC` so bwrap can read it after fork; it is closed by bwrap when done.
 /// The caller must keep the returned [`OwnedFd`] alive until after `Command::spawn()`.
 fn write_bytes_to_tmpfd(bpf_bytes: &[u8]) -> Result<(OwnedFd, i32), SandboxError> {
-    use std::io::Write as _;
-
     let mut tmp = tempfile::tempfile().map_err(SandboxError::Setup)?;
     tmp.write_all(bpf_bytes).map_err(SandboxError::Setup)?;
     tmp.flush().map_err(SandboxError::Setup)?;
 
-    use std::io::Seek as _;
     tmp.seek(std::io::SeekFrom::Start(0))
         .map_err(SandboxError::Setup)?;
 
-    use std::os::unix::io::AsRawFd as _;
     let owned: OwnedFd = tmp.into();
     let fd_num = owned.as_raw_fd();
     Ok((owned, fd_num))
 }
 
 /// Rewrite `cmd` to execute via `bwrap <flags> -- <original>`.
-fn rewrite_with_bwrap(cmd: &mut Command, bwrap: &Path, policy: &SandboxPolicy, seccomp_fd: i32) {
+///
+/// When `hosts_override` is `Some`, the file is mounted read-only at `/etc/hosts`
+/// inside the namespace, shadowing the system hosts file. This provides a best-effort
+/// egress filter for `denied_domains` entries. Processes that use custom DNS clients,
+/// IP literals, or HTTP proxies can bypass this filter.
+fn rewrite_with_bwrap(
+    cmd: &mut Command,
+    bwrap: &Path,
+    policy: &SandboxPolicy,
+    seccomp_fd: i32,
+    hosts_override: Option<&Path>,
+) {
     let std_cmd = cmd.as_std_mut();
 
     let original_program = std_cmd.get_program().to_os_string();
@@ -340,6 +383,17 @@ fn rewrite_with_bwrap(cmd: &mut Command, bwrap: &Path, policy: &SandboxPolicy, s
         bwrap_args.extend(["--bind".into(), p.clone().into(), p.into()]);
     }
 
+    // Overlay /etc/hosts with the synthetic deny-list file when provided.
+    // Mounted after the /etc ro-bind above, so bwrap applies binds in order and
+    // this entry shadows the system /etc/hosts inside the namespace.
+    if let Some(hosts_path) = hosts_override {
+        bwrap_args.extend([
+            "--ro-bind".into(),
+            hosts_path.display().to_string().into(),
+            "/etc/hosts".into(),
+        ]);
+    }
+
     // Seccomp fd.
     bwrap_args.push("--seccomp".into());
     bwrap_args.push(seccomp_fd.to_string().into());
@@ -354,6 +408,40 @@ fn rewrite_with_bwrap(cmd: &mut Command, bwrap: &Path, policy: &SandboxPolicy, s
     for arg in bwrap_args {
         std_cmd.arg(arg);
     }
+}
+
+/// Generate a synthetic `/etc/hosts` content that resolves denied hostnames to `0.0.0.0`.
+///
+/// Wildcards (`*.example.com`) are expanded shallowly: only the base hostname (`example.com`)
+/// is emitted. Full subdomain enumeration is out of scope; real DNS blocking requires a
+/// resolver proxy (future work).
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(all(target_os = "linux", feature = "sandbox"))]
+/// # {
+/// use zeph_tools::sandbox::linux::generate_hosts_override;
+///
+/// let denied = vec!["pastebin.com".to_owned(), "*.evil.com".to_owned()];
+/// let content = generate_hosts_override(&denied);
+/// assert!(content.contains("0.0.0.0 pastebin.com"));
+/// assert!(content.contains("0.0.0.0 evil.com"));
+/// # }
+/// ```
+#[must_use]
+pub fn generate_hosts_override(denied: &[String]) -> String {
+    let mut out = String::from(
+        "# zeph sandbox egress deny list — generated per-wrap\n\
+         127.0.0.1 localhost\n\
+         ::1 localhost\n",
+    );
+    for domain in denied {
+        // Wildcards: emit the base domain (shallow expansion only).
+        let hostname = domain.strip_prefix("*.").unwrap_or(domain.as_str());
+        out.push_str(&format!("0.0.0.0 {hostname}\n"));
+    }
+    out
 }
 
 /// Apply a Landlock FS ruleset on the *calling* thread and restrict it to `policy`.
@@ -461,6 +549,50 @@ mod tests {
         // Test that the locate function doesn't panic when bwrap is absent.
         // We can't assert presence since CI may or may not have bwrap.
         let _ = locate_bwrap();
+    }
+
+    // -- generate_hosts_override (#3294) -------------------------------------------
+
+    #[test]
+    fn hosts_override_contains_localhost_entries() {
+        let content = generate_hosts_override(&[]);
+        assert!(content.contains("127.0.0.1 localhost"));
+        assert!(content.contains("::1 localhost"));
+    }
+
+    #[test]
+    fn hosts_override_exact_domain_resolved_to_zero() {
+        let denied = vec!["pastebin.com".to_owned()];
+        let content = generate_hosts_override(&denied);
+        assert!(
+            content.contains("0.0.0.0 pastebin.com"),
+            "exact domain must be mapped to 0.0.0.0"
+        );
+    }
+
+    #[test]
+    fn hosts_override_wildcard_emits_base_only() {
+        let denied = vec!["*.evil.com".to_owned()];
+        let content = generate_hosts_override(&denied);
+        // Only the base hostname is emitted (shallow expansion).
+        assert!(
+            content.contains("0.0.0.0 evil.com"),
+            "wildcard must emit the base hostname"
+        );
+        // The literal wildcard form must NOT appear in /etc/hosts.
+        assert!(
+            !content.contains("*.evil.com"),
+            "wildcard prefix must not appear in hosts file"
+        );
+    }
+
+    #[test]
+    fn hosts_override_empty_denied_has_no_zero_entries() {
+        let content = generate_hosts_override(&[]);
+        assert!(
+            !content.contains("0.0.0.0"),
+            "empty denied list must produce no 0.0.0.0 entries"
+        );
     }
 
     /// Verify that Landlock restriction on a throw-away thread does not affect the

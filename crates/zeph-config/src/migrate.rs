@@ -2099,6 +2099,63 @@ pub fn migrate_sandbox_config(toml_src: &str) -> Result<MigrationResult, Migrate
     })
 }
 
+/// Insert `denied_domains` and `fail_if_unavailable` into an existing `[tools.sandbox]`
+/// section when those keys are absent (#3294).
+///
+/// Idempotent: if either key is already present (active or commented), the function is a no-op.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the TOML document cannot be parsed.
+pub fn migrate_sandbox_egress_filter(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Only inject when [tools.sandbox] already exists.
+    if !toml_src.contains("[tools.sandbox]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let already_has_denied =
+        toml_src.contains("denied_domains") || toml_src.contains("# denied_domains");
+    let already_has_fail =
+        toml_src.contains("fail_if_unavailable") || toml_src.contains("# fail_if_unavailable");
+
+    if already_has_denied && already_has_fail {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let mut comment = String::new();
+    if !already_has_denied {
+        comment.push_str(
+            "# denied_domains = []       \
+             # hostnames denied egress from sandboxed processes (\"pastebin.com\", \"*.evil.com\")\n",
+        );
+    }
+    if !already_has_fail {
+        comment.push_str(
+            "# fail_if_unavailable = false  \
+             # abort startup when no effective OS sandbox is available\n",
+        );
+    }
+
+    let output = toml_src.replacen(
+        "[tools.sandbox]\n",
+        &format!("[tools.sandbox]\n{comment}"),
+        1,
+    );
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["tools.sandbox.denied_domains".to_owned()],
+    })
+}
+
 /// Add a commented-out `persistence_enabled` key under `[orchestration]` when absent (#3107).
 ///
 /// Existing configs that omit this key pick up `true` via `#[serde(default)]`, so this

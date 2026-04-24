@@ -403,15 +403,26 @@ pub(crate) async fn build_tool_setup(
         .with_permissions(permission_policy)
         .with_output_filters(filter_registry);
     if config.tools.sandbox.enabled {
-        match zeph_tools::sandbox::build_sandbox(config.tools.sandbox.strict) {
+        let denied_present = !config.tools.sandbox.denied_domains.is_empty();
+        let _span = tracing::info_span!(
+            "tools.sandbox.denied_domains_check",
+            denied_count = config.tools.sandbox.denied_domains.len(),
+            fail_if_unavailable = config.tools.sandbox.fail_if_unavailable,
+        )
+        .entered();
+        match zeph_tools::sandbox::build_sandbox_with_policy(
+            config.tools.sandbox.strict,
+            config.tools.sandbox.fail_if_unavailable,
+            denied_present,
+        ) {
             Ok(backend) => {
                 let name = backend.name();
                 let policy = sandbox_policy_from_config(&config.tools.sandbox);
                 shell_executor = shell_executor.with_sandbox(std::sync::Arc::from(backend), policy);
                 tracing::info!(backend = name, "OS sandbox enabled");
             }
-            Err(e) if config.tools.sandbox.strict => {
-                panic!("sandbox initialization failed (strict=true): {e}");
+            Err(e) if config.tools.sandbox.strict || config.tools.sandbox.fail_if_unavailable => {
+                panic!("sandbox initialization failed: {e}");
             }
             Err(e) => {
                 tracing::warn!("OS sandbox unavailable, running without isolation: {e}");
@@ -1327,6 +1338,7 @@ pub(crate) fn sandbox_policy_from_config(
         allow_network: cfg.profile == zeph_tools::sandbox::SandboxProfile::NetworkAllowAll,
         allow_exec: vec![],
         env_inherit: vec![],
+        denied_domains: cfg.denied_domains.clone(),
     }
     .canonicalized()
 }

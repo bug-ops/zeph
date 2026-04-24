@@ -176,6 +176,21 @@ pub(crate) struct Cli {
     #[arg(long = "dump-format", value_name = "FORMAT")]
     pub(crate) dump_format: Option<zeph_core::debug_dump::DumpFormat>,
 
+    /// Deny network egress to this domain from sandboxed shell commands (repeatable).
+    ///
+    /// Merges with `[tools.sandbox].denied_domains` from config. Patterns support exact
+    /// hostnames (`"pastebin.com"`) and single-level wildcards (`"*.pastebin.com"`).
+    /// Has no effect when the sandbox is disabled or unavailable.
+    #[arg(long = "deny-domain", value_name = "DOMAIN")]
+    pub(crate) deny_domain: Vec<String>,
+
+    /// Abort startup if an effective OS sandbox cannot be activated.
+    ///
+    /// Equivalent to setting `[tools.sandbox].fail_if_unavailable = true` in config.
+    /// Useful when `--deny-domain` is set and the egress filter must be enforced.
+    #[arg(long = "no-sandbox-fallback")]
+    pub(crate) no_sandbox_fallback: bool,
+
     /// Override scheduler tick interval in seconds (requires scheduler feature)
     #[cfg(feature = "scheduler")]
     #[arg(long, value_name = "SECS")]
@@ -303,6 +318,36 @@ pub(crate) enum Command {
     Agents {
         #[command(subcommand)]
         command: AgentsCommand,
+    },
+    /// Start the scheduler daemon in the background (Unix only).
+    ///
+    /// Acquires an exclusive pid file lock so only one instance runs per config.
+    /// Use `--foreground` for systemd / launchd managed processes.
+    #[cfg(all(unix, feature = "scheduler"))]
+    Serve {
+        /// Run in the foreground instead of detaching (useful for systemd / launchd).
+        #[arg(long)]
+        foreground: bool,
+        /// Disable catch-up: do not replay overdue tasks on startup.
+        #[arg(long)]
+        no_catch_up: bool,
+    },
+    /// Stop the running scheduler daemon (Unix only).
+    #[cfg(all(unix, feature = "scheduler"))]
+    Stop {
+        /// Seconds to wait for graceful shutdown before escalating to SIGKILL. Default: 10.
+        #[arg(long, default_value = "10")]
+        timeout_secs: u64,
+    },
+    /// Show scheduler daemon status and recent task runs (Unix only).
+    #[cfg(all(unix, feature = "scheduler"))]
+    Status {
+        /// Emit output as JSON (stable schema for scripting).
+        #[arg(long)]
+        json: bool,
+        /// Number of recent task runs to display. Default: 10.
+        #[arg(long, short, default_value = "10")]
+        n: usize,
     },
     /// Add missing config parameters as commented-out entries, preserving existing values
     MigrateConfig {

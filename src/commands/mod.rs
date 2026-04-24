@@ -16,6 +16,8 @@ pub(crate) mod plugin;
 pub(crate) mod router;
 #[cfg(feature = "scheduler")]
 pub(crate) mod schedule;
+#[cfg(all(unix, feature = "scheduler"))]
+pub(crate) mod scheduler_daemon;
 #[cfg(feature = "acp")]
 pub(crate) mod sessions;
 pub(crate) mod skill;

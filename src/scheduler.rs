@@ -172,7 +172,7 @@ impl TaskHandler for ExperimentTaskHandler {
 
 /// Enqueue config-declared tasks onto the scheduler channel, skipping invalid entries.
 #[cfg(feature = "scheduler")]
-fn load_config_tasks(
+pub(crate) fn load_config_tasks(
     tasks: &[zeph_core::config::ScheduledTaskConfig],
     tx: &mpsc::Sender<SchedulerMessage>,
 ) {

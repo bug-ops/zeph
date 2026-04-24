@@ -952,6 +952,32 @@ pub struct SandboxConfig {
     /// `"auto"` selects the best available backend for the current platform.
     #[serde(default = "default_sandbox_backend")]
     pub backend: String,
+
+    /// Hostnames (or single-level wildcard patterns) denied network egress from sandboxed
+    /// subprocesses. Enforcement is platform-specific:
+    ///
+    /// - **macOS Seatbelt**: injects `(deny network* (remote host "<host>"))` rules after
+    ///   `(allow network*)` so Seatbelt's last-rule-wins semantics block the listed hosts.
+    /// - **Linux bwrap**: mounts a synthetic `/etc/hosts` that resolves denied names to
+    ///   `0.0.0.0`. This is best-effort — processes using custom DNS clients, IP literals,
+    ///   or HTTP proxies can bypass this filter.
+    ///
+    /// On `NoopSandbox` (unsupported platform), denied domains cannot be enforced.
+    /// See `fail_if_unavailable` to make that a startup error instead of a warning.
+    ///
+    /// Patterns follow the same syntax as `[tools.scrape].denied_domains`:
+    /// exact hostname or `*.suffix` (single subdomain level).
+    #[serde(default)]
+    pub denied_domains: Vec<String>,
+
+    /// When `true`, failure to activate an effective OS sandbox (noop selected, backend
+    /// missing, or platform unsupported) aborts startup with an error.
+    ///
+    /// This is stricter than `strict`: `strict` only gates *missing backend binary* errors,
+    /// while `fail_if_unavailable` additionally rejects `NoopSandbox` selection (e.g. on an
+    /// unsupported platform). Default: `false`.
+    #[serde(default)]
+    pub fail_if_unavailable: bool,
 }
 
 impl Default for SandboxConfig {
@@ -963,7 +989,24 @@ impl Default for SandboxConfig {
             allow_write: Vec::new(),
             strict: true,
             backend: default_sandbox_backend(),
+            denied_domains: Vec::new(),
+            fail_if_unavailable: false,
         }
+    }
+}
+
+impl SandboxConfig {
+    /// Validate `denied_domains` entries.
+    ///
+    /// Each entry must contain only alphanumeric characters, dots, hyphens, and an
+    /// optional leading `*` wildcard. Returns `Err` with a descriptive message on the
+    /// first invalid entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string when any pattern contains invalid characters.
+    pub fn validate_denied_domains(&self) -> Result<(), String> {
+        crate::domain_match::validate_domain_patterns(&self.denied_domains)
     }
 }
 

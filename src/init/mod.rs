@@ -210,6 +210,10 @@ pub(crate) struct WizardState {
     pub(crate) sandbox_strict: bool,
     pub(crate) sandbox_allow_read: Vec<String>,
     pub(crate) sandbox_allow_write: Vec<String>,
+    /// Hostnames denied egress from sandboxed subprocesses (#3294).
+    pub(crate) sandbox_denied_domains: Vec<String>,
+    /// Whether to abort startup when no effective OS sandbox is available (#3294).
+    pub(crate) sandbox_fail_if_unavailable: bool,
     // Budget hint injection (#2267)
     pub(crate) budget_hint_enabled: bool,
     // SleepGate forgetting sweep (#2397)
@@ -379,6 +383,8 @@ impl Default for WizardState {
             sandbox_strict: true,
             sandbox_allow_read: Vec::new(),
             sandbox_allow_write: Vec::new(),
+            sandbox_denied_domains: Vec::new(),
+            sandbox_fail_if_unavailable: false,
             budget_hint_enabled: true,
             forgetting_enabled: false,
             microcompact_enabled: false,
@@ -773,6 +779,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         tick_interval_secs: state.scheduler_tick_interval_secs,
         max_tasks: state.scheduler_max_tasks,
         tasks: Vec::new(),
+        daemon: zeph_core::config::SchedulerDaemonConfig::default(),
     };
 
     config.agents.default_permission_mode = state.agents_default_permission_mode;
@@ -878,6 +885,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         .iter()
         .map(std::path::PathBuf::from)
         .collect();
+    // Sandbox egress filter (#3294).
+    config
+        .tools
+        .sandbox
+        .denied_domains
+        .clone_from(&state.sandbox_denied_domains);
+    config.tools.sandbox.fail_if_unavailable = state.sandbox_fail_if_unavailable;
     config.skills.trust.scan_on_load = state.skill_scan_on_load;
     config.skills.trust.scanner.capability_escalation_check =
         state.skill_capability_escalation_check;

@@ -112,6 +112,8 @@ pub enum TuiCommand {
     AcpStatus,
     // ACP sub-agent delegation (#3272)
     SubagentSpawn { command: String },
+    // Sandbox egress status (#3294)
+    SandboxStatus,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -407,6 +409,13 @@ fn build_infra_commands() -> Vec<CommandEntry> {
             category: "security",
             shortcut: None,
             command: TuiCommand::SecurityEvents,
+        },
+        CommandEntry {
+            id: "sandbox:status",
+            label: "Show sandbox status: backend, denied_domains, fail_if_unavailable",
+            category: "security",
+            shortcut: None,
+            command: TuiCommand::SandboxStatus,
         },
         CommandEntry {
             id: "log:status",
@@ -783,8 +792,8 @@ mod tests {
     fn extra_registry_has_correct_command_count() {
         // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
         // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status
-        // + 1 forgetting-sweep + 3 acp = 42
-        assert_eq!(extra_command_registry().len(), 42);
+        // + 1 forgetting-sweep + 3 acp + 1 sandbox:status (#3294) = 43
+        assert_eq!(extra_command_registry().len(), 43);
     }
 
     #[test]

@@ -61,6 +61,7 @@ pub mod composite;
 pub mod config;
 pub mod cwd;
 pub mod diagnostics;
+pub mod domain_match;
 pub mod error_taxonomy;
 pub mod executor;
 pub mod file;
@@ -129,6 +130,7 @@ pub use registry::ToolRegistry;
 pub use sandbox::MacosSandbox;
 pub use sandbox::{
     NoopSandbox, Sandbox, SandboxError, SandboxPolicy, SandboxProfile, build_sandbox,
+    build_sandbox_with_policy,
 };
 pub use schema_filter::{
     DependencyExclusion, InclusionReason, ToolDependencyGraph, ToolEmbedding, ToolFilterResult,

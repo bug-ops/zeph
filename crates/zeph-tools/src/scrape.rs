@@ -996,25 +996,8 @@ fn check_domain_policy(
     Ok(())
 }
 
-/// Match a domain pattern against a hostname.
-///
-/// Pattern `*.example.com` matches `sub.example.com` but not `example.com` or
-/// `sub.sub.example.com`. Exact patterns match only themselves.
-/// Patterns with multiple `*` characters are not supported and are treated as exact strings.
-fn domain_matches(pattern: &str, host: &str) -> bool {
-    if pattern.starts_with("*.") {
-        // Allow only a single subdomain level: `*.example.com` → `<label>.example.com`
-        let suffix = &pattern[1..]; // ".example.com"
-        if let Some(remainder) = host.strip_suffix(suffix) {
-            // remainder must be a single DNS label (no dots)
-            !remainder.is_empty() && !remainder.contains('.')
-        } else {
-            false
-        }
-    } else {
-        pattern == host
-    }
-}
+// Domain pattern matching is delegated to the shared `domain_match` module.
+use crate::domain_match::domain_matches;
 
 fn validate_url(raw: &str) -> Result<Url, ToolError> {
     let parsed = Url::parse(raw).map_err(|_| ToolError::Blocked {

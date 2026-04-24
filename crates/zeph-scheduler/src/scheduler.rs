@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
 use chrono::Utc;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::error::SchedulerError;
 use crate::sanitize::sanitize_task_prompt;
@@ -87,6 +88,11 @@ pub struct Scheduler {
     /// Optional sender for injecting custom task prompts into the agent loop.
     custom_task_tx: Option<mpsc::Sender<String>>,
     max_tasks: usize,
+    /// Per-task execution mutex: task names of tasks currently being executed.
+    ///
+    /// SIGNIFICANT-5: prevents concurrent executions of the same task when the
+    /// handler is slow and `catch_up_missed` + `tick` overlap.
+    in_flight: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Scheduler {
@@ -124,6 +130,7 @@ impl Scheduler {
             task_rx: rx,
             custom_task_tx: None,
             max_tasks,
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
         };
         (scheduler, tx)
     }
@@ -206,6 +213,143 @@ impl Scheduler {
             }
         }
         Ok(())
+    }
+
+    /// Fire overdue periodic tasks once on startup, then advance their `next_run`.
+    ///
+    /// For each periodic task whose `next_run <= now`, the task is executed via
+    /// the registered handler exactly once. One-shot tasks are handled by the
+    /// normal `tick()` path and are NOT replayed here.
+    ///
+    /// SIGNIFICANT-5: uses the same `in_flight` mutex as `tick()` so that
+    /// `catch_up_missed` and a concurrent `tick()` cannot execute the same task.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error encountered during store or handler operations.
+    pub async fn catch_up_missed(&mut self) -> Result<(), SchedulerError> {
+        let _span =
+            tracing::info_span!("scheduler.daemon.catch_up", tasks = self.tasks.len()).entered();
+
+        let now = chrono::Utc::now();
+        let mut replayed = 0usize;
+
+        // Collect overdue periodic tasks first so we don't borrow self.tasks while executing.
+        let overdue: Vec<_> = {
+            let mut v = Vec::new();
+            for task in &self.tasks {
+                let TaskMode::Periodic { .. } = &task.mode else {
+                    continue;
+                };
+                if let Ok(Some(ref s)) = self.store.get_next_run(&task.name).await
+                    && s.parse::<chrono::DateTime<chrono::Utc>>()
+                        .is_ok_and(|dt| dt <= now)
+                {
+                    v.push(task.name.clone());
+                }
+            }
+            v
+        };
+
+        for name in &overdue {
+            // Per-task mutex: skip if already running (safety against overlap with tick).
+            {
+                let mut guard = self.in_flight.lock().await;
+                if guard.contains(name.as_str()) {
+                    tracing::debug!(task = %name, "catch_up_missed: task in-flight, skipping");
+                    continue;
+                }
+                guard.insert(name.clone());
+            }
+
+            let result = self.run_periodic_task_by_name(name, &now).await;
+
+            self.in_flight.lock().await.remove(name.as_str());
+
+            match result {
+                Ok(true) => replayed += 1,
+                Ok(false) => {}
+                Err(e) => tracing::warn!(task = %name, "catch_up_missed: handler error: {e}"),
+            }
+        }
+
+        tracing::info!(replayed, "catch_up_missed complete");
+        Ok(())
+    }
+
+    /// Execute a named periodic task and advance its `next_run`.
+    ///
+    /// Returns `Ok(true)` if the task was found and executed, `Ok(false)` if not found.
+    async fn run_periodic_task_by_name(
+        &self,
+        name: &str,
+        now: &chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, SchedulerError> {
+        let Some(task) = self.tasks.iter().find(|t| t.name == name) else {
+            return Ok(false);
+        };
+        let TaskMode::Periodic { schedule } = &task.mode else {
+            return Ok(false);
+        };
+        let Some(handler) = self.handlers.get(task.kind.as_str()) else {
+            tracing::debug!(task = %name, "catch_up_missed: no handler, skipping");
+            return Ok(false);
+        };
+
+        tracing::info!(task = %name, "catch_up_missed: executing overdue task");
+        handler.execute(&task.config).await?;
+
+        let next = schedule
+            .after(now)
+            .next()
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+        self.store
+            .record_run(name, &now.to_rfc3339(), &next)
+            .await?;
+        Ok(true)
+    }
+
+    /// Run the scheduler loop with a configurable tick interval and graceful shutdown window.
+    ///
+    /// The interval is clamped to `5..=3600` seconds. Missed ticks are skipped to avoid
+    /// burst storms. After the shutdown channel fires, in-flight ticks are allowed to
+    /// complete but no new ticks start. The `grace_secs` window gives handlers time to
+    /// finish before the function returns.
+    ///
+    /// The grace window is clamped to 60 seconds. Values above 60 have no additional effect.
+    /// Note: the sleep is a best-effort delay, not a join on in-flight handlers — handlers
+    /// that outlive the grace window are dropped, not awaited.
+    ///
+    /// The `grace_secs` parameter corresponds to `scheduler.daemon.shutdown_grace_secs`
+    /// in config (default 30). Pass 0 for immediate exit after shutdown signal.
+    pub async fn run_with_interval_and_grace(&mut self, tick_secs: u64, grace_secs: u64) {
+        let secs = tick_secs.clamp(5, 3600);
+        let mut interval = tokio::time::interval(Duration::from_secs(secs));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let _tick_span = tracing::info_span!(
+                        "scheduler.daemon.tick",
+                        tasks = self.tasks.len()
+                    ).entered();
+                    self.drain_channel().await;
+                    self.tick().await;
+                }
+                _ = self.shutdown_rx.changed() => {
+                    if *self.shutdown_rx.borrow() {
+                        tracing::info!("scheduler shutting down (grace {}s)", grace_secs);
+                        // Allow in-flight tasks up to grace_secs.
+                        if grace_secs > 0 {
+                            tokio::time::sleep(Duration::from_secs(grace_secs.min(60))).await;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     /// Run the scheduler loop with a configurable tick interval.

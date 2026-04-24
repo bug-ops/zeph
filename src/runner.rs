@@ -445,6 +445,34 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Bench { command: bench_cmd }) => {
             return crate::commands::bench::handle_bench_command(&bench_cmd, cli.config.as_deref());
         }
+        #[cfg(all(unix, feature = "scheduler"))]
+        Some(Command::Serve {
+            foreground,
+            no_catch_up,
+        }) => {
+            return crate::commands::scheduler_daemon::handle_serve(
+                cli.config.as_deref(),
+                foreground,
+                !no_catch_up,
+            )
+            .await;
+        }
+        #[cfg(all(unix, feature = "scheduler"))]
+        Some(Command::Stop { timeout_secs }) => {
+            return crate::commands::scheduler_daemon::handle_stop(
+                cli.config.as_deref(),
+                timeout_secs,
+            );
+        }
+        #[cfg(all(unix, feature = "scheduler"))]
+        Some(Command::Status { json, n }) => {
+            return crate::commands::scheduler_daemon::handle_status(
+                cli.config.as_deref(),
+                json,
+                n,
+            )
+            .await;
+        }
         Some(Command::Doctor {
             json,
             llm_timeout_secs,
@@ -647,6 +675,27 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     if let Some(ref path) = cli.policy_file {
         app.config_mut().tools.policy.policy_file = Some(path.display().to_string());
         app.config_mut().tools.policy.enabled = true;
+    }
+
+    // CLI --deny-domain merges into [tools.sandbox].denied_domains.
+    if !cli.deny_domain.is_empty() {
+        app.config_mut()
+            .tools
+            .sandbox
+            .denied_domains
+            .extend(cli.deny_domain.iter().cloned());
+    }
+
+    // Validate denied_domains after all merges so config-file + CLI entries are both checked.
+    app.config()
+        .tools
+        .sandbox
+        .validate_denied_domains()
+        .map_err(|e| anyhow::anyhow!("invalid tools.sandbox.denied_domains: {e}"))?;
+
+    // CLI --no-sandbox-fallback sets fail_if_unavailable.
+    if cli.no_sandbox_fallback {
+        app.config_mut().tools.sandbox.fail_if_unavailable = true;
     }
 
     if let Some(ref thinking_str) = cli.thinking {

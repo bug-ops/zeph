@@ -12,8 +12,9 @@ use zeph_core::config::migrate::{
     migrate_mcp_elicitation_config, migrate_mcp_trust_levels, migrate_memory_graph_config,
     migrate_microcompact_config, migrate_orchestration_persistence, migrate_otel_filter,
     migrate_planner_model_to_provider, migrate_quality_config, migrate_sandbox_config,
-    migrate_session_recap_config, migrate_shell_transactional, migrate_stt_to_provider,
-    migrate_supervisor_config, migrate_telemetry_config, migrate_vigil_config,
+    migrate_sandbox_egress_filter, migrate_session_recap_config, migrate_shell_transactional,
+    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
+    migrate_vigil_config,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -123,19 +124,23 @@ pub(crate) fn handle_migrate_config(
     let quality_result = migrate_quality_config(&after_mcp_elicitation)?;
     let after_quality = quality_result.output;
 
-    // Step 23: add commented-out [acp.subagents] block if absent (#3304).
-    let acp_subagents_result = migrate_acp_subagents_config(&after_quality)?;
+    // Step 23: insert denied_domains / fail_if_unavailable into existing [tools.sandbox] (#3294).
+    let sandbox_egress_result = migrate_sandbox_egress_filter(&after_quality)?;
+    let after_sandbox_egress = sandbox_egress_result.output;
+
+    // Step 24: add commented-out [acp.subagents] block if absent (#3304).
+    let acp_subagents_result = migrate_acp_subagents_config(&after_sandbox_egress)?;
     let after_acp_subagents = acp_subagents_result.output;
 
-    // Step 24: add commented-out [[hooks.permission_denied]] block if absent (#3309).
+    // Step 25: add commented-out [[hooks.permission_denied]] block if absent (#3309).
     let hooks_perm_denied_result = migrate_hooks_permission_denied_config(&after_acp_subagents)?;
     let after_hooks_perm_denied = hooks_perm_denied_result.output;
 
-    // Step 25: add commented-out [memory.graph] retrieval strategy options if absent (#3317).
+    // Step 26: add commented-out [memory.graph] retrieval strategy options if absent (#3317).
     let memory_graph_result = migrate_memory_graph_config(&after_hooks_perm_denied)?;
     let after_memory_graph = memory_graph_result.output;
 
-    // Step 26: add missing default keys as commented-out entries.
+    // Step 27: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
     let result = migrator.migrate(&after_memory_graph)?;
 
@@ -222,6 +227,12 @@ pub(crate) fn handle_migrate_config(
         }
         if quality_result.changed_count > 0 {
             eprintln!("Quality migration: added commented-out [quality] block.");
+        }
+        if sandbox_egress_result.changed_count > 0 {
+            eprintln!(
+                "Sandbox egress migration: \
+                 added commented-out denied_domains / fail_if_unavailable to [tools.sandbox]."
+            );
         }
         if acp_subagents_result.changed_count > 0 {
             eprintln!("ACP subagents migration: added commented-out [acp.subagents] block.");
