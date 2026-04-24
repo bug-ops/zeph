@@ -20,7 +20,7 @@ pub use provider::{
 };
 pub use skills::{
     create_embedding_provider, create_skill_matcher, effective_embedding_model, managed_skills_dir,
-    plugins_dir,
+    plugins_dir, stable_skill_embedding_model,
 };
 
 use std::path::{Path, PathBuf};
@@ -692,7 +692,10 @@ impl AppBuilder {
         meta: &[&SkillMeta],
         memory: &SemanticMemory,
     ) -> Option<SkillMatcherBackend> {
-        let embed_model = self.embedding_model();
+        // Use the stable model name derived from the resolved embed provider entry so that
+        // `model_has_changed` in `EmbeddingRegistry` does not trigger a collection rebuild on
+        // every restart when `effective_embedding_model` returns an unstable or empty string.
+        let embed_model = stable_skill_embedding_model(&self.config);
         create_skill_matcher(
             &self.config,
             provider,

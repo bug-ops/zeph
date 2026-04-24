@@ -402,6 +402,40 @@ pub fn effective_embedding_model(config: &Config) -> String {
     config.llm.embedding_model.clone()
 }
 
+/// Resolve the stable embedding model name for skill-matcher collection versioning.
+///
+/// This uses the same entry resolution as the embedding provider itself: the entry
+/// with `embed = true`, preferring its `embedding_model` field and falling back to
+/// its `model` field. Using the actual provider's model name prevents the
+/// `model_has_changed` check in [`zeph_memory::embedding_registry`] from triggering
+/// false positives that would rebuild the `zeph_skills` collection on every startup.
+///
+/// Falls back to [`effective_embedding_model`] when no dedicated embed entry exists.
+#[must_use]
+pub fn stable_skill_embedding_model(config: &Config) -> String {
+    // Find the dedicated embed entry (same lookup as `create_embedding_provider`).
+    let embed_entry = config.llm.providers.iter().find(|e| e.embed).or_else(|| {
+        config
+            .llm
+            .providers
+            .iter()
+            .find(|e| e.embedding_model.is_some())
+    });
+
+    if let Some(entry) = embed_entry {
+        // Prefer the explicit `embedding_model` field; fall back to the `model` field.
+        if let Some(em) = entry.embedding_model.as_ref().filter(|s| !s.is_empty()) {
+            return em.clone();
+        }
+        if let Some(m) = entry.model.as_ref().filter(|s| !s.is_empty()) {
+            return m.clone();
+        }
+    }
+
+    // No dedicated embed entry — fall back to the general embedding model resolution.
+    effective_embedding_model(config)
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "candle")]
@@ -447,5 +481,70 @@ mod tests {
                 | zeph_llm::candle_provider::Device::Cuda(_)
                 | zeph_llm::candle_provider::Device::Metal(_)
         ));
+    }
+
+    use super::{effective_embedding_model, stable_skill_embedding_model};
+    use crate::config::{Config, ProviderKind};
+    use zeph_config::providers::ProviderEntry;
+
+    fn make_provider_entry(
+        embed: bool,
+        model: Option<&str>,
+        embedding_model: Option<&str>,
+    ) -> ProviderEntry {
+        ProviderEntry {
+            provider_type: ProviderKind::Ollama,
+            embed,
+            model: model.map(str::to_owned),
+            embedding_model: embedding_model.map(str::to_owned),
+            ..ProviderEntry::default()
+        }
+    }
+
+    #[test]
+    fn stable_skill_embedding_model_prefers_embedding_model_field() {
+        let mut config = Config::default();
+        config.llm.providers = vec![make_provider_entry(
+            true,
+            Some("chat-model"),
+            Some("embed-v2"),
+        )];
+        assert_eq!(stable_skill_embedding_model(&config), "embed-v2");
+    }
+
+    #[test]
+    fn stable_skill_embedding_model_falls_back_to_model_field() {
+        let mut config = Config::default();
+        config.llm.providers = vec![make_provider_entry(
+            true,
+            Some("nomic-embed-text-v2-moe:latest"),
+            None,
+        )];
+        assert_eq!(
+            stable_skill_embedding_model(&config),
+            "nomic-embed-text-v2-moe:latest"
+        );
+    }
+
+    #[test]
+    fn stable_skill_embedding_model_finds_embed_flag_entry() {
+        let mut config = Config::default();
+        config.llm.providers = vec![
+            make_provider_entry(false, Some("chat-model"), None),
+            make_provider_entry(true, Some("embed-model"), Some("text-embed-3")),
+        ];
+        assert_eq!(stable_skill_embedding_model(&config), "text-embed-3");
+    }
+
+    #[test]
+    fn stable_skill_embedding_model_falls_back_to_effective_when_no_embed_entry() {
+        let mut config = Config::default();
+        config.llm.embedding_model = "global-embed-model".to_owned();
+        // No embed=true entry, no embedding_model field set — falls back to effective_embedding_model.
+        config.llm.providers = vec![make_provider_entry(false, Some("chat"), None)];
+        assert_eq!(
+            stable_skill_embedding_model(&config),
+            effective_embedding_model(&config)
+        );
     }
 }

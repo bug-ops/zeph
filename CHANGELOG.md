@@ -95,6 +95,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `min_assistant_chars` guard (default: 50) to skip trivial short responses. Together these
   changes eliminate false `Failure` outcomes caused by multi-session context confusing the
   evaluator model (#3383).
+- skills: skip `build_skill_matcher` in `--bare` mode to prevent `zeph_skills` Qdrant collection
+  destruction on CI startup (#3390).
+- skills: use stable embed provider model name for Qdrant collection versioning to prevent
+  collection oscillation and near-zero cosine scores (#3391).
 
 - `--bare` mode now skips the file change watcher: `with_hooks_config` is no longer called
   unconditionally in `runner.rs` — it is guarded by `!exec_mode.bare`, preventing background
