@@ -28,7 +28,7 @@ use crate::scheduler::Scheduler;
 
 /// Configuration for the scheduler daemon process.
 ///
-/// Typically constructed from [`zeph_config::SchedulerDaemonConfig`] by the binary.
+/// Typically constructed from `zeph_config::SchedulerDaemonConfig` by the binary.
 ///
 /// # Example
 ///
