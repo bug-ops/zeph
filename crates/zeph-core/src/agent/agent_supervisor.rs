@@ -14,6 +14,8 @@
 //! | `Enrichment` | configurable (default 4) | Drop | summarization, graph/persona/trajectory extraction |
 //! | `Telemetry` | configurable (default 8) | Drop | audit log writes, graph count sync |
 //!
+//! Background shell runs are not yet routed through the supervisor; see issue #3366.
+//!
 //! # Critic-driven design decisions
 //!
 //! - **S1**: `unsummarized_count` is NOT shared via `AtomicUsize`. Background summarization
@@ -36,6 +38,8 @@ use crate::config::TaskSupervisorConfig;
 use crate::metrics::HistogramRecorder;
 
 /// Identifies the class of a background task.
+///
+// TODO: route background shell spawns through the supervisor (see issue #3366)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TaskClass {
     /// Enrichment tasks spawned from `persist_message`: summarization, graph/persona/trajectory
@@ -43,12 +47,6 @@ pub(crate) enum TaskClass {
     Enrichment,
     /// Telemetry/metrics updates: audit log writes, graph count sync. Small and fast.
     Telemetry,
-    /// Background shell runs spawned via `background = true` bash tool calls.
-    ///
-    /// Isolated from `Enrichment` so shell-run saturation cannot starve memory compaction.
-    /// Budget mirrors `ShellConfig::max_background_runs` (default 8).
-    #[allow(dead_code)]
-    BackgroundShell,
 }
 
 impl TaskClass {
@@ -56,7 +54,6 @@ impl TaskClass {
         match self {
             TaskClass::Enrichment => 0,
             TaskClass::Telemetry => 1,
-            TaskClass::BackgroundShell => 2,
         }
     }
 
@@ -64,13 +61,12 @@ impl TaskClass {
         match self {
             TaskClass::Enrichment => "enrichment",
             TaskClass::Telemetry => "telemetry",
-            TaskClass::BackgroundShell => "background_shell",
         }
     }
 }
 
 // MVP: only Drop overflow policy is supported.
-const NUM_CLASSES: usize = 3;
+const NUM_CLASSES: usize = 2;
 
 /// Signal that background summarization completed successfully.
 /// Stored in `BackgroundSupervisor` and consumed by `reap()` to reset `unsummarized_count`
@@ -163,11 +159,7 @@ impl BackgroundSupervisor {
             tasks: JoinSet::new(),
             class_inflight: std::array::from_fn(|_| Arc::new(AtomicUsize::new(0))),
             class_metrics: [ClassMetrics::default(); NUM_CLASSES],
-            class_limits: [
-                config.enrichment_limit,
-                config.telemetry_limit,
-                config.background_shell_limit,
-            ],
+            class_limits: [config.enrichment_limit, config.telemetry_limit],
             class_handles: std::array::from_fn(|_| Vec::new()),
             histogram_recorder: recorder,
         }
@@ -595,7 +587,7 @@ mod tests {
             enrichment_limit: 2,
             telemetry_limit: 3,
             abort_enrichment_on_turn: false,
-            background_shell_limit: 8,
+            background_shell_limit: 8, // retained in config; unused by supervisor until #3366
         };
         let mut sv = BackgroundSupervisor::new(&config, None);
         let mut txs = Vec::new();

@@ -181,6 +181,10 @@ impl Notifier {
     /// - `NotifyTestError::MacOsFailed` — macOS notification failed (macOS only)
     /// - `NotifyTestError::WebhookFailed` — webhook POST failed
     pub async fn fire_test(&self) -> Result<(), NotifyTestError> {
+        if !self.cfg.enabled {
+            return Err(NotifyTestError::MasterSwitchDisabled);
+        }
+
         let macos_enabled = self.cfg.macos_native;
         let webhook_enabled = self.cfg.webhook_url.is_some() && self.cfg.webhook_topic.is_some();
 
@@ -216,6 +220,9 @@ impl Notifier {
 /// Error returned by [`Notifier::fire_test`].
 #[derive(Debug, thiserror::Error)]
 pub enum NotifyTestError {
+    /// The master `notifications.enabled` switch is `false`.
+    #[error("notifications are disabled (set notifications.enabled = true to enable)")]
+    MasterSwitchDisabled,
     /// No channels are enabled in the current configuration.
     #[error("all notification channels are disabled")]
     AllDisabled,

@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `Notifier::fire_test()` now checks the master `notifications.enabled` switch first; if
+  disabled, it returns an error instead of silently firing a test notification (#3364).
+- Fixed misleading comment in `drain_background_completions()`: the overflow branch drops
+  the oldest queued completion (not the incoming one) and pushes a sentinel for the new run.
+  Comment now matches the code (#3365).
+- Removed dead `TaskClass::BackgroundShell` enum variant from the agent supervisor; `NUM_CLASSES`
+  reduced from 3 to 2. Background shell tasks currently use `tokio::spawn` directly (deferred
+  to a follow-up, tracked via TODO comment in source) (#3366).
+
 - `--bare` mode now skips the file change watcher: `with_hooks_config` is no longer called
   unconditionally in `runner.rs` — it is guarded by `!exec_mode.bare`, preventing background
   filesystem watch threads from starting in minimal sessions (#3362).

@@ -1744,10 +1744,8 @@ impl<C: Channel> Agent<C> {
                     run_id = %completion.run_id,
                     "background completion buffer full; dropping run result"
                 );
-                // Drop the new (incoming) completion and push a sentinel in its place so
-                // the LLM is informed that this specific run's result was lost. We do NOT
-                // pop the oldest entry — the oldest entries have already been queued for
-                // delivery and evicting them would silently lose data that the user expects.
+                // Buffer is full: drop the oldest queued completion and push a sentinel
+                // for the new (incoming) run so the LLM is informed its result was lost.
                 self.lifecycle.pending_background_completions.pop_front();
                 self.lifecycle.pending_background_completions.push_back(
                     zeph_tools::BackgroundCompletion {
