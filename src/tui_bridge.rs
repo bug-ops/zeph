@@ -239,6 +239,7 @@ fn tui_command_context(config: &zeph_core::config::Config, cli_tafc: bool) -> Tu
     }
 }
 
+#[cfg(feature = "tui")]
 pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     agent: zeph_core::agent::Agent<C>,
     mut params: TuiRunParams<'_>,
