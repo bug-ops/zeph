@@ -236,17 +236,16 @@ async fn fire_all_channels(
     summary: &TurnSummary,
 ) {
     let title = &cfg.title;
-    let message = build_notification_message(summary);
 
     #[cfg(target_os = "macos")]
-    if cfg.macos_native
-        && let Err(e) = fire_macos_native(title, &message).await
     {
-        warn!(error = %e, "macOS notification failed");
+        let message = build_notification_message(summary);
+        if cfg.macos_native
+            && let Err(e) = fire_macos_native(title, &message).await
+        {
+            warn!(error = %e, "macOS notification failed");
+        }
     }
-
-    #[cfg(not(target_os = "macos"))]
-    let _ = cfg.macos_native; // platform does not support osascript
 
     if let (Some(url), Some(topic)) = (&cfg.webhook_url, &cfg.webhook_topic)
         && let Err(e) = fire_webhook(http, url, title, topic, summary).await

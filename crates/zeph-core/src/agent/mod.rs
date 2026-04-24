@@ -1317,33 +1317,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         turn: &mut turn::Turn,
     ) -> Result<(), error::AgentError> {
-        // Reap completed background tasks from the previous turn. The summarization signal
-        // is applied here — between turns — so `unsummarized_count` is always reset on the
-        // foreground without shared mutable state across tasks (S1 fix from critic review).
-        let bg_signal = self.lifecycle.supervisor.reap();
-        if bg_signal.did_summarize {
-            self.memory_state.persistence.unsummarized_count = 0;
-            tracing::debug!("background summarization completed; unsummarized_count reset");
-        }
-        {
-            let snap = self.lifecycle.supervisor.metrics_snapshot();
-            self.update_metrics(|m| {
-                m.bg_inflight = snap.inflight as u64;
-                m.bg_dropped = snap.total_dropped();
-                m.bg_completed = snap.total_completed();
-                m.bg_enrichment_inflight = snap.class_inflight[0] as u64;
-                m.bg_telemetry_inflight = snap.class_inflight[1] as u64;
-            });
-        }
-
-        // Intentional ordering: reap() runs before abort_class() so completed tasks are
-        // accounted in the metrics snapshot above. The TUI may show a stale enrichment
-        // inflight count for one cycle when abort fires, but this self-corrects next turn.
-        if self.runtime.supervisor_config.abort_enrichment_on_turn {
-            self.lifecycle
-                .supervisor
-                .abort_class(agent_supervisor::TaskClass::Enrichment);
-        }
+        self.reap_background_tasks_and_update_metrics();
 
         // Drain any background shell completions that arrived since the last turn.
         // They are buffered in `pending_background_completions` and merged with the
@@ -1474,6 +1448,32 @@ impl<C: Channel> Agent<C> {
         turn.metrics_mut().timings.tool_exec_ms = self.metrics.pending_timings.tool_exec_ms;
 
         Ok(())
+    }
+
+    /// Reap completed background tasks, apply summarization signal, and update supervisor metrics.
+    ///
+    /// Called at the top of each turn, before any user message processing.
+    fn reap_background_tasks_and_update_metrics(&mut self) {
+        let bg_signal = self.lifecycle.supervisor.reap();
+        if bg_signal.did_summarize {
+            self.memory_state.persistence.unsummarized_count = 0;
+            tracing::debug!("background summarization completed; unsummarized_count reset");
+        }
+        let snap = self.lifecycle.supervisor.metrics_snapshot();
+        self.update_metrics(|m| {
+            m.bg_inflight = snap.inflight as u64;
+            m.bg_dropped = snap.total_dropped();
+            m.bg_completed = snap.total_completed();
+            m.bg_enrichment_inflight = snap.class_inflight[0] as u64;
+            m.bg_telemetry_inflight = snap.class_inflight[1] as u64;
+        });
+        // Intentional ordering: reap() runs before abort_class() so completed tasks are
+        // accounted in the snapshot above.
+        if self.runtime.supervisor_config.abort_enrichment_on_turn {
+            self.lifecycle
+                .supervisor
+                .abort_class(agent_supervisor::TaskClass::Enrichment);
+        }
     }
 
     /// Fire a completion notification if the notifier is configured and gating conditions pass.
