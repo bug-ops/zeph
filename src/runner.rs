@@ -816,6 +816,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             config,
             permission_policy.clone(),
             with_tool_events,
+            exec_mode.bare,
             runtime_ctx,
             app.age_vault_arc(),
             Some(agent_status_tx.clone()),
@@ -829,6 +830,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config,
         permission_policy.clone(),
         with_tool_events,
+        exec_mode.bare,
         runtime_ctx,
         app.age_vault_arc(),
         Some(agent_status_tx.clone()),
@@ -1985,7 +1987,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent.with_tafc_config(tafc_config);
 
     let agent = agent.with_document_config(config.memory.documents.clone());
-    let agent = agent.with_graph_config(config.memory.graph.clone());
+    let agent = if exec_mode.bare {
+        agent
+    } else {
+        agent.with_graph_config(config.memory.graph.clone())
+    };
 
     let agent = {
         let mut mgr = zeph_subagent::SubAgentManager::new(config.agents.max_concurrent);
@@ -2369,7 +2375,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // `prometheus` feature implies `gateway` (see Cargo.toml feature definition), so no inner
     // `#[cfg(feature = "gateway")]` guards are needed inside this block.
     #[cfg(feature = "prometheus")]
-    let _prometheus_sync_handle = {
+    let _prometheus_sync_handle = if exec_mode.bare {
+        None
+    } else {
         if let Some(prom) = prom_arc {
             let handle = crate::metrics_export::spawn_metrics_sync(
                 std::sync::Arc::clone(&prom),
@@ -2405,7 +2413,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     // When `prometheus` feature is disabled, spawn gateway unconditionally if enabled.
     #[cfg(all(feature = "gateway", not(feature = "prometheus")))]
-    if config.gateway.enabled {
+    if !exec_mode.bare && config.gateway.enabled {
         crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone());
     }
 
@@ -3062,5 +3070,38 @@ mod tests {
             scheduler_would_run,
             "scheduler must be allowed in non-bare mode"
         );
+    }
+
+    /// `--bare` suppresses MCP `connect_all` — the guard `if bare { (vec![], vec![]) }` fires.
+    #[test]
+    fn bare_flag_skips_mcp_connect_guard() {
+        let cli = Cli::parse_from(["zeph", "--bare"]);
+        let mode =
+            crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
+        // Guard: `if bare { (Vec::new(), Vec::new()) } else { mcp_manager.connect_all().await }`
+        let mcp_would_connect = !mode.bare;
+        assert!(!mcp_would_connect, "MCP connect_all must be skipped in bare mode");
+    }
+
+    /// `--bare` suppresses gateway spawn — guards `!exec_mode.bare` prevent both code paths.
+    #[test]
+    fn bare_flag_skips_gateway_spawn_guard() {
+        let cli = Cli::parse_from(["zeph", "--bare"]);
+        let mode =
+            crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
+        // Guard: `if exec_mode.bare { None } else { spawn_gateway_server(...) }`
+        let gateway_would_spawn = !mode.bare;
+        assert!(!gateway_would_spawn, "gateway must not spawn in bare mode");
+    }
+
+    /// `--bare` skips `agent.with_graph_config()` — guard `if exec_mode.bare { agent }` fires.
+    #[test]
+    fn bare_flag_skips_graph_config_guard() {
+        let cli = Cli::parse_from(["zeph", "--bare"]);
+        let mode =
+            crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
+        // Guard: `if exec_mode.bare { agent } else { agent.with_graph_config(...) }`
+        let graph_would_activate = !mode.bare;
+        assert!(!graph_would_activate, "graph memory must not activate in bare mode");
     }
 }

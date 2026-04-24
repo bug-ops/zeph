@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `--bare` mode now skips MCP `connect_all` and the background refresh task, gateway server spawn,
+  and `agent.with_graph_config()` activation — all three were previously unconditional (#3298).
+  Bare mode is a minimal LLM round-trip with no external service dependencies as documented.
+
 ### Added
 
 - CPS (cost per successful task) metric in `CostTracker`: `record_successful_task()`, `cps()`,

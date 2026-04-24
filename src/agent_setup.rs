@@ -387,6 +387,7 @@ pub(crate) async fn build_tool_setup(
     config: &Config,
     permission_policy: zeph_tools::PermissionPolicy,
     with_tool_events: bool,
+    bare: bool,
     runtime_ctx: RuntimeContext,
     age_vault: Option<&Arc<tokio::sync::RwLock<zeph_core::vault::AgeVaultProvider>>>,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -486,15 +487,22 @@ pub(crate) async fn build_tool_setup(
         tokio::spawn(drain_embedding_guard_events(rx));
     }
     let mcp_manager = Arc::new(mcp_manager_builder);
-    let (mcp_tools, mcp_outcomes) = mcp_manager.connect_all().await;
-    tracing::info!("discovered {} MCP tool(s)", mcp_tools.len());
+    let (mcp_tools, mcp_outcomes) = if bare {
+        (Vec::new(), Vec::new())
+    } else {
+        let result = mcp_manager.connect_all().await;
+        tracing::info!("discovered {} MCP tool(s)", result.0.len());
+        result
+    };
 
     // Subscribe before spawning the refresh task so no events are missed.
     let mcp_tool_rx = mcp_manager.subscribe_tool_changes();
     // Take the elicitation receiver before Arc-wrapping the manager.
     let mcp_elicitation_rx = mcp_manager.take_elicitation_rx();
-    // Spawn the background task that processes tools/list_changed events.
-    mcp_manager.spawn_refresh_task();
+    if !bare {
+        // Spawn the background task that processes tools/list_changed events.
+        mcp_manager.spawn_refresh_task();
+    }
 
     let mcp_shared_tools = Arc::new(RwLock::new(mcp_tools.clone()));
     let mcp_executor =
