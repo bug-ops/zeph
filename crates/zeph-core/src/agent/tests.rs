@@ -6075,3 +6075,89 @@ mod resolve_context_budget_tests {
         assert_eq!(resolve_context_budget(&config, &provider), 128_000);
     }
 }
+
+mod subagent_dispatch_tests {
+    use super::agent_tests::QuickTestAgent;
+
+    #[tokio::test]
+    async fn subagent_no_args_returns_usage() {
+        let mut h = QuickTestAgent::minimal("");
+        let result = h.agent.dispatch_slash_command("/subagent").await;
+        assert!(result.is_some(), "/subagent must be intercepted");
+        let output = h.sent_messages().join("\n");
+        assert!(
+            output.contains("Usage"),
+            "expected usage hint, got: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn subagent_spawn_no_command_returns_usage() {
+        let mut h = QuickTestAgent::minimal("");
+        let result = h.agent.dispatch_slash_command("/subagent spawn").await;
+        assert!(result.is_some(), "/subagent spawn must be intercepted");
+        let output = h.sent_messages().join("\n");
+        assert!(
+            output.contains("Usage"),
+            "expected usage hint, got: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn subagent_spawn_without_callback_returns_not_available() {
+        let mut h = QuickTestAgent::minimal("");
+        let result = h
+            .agent
+            .dispatch_slash_command("/subagent spawn cargo run -- --acp")
+            .await;
+        assert!(result.is_some(), "must be intercepted");
+        let output = h.sent_messages().join("\n");
+        assert!(
+            output.to_lowercase().contains("not available"),
+            "expected 'not available' message, got: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn subagent_spawn_with_callback_returns_output() {
+        let mut h = QuickTestAgent::minimal("");
+        h.agent.runtime.acp_subagent_spawn_fn = Some(std::sync::Arc::new(|cmd: String| {
+            Box::pin(async move { Ok(format!("spawned: {cmd}")) })
+        }));
+        let result = h
+            .agent
+            .dispatch_slash_command("/subagent spawn my-command")
+            .await;
+        assert!(result.is_some(), "must be intercepted");
+        let output = h.sent_messages().join("\n");
+        assert!(
+            output.contains("spawned: my-command"),
+            "expected callback output, got: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn subagent_unknown_subcommand_returns_error() {
+        let mut h = QuickTestAgent::minimal("");
+        let result = h.agent.dispatch_slash_command("/subagent badcmd").await;
+        assert!(result.is_some(), "must be intercepted");
+        let output = h.sent_messages().join("\n");
+        assert!(
+            output.contains("badcmd"),
+            "error must name the subcommand, got: {output}"
+        );
+    }
+}
+
+mod layer_denial_tests {
+    #[test]
+    fn layer_denial_carries_custom_reason() {
+        use crate::runtime_layer::LayerDenial;
+
+        let denial = LayerDenial {
+            result: Ok(None),
+            reason: "utility gate: score below threshold".to_owned(),
+        };
+        assert_eq!(denial.reason, "utility gate: score below threshold");
+    }
+}

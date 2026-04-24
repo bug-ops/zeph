@@ -2337,6 +2337,25 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let agent = agent.with_supervisor_config(&config.agent.supervisor);
     let agent = agent.with_acp_config(config.acp.clone());
 
+    // Wire ACP sub-agent spawn callback so `/subagent spawn <cmd>` works in CLI/piped mode (#3302).
+    #[cfg(feature = "acp")]
+    let agent = {
+        let spawn_fn: zeph_subagent::AcpSubagentSpawnFn = std::sync::Arc::new(|command: String| {
+            Box::pin(async move {
+                let cfg = zeph_acp::client::SubagentConfig {
+                    command,
+                    auto_approve_permissions: true,
+                    ..zeph_acp::client::SubagentConfig::default()
+                };
+                zeph_acp::run_session(cfg, String::new())
+                    .await
+                    .map(|o| o.text)
+                    .map_err(|e| e.to_string())
+            })
+        });
+        agent.with_acp_subagent_spawn_fn(spawn_fn)
+    };
+
     #[cfg(feature = "self-check")]
     let agent = {
         let pipeline = if config.quality.self_check {

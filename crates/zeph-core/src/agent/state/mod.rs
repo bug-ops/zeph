@@ -249,6 +249,11 @@ pub(crate) struct RuntimeConfig {
     /// Combined with `auto_recap_shown` to detect whether the user has added new
     /// messages after the auto-recap was shown.
     pub(crate) msg_count_at_resume: usize,
+    /// Callback that spawns an external ACP sub-agent process by shell command (#3302).
+    ///
+    /// Injected by the binary crate when the `acp` feature is enabled.
+    /// `None` in bare / non-ACP mode; callers must degrade gracefully.
+    pub(crate) acp_subagent_spawn_fn: Option<zeph_subagent::AcpSubagentSpawnFn>,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.
@@ -888,6 +893,7 @@ impl Default for RuntimeConfig {
             acp_config: zeph_config::AcpConfig::default(),
             auto_recap_shown: false,
             msg_count_at_resume: 0,
+            acp_subagent_spawn_fn: None,
         }
     }
 }

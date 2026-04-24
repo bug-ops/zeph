@@ -81,7 +81,52 @@ impl<C: crate::channel::Channel> Agent<C> {
             return self.dispatch_agent_command(trimmed).await;
         }
 
+        // `/subagent spawn <cmd>` — ACP external process spawn (#3302).
+        if trimmed.eq_ignore_ascii_case("/subagent")
+            || trimmed.to_ascii_lowercase().starts_with("/subagent ")
+        {
+            let args = trimmed.get("/subagent".len()..).unwrap_or("").trim();
+            return Some(self.handle_subagent_slash(args).await);
+        }
+
         None
+    }
+
+    /// Handle `/subagent [spawn <cmd>]` and return a user-visible result.
+    ///
+    /// Routes `/subagent spawn <cmd>` through the ACP spawn callback when available.
+    /// Returns a usage hint when no sub-command or command string is given, and a
+    /// "not available" message when the ACP spawn callback has not been injected.
+    async fn handle_subagent_slash(&mut self, args: &str) -> Result<(), error::AgentError> {
+        let msg: String = if args.is_empty() {
+            "Usage: /subagent <subcommand>\n\nSubcommands:\n  spawn <command>  Spawn an ACP sub-agent process".to_owned()
+        } else {
+            let (subcmd, rest) = args.split_once(' ').unwrap_or((args, ""));
+            match subcmd {
+                "spawn" => {
+                    let cmd = rest.trim();
+                    if cmd.is_empty() {
+                        "Usage: /subagent spawn <command>\n\nExample: /subagent spawn zeph --acp"
+                            .to_owned()
+                    } else if let Some(spawn_fn) = self.runtime.acp_subagent_spawn_fn.clone() {
+                        let cmd = cmd.to_owned();
+                        match spawn_fn(cmd).await {
+                            Ok(output) => output,
+                            Err(e) => format!("Sub-agent error: {e}"),
+                        }
+                    } else {
+                        "ACP sub-agent spawning is not available in this mode.\n\
+                         Use `zeph acp run-agent --command <CMD> --prompt <TEXT>` for one-shot sessions."
+                            .to_owned()
+                    }
+                }
+                other => format!("Unknown /subagent subcommand: '{other}'. Available: spawn"),
+            }
+        };
+
+        let _ = self.channel.send(&msg).await;
+        let _ = self.channel.flush_chunks().await;
+        Ok(())
     }
 
     pub(super) async fn dispatch_agent_command(

@@ -68,3 +68,16 @@ pub use memory::{ensure_memory_dir, load_memory_content};
 pub use resolve::resolve_agent_paths;
 pub use state::SubAgentState;
 pub use transcript::{TranscriptMeta, TranscriptReader, TranscriptWriter, sweep_old_transcripts};
+
+/// Async callback type for spawning an external ACP sub-agent by shell command.
+///
+/// Returns the sub-agent's text output on success or an error string on failure.
+/// Installed via `AgentBuilder::with_acp_subagent_spawn_fn` when the `acp` feature is enabled.
+pub type AcpSubagentSpawnFn = std::sync::Arc<
+    dyn Fn(
+            String,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'static>,
+        > + Send
+        + Sync,
+>;

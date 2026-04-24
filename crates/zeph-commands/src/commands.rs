@@ -203,6 +203,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         category: SlashCategory::Integration,
         feature_gate: None,
     },
+    CommandInfo {
+        name: "/subagent",
+        args: "spawn <command>",
+        description: "Spawn an external ACP sub-agent process",
+        category: SlashCategory::Integration,
+        feature_gate: Some("acp"),
+    },
     // --- Planning ---
     CommandInfo {
         name: "/plan",

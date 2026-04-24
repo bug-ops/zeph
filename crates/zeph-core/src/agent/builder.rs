@@ -1280,6 +1280,27 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Installs a callback for spawning external ACP sub-agent processes via `/subagent spawn`.
+    ///
+    /// The binary crate provides this when the `acp` feature is compiled in.
+    /// When absent the command returns a "not available" user message instead of falling through
+    /// to the LLM.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use zeph_subagent::AcpSubagentSpawnFn;
+    /// let f: AcpSubagentSpawnFn = Arc::new(|cmd| {
+    ///     Box::pin(async move { Ok(format!("spawned: {cmd}")) })
+    /// });
+    /// ```
+    #[must_use]
+    pub fn with_acp_subagent_spawn_fn(mut self, f: zeph_subagent::AcpSubagentSpawnFn) -> Self {
+        self.runtime.acp_subagent_spawn_fn = Some(f);
+        self
+    }
+
     /// Returns a handle that can cancel the current in-flight operation.
     /// The returned `Notify` is stable across messages — callers invoke
     /// `notify_waiters()` to cancel whatever operation is running.

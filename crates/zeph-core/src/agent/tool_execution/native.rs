@@ -1902,10 +1902,7 @@ impl<C: Channel> Agent<C> {
                             .entered();
                             let mut env = std::collections::HashMap::new();
                             env.insert("ZEPH_DENIED_TOOL".to_owned(), tc.name.to_string());
-                            env.insert(
-                                "ZEPH_DENY_REASON".to_owned(),
-                                "blocked by before_tool layer".to_owned(),
-                            );
+                            env.insert("ZEPH_DENY_REASON".to_owned(), r.reason.clone());
                             let dispatch = self.mcp_dispatch();
                             let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
                                 .as_ref()
@@ -1921,7 +1918,7 @@ impl<C: Channel> Agent<C> {
                                 );
                             }
                         }
-                        tier_futs.push((idx, Box::pin(std::future::ready(r))));
+                        tier_futs.push((idx, Box::pin(std::future::ready(r.result))));
                         continue;
                     }
                 }

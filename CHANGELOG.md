@@ -25,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Hook actions now support `type = "mcp_tool"` to invoke MCP server tools directly without spawning a subprocess (#3293). Hooks can set `server`, `tool`, and optional `args` fields. Requires the MCP manager to be active; fails according to `fail_closed` if unavailable.
 - New `[hooks.permission_denied]` event fires when a tool execution is short-circuited by a `RuntimeLayer::before_tool` check (#3292). `Command` hooks receive `ZEPH_DENIED_TOOL` and `ZEPH_DENY_REASON` environment variables.
 - `McpDispatch` trait in `zeph-subagent` decouples hook execution from `zeph-mcp` — implementors are wired by `zeph-core` at call sites.
+- `/subagent spawn <command>` slash command is now intercepted in the core agent loop and works in CLI, piped, and bare modes — previously fell through to the LLM (#3302). Without ACP support, the command returns a clear "not available" message. `AcpSubagentSpawnFn` callback type bridges `zeph-core` ↔ `zeph-acp` without a direct crate dependency.
+- `LayerDenial` struct replaces the bare `BeforeToolResult` type alias: layers now carry an explicit `reason: String` that is propagated into the `ZEPH_DENY_REASON` hook env var (#3310). The previously hardcoded `"blocked by before_tool layer"` string is removed.
 
 ### Changed
 

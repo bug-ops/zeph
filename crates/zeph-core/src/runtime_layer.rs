@@ -28,8 +28,19 @@ use zeph_llm::provider::{ChatResponse, Message, ToolDefinition};
 use zeph_tools::ToolError;
 use zeph_tools::executor::{ToolCall, ToolOutput};
 
-/// Short-circuit result type for `before_tool`: `Some(result)` bypasses tool execution.
-pub type BeforeToolResult = Option<Result<Option<ToolOutput>, ToolError>>;
+/// Short-circuit outcome returned by a layer that blocks tool execution.
+///
+/// Carries both the result to inject in place of the real tool call and a human-readable
+/// `reason` string that is propagated to `ZEPH_DENY_REASON` in `permission_denied` hooks.
+pub struct LayerDenial {
+    /// Result injected in place of the actual tool execution.
+    pub result: Result<Option<ToolOutput>, ToolError>,
+    /// Human-readable reason exposed via the `ZEPH_DENY_REASON` hook environment variable.
+    pub reason: String,
+}
+
+/// Short-circuit result type for `before_tool`: `Some(denial)` bypasses tool execution.
+pub type BeforeToolResult = Option<LayerDenial>;
 
 /// Context available to runtime layers during interception.
 #[derive(Debug)]

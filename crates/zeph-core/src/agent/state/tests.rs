@@ -95,6 +95,7 @@ fn make_runtime_config() -> RuntimeConfig {
         acp_config: zeph_config::AcpConfig::default(),
         auto_recap_shown: false,
         msg_count_at_resume: 0,
+        acp_subagent_spawn_fn: None,
     }
 }
 
