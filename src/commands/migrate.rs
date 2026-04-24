@@ -5,14 +5,15 @@ use std::path::Path;
 
 use similar::{ChangeTag, TextDiff};
 use zeph_core::config::migrate::{
-    ConfigMigrator, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
-    migrate_autodream_config, migrate_compression_predictor_config, migrate_database_url,
-    migrate_egress_config, migrate_forgetting_config, migrate_magic_docs_config,
-    migrate_mcp_elicitation_config, migrate_mcp_trust_levels, migrate_microcompact_config,
-    migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
-    migrate_quality_config, migrate_sandbox_config, migrate_session_recap_config,
-    migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
-    migrate_telemetry_config, migrate_vigil_config,
+    ConfigMigrator, migrate_acp_subagents_config, migrate_agent_budget_hint,
+    migrate_agent_retry_to_tools_retry, migrate_autodream_config,
+    migrate_compression_predictor_config, migrate_database_url, migrate_egress_config,
+    migrate_forgetting_config, migrate_hooks_permission_denied_config, migrate_magic_docs_config,
+    migrate_mcp_elicitation_config, migrate_mcp_trust_levels, migrate_memory_graph_config,
+    migrate_microcompact_config, migrate_orchestration_persistence, migrate_otel_filter,
+    migrate_planner_model_to_provider, migrate_quality_config, migrate_sandbox_config,
+    migrate_session_recap_config, migrate_shell_transactional, migrate_stt_to_provider,
+    migrate_supervisor_config, migrate_telemetry_config, migrate_vigil_config,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -122,9 +123,21 @@ pub(crate) fn handle_migrate_config(
     let quality_result = migrate_quality_config(&after_mcp_elicitation)?;
     let after_quality = quality_result.output;
 
-    // Step 23: add missing default keys as commented-out entries.
+    // Step 23: add commented-out [acp.subagents] block if absent (#3304).
+    let acp_subagents_result = migrate_acp_subagents_config(&after_quality)?;
+    let after_acp_subagents = acp_subagents_result.output;
+
+    // Step 24: add commented-out [[hooks.permission_denied]] block if absent (#3309).
+    let hooks_perm_denied_result = migrate_hooks_permission_denied_config(&after_acp_subagents)?;
+    let after_hooks_perm_denied = hooks_perm_denied_result.output;
+
+    // Step 25: add commented-out [memory.graph] retrieval strategy options if absent (#3317).
+    let memory_graph_result = migrate_memory_graph_config(&after_hooks_perm_denied)?;
+    let after_memory_graph = memory_graph_result.output;
+
+    // Step 26: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_quality)?;
+    let result = migrator.migrate(&after_memory_graph)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -209,6 +222,20 @@ pub(crate) fn handle_migrate_config(
         }
         if quality_result.changed_count > 0 {
             eprintln!("Quality migration: added commented-out [quality] block.");
+        }
+        if acp_subagents_result.changed_count > 0 {
+            eprintln!("ACP subagents migration: added commented-out [acp.subagents] block.");
+        }
+        if hooks_perm_denied_result.changed_count > 0 {
+            eprintln!(
+                "Hooks permission_denied migration: \
+                 added commented-out [[hooks.permission_denied]] block."
+            );
+        }
+        if memory_graph_result.changed_count > 0 {
+            eprintln!(
+                "Memory graph migration: added commented-out [memory.graph] retrieval options."
+            );
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

@@ -2269,6 +2269,130 @@ pub fn migrate_quality_config(toml_src: &str) -> Result<MigrationResult, Migrate
     })
 }
 
+/// Add a commented-out `[acp.subagents]` block if the config lacks it (#3304).
+///
+/// Introduced alongside the ACP sub-agent delegation feature (#3289). All `AcpSubagentsConfig`
+/// fields have `#[serde(default)]` so existing configs parse without changes; this migration
+/// only surfaces the section so users can discover and enable it.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the
+/// migration function convention for use in chained pipelines.
+pub fn migrate_acp_subagents_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src
+        .lines()
+        .any(|l| l.trim() == "[acp.subagents]" || l.trim() == "# [acp.subagents]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [acp.subagents] — sub-agent delegation via ACP protocol (#3289).\n\
+         # [acp.subagents]\n\
+         # enabled = false\n\
+         #\n\
+         # [[acp.subagents.presets]]\n\
+         # name = \"inner\"                         # identifier used in /subagent commands\n\
+         # command = \"cargo run --quiet -- --acp\" # shell command to spawn the sub-agent\n\
+         # # cwd = \"/path/to/agent\"              # optional working directory\n\
+         # # handshake_timeout_secs = 30          # initialize+session/new timeout\n\
+         # # prompt_timeout_secs = 600            # single round-trip timeout\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["acp.subagents".to_owned()],
+    })
+}
+
+/// Add a commented-out `[[hooks.permission_denied]]` block if the config lacks it (#3309).
+///
+/// Introduced alongside the reactive env hooks and MCP tool dispatch feature (#3303).
+/// All hook arrays have `#[serde(default)]` so existing configs parse without changes;
+/// this migration surfaces the section for discoverability.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the
+/// migration function convention for use in chained pipelines.
+pub fn migrate_hooks_permission_denied_config(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if toml_src.lines().any(|l| {
+        l.trim() == "[[hooks.permission_denied]]" || l.trim() == "# [[hooks.permission_denied]]"
+    }) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [[hooks.permission_denied]] — hook fired when a tool call is denied (#3303).\n\
+         # Available env vars: ZEPH_TOOL, ZEPH_DENY_REASON, ZEPH_TOOL_INPUT_JSON.\n\
+         # [[hooks.permission_denied]]\n\
+         # [hooks.permission_denied.action]\n\
+         # type = \"command\"\n\
+         # command = \"echo denied: $ZEPH_TOOL\"\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["hooks.permission_denied".to_owned()],
+    })
+}
+
+/// Add commented-out `[memory.graph]` retrieval strategy options if the config lacks them (#3317).
+///
+/// Introduced alongside the multi-strategy graph retrieval and experience memory feature (#3311).
+/// All `MemoryGraphConfig` fields have `#[serde(default)]` so existing configs parse without
+/// changes; this migration surfaces the new options for discoverability.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the
+/// migration function convention for use in chained pipelines.
+pub fn migrate_memory_graph_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("retrieval_strategy")
+        || toml_src.contains("[memory.graph.beam_search]")
+        || toml_src.contains("# [memory.graph.beam_search]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [memory.graph] retrieval strategy options (#3311).\n\
+         # retrieval_strategy = \"synapse\"    # synapse | bfs | astar | watercircles | beam_search | hybrid\n\
+         #\n\
+         # [memory.graph.beam_search]        # active when retrieval_strategy = \"beam_search\"\n\
+         # beam_width = 10                   # top-K candidates kept per hop\n\
+         #\n\
+         # [memory.graph.watercircles]       # active when retrieval_strategy = \"watercircles\"\n\
+         # ring_limit = 0                    # max facts per ring; 0 = auto\n\
+         #\n\
+         # [memory.graph.experience]         # experience memory recording\n\
+         # enabled = false\n\
+         # evolution_sweep_enabled = false\n\
+         # confidence_prune_threshold = 0.1  # prune edges below this threshold\n\
+         # evolution_sweep_interval = 50     # turns between sweeps\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.graph.retrieval".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
