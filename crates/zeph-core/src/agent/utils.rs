@@ -127,6 +127,21 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Publish the effective context window limit from the active provider's budget into
+    /// [`MetricsSnapshot::context_max_tokens`].
+    ///
+    /// Call after the provider pool is constructed (builder) and on every successful `/provider`
+    /// switch so the TUI context gauge always reflects the active provider's window.
+    /// When no budget is configured the field is set to `0`, which the gauge renders as `"—"`.
+    pub(crate) fn publish_context_budget(&self) {
+        let max_tokens = self
+            .context_manager
+            .budget
+            .as_ref()
+            .map_or(0, |b| b.max_tokens() as u64);
+        self.update_metrics(|m| m.context_max_tokens = max_tokens);
+    }
+
     /// Flush `metrics.pending_timings` into the rolling window and publish to the metrics snapshot.
     ///
     /// Call once per turn after all four phases have written to `pending_timings`.

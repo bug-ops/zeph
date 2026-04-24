@@ -1200,6 +1200,14 @@ sweep_batch_size = 100
 # # Interval between system-metrics snapshots in seconds (Phase 3)
 # system_metrics_interval_secs = 5
 
+# [session] — session-scoped user experience settings
+# [session]
+# Persist the last-used provider per channel across restarts (#3308).
+# When true (default), the agent saves the active provider name to SQLite after each
+# /provider switch and restores it on the next session start for the same channel.
+# Set to false to always start with the configured primary provider.
+# provider_persistence = true
+
 # [session.recap] — session recap on resume (#3064)
 # [session.recap]
 # Show a recap of the previous session when resuming a conversation (requires a persisted digest)
@@ -1276,4 +1284,27 @@ sweep_batch_size = 100
 # type = "command"
 # command = "cargo check"
 # timeout_secs = 30
+# fail_closed = false
+
+# ── hooks.turn_complete ───────────────────────────────────────────────────────
+# Fired after every agent turn completes (#3327).
+# Env vars set for command hooks:
+#   ZEPH_TURN_DURATION_MS   — wall-clock duration of the turn in milliseconds
+#   ZEPH_TURN_STATUS        — "success" or "error"
+#   ZEPH_TURN_PREVIEW       — redacted first ≤160 chars of the assistant response
+#   ZEPH_TURN_LLM_REQUESTS  — number of completed LLM round-trips this turn
+#
+# Note: the built-in [notifications] section is the preferred path for desktop
+# and webhook delivery. This hook is an escape hatch for custom shell integration
+# (e.g. system sounds, status-bar updates, logging pipelines).
+# When [notifications] is also configured its should_fire gate applies here too
+# (min_turn_duration_ms, only_on_error). Without [notifications], hooks fire on
+# every turn completion.
+#
+# macOS desktop notification example:
+# Note: ZEPH_TURN_PREVIEW is available as env var but should not be embedded
+# directly in the command string to avoid shell injection. Use a wrapper script instead.
+# [[hooks.turn_complete]]
+# command = "osascript -e 'display notification \"Task complete\" with title \"Zeph\"'"
+# timeout_secs = 3
 # fail_closed = false

@@ -1435,7 +1435,23 @@ impl App {
     fn draw_side_panel(&mut self, frame: &mut ratatui::Frame, layout: &AppLayout) {
         widgets::skills::render(&self.metrics, frame, layout.skills);
         widgets::memory::render(&self.metrics, frame, layout.memory);
-        widgets::resources::render(&self.metrics, frame, layout.resources);
+
+        // Split the resources area into: context gauge (3 rows), compaction badge (3 rows),
+        // and the remaining resources panel. Each gauge/badge needs at least its border rows.
+        {
+            use ratatui::layout::{Constraint, Direction, Layout};
+            let context_split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Length(3),
+                    Constraint::Min(0),
+                ])
+                .split(layout.resources);
+            widgets::context_gauge::render(&self.metrics, frame, context_split[0]);
+            widgets::compaction_badge::render(&self.metrics, frame, context_split[1]);
+            widgets::resources::render(&self.metrics, frame, context_split[2]);
+        }
 
         let tick = self.throbber_state.index().cast_unsigned();
         let has_graph = self.metrics.orchestration_graph.as_ref().is_some_and(|s| {

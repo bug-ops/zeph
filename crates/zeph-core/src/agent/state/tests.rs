@@ -96,6 +96,8 @@ fn make_runtime_config() -> RuntimeConfig {
         auto_recap_shown: false,
         msg_count_at_resume: 0,
         acp_subagent_spawn_fn: None,
+        channel_type: String::new(),
+        provider_persistence_enabled: true,
     }
 }
 

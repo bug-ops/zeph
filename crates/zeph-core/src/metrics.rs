@@ -408,6 +408,18 @@ pub struct MetricsSnapshot {
     pub egress_dropped_total: u64,
     /// Egress requests blocked by scheme/domain/SSRF policy.
     pub egress_blocked_total: u64,
+    /// Runtime-resolved context window limit (tokens).
+    ///
+    /// Populated from `resolve_context_budget` after provider pool construction and refreshed on
+    /// every `/provider` switch. `0` means unknown (pre-init or provider has no declared window);
+    /// the TUI gauge renders `"—"` in this case to avoid divide-by-zero.
+    pub context_max_tokens: u64,
+    /// Token count at the time the most recent compaction was triggered. `0` = never compacted.
+    pub compaction_last_before: u64,
+    /// Token count after the most recent compaction completed. `0` = never compacted.
+    pub compaction_last_after: u64,
+    /// Unix epoch milliseconds when the most recent compaction occurred. `0` = never compacted.
+    pub compaction_last_at_ms: u64,
 }
 
 /// Configuration-derived fields of [`MetricsSnapshot`] that are known at agent startup and do
@@ -546,6 +558,49 @@ impl MetricsCollector {
 
     pub fn update(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
         self.tx.send_modify(f);
+    }
+
+    /// Publish the runtime-resolved context window limit.
+    ///
+    /// Call after the provider pool is constructed (builder) and on every successful
+    /// `/provider` switch so the TUI context gauge reflects the active provider's window.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_core::metrics::MetricsCollector;
+    ///
+    /// let (collector, rx) = MetricsCollector::new();
+    /// collector.set_context_max_tokens(128_000);
+    /// assert_eq!(rx.borrow().context_max_tokens, 128_000);
+    /// ```
+    pub fn set_context_max_tokens(&self, max_tokens: u64) {
+        self.tx.send_modify(|m| m.context_max_tokens = max_tokens);
+    }
+
+    /// Record the outcome of the most recent compaction event.
+    ///
+    /// Sets all three `compaction_last_*` fields atomically. `at_ms` is the Unix epoch in
+    /// milliseconds — obtain via `SystemTime::UNIX_EPOCH.elapsed().unwrap_or_default().as_millis()`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_core::metrics::MetricsCollector;
+    ///
+    /// let (collector, rx) = MetricsCollector::new();
+    /// collector.record_compaction(50_000, 12_000, 1_700_000_000_000);
+    /// let snap = rx.borrow();
+    /// assert_eq!(snap.compaction_last_before, 50_000);
+    /// assert_eq!(snap.compaction_last_after, 12_000);
+    /// assert_eq!(snap.compaction_last_at_ms, 1_700_000_000_000);
+    /// ```
+    pub fn record_compaction(&self, before: u64, after: u64, at_ms: u64) {
+        self.tx.send_modify(|m| {
+            m.compaction_last_before = before;
+            m.compaction_last_after = after;
+            m.compaction_last_at_ms = at_ms;
+        });
     }
 
     /// Returns a clone of the underlying [`watch::Sender`].

@@ -25,9 +25,11 @@
 //! | `mem_scenes` | Scene segmentation records |
 //! | `compression_guidelines` | LLM compression policy guidelines |
 //! | `admission_training` | A-MAC admission training data |
+//! | `channel_preferences` | Per-channel UX preferences (e.g. last active provider) |
 
 mod acp_sessions;
 pub mod admission_training;
+pub mod channel_preferences;
 pub mod compression_guidelines;
 pub mod corrections;
 pub mod experiments;

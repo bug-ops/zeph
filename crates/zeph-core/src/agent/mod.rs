@@ -775,6 +775,9 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Restore the last-used provider preference before any user interaction (#3308).
+        self.restore_channel_provider().await;
+
         // Load the session digest once at session start for context injection.
         self.load_and_cache_session_digest().await;
         self.maybe_send_resume_recap().await;
@@ -1489,11 +1492,19 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    /// Fire a completion notification if the notifier is configured and gating conditions pass.
-    fn maybe_fire_completion_notification(&self, turn: &turn::Turn, is_error: bool) {
-        let Some(ref notifier) = self.lifecycle.notifier else {
-            return;
-        };
+    /// Fire completion notifications and `turn_complete` hooks after each turn.
+    ///
+    /// Builds [`crate::notifications::TurnSummary`] once and reuses it for both the
+    /// [`crate::notifications::Notifier`] and any `[[hooks.turn_complete]]` entries. The
+    /// `preview` field is already redacted by [`Self::last_assistant_preview`], so hook
+    /// env vars carry no raw assistant output.
+    ///
+    /// Gating:
+    /// - When a `Notifier` is configured, both the notifier and hooks share its
+    ///   `should_fire` gate (`min_turn_duration_ms`, `only_on_error`, `enabled`).
+    /// - When no `Notifier` is configured, hooks fire on every turn completion (the
+    ///   notifier path is simply skipped).
+    fn maybe_fire_completion_notification(&mut self, turn: &turn::Turn, is_error: bool) {
         let snap = turn.metrics_snapshot().timings.clone();
         let duration_ms = snap
             .prepare_context_ms
@@ -1511,8 +1522,55 @@ impl<C: Channel> Agent<C> {
                 crate::notifications::TurnExitStatus::Success
             },
         };
-        if notifier.should_fire(&summary) {
+
+        // Gate evaluation: notifier's should_fire result (or unconditional when absent).
+        let gate_ok = self
+            .lifecycle
+            .notifier
+            .as_ref()
+            .is_none_or(|n| n.should_fire(&summary));
+
+        // 1) Existing notifier path — unchanged semantics.
+        if let Some(ref notifier) = self.lifecycle.notifier
+            && gate_ok
+        {
             notifier.fire(&summary);
+        }
+
+        // 2) turn_complete hooks — fire-and-forget, matching the Notifier::fire pattern.
+        // MCP dispatch is omitted: turn_complete hooks are expected to be Command-type
+        // (shell scripts for desktop notifications, status-bar updates, etc.). McpTool
+        // hooks in this context would require a Send + 'static MCP handle; defer that
+        // extension if needed via a follow-up.
+        let hooks = self.session.hooks_config.turn_complete.clone();
+        if !hooks.is_empty() && gate_ok {
+            let mut env = std::collections::HashMap::new();
+            env.insert(
+                "ZEPH_TURN_DURATION_MS".to_owned(),
+                summary.duration_ms.to_string(),
+            );
+            env.insert(
+                "ZEPH_TURN_STATUS".to_owned(),
+                if is_error { "error" } else { "success" }.to_owned(),
+            );
+            env.insert("ZEPH_TURN_PREVIEW".to_owned(), summary.preview.clone());
+            env.insert(
+                "ZEPH_TURN_LLM_REQUESTS".to_owned(),
+                summary.llm_requests.to_string(),
+            );
+            let _span = tracing::info_span!("core.agent.turn_hooks").entered();
+            let _accepted = self.lifecycle.supervisor.spawn(
+                agent_supervisor::TaskClass::Telemetry,
+                "turn-complete-hooks",
+                async move {
+                    // Explicitly 'static so the future satisfies tokio::spawn's bound.
+                    // None holds no actual reference; the annotation is vacuously satisfied.
+                    let no_mcp: Option<&'static dyn zeph_subagent::McpDispatch> = None;
+                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, no_mcp).await {
+                        tracing::warn!(error = %e, "turn_complete hook failed");
+                    }
+                },
+            );
         }
     }
 

@@ -2668,6 +2668,49 @@ pub fn migrate_memory_hebbian_consolidation_config(
     })
 }
 
+/// Append a commented-out `[[hooks.turn_complete]]` block to `toml_src` when it is absent (#3308).
+///
+/// Idempotent: if a `[[hooks.turn_complete]]` or `# [[hooks.turn_complete]]` line already exists,
+/// the input is returned unchanged with `changed_count = 0`.
+///
+/// The template uses a single `command` string (not `args`) to match the `HookAction::Command`
+/// schema, and avoids embedding `$ZEPH_TURN_PREVIEW` directly in the command string to prevent
+/// shell injection.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the migration
+/// function convention for use in chained pipelines.
+pub fn migrate_hooks_turn_complete_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src
+        .lines()
+        .any(|l| l.trim() == "[[hooks.turn_complete]]" || l.trim() == "# [[hooks.turn_complete]]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [[hooks.turn_complete]] — hook fired after every agent turn completes (#3308).\n\
+         # Available env vars: ZEPH_TURN_DURATION_MS, ZEPH_TURN_STATUS, ZEPH_TURN_PREVIEW,\n\
+         # ZEPH_TURN_LLM_REQUESTS.\n\
+         # Note: ZEPH_TURN_PREVIEW is available as env var but should not be embedded\n\
+         # directly in the command string to avoid shell injection. Use a wrapper script instead.\n\
+         # [[hooks.turn_complete]]\n\
+         # command = \"osascript -e 'display notification \\\"Task complete\\\" with title \\\"Zeph\\\"'\"\n\
+         # timeout_secs = 3\n\
+         # fail_closed = false\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["hooks.turn_complete".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -4160,6 +4203,33 @@ prompt_cache_ttl = "1h"
     fn migrate_memory_reasoning_idempotent_on_existing_block() {
         let input = "[agent]\nmodel = \"gpt-4o\"\n# [memory.reasoning]\n# enabled = false\n";
         let result = migrate_memory_reasoning_config(input).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert!(result.sections_changed.is_empty());
+        assert_eq!(result.output, input);
+    }
+
+    // ── migrate_hooks_turn_complete_config ────────────────────────────────────
+
+    #[test]
+    fn migrate_hooks_turn_complete_adds_block_when_absent() {
+        let input = "[agent]\nmodel = \"gpt-4o\"\n";
+        let result = migrate_hooks_turn_complete_config(input).unwrap();
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result
+                .sections_changed
+                .contains(&"hooks.turn_complete".to_owned())
+        );
+        assert!(result.output.contains("# [[hooks.turn_complete]]"));
+        assert!(result.output.contains("ZEPH_TURN_PREVIEW"));
+        assert!(result.output.contains("timeout_secs = 3"));
+    }
+
+    #[test]
+    fn migrate_hooks_turn_complete_idempotent_on_existing_block() {
+        let input =
+            "[agent]\nmodel = \"gpt-4o\"\n# [[hooks.turn_complete]]\n# command = \"echo done\"\n";
+        let result = migrate_hooks_turn_complete_config(input).unwrap();
         assert_eq!(result.changed_count, 0);
         assert!(result.sections_changed.is_empty());
         assert_eq!(result.output, input);

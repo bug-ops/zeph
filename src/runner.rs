@@ -2433,7 +2433,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .with_metrics(metrics_tx)
         .with_static_metrics(static_metrics_init)
         .with_status_tx(agent_status_tx)
-        .with_provider_pool(config.llm.providers.clone(), provider_config_snapshot);
+        .with_provider_pool(config.llm.providers.clone(), provider_config_snapshot)
+        .with_channel_identity(
+            active_channel_name.clone(),
+            config.session.provider_persistence,
+        );
 
     #[cfg(feature = "prometheus")]
     let agent = {

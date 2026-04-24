@@ -9,11 +9,28 @@
 use serde::{Deserialize, Serialize};
 
 /// Top-level `[session]` config block.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SessionConfig {
     /// Recap-on-resume settings.
     pub recap: RecapConfig,
+    /// Whether to persist the last-used provider per channel across restarts.
+    ///
+    /// When `true` (the default), the agent stores the active provider name in `SQLite`
+    /// after each `/provider` switch and restores it on the next startup for the same
+    /// `(channel_type, channel_id)` pair.
+    ///
+    /// Set to `false` to always start with the configured primary provider.
+    pub provider_persistence: bool,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            recap: RecapConfig::default(),
+            provider_persistence: true,
+        }
+    }
 }
 
 /// `[session.recap]` — controls the session recap feature (#3064).

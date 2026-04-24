@@ -435,6 +435,33 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure channel identity for per-channel UX preference persistence (#3308).
+    ///
+    /// `channel_type` must match the active I/O channel name (`"cli"`, `"tui"`, `"telegram"`,
+    /// `"discord"`, etc.). `provider_persistence` controls whether the last-used provider is
+    /// stored in `SQLite` after each `/provider` switch and restored on the next startup.
+    ///
+    /// When `provider_persistence` is `false`, the stored preference is never read or written.
+    /// When `channel_type` is empty (the default), persistence is skipped silently.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let agent = Agent::new(provider, channel, registry, None, 5, executor)
+    ///     .with_channel_identity("cli", true)
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn with_channel_identity(
+        mut self,
+        channel_type: impl Into<String>,
+        provider_persistence: bool,
+    ) -> Self {
+        self.runtime.channel_type = channel_type.into();
+        self.runtime.provider_persistence_enabled = provider_persistence;
+        self
+    }
+
     /// Attach a speech-to-text backend for voice input.
     #[must_use]
     pub fn with_stt(mut self, stt: Box<dyn zeph_llm::stt::SpeechToText>) -> Self {
@@ -830,6 +857,9 @@ impl<C: Channel> Agent<C> {
         self.context_manager.hard_compaction_threshold = hard_compaction_threshold;
         self.context_manager.compaction_preserve_tail = compaction_preserve_tail;
         self.context_manager.prune_protect_tokens = prune_protect_tokens;
+        // Publish the resolved budget into MetricsSnapshot so the TUI context gauge has a value
+        // immediately at startup rather than waiting for the first turn.
+        self.publish_context_budget();
         self
     }
 
@@ -1203,6 +1233,11 @@ impl<C: Channel> Agent<C> {
             .hooks_config
             .permission_denied
             .clone_from(&config.permission_denied);
+
+        self.session
+            .hooks_config
+            .turn_complete
+            .clone_from(&config.turn_complete);
 
         if let Some(ref fc) = config.file_changed {
             self.session

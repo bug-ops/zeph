@@ -5,11 +5,125 @@
 
 use std::fmt::Write as _;
 
+use tokio::time::Duration;
+
 use super::Agent;
+use super::agent_supervisor::TaskClass;
 use crate::channel::Channel;
 use zeph_llm::provider::LlmProvider as _;
 
 impl<C: Channel> Agent<C> {
+    /// Restore the last-used provider for the active channel from `SQLite` (#3308).
+    ///
+    /// Called once at session start (inside [`Agent::run`], before the main loop). If provider
+    /// persistence is disabled or no memory backend is configured, this is a no-op. On lookup
+    /// failure the agent continues with the primary provider — startup must never be blocked.
+    ///
+    /// A 2-second timeout guards against slow database I/O on startup; if the timeout fires,
+    /// a warning is logged and the default provider is kept.
+    #[tracing::instrument(name = "core.agent.restore_provider", skip_all)]
+    pub(super) async fn restore_channel_provider(&mut self) {
+        if !self.runtime.provider_persistence_enabled {
+            return;
+        }
+        let channel_type = self.runtime.channel_type.clone();
+        if channel_type.is_empty() {
+            return;
+        }
+        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
+            return;
+        };
+        let sqlite = memory.sqlite().clone();
+        // channel_id is always "" for CLI/TUI. Telegram persistence is deferred to a follow-up.
+        let load_fut = sqlite.load_channel_preference(&channel_type, "", "provider");
+        match tokio::time::timeout(Duration::from_secs(2), load_fut).await {
+            Err(_elapsed) => {
+                tracing::warn!(
+                    channel_type,
+                    "timed out loading persisted provider preference — using default"
+                );
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    channel_type,
+                    error = %e,
+                    "failed to load persisted provider preference — using default"
+                );
+            }
+            Ok(Ok(None)) => {
+                // No preference stored yet; nothing to do.
+            }
+            Ok(Ok(Some(stored_name))) => {
+                // Validate against the provider pool before switching (invariant #2).
+                let found = self
+                    .providers
+                    .provider_pool
+                    .iter()
+                    .any(|e| e.effective_name().eq_ignore_ascii_case(&stored_name));
+                if found {
+                    let result = self.provider_switch_as_string(&stored_name);
+                    if result.contains("Switched") {
+                        tracing::info!(
+                            provider = stored_name,
+                            channel_type,
+                            "restored persisted provider preference from SQLite"
+                        );
+                    } else {
+                        tracing::warn!(
+                            provider = stored_name,
+                            channel_type,
+                            response = result,
+                            "persisted provider preference could not be switched — using default"
+                        );
+                    }
+                } else {
+                    tracing::warn!(
+                        provider = stored_name,
+                        channel_type,
+                        "persisted provider '{}' not found in provider pool — using default",
+                        stored_name
+                    );
+                }
+            }
+        }
+    }
+
+    /// Persist the active provider preference for the current channel to `SQLite`.
+    ///
+    /// Spawned via [`BackgroundSupervisor`] under `TaskClass::Telemetry` so the store is
+    /// never called on the hot path. Fails silently on concurrency-limit overflow — the
+    /// preference will be persisted on the next successful switch.
+    fn persist_channel_provider(&mut self, provider_name: String) {
+        if !self.runtime.provider_persistence_enabled {
+            return;
+        }
+        let channel_type = self.runtime.channel_type.clone();
+        if channel_type.is_empty() {
+            return;
+        }
+        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
+            return;
+        };
+        let sqlite = memory.sqlite().clone();
+        self.lifecycle.supervisor.spawn(
+            TaskClass::Telemetry,
+            "persist_channel_provider",
+            async move {
+                if let Err(e) = sqlite
+                    .upsert_channel_preference(&channel_type, "", "provider", &provider_name)
+                    .await
+                {
+                    tracing::warn!(
+                        channel_type,
+                        provider = provider_name,
+                        error = %e,
+                        "failed to persist channel provider preference"
+                    );
+                }
+            },
+        );
+    }
+
     /// Update instruction files when the active provider changes (C5).
     fn update_provider_instructions(&mut self, entry: &zeph_config::ProviderEntry) {
         let Some(ref mut reload_state) = self.instructions.reload_state else {
@@ -198,6 +312,9 @@ impl<C: Channel> Agent<C> {
 
                 self.update_provider_instructions(&entry);
                 self.apply_provider_switch_metrics(&entry, &configured_name);
+                self.persist_channel_provider(configured_name.clone());
+                // Refresh the TUI context gauge with the new provider's window size.
+                self.publish_context_budget();
                 self.build_switch_message(&configured_name)
             }
             Err(e) => format!("Failed to switch to '{name}': {e}"),

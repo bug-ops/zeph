@@ -3,7 +3,9 @@
 
 pub mod chat;
 pub mod command_palette;
+pub mod compaction_badge;
 pub mod confirm;
+pub mod context_gauge;
 pub mod diff;
 pub mod elicitation;
 pub mod file_picker;

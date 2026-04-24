@@ -52,6 +52,23 @@ pub struct HooksConfig {
     /// - `ZEPH_DENIED_TOOL` — the name of the tool that was blocked.
     /// - `ZEPH_DENY_REASON` — human-readable reason string from the layer.
     pub permission_denied: Vec<HookDef>,
+    /// Hooks fired after each agent turn completes (#3327).
+    ///
+    /// Runs regardless of the `[notifications]` config. When a `[notifications]` notifier is
+    /// also configured, these hooks share its `should_fire` gate (respecting `min_turn_duration_ms`,
+    /// `only_on_error`, and `enabled`). When no notifier is configured, hooks fire on every
+    /// completed turn.
+    ///
+    /// Use `min_duration_ms` in a wrapper script or the `[notifications].min_turn_duration_ms`
+    /// gate to avoid firing on trivial responses.
+    ///
+    /// Environment variables set for `Command` hooks:
+    /// - `ZEPH_TURN_DURATION_MS`   — wall-clock duration of the turn in milliseconds.
+    /// - `ZEPH_TURN_STATUS`        — `"success"` or `"error"`.
+    /// - `ZEPH_TURN_PREVIEW`       — redacted first ≤ 160 chars of the assistant response.
+    /// - `ZEPH_TURN_LLM_REQUESTS`  — number of completed LLM round-trips this turn.
+    #[serde(default)]
+    pub turn_complete: Vec<HookDef>,
 }
 
 impl HooksConfig {
@@ -69,6 +86,7 @@ impl HooksConfig {
         self.cwd_changed.is_empty()
             && self.file_changed.is_none()
             && self.permission_denied.is_empty()
+            && self.turn_complete.is_empty()
     }
 }
 
@@ -164,6 +182,7 @@ severity = "high"
             cwd_changed: vec![cmd_hook("echo hi")],
             file_changed: None,
             permission_denied: Vec::new(),
+            turn_complete: Vec::new(),
         };
         assert!(!cfg.is_empty());
     }
@@ -174,7 +193,45 @@ severity = "high"
             cwd_changed: Vec::new(),
             file_changed: None,
             permission_denied: vec![cmd_hook("echo denied")],
+            turn_complete: Vec::new(),
         };
         assert!(!cfg.is_empty());
+    }
+
+    #[test]
+    fn hooks_config_not_empty_with_turn_complete_hooks() {
+        let cfg = HooksConfig {
+            cwd_changed: Vec::new(),
+            file_changed: None,
+            permission_denied: Vec::new(),
+            turn_complete: vec![cmd_hook("notify-send Zeph done")],
+        };
+        assert!(!cfg.is_empty());
+    }
+
+    #[test]
+    fn hooks_config_is_empty_when_all_empty_including_turn_complete() {
+        let cfg = HooksConfig {
+            cwd_changed: Vec::new(),
+            file_changed: None,
+            permission_denied: Vec::new(),
+            turn_complete: Vec::new(),
+        };
+        assert!(cfg.is_empty());
+    }
+
+    #[test]
+    fn hooks_config_parses_turn_complete_from_toml() {
+        let toml = r#"
+[[turn_complete]]
+type = "command"
+command = "osascript -e 'display notification \"$ZEPH_TURN_PREVIEW\" with title \"Zeph\"'"
+timeout_secs = 3
+fail_closed = false
+"#;
+        let cfg: HooksConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.turn_complete.len(), 1);
+        assert!(cfg.cwd_changed.is_empty());
+        assert!(cfg.permission_denied.is_empty());
     }
 }

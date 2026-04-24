@@ -8,6 +8,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Provider preference persistence per channel (#3308). The last-used provider (set via
+  `/provider <name>`) is now saved to `SQLite` after each successful switch and automatically
+  restored on the next session start. Identity is keyed by `(channel_type, channel_id)` —
+  CLI/TUI use `channel_id = ""`, Telegram persistence is deferred pending per-chat wiring.
+  Adds `[session] provider_persistence = true` config flag (default enabled). Migration
+  `079_channel_preferences.sql` (SQLite) and `075_channel_preferences.sql` (Postgres).
+- `[[hooks.turn_complete]]` hook event fired after each agent turn completes (#3327). Env vars
+  exposed: `ZEPH_TURN_DURATION_MS`, `ZEPH_TURN_STATUS`, `ZEPH_TURN_PREVIEW` (redacted), and
+  `ZEPH_TURN_LLM_REQUESTS`. Shares the `[notifications]` `should_fire` gate when a notifier is
+  configured; fires on every turn when no notifier is present. Adds `turn_complete` field to
+  `HooksConfig` and `HooksConfigSnapshot`; `HooksConfig::is_empty()` updated accordingly.
+  Commented-out macOS example added to `config/default.toml`.
+- `specs/UX/mention-routing.md` — research spec assessing `@agent` mention routing feasibility
+  for Zeph's TUI. Documents the Goose reference pattern, required changes, and defers
+  implementation pending `AgentRegistry` infrastructure (#3327).
+- Compaction progress UX improvements (#3314):
+  - `MetricsSnapshot` gains four new fields: `context_max_tokens`, `compaction_last_before`,
+    `compaction_last_after`, and `compaction_last_at_ms` (all `u64`, default 0 = unknown/never).
+  - `MetricsCollector` exposes `set_context_max_tokens()` and `record_compaction()` helpers.
+  - `Agent::publish_context_budget()` resolves the effective context window from
+    `context_manager.budget.max_tokens()` and publishes it to `MetricsSnapshot` immediately
+    after provider pool construction and on every successful `/provider` switch.
+  - An `INFO` log (`tokens_before`, `tokens_after`, `saved`) and a transient
+    `send_status("Compacting: {b}→{a} tokens")` are emitted after each successful hard
+    compaction in `agent/context/summarization.rs`.
+  - TUI: new `context_gauge` widget renders a color-coded fill bar (green < 70%, yellow 70–90%,
+    red > 90%); hides gracefully when `context_max_tokens == 0` (displays `"—"`).
+  - TUI: new `compaction_badge` widget shows `"{before}k→{after}k (-{saved}k) {elapsed}"` as a
+    persistent side-panel entry; hidden until the first compaction occurs this session.
+
 - HL-F1: `Edge.weight: f32` field (default `1.0`) for Hebbian reinforcement in the graph store
   (`crates/zeph-memory`). SQLite migration 077 adds `graph_edges.weight REAL NOT NULL DEFAULT 1.0`
   and the `idx_summaries_message_range` partial index. Postgres is out of scope pending resolution

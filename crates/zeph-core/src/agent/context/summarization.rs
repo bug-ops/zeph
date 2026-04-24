@@ -1975,7 +1975,33 @@ impl<C: Channel> Agent<C> {
                         // it gracefully if the messages changed during the async call.
                     }
                 }
-                let _ = self.channel.send_status("").await;
+                // Emit compaction UX signal when tokens were actually freed (#3314).
+                // The `send_status` call below clears the spinner immediately, so we emit the
+                // status notification here while the status line is still visible.
+                let tokens_after = self.providers.cached_prompt_tokens;
+                if tokens_after < tokens_before {
+                    let now_ms = std::time::SystemTime::UNIX_EPOCH
+                        .elapsed()
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    tracing::info!(
+                        tokens_before,
+                        tokens_after,
+                        saved = tokens_before.saturating_sub(tokens_after),
+                        "context compaction complete"
+                    );
+                    let _ = self
+                        .channel
+                        .send_status(&format!(
+                            "Compacting: {tokens_before}→{tokens_after} tokens"
+                        ))
+                        .await;
+                    self.update_metrics(|m| {
+                        m.compaction_last_before = tokens_before;
+                        m.compaction_last_after = tokens_after;
+                        m.compaction_last_at_ms = now_ms;
+                    });
+                }
                 Ok(())
             }
         }

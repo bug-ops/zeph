@@ -263,6 +263,16 @@ pub(crate) struct RuntimeConfig {
     /// Injected by the binary crate when the `acp` feature is enabled.
     /// `None` in bare / non-ACP mode; callers must degrade gracefully.
     pub(crate) acp_subagent_spawn_fn: Option<zeph_subagent::AcpSubagentSpawnFn>,
+    /// Channel type string used as part of the `(channel_type, channel_id)` persistence key.
+    ///
+    /// Set at build time from the active I/O channel (e.g. `"cli"`, `"tui"`, `"telegram"`).
+    /// Empty when channel identity has not been configured (persistence is skipped).
+    pub(crate) channel_type: String,
+    /// Whether provider preference persistence is enabled for this session (#3308).
+    ///
+    /// Controlled by `[session] provider_persistence = true` (the default). When `false`,
+    /// the stored provider preference is never read or written.
+    pub(crate) provider_persistence_enabled: bool,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.
@@ -647,6 +657,12 @@ pub(crate) struct HooksConfigSnapshot {
     pub(crate) file_changed_hooks: Vec<zeph_config::HookDef>,
     /// Hooks fired when a tool execution is blocked by a `RuntimeLayer::before_tool` check.
     pub(crate) permission_denied: Vec<zeph_config::HookDef>,
+    /// Hooks fired after each agent turn completes (#3327).
+    ///
+    /// Populated from `HooksConfig::turn_complete` at session construction. Shares the
+    /// `Notifier::should_fire` gate when a notifier is configured; fires on every completion
+    /// when no notifier is present.
+    pub(crate) turn_complete: Vec<zeph_config::HookDef>,
 }
 
 // Groups message buffering and image staging state.
@@ -927,6 +943,8 @@ impl Default for RuntimeConfig {
             auto_recap_shown: false,
             msg_count_at_resume: 0,
             acp_subagent_spawn_fn: None,
+            channel_type: String::new(),
+            provider_persistence_enabled: true,
         }
     }
 }
