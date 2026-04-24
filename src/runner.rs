@@ -2377,38 +2377,36 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "prometheus")]
     let _prometheus_sync_handle = if exec_mode.bare {
         None
+    } else if let Some(prom) = prom_arc {
+        let handle = crate::metrics_export::spawn_metrics_sync(
+            std::sync::Arc::clone(&prom),
+            prometheus_metrics_rx,
+            config.metrics.sync_interval_secs,
+        );
+        let effective_path = {
+            let p = &config.metrics.path;
+            if p.is_empty() || !p.starts_with('/') {
+                "/metrics".to_owned()
+            } else {
+                p.clone()
+            }
+        };
+        crate::gateway_spawn::spawn_gateway_server(
+            config,
+            shutdown_rx.clone(),
+            Some((std::sync::Arc::clone(&prom.registry), effective_path)),
+        );
+        Some(handle)
     } else {
-        if let Some(prom) = prom_arc {
-            let handle = crate::metrics_export::spawn_metrics_sync(
-                std::sync::Arc::clone(&prom),
-                prometheus_metrics_rx,
-                config.metrics.sync_interval_secs,
+        if config.metrics.enabled && !config.gateway.enabled {
+            tracing::warn!(
+                "[metrics] enabled=true but [gateway] enabled=false; skipping Prometheus metrics export"
             );
-            let effective_path = {
-                let p = &config.metrics.path;
-                if p.is_empty() || !p.starts_with('/') {
-                    "/metrics".to_owned()
-                } else {
-                    p.clone()
-                }
-            };
-            crate::gateway_spawn::spawn_gateway_server(
-                config,
-                shutdown_rx.clone(),
-                Some((std::sync::Arc::clone(&prom.registry), effective_path)),
-            );
-            Some(handle)
-        } else {
-            if config.metrics.enabled && !config.gateway.enabled {
-                tracing::warn!(
-                    "[metrics] enabled=true but [gateway] enabled=false; skipping Prometheus metrics export"
-                );
-            }
-            if config.gateway.enabled {
-                crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone(), None);
-            }
-            None
         }
+        if config.gateway.enabled {
+            crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone(), None);
+        }
+        None
     };
 
     // When `prometheus` feature is disabled, spawn gateway unconditionally if enabled.
