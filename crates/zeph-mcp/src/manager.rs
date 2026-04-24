@@ -768,14 +768,18 @@ impl McpManager {
     /// Must be called after the UI channel is running so that auth URLs are
     /// visible to the user. For each server requiring authorization, the
     /// browser is opened automatically and the callback is awaited (up to 300 s).
-    /// Discovered tools are published via `tools_watch_tx` so the running agent
-    /// picks them up automatically.
+    /// All OAuth handshakes run concurrently via `JoinSet`. Discovered tools are
+    /// published via `tools_watch_tx` after all connections complete.
     ///
     /// # Panics
     ///
     #[allow(clippy::too_many_lines)]
     pub async fn connect_oauth_deferred(&self) {
         let last_refresh = Arc::clone(&self.last_refresh);
+        let limits = IngestLimits {
+            description_bytes: self.max_description_bytes,
+            instructions_bytes: self.max_instructions_bytes,
+        };
 
         let oauth_configs: Vec<_> = self
             .configs
@@ -784,7 +788,12 @@ impl McpManager {
             .cloned()
             .collect();
 
-        let mut outcomes: Vec<ServerConnectOutcome> = Vec::new();
+        // Spawn one task per OAuth server. Each task runs the full OAuth flow
+        // (initial connect + optional browser callback) and returns the connected
+        // client or a pre-formatted error string. No &self reference crosses the
+        // task boundary — only cloned/Arc values are captured.
+        let mut join_set: JoinSet<(String, Result<McpClient, String>)> = JoinSet::new();
+
         for config in oauth_configs {
             let McpTransport::OAuth {
                 ref url,
@@ -809,162 +818,171 @@ impl McpManager {
                 continue;
             };
 
-            let roots = Arc::new(validate_roots(&config.roots, &config.id));
-            let connect_result = McpClient::connect_url_oauth(
-                &config.id,
-                url,
-                scopes,
-                callback_port,
-                client_name,
-                credential_store,
-                matches!(config.trust_level, McpTrustLevel::Trusted),
-                tx,
-                Arc::clone(&last_refresh),
-                config.timeout,
-                crate::client::HandlerConfig {
-                    roots,
-                    max_description_bytes: self.max_description_bytes,
-                    elicitation_tx: self.clone_elicitation_tx_for(&config.id, config.trust_level),
-                    elicitation_timeout: self.elicitation_timeout_for(&config.id),
-                },
-            )
-            .await;
+            let url = url.clone();
+            let scopes = scopes.clone();
+            let client_name = client_name.clone();
+            let server_id = config.id.clone();
+            let trusted = matches!(config.trust_level, McpTrustLevel::Trusted);
+            let timeout = config.timeout;
+            let handler_cfg = self.handler_cfg_for(&config);
+            let status_tx = self.status_tx.clone();
+            let last_refresh = Arc::clone(&last_refresh);
 
-            match connect_result {
-                Ok(OAuthConnectResult::Connected(client)) => {
-                    let output = self
-                        .handle_connect_result(
-                            config.id.clone(),
-                            Ok(client),
-                            IngestLimits {
-                                description_bytes: self.max_description_bytes,
-                                instructions_bytes: self.max_instructions_bytes,
-                            },
+            join_set.spawn(async move {
+                let connect_result = McpClient::connect_url_oauth(
+                    &server_id,
+                    &url,
+                    &scopes,
+                    callback_port,
+                    &client_name,
+                    credential_store,
+                    trusted,
+                    tx,
+                    last_refresh,
+                    timeout,
+                    handler_cfg,
+                )
+                .await;
+
+                let client_result = match connect_result {
+                    Ok(OAuthConnectResult::Connected(client)) => Ok(client),
+                    Ok(OAuthConnectResult::AuthorizationRequired(pending_box)) => {
+                        let mut pending = *pending_box;
+                        tracing::info!(
+                            server_id,
+                            auth_url = pending.auth_url,
+                            callback_port = pending.actual_port,
+                            "OAuth authorization required — open this URL to authorize"
+                        );
+                        let auth_msg = format!(
+                            "MCP OAuth: Open this URL to authorize '{}': {}",
+                            server_id, pending.auth_url
+                        );
+                        if let Some(ref stx) = status_tx {
+                            let _ = stx.send(format!("Waiting for OAuth: {server_id}"));
+                            let _ = stx.send(auth_msg.clone());
+                        } else {
+                            eprintln!("{auth_msg}");
+                        }
+                        // open::that_in_background spawns an OS thread; ignore the handle —
+                        // we don't need to wait for the browser to open.
+                        let _ = open::that_in_background(pending.auth_url.clone());
+
+                        let callback_timeout = std::time::Duration::from_mins(5);
+                        let listener = pending
+                            .listener
+                            .take()
+                            .expect("listener always set by connect_url_oauth");
+                        match crate::oauth::await_oauth_callback(
+                            listener,
+                            callback_timeout,
+                            &server_id,
                         )
-                        .await;
-                    outcomes.push(output.outcome);
-                    if let Some((sid, instr)) = output.instructions {
-                        self.server_instructions.write().await.insert(sid, instr);
-                    }
-                    let mut clients_guard = self.clients.write().await;
-                    let mut server_tools_guard = self.server_tools.write().await;
-                    if let Some((sid, client)) = output.client_entry {
-                        clients_guard.insert(sid, client);
-                    }
-                    if let Some((sid, tools)) = output.tools_entry {
-                        server_tools_guard.insert(sid, tools);
-                    }
-                    let updated: Vec<McpTool> =
-                        server_tools_guard.values().flatten().cloned().collect();
-                    drop(clients_guard);
-                    drop(server_tools_guard);
-                    let _ = self.tools_watch_tx.send(updated);
-                }
-                Ok(OAuthConnectResult::AuthorizationRequired(pending_box)) => {
-                    let mut pending = *pending_box;
-                    tracing::info!(
-                        server_id = config.id,
-                        auth_url = pending.auth_url,
-                        callback_port = pending.actual_port,
-                        "OAuth authorization required — open this URL to authorize"
-                    );
-                    let auth_msg = format!(
-                        "MCP OAuth: Open this URL to authorize '{}': {}",
-                        config.id, pending.auth_url
-                    );
-                    if let Some(ref tx) = self.status_tx {
-                        let _ = tx.send(format!("Waiting for OAuth: {}", config.id));
-                        let _ = tx.send(auth_msg.clone());
-                    } else {
-                        eprintln!("{auth_msg}");
-                    }
-                    // open::that_in_background spawns an OS thread; ignore the handle —
-                    // we don't need to wait for the browser to open.
-                    let _ = open::that_in_background(pending.auth_url.clone());
-
-                    let callback_timeout = std::time::Duration::from_mins(5);
-                    let listener = pending
-                        .listener
-                        .take()
-                        .expect("listener always set by connect_url_oauth");
-                    match crate::oauth::await_oauth_callback(listener, callback_timeout, &config.id)
                         .await
-                    {
-                        Ok((code, csrf_token)) => {
-                            if let Some(ref tx) = self.status_tx {
-                                let _ = tx.send(String::new());
-                            }
-                            match McpClient::complete_oauth(pending, &code, &csrf_token).await {
-                                Ok(client) => {
-                                    let output = self
-                                        .handle_connect_result(
-                                            config.id.clone(),
-                                            Ok(client),
-                                            IngestLimits {
-                                                description_bytes: self.max_description_bytes,
-                                                instructions_bytes: self.max_instructions_bytes,
-                                            },
-                                        )
-                                        .await;
-                                    outcomes.push(output.outcome);
-                                    if let Some((sid, instr)) = output.instructions {
-                                        self.server_instructions.write().await.insert(sid, instr);
-                                    }
-                                    let mut clients_guard = self.clients.write().await;
-                                    let mut server_tools_guard = self.server_tools.write().await;
-                                    if let Some((sid, client)) = output.client_entry {
-                                        clients_guard.insert(sid, client);
-                                    }
-                                    if let Some((sid, tools)) = output.tools_entry {
-                                        server_tools_guard.insert(sid, tools);
-                                    }
-                                    let updated: Vec<McpTool> =
-                                        server_tools_guard.values().flatten().cloned().collect();
-                                    drop(clients_guard);
-                                    drop(server_tools_guard);
-                                    let _ = self.tools_watch_tx.send(updated);
+                        {
+                            Ok((code, csrf_token)) => {
+                                if let Some(ref stx) = status_tx {
+                                    let _ = stx.send(String::new());
                                 }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        server_id = config.id,
-                                        "OAuth token exchange failed: {e:#}"
-                                    );
-                                    outcomes.push(ServerConnectOutcome {
-                                        id: config.id.clone(),
-                                        connected: false,
-                                        tool_count: 0,
-                                        error: format!("OAuth token exchange failed: {e:#}"),
-                                    });
+                                McpClient::complete_oauth(pending, &code, &csrf_token)
+                                    .await
+                                    .map_err(|e| format!("OAuth token exchange failed: {e:#}"))
+                            }
+                            Err(e) => {
+                                if let Some(ref stx) = status_tx {
+                                    let _ = stx.send(String::new());
                                 }
+                                tracing::warn!(server_id, "OAuth callback failed: {e:#}");
+                                Err(format!("OAuth callback failed: {e:#}"))
                             }
-                        }
-                        Err(e) => {
-                            if let Some(ref tx) = self.status_tx {
-                                let _ = tx.send(String::new());
-                            }
-                            tracing::warn!(server_id = config.id, "OAuth callback failed: {e:#}");
-                            outcomes.push(ServerConnectOutcome {
-                                id: config.id.clone(),
-                                connected: false,
-                                tool_count: 0,
-                                error: format!("OAuth callback failed: {e:#}"),
-                            });
                         }
                     }
+                    Err(e) => {
+                        tracing::warn!(server_id, "OAuth connection failed: {e:#}");
+                        Err(format!("{e:#}"))
+                    }
+                };
+
+                (server_id, client_result)
+            });
+        }
+
+        // Drain all tasks before touching shared state — no locks held here.
+        let mut raw_results: Vec<(String, Result<McpClient, String>)> =
+            Vec::with_capacity(join_set.len());
+        while let Some(res) = join_set.join_next().await {
+            if let Ok(item) = res {
+                raw_results.push(item);
+            } else {
+                tracing::warn!("MCP OAuth connection task panicked");
+            }
+        }
+
+        // Process each result through handle_connect_result (no locks held).
+        let mut outputs = Vec::with_capacity(raw_results.len());
+        for (server_id, client_result) in raw_results {
+            match client_result {
+                Ok(client) => {
+                    outputs.push(
+                        self.handle_connect_result(server_id, Ok(client), limits)
+                            .await,
+                    );
                 }
-                Err(e) => {
-                    tracing::warn!(server_id = config.id, "OAuth connection failed: {e:#}");
-                    outcomes.push(ServerConnectOutcome {
-                        id: config.id.clone(),
-                        connected: false,
-                        tool_count: 0,
-                        error: format!("{e:#}"),
+                Err(error) => {
+                    outputs.push(ConnectOutput {
+                        client_entry: None,
+                        tools_entry: None,
+                        tools: Vec::new(),
+                        outcome: ServerConnectOutcome {
+                            id: server_id,
+                            connected: false,
+                            tool_count: 0,
+                            error,
+                        },
+                        instructions: None,
                     });
                 }
             }
         }
 
-        drop(outcomes);
+        // Batch-commit to shared maps in separate guarded blocks — never hold one
+        // lock across another .await (same pattern as connect_all).
+        let mut pending_instructions: Vec<(String, String)> = Vec::new();
+        let mut pending_clients: Vec<(String, McpClient)> = Vec::new();
+        let mut pending_tools: Vec<(String, Vec<McpTool>)> = Vec::new();
+        for output in outputs {
+            if let Some((sid, instr)) = output.instructions {
+                pending_instructions.push((sid, instr));
+            }
+            if let Some((sid, client)) = output.client_entry {
+                pending_clients.push((sid, client));
+            }
+            if let Some((sid, tools)) = output.tools_entry {
+                pending_tools.push((sid, tools));
+            }
+        }
+        {
+            let mut g = self.server_instructions.write().await;
+            for (sid, instr) in pending_instructions {
+                g.insert(sid, instr);
+            }
+        }
+        {
+            let mut g = self.clients.write().await;
+            for (sid, client) in pending_clients {
+                g.insert(sid, client);
+            }
+        }
+        let updated = {
+            let mut g = self.server_tools.write().await;
+            for (sid, tools) in pending_tools {
+                g.insert(sid, tools);
+            }
+            g.values().flatten().cloned().collect::<Vec<McpTool>>()
+        };
+        if !updated.is_empty() {
+            let _ = self.tools_watch_tx.send(updated);
+        }
     }
 
     /// Log warnings for all `sanitized_id` collisions in `tools`.

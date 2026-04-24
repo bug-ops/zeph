@@ -128,7 +128,7 @@ async fn handle_tool_step(
 
             let mut result_parts: Vec<MessagePart> = Vec::new();
             for tc in &tool_calls {
-                let hook_env = make_hook_env(task_id, agent_name, tc.name.as_str());
+                let mut hook_env = make_hook_env(task_id, agent_name, tc.name.as_str());
 
                 let pre_hooks: Vec<&HookDef> =
                     matching_hooks(&hooks.pre_tool_use, tc.name.as_str());
@@ -151,6 +151,7 @@ async fn handle_tool_step(
                     params,
                     caller_id: None,
                 };
+                let tool_start = Instant::now();
                 let (content, is_error) = match executor.execute_tool_call_erased(&call).await {
                     Ok(Some(output)) => (
                         format!(
@@ -165,11 +166,14 @@ async fn handle_tool_step(
                         (format!("[tool error]: {e}"), true)
                     }
                 };
+                let duration_ms = tool_start.elapsed().as_millis();
                 result_parts.push(MessagePart::ToolResult {
                     tool_use_id: tc.id.clone(),
                     content,
                     is_error,
                 });
+
+                hook_env.insert("ZEPH_TOOL_DURATION_MS".to_owned(), duration_ms.to_string());
 
                 if !hooks.post_tool_use.is_empty() {
                     let post_hooks: Vec<&HookDef> =
