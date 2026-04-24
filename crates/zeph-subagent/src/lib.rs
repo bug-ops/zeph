@@ -60,7 +60,8 @@ pub use error::SubAgentError;
 pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};
 pub use grants::{Grant, GrantKind, PermissionGrants, SecretRequest};
 pub use hooks::{
-    HookDef, HookError, HookMatcher, HookType, SubagentHooks, fire_hooks, matching_hooks,
+    HookAction, HookDef, HookError, HookMatcher, McpDispatch, SubagentHooks, fire_hooks,
+    matching_hooks,
 };
 pub use manager::{SpawnContext, SubAgentHandle, SubAgentManager, SubAgentStatus};
 pub use memory::{ensure_memory_dir, load_memory_content};

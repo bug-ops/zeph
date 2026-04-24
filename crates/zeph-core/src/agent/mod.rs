@@ -2658,6 +2658,14 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Return an `McpDispatch` adapter backed by the agent's MCP manager, if present.
+    fn mcp_dispatch(&self) -> Option<McpManagerDispatch> {
+        self.mcp
+            .manager
+            .as_ref()
+            .map(|m| McpManagerDispatch(Arc::clone(m)))
+    }
+
     /// Check if the process cwd has changed since last call and fire `CwdChanged` hooks.
     ///
     /// Called after each tool batch completes. The check is a single syscall and has
@@ -2693,7 +2701,11 @@ impl<C: Channel> Agent<C> {
             let mut env = std::collections::HashMap::new();
             env.insert("ZEPH_OLD_CWD".to_owned(), old_cwd.display().to_string());
             env.insert("ZEPH_NEW_CWD".to_owned(), current.display().to_string());
-            if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env).await {
+            let dispatch = self.mcp_dispatch();
+            let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
+                .as_ref()
+                .map(|d| d as &dyn zeph_subagent::McpDispatch);
+            if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, mcp).await {
                 tracing::warn!(error = %e, "CwdChanged hook failed");
             }
         }
@@ -2720,7 +2732,11 @@ impl<C: Channel> Agent<C> {
                 "ZEPH_CHANGED_PATH".to_owned(),
                 event.path.display().to_string(),
             );
-            if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env).await {
+            let dispatch = self.mcp_dispatch();
+            let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
+                .as_ref()
+                .map(|d| d as &dyn zeph_subagent::McpDispatch);
+            if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, mcp).await {
                 tracing::warn!(error = %e, "FileChanged hook failed");
             }
         }
@@ -2728,6 +2744,45 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("").await;
     }
 }
+/// Thin wrapper that implements [`zeph_subagent::McpDispatch`] over an [`Arc<zeph_mcp::McpManager>`].
+///
+/// Used to pass MCP tool dispatch capability into `fire_hooks` without coupling
+/// `zeph-subagent` to `zeph-mcp`.
+struct McpManagerDispatch(Arc<zeph_mcp::McpManager>);
+
+impl zeph_subagent::McpDispatch for McpManagerDispatch {
+    fn call_tool<'a>(
+        &'a self,
+        server: &'a str,
+        tool: &'a str,
+        args: serde_json::Value,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.0
+                .call_tool(server, tool, args)
+                .await
+                .map(|result| {
+                    // Extract text content from the MCP response as a JSON value.
+                    let texts: Vec<serde_json::Value> = result
+                        .content
+                        .iter()
+                        .filter_map(|c| {
+                            if let rmcp::model::RawContent::Text(t) = &c.raw {
+                                Some(serde_json::Value::String(t.text.clone()))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    serde_json::Value::Array(texts)
+                })
+                .map_err(|e| e.to_string())
+        })
+    }
+}
+
 pub(crate) async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
     while !*rx.borrow_and_update() {
         if rx.changed().await.is_err() {

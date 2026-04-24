@@ -1890,6 +1890,35 @@ impl<C: Channel> Agent<C> {
                         }
                     }
                     if let Some(r) = sc_result {
+                        // Fire PermissionDenied hooks (fail_open: hook errors are logged, not fatal).
+                        let pd_hooks = self.session.hooks_config.permission_denied.clone();
+                        if !pd_hooks.is_empty() {
+                            let _span = tracing::info_span!(
+                                "core.hooks.permission_denied",
+                                tool = %tc.name,
+                            )
+                            .entered();
+                            let mut env = std::collections::HashMap::new();
+                            env.insert("ZEPH_DENIED_TOOL".to_owned(), tc.name.to_string());
+                            env.insert(
+                                "ZEPH_DENY_REASON".to_owned(),
+                                "blocked by before_tool layer".to_owned(),
+                            );
+                            let dispatch = self.mcp_dispatch();
+                            let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
+                                .as_ref()
+                                .map(|d| d as &dyn zeph_subagent::McpDispatch);
+                            // TODO: implement retry-on-{"retry":true} stdout signal (#3292)
+                            if let Err(e) =
+                                zeph_subagent::hooks::fire_hooks(&pd_hooks, &env, mcp).await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    tool = %tc.name,
+                                    "PermissionDenied hook failed"
+                                );
+                            }
+                        }
                         tier_futs.push((idx, Box::pin(std::future::ready(r))));
                         continue;
                     }

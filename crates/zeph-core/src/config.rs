@@ -13,7 +13,7 @@ pub use zeph_config::{
     ClassifiersConfig, CompressionConfig, CompressionStrategy, Config, ConfigError, CostConfig,
     DaemonConfig, DebugConfig, DetectorMode, DiscordConfig, DocumentConfig, DumpFormat,
     ExperimentConfig, ExperimentSchedule, FocusConfig, GatewayConfig, GenerationParams,
-    GraphConfig, HookDef, HookMatcher, HookType, IndexConfig, LearningConfig, LlmConfig,
+    GraphConfig, HookAction, HookDef, HookMatcher, IndexConfig, LearningConfig, LlmConfig,
     LlmRoutingStrategy, LogRotation, LoggingConfig, MAX_TOKENS_CAP, McpConfig, McpOAuthConfig,
     McpServerConfig, McpTrustLevel, MemoryConfig, MemoryScope, NoteLinkingConfig,
     OAuthTokenStorage, OrchestrationConfig, PermissionMode, ProviderEntry, ProviderKind,

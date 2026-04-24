@@ -607,6 +607,8 @@ pub(crate) struct HooksConfigSnapshot {
     pub(crate) cwd_changed: Vec<zeph_config::HookDef>,
     /// Hooks fired when a watched file changes.
     pub(crate) file_changed_hooks: Vec<zeph_config::HookDef>,
+    /// Hooks fired when a tool execution is blocked by a `RuntimeLayer::before_tool` check.
+    pub(crate) permission_denied: Vec<zeph_config::HookDef>,
 }
 
 // Groups message buffering and image staging state.

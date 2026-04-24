@@ -765,7 +765,7 @@ impl SubAgentManager {
             let start_hooks = config.hooks.start.clone();
             let start_env = make_hook_env(task_id, def_name, "");
             tokio::spawn(async move {
-                if let Err(e) = fire_hooks(&start_hooks, &start_env).await {
+                if let Err(e) = fire_hooks(&start_hooks, &start_env, None).await {
                     tracing::warn!(error = %e, "SubagentStart hook failed");
                 }
             });
@@ -845,7 +845,7 @@ impl SubAgentManager {
             let stop_hooks = self.stop_hooks.clone();
             let stop_env = make_hook_env(task_id, &handle.def.name, "");
             tokio::spawn(async move {
-                if let Err(e) = fire_hooks(&stop_hooks, &stop_env).await {
+                if let Err(e) = fire_hooks(&stop_hooks, &stop_env, None).await {
                     tracing::warn!(error = %e, "SubagentStop hook failed");
                 }
             });
@@ -987,7 +987,7 @@ impl SubAgentManager {
             let stop_hooks = self.stop_hooks.clone();
             let stop_env = make_hook_env(task_id, &handle.def.name, "");
             tokio::spawn(async move {
-                if let Err(e) = fire_hooks(&stop_hooks, &stop_env).await {
+                if let Err(e) = fire_hooks(&stop_hooks, &stop_env, None).await {
                     tracing::warn!(error = %e, "SubagentStop hook failed");
                 }
             });
@@ -1218,7 +1218,7 @@ impl SubAgentManager {
             let def_name = meta.def_name.clone();
             let start_env = make_hook_env(&new_task_id, &def_name, "");
             tokio::spawn(async move {
-                if let Err(e) = fire_hooks(&start_hooks, &start_env).await {
+                if let Err(e) = fire_hooks(&start_hooks, &start_env, None).await {
                     tracing::warn!(error = %e, "SubagentStart hook failed");
                 }
             });

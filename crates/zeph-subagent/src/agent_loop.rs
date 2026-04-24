@@ -134,7 +134,8 @@ async fn handle_tool_step(
                     matching_hooks(&hooks.pre_tool_use, tc.name.as_str());
                 if !pre_hooks.is_empty() {
                     let pre_owned: Vec<HookDef> = pre_hooks.into_iter().cloned().collect();
-                    if let Err(e) = fire_hooks(&pre_owned, &hook_env).await {
+                    // MCP dispatch is not available in the subagent execution path.
+                    if let Err(e) = fire_hooks(&pre_owned, &hook_env, None).await {
                         tracing::warn!(error = %e, tool = %tc.name, "PreToolUse hook failed");
                     }
                 }
@@ -175,7 +176,8 @@ async fn handle_tool_step(
                         matching_hooks(&hooks.post_tool_use, tc.name.as_str());
                     if !post_hooks.is_empty() {
                         let post_owned: Vec<HookDef> = post_hooks.into_iter().cloned().collect();
-                        if let Err(e) = fire_hooks(&post_owned, &hook_env).await {
+                        // MCP dispatch is not available in the subagent execution path.
+                        if let Err(e) = fire_hooks(&post_owned, &hook_env, None).await {
                             tracing::warn!(
                                 error = %e,
                                 tool = %tc.name,

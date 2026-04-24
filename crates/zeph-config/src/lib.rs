@@ -136,7 +136,7 @@ pub use sanitizer::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
 pub use security::{ScannerConfig, SecurityConfig, TimeoutConfig, TrustConfig};
 pub use session::{RecapConfig, SessionConfig};
 pub use subagent::{
-    HookDef, HookMatcher, HookType, MemoryScope, PermissionMode, SkillFilter, SubagentHooks,
+    HookAction, HookDef, HookMatcher, MemoryScope, PermissionMode, SkillFilter, SubagentHooks,
     ToolPolicy,
 };
 pub use telemetry::{TelemetryBackend, TelemetryConfig};

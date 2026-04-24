@@ -1146,6 +1146,11 @@ impl<C: Channel> Agent<C> {
             .cwd_changed
             .clone_from(&config.cwd_changed);
 
+        self.session
+            .hooks_config
+            .permission_denied
+            .clone_from(&config.permission_denied);
+
         if let Some(ref fc) = config.file_changed {
             self.session
                 .hooks_config

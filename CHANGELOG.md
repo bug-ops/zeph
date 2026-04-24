@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Hook actions now support `type = "mcp_tool"` to invoke MCP server tools directly without spawning a subprocess (#3293). Hooks can set `server`, `tool`, and optional `args` fields. Requires the MCP manager to be active; fails according to `fail_closed` if unavailable.
+- New `[hooks.permission_denied]` event fires when a tool execution is short-circuited by a `RuntimeLayer::before_tool` check (#3292). `Command` hooks receive `ZEPH_DENIED_TOOL` and `ZEPH_DENY_REASON` environment variables.
+- `McpDispatch` trait in `zeph-subagent` decouples hook execution from `zeph-mcp` — implementors are wired by `zeph-core` at call sites.
+
+### Changed
+
+- **BREAKING (config):** `HookDef.hook_type + command` fields replaced by `HookDef.action: HookAction` (serde-flattened). Existing TOML with `type = "command"` deserializes correctly — no manual migration needed. Internal Rust code constructing `HookDef` must use `action: HookAction::Command { command: "..." }` (#3293).
+
 ### Removed
 
 - `admission_rl` module (RL-based admission classifier, never wired into production) (#3250). SQLite table `admission_rl_weights` remains (migrations are append-only).

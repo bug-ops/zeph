@@ -90,13 +90,47 @@ impl SkillFilter {
     }
 }
 
-// ── HookDef / HookType / HookMatcher / SubagentHooks ──────────────────────
+// ── HookDef / HookAction / HookMatcher / SubagentHooks ────────────────────
 
-/// The type of hook — currently only shell command hooks are supported.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum HookType {
-    Command,
+/// The action a hook executes when triggered.
+///
+/// Hooks either run a shell command or invoke an MCP server tool directly.
+///
+/// # Examples
+///
+/// ```toml
+/// # Shell command hook
+/// [[hooks.cwd_changed]]
+/// type = "command"
+/// command = "echo $ZEPH_NEW_CWD"
+/// timeout_secs = 10
+///
+/// # MCP tool hook
+/// [[hooks.permission_denied]]
+/// type = "mcp_tool"
+/// server = "policy-server"
+/// tool = "audit_denied"
+/// [hooks.permission_denied.args]
+/// severity = "high"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HookAction {
+    /// Execute a shell command via `sh -c`.
+    Command {
+        /// The shell command to run.
+        command: String,
+    },
+    /// Invoke an MCP server tool directly without spawning a subprocess.
+    McpTool {
+        /// The MCP server ID as declared in `[[mcp.servers]]`.
+        server: String,
+        /// The tool name to call on that server.
+        tool: String,
+        /// Optional JSON arguments passed to the tool. Defaults to `{}`.
+        #[serde(default)]
+        args: serde_json::Value,
+    },
 }
 
 fn default_hook_timeout() -> u64 {
@@ -104,11 +138,25 @@ fn default_hook_timeout() -> u64 {
 }
 
 /// A single hook definition.
+///
+/// Hooks are fired at specific lifecycle points. The `action` field determines
+/// whether the hook runs a shell command or dispatches to an MCP server tool.
+///
+/// # Examples
+///
+/// ```toml
+/// [[hooks.cwd_changed]]
+/// type = "command"
+/// command = "echo changed to $ZEPH_NEW_CWD"
+/// timeout_secs = 10
+/// fail_closed = false
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookDef {
-    #[serde(rename = "type")]
-    pub hook_type: HookType,
-    pub command: String,
+    /// The action to execute: shell command or MCP tool call.
+    #[serde(flatten)]
+    pub action: HookAction,
+    /// Maximum seconds to wait for the hook before timing out. Default: 30.
     #[serde(default = "default_hook_timeout")]
     pub timeout_secs: u64,
     /// When `true`, a non-zero exit code or timeout causes the calling operation to fail.
