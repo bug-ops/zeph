@@ -68,6 +68,7 @@ pub mod logging;
 pub mod memory;
 pub mod metrics;
 pub mod migrate;
+pub mod notifications;
 pub mod providers;
 pub mod quality;
 pub mod rate_limit;
@@ -119,6 +120,7 @@ pub use memory::{
     StoreRoutingStrategy, TierConfig, TrajectoryConfig, TreeConfig, VectorBackend,
 };
 pub use metrics::MetricsConfig;
+pub use notifications::NotificationsConfig;
 pub use providers::{
     BanditConfig, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
     CoeConfig, ComplexityRoutingConfig, GenerationParams, LlmConfig, LlmRoutingStrategy,

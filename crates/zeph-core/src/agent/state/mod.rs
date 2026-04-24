@@ -408,6 +408,25 @@ pub(crate) struct LifecycleState {
     /// Supervised background task manager. Owned by the agent; call `reap()` between turns
     /// and `abort_all()` on shutdown.
     pub(crate) supervisor: super::agent_supervisor::BackgroundSupervisor,
+    /// Per-turn completion notifier. `None` when `notifications.enabled = false`.
+    pub(crate) notifier: Option<crate::notifications::Notifier>,
+    /// Per-turn LLM request counter. Incremented by `process_response`; reset at turn start.
+    pub(crate) turn_llm_requests: u32,
+    /// Completions from background shell runs waiting to be injected into the next turn.
+    ///
+    /// Drained at the top of `process_user_message_inner` after `supervisor.reap()`.
+    /// All pending completions and the real user message are merged into a **single**
+    /// user-role block to satisfy strict alternation requirements (Anthropic Messages API).
+    ///
+    /// Capacity is capped at `BACKGROUND_COMPLETION_BUFFER_CAP`. On overflow the oldest
+    /// entry is dropped and a placeholder is substituted so the LLM learns results were lost.
+    pub(crate) pending_background_completions:
+        VecDeque<zeph_tools::shell::background::BackgroundCompletion>,
+    /// Receiver end of the dedicated background-completion channel created alongside the
+    /// [`ShellExecutor`]. Polled at the top of each turn to drain completions into
+    /// `pending_background_completions`. `None` when no [`ShellExecutor`] is configured.
+    pub(crate) background_completion_rx:
+        Option<tokio::sync::mpsc::Receiver<zeph_tools::BackgroundCompletion>>,
 }
 
 /// Minimal config snapshot needed to reconstruct a provider at runtime via `/provider <name>`.
@@ -989,6 +1008,10 @@ impl LifecycleState {
                 &crate::config::TaskSupervisorConfig::default(),
                 None,
             ),
+            notifier: None,
+            turn_llm_requests: 0,
+            pending_background_completions: VecDeque::new(),
+            background_completion_rx: None,
         }
     }
 }

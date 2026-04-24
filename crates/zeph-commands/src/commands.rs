@@ -290,4 +290,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         category: SlashCategory::Advanced,
         feature_gate: None,
     },
+    CommandInfo {
+        name: "/notify-test",
+        args: "",
+        description: "Send a test notification via all enabled channels (macOS, webhook)",
+        category: SlashCategory::Debugging,
+        feature_gate: None,
+    },
 ];

@@ -20,7 +20,10 @@
 //! - **Transactional rollback** — when enabled, file snapshots are taken before execution
 //!   and restored on failure or on non-zero exit codes in `auto_rollback_exit_codes`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use tokio::process::Command;
@@ -29,10 +32,8 @@ use tokio_util::sync::CancellationToken;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use std::sync::Arc;
-
 use arc_swap::ArcSwap;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use zeph_common::ToolName;
 
@@ -44,6 +45,9 @@ use crate::executor::{
 use crate::filter::{OutputFilterRegistry, sanitize_output};
 use crate::permissions::{PermissionAction, PermissionPolicy};
 use crate::sandbox::{Sandbox, SandboxPolicy};
+
+pub mod background;
+use background::{BackgroundCompletion, BackgroundHandle, RunId};
 
 mod transaction;
 use transaction::{TransactionSnapshot, affected_paths, build_scope_matchers, is_write_command};
@@ -193,8 +197,15 @@ pub(crate) fn compute_blocked_commands(config: &crate::config::ShellConfig) -> V
 
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct BashParams {
-    /// The bash command to execute
+    /// The bash command to execute.
     command: String,
+    /// When `true`, spawn the command in the background and return immediately.
+    ///
+    /// The agent receives a `run_id` in the synchronous tool result. When the
+    /// command finishes, a synthetic user-role message is injected at the start
+    /// of the next turn carrying the exit code and output.
+    #[serde(default)]
+    background: bool,
 }
 
 /// Bash block extraction and execution via `tokio::process::Command`.
@@ -240,6 +251,18 @@ pub struct ShellExecutor {
     transaction_scope_matchers: Vec<globset::GlobMatcher>,
     sandbox: Option<Arc<dyn Sandbox>>,
     sandbox_policy: Option<SandboxPolicy>,
+    /// Registry of in-flight background runs. Bounded by `max_background_runs`.
+    background_runs: Arc<Mutex<HashMap<RunId, BackgroundHandle>>>,
+    /// Maximum number of concurrent background runs.
+    max_background_runs: usize,
+    /// Timeout applied to each background run.
+    background_timeout: Duration,
+    /// Set to `true` during shutdown to prevent new background spawns.
+    shutting_down: Arc<AtomicBool>,
+    /// Dedicated sender used to forward [`BackgroundCompletion`]s to the agent
+    /// (bypasses the UI-facing [`ToolEventTx`] channel). `None` when the agent
+    /// has not wired a background completion receiver.
+    background_completion_tx: Option<tokio::sync::mpsc::Sender<BackgroundCompletion>>,
 }
 
 impl ShellExecutor {
@@ -280,6 +303,11 @@ impl ShellExecutor {
             transaction_scope_matchers: build_scope_matchers(&config.transaction_scope),
             sandbox: None,
             sandbox_policy: None,
+            background_runs: Arc::new(Mutex::new(HashMap::new())),
+            max_background_runs: config.max_background_runs,
+            background_timeout: Duration::from_secs(config.background_timeout_secs),
+            shutting_down: Arc::new(AtomicBool::new(false)),
+            background_completion_tx: None,
         }
     }
 
@@ -313,6 +341,20 @@ impl ShellExecutor {
     #[must_use]
     pub fn with_tool_event_tx(mut self, tx: ToolEventTx) -> Self {
         self.tool_event_tx = Some(tx);
+        self
+    }
+
+    /// Attach a dedicated sender for routing [`BackgroundCompletion`] payloads to the agent.
+    ///
+    /// This channel is separate from [`ToolEventTx`] (which goes to the TUI). The agent holds
+    /// the receiver end and drains it at the start of each turn to inject deferred completions
+    /// into the message history as a single merged user-role block.
+    #[must_use]
+    pub fn with_background_completion_tx(
+        mut self,
+        tx: tokio::sync::mpsc::Sender<BackgroundCompletion>,
+    ) -> Self {
+        self.background_completion_tx = Some(tx);
         self
     }
 
@@ -474,7 +516,8 @@ impl ShellExecutor {
                 .sandbox_policy
                 .as_ref()
                 .map(|p| format!("{:?}", p.profile));
-            let _ = tx.send(ToolEvent::Started {
+            // Non-terminal streaming event: use try_send (drop on full).
+            let _ = tx.try_send(ToolEvent::Started {
                 tool_name: ToolName::new("bash"),
                 command: block.to_owned(),
                 sandbox_profile,
@@ -540,12 +583,15 @@ impl ShellExecutor {
                         )
                         .await;
                         if let Some(ref tx) = self.tool_event_tx {
-                            let _ = tx.send(ToolEvent::Rollback {
-                                tool_name: ToolName::new("bash"),
-                                command: block.to_owned(),
-                                restored_count: report.restored_count,
-                                deleted_count: report.deleted_count,
-                            });
+                            // Terminal event: must deliver. Use send().await.
+                            let _ = tx
+                                .send(ToolEvent::Rollback {
+                                    tool_name: ToolName::new("bash"),
+                                    command: block.to_owned(),
+                                    restored_count: report.restored_count,
+                                    deleted_count: report.deleted_count,
+                                })
+                                .await;
                         }
                     }
                     Err(e) => {
@@ -576,14 +622,14 @@ impl ShellExecutor {
                 false,
             )
             .await;
-            self.emit_completed(block, &out, false, None);
+            self.emit_completed(block, &out, false, None, None).await;
             return Err(ToolError::Timeout {
                 timeout_secs: self.timeout.as_secs(),
             });
         }
 
         if let Some(category) = classify_shell_exit(exit_code, &out) {
-            self.emit_completed(block, &out, false, None);
+            self.emit_completed(block, &out, false, None, None).await;
             return Err(ToolError::Shell {
                 exit_code,
                 category,
@@ -625,7 +671,9 @@ impl ShellExecutor {
             &out,
             !out.contains("[error]"),
             per_block_stats.clone(),
-        );
+            None,
+        )
+        .await;
 
         // Mark truncated if output was shortened during filtering.
         envelope.truncated = filtered.len() < out.len();
@@ -648,22 +696,27 @@ impl ShellExecutor {
         Ok((output_line, per_block_stats, envelope))
     }
 
-    fn emit_completed(
+    async fn emit_completed(
         &self,
         command: &str,
         output: &str,
         success: bool,
         filter_stats: Option<FilterStats>,
+        run_id: Option<RunId>,
     ) {
         if let Some(ref tx) = self.tool_event_tx {
-            let _ = tx.send(ToolEvent::Completed {
-                tool_name: ToolName::new("bash"),
-                command: command.to_owned(),
-                output: output.to_owned(),
-                success,
-                filter_stats,
-                diff: None,
-            });
+            // Terminal event: must deliver. Use send().await (never dropped).
+            let _ = tx
+                .send(ToolEvent::Completed {
+                    tool_name: ToolName::new("bash"),
+                    command: command.to_owned(),
+                    output: output.to_owned(),
+                    success,
+                    filter_stats,
+                    diff: None,
+                    run_id,
+                })
+                .await;
         }
     }
 
@@ -899,13 +952,219 @@ impl ToolExecutor for ShellExecutor {
             return Ok(None);
         }
         let command = &params.command;
-        // Wrap as a fenced block so execute_inner can extract and run it
+
+        if params.background {
+            let run_id = self.spawn_background(command).await?;
+            let id_short = &run_id.to_string()[..8];
+            return Ok(Some(ToolOutput {
+                tool_name: ToolName::new("bash"),
+                summary: format!(
+                    "[background] started run_id={run_id} — command: {command}\n\
+                     The command is running in the background. When it completes, \
+                     results will appear at the start of the next turn (run_id_short={id_short})."
+                ),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: true,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: Some(ClaimSource::Shell),
+            }));
+        }
+
+        // Wrap as a fenced block so execute_inner can extract and run it.
         let synthetic = format!("```bash\n{command}\n```");
         self.execute_inner(&synthetic, false).await
     }
 
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         ShellExecutor::set_skill_env(self, env);
+    }
+}
+
+impl ShellExecutor {
+    /// Spawn `command` as a background shell process and return its [`RunId`].
+    ///
+    /// All security checks (blocklist, sandbox, permissions) are performed synchronously
+    /// before spawning. When the cap (`max_background_runs`) is already reached, this
+    /// returns [`ToolError::Blocked`] immediately without spawning.
+    ///
+    /// On completion the spawned task emits a
+    /// `ToolEvent::Completed { run_id: Some(..), .. }` via `tool_event_tx`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolError::Blocked`] when the background run cap is reached or the command
+    /// is blocked by policy. Returns other [`ToolError`] variants on sandbox/permission
+    /// failures.
+    pub async fn spawn_background(&self, command: &str) -> Result<RunId, ToolError> {
+        use std::sync::atomic::Ordering;
+
+        // Reject new spawns while shutting down.
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(ToolError::Blocked {
+                command: command.to_owned(),
+            });
+        }
+
+        // Enforce security checks — same as blocking mode.
+        self.check_permissions(command, false).await?;
+        self.validate_sandbox(command)?;
+
+        // Check cap under lock.
+        let run_id = RunId::new();
+        {
+            let mut runs = self.background_runs.lock();
+            if runs.len() >= self.max_background_runs {
+                return Err(ToolError::Blocked {
+                    command: format!(
+                        "background run cap reached (max_background_runs={})",
+                        self.max_background_runs
+                    ),
+                });
+            }
+            let abort = CancellationToken::new();
+            runs.insert(
+                run_id,
+                BackgroundHandle {
+                    command: command.to_owned(),
+                    started_at: std::time::Instant::now(),
+                    abort: abort.clone(),
+                    child_pid: None,
+                },
+            );
+            drop(runs);
+
+            let tool_event_tx = self.tool_event_tx.clone();
+            let background_completion_tx = self.background_completion_tx.clone();
+            let background_runs = Arc::clone(&self.background_runs);
+            let timeout = self.background_timeout;
+            let env_blocklist = self.env_blocklist.clone();
+            let skill_env_snapshot: Option<std::collections::HashMap<String, String>> =
+                self.skill_env.read().clone();
+            let command_owned = command.to_owned();
+
+            tokio::spawn(async move {
+                let started_at = std::time::Instant::now();
+                let (_, out) = execute_bash(
+                    &command_owned,
+                    timeout,
+                    tool_event_tx.as_ref(),
+                    Some(&abort),
+                    skill_env_snapshot.as_ref(),
+                    &env_blocklist,
+                    None,
+                )
+                .await;
+
+                #[allow(clippy::cast_possible_truncation)]
+                let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                let success = !out.contains("[error]");
+                let exit_code = i32::from(!success);
+                let truncated = crate::executor::truncate_tool_output_at(&out, 4096);
+
+                // Remove from registry.
+                background_runs.lock().remove(&run_id);
+
+                // Deliver terminal event to the TUI/channel adapter.
+                if let Some(ref tx) = tool_event_tx {
+                    let _ = tx
+                        .send(ToolEvent::Completed {
+                            tool_name: ToolName::new("bash"),
+                            command: command_owned.clone(),
+                            output: truncated.clone(),
+                            success,
+                            filter_stats: None,
+                            diff: None,
+                            run_id: Some(run_id),
+                        })
+                        .await;
+                }
+
+                // Deliver completion to the agent for injection into the next turn.
+                if let Some(ref tx) = background_completion_tx {
+                    let completion = BackgroundCompletion {
+                        run_id,
+                        exit_code,
+                        output: truncated,
+                        success,
+                        elapsed_ms,
+                        command: command_owned,
+                    };
+                    if tx.send(completion).await.is_err() {
+                        tracing::warn!(
+                            run_id = %run_id,
+                            "background completion channel closed; agent may have shut down"
+                        );
+                    }
+                }
+
+                tracing::debug!(
+                    run_id = %run_id,
+                    exit_code,
+                    elapsed_ms,
+                    "background shell run completed"
+                );
+            });
+        }
+
+        Ok(run_id)
+    }
+
+    /// Cancel all in-flight background runs.
+    ///
+    /// Called during agent shutdown. Each cancelled run emits a
+    /// `ToolEvent::Completed { success: false }` event. Cancellation is cooperative:
+    /// the spawned tasks detect the token and exit on the next check point.
+    ///
+    /// # Note
+    ///
+    /// SIGTERM/SIGKILL escalation is deferred to a future enhancement
+    /// (requires a safe OS-signal abstraction). The `CancellationToken` is
+    /// sufficient for the process-local case.
+    // TODO(review): add SIGTERM+SIGKILL escalation via a safe signal wrapper (e.g. nix crate).
+    pub async fn shutdown(&self) {
+        use std::sync::atomic::Ordering;
+
+        self.shutting_down.store(true, Ordering::Release);
+
+        let handles: Vec<(RunId, String, CancellationToken)> = {
+            let runs = self.background_runs.lock();
+            runs.iter()
+                .map(|(id, h)| (*id, h.command.clone(), h.abort.clone()))
+                .collect()
+        };
+
+        if handles.is_empty() {
+            return;
+        }
+
+        tracing::info!(
+            count = handles.len(),
+            "cancelling background shell runs for shutdown"
+        );
+
+        for (run_id, command, abort) in &handles {
+            abort.cancel();
+
+            if let Some(ref tx) = self.tool_event_tx {
+                let _ = tx
+                    .send(ToolEvent::Completed {
+                        tool_name: ToolName::new("bash"),
+                        command: command.clone(),
+                        output: "[terminated by shutdown]".to_owned(),
+                        success: false,
+                        filter_stats: None,
+                        diff: None,
+                        run_id: Some(*run_id),
+                    })
+                    .await;
+            }
+        }
+
+        self.background_runs.lock().clear();
     }
 }
 
@@ -1392,7 +1651,8 @@ async fn execute_bash(
                             chunk.clone()
                         };
                         if let Some(tx) = event_tx {
-                            let _ = tx.send(ToolEvent::OutputChunk {
+                            // Non-terminal streaming event: use try_send (drop on full).
+                            let _ = tx.try_send(ToolEvent::OutputChunk {
                                 tool_name: ToolName::new("bash"),
                                 command: code.to_owned(),
                                 chunk: interleaved.clone(),

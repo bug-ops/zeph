@@ -40,6 +40,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `search_prompt_template` (query-side embedding template with `{query}` placeholder),
   `context_format` (`structured` / `plain` — memory snippet rendering in agent context).
   MemMachine MM-F1/F2/F5 (#3340).
+- Background shell execution (#3328): `bash` tool call accepts `background: bool` parameter.
+  When `true`, the command is spawned immediately and a `[background] started run_id=…`
+  stub is returned to close the LLM's `tool_use_id`. Completion is delivered as a synthetic
+  user-role block at the start of the next turn (drain-on-next-turn pattern, N1 invariant:
+  all pending completions are merged with the real user message into a single user-role block
+  to satisfy strict Anthropic alternation). `ShellExecutor` gains `spawn_background()`,
+  `shutdown()`, and `with_background_completion_tx()`. `ToolEventTx` is now a bounded
+  `mpsc::Sender<ToolEvent>` (cap 1024). New config fields: `tools.shell.max_background_runs`
+  (default 8) and `tools.shell.background_timeout_secs` (default 1800). New supervisor task
+  class `BackgroundShell` isolated from `Enrichment`. `agent.supervisor.background_shell_limit`
+  added to `TaskSupervisorConfig`.
+- Per-turn completion notifications (#3328 / #3329): `zeph-core` gains a `Notifier` that fires
+  after each agent turn via macOS native banners (`osascript`, stdin-fed to prevent injection)
+  and/or an ntfy-compatible JSON webhook. Gate conditions: master `enabled` switch,
+  zero-LLM-success skip (slash commands / cache hits), `only_on_error`, and a duration
+  threshold (`min_turn_duration_ms`). Error turns always fire regardless of duration.
+  Secrets are redacted via `scrub_content` before any payload leaves the process.
+  `zeph notify test` CLI subcommand and `/notify-test` slash command fire a test notification.
+  New `[notifications]` config section with commented defaults in `default.toml`.
 - CPS (cost per successful task) metric in `CostTracker`: `record_successful_task()`, `cps()`,
   and `successful_tasks()` methods; daily reset consistent with existing cost reset (#2194).
 - `cost_cps_cents: Option<f64>` and `cost_successful_tasks: u64` fields in `AgentMetrics`;

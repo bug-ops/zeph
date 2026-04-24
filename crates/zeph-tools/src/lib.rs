@@ -108,8 +108,8 @@ pub use error_taxonomy::{
 };
 pub use executor::{
     ClaimSource, DiffData, DynExecutor, ErasedToolExecutor, ErrorKind, FilterStats,
-    MAX_TOOL_OUTPUT_CHARS, ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput,
-    truncate_tool_output, truncate_tool_output_at,
+    MAX_TOOL_OUTPUT_CHARS, TOOL_EVENT_CHANNEL_CAP, ToolCall, ToolError, ToolEvent, ToolEventRx,
+    ToolEventTx, ToolExecutor, ToolOutput, truncate_tool_output, truncate_tool_output_at,
 };
 pub use file::FileExecutor;
 pub use filter::{
@@ -140,6 +140,7 @@ pub use scrape::WebScrapeExecutor;
 pub use search_code::{
     LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,
 };
+pub use shell::background::{BackgroundCompletion, RunId};
 pub use shell::{
     DEFAULT_BLOCKED_COMMANDS, SHELL_INTERPRETERS, ShellExecutor, ShellOutputEnvelope,
     ShellPolicyHandle, check_blocklist, effective_shell_command,

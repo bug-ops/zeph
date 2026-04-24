@@ -488,6 +488,23 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             .await?;
             std::process::exit(exit_code);
         }
+        Some(Command::Notify {
+            command: crate::cli::NotifyCommand::Test,
+        }) => {
+            let config_path = resolve_config_path(cli.config.as_deref());
+            let config = zeph_core::config::Config::load(&config_path)?;
+            let notifier = zeph_core::notifications::Notifier::new(config.notifications.clone());
+            match notifier.fire_test().await {
+                Ok(()) => {
+                    println!("Test notification sent successfully.");
+                }
+                Err(e) => {
+                    eprintln!("Notification test failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return Ok(());
+        }
         None => {}
     }
 
@@ -1571,6 +1588,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let _tool_event_rx = tool_setup.tool_event_rx;
     let egress_rx = tool_setup.egress_rx;
     let shell_policy_handle = tool_setup.shell_policy_handle;
+    let background_completion_rx = tool_setup.background_completion_rx;
     let _skill_watcher = watchers.skill_watcher;
     // Receivers arrive as InstrumentedReceiver<T> from build_watchers().
     // Agent builder expects mpsc::Receiver<T>, so unwrap the instrumented wrapper.
@@ -1699,6 +1717,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_config_reload(config_path, config_reload_rx)
     .with_plugins_dir(crate::bootstrap::plugins_dir(), startup_shell_overlay)
     .with_shell_policy_handle(shell_policy_handle)
+    .with_background_completion_rx_opt(background_completion_rx)
     .with_logging_config(logging_config.clone())
     .with_autosave_config(
         config.memory.autosave_assistant,
@@ -1927,6 +1946,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     };
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
     let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());
+    let agent = agent.with_notifications(config.notifications.clone());
     #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_injection_classifier(agent, config);
     #[cfg(feature = "classifiers")]

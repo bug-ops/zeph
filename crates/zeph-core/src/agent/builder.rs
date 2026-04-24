@@ -1123,10 +1123,52 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach the receiver end of the background-completion channel created alongside the
+    /// [`ShellExecutor`].
+    ///
+    /// The agent drains this channel at the start of each turn and merges any pending
+    /// [`zeph_tools::BackgroundCompletion`] entries into the user-role message (single block,
+    /// N1 invariant).
+    #[must_use]
+    pub fn with_background_completion_rx(
+        mut self,
+        rx: tokio::sync::mpsc::Receiver<zeph_tools::BackgroundCompletion>,
+    ) -> Self {
+        self.lifecycle.background_completion_rx = Some(rx);
+        self
+    }
+
+    /// Convenience variant of [`with_background_completion_rx`](Self::with_background_completion_rx)
+    /// that accepts an `Option` — does nothing when `None`.
+    #[must_use]
+    pub fn with_background_completion_rx_opt(
+        self,
+        rx: Option<tokio::sync::mpsc::Receiver<zeph_tools::BackgroundCompletion>>,
+    ) -> Self {
+        if let Some(r) = rx {
+            self.with_background_completion_rx(r)
+        } else {
+            self
+        }
+    }
+
     /// Attach the update-notification receiver for in-process version alerts.
     #[must_use]
     pub fn with_update_notifications(mut self, rx: mpsc::Receiver<String>) -> Self {
         self.lifecycle.update_notify_rx = Some(rx);
+        self
+    }
+
+    /// Configure per-turn completion notifications from the `[notifications]` config section.
+    ///
+    /// When `cfg.enabled` is `true`, constructs a [`crate::notifications::Notifier`] and stores
+    /// it on the lifecycle state. The notifier is `None` when notifications are disabled, so the
+    /// agent loop skips the gate check entirely for zero overhead.
+    #[must_use]
+    pub fn with_notifications(mut self, cfg: zeph_config::NotificationsConfig) -> Self {
+        if cfg.enabled {
+            self.lifecycle.notifier = Some(crate::notifications::Notifier::new(cfg));
+        }
         self
     }
 

@@ -35,6 +35,7 @@ static CANONICAL_ORDER: &[&str] = &[
     "cost",
     "debug",
     "logging",
+    "notifications",
     "tui",
     "agents",
     "experiments",

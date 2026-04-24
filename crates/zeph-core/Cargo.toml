@@ -47,7 +47,7 @@ serde_norway.workspace = true
 tempfile.workspace = true
 zeph-db = { workspace = true, features = ["sqlite"] }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "macros", "process", "rt-multi-thread", "sync", "time"] }
 tokio-stream.workspace = true
 tokio-util.workspace = true
 toml.workspace = true

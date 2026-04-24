@@ -5,6 +5,8 @@ use std::fmt;
 
 use zeph_common::ToolName;
 
+use crate::shell::background::RunId;
+
 /// Data for rendering file diffs in the TUI.
 ///
 /// Produced by [`ShellExecutor`](crate::ShellExecutor) and [`FileExecutor`](crate::FileExecutor)
@@ -304,6 +306,8 @@ pub enum ToolEvent {
         success: bool,
         filter_stats: Option<FilterStats>,
         diff: Option<DiffData>,
+        /// Set when this completion belongs to a background run. `None` for blocking runs.
+        run_id: Option<RunId>,
     },
     /// A transactional rollback was performed, restoring or deleting files.
     Rollback {
@@ -316,11 +320,20 @@ pub enum ToolEvent {
     },
 }
 
-/// Sender half of the unbounded channel used to stream [`ToolEvent`]s to the UI.
+/// Sender half of the bounded channel used to stream [`ToolEvent`]s to the UI.
 ///
-/// Obtained from [`tokio::sync::mpsc::unbounded_channel`] and injected into executors
-/// via builder methods (e.g. [`ShellExecutor::with_tool_event_tx`](crate::ShellExecutor)).
-pub type ToolEventTx = tokio::sync::mpsc::UnboundedSender<ToolEvent>;
+/// Capacity is 1024 slots. Streaming variants (`OutputChunk`, `Started`) use
+/// `try_send` and drop on full; terminal variants (`Completed`, `Rollback`) use
+/// `send().await` to guarantee delivery.
+///
+/// Created via [`tokio::sync::mpsc::channel`] with capacity `TOOL_EVENT_CHANNEL_CAP`.
+pub type ToolEventTx = tokio::sync::mpsc::Sender<ToolEvent>;
+
+/// Receiver half matching [`ToolEventTx`].
+pub type ToolEventRx = tokio::sync::mpsc::Receiver<ToolEvent>;
+
+/// Bounded capacity for the tool-event channel.
+pub const TOOL_EVENT_CHANNEL_CAP: usize = 1024;
 
 /// Classifies a tool error as transient (retryable) or permanent (abort immediately).
 ///

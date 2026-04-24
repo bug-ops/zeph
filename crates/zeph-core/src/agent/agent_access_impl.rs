@@ -915,6 +915,24 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             ))
         })
     }
+
+    fn notify_test<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let notifier = self.lifecycle.notifier.clone();
+        Box::pin(async move {
+            let Some(notifier) = notifier else {
+                return Ok(
+                    "Notifications are disabled. Set `notifications.enabled = true` in config."
+                        .to_owned(),
+                );
+            };
+            match notifier.fire_test().await {
+                Ok(()) => Ok("Test notification sent.".to_owned()),
+                Err(e) => Err(CommandError::new(format!("notification test failed: {e}"))),
+            }
+        })
+    }
 }
 
 /// Convert `AgentError` to `CommandError` for the trait boundary.

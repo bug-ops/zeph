@@ -34,7 +34,7 @@ pub(crate) struct ToolSetup {
     pub(crate) mcp_outcomes: Vec<zeph_mcp::ServerConnectOutcome>,
     pub(crate) mcp_manager: Arc<zeph_mcp::McpManager>,
     pub(crate) mcp_shared_tools: Arc<RwLock<Vec<zeph_mcp::McpTool>>>,
-    pub(crate) tool_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>>,
+    pub(crate) tool_event_rx: Option<tokio::sync::mpsc::Receiver<zeph_tools::ToolEvent>>,
     /// Watch receiver for MCP tool list updates from `tools/list_changed` notifications.
     pub(crate) mcp_tool_rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
     /// Receiver for elicitation requests from MCP server handlers.
@@ -45,6 +45,10 @@ pub(crate) struct ToolSetup {
     pub(crate) egress_rx: Option<tokio::sync::mpsc::Receiver<zeph_tools::EgressEvent>>,
     /// Live-rebuild handle for the `ShellExecutor`'s `blocked_commands` policy.
     pub(crate) shell_policy_handle: zeph_tools::ShellPolicyHandle,
+    /// Receiver end of the background-completion channel. Passed to the agent via
+    /// `Agent::with_background_completion_rx` so it can drain completions into the next turn.
+    pub(crate) background_completion_rx:
+        Option<tokio::sync::mpsc::Receiver<zeph_tools::BackgroundCompletion>>,
 }
 
 #[derive(Clone)]
@@ -459,12 +463,21 @@ pub(crate) async fn build_tool_setup(
     }
 
     let tool_event_rx = if with_tool_events {
-        let (tool_tx, tool_rx) = tokio::sync::mpsc::unbounded_channel::<zeph_tools::ToolEvent>();
+        let (tool_tx, tool_rx) =
+            tokio::sync::mpsc::channel::<zeph_tools::ToolEvent>(zeph_tools::TOOL_EVENT_CHANNEL_CAP);
         shell_executor = shell_executor.with_tool_event_tx(tool_tx);
         Some(tool_rx)
     } else {
         None
     };
+
+    // Background-completion channel: the agent drains this at turn start and injects
+    // deferred completions into the message history as a single user-role block (N1).
+    let (bg_completion_tx, bg_completion_rx) = tokio::sync::mpsc::channel::<
+        zeph_tools::BackgroundCompletion,
+    >(config.tools.shell.max_background_runs * 2);
+    shell_executor = shell_executor.with_background_completion_tx(bg_completion_tx);
+
     let file_executor = zeph_tools::FileExecutor::new(
         config
             .tools
@@ -541,6 +554,7 @@ pub(crate) async fn build_tool_setup(
         audit_logger,
         egress_rx,
         shell_policy_handle,
+        background_completion_rx: Some(bg_completion_rx),
     }
 }
 

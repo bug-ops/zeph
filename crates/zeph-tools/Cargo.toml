@@ -42,7 +42,7 @@ tree-sitter-toml-ng.workspace = true
 tree-sitter-typescript.workspace = true
 unicode-normalization.workspace = true
 url.workspace = true
-uuid = { workspace = true, features = ["v4"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
 zeph-common = { workspace = true, features = ["treesitter"] }
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 

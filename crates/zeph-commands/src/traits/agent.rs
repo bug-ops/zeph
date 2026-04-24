@@ -420,6 +420,20 @@ pub trait AgentAccess: Send {
         &'a mut self,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /notify-test -----
+
+    /// Fire a test notification via all enabled notification channels.
+    ///
+    /// Returns a status message for the user. If all channels are disabled or the
+    /// notifier is not configured, returns a user-visible explanation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the notification send fails.
+    fn notify_test<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
 }
 
 /// A no-op [`AgentAccess`] implementation.
@@ -640,5 +654,19 @@ impl AgentAccess for NullAgent {
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async { Ok(String::new()) })
+    }
+
+    /// Fire a test notification via all enabled notification channels.
+    ///
+    /// Returns a status message for the user. If all channels are disabled or the
+    /// notifier is not configured, returns a user-visible explanation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the notification send fails.
+    fn notify_test<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok("Notifications not configured.".to_owned()) })
     }
 }

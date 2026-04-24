@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Miscellaneous utility handlers: `/cache-stats`, `/image`.
+//! Miscellaneous utility handlers: `/cache-stats`, `/image`, `/notify-test`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -32,6 +32,34 @@ impl CommandHandler<CommandContext<'_>> for CacheStatsCommand {
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
         Box::pin(async move {
             let result = ctx.agent.cache_stats();
+            Ok(CommandOutput::Message(result))
+        })
+    }
+}
+
+/// Send a test notification via all enabled notification channels.
+pub struct NotifyTestCommand;
+
+impl CommandHandler<CommandContext<'_>> for NotifyTestCommand {
+    fn name(&self) -> &'static str {
+        "/notify-test"
+    }
+
+    fn description(&self) -> &'static str {
+        "Send a test notification via all enabled channels (macOS, webhook)"
+    }
+
+    fn category(&self) -> SlashCategory {
+        SlashCategory::Debugging
+    }
+
+    fn handle<'a>(
+        &'a self,
+        ctx: &'a mut CommandContext<'_>,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
+        Box::pin(async move {
+            let result = ctx.agent.notify_test().await?;
             Ok(CommandOutput::Message(result))
         })
     }

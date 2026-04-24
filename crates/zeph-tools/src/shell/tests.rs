@@ -18,6 +18,8 @@ fn default_config() -> ShellConfig {
         auto_rollback_exit_codes: Vec::new(),
         snapshot_required: false,
         max_snapshot_bytes: 0,
+        max_background_runs: 8,
+        background_timeout_secs: 1800,
     }
 }
 
@@ -2527,4 +2529,56 @@ fn find_blocked_command_returns_owned_string() {
     let executor = ShellExecutor::new(&cfg);
     let result: Option<String> = executor.find_blocked_command("mycmd arg");
     assert_eq!(result, Some("mycmd".to_owned()));
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn execute_tool_call_with_background_true() {
+    let executor = ShellExecutor::new(&default_config());
+    let call = ToolCall {
+        tool_id: ToolName::new("bash"),
+        params: [
+            ("command".to_owned(), serde_json::json!("echo bg-test")),
+            ("background".to_owned(), serde_json::json!(true)),
+        ]
+        .into_iter()
+        .collect(),
+        caller_id: None,
+    };
+    let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
+    assert!(
+        result.summary.contains("run_id="),
+        "output should contain run_id, got: {}",
+        result.summary
+    );
+    assert!(
+        result.summary.contains("background"),
+        "output should contain 'background', got: {}",
+        result.summary
+    );
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn spawn_background_cap_enforcement() {
+    let cfg = ShellConfig {
+        max_background_runs: 1,
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&cfg);
+
+    // First spawn: must succeed.
+    let first = executor.spawn_background("sleep 60").await;
+    assert!(first.is_ok(), "first spawn should succeed");
+
+    // Second spawn: must be blocked because max_background_runs=1 is already at capacity.
+    let second = executor.spawn_background("sleep 60").await;
+    assert!(
+        matches!(second, Err(ToolError::Blocked { .. })),
+        "second spawn should return Blocked, got: {:?}",
+        second
+    );
+
+    // Cleanup: cancel in-flight runs so the spawned `sleep 60` task does not outlive the test.
+    executor.shutdown().await;
 }

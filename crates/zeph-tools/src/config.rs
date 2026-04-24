@@ -17,6 +17,14 @@ fn default_timeout() -> u64 {
     30
 }
 
+fn default_max_background_runs() -> usize {
+    8
+}
+
+fn default_background_timeout_secs() -> u64 {
+    1800
+}
+
 fn default_cache_ttl_secs() -> u64 {
     300
 }
@@ -567,6 +575,40 @@ pub struct ShellConfig {
     /// Maximum cumulative bytes for transaction snapshots. 0 = unlimited.
     #[serde(default)]
     pub max_snapshot_bytes: u64,
+    /// Maximum number of concurrent background shell runs. Default: 8.
+    ///
+    /// When this limit is reached, new `background = true` tool calls are rejected with
+    /// a `Blocked` error until existing runs complete.
+    #[serde(default = "default_max_background_runs")]
+    pub max_background_runs: usize,
+    /// Timeout in seconds for each background shell run. Default: 1800 (30 minutes).
+    ///
+    /// Runs that exceed this timeout are killed and a completion event with
+    /// `success = false` is emitted.
+    #[serde(default = "default_background_timeout_secs")]
+    pub background_timeout_secs: u64,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            timeout: default_timeout(),
+            blocked_commands: Vec::new(),
+            allowed_commands: Vec::new(),
+            allowed_paths: Vec::new(),
+            allow_network: true,
+            confirm_patterns: default_confirm_patterns(),
+            env_blocklist: Self::default_env_blocklist(),
+            transactional: false,
+            transaction_scope: Vec::new(),
+            auto_rollback: false,
+            auto_rollback_exit_codes: Vec::new(),
+            snapshot_required: false,
+            max_snapshot_bytes: 0,
+            max_background_runs: default_max_background_runs(),
+            background_timeout_secs: default_background_timeout_secs(),
+        }
+    }
 }
 
 impl ShellConfig {
@@ -770,26 +812,6 @@ impl Default for SpeculativeConfig {
             audit: true,
             pattern: SpeculativePatternConfig::default(),
             allowlist: SpeculativeAllowlistConfig::default(),
-        }
-    }
-}
-
-impl Default for ShellConfig {
-    fn default() -> Self {
-        Self {
-            timeout: default_timeout(),
-            blocked_commands: Vec::new(),
-            allowed_commands: Vec::new(),
-            allowed_paths: Vec::new(),
-            allow_network: true,
-            confirm_patterns: default_confirm_patterns(),
-            env_blocklist: Self::default_env_blocklist(),
-            transactional: false,
-            transaction_scope: Vec::new(),
-            auto_rollback: false,
-            auto_rollback_exit_codes: Vec::new(),
-            snapshot_required: false,
-            max_snapshot_bytes: 0,
         }
     }
 }

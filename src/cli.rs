@@ -389,6 +389,11 @@ pub(crate) enum Command {
         #[arg(long, default_value = "5")]
         mcp_timeout_secs: u64,
     },
+    /// Test notification channels (sends a test notification via enabled channels)
+    Notify {
+        #[command(subcommand)]
+        command: NotifyCommand,
+    },
     /// Run agent benchmarks against standardized datasets
     #[cfg(feature = "bench")]
     Bench {
@@ -628,6 +633,13 @@ pub(crate) enum RouterCommand {
         #[arg(long, value_name = "PATH")]
         state_path: Option<std::path::PathBuf>,
     },
+}
+
+/// Notification management subcommands.
+#[derive(Subcommand)]
+pub(crate) enum NotifyCommand {
+    /// Send a test notification via all configured channels
+    Test,
 }
 
 #[derive(Subcommand)]

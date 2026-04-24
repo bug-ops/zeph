@@ -1029,6 +1029,8 @@ impl<C: Channel> Agent<C> {
                 m.router_thompson_stats = router_stats;
             }
         });
+        // Track per-turn LLM call count for the notification gate.
+        self.lifecycle.turn_llm_requests = self.lifecycle.turn_llm_requests.saturating_add(1);
         self.record_cost_and_cache(final_prompt, final_completion);
         self.record_successful_task();
 

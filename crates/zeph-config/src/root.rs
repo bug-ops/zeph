@@ -25,6 +25,7 @@ use crate::memory::{
     SessionsConfig, SidequestConfig, TierConfig, VectorBackend,
 };
 use crate::metrics::MetricsConfig;
+use crate::notifications::NotificationsConfig;
 use crate::providers::{
     LlmConfig, get_default_embedding_model, get_default_response_cache_ttl_secs,
     get_default_router_ema_alpha, get_default_router_reorder_interval,
@@ -112,6 +113,9 @@ pub struct Config {
     /// MARCH self-check quality pipeline configuration.
     #[serde(default)]
     pub quality: crate::quality::QualityConfig,
+    /// Per-turn completion notification settings (macOS banners, ntfy webhook).
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
     /// Resolved secrets from vault. Never serialized — populated at runtime.
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
@@ -280,6 +284,7 @@ impl Default for Config {
             session: crate::session::SessionConfig::default(),
             cli: CliConfig::default(),
             quality: crate::quality::QualityConfig::default(),
+            notifications: NotificationsConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

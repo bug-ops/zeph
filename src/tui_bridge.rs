@@ -18,7 +18,7 @@ pub(crate) struct TuiRunParams<'a> {
     pub(crate) tui_handle: TuiHandle,
     pub(crate) config: &'a zeph_core::config::Config,
     pub(crate) status_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
-    pub(crate) tool_rx: Option<tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>>,
+    pub(crate) tool_rx: Option<tokio::sync::mpsc::Receiver<zeph_tools::ToolEvent>>,
     pub(crate) metrics_rx:
         Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
     pub(crate) warmup_provider: AnyProvider,
@@ -447,7 +447,7 @@ pub(crate) async fn forward_status_to_tui(
 
 #[cfg(feature = "tui")]
 pub(crate) async fn forward_tool_events_to_tui(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<zeph_tools::ToolEvent>,
+    mut rx: tokio::sync::mpsc::Receiver<zeph_tools::ToolEvent>,
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 ) {
     // Only forward streaming chunks. ToolStart and ToolOutput are already sent via
@@ -525,7 +525,7 @@ mod tests {
 
     #[tokio::test]
     async fn forward_tool_events_skips_started_and_completed() {
-        let (tool_tx, tool_rx) = tokio::sync::mpsc::unbounded_channel::<zeph_tools::ToolEvent>();
+        let (tool_tx, tool_rx) = tokio::sync::mpsc::channel::<zeph_tools::ToolEvent>(64);
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(16);
 
         tokio::spawn(forward_tool_events_to_tui(tool_rx, agent_tx));
@@ -536,6 +536,7 @@ mod tests {
                 command: "ls".into(),
                 sandbox_profile: None,
             })
+            .await
             .unwrap();
         tool_tx
             .send(zeph_tools::ToolEvent::OutputChunk {
@@ -543,6 +544,7 @@ mod tests {
                 command: "ls".into(),
                 chunk: "file.txt\n".into(),
             })
+            .await
             .unwrap();
         tool_tx
             .send(zeph_tools::ToolEvent::Completed {
@@ -552,7 +554,9 @@ mod tests {
                 success: true,
                 diff: None,
                 filter_stats: None,
+                run_id: None,
             })
+            .await
             .unwrap();
         drop(tool_tx);
 

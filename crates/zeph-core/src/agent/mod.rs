@@ -56,6 +56,7 @@ mod utils;
 pub(crate) mod vigil;
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -953,7 +954,7 @@ impl<C: Channel> Agent<C> {
                     lsp::LspCommand,
                     mcp::McpCommand,
                     memory::{GraphCommand, GuidelinesCommand, MemoryCommand},
-                    misc::{CacheStatsCommand, ImageCommand},
+                    misc::{CacheStatsCommand, ImageCommand, NotifyTestCommand},
                     model::{ModelCommand, ProviderCommand},
                     plan::PlanCommand,
                     plugins::PluginsCommand,
@@ -980,6 +981,7 @@ impl<C: Channel> Agent<C> {
                 // Phase 4 migrations (Send-safe commands):
                 agent_reg.register(CacheStatsCommand);
                 agent_reg.register(ImageCommand);
+                agent_reg.register(NotifyTestCommand);
                 agent_reg.register(StatusCommand);
                 agent_reg.register(GuardrailCommand);
                 agent_reg.register(FocusCommand);
@@ -1259,6 +1261,8 @@ impl<C: Channel> Agent<C> {
         self.debug_state.iteration_counter += 1;
         self.lifecycle.cancel_token = CancellationToken::new();
         self.security.user_provided_urls.write().clear();
+        // Reset per-turn LLM request counter for the notification gate.
+        self.lifecycle.turn_llm_requests = 0;
         turn::Turn::new(id, input)
     }
 
@@ -1341,6 +1345,11 @@ impl<C: Channel> Agent<C> {
                 .abort_class(agent_supervisor::TaskClass::Enrichment);
         }
 
+        // Drain any background shell completions that arrived since the last turn.
+        // They are buffered in `pending_background_completions` and merged with the
+        // real user message into a single user-role block below (N1 invariant).
+        self.drain_background_completions();
+
         // Wire the per-turn cancellation token into the cancel bridge.
         // The bridge translates the `cancel_signal` (Notify) into a CancellationToken cancel.
         // Abort the previous bridge before spawning to prevent unbounded accumulation (#2737).
@@ -1389,7 +1398,11 @@ impl<C: Channel> Agent<C> {
         );
 
         let image_parts = std::mem::take(&mut turn.input.image_parts);
-        let user_msg = self.build_user_message(&text, image_parts);
+        // Prepend any background completion blocks to the user text. All completions and the
+        // user message MUST be merged into a single user-role block to satisfy the strict
+        // user/assistant alternation rule (Anthropic Messages API — N1 invariant).
+        let merged_text = self.build_user_message_text_with_bg_completions(&text);
+        let user_msg = self.build_user_message(&merged_text, image_parts);
 
         // Extract URLs from user input and add to user_provided_urls for grounding checks.
         // URL set was cleared in begin_turn; re-populate for this turn.
@@ -1417,7 +1430,7 @@ impl<C: Channel> Agent<C> {
         // llm_chat_ms and tool_exec_ms are accumulated inside call_chat_with_tools and
         // handle_native_tool_calls respectively via metrics.pending_timings.
         tracing::debug!("turn timing: process_response start");
-        if let Err(e) = self.process_response().await {
+        let turn_had_error = if let Err(e) = self.process_response().await {
             // Detach any in-flight learning tasks before mutating message state.
             self.learning_engine.learning_tasks.detach_all();
             tracing::error!("Response processing failed: {e:#}");
@@ -1426,6 +1439,7 @@ impl<C: Channel> Agent<C> {
             self.msg.messages.pop();
             self.recompute_prompt_tokens();
             self.channel.flush_chunks().await?;
+            true
         } else {
             // Detach learning tasks spawned this turn — they are fire-and-forget and must not
             // leak into the next turn's context.
@@ -1435,7 +1449,8 @@ impl<C: Channel> Agent<C> {
             self.maybe_update_magic_docs();
             // Compression spectrum: fire-and-forget promotion scan (#3305).
             self.maybe_spawn_promotion_scan();
-        }
+            false
+        };
         tracing::debug!("turn timing: process_response done");
 
         // MARCH self-check hook: runs after every successful response, including cache-hit path.
@@ -1449,6 +1464,8 @@ impl<C: Channel> Agent<C> {
         // the main response and the marker, preventing the double response_end of #3243.
         let _ = self.channel.flush_chunks().await;
 
+        self.maybe_fire_completion_notification(turn, turn_had_error);
+
         // Collect llm_chat_ms and tool_exec_ms from MetricsState.pending_timings (accumulated
         // by the tool execution chain) into turn.metrics so end_turn can flush them.
         // This is the Phase 1 bridging: existing code writes to pending_timings directly;
@@ -1457,6 +1474,33 @@ impl<C: Channel> Agent<C> {
         turn.metrics_mut().timings.tool_exec_ms = self.metrics.pending_timings.tool_exec_ms;
 
         Ok(())
+    }
+
+    /// Fire a completion notification if the notifier is configured and gating conditions pass.
+    fn maybe_fire_completion_notification(&self, turn: &turn::Turn, is_error: bool) {
+        let Some(ref notifier) = self.lifecycle.notifier else {
+            return;
+        };
+        let snap = turn.metrics_snapshot().timings.clone();
+        let duration_ms = snap
+            .prepare_context_ms
+            .saturating_add(snap.llm_chat_ms)
+            .saturating_add(snap.tool_exec_ms);
+        let summary = crate::notifications::TurnSummary {
+            duration_ms,
+            preview: self.last_assistant_preview(160),
+            // TODO: wire turn_tool_calls counter once LifecycleState tracks it (Phase 2).
+            tool_calls: 0,
+            llm_requests: self.lifecycle.turn_llm_requests,
+            exit_status: if is_error {
+                crate::notifications::TurnExitStatus::Error
+            } else {
+                crate::notifications::TurnExitStatus::Success
+            },
+        };
+        if notifier.should_fire(&summary) {
+            notifier.fire(&summary);
+        }
     }
 
     // Returns true if the input was blocked and the caller should return Ok(()) immediately.
@@ -1680,6 +1724,74 @@ impl<C: Channel> Agent<C> {
                 metadata: MessageMetadata::default(),
             }
         }
+    }
+
+    /// Drain any ready [`zeph_tools::BackgroundCompletion`]s from the channel into
+    /// `pending_background_completions`. Bounded by `BACKGROUND_COMPLETION_BUFFER_CAP`;
+    /// on overflow the oldest entry is evicted and a placeholder is inserted.
+    fn drain_background_completions(&mut self) {
+        const BACKGROUND_COMPLETION_BUFFER_CAP: usize = 16;
+
+        let Some(ref mut rx) = self.lifecycle.background_completion_rx else {
+            return;
+        };
+        // Non-blocking drain: collect all completions that are already ready.
+        while let Ok(completion) = rx.try_recv() {
+            if self.lifecycle.pending_background_completions.len()
+                >= BACKGROUND_COMPLETION_BUFFER_CAP
+            {
+                tracing::warn!(
+                    run_id = %completion.run_id,
+                    "background completion buffer full; dropping run result"
+                );
+                // Drop the new (incoming) completion and push a sentinel in its place so
+                // the LLM is informed that this specific run's result was lost. We do NOT
+                // pop the oldest entry — the oldest entries have already been queued for
+                // delivery and evicting them would silently lose data that the user expects.
+                self.lifecycle.pending_background_completions.pop_front();
+                self.lifecycle.pending_background_completions.push_back(
+                    zeph_tools::BackgroundCompletion {
+                        run_id: completion.run_id,
+                        exit_code: -1,
+                        success: false,
+                        elapsed_ms: 0,
+                        command: completion.command,
+                        output: format!(
+                            "[background result for run {} dropped: buffer overflow]",
+                            completion.run_id
+                        ),
+                    },
+                );
+            } else {
+                self.lifecycle
+                    .pending_background_completions
+                    .push_back(completion);
+            }
+        }
+    }
+
+    /// Format and drain `pending_background_completions` into a prefix string, then
+    /// return the final merged text (prefix + user message). When there are no pending
+    /// completions the original text is returned unchanged.
+    fn build_user_message_text_with_bg_completions(&mut self, user_text: &str) -> String {
+        if self.lifecycle.pending_background_completions.is_empty() {
+            return user_text.to_owned();
+        }
+        let mut parts = String::new();
+        for completion in self.lifecycle.pending_background_completions.drain(..) {
+            let _ = write!(
+                parts,
+                "[Background task {} completed]\nexit_code: {}\nsuccess: {}\nelapsed_ms: {}\ncommand: {}\n\n{}\n\n",
+                completion.run_id,
+                completion.exit_code,
+                completion.success,
+                completion.elapsed_ms,
+                completion.command,
+                completion.output,
+            );
+        }
+        parts.push_str(user_text);
+        parts
     }
 
     /// Poll a sub-agent until it reaches a terminal state, bridging secret requests to the

@@ -277,6 +277,40 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Extract a redacted preview of the last assistant message.
+    ///
+    /// Walks `self.msg.messages` in reverse to find the most recent `Role::Assistant`
+    /// message, takes up to `max_chars` Unicode scalar values from `message.content`,
+    /// and applies [`crate::redact::scrub_content`] to redact any secrets.
+    ///
+    /// Returns an empty string when no assistant message exists in the current turn.
+    pub(super) fn last_assistant_preview(&self, max_chars: usize) -> String {
+        let raw = self
+            .msg
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+            .map_or("", |m| m.content.as_str());
+
+        if raw.is_empty() {
+            return String::new();
+        }
+
+        // Truncate to max_chars before redaction to bound redaction work.
+        let truncated: &str = if raw.chars().count() > max_chars {
+            let end = raw
+                .char_indices()
+                .nth(max_chars)
+                .map_or(raw.len(), |(i, _)| i);
+            &raw[..end]
+        } else {
+            raw
+        };
+
+        crate::redact::scrub_content(truncated).into_owned()
+    }
+
     /// Inject pre-formatted code context into the message list.
     /// The caller is responsible for retrieving and formatting the text.
     pub fn inject_code_context(&mut self, text: &str) {

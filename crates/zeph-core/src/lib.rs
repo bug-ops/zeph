@@ -79,6 +79,7 @@ pub mod instrumented_channel;
 pub mod metrics;
 #[cfg(feature = "profiling")]
 pub mod metrics_bridge;
+pub mod notifications;
 pub mod pipeline;
 pub mod project;
 pub mod provider_factory;

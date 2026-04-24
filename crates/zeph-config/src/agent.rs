@@ -277,6 +277,10 @@ fn default_telemetry_limit() -> usize {
     8
 }
 
+fn default_background_shell_limit() -> usize {
+    8
+}
+
 /// Background task supervisor configuration, nested under `[agent.supervisor]` in TOML.
 ///
 /// Controls per-class concurrency limits and turn-boundary behaviour for the
@@ -307,6 +311,12 @@ pub struct TaskSupervisorConfig {
     /// Default: `false`.
     #[serde(default)]
     pub abort_enrichment_on_turn: bool,
+    /// Maximum concurrent background shell runs tracked by the supervisor.
+    ///
+    /// Should match `tools.shell.max_background_runs` so both layers agree on capacity.
+    /// Default: `8`.
+    #[serde(default = "default_background_shell_limit")]
+    pub background_shell_limit: usize,
 }
 
 impl Default for TaskSupervisorConfig {
@@ -315,6 +325,7 @@ impl Default for TaskSupervisorConfig {
             enrichment_limit: default_enrichment_limit(),
             telemetry_limit: default_telemetry_limit(),
             abort_enrichment_on_turn: false,
+            background_shell_limit: default_background_shell_limit(),
         }
     }
 }

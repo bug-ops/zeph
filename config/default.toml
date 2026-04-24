@@ -940,6 +940,26 @@ rotation = "daily"
 # Maximum number of rotated log files to retain
 max_files = 7
 
+# Per-turn completion notifications
+# Fires a best-effort notification after each agent turn via macOS Notification Center
+# and/or an ntfy-compatible webhook. Both channels are independently configurable.
+# [notifications]
+# Master switch. All channels are disabled when false.
+# enabled = false
+# Send a macOS Notification Center banner via osascript. No-op on non-macOS platforms.
+# macos_native = false
+# ntfy-compatible webhook URL (e.g. "https://ntfy.sh"). Absent or empty = disabled.
+# webhook_url = ""
+# ntfy topic. Required when webhook_url is set; ignored otherwise.
+# webhook_topic = ""
+# Notification title shown in banners and webhook payloads.
+# title = "Zeph"
+# Minimum successful-turn wall-clock duration (ms) before firing. 0 = always notify.
+# Errors always fire regardless of this setting.
+# min_turn_duration_ms = 0
+# When true, only notify on turns that completed with an error.
+# only_on_error = false
+
 # Knowledge graph memory
 # Extracts entities and relations from conversations into a persistent graph.
 # WARNING: entity names and facts are stored verbatim without PII redaction.
