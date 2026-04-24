@@ -5129,3 +5129,76 @@ mod histogram_recorder_wiring {
         );
     }
 }
+
+// --- #3384: ML classifier must be skipped for internal tool names ---
+
+#[cfg(feature = "classifiers")]
+mod skip_ml_internal_tools {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use zeph_llm::classifier::{ClassificationResult, ClassifierBackend};
+
+    use super::super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+
+    /// Backend that always signals a hard-threshold injection block.
+    /// If `classify_injection` is ever called with this backend, the function returns
+    /// the blocked sentinel — proving that `skip_ml` failed.
+    struct BlockedBackend;
+
+    impl ClassifierBackend for BlockedBackend {
+        fn classify<'a>(
+            &'a self,
+            _text: &'a str,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<ClassificationResult, zeph_llm::error::LlmError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                Ok(ClassificationResult {
+                    label: "INJECTION".into(),
+                    score: 1.0,
+                    is_positive: true,
+                    spans: vec![],
+                })
+            })
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "blocked"
+        }
+    }
+
+    #[tokio::test]
+    async fn sanitize_tool_output_internal_tool_skips_ml_classifier() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent =
+            super::super::super::Agent::new(provider, channel, registry, None, 5, executor);
+        // Wire a classifier that blocks everything — if skip_ml is broken,
+        // classify_injection will be called and the blocked sentinel will be returned.
+        let cfg = zeph_sanitizer::ContentIsolationConfig {
+            enabled: true,
+            flag_injection_patterns: true,
+            ..Default::default()
+        };
+        agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg)
+            .with_classifier(Arc::new(BlockedBackend), 5_000, 0.5)
+            .with_enforcement_mode(zeph_config::InjectionEnforcementMode::Block);
+        let (body, _) = agent
+            .sanitize_tool_output("skill not found: exit", "invoke_skill")
+            .await;
+        assert_ne!(
+            body, "[tool output blocked: injection detected by classifier]",
+            "invoke_skill is an internal tool — classify_injection must be skipped"
+        );
+    }
+}
