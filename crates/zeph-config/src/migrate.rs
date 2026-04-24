@@ -2450,6 +2450,44 @@ pub fn migrate_memory_graph_config(toml_src: &str) -> Result<MigrationResult, Mi
     })
 }
 
+/// Add a commented-out `[scheduler.daemon]` block if the config lacks it (#3332).
+///
+/// Introduced alongside the `zeph serve` daemon mode (#3332). All `DaemonConfig` fields
+/// have defaults so existing configs parse without changes; this migration surfaces the
+/// section so users can discover and configure the daemon process.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the
+/// migration function convention for use in chained pipelines.
+pub fn migrate_scheduler_daemon_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src
+        .lines()
+        .any(|l| l.trim() == "[scheduler.daemon]" || l.trim() == "# [scheduler.daemon]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [scheduler.daemon] — daemon process config for `zeph serve` (#3332).\n\
+         # [scheduler.daemon]\n\
+         # pid_file = \"/tmp/zeph-scheduler.pid\"   # PID file path (must be on a local filesystem)\n\
+         # log_file = \"/tmp/zeph-scheduler.log\"   # daemon log file path (append-only; rotate externally)\n\
+         # tick_secs = 60                           # scheduler tick interval in seconds (clamped 5..=3600)\n\
+         # shutdown_grace_secs = 30                 # grace period after SIGTERM before process exits\n\
+         # catch_up = true                          # replay missed cron tasks on daemon restart\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["scheduler.daemon".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -3833,6 +3871,33 @@ prompt_cache_ttl = "1h"
     fn migrate_memory_graph_idempotent_on_existing_block() {
         let src = "[agent]\nname = \"Zeph\"\n# [memory.graph.beam_search]\n# beam_width = 10\n";
         let result = migrate_memory_graph_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    // ── migrate_scheduler_daemon_config ──────────────────────────────────────
+
+    #[test]
+    fn migrate_scheduler_daemon_adds_block_when_absent() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_scheduler_daemon_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result
+                .sections_changed
+                .contains(&"scheduler.daemon".to_owned())
+        );
+        assert!(result.output.contains("# [scheduler.daemon]"));
+        assert!(result.output.contains("pid_file"));
+        assert!(result.output.contains("tick_secs = 60"));
+        assert!(result.output.contains("shutdown_grace_secs = 30"));
+        assert!(result.output.contains("catch_up = true"));
+    }
+
+    #[test]
+    fn migrate_scheduler_daemon_idempotent_on_existing_block() {
+        let src = "[agent]\nname = \"Zeph\"\n# [scheduler.daemon]\n# tick_secs = 60\n";
+        let result = migrate_scheduler_daemon_config(src).expect("migrate");
         assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }

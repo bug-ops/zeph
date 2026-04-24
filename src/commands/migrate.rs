@@ -12,9 +12,9 @@ use zeph_core::config::migrate::{
     migrate_mcp_elicitation_config, migrate_mcp_trust_levels, migrate_memory_graph_config,
     migrate_microcompact_config, migrate_orchestration_persistence, migrate_otel_filter,
     migrate_planner_model_to_provider, migrate_quality_config, migrate_sandbox_config,
-    migrate_sandbox_egress_filter, migrate_session_recap_config, migrate_shell_transactional,
-    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
-    migrate_vigil_config,
+    migrate_sandbox_egress_filter, migrate_scheduler_daemon_config, migrate_session_recap_config,
+    migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
+    migrate_telemetry_config, migrate_vigil_config,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -140,9 +140,13 @@ pub(crate) fn handle_migrate_config(
     let memory_graph_result = migrate_memory_graph_config(&after_hooks_perm_denied)?;
     let after_memory_graph = memory_graph_result.output;
 
-    // Step 27: add missing default keys as commented-out entries.
+    // Step 27: add commented-out [scheduler.daemon] block if absent (#3332).
+    let scheduler_daemon_result = migrate_scheduler_daemon_config(&after_memory_graph)?;
+    let after_scheduler_daemon = scheduler_daemon_result.output;
+
+    // Step 28: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_memory_graph)?;
+    let result = migrator.migrate(&after_scheduler_daemon)?;
 
     if diff {
         print_diff(&input, &result.output);
@@ -247,6 +251,9 @@ pub(crate) fn handle_migrate_config(
             eprintln!(
                 "Memory graph migration: added commented-out [memory.graph] retrieval options."
             );
+        }
+        if scheduler_daemon_result.changed_count > 0 {
+            eprintln!("Scheduler daemon migration: added commented-out [scheduler.daemon] block.");
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

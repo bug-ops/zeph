@@ -341,9 +341,20 @@ impl Scheduler {
                 _ = self.shutdown_rx.changed() => {
                     if *self.shutdown_rx.borrow() {
                         tracing::info!("scheduler shutting down (grace {}s)", grace_secs);
-                        // Allow in-flight tasks up to grace_secs.
                         if grace_secs > 0 {
-                            tokio::time::sleep(Duration::from_secs(grace_secs.min(60))).await;
+                            let deadline = tokio::time::Instant::now()
+                                + Duration::from_secs(grace_secs.min(60));
+                            loop {
+                                if self.in_flight.lock().await.is_empty() {
+                                    tracing::debug!("scheduler: no in-flight tasks, exiting immediately");
+                                    break;
+                                }
+                                if tokio::time::Instant::now() >= deadline {
+                                    tracing::warn!("scheduler: grace period elapsed with tasks still in-flight");
+                                    break;
+                                }
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            }
                         }
                         break;
                     }
