@@ -947,6 +947,7 @@ impl McpManager {
 
         // Batch-commit to shared maps in separate guarded blocks — never hold one
         // lock across another .await (same pattern as connect_all).
+        let all_tools: Vec<McpTool> = outputs.iter().flat_map(|o| o.tools.iter().cloned()).collect();
         let mut pending_instructions: Vec<(String, String)> = Vec::new();
         let mut pending_clients: Vec<(String, McpClient)> = Vec::new();
         let mut pending_tools: Vec<(String, Vec<McpTool>)> = Vec::new();
@@ -983,6 +984,7 @@ impl McpManager {
         if !updated.is_empty() {
             let _ = self.tools_watch_tx.send(updated);
         }
+        self.log_tool_collisions(&all_tools).await;
     }
 
     /// Log warnings for all `sanitized_id` collisions in `tools`.

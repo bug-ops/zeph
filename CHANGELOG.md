@@ -14,7 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `config/default.toml` `[tools.shell]` section now documents the two background execution
   fields (`max_background_runs`, `background_timeout_secs`) added in #3328 as commented-out
   entries, matching the documented defaults (#3363).
-
+- `connect_oauth_deferred` now collects committed tools and calls `log_tool_collisions` after the
+  drain loop, matching the behavior of `connect_all`. Previously, tool ID collisions introduced via
+  the OAuth path were silently accepted (#3359).
+- OAuth deferred MCP connection is no longer spawned in `--bare` mode. The spawn guard in
+  `runner.rs` now checks `!exec_mode.bare` before calling `connect_oauth_deferred`, preventing
+  live MCP connections from being established when no external services should be contacted (#3358).
 - Wire `ExperienceStore` into the agent tool loop and per-turn evolution sweep (#3318): tool
   outcomes are recorded fire-and-forget via `TaskClass::Telemetry`; evolution sweep runs every N
   user turns; both gates on `memory.graph.experience.enabled` with zero overhead when disabled.

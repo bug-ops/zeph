@@ -1059,7 +1059,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // Spawn deferred OAuth connections now that the UI channel is ready and can
     // display the authorization URL. Non-OAuth tools are already available from
     // connect_all(); OAuth tools arrive via tools_watch_tx when authorized.
-    if tool_setup.mcp_manager.has_oauth_servers() {
+    if !exec_mode.bare && tool_setup.mcp_manager.has_oauth_servers() {
         let mgr = std::sync::Arc::clone(&tool_setup.mcp_manager);
         tokio::spawn(async move {
             mgr.connect_oauth_deferred().await;
