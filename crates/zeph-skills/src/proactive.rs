@@ -6,7 +6,7 @@
 //! [`ProactiveExplorer`] classifies incoming queries against a keyword map of recognisable
 //! technology domains and, for domains with no existing SKILL.md, generates one. The skill
 //! is written to disk and registered in the [`SkillRegistry`] immediately, but becomes
-//! **visible to [`SkillMatcher`]** only on the next turn — this is an intentional MVP
+//! **visible to [`crate::matcher::SkillMatcher`]** only on the next turn — this is an intentional MVP
 //! trade-off that avoids an expensive synchronous re-embed on the hot path.
 //!
 //! # Domain keyword map (MVP)

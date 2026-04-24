@@ -32,7 +32,7 @@
 //! | [`stem`] | STEM: automatic detection of recurring tool-use patterns |
 //! | [`rl_head`] | 2-layer MLP routing head trained with REINFORCE for skill re-ranking |
 //! | [`resource`] | Skill-local resource file discovery and loading |
-//! | [`qdrant_matcher`] | Qdrant-backed vector store for skill matching at scale |
+//! | `qdrant_matcher` | Qdrant-backed vector store for skill matching at scale (feature `qdrant`) |
 //!
 //! # Quick Start
 //!
