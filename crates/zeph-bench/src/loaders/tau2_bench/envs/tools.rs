@@ -156,8 +156,8 @@ pub(super) struct TransferToHumanAgentsParams {
 
 /// Empty-object schema for tools that take no parameters.
 ///
-/// OpenAI requires `type: "object"` even for no-arg tools; `schemars::schema_for!(())` produces
-/// `type: "null"` which the API rejects.
+/// LLM providers require `type: "object"` even for no-arg tools; `schemars::schema_for!(())`
+/// produces `type: "null"` which most providers reject.
 fn empty_object_schema() -> schemars::Schema {
     serde_json::from_value(serde_json::json!({"type": "object", "properties": {}}))
         .expect("static schema is valid")
