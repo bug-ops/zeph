@@ -358,7 +358,7 @@ impl<C: Channel> Agent<C> {
     /// Consume the agent and return the inner channel.
     ///
     /// Call this after [`run`][Agent::run] completes to retrieve the I/O channel (e.g., to
-    /// read captured responses from a [`zeph_bench::BenchmarkChannel`]).
+    /// read captured responses from a headless channel such as `BenchmarkChannel`).
     ///
     /// # Examples
     ///
