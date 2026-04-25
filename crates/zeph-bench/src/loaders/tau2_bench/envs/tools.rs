@@ -154,6 +154,15 @@ pub(super) struct TransferToHumanAgentsParams {
     pub summary: String,
 }
 
+/// Empty-object schema for tools that take no parameters.
+///
+/// OpenAI requires `type: "object"` even for no-arg tools; `schemars::schema_for!(())` produces
+/// `type: "null"` which the API rejects.
+fn empty_object_schema() -> schemars::Schema {
+    serde_json::from_value(serde_json::json!({"type": "object", "properties": {}}))
+        .expect("static schema is valid")
+}
+
 /// Return all tool definitions for the retail domain.
 #[must_use]
 #[allow(clippy::too_many_lines)]
@@ -225,7 +234,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
         ToolDef {
             id: "list_all_product_types".into(),
             description: "List all available product type names.".into(),
-            schema: schemars::schema_for!(()),
+            schema: empty_object_schema(),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
         },
@@ -430,7 +439,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
         ToolDef {
             id: "list_all_airports".into(),
             description: "List all airports with their city, country, and code.".into(),
-            schema: schemars::schema_for!(()),
+            schema: empty_object_schema(),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
         },

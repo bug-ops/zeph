@@ -98,8 +98,8 @@ impl DatasetLoader for Tau2BenchLoader {
 
     /// Load all tasks from `path` (must be `tasks.json`).
     ///
-    /// Tasks whose `reward_basis` does not contain `"ACTION"` are skipped with
-    /// a log message — they require Phase-2 evaluators not yet implemented.
+    /// All tasks are loaded regardless of `reward_basis` — the evaluator scores
+    /// based on the `actions` field which is present in every task.
     ///
     /// # Errors
     ///
@@ -115,19 +115,6 @@ impl DatasetLoader for Tau2BenchLoader {
         let mut scenarios = Vec::with_capacity(tasks.len());
 
         for task in tasks {
-            // Skip tasks whose reward_basis excludes ACTION evaluation — we cannot
-            // score them correctly until Phase-2 (DB/env reward) is implemented.
-            // TODO(#3417/D1): remove this filter once Phase-2 env-reward evaluator is done.
-            if task.evaluation_criteria.as_ref().is_some_and(|c| {
-                !c.reward_basis.is_empty() && !c.reward_basis.iter().any(|b| b == "ACTION")
-            }) {
-                tracing::info!(
-                    task_id = %task.id,
-                    "tau2-bench: skipping task with non-ACTION reward_basis (Phase-2 not implemented)"
-                );
-                continue;
-            }
-
             let id = format!("{}_{}", loader_name, task.id);
             let prompt = build_prompt(&task);
             let metadata = serde_json::json!({
@@ -244,10 +231,10 @@ mod tests {
     }
 
     #[test]
-    fn load_filters_non_action_tasks() {
-        // Task id=2 has reward_basis=["DB"] and should be skipped.
+    fn load_all_tasks_regardless_of_reward_basis() {
+        // All 3 tasks are loaded — reward_basis filter was removed.
         let scenarios = load_from_str(TASKS_FIXTURE, Domain::Retail);
-        assert_eq!(scenarios.len(), 2);
+        assert_eq!(scenarios.len(), 3);
     }
 
     #[test]
@@ -255,6 +242,7 @@ mod tests {
         let scenarios = load_from_str(TASKS_FIXTURE, Domain::Retail);
         assert_eq!(scenarios[0].id, "tau2-bench-retail_0");
         assert_eq!(scenarios[1].id, "tau2-bench-retail_1");
+        assert_eq!(scenarios[2].id, "tau2-bench-retail_2");
     }
 
     #[test]
