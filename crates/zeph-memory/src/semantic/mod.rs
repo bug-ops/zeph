@@ -571,8 +571,8 @@ impl SemanticMemory {
     /// Returns the embedding unchanged if `query_bias_correction` is `false`,
     /// if the query is not first-person, or if the profile centroid is unavailable.
     /// Logs a single WARN on dimension mismatch and returns the original embedding.
+    #[tracing::instrument(name = "memory.query_bias.apply", skip(self, embedding), fields(query_len = query.len()))]
     pub(crate) async fn apply_query_bias(&self, query: &str, embedding: Vec<f32>) -> Vec<f32> {
-        let _span = tracing::info_span!("memory.query_bias.apply").entered();
         if !self.query_bias_correction {
             tracing::debug!(reason = "disabled", "query-bias: skipping");
             return embedding;
@@ -612,8 +612,8 @@ impl SemanticMemory {
     ///
     /// Holds the read lock only to check freshness; releases it before any `.await`.
     /// On compute failure, preserves the previous cache value (non-sticky miss).
+    #[tracing::instrument(name = "memory.query_bias.centroid", skip(self))]
     pub(crate) async fn profile_centroid_cached(&self) -> Option<Vec<f32>> {
-        let _span = tracing::info_span!("memory.query_bias.centroid").entered();
         // Fast path: check freshness under read lock without holding it across await.
         {
             let guard = self.profile_centroid.read().await;

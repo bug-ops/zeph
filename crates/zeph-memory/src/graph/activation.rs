@@ -276,8 +276,7 @@ pub async fn hela_spreading_recall(
             break;
         }
 
-        let _hop_span =
-            tracing::debug_span!("hela.hop", hop, frontier_size = frontier.len()).entered();
+        tracing::debug!(hop, frontier_size = frontier.len(), "hela: starting hop");
 
         let t_step = Instant::now();
         let edges = store
