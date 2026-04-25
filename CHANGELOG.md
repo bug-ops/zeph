@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-memory`: `EmbeddingRegistry::search_raw` now validates query vector dimension against the
+  stored collection dimension before issuing a gRPC search. Qdrant gRPC silently returned
+  near-zero cosine scores (~0.022) on dimension mismatch, causing all skill candidates to be
+  dropped below the `min_injection_score` threshold and making skill injection non-functional.
+  A cached dimension (populated at sync time) is checked first; on cache miss the collection is
+  probed once and the result cached for subsequent calls. (#3418)
+
 ### Added
 
 - `zeph-bench`: aggregate `median_score`, `stddev` (population), and `error_count` statistics on
