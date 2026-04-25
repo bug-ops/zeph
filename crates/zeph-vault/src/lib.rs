@@ -298,7 +298,7 @@ mod age_tests {
     use age::secrecy::ExposeSecret;
 
     use super::*;
-    use crate::age::{decrypt_secrets, parse_identity};
+    use crate::age::decrypt_secrets;
 
     fn encrypt_json(identity: &age::x25519::Identity, json: &serde_json::Value) -> Vec<u8> {
         let recipient = identity.to_public();
