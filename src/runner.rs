@@ -2521,9 +2521,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                                 tx_clone.send_modify(|m| {
                                     m.scheduled_tasks = jobs
                                         .into_iter()
-                                        .map(|(name, kind, mode, next_run)| {
-                                            [name, kind, mode, next_run]
-                                        })
+                                        .map(|r| [r.name, r.kind, r.task_mode, r.next_run])
                                         .collect();
                                 });
                             }
@@ -2539,9 +2537,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                                 tx_clone.send_modify(|m| {
                                     m.scheduled_tasks = jobs
                                         .into_iter()
-                                        .map(|(name, kind, mode, next_run)| {
-                                            [name, kind, mode, next_run]
-                                        })
+                                        .map(|r| [r.name, r.kind, r.task_mode, r.next_run])
                                         .collect();
                                 });
                             }

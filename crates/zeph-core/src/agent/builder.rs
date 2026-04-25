@@ -1,6 +1,31 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Agent construction API: the 109 `with_*` setter methods on `Agent<C>`.
+//!
+//! # Current design
+//!
+//! The builder lives directly on `Agent<C>` — setters mutate `self` in place and return `Self`.
+//! This is a **fake builder pattern**: the constructed value is already a fully-initialised
+//! `Agent<C>` from the moment `Agent::new` returns; the `with_*` chain only populates optional
+//! subsystems on top.
+//!
+//! A proper typestate builder (`AgentBuilder<C, State>` with a phantom type parameter tracking
+//! which required fields have been set) would catch misconfiguration at compile time instead of
+//! at the `build()` call. **This refactor has High blast radius** — construction sites exist in
+//! `agent/tests.rs` (6 163 LOC), `tool_execution/tests.rs` (5 204 LOC), `context/tests.rs`
+//! (4 429 LOC), and multiple binary-crate files — totalling > 30 call sites across multiple
+//! crates. Any typestate conversion must be split across at least four PRs (see H3 in the
+//! architecture audit). Until that sprint lands, the fake-builder pattern is the deliberate
+//! choice and callers must use `build()` to validate configuration at the point of construction.
+//!
+//! # Call ordering constraints
+//!
+//! Some setters have explicit ordering requirements documented in their `# Panics` sections:
+//! - [`Agent::with_static_metrics`] must be called after [`Agent::with_metrics`].
+//!
+//! All other setters are order-independent.
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

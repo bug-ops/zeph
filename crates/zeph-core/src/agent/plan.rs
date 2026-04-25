@@ -964,7 +964,13 @@ impl<C: crate::channel::Channel> Agent<C> {
             ));
         }
 
-        let mut graph = self.orchestration.pending_graph.take().unwrap();
+        // SAFETY: `pending_graph` was verified to be `Some` at line 943 above; no other
+        // code path between that check and here can set it to `None`.
+        let mut graph = self
+            .orchestration
+            .pending_graph
+            .take()
+            .expect("BUG: pending_graph was Some at entry but became None before take()");
 
         let failed_count = graph
             .tasks

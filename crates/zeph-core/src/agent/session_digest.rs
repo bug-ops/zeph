@@ -19,14 +19,18 @@ use zeph_memory::TokenCounter;
 fn sanitize_digest(text: &str) -> String {
     static INJECTION_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         vec![
-            Regex::new(r"<[^>]{1,100}>").unwrap(),
-            Regex::new(r"(?i)\[/?INST\]|\[/?SYS\]").unwrap(),
-            Regex::new(r"<\|[^|]{1,30}\|>").unwrap(),
-            Regex::new(r"(?im)^(system|assistant|user)\s*:\s*").unwrap(),
+            Regex::new(r"<[^>]{1,100}>").expect("BUG: static HTML-tag pattern is invalid"),
+            Regex::new(r"(?i)\[/?INST\]|\[/?SYS\]")
+                .expect("BUG: static INST/SYS pattern is invalid"),
+            Regex::new(r"<\|[^|]{1,30}\|>")
+                .expect("BUG: static pipe-delimited token pattern is invalid"),
+            Regex::new(r"(?im)^(system|assistant|user)\s*:\s*")
+                .expect("BUG: static role-prefix pattern is invalid"),
         ]
     });
     static INJECTION_LINE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)ignore\s+.{0,30}(instruction|above|previous|system)").unwrap()
+        Regex::new(r"(?i)ignore\s+.{0,30}(instruction|above|previous|system)")
+            .expect("BUG: static injection-line pattern is invalid")
     });
 
     let mut result = text.to_string();

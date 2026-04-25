@@ -4,31 +4,17 @@
 use std::path::Path;
 
 use similar::{ChangeTag, TextDiff};
-use zeph_core::config::migrate::{
-    ConfigMigrator, migrate_acp_subagents_config, migrate_agent_budget_hint,
-    migrate_agent_retry_to_tools_retry, migrate_autodream_config,
-    migrate_compression_predictor_config, migrate_database_url, migrate_egress_config,
-    migrate_focus_auto_consolidate_min_window, migrate_forgetting_config,
-    migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
-    migrate_magic_docs_config, migrate_mcp_elicitation_config, migrate_mcp_trust_levels,
-    migrate_memory_graph_config, migrate_memory_hebbian_config,
-    migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
-    migrate_memory_reasoning_config, migrate_memory_reasoning_judge_config,
-    migrate_memory_retrieval_config, migrate_microcompact_config,
-    migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
-    migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
-    migrate_scheduler_daemon_config, migrate_session_recap_config, migrate_shell_transactional,
-    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
-    migrate_vigil_config,
-};
+use zeph_core::config::migrate::{ConfigMigrator, MIGRATIONS, MigrationResult};
 
 /// Handle the `zeph migrate-config` command.
 ///
+/// Applies all registered migration steps from [`MIGRATIONS`] in chronological order,
+/// followed by the `ConfigMigrator` pass that adds missing keys as commented-out entries.
+///
 /// # Errors
 ///
-/// Returns an error if the config file cannot be read, the migration fails, or the
+/// Returns an error if the config file cannot be read, any migration step fails, or the
 /// in-place write fails.
-#[allow(clippy::too_many_lines)]
 pub(crate) fn handle_migrate_config(
     config_path: &Path,
     in_place: bool,
@@ -40,293 +26,34 @@ pub(crate) fn handle_migrate_config(
         String::new()
     };
 
-    // Step 1: migrate [llm.stt] model/base_url fields to [[llm.providers]] stt_model.
-    let stt_result = migrate_stt_to_provider(&input)?;
-    let after_stt = stt_result.output;
+    // Apply all registered migration steps in order, collecting results for diff reporting.
+    let mut current = input.clone();
+    let mut step_results: Vec<(&str, MigrationResult)> = Vec::with_capacity(MIGRATIONS.len());
+    for migration in MIGRATIONS.iter() {
+        let result = migration.apply(&current)?;
+        current = result.output.clone();
+        step_results.push((migration.name(), result));
+    }
 
-    // Step 2: migrate [orchestration] planner_model → planner_provider (rename + semantic change).
-    let planner_result = migrate_planner_model_to_provider(&after_stt)?;
-    let after_planner = planner_result.output;
-
-    // Step 3: add trust_level = "trusted" to existing [[mcp.servers]] entries that lack it,
-    // preserving the previous behavior where all config-defined servers skipped SSRF validation.
-    let trust_result = migrate_mcp_trust_levels(&after_planner)?;
-    let after_trust = trust_result.output;
-
-    // Step 4: migrate [agent].max_tool_retries / max_retry_duration_secs → [tools.retry].
-    let retry_result = migrate_agent_retry_to_tools_retry(&after_trust)?;
-    let after_retry = retry_result.output;
-
-    // Step 5: add commented-out database_url under [memory] if absent.
-    let db_url_result = migrate_database_url(&after_retry)?;
-    let after_db_url = db_url_result.output;
-
-    // Step 6: add commented-out [tools.shell] transactional fields if absent (#2414).
-    let shell_txn_result = migrate_shell_transactional(&after_db_url)?;
-    let after_shell_txn = shell_txn_result.output;
-
-    // Step 7: add commented-out budget_hint_enabled to [agent] if absent (#2267).
-    let budget_hint_result = migrate_agent_budget_hint(&after_shell_txn)?;
-    let after_budget_hint = budget_hint_result.output;
-
-    // Step 8: add commented-out [memory.forgetting] section if absent (#2397).
-    let forgetting_result = migrate_forgetting_config(&after_budget_hint)?;
-    let after_forgetting = forgetting_result.output;
-
-    // Step 9: strip obsolete [memory.compression.predictor] section (#3251).
-    let predictor_result = migrate_compression_predictor_config(&after_forgetting)?;
-    let after_predictor = predictor_result.output;
-
-    // Step 10: add commented-out [memory.microcompact] block if absent (#2699).
-    let microcompact_result = migrate_microcompact_config(&after_predictor)?;
-    let after_microcompact = microcompact_result.output;
-
-    // Step 11: add commented-out [memory.autodream] block if absent (#2697).
-    let autodream_result = migrate_autodream_config(&after_microcompact)?;
-    let after_autodream = autodream_result.output;
-
-    // Step 12: add commented-out [magic_docs] block if absent (#2702).
-    let magic_docs_result = migrate_magic_docs_config(&after_autodream)?;
-    let after_magic_docs = magic_docs_result.output;
-
-    // Step 13: add commented-out [telemetry] block if absent (#2846).
-    let telemetry_result = migrate_telemetry_config(&after_magic_docs)?;
-    let after_telemetry = telemetry_result.output;
-
-    // Step 14: add commented-out [agent.supervisor] block if absent (#2883).
-    let supervisor_result = migrate_supervisor_config(&after_telemetry)?;
-    let after_supervisor = supervisor_result.output;
-
-    // Step 15: add commented-out otel_filter key under [telemetry] if absent (#2997).
-    let otel_filter_result = migrate_otel_filter(&after_supervisor)?;
-    let after_otel_filter = otel_filter_result.output;
-
-    // Step 16: add commented-out [tools.egress] block if absent (#3058).
-    let egress_result = migrate_egress_config(&after_otel_filter)?;
-    let after_egress = egress_result.output;
-
-    // Step 17: add commented-out [security.vigil] block if absent (#3058).
-    let vigil_result = migrate_vigil_config(&after_egress)?;
-    let after_vigil = vigil_result.output;
-
-    // Step 18: add commented-out [tools.sandbox] block if absent (#3070).
-    let sandbox_result = migrate_sandbox_config(&after_vigil)?;
-    let after_sandbox = sandbox_result.output;
-
-    // Step 19: add commented-out persistence_enabled under [orchestration] if absent (#3107).
-    let orch_persistence_result = migrate_orchestration_persistence(&after_sandbox)?;
-    let after_orch_persistence = orch_persistence_result.output;
-
-    // Step 20: add commented-out [session.recap] block if absent (#3064).
-    let session_recap_result = migrate_session_recap_config(&after_orch_persistence)?;
-    let after_session_recap = session_recap_result.output;
-
-    // Step 21: add commented-out MCP elicitation keys under [mcp] if absent (#3141).
-    let mcp_elicitation_result = migrate_mcp_elicitation_config(&after_session_recap)?;
-    let after_mcp_elicitation = mcp_elicitation_result.output;
-
-    // Step 22: add commented-out [quality] block if absent (#3228).
-    let quality_result = migrate_quality_config(&after_mcp_elicitation)?;
-    let after_quality = quality_result.output;
-
-    // Step 23: insert denied_domains / fail_if_unavailable into existing [tools.sandbox] (#3294).
-    let sandbox_egress_result = migrate_sandbox_egress_filter(&after_quality)?;
-    let after_sandbox_egress = sandbox_egress_result.output;
-
-    // Step 24: add commented-out [acp.subagents] block if absent (#3304).
-    let acp_subagents_result = migrate_acp_subagents_config(&after_sandbox_egress)?;
-    let after_acp_subagents = acp_subagents_result.output;
-
-    // Step 25: add commented-out [[hooks.permission_denied]] block if absent (#3309).
-    let hooks_perm_denied_result = migrate_hooks_permission_denied_config(&after_acp_subagents)?;
-    let after_hooks_perm_denied = hooks_perm_denied_result.output;
-
-    // Step 26: add commented-out [memory.graph] retrieval strategy options if absent (#3317).
-    let memory_graph_result = migrate_memory_graph_config(&after_hooks_perm_denied)?;
-    let after_memory_graph = memory_graph_result.output;
-
-    // Step 27: add commented-out [scheduler.daemon] block if absent (#3332).
-    let scheduler_daemon_result = migrate_scheduler_daemon_config(&after_memory_graph)?;
-    let after_scheduler_daemon = scheduler_daemon_result.output;
-
-    // Step 28: add commented-out [memory.retrieval] block if absent (#3340).
-    let memory_retrieval_result = migrate_memory_retrieval_config(&after_scheduler_daemon)?;
-    let after_memory_retrieval = memory_retrieval_result.output;
-
-    // Step 29: add commented-out [memory.reasoning] block if absent (#3369).
-    let memory_reasoning_result = migrate_memory_reasoning_config(&after_memory_retrieval)?;
-    let after_memory_reasoning = memory_reasoning_result.output;
-
-    // Step 29b: inject self_judge_window / min_assistant_chars into existing [memory.reasoning] (#3383).
-    let memory_reasoning_judge_result =
-        migrate_memory_reasoning_judge_config(&after_memory_reasoning)?;
-    let after_memory_reasoning_judge = memory_reasoning_judge_result.output;
-
-    // Step 30: add commented-out [memory.hebbian] block if absent (#3344, HL-F1/F2).
-    let memory_hebbian_result = migrate_memory_hebbian_config(&after_memory_reasoning_judge)?;
-    let after_memory_hebbian = memory_hebbian_result.output;
-
-    // Step 31: splice HL-F3/F4 consolidation fields into an existing [memory.hebbian] section
-    // (#3345). No-op when section is absent (step 30 already added commented-out block).
-    let hebbian_consolidation_result =
-        migrate_memory_hebbian_consolidation_config(&after_memory_hebbian)?;
-    let after_hebbian_consolidation = hebbian_consolidation_result.output;
-
-    // Step 31b: splice HL-F5 spreading-activation fields into [memory.hebbian] if absent (#3346).
-    let hebbian_spread_result = migrate_memory_hebbian_spread_config(&after_hebbian_consolidation)?;
-    let after_hebbian_spread = hebbian_spread_result.output;
-
-    // Step 32: add commented-out [[hooks.turn_complete]] block if absent (#3308).
-    let hooks_turn_complete_result = migrate_hooks_turn_complete_config(&after_hebbian_spread)?;
-    let after_hooks_turn_complete = hooks_turn_complete_result.output;
-
-    // Step 33: inject auto_consolidate_min_window into [agent.focus] if absent (#3313).
-    let focus_window_result =
-        migrate_focus_auto_consolidate_min_window(&after_hooks_turn_complete)?;
-    let after_focus_window = focus_window_result.output;
-
-    // Step 34: add missing default keys as commented-out entries.
+    // Final pass: add missing default keys as commented-out entries.
     let migrator = ConfigMigrator::new();
-    let result = migrator.migrate(&after_focus_window)?;
+    let result = migrator.migrate(&current)?;
 
     if diff {
         print_diff(&input, &result.output);
-        if stt_result.changed_count > 0 {
-            eprintln!("STT migration: moved model/base_url to [[llm.providers]] entry.");
-        }
-        if planner_result.changed_count > 0 {
-            eprintln!(
-                "Planner migration: planner_model renamed to planner_provider (value commented out)."
-            );
-        }
-        if trust_result.changed_count > 0 {
-            eprintln!(
-                "MCP trust migration: added trust_level = \"trusted\" to {} [[mcp.servers]] entries.",
-                trust_result.changed_count
-            );
-        }
-        if retry_result.changed_count > 0 {
-            eprintln!("Retry migration: [agent] retry fields migrated to [tools.retry].");
-        }
-        if db_url_result.changed_count > 0 {
-            eprintln!("Database URL migration: added database_url placeholder under [memory].");
-        }
-        if shell_txn_result.changed_count > 0 {
-            eprintln!(
-                "Shell transactional migration: added commented-out transactional fields to [tools.shell]."
-            );
-        }
-        if budget_hint_result.changed_count > 0 {
-            eprintln!("Budget hint migration: added commented-out budget_hint_enabled to [agent].");
-        }
-        if forgetting_result.changed_count > 0 {
-            eprintln!("Forgetting migration: added commented-out [memory.forgetting] section.");
-        }
-        if predictor_result.changed_count > 0 {
-            eprintln!(
-                "Predictor migration: removed obsolete [memory.compression.predictor] section."
-            );
-        }
-        if microcompact_result.changed_count > 0 {
-            eprintln!("Microcompact migration: added commented-out [memory.microcompact] block.");
-        }
-        if autodream_result.changed_count > 0 {
-            eprintln!("autoDream migration: added commented-out [memory.autodream] block.");
-        }
-        if magic_docs_result.changed_count > 0 {
-            eprintln!("MagicDocs migration: added commented-out [magic_docs] block.");
-        }
-        if telemetry_result.changed_count > 0 {
-            eprintln!("Telemetry migration: added commented-out [telemetry] block.");
-        }
-        if supervisor_result.changed_count > 0 {
-            eprintln!("Supervisor migration: added commented-out [agent.supervisor] block.");
-        }
-        if otel_filter_result.changed_count > 0 {
-            eprintln!(
-                "OTLP filter migration: added commented-out otel_filter key under [telemetry]."
-            );
-        }
-        if egress_result.changed_count > 0 {
-            eprintln!("Egress migration: added commented-out [tools.egress] block.");
-        }
-        if vigil_result.changed_count > 0 {
-            eprintln!("VIGIL migration: added commented-out [security.vigil] block.");
-        }
-        if sandbox_result.changed_count > 0 {
-            eprintln!("Sandbox migration: added commented-out [tools.sandbox] block.");
-        }
-        if orch_persistence_result.changed_count > 0 {
-            eprintln!(
-                "Orchestration persistence migration: \
-                 added commented-out persistence_enabled under [orchestration]."
-            );
-        }
-        if session_recap_result.changed_count > 0 {
-            eprintln!("Session recap migration: added commented-out [session.recap] block.");
-        }
-        if mcp_elicitation_result.changed_count > 0 {
-            eprintln!(
-                "MCP elicitation migration: added commented-out elicitation keys under [mcp]."
-            );
-        }
-        if quality_result.changed_count > 0 {
-            eprintln!("Quality migration: added commented-out [quality] block.");
-        }
-        if sandbox_egress_result.changed_count > 0 {
-            eprintln!(
-                "Sandbox egress migration: \
-                 added commented-out denied_domains / fail_if_unavailable to [tools.sandbox]."
-            );
-        }
-        if acp_subagents_result.changed_count > 0 {
-            eprintln!("ACP subagents migration: added commented-out [acp.subagents] block.");
-        }
-        if hooks_perm_denied_result.changed_count > 0 {
-            eprintln!(
-                "Hooks permission_denied migration: \
-                 added commented-out [[hooks.permission_denied]] block."
-            );
-        }
-        if memory_graph_result.changed_count > 0 {
-            eprintln!(
-                "Memory graph migration: added commented-out [memory.graph] retrieval options."
-            );
-        }
-        if scheduler_daemon_result.changed_count > 0 {
-            eprintln!("Scheduler daemon migration: added commented-out [scheduler.daemon] block.");
-        }
-        if memory_retrieval_result.changed_count > 0 {
-            eprintln!(
-                "Memory retrieval migration: added commented-out [memory.retrieval] block (#3340)."
-            );
-        }
-        if memory_reasoning_judge_result.changed_count > 0 {
-            eprintln!(
-                "Reasoning judge migration: added commented-out self_judge_window / \
-                 min_assistant_chars to [memory.reasoning] (#3383)."
-            );
-        }
-        if memory_hebbian_result.changed_count > 0 {
-            eprintln!("Hebbian migration: added commented-out [memory.hebbian] block (#3344).");
-        }
-        if hebbian_consolidation_result.changed_count > 0 {
-            eprintln!(
-                "Hebbian consolidation migration: \
-                 spliced HL-F3/F4 consolidation fields into [memory.hebbian] (#3345)."
-            );
-        }
-        if hooks_turn_complete_result.changed_count > 0 {
-            eprintln!(
-                "Hooks turn_complete migration: \
-                 added commented-out [[hooks.turn_complete]] block (#3308)."
-            );
-        }
-        if focus_window_result.changed_count > 0 {
-            eprintln!(
-                "Focus migration: added commented-out \
-                 auto_consolidate_min_window to [agent.focus] (#3313)."
-            );
+        for (name, step_result) in &step_results {
+            if step_result.changed_count > 0 {
+                eprintln!(
+                    "{}: {} change(s) (sections: {})",
+                    name,
+                    step_result.changed_count,
+                    if step_result.sections_changed.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        step_result.sections_changed.join(", ")
+                    }
+                );
+            }
         }
         eprintln!(
             "Migration would add {} entries ({} sections).",

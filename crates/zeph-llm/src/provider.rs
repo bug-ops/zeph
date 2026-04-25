@@ -828,13 +828,6 @@ pub trait LlmProvider: Send + Sync {
         None
     }
 
-    /// Record a quality outcome from tool execution for reputation-based routing (RAPS).
-    ///
-    /// Only `RouterProvider` has a non-trivial implementation; all other providers are no-ops.
-    /// Must only be called for semantic failures (invalid tool arguments, parse errors).
-    /// Do NOT call for network errors, rate limits, or transient I/O failures.
-    fn record_quality_outcome(&self, _provider_name: &str, _success: bool) {}
-
     /// Send messages and return the assistant response together with per-call extras.
     ///
     /// Default implementation calls [`chat`][Self::chat] and returns [`ChatExtras::default()`],

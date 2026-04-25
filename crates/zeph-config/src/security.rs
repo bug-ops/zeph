@@ -398,10 +398,10 @@ hash_mismatch_level = "quarantined"
 
     #[test]
     fn timeout_config_new_fields_deserialize_from_toml() {
-        let toml = r#"
+        let toml = r"
 context_prep_timeout_secs = 60
 no_providers_backoff_secs = 10
-"#;
+";
         let cfg: TimeoutConfig = toml::from_str(toml).expect("deserialize");
         assert_eq!(cfg.context_prep_timeout_secs, 60);
         assert_eq!(cfg.no_providers_backoff_secs, 10);

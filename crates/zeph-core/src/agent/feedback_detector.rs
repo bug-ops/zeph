@@ -48,6 +48,9 @@ struct LangPatterns {
     self_correction: Vec<(Regex, f32)>,
 }
 
+// All `Regex::new(literal).unwrap()` calls below are infallible: the patterns are hardcoded
+// string literals validated by the test suite. A panic here would indicate a regex syntax error
+// introduced in source code, not a runtime condition — it is caught immediately by any test run.
 static PATTERNS: LazyLock<LangPatterns> = LazyLock::new(|| LangPatterns {
     rejection: build_rejection_patterns(),
     alternative: build_alternative_patterns(),

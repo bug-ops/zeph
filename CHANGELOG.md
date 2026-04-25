@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `zeph-config`: extended `MIGRATIONS` registry to cover all 35 sequential migration steps
+  (previously only the 10 most recent were registered). `src/commands/migrate.rs` now iterates
+  `MIGRATIONS` instead of calling each migration free function individually, eliminating ~150 lines
+  of manual dispatch and making future migration additions a single registry entry.
+- `zeph-scheduler`: added `#[derive(Debug, Clone)]` to `ScheduledTaskInfo` and `#[derive(Debug)]`
+  to `JobStore` to satisfy the workspace `Debug`-on-all-public-types convention.
+
 ## [0.20.0] - 2026-04-25
 
 ### Added

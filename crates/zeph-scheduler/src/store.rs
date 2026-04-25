@@ -7,10 +7,48 @@ use zeph_db::sql;
 
 use crate::error::SchedulerError;
 
+/// A scheduled task row returned by [`JobStore::list_jobs`].
+///
+/// Replaces the previous `(String, String, String, String)` tuple to eliminate
+/// positional destructuring bugs. Fields map 1-to-1 to the SQL columns in the
+/// same order as the query: `name`, `kind`, `task_mode`, and the coalesced
+/// `next_run`.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use zeph_scheduler::JobStore;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let store = JobStore::open("sqlite:scheduler.db").await?;
+/// store.init().await?;
+///
+/// for job in store.list_jobs().await? {
+///     println!("{}: {} ({}) → {}", job.name, job.kind, job.task_mode, job.next_run);
+/// }
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct ScheduledTaskRecord {
+    /// Unique task name (primary key in the `scheduled_jobs` table).
+    pub name: String,
+    /// Serialised [`crate::TaskKind`] string (e.g. `"health_check"`).
+    pub kind: String,
+    /// Execution mode: `"periodic"` or `"oneshot"`.
+    pub task_mode: String,
+    /// Next scheduled run time as an ISO 8601 / RFC 3339 string.
+    ///
+    /// Falls back to `run_at` for one-shot jobs that have not yet computed a
+    /// `next_run`. Empty string when neither field is set.
+    pub next_run: String,
+}
+
 /// Full details for a scheduled task, returned by [`JobStore::list_jobs_full`].
 ///
 /// Intended for display in the TUI or CLI task list. All string fields are UTF-8
 /// and come directly from the `scheduled_jobs` `SQLite` table.
+#[derive(Debug, Clone)]
 pub struct ScheduledTaskInfo {
     /// Unique task name (primary key in the `scheduled_jobs` table).
     pub name: String,
@@ -44,12 +82,13 @@ pub struct ScheduledTaskInfo {
 ///
 /// // Query job list.
 /// let jobs = store.list_jobs().await?;
-/// for (name, kind, mode, next_run) in &jobs {
-///     println!("{name}: {kind} ({mode}) → {next_run}");
+/// for job in &jobs {
+///     println!("{}: {} ({}) → {}", job.name, job.kind, job.task_mode, job.next_run);
 /// }
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Debug)]
 pub struct JobStore {
     pool: DbPool,
 }
@@ -277,12 +316,16 @@ impl JobStore {
         Ok(row.and_then(|r| r.0))
     }
 
-    /// List all active (non-done) jobs. Returns `(name, kind, task_mode, next_run)` tuples.
+    /// List all active (non-done) jobs.
+    ///
+    /// Returns a [`ScheduledTaskRecord`] per active job, ordered by name.
+    /// One-shot jobs without a computed `next_run` fall back to their `run_at` value;
+    /// if neither is set the field is an empty string.
     ///
     /// # Errors
     ///
     /// Returns an error if the SQL query fails.
-    pub async fn list_jobs(&self) -> Result<Vec<(String, String, String, String)>, SchedulerError> {
+    pub async fn list_jobs(&self) -> Result<Vec<ScheduledTaskRecord>, SchedulerError> {
         let rows: Vec<(String, String, String, Option<String>)> = zeph_db::query_as(
             sql!("SELECT name, kind, task_mode, COALESCE(next_run, run_at) FROM scheduled_jobs WHERE status != 'done' ORDER BY name"),
         )
@@ -290,7 +333,12 @@ impl JobStore {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(name, kind, mode, next_run)| (name, kind, mode, next_run.unwrap_or_default()))
+            .map(|(name, kind, task_mode, next_run)| ScheduledTaskRecord {
+                name,
+                kind,
+                task_mode,
+                next_run: next_run.unwrap_or_default(),
+            })
             .collect())
     }
 
@@ -478,7 +526,7 @@ mod tests {
         store.mark_done("done_job").await.unwrap();
         let jobs = store.list_jobs().await.unwrap();
         assert!(
-            jobs.iter().all(|(name, ..)| name != "done_job"),
+            jobs.iter().all(|j| j.name != "done_job"),
             "list_jobs must not return done jobs"
         );
     }
@@ -500,9 +548,9 @@ mod tests {
             .await
             .unwrap();
         let jobs = store.list_jobs().await.unwrap();
-        let (_, _, _, next_run) = jobs.iter().find(|(n, ..)| n == "oneshot_job").unwrap();
+        let job = jobs.iter().find(|j| j.name == "oneshot_job").unwrap();
         assert_eq!(
-            next_run, "2026-06-01T10:00:00Z",
+            job.next_run, "2026-06-01T10:00:00Z",
             "run_at must be shown as next_run for oneshot jobs"
         );
     }

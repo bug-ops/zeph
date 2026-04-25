@@ -72,9 +72,18 @@ impl AnyProvider {
     ///
     /// Delegates to [`RouterProvider::set_memory_confidence`] when the inner provider is
     /// a bandit router. No-op for all other provider types.
+    ///
+    /// Prefer importing [`RouterAware`][crate::router::RouterAware] for explicit dispatch
+    /// at call sites that always work with a known router provider.
     pub fn set_memory_confidence(&self, confidence: Option<f32>) {
         if let AnyProvider::Router(r) = self {
             r.set_memory_confidence(confidence);
+        } else {
+            tracing::trace!(
+                provider_variant = self.name(),
+                confidence = ?confidence,
+                "set_memory_confidence: no-op (non-router provider; MAR signal requires RouterProvider)"
+            );
         }
     }
 
@@ -183,12 +192,22 @@ impl AnyProvider {
 
     /// Record a quality outcome for reputation-based routing (RAPS).
     ///
-    /// Delegates to `RouterProvider::record_quality_outcome`; no-op for all other variants.
+    /// Delegates to [`RouterProvider::record_quality_outcome`] when the inner provider is a
+    /// router. No-op for all other provider types — this is intentional: quality signals only
+    /// apply to multi-provider routers with reputation tracking enabled.
+    ///
     /// Must only be called for semantic failures (bad tool arguments, parse errors),
     /// never for network errors or transient failures.
     pub fn record_quality_outcome(&self, provider_name: &str, success: bool) {
         if let Self::Router(p) = self {
             p.record_quality_outcome(provider_name, success);
+        } else {
+            tracing::trace!(
+                provider_name,
+                success,
+                provider_variant = self.name(),
+                "record_quality_outcome: no-op (non-router provider; quality signals require RouterProvider)"
+            );
         }
     }
 

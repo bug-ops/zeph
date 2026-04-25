@@ -46,12 +46,17 @@
 //! on Unix. Do not store state files in world-writable directories.
 
 pub mod asi;
+pub mod aware;
 pub mod bandit;
 pub mod cascade;
 pub mod coe;
 pub mod reputation;
+pub mod state;
 pub mod thompson;
 pub mod triage;
+
+pub use aware::RouterAware;
+pub use state::RouterState;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -261,17 +266,17 @@ impl Default for CascadeRouterConfig {
 /// runtime state (EMA statistics, Thompson distribution, bandit weights) which is
 /// stored behind `Arc<Mutex<_>>` and updated on every successful call.
 ///
-/// Cloning is cheap: provider list, EMA, Thompson, and bandit state are all
-/// `Arc`-wrapped and shared between the original and all clones.
+/// Cloning is cheap: [`RouterState`] and all per-strategy state are `Arc`-wrapped
+/// and shared between the original and all clones — clone cost is proportional to
+/// the number of `Arc` fields, not to provider count or strategy complexity.
 #[derive(Debug, Clone)]
 pub struct RouterProvider {
-    // Arc<[AnyProvider]> makes self.clone() O(1) for the providers field (atomic refcount
-    // increment) instead of O(N * provider_size). This benefits ALL strategies since every
-    // chat/chat_stream/embed/chat_with_tools call does `let router = self.clone()`.
-    providers: Arc<[AnyProvider]>,
+    /// Shared cross-strategy runtime signals (providers, turn counter, MAR, etc.).
+    ///
+    /// All fields inside are `Arc`-wrapped; clone is O(1).
+    pub(crate) state: RouterState,
     status_tx: Option<StatusTx>,
     ema: Option<EmaTracker>,
-    provider_order: Arc<Mutex<Vec<usize>>>,
     strategy: RouterStrategy,
     thompson: Option<Arc<Mutex<ThompsonState>>>,
     /// Path for persisting Thompson state. `None` disables persistence.
@@ -286,9 +291,6 @@ pub struct RouterProvider {
     reputation_state_path: Option<std::path::PathBuf>,
     /// Reputation weight in [0.0, 1.0] for routing score blend.
     reputation_weight: f64,
-    /// Name of the sub-provider that served the most recent successful tool call.
-    /// Used by `record_quality_outcome` to attribute quality to the right provider.
-    last_active_provider: Arc<Mutex<Option<String>>>,
     /// PILOT bandit state.
     bandit: Option<Arc<Mutex<BanditState>>>,
     /// Path for persisting bandit state. `None` disables persistence.
@@ -301,12 +303,6 @@ pub struct RouterProvider {
     /// LRU embedding cache: maps query-string hash to feature vector.
     /// Shared across requests; keyed by `u64` hash of query text.
     bandit_embed_cache: Arc<Mutex<BanditEmbedCache>>,
-    /// MAR signal: top-1 semantic memory recall score for the current turn.
-    /// Set by the agent before each `chat`/`chat_stream` call; read by `bandit_select_provider`.
-    last_memory_confidence: Arc<Mutex<Option<f32>>>,
-    /// Maps provider name to model identifier for cost estimation.
-    /// Built at construction time from `self.providers`.
-    provider_models: Arc<std::collections::HashMap<String, String>>,
     /// Agent Stability Index state (session-only coherence tracking).
     asi: Option<Arc<Mutex<AsiState>>>,
     /// ASI configuration. `None` when ASI is disabled.
@@ -317,33 +313,21 @@ pub struct RouterProvider {
     quality_gate: Option<f32>,
     /// `CoE` (Collaborative Entropy) router. `None` when `CoE` is disabled.
     coe: Option<Arc<CoeRouter>>,
-    /// Monotonically increasing turn counter. Incremented once per top-level `chat()` call.
-    /// Shared across clones so that concurrent sub-calls within the same turn see the same value.
-    turn_counter: Arc<AtomicU64>,
-    /// Turn ID of the last ASI embedding update. Used to debounce `spawn_asi_update` so that
-    /// only one embed call fires per turn even when `chat()` is invoked N times concurrently.
-    asi_last_turn: Arc<AtomicU64>,
-    /// Semaphore limiting concurrent `embed_batch` calls. `None` = unlimited.
-    embed_semaphore: Option<Arc<tokio::sync::Semaphore>>,
-    /// Total embed calls attempted via `embed_cached` this session.
-    embed_call_count: Arc<AtomicU64>,
-    /// Cache hits from `TurnEmbedCache` this session.
-    embed_cache_hits: Arc<AtomicU64>,
 }
 
 impl RouterProvider {
+    /// Create a new router over `providers`.
+    ///
+    /// Use the builder methods (e.g., [`with_thompson`][Self::with_thompson],
+    /// [`with_cascade`][Self::with_cascade]) to configure a routing strategy.
+    /// The default strategy is [`RouterStrategy::Ema`].
     #[must_use]
     pub fn new(providers: Vec<AnyProvider>) -> Self {
-        let n = providers.len();
-        let provider_models: std::collections::HashMap<String, String> = providers
-            .iter()
-            .map(|p| (p.name().to_owned(), p.model_identifier().to_owned()))
-            .collect();
+        let state = RouterState::new(Arc::from(providers));
         Self {
-            providers: Arc::from(providers),
+            state,
             status_tx: None,
             ema: None,
-            provider_order: Arc::new(Mutex::new((0..n).collect())),
             strategy: RouterStrategy::Ema,
             thompson: None,
             thompson_state_path: None,
@@ -352,22 +336,14 @@ impl RouterProvider {
             reputation: None,
             reputation_state_path: None,
             reputation_weight: 0.3,
-            last_active_provider: Arc::new(Mutex::new(None)),
             bandit: None,
             bandit_state_path: None,
             bandit_config: None,
             bandit_embedding_provider: None,
             bandit_embed_cache: Arc::new(Mutex::new(BanditEmbedCache::default())),
-            last_memory_confidence: Arc::new(Mutex::new(None)),
-            provider_models: Arc::new(provider_models),
             asi: None,
             asi_config: None,
             quality_gate: None,
-            turn_counter: Arc::new(AtomicU64::new(0)),
-            asi_last_turn: Arc::new(AtomicU64::new(u64::MAX)),
-            embed_semaphore: None,
-            embed_call_count: Arc::new(AtomicU64::new(0)),
-            embed_cache_hits: Arc::new(AtomicU64::new(0)),
             coe: None,
         }
     }
@@ -377,7 +353,7 @@ impl RouterProvider {
     /// A value of 0 disables the semaphore (unlimited). Default is no semaphore.
     #[must_use]
     pub fn with_embed_concurrency(mut self, limit: usize) -> Self {
-        self.embed_semaphore = if limit > 0 {
+        self.state.embed_semaphore = if limit > 0 {
             Some(Arc::new(tokio::sync::Semaphore::new(limit)))
         } else {
             None
@@ -390,7 +366,7 @@ impl RouterProvider {
     /// Must be called before `chat` / `chat_stream` to influence bandit provider selection.
     /// Pass `None` to disable MAR for this turn.
     pub fn set_memory_confidence(&self, confidence: Option<f32>) {
-        *self.last_memory_confidence.lock() = confidence;
+        *self.state.last_memory_confidence.lock() = confidence;
     }
 
     /// Enable EMA-based adaptive provider ordering.
@@ -480,8 +456,12 @@ impl RouterProvider {
         let path = state_path.map_or_else(ThompsonState::default_path, Path::to_path_buf);
         let mut state = ThompsonState::load(&path);
         // CRIT-3: prune orphan entries from previous configs.
-        let known: std::collections::HashSet<String> =
-            self.providers.iter().map(|p| p.name().to_owned()).collect();
+        let known: std::collections::HashSet<String> = self
+            .state
+            .providers
+            .iter()
+            .map(|p| p.name().to_owned())
+            .collect();
         state.prune(&known);
         self.thompson = Some(Arc::new(Mutex::new(state)));
         self.thompson_state_path = Some(path);
@@ -507,7 +487,7 @@ impl RouterProvider {
         embedding_provider: Option<AnyProvider>,
     ) -> Self {
         self.strategy = RouterStrategy::Bandit;
-        let n = self.providers.len();
+        let n = self.state.providers.len();
         if config.warmup_queries == 0 {
             config.warmup_queries = u64::try_from(10 * n.max(1)).unwrap_or(100);
         }
@@ -547,8 +527,12 @@ impl RouterProvider {
         if config.decay_factor < 1.0 {
             state.apply_decay(config.decay_factor);
         }
-        let known: std::collections::HashSet<String> =
-            self.providers.iter().map(|p| p.name().to_owned()).collect();
+        let known: std::collections::HashSet<String> = self
+            .state
+            .providers
+            .iter()
+            .map(|p| p.name().to_owned())
+            .collect();
         state.prune(&known);
         self.bandit = Some(Arc::new(Mutex::new(state)));
         self.bandit_state_path = Some(path);
@@ -601,8 +585,12 @@ impl RouterProvider {
         let path = state_path.map_or_else(ReputationTracker::default_path, Path::to_path_buf);
         // Load persisted state, apply decay, and prune orphaned providers.
         let mut tracker = ReputationTracker::load(&path);
-        let known: std::collections::HashSet<String> =
-            self.providers.iter().map(|p| p.name().to_owned()).collect();
+        let known: std::collections::HashSet<String> = self
+            .state
+            .providers
+            .iter()
+            .map(|p| p.name().to_owned())
+            .collect();
         tracker.apply_decay();
         tracker.prune(&known);
         // Overwrite config params (decay/min_obs may differ from the persisted defaults).
@@ -647,7 +635,7 @@ impl RouterProvider {
         let Some(ref reputation) = self.reputation else {
             return;
         };
-        let active = self.last_active_provider.lock().clone();
+        let active = self.state.last_active_provider.lock().clone();
         let Some(provider_name) = active else {
             return;
         };
@@ -702,9 +690,14 @@ impl RouterProvider {
                 .map(|(i, n)| (n.as_str(), i))
                 .collect();
 
-            let before: Vec<_> = self.providers.iter().map(|p| p.name().to_owned()).collect();
+            let before: Vec<_> = self
+                .state
+                .providers
+                .iter()
+                .map(|p| p.name().to_owned())
+                .collect();
             let mut indexed: Vec<(usize, AnyProvider)> =
-                self.providers.iter().cloned().enumerate().collect();
+                self.state.providers.iter().cloned().enumerate().collect();
             indexed.sort_by_key(|(orig_idx, p)| {
                 tier_pos
                     .get(p.name())
@@ -719,7 +712,8 @@ impl RouterProvider {
                     "cascade: providers reordered by cost_tiers"
                 );
             }
-            self.providers = Arc::from(indexed.into_iter().map(|(_, p)| p).collect::<Vec<_>>());
+            self.state.providers =
+                Arc::from(indexed.into_iter().map(|(_, p)| p).collect::<Vec<_>>());
         }
 
         let window = config.window_size;
@@ -808,15 +802,20 @@ impl RouterProvider {
     /// Per-provider budget fractions are intentionally NOT implemented (scope creep, see #2230).
     async fn bandit_select_provider(&self, query: &str) -> Option<AnyProvider> {
         let Some(ref bandit_arc) = self.bandit else {
-            return self.providers.first().cloned();
+            return self.state.providers.first().cloned();
         };
         let cfg = self.bandit_config.as_ref()?;
 
-        let names: Vec<String> = self.providers.iter().map(|p| p.name().to_owned()).collect();
+        let names: Vec<String> = self
+            .state
+            .providers
+            .iter()
+            .map(|p| p.name().to_owned())
+            .collect();
 
         // Try LinUCB selection with feature vector.
         if let Some(features) = self.bandit_features(query).await {
-            let memory_confidence = self.last_memory_confidence.lock().as_ref().copied();
+            let memory_confidence = self.state.last_memory_confidence.lock().as_ref().copied();
             let selected = {
                 let state = bandit_arc.lock();
                 state.select(
@@ -826,7 +825,7 @@ impl RouterProvider {
                     cfg.warmup_queries,
                     &|_| true,
                     cfg.cost_weight,
-                    &self.provider_models,
+                    &self.state.provider_models,
                     memory_confidence,
                     cfg.memory_confidence_threshold,
                 )
@@ -838,7 +837,12 @@ impl RouterProvider {
                     memory_confidence = ?memory_confidence,
                     "selected provider"
                 );
-                return self.providers.iter().find(|p| p.name() == name).cloned();
+                return self
+                    .state
+                    .providers
+                    .iter()
+                    .find(|p| p.name() == name)
+                    .cloned();
             }
         }
 
@@ -852,6 +856,7 @@ impl RouterProvider {
                     "selected provider"
                 );
                 return self
+                    .state
                     .providers
                     .iter()
                     .find(|p| p.name() == sel.provider)
@@ -860,7 +865,7 @@ impl RouterProvider {
         }
 
         // Last resort: first provider.
-        self.providers.first().cloned()
+        self.state.providers.first().cloned()
     }
 
     /// Record the bandit reward for a completed request.
@@ -900,15 +905,15 @@ impl RouterProvider {
             // Cascade/Bandit: sync path used only for debug_request_json(); hot paths use
             // dedicated async selection methods. For Cascade, providers are sorted at
             // construction time.
-            RouterStrategy::Cascade | RouterStrategy::Bandit => self.providers.to_vec(),
+            RouterStrategy::Cascade | RouterStrategy::Bandit => self.state.providers.to_vec(),
         }
     }
 
     fn ema_ordered_providers(&self) -> Vec<AnyProvider> {
-        let order = self.provider_order.lock();
+        let order = self.state.provider_order.lock();
         let mut ordered: Vec<AnyProvider> = order
             .iter()
-            .filter_map(|&i| self.providers.get(i).cloned())
+            .filter_map(|&i| self.state.providers.get(i).cloned())
             .collect();
 
         // CRIT-2 fix: apply reputation as a multiplicative adjustment to the EMA score,
@@ -1014,10 +1019,15 @@ impl RouterProvider {
 
     fn thompson_ordered_providers(&self) -> Vec<AnyProvider> {
         let Some(ref thompson) = self.thompson else {
-            return self.providers.to_vec();
+            return self.state.providers.to_vec();
         };
         let mut state = thompson.lock();
-        let names: Vec<String> = self.providers.iter().map(|p| p.name().to_owned()).collect();
+        let names: Vec<String> = self
+            .state
+            .providers
+            .iter()
+            .map(|p| p.name().to_owned())
+            .collect();
 
         // Compute per-provider prior overrides: start from base Beta distribution, apply
         // reputation shift (CRIT-3), then apply ASI coherence penalty.
@@ -1101,7 +1111,7 @@ impl RouterProvider {
             );
         }
         // Put selected provider first, keep rest in original order.
-        let mut ordered = self.providers.to_vec();
+        let mut ordered = self.state.providers.to_vec();
         if let Some(ref sel) = selected
             && let Some(pos) = ordered.iter().position(|p| p.name() == sel.provider)
         {
@@ -1138,10 +1148,15 @@ impl RouterProvider {
             return;
         };
         ema.record(provider_name, success, latency_ms);
-        let current_names: Vec<String> =
-            self.providers.iter().map(|p| p.name().to_owned()).collect();
+        let current_names: Vec<String> = self
+            .state
+            .providers
+            .iter()
+            .map(|p| p.name().to_owned())
+            .collect();
         if let Some(new_order_names) = ema.maybe_reorder(&current_names) {
             let name_to_idx: std::collections::HashMap<&str, usize> = self
+                .state
                 .providers
                 .iter()
                 .enumerate()
@@ -1151,7 +1166,7 @@ impl RouterProvider {
                 .iter()
                 .filter_map(|n| name_to_idx.get(n.as_str()).copied())
                 .collect();
-            let mut order = self.provider_order.lock();
+            let mut order = self.state.provider_order.lock();
             *order = new_order;
         }
     }
@@ -1169,17 +1184,17 @@ impl RouterProvider {
     }
 
     pub fn set_status_tx(&mut self, tx: StatusTx) {
-        if let Some(providers) = Arc::get_mut(&mut self.providers) {
+        if let Some(providers) = Arc::get_mut(&mut self.state.providers) {
             for p in providers {
                 p.set_status_tx(tx.clone());
             }
         } else {
             // Defensive path: should never happen at bootstrap (refcount == 1).
-            let mut v: Vec<_> = self.providers.iter().cloned().collect();
+            let mut v: Vec<_> = self.state.providers.iter().cloned().collect();
             for p in &mut v {
                 p.set_status_tx(tx.clone());
             }
-            self.providers = Arc::from(v);
+            self.state.providers = Arc::from(v);
         }
         self.status_tx = Some(tx);
     }
@@ -1196,7 +1211,7 @@ impl RouterProvider {
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
         let mut seen = std::collections::HashSet::new();
         let mut all = Vec::new();
-        for p in self.providers.iter() {
+        for p in self.state.providers.iter() {
             match p.list_models_remote().await {
                 Ok(models) => {
                     for m in models {
@@ -1276,9 +1291,9 @@ impl RouterProvider {
         text: &str,
         cache: &Mutex<TurnEmbedCache>,
     ) -> Result<Vec<f32>, crate::error::LlmError> {
-        self.embed_call_count.fetch_add(1, Ordering::Relaxed);
+        self.state.embed_call_count.fetch_add(1, Ordering::Relaxed);
         if let Some(emb) = cache.lock().get(text) {
-            self.embed_cache_hits.fetch_add(1, Ordering::Relaxed);
+            self.state.embed_cache_hits.fetch_add(1, Ordering::Relaxed);
             return Ok(emb.clone());
         }
         let emb = self.embed(text).await?;
@@ -1290,8 +1305,8 @@ impl RouterProvider {
     #[must_use]
     pub fn embed_cache_metrics(&self) -> (u64, u64) {
         (
-            self.embed_call_count.load(Ordering::Relaxed),
-            self.embed_cache_hits.load(Ordering::Relaxed),
+            self.state.embed_call_count.load(Ordering::Relaxed),
+            self.state.embed_cache_hits.load(Ordering::Relaxed),
         )
     }
 
@@ -1316,7 +1331,7 @@ impl RouterProvider {
         // Debounce: swap in turn_id; if the previous value equals turn_id, another call
         // already claimed this turn → drop silently. `swap` is atomic so exactly one
         // concurrent caller wins the "first for this turn" race.
-        let prev = self.asi_last_turn.swap(turn_id, Ordering::AcqRel);
+        let prev = self.state.asi_last_turn.swap(turn_id, Ordering::AcqRel);
         if prev == turn_id {
             return;
         }
@@ -1352,7 +1367,10 @@ impl RouterProvider {
 
 impl LlmProvider for RouterProvider {
     fn context_window(&self) -> Option<usize> {
-        self.providers.first().and_then(LlmProvider::context_window)
+        self.state
+            .providers
+            .first()
+            .and_then(LlmProvider::context_window)
     }
 
     #[allow(clippy::too_many_lines)] // CoE + quality-gate inline logic; extracting would obscure the control flow
@@ -1369,13 +1387,20 @@ impl LlmProvider for RouterProvider {
             // Increment turn counter once per top-level chat() call. All concurrent sub-calls
             // (tool schema fetches, embed probes) that re-enter chat() will see the same
             // turn_id via the shared Arc<AtomicU64>, enabling ASI debounce.
-            let turn_id = router.turn_counter.fetch_add(1, Ordering::Relaxed);
+            let turn_id = router.state.turn_counter.fetch_add(1, Ordering::Relaxed);
+
+            tracing::info!(
+                strategy = ?router.strategy,
+                turn_id,
+                provider_count = router.state.providers.len(),
+                "llm.router.select"
+            );
 
             if router.strategy == RouterStrategy::Cascade {
                 // Cascade: pass Arc slice directly — providers are sorted at construction,
                 // so no Vec allocation needed on the hot path.
                 return router
-                    .cascade_chat(&router.providers, &messages, status_tx)
+                    .cascade_chat(&router.state.providers, &messages, status_tx)
                     .await;
             }
             if router.strategy == RouterStrategy::Bandit {
@@ -1528,7 +1553,7 @@ impl LlmProvider for RouterProvider {
             if router.strategy == RouterStrategy::Cascade {
                 // Cascade: pass Arc slice directly — no Vec allocation on the hot path.
                 return router
-                    .cascade_chat_stream(&router.providers, &messages, status_tx)
+                    .cascade_chat_stream(&router.state.providers, &messages, status_tx)
                     .await;
             }
             if router.strategy == RouterStrategy::Bandit {
@@ -1584,7 +1609,10 @@ impl LlmProvider for RouterProvider {
     }
 
     fn supports_streaming(&self) -> bool {
-        self.providers.iter().any(LlmProvider::supports_streaming)
+        self.state
+            .providers
+            .iter()
+            .any(LlmProvider::supports_streaming)
     }
 
     fn embed(
@@ -1680,7 +1708,7 @@ impl LlmProvider for RouterProvider {
         let status_tx = self.status_tx.clone();
         let owned = owned_strs(texts);
         let router = self.clone();
-        let semaphore = self.embed_semaphore.clone();
+        let semaphore = self.state.embed_semaphore.clone();
         Box::pin(async move {
             // Acquire embed semaphore permit before any HTTP work to cap concurrency.
             let _permit = if let Some(ref sem) = semaphore {
@@ -1768,7 +1796,10 @@ impl LlmProvider for RouterProvider {
     }
 
     fn supports_embeddings(&self) -> bool {
-        self.providers.iter().any(LlmProvider::supports_embeddings)
+        self.state
+            .providers
+            .iter()
+            .any(LlmProvider::supports_embeddings)
     }
 
     #[allow(clippy::unnecessary_literal_bound)]
@@ -1777,11 +1808,15 @@ impl LlmProvider for RouterProvider {
     }
 
     fn supports_tool_use(&self) -> bool {
-        self.providers.iter().any(LlmProvider::supports_tool_use)
+        self.state
+            .providers
+            .iter()
+            .any(LlmProvider::supports_tool_use)
     }
 
     fn list_models(&self) -> Vec<String> {
-        self.providers
+        self.state
+            .providers
             .iter()
             .flat_map(super::provider::LlmProvider::list_models)
             .collect()
@@ -1813,7 +1848,7 @@ impl LlmProvider for RouterProvider {
                 }
                 let result = p.chat_with_tools(&messages, &tools).await;
                 if result.is_ok() {
-                    *router.last_active_provider.lock() = Some(p.name().to_owned());
+                    *router.state.last_active_provider.lock() = Some(p.name().to_owned());
                 }
                 return result;
             }
@@ -1836,7 +1871,7 @@ impl LlmProvider for RouterProvider {
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                         );
                         // Track which sub-provider served this tool call for reputation attribution.
-                        *router.last_active_provider.lock() = Some(p.name().to_owned());
+                        *router.state.last_active_provider.lock() = Some(p.name().to_owned());
                         return Ok(r);
                     }
                     Err(e) => {
@@ -2463,7 +2498,7 @@ mod tests {
         ));
         let r = RouterProvider::new(vec![p]);
         let c = r.clone();
-        assert_eq!(c.providers.len(), 1);
+        assert_eq!(c.state.providers.len(), 1);
         assert_eq!(c.name(), "router");
     }
 
@@ -3032,7 +3067,7 @@ mod tests {
         let r = RouterProvider::new(vec![p]);
         let c = r.clone();
         // Both RouterProvider instances must share the same Arc allocation.
-        assert!(Arc::ptr_eq(&r.providers, &c.providers));
+        assert!(Arc::ptr_eq(&r.state.providers, &c.state.providers));
     }
 
     #[test]
@@ -3045,7 +3080,7 @@ mod tests {
             cost_tiers: Some(vec!["ollama".into(), "claude".into()]),
             ..CascadeRouterConfig::default()
         });
-        let names: Vec<&str> = r.providers.iter().map(LlmProvider::name).collect();
+        let names: Vec<&str> = r.state.providers.iter().map(LlmProvider::name).collect();
         // ollama first (tier 0), claude second (tier 1), openai last (unlisted, original idx 2)
         assert_eq!(names, vec!["ollama", "claude", "openai"]);
     }
@@ -3059,7 +3094,7 @@ mod tests {
             cost_tiers: None,
             ..CascadeRouterConfig::default()
         });
-        let names: Vec<&str> = r.providers.iter().map(LlmProvider::name).collect();
+        let names: Vec<&str> = r.state.providers.iter().map(LlmProvider::name).collect();
         assert_eq!(names, vec!["claude", "ollama"]);
     }
 
@@ -3072,7 +3107,7 @@ mod tests {
             cost_tiers: Some(vec![]),
             ..CascadeRouterConfig::default()
         });
-        let names: Vec<&str> = r.providers.iter().map(LlmProvider::name).collect();
+        let names: Vec<&str> = r.state.providers.iter().map(LlmProvider::name).collect();
         assert_eq!(names, vec!["claude", "ollama"]);
     }
 
@@ -3085,7 +3120,7 @@ mod tests {
             cost_tiers: Some(vec!["nonexistent".into(), "ollama".into()]),
             ..CascadeRouterConfig::default()
         });
-        let names: Vec<&str> = r.providers.iter().map(LlmProvider::name).collect();
+        let names: Vec<&str> = r.state.providers.iter().map(LlmProvider::name).collect();
         // "nonexistent" ignored; "ollama" is tier 1 → first; "claude" unlisted → second
         assert_eq!(names, vec!["ollama", "claude"]);
     }
@@ -3100,7 +3135,7 @@ mod tests {
             cost_tiers: Some(vec!["a".into(), "b".into(), "c".into()]),
             ..CascadeRouterConfig::default()
         });
-        let names: Vec<&str> = r.providers.iter().map(LlmProvider::name).collect();
+        let names: Vec<&str> = r.state.providers.iter().map(LlmProvider::name).collect();
         assert_eq!(names, vec!["a", "b", "c"]);
     }
 
@@ -3115,7 +3150,7 @@ mod tests {
             cost_tiers: Some(vec!["claude".into(), "ollama".into(), "ollama".into()]),
             ..CascadeRouterConfig::default()
         });
-        let names: Vec<&str> = r.providers.iter().map(LlmProvider::name).collect();
+        let names: Vec<&str> = r.state.providers.iter().map(LlmProvider::name).collect();
         assert_eq!(names, vec!["claude", "ollama"]);
     }
 
@@ -3125,7 +3160,7 @@ mod tests {
             cost_tiers: Some(vec!["foo".into()]),
             ..CascadeRouterConfig::default()
         });
-        assert_eq!(r.providers.len(), 0);
+        assert_eq!(r.state.providers.len(), 0);
     }
 
     #[test]
@@ -3491,11 +3526,11 @@ mod tests {
         let turn_id = 42u64;
 
         // First call: prev == u64::MAX (initial) → not equal to turn_id → proceeds (returns false)
-        let prev1 = router.asi_last_turn.swap(turn_id, Ordering::AcqRel);
+        let prev1 = router.state.asi_last_turn.swap(turn_id, Ordering::AcqRel);
         let first_dropped = prev1 == turn_id;
 
         // Second call same turn: prev == turn_id → dropped
-        let prev2 = router.asi_last_turn.swap(turn_id, Ordering::AcqRel);
+        let prev2 = router.state.asi_last_turn.swap(turn_id, Ordering::AcqRel);
         let second_dropped = prev2 == turn_id;
 
         assert!(!first_dropped, "first call in turn must not be dropped");
@@ -3507,11 +3542,11 @@ mod tests {
         let router = RouterProvider::new(vec![]);
 
         // Simulate turn 1
-        let prev1 = router.asi_last_turn.swap(1u64, Ordering::AcqRel);
+        let prev1 = router.state.asi_last_turn.swap(1u64, Ordering::AcqRel);
         assert_ne!(prev1, 1u64, "turn 1: initial value != 1, should proceed");
 
         // Simulate turn 2 — different turn_id
-        let prev2 = router.asi_last_turn.swap(2u64, Ordering::AcqRel);
+        let prev2 = router.state.asi_last_turn.swap(2u64, Ordering::AcqRel);
         let dropped = prev2 == 2u64;
         assert!(!dropped, "turn 2 must not be dropped (different turn_id)");
     }
@@ -3521,8 +3556,8 @@ mod tests {
         let router = RouterProvider::new(vec![]);
         let clone = router.clone();
 
-        let t0 = router.turn_counter.fetch_add(1, Ordering::Relaxed);
-        let t1 = clone.turn_counter.fetch_add(1, Ordering::Relaxed);
+        let t0 = router.state.turn_counter.fetch_add(1, Ordering::Relaxed);
+        let t1 = clone.state.turn_counter.fetch_add(1, Ordering::Relaxed);
 
         // Both clones share the same Arc<AtomicU64>
         assert_eq!(t1, t0 + 1, "cloned router shares turn_counter");
@@ -3531,13 +3566,20 @@ mod tests {
     #[test]
     fn with_embed_concurrency_zero_means_no_semaphore() {
         let r = RouterProvider::new(vec![]).with_embed_concurrency(0);
-        assert!(r.embed_semaphore.is_none(), "0 should disable semaphore");
+        assert!(
+            r.state.embed_semaphore.is_none(),
+            "0 should disable semaphore"
+        );
     }
 
     #[test]
     fn with_embed_concurrency_positive_creates_semaphore() {
         let r = RouterProvider::new(vec![]).with_embed_concurrency(4);
-        let sem = r.embed_semaphore.as_ref().expect("semaphore should exist");
+        let sem = r
+            .state
+            .embed_semaphore
+            .as_ref()
+            .expect("semaphore should exist");
         assert_eq!(sem.available_permits(), 4);
     }
 
@@ -3634,7 +3676,7 @@ mod tests {
         let turn_id = 42u64;
 
         // Inject a different turn id into asi_last_turn so the debounce doesn't fire.
-        r.asi_last_turn.store(u64::MAX, Ordering::SeqCst);
+        r.state.asi_last_turn.store(u64::MAX, Ordering::SeqCst);
 
         r.spawn_asi_update(
             "p1",

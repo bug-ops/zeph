@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_empty() {
-        let patterns = vec!["".to_owned()];
+        let patterns = vec![String::new()];
         assert!(validate_domain_patterns(&patterns).is_err());
     }
 }

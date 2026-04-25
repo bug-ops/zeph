@@ -872,10 +872,28 @@ impl<C: Channel> Agent<C> {
                 }
             }
 
-            // Registry dispatch: build the command registry, construct CommandContext, dispatch.
-            // The registry is built inline (all handlers are ZSTs) to avoid borrow-checker
-            // conflicts when constructing CommandContext from Agent<C> fields.
-            // Build context first so that borrows outlive the registry (drop order matters).
+            // Registry dispatch: two-phase command dispatch.
+            //
+            // Phase 1 (session/debug): handlers that need sink + debug + messages but NOT agent.
+            // Phase 2 (agent): handlers that need &mut Agent directly; use null sentinels for
+            // the other CommandContext fields to satisfy the type but avoid borrow conflicts.
+            //
+            // STRUCTURAL NOTE (C4 — borrow-checker constraint, not deferred by oversight):
+            // A `TurnState<'a, C>` struct grouping disjoint `&mut Agent<C>` sub-fields would
+            // eliminate the LIFO-sentinel ordering below. The obstacle: `AgentAccess` is
+            // implemented on `Agent<C>` itself (see `agent_access_impl.rs`), which accesses
+            // fields like `memory_state`, `providers`, `mcp`, and `skill_state`. Those fields
+            // overlap with what a `TurnState` would need to borrow, so `AgentBackend::Real`
+            // cannot simultaneously hold `&mut Agent` while `TurnState` holds `&mut Agent.providers`.
+            // The fix requires splitting `Agent<C>` fields into two disjoint sub-structs and moving
+            // `AgentAccess` to the sub-struct that is disjoint from `TurnState`'s borrow set.
+            // That restructuring touches `agent_access_impl.rs`, `state.rs`, `builder.rs`, all
+            // command handlers, and the binary crate — estimated > 300 lines across > 5 files.
+            // Track as a multi-PR refactor; the current sentinel pattern is correct and safe.
+            //
+            // Drop-order rules enforced here:
+            //   - `sink_adapter` / `null_agent` declared before the registry block → dropped after.
+            //   - Phase-2 sentinels declared before `ctx` → dropped after `ctx`.
             let session_impl = command_context_impls::SessionAccessImpl {
                 supports_exit: self.channel.supports_exit(),
             };

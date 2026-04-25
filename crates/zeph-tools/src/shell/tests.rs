@@ -2575,8 +2575,7 @@ async fn spawn_background_cap_enforcement() {
     let second = executor.spawn_background("sleep 60").await;
     assert!(
         matches!(second, Err(ToolError::Blocked { .. })),
-        "second spawn should return Blocked, got: {:?}",
-        second
+        "second spawn should return Blocked, got: {second:?}"
     );
 
     // Cleanup: cancel in-flight runs so the spawned `sleep 60` task does not outlive the test.
