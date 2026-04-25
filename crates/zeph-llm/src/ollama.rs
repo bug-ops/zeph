@@ -272,11 +272,14 @@ impl LlmProvider for OllamaProvider {
             request = apply_generation_overrides(request, ov);
         }
 
-        let response = self
-            .client
-            .send_chat_messages(request)
-            .await
-            .map_err(|e| LlmError::Other(format!("Ollama chat request failed: {e}")))?;
+        let response = self.client.send_chat_messages(request).await.map_err(|e| {
+            let msg = e.to_string();
+            if crate::error::body_is_context_length_error(&msg) {
+                LlmError::ContextLengthExceeded
+            } else {
+                LlmError::Other(format!("Ollama chat request failed: {msg}"))
+            }
+        })?;
 
         if let Some(ref fd) = response.final_data {
             self.usage.record_usage(fd.prompt_eval_count, fd.eval_count);
@@ -319,7 +322,14 @@ impl LlmProvider for OllamaProvider {
             .client
             .send_chat_messages_stream(request)
             .await
-            .map_err(|e| LlmError::Other(format!("Ollama streaming request failed: {e}")))?;
+            .map_err(|e| {
+                let msg = e.to_string();
+                if crate::error::body_is_context_length_error(&msg) {
+                    LlmError::ContextLengthExceeded
+                } else {
+                    LlmError::Other(format!("Ollama streaming request failed: {msg}"))
+                }
+            })?;
 
         let mapped = stream.map(|item| match item {
             Ok(response) => Ok(crate::provider::StreamChunk::Content(
@@ -408,10 +418,14 @@ impl LlmProvider for OllamaProvider {
             request = apply_generation_overrides(request, ov);
         }
 
-        let response =
-            self.client.send_chat_messages(request).await.map_err(|e| {
-                LlmError::Other(format!("Ollama chat_with_tools request failed: {e}"))
-            })?;
+        let response = self.client.send_chat_messages(request).await.map_err(|e| {
+            let msg = e.to_string();
+            if crate::error::body_is_context_length_error(&msg) {
+                LlmError::ContextLengthExceeded
+            } else {
+                LlmError::Other(format!("Ollama chat_with_tools request failed: {msg}"))
+            }
+        })?;
 
         if let Some(ref fd) = response.final_data {
             self.usage.record_usage(fd.prompt_eval_count, fd.eval_count);
@@ -631,6 +645,23 @@ mod tests {
 
     fn ollama_embed_model() -> String {
         std::env::var("OLLAMA_EMBED_MODEL").unwrap_or_else(|_| "qwen3-embedding".into())
+    }
+
+    #[test]
+    fn context_length_error_keywords_are_detected() {
+        // Verify the helper used at each chat/stream/tools call site works for Ollama error strings.
+        assert!(crate::error::body_is_context_length_error(
+            "context length exceeded for this model"
+        ));
+        assert!(crate::error::body_is_context_length_error(
+            "maximum number of tokens is 4096"
+        ));
+        assert!(crate::error::body_is_context_length_error(
+            "prompt is too long"
+        ));
+        assert!(!crate::error::body_is_context_length_error(
+            "connection refused"
+        ));
     }
 
     #[test]

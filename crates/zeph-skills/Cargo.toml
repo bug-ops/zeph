@@ -60,6 +60,7 @@ proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tracing-test.workspace = true
+zeph-llm = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

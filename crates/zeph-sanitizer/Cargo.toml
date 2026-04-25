@@ -29,7 +29,8 @@ zeph-tools.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 toml.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+zeph-llm = { workspace = true, features = ["testing"] }
 
 [features]
 default = []

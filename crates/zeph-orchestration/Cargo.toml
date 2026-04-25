@@ -38,6 +38,7 @@ zeph-subagent.workspace = true
 futures.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+zeph-llm = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

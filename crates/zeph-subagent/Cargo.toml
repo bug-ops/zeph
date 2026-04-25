@@ -38,7 +38,7 @@ schemars.workspace = true
 serial_test.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-zeph-llm.workspace = true
+zeph-llm = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

@@ -94,8 +94,8 @@ serial_test.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 tracing-subscriber = { workspace = true, features = ["parking_lot", "registry"] }
-zeph-llm.workspace = true
-zeph-memory.workspace = true
+zeph-llm = { workspace = true, features = ["testing"] }
+zeph-memory = { workspace = true, features = ["testing"] }
 zeph-vault = { workspace = true, features = ["mock"] }
 
 [lints]

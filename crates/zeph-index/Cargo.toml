@@ -46,6 +46,7 @@ tree-sitter-typescript.workspace = true
 sqlx = { workspace = true, features = ["runtime-tokio-rustls", "sqlite"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+zeph-llm = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true
