@@ -1931,7 +1931,7 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Attach a pre-built [`SelfCheckPipeline`] to enable per-turn factual self-check.
+    /// Attach a pre-built `SelfCheckPipeline` to enable per-turn factual self-check.
     ///
     /// When set, the agent runs the MARCH Proposer → Checker pipeline after every assistant
     /// response and appends a flag marker to the channel output if assertions are contradicted
