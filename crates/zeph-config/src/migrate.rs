@@ -1102,7 +1102,7 @@ fn replace_llm_section(toml_str: &str, new_llm_section: &str) -> String {
 /// Returns `MigrateError::Parse` if the input TOML is invalid.
 /// Returns `MigrateError::InvalidStructure` if `[llm.stt].model` is present but the `[llm]`
 /// key is absent or not a table, making mutation impossible.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
 pub fn migrate_stt_to_provider(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
 

@@ -85,7 +85,7 @@ impl<C: Channel> Agent<C> {
         let Some(memory) = self.memory_state.persistence.memory.clone() else {
             return;
         };
-        let Ok(skill) = self.skill_state.registry.read().get_skill(skill_name) else {
+        let Ok(skill) = self.skill_state.registry.read().skill(skill_name) else {
             return;
         };
         let status_tx = self.session.status_tx.clone();

@@ -43,7 +43,7 @@ pub const CONTEXT_BUDGET_RESERVE_RATIO: f32 = 0.20;
 /// - **Scheduler runtime objects** (`scheduler_executor`, broadcast senders) — runtime state,
 ///   not config-derived values.
 #[derive(Clone)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct AgentSessionConfig {
     // Tool behavior
     pub max_tool_iterations: usize,

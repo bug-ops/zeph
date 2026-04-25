@@ -1149,7 +1149,7 @@ impl Default for CandleInlineConfig {
 /// Provider-specific fields use `#[serde(default)]` and are ignored by backends
 /// that do not use them (flat-union pattern).
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct ProviderEntry {
     /// Required: provider backend type.
     #[serde(rename = "type")]

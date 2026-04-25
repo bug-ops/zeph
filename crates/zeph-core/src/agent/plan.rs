@@ -190,7 +190,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                 mgr.release_reservation(reserved);
             }
-            error::AgentError::Other(e.to_string())
+            error::AgentError::OrchestrationError(e.to_string())
         })?;
 
         let provider_names: Vec<&str> = self
@@ -205,7 +205,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                 if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                     mgr.release_reservation(reserved);
                 }
-                error::AgentError::Other(e.to_string())
+                error::AgentError::OrchestrationError(e.to_string())
             })?;
 
         Ok((scheduler, reserved))
@@ -435,7 +435,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub(super) async fn finalize_plan_execution(
         &mut self,
         completed_graph: zeph_orchestration::TaskGraph,
@@ -624,7 +624,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
     // ----- _as_string variants (used by AgentAccess / CommandHandler) -----
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub(super) async fn handle_plan_goal_as_string(
         &mut self,
         goal: &str,
@@ -707,7 +707,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     .plan_with_hint(goal, &available_agents, topology_hint)
                     .await
             };
-            result.map_err(|e| error::AgentError::Other(e.to_string()))?
+            result.map_err(|e| error::AgentError::OrchestrationError(e.to_string()))?
         };
 
         self.orchestration.pending_goal_embedding = goal_embedding;
@@ -805,7 +805,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     // too_many_lines: sequential status×action dispatch table; branching is inherent
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub(super) async fn handle_plan_resume_as_string(&mut self, graph_id: Option<&str>) -> String {
         use zeph_orchestration::{GraphId, GraphStatus, TaskStatus};
 
@@ -978,7 +978,8 @@ impl<C: crate::channel::Channel> Agent<C> {
             .filter(|t| t.status == zeph_orchestration::TaskStatus::Failed)
             .count();
 
-        dag::reset_for_retry(&mut graph).map_err(|e| error::AgentError::Other(e.to_string()))?;
+        dag::reset_for_retry(&mut graph)
+            .map_err(|e| error::AgentError::OrchestrationError(e.to_string()))?;
 
         for task in &mut graph.tasks {
             if task.status == zeph_orchestration::TaskStatus::Running {

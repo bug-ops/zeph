@@ -154,7 +154,7 @@ pub enum DetectorMode {
 /// auto_activate = false
 /// min_failures = 3
 /// ```
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LearningConfig {
     /// Enable self-learning pipelines. Default: `false`.

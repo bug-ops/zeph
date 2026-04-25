@@ -460,7 +460,7 @@ impl PlanCache {
 /// # Errors
 ///
 /// Returns `OrchestrationError` from the planner on full-decomposition fallback.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 pub async fn plan_with_cache<P>(
     planner: &P,
     plan_cache: Option<&PlanCache>,

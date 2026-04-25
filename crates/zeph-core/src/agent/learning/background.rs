@@ -31,7 +31,7 @@ pub(super) async fn write_skill_file(
     body: &str,
 ) -> Result<(), super::super::error::AgentError> {
     if skill_name.contains('/') || skill_name.contains('\\') || skill_name.contains("..") {
-        return Err(super::super::error::AgentError::Other(format!(
+        return Err(super::super::error::AgentError::SkillOperation(format!(
             "invalid skill name: {skill_name}"
         )));
     }
@@ -45,7 +45,7 @@ pub(super) async fn write_skill_file(
             return Ok(());
         }
     }
-    Err(super::super::error::AgentError::Other(format!(
+    Err(super::super::error::AgentError::SkillOperation(format!(
         "skill directory not found for {skill_name}"
     )))
 }

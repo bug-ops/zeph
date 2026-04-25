@@ -304,7 +304,7 @@ pub fn filter_skills(
             let excluded = compiled_exclude.iter().any(|p| glob_match(p, name));
             included && !excluded
         })
-        .filter_map(|meta| registry.get_skill(&meta.name).ok())
+        .filter_map(|meta| registry.skill(&meta.name).ok())
         .collect();
 
     Ok(all)

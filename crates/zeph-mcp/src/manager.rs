@@ -645,7 +645,7 @@ impl McpManager {
         feature = "profiling",
         tracing::instrument(name = "mcp.connect_all", skip_all, fields(connected = tracing::field::Empty, failed = tracing::field::Empty))
     )]
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub async fn connect_all(&self) -> (Vec<McpTool>, Vec<ServerConnectOutcome>) {
         let allowed = self.allowed_commands.clone();
         let suppress = self.suppress_stderr;
@@ -773,7 +773,7 @@ impl McpManager {
     ///
     /// # Panics
     ///
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub async fn connect_oauth_deferred(&self) {
         let last_refresh = Arc::clone(&self.last_refresh);
         let limits = IngestLimits {
@@ -1197,7 +1197,7 @@ impl McpManager {
     ///
     /// # Panics
     ///
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub async fn add_server(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
         // Early check under read lock (fast path for duplicates)
         {
@@ -1521,7 +1521,7 @@ async fn apply_injection_penalties(
 /// then runs attestation against `expected_tools`, then applies allowlist filtering.
 ///
 /// Returns the filtered tool list and the sanitization result (for injection feedback).
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
 fn ingest_tools(
     mut tools: Vec<McpTool>,
     server_id: &str,
@@ -1660,7 +1660,7 @@ fn ingest_tools(
     (filtered, sanitize_result)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 async fn connect_entry(
     entry: &ServerEntry,
     allowed_commands: &[String],

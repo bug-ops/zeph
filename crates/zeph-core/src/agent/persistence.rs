@@ -437,6 +437,7 @@ impl<C: Channel> Agent<C> {
     /// When `true` and `guard_memory_writes` is enabled, only `SQLite` is written — the message
     /// is saved for conversation continuity but will not pollute semantic search (M2, D2).
     #[allow(clippy::too_many_lines)]
+    // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "agent.persist_message", skip_all)
@@ -664,7 +665,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Guards (enabled check, injection/tool-result skip) stay on the foreground path.
     /// The RPE check and actual extraction run in background (S2: no `send_status`).
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     async fn enqueue_graph_extraction_task(
         &mut self,
         content: &str,

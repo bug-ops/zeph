@@ -262,7 +262,7 @@ async fn generate_scene_label_and_profile(
 
     let result = tokio::time::timeout(Duration::from_secs(15), provider.chat(&messages))
         .await
-        .map_err(|_| MemoryError::Other("scene LLM call timed out after 15s".into()))?
+        .map_err(|_| MemoryError::Timeout("scene LLM call timed out after 15s".into()))?
         .map_err(MemoryError::Llm)?;
 
     parse_label_profile(&result)
@@ -293,7 +293,9 @@ fn parse_label_profile(response: &str) -> Result<(String, String), MemoryError> 
     let label = lines.next().unwrap_or("").trim().to_owned();
     let profile = lines.next().unwrap_or(trimmed).trim().to_owned();
     if label.is_empty() {
-        return Err(MemoryError::Other("scene LLM returned empty label".into()));
+        return Err(MemoryError::InvalidInput(
+            "scene LLM returned empty label".into(),
+        ));
     }
     let profile = if profile.is_empty() {
         label.clone()

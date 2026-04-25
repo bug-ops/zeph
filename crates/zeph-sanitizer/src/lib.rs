@@ -136,7 +136,7 @@ static INJECTION_PATTERNS: LazyLock<Vec<CompiledPattern>> = LazyLock::new(|| {
 /// assert!(!result.was_truncated);
 /// ```
 #[derive(Clone)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct ContentSanitizer {
     max_content_size: usize,
     flag_injections: bool,
@@ -616,7 +616,7 @@ impl ContentSanitizer {
     ///
     /// When no classifier backend is attached, also falls back to regex detection.
     #[cfg(feature = "classifiers")]
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub async fn classify_injection(&self, text: &str) -> InjectionVerdict {
         if !self.enabled {
             if Self::detect_injections(text).is_empty() {

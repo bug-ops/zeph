@@ -23,7 +23,7 @@
 //!
 //! # fn try_main() -> Result<(), zeph_skills::SkillError> {
 //! # let registry = zeph_skills::registry::SkillRegistry::load(&["/tmp"]);
-//! let body = registry.get_body("my-skill")?;
+//! let body = registry.body("my-skill")?;
 //! println!("{body}");
 //! # Ok(())
 //! # }
@@ -225,7 +225,7 @@ impl SkillRegistry {
     /// # Errors
     ///
     /// Returns an error if the body cannot be loaded from disk.
-    pub fn get_body(&self, name: &str) -> Result<&str, SkillError> {
+    pub fn body(&self, name: &str) -> Result<&str, SkillError> {
         let entry = self
             .entries
             .iter()
@@ -245,8 +245,8 @@ impl SkillRegistry {
     /// # Errors
     ///
     /// Returns an error if the skill is not found or body cannot be loaded.
-    pub fn get_skill(&self, name: &str) -> Result<Skill, SkillError> {
-        let body = self.get_body(name)?.to_owned();
+    pub fn skill(&self, name: &str) -> Result<Skill, SkillError> {
+        let body = self.body(name)?.to_owned();
         let entry = self
             .entries
             .iter()
@@ -282,7 +282,7 @@ impl SkillRegistry {
         let mut results = Vec::new();
 
         for entry in &self.entries {
-            let body = match self.get_body(&entry.meta.name) {
+            let body = match self.body(&entry.meta.name) {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::warn!(
@@ -478,7 +478,7 @@ mod tests {
         create_skill(dir.path(), "lazy", "desc", "lazy body content");
 
         let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
-        let body = registry.get_body("lazy").unwrap();
+        let body = registry.body("lazy").unwrap();
         assert_eq!(body, "lazy body content");
     }
 
@@ -488,7 +488,7 @@ mod tests {
         create_skill(dir.path(), "full", "description", "full body");
 
         let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
-        let skill = registry.get_skill("full").unwrap();
+        let skill = registry.skill("full").unwrap();
         assert_eq!(skill.name(), "full");
         assert_eq!(skill.description(), "description");
         assert_eq!(skill.body, "full body");
@@ -498,7 +498,7 @@ mod tests {
     fn get_body_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
-        assert!(registry.get_body("nonexistent").is_err());
+        assert!(registry.body("nonexistent").is_err());
     }
 
     #[test]

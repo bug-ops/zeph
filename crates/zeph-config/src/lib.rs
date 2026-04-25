@@ -7,6 +7,19 @@
 //! environment variable overrides, validation, and migration helpers.
 //! Vault secret resolution is handled in `zeph-core` through the `SecretResolver` trait.
 //!
+//! # TODO (D4 — deferred: typed config presets)
+//!
+//! This crate currently has 131 config structs across 30 files (~19K LOC). Many subsystem
+//! configs duplicate the same optional/default patterns and there is no compile-time guarantee
+//! that a feature's config section is consistent with its runtime behaviour.
+//!
+//! Planned: typed preset newtype wrappers (e.g., `MemoryConfig<Minimal>`, `MemoryConfig<Full>`)
+//! so callers can use a named preset instead of setting 20+ individual fields, avoiding silent
+//! config drift when new fields are added.
+//!
+//! **Blocked by:** requires a clear preset taxonomy and a backwards-compatible TOML migration
+//! strategy. Must be a standalone epic with its own SDD spec. Do NOT bundle with other refactors.
+//!
 //! # Loading configuration
 //!
 //! ```no_run

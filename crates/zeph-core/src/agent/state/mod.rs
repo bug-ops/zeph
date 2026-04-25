@@ -210,7 +210,7 @@ pub struct AdversarialPolicyInfo {
     pub fail_open: bool,
 }
 
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub(crate) struct RuntimeConfig {
     pub(crate) security: SecurityConfig,
     pub(crate) timeouts: TimeoutConfig,
@@ -738,7 +738,7 @@ impl IndexState {
         let result = retriever
             .retrieve(query, token_budget)
             .await
-            .map_err(|e| crate::agent::error::AgentError::Other(format!("{e:#}")))?;
+            .map_err(|e| crate::agent::error::AgentError::ContextError(format!("{e:#}")))?;
         let context_text = zeph_index::retriever::format_as_context(&result);
 
         if context_text.is_empty() {

@@ -122,7 +122,7 @@ impl ToolOrchestrator {
         self.utility_scorer = UtilityScorer::new(config);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub(crate) fn apply_config(
         &mut self,
         max_iterations: usize,

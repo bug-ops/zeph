@@ -83,6 +83,7 @@ pub mod error;
 pub mod extractor;
 pub mod gemini;
 pub mod http;
+#[cfg(any(test, feature = "testing"))]
 pub mod mock;
 pub mod model_cache;
 pub mod ollama;

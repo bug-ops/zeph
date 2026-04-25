@@ -122,7 +122,7 @@ enum AuditDestination {
 ///  "duration_ms":12,"exit_code":0,"claim_source":"shell"}
 /// ```
 #[derive(serde::Serialize)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct AuditEntry {
     /// Unix timestamp (seconds) when the tool invocation started.
     pub timestamp: String,

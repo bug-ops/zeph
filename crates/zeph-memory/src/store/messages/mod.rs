@@ -1166,7 +1166,7 @@ impl SqliteStore {
         original_ids: &[MessageId],
     ) -> Result<MessageId, MemoryError> {
         if original_ids.is_empty() {
-            return Err(MemoryError::Other(
+            return Err(MemoryError::InvalidInput(
                 "promote_to_semantic: original_ids must not be empty".into(),
             ));
         }

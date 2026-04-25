@@ -72,7 +72,7 @@ pub(super) fn dispatch_acp(
             "Usage: /acp <subcommand>\n\nSubcommands:\n  dirs          List additional_directories allowlist\n  auth-methods  List advertised auth methods\n  status        Show ACP server configuration summary"
                 .to_owned(),
         ),
-        other => Err(AgentError::Other(format!(
+        other => Err(AgentError::UnknownCommand(format!(
             "Unknown /acp subcommand: {other}. Valid subcommands: dirs, auth-methods, status"
         ))),
     }

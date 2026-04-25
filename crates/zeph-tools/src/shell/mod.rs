@@ -469,7 +469,7 @@ impl ShellExecutor {
         }))
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     async fn execute_block(
         &self,
         block: &str,
@@ -1542,7 +1542,7 @@ pub struct ShellOutputEnvelope {
     pub truncated: bool,
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
 async fn execute_bash(
     code: &str,
     timeout: Duration,

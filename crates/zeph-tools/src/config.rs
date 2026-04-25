@@ -532,7 +532,7 @@ impl ToolsConfig {
 
 /// Shell-specific configuration: timeout, command blocklist, and allowlist overrides.
 #[derive(Debug, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct ShellConfig {
     #[serde(default = "default_timeout")]
     pub timeout: u64,
@@ -848,7 +848,7 @@ pub struct AuthorizationConfig {
 /// here — it remains solely in [`ScrapeConfig`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct EgressConfig {
     /// Master switch for egress event emission. Default: `true`.
     pub enabled: bool,

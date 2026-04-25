@@ -330,7 +330,7 @@ fn tool_start_to_updates(data: zeph_core::ToolStartData) -> Vec<SessionUpdate> {
     vec![SessionUpdate::ToolCall(tool_call)]
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 fn terminal_tool_updates(
     tool_call_id: String,
     display: String,
@@ -385,7 +385,7 @@ fn terminal_tool_updates(
     vec![terminal_intermediate, final_update]
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 fn non_terminal_tool_updates(
     tool_call_id: String,
     display: String,

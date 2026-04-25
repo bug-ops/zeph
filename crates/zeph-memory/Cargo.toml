@@ -47,6 +47,7 @@ default = ["sqlite"]
 pdf = ["dep:pdf-extract"]
 sqlite = ["zeph-db/sqlite"]
 postgres = ["zeph-db/postgres"]
+testing = []
 
 [[bench]]
 name = "token_estimation"
@@ -60,7 +61,7 @@ testcontainers.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 toml.workspace = true
 tracing-test.workspace = true
-zeph-llm.workspace = true
+zeph-llm = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

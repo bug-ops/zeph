@@ -237,13 +237,13 @@ impl MemoryFacade for InMemoryFacade {
         let mut id_guard = self
             .next_id
             .lock()
-            .map_err(|e| MemoryError::Other(format!("InMemoryFacade lock poisoned: {e}")))?;
+            .map_err(|e| MemoryError::LockPoisoned(format!("InMemoryFacade lock poisoned: {e}")))?;
         *id_guard += 1;
         let id = *id_guard;
         let mut entries = self
             .entries
             .lock()
-            .map_err(|e| MemoryError::Other(format!("InMemoryFacade lock poisoned: {e}")))?;
+            .map_err(|e| MemoryError::LockPoisoned(format!("InMemoryFacade lock poisoned: {e}")))?;
         entries.insert(id, entry);
         Ok(MessageId(id))
     }
@@ -252,7 +252,7 @@ impl MemoryFacade for InMemoryFacade {
         let entries = self
             .entries
             .lock()
-            .map_err(|e| MemoryError::Other(format!("InMemoryFacade lock poisoned: {e}")))?;
+            .map_err(|e| MemoryError::LockPoisoned(format!("InMemoryFacade lock poisoned: {e}")))?;
         let query_lower = query.to_lowercase();
         let mut matches: Vec<MemoryMatch> = entries
             .values()
@@ -273,7 +273,7 @@ impl MemoryFacade for InMemoryFacade {
         let entries = self
             .entries
             .lock()
-            .map_err(|e| MemoryError::Other(format!("InMemoryFacade lock poisoned: {e}")))?;
+            .map_err(|e| MemoryError::LockPoisoned(format!("InMemoryFacade lock poisoned: {e}")))?;
         let texts: Vec<&str> = entries
             .values()
             .filter(|e| e.conversation_id == conv_id)
@@ -286,7 +286,7 @@ impl MemoryFacade for InMemoryFacade {
         let mut entries = self
             .entries
             .lock()
-            .map_err(|e| MemoryError::Other(format!("InMemoryFacade lock poisoned: {e}")))?;
+            .map_err(|e| MemoryError::LockPoisoned(format!("InMemoryFacade lock poisoned: {e}")))?;
         let ids_to_remove: Vec<i64> = entries
             .iter()
             .filter(|(_, e)| e.conversation_id == ctx.conversation_id)
@@ -311,8 +311,7 @@ impl MemoryFacade for InMemoryFacade {
 
 impl MemoryFacade for crate::semantic::SemanticMemory {
     async fn remember(&self, entry: MemoryEntry) -> Result<MessageId, MemoryError> {
-        let parts_json = serde_json::to_string(&entry.parts)
-            .map_err(|e| MemoryError::Other(format!("parts serialization failed: {e}")))?;
+        let parts_json = serde_json::to_string(&entry.parts).map_err(MemoryError::Json)?;
         let (id_opt, _embedded) = self
             .remember_with_parts(
                 entry.conversation_id,
@@ -322,7 +321,9 @@ impl MemoryFacade for crate::semantic::SemanticMemory {
                 None,
             )
             .await?;
-        id_opt.ok_or_else(|| MemoryError::Other("message rejected by admission control".into()))
+        id_opt.ok_or_else(|| {
+            MemoryError::InvalidInput("message rejected by admission control".into())
+        })
     }
 
     async fn recall(&self, query: &str, limit: usize) -> Result<Vec<MemoryMatch>, MemoryError> {

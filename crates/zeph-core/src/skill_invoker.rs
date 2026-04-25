@@ -126,7 +126,7 @@ impl ToolExecutor for SkillInvokeExecutor {
         // Clone body out of the read guard before any .await — never hold lock across await.
         let body = {
             let guard = self.registry.read();
-            guard.get_body(&skill_name).map(str::to_owned)
+            guard.body(&skill_name).map(str::to_owned)
         };
 
         let summary = match body {

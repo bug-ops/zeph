@@ -258,7 +258,9 @@ async fn merge_cluster_and_promote(
     // Validate: non-empty result required.
     let merged = merged.trim().to_owned();
     if merged.is_empty() {
-        return Err(MemoryError::Other("LLM merge returned empty result".into()));
+        return Err(MemoryError::InvalidInput(
+            "LLM merge returned empty result".into(),
+        ));
     }
 
     // Validate: merged result must be semantically related to at least one original.
@@ -275,7 +277,7 @@ async fn merge_cluster_and_promote(
                         .fold(f32::NEG_INFINITY, f32::max);
 
                     if max_sim < MERGE_VALIDATION_MIN_SIMILARITY {
-                        return Err(MemoryError::Other(format!(
+                        return Err(MemoryError::InvalidInput(format!(
                             "LLM merge validation failed: max similarity to originals = {max_sim:.3} < {MERGE_VALIDATION_MIN_SIMILARITY}"
                         )));
                     }
@@ -370,7 +372,7 @@ async fn call_merge_llm(provider: &AnyProvider, contents: &[&str]) -> Result<Str
 
     let result = tokio::time::timeout(timeout, provider.chat(&messages))
         .await
-        .map_err(|_| MemoryError::Other("LLM merge timed out after 15s".into()))?
+        .map_err(|_| MemoryError::Timeout("LLM merge timed out after 15s".into()))?
         .map_err(MemoryError::Llm)?;
 
     Ok(result)

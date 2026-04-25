@@ -124,7 +124,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn upsert_skill_trust_with_git_hash(
         &self,
         skill_name: &str,

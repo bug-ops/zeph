@@ -30,7 +30,7 @@ impl SemanticMemory {
             .effective_embed_provider()
             .embed(correction_text)
             .await
-            .map_err(|e| MemoryError::Other(e.to_string()))?;
+            .map_err(MemoryError::Llm)?;
         let vector_size = u64::try_from(embedding.len()).unwrap_or(896);
         store
             .ensure_named_collection(CORRECTIONS_COLLECTION, vector_size)
@@ -68,7 +68,7 @@ impl SemanticMemory {
             .effective_embed_provider()
             .embed(query)
             .await
-            .map_err(|e| MemoryError::Other(e.to_string()))?;
+            .map_err(MemoryError::Llm)?;
         let vector_size = u64::try_from(embedding.len()).unwrap_or(896);
         store
             .ensure_named_collection(CORRECTIONS_COLLECTION, vector_size)

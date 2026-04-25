@@ -38,7 +38,7 @@ impl<C: Channel> Agent<C> {
             }
         })
         .await
-        .map_err(|e| AgentError::Other(format!("spawn_blocking failed: {e}")))?;
+        .map_err(AgentError::SpawnBlocking)?;
 
         match result {
             Ok(installed) => {
@@ -127,7 +127,7 @@ impl<C: Channel> Agent<C> {
 
         let remove_result = tokio::task::spawn_blocking(move || mgr.remove(&name_owned))
             .await
-            .map_err(|e| AgentError::Other(format!("spawn_blocking failed: {e}")))?;
+            .map_err(AgentError::SpawnBlocking)?;
 
         match remove_result {
             Ok(()) => {

@@ -164,7 +164,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     /// Return formatted session status string for use via [`AgentAccess::session_status`].
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub(super) fn handle_status_as_string(&mut self) -> String {
         use std::fmt::Write;
         use zeph_llm::provider::Role;

@@ -271,7 +271,7 @@ impl<'a> EntityResolver<'a> {
 
     /// Handle a candidate in the ambiguous score range by running LLM disambiguation.
     /// Returns `Ok(Some(...))` if the LLM confirms a match, `Ok(None)` to fall through to create.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn handle_ambiguous_candidate(
         &self,
         emb_store: &EmbeddingStore,
@@ -448,7 +448,7 @@ impl<'a> EntityResolver<'a> {
     }
 
     /// Create a new entity, register aliases, and store its embedding in Qdrant.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn create_with_embedding(
         &self,
         emb_store: &EmbeddingStore,
@@ -500,7 +500,7 @@ impl<'a> EntityResolver<'a> {
     }
 
     /// Merge an existing entity with new information: combine summaries, update Qdrant.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn merge_entity(
         &self,
         emb_store: &EmbeddingStore,
@@ -608,7 +608,7 @@ impl<'a> EntityResolver<'a> {
     ///
     /// Failures are logged at warn level but do not propagate — the entity is still
     /// valid in `SQLite` even if Qdrant upsert fails.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn store_entity_embedding(
         &self,
         emb_store: &EmbeddingStore,
@@ -685,7 +685,7 @@ impl<'a> EntityResolver<'a> {
     /// Ask the LLM whether two entities are the same.
     ///
     /// Returns `Some(true)` for merge, `Some(false)` for separate, `None` on failure.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn llm_disambiguate(
         &self,
         provider: &AnyProvider,
@@ -873,7 +873,7 @@ impl<'a> EntityResolver<'a> {
     /// # Errors
     ///
     /// Returns an error if any database operation fails.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn resolve_edge_typed(
         &self,
         source_id: i64,

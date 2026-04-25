@@ -128,7 +128,7 @@ pub struct HelaSpreadRuntime {
 /// All fields are `pub(crate)` — callers interact through the inherent method API.
 // TODO(review): Refactor the five bool flags into two-variant enums to satisfy
 // clippy::struct_excessive_bools. Left for a follow-up to avoid scope creep.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct SemanticMemory {
     pub(crate) sqlite: SqliteStore,
     pub(crate) qdrant: Option<Arc<EmbeddingStore>>,

@@ -179,7 +179,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
         fallback = tracing::field::Empty,
     )
 )]
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
 pub async fn hela_spreading_recall(
     store: &GraphStore,
     embeddings: &EmbeddingStore,
@@ -481,7 +481,7 @@ impl SpreadingActivation {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub async fn spread(
         &self,
         store: &GraphStore,

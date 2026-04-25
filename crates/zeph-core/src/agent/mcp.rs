@@ -25,7 +25,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     async fn handle_mcp_add(&mut self, args: &[&str]) -> Result<String, super::error::AgentError> {
         if args.len() < 2 {
             return Ok("Usage: /mcp add <id> <command> [args...] | /mcp add <id> <url>".to_owned());

@@ -691,7 +691,7 @@ impl VectorBackend {
 /// auto_budget = true
 /// ```
 #[derive(Debug, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct MemoryConfig {
     #[serde(default)]
     pub compression_guidelines: zeph_memory::CompressionGuidelinesConfig,
@@ -1019,7 +1019,7 @@ impl Default for DocumentConfig {
 /// mmr_lambda = 0.7
 /// ```
 #[derive(Debug, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct SemanticConfig {
     /// Enable vector-based semantic recall. Default: `true`.
     #[serde(default = "default_semantic_enabled")]

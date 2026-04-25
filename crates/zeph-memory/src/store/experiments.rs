@@ -51,13 +51,13 @@ fn validate_timestamp(s: &str) -> Result<(), MemoryError> {
     let bytes = s.as_bytes();
     // Minimum length: "2000-01-01 00:00:00" = 19 chars
     if bytes.len() < 19 {
-        return Err(MemoryError::Other(format!(
+        return Err(MemoryError::InvalidInput(format!(
             "invalid timestamp format (too short): {s:?}"
         )));
     }
     let sep = bytes[10];
     if sep != b' ' && sep != b'T' {
-        return Err(MemoryError::Other(format!(
+        return Err(MemoryError::InvalidInput(format!(
             "invalid timestamp format (expected space or T at position 10): {s:?}"
         )));
     }
@@ -67,21 +67,21 @@ fn validate_timestamp(s: &str) -> Result<(), MemoryError> {
     let colons_at = [13, 16];
     for i in digits_at {
         if !bytes[i].is_ascii_digit() {
-            return Err(MemoryError::Other(format!(
+            return Err(MemoryError::InvalidInput(format!(
                 "invalid timestamp format (expected digit at {i}): {s:?}"
             )));
         }
     }
     for i in dashes_at {
         if bytes[i] != b'-' {
-            return Err(MemoryError::Other(format!(
+            return Err(MemoryError::InvalidInput(format!(
                 "invalid timestamp format (expected '-' at {i}): {s:?}"
             )));
         }
     }
     for i in colons_at {
         if bytes[i] != b':' {
-            return Err(MemoryError::Other(format!(
+            return Err(MemoryError::InvalidInput(format!(
                 "invalid timestamp format (expected ':' at {i}): {s:?}"
             )));
         }

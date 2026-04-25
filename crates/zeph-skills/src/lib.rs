@@ -45,7 +45,7 @@
 //! println!("loaded {} skills", registry.all_meta().len());
 //!
 //! // Look up a skill body by name.
-//! let body = registry.get_body("my-skill")?;
+//! let body = registry.body("my-skill")?;
 //! println!("{}", body);
 //! # Ok(())
 //! # }

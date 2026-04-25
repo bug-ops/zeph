@@ -150,6 +150,24 @@ pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
 /// 1. Create with [`Self::new`] or [`Self::new_with_registry_arc`]
 /// 2. Run main loop with [`Self::run`]
 /// 3. Clean up with [`Self::shutdown`] to persist state and close resources
+///
+/// # TODO (A1 — deferred: decompose god object)
+///
+/// `Agent<C>` currently aggregates 25+ sub-state structs as direct fields, which prevents
+/// partial borrows and forces every method to take `&mut self` even when only one sub-state is
+/// needed. The planned decomposition:
+///
+/// 1. **Conversation core** (`msg`, `context_manager`, persistence) — stays on `Agent`.
+/// 2. **Background services** (`memory`, `learning`, `focus`, `sidequest`, `compression`, `mcp`,
+///    `index`, `security`, `orchestration`, `experiments`) — behind a `Services` aggregator that
+///    `Agent` borrows immutably; each service exposes its own `&mut self` API.
+/// 3. **Runtime config** (`runtime`, `lifecycle`, `providers`, `metrics`, `debug_state`,
+///    `instructions`) — wrapped in an `AgentRuntime` newtype.
+///
+/// **Blocked by:** this is a multi-sprint architectural rewrite with blast radius across all
+/// crates, integration tests, and channels. Requires its own SDD spec + critic review before
+/// starting. Do NOT bundle with other PRs. See architect plan `.local/handoff/architect-plan.md`
+/// §A1 and critic review §C1.
 pub struct Agent<C: Channel> {
     provider: AnyProvider,
     /// Dedicated embedding provider. Resolved once at bootstrap from `[[llm.providers]]`
@@ -278,7 +296,7 @@ impl<C: Channel> Agent<C> {
             let reg = registry.read();
             reg.all_meta()
                 .iter()
-                .filter_map(|m| reg.get_skill(&m.name).ok())
+                .filter_map(|m| reg.skill(&m.name).ok())
                 .collect()
         };
         let empty_trust = HashMap::new();
@@ -691,6 +709,21 @@ impl<C: Channel> Agent<C> {
         self.flush_orphaned_tool_use_on_shutdown().await;
 
         self.lifecycle.supervisor.abort_all();
+
+        // Abort background task handles not tracked by BackgroundSupervisor.
+        // Per the Await Discipline rule, fire-and-forget handles must be aborted on shutdown.
+        if let Some(h) = self.compression.pending_task_goal.take() {
+            h.abort();
+        }
+        if let Some(h) = self.compression.pending_sidequest_result.take() {
+            h.abort();
+        }
+        if let Some(h) = self.compression.pending_subgoal.take() {
+            h.abort();
+        }
+
+        // Abort learning tasks (JoinSet detached at turn boundaries but not on shutdown).
+        self.learning_engine.learning_tasks.abort_all();
 
         self.maybe_store_shutdown_summary().await;
         self.maybe_store_session_digest().await;
@@ -2107,7 +2140,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     async fn handle_agent_command(&mut self, cmd: zeph_subagent::AgentCommand) -> Option<String> {
         use zeph_subagent::AgentCommand;
 
@@ -2553,7 +2586,7 @@ impl<C: Channel> Agent<C> {
             let reg = self.skill_state.registry.read();
             reg.all_meta()
                 .iter()
-                .filter_map(|m| reg.get_skill(&m.name).ok())
+                .filter_map(|m| reg.skill(&m.name).ok())
                 .collect()
         };
         let trust_map = self.build_skill_trust_map().await;
@@ -2796,7 +2829,7 @@ impl<C: Channel> Agent<C> {
     /// Phase 2 (schedule, this turn): rebuild cursors and spawn a background `tokio::spawn`
     /// task for the LLM call. The result is stored in `pending_sidequest_result` and applied
     /// next turn, so the current agent turn is never blocked by the LLM call.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     fn maybe_sidequest_eviction(&mut self) {
         use zeph_llm::provider::{Message, MessageMetadata, Role};
 

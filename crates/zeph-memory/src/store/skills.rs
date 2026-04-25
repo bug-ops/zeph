@@ -261,7 +261,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the insert fails.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn save_skill_version(
         &self,
         skill_name: &str,

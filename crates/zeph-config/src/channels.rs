@@ -476,7 +476,7 @@ impl Default for ToolDiscoveryConfig {
 
 /// Trust calibration configuration, nested under `[mcp.trust_calibration]`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct TrustCalibrationConfig {
     /// Enable trust calibration (default: false — opt-in).
     #[serde(default)]
@@ -543,7 +543,7 @@ fn default_output_schema_hint_bytes() -> usize {
     1024
 }
 
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpConfig {
     #[serde(default)]

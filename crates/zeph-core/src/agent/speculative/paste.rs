@@ -110,7 +110,7 @@ impl PatternStore {
     /// # Errors
     ///
     /// Returns [`PatternError::Db`] on `SQLite` failure.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn observe(
         &self,
         skill_name: &str,

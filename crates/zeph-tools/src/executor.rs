@@ -515,6 +515,27 @@ pub fn deserialize_params<T: serde::de::DeserializeOwned>(
 ///     }
 /// }
 /// ```
+/// # TODO (G3 — deferred: Tower-style tool middleware stack)
+///
+/// Currently, cross-cutting concerns (audit logging, rate limiting, sandboxing, guardrails)
+/// are scattered across individual executor implementations. The planned approach is a
+/// composable middleware stack similar to Tower's `Service` trait:
+///
+/// ```text
+/// AuditLayer::new(RateLimitLayer::new(SandboxLayer::new(ShellExecutor::new())))
+/// ```
+///
+/// **Blocked by:** requires D2 (consolidating `ToolExecutor` + `ErasedToolExecutor` into one
+/// object-safe trait). See critic review §S3 for the tradeoff between RPIT fast-path and
+/// dynamic dispatch overhead before collapsing D2.
+///
+/// # TODO (D2 — deferred: consolidate `ToolExecutor` and `ErasedToolExecutor`)
+///
+/// Having two parallel traits creates duplication and confusion. The blanket impl
+/// `impl<T: ToolExecutor> ErasedToolExecutor for T` works but every new method must be
+/// added to both traits. Use `trait_variant::make` or a single object-safe design.
+///
+/// **Blocked by:** need to benchmark the RPIT fast-path before removing it. See critic §S3.
 pub trait ToolExecutor: Send + Sync {
     /// Parse `response` for fenced tool blocks and execute them.
     ///

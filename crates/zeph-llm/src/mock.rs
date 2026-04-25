@@ -11,7 +11,7 @@ use crate::provider::{
     ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, ToolDefinition,
 };
 
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 #[derive(Debug, Clone)]
 pub struct MockProvider {
     responses: Arc<Mutex<VecDeque<String>>>,

@@ -318,7 +318,7 @@ impl ToolExecutor for WebScrapeExecutor {
         feature = "profiling",
         tracing::instrument(name = "tool.web_scrape", skip_all)
     )]
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         match call.tool_id.as_str() {
             "web_scrape" => {
@@ -443,7 +443,7 @@ fn tool_error_to_audit_result(e: &ToolError) -> AuditResult {
 }
 
 impl WebScrapeExecutor {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn log_audit(
         &self,
         tool: &str,

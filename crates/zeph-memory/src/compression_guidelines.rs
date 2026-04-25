@@ -247,8 +247,8 @@ mod updater {
                 return Ok(());
             }
             r = tokio::time::timeout(llm_timeout, provider.chat(&msgs)) => {
-                r.map_err(|_| MemoryError::Other("guidelines LLM call timed out".into()))?
-                    .map_err(|e| MemoryError::Other(format!("guidelines LLM call failed: {e:#}")))?
+                r.map_err(|_| MemoryError::Timeout("guidelines LLM call timed out".into()))?
+                    .map_err(MemoryError::Llm)?
             }
         };
 

@@ -105,7 +105,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     max_scroll
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 fn collect_message_lines_from(
     messages: &[crate::app::ChatMessage],
     truncation_info: Option<&str>,
@@ -407,7 +407,7 @@ const TOOL_OUTPUT_COLLAPSED_LINES: usize = 3;
 /// Mirrors `TOOL_OUTPUT_COLLAPSED_LINES` for visual consistency.
 const PASTE_COLLAPSED_LINES: usize = 3;
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
 fn render_tool_message(
     msg: &crate::app::ChatMessage,
     tool_expanded: bool,

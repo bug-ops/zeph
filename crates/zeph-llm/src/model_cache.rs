@@ -72,8 +72,7 @@ impl ModelCache {
         let Ok(data) = std::fs::read(&self.path) else {
             return Ok(None);
         };
-        let envelope: CacheEnvelope =
-            serde_json::from_slice(&data).map_err(|e| LlmError::Other(e.to_string()))?;
+        let envelope: CacheEnvelope = serde_json::from_slice(&data).map_err(LlmError::Json)?;
         Ok(Some(envelope.models))
     }
 
@@ -100,8 +99,7 @@ impl ModelCache {
     /// Returns an error if the directory cannot be created or the file cannot be written.
     pub fn save(&self, models: &[RemoteModelInfo]) -> Result<(), LlmError> {
         if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| LlmError::Other(format!("cache dir: {e}")))?;
+            std::fs::create_dir_all(parent).map_err(LlmError::Io)?;
         }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -111,10 +109,8 @@ impl ModelCache {
             fetched_at: now,
             models: models.to_vec(),
         };
-        let json =
-            serde_json::to_vec_pretty(&envelope).map_err(|e| LlmError::Other(e.to_string()))?;
-        zeph_common::fs_secure::atomic_write_private(&self.path, &json)
-            .map_err(|e| LlmError::Other(format!("cache write: {e}")))?;
+        let json = serde_json::to_vec_pretty(&envelope).map_err(LlmError::Json)?;
+        zeph_common::fs_secure::atomic_write_private(&self.path, &json).map_err(LlmError::Io)?;
         Ok(())
     }
 

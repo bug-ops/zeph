@@ -370,7 +370,7 @@ impl McpClient {
         feature = "profiling",
         tracing::instrument(name = "mcp.connect", skip_all, fields(server_id = %server_id))
     )]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn connect(
         server_id: &str,
         command: &str,
@@ -517,6 +517,7 @@ impl McpClient {
     /// `McpError::Timeout` if the handshake exceeds `timeout`, or
     /// `McpError::Connection` if the handshake fails.
     #[allow(clippy::too_many_arguments)]
+    // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "mcp.connect_url", skip_all, fields(server_id = %server_id))
@@ -604,6 +605,7 @@ impl McpClient {
     ///
     /// Returns `McpError::OAuthError` on metadata discovery, SSRF, or authorization failures.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "mcp.connect_url", skip_all, fields(server_id = %server_id))

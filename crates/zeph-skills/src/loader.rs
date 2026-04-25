@@ -54,7 +54,7 @@ use crate::error::SkillError;
 /// Parsed frontmatter metadata for a single skill.
 ///
 /// Loaded lazily by [`crate::registry::SkillRegistry`] — the body string is **not**
-/// stored here. Use [`crate::registry::SkillRegistry::get_skill`] to retrieve the full
+/// stored here. Use [`crate::registry::SkillRegistry::skill`] to retrieve the full
 /// [`Skill`] struct including the Markdown body.
 #[derive(Clone, Debug)]
 pub struct SkillMeta {
@@ -84,7 +84,7 @@ pub struct SkillMeta {
 
 /// A fully loaded skill: metadata plus the raw Markdown body.
 ///
-/// Obtain via [`crate::registry::SkillRegistry::get_skill`] or
+/// Obtain via [`crate::registry::SkillRegistry::skill`] or
 /// [`crate::registry::SkillRegistry::into_skills`].
 ///
 /// # Examples
@@ -95,7 +95,7 @@ pub struct SkillMeta {
 /// let registry = SkillRegistry::load(&["/path/to/skills"]);
 /// # fn try_main() -> Result<(), zeph_skills::SkillError> {
 /// # let registry = zeph_skills::registry::SkillRegistry::load(&["/tmp"]);
-/// let skill = registry.get_skill("my-skill")?;
+/// let skill = registry.skill("my-skill")?;
 /// println!("name: {}", skill.name());
 /// println!("body: {}", skill.body);
 /// # Ok(())

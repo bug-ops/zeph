@@ -90,7 +90,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// Tasks are supervised via [`BackgroundSupervisor`] (`TaskClass::Enrichment`).
     /// If the concurrency limit is reached, the correction check is silently dropped —
     /// corrections are non-critical lossy data.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub(super) fn spawn_judge_correction_check(
         &mut self,
         trimmed: &str,
@@ -219,7 +219,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// regex result is borderline, the LLM judge runs in a background task (non-blocking).
     /// When `DetectorMode::Model` and an `LlmClassifier` is attached, the LLM classifier is
     /// used instead of `JudgeDetector`, sharing the same adaptive thresholds and rate limiter.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub(super) async fn detect_and_record_corrections(
         &mut self,
         trimmed: &str,

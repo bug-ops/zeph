@@ -37,7 +37,7 @@ const DEFAULT_COMMUNITY_CAP: usize = 3;
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
 pub async fn graph_recall_astar(
     store: &GraphStore,
     embeddings: Option<&EmbeddingStore>,

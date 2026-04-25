@@ -18,7 +18,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     async fn check_trust_transition_inner(&self, skill_name: &str) {
         let Some(memory) = &self.memory_state.persistence.memory else {
             return;

@@ -544,7 +544,7 @@ impl<C: Channel> Agent<C> {
 
         let prepared = zeph_context::assembler::ContextAssembler::gather(&input)
             .await
-            .map_err(|e| super::super::error::AgentError::Other(format!("{e:#}")))
+            .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))
             .inspect_err(|_| {
                 // Status clear is best-effort; we drop the future intentionally.
                 std::mem::drop(self.channel.send_status(""));
@@ -1157,7 +1157,7 @@ impl<C: Channel> Agent<C> {
             let all: Vec<Skill> = reg
                 .all_meta()
                 .iter()
-                .filter_map(|m| reg.get_skill(&m.name).ok())
+                .filter_map(|m| reg.skill(&m.name).ok())
                 .filter(|s| {
                     let allowed =
                         zeph_config::is_skill_allowed(s.name(), &self.runtime.channel_skills);
@@ -1171,7 +1171,7 @@ impl<C: Channel> Agent<C> {
                 .skill_state
                 .active_skill_names
                 .iter()
-                .filter_map(|name| reg.get_skill(name).ok())
+                .filter_map(|name| reg.skill(name).ok())
                 .filter(|s| {
                     let allowed =
                         zeph_config::is_skill_allowed(s.name(), &self.runtime.channel_skills);

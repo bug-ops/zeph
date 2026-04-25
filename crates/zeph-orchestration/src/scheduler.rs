@@ -184,7 +184,7 @@ struct RunningTask {
 ///     scheduler.wait_event().await;
 /// }
 /// ```
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct DagScheduler {
     graph: TaskGraph,
     max_parallel: usize,
@@ -815,7 +815,7 @@ impl DagScheduler {
     /// Process pending events and produce actions for the caller.
     ///
     /// Call `wait_event` after processing all actions to block until the next event.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub fn tick(&mut self) -> Vec<SchedulerAction> {
         if self.graph.status != GraphStatus::Running {
             return vec![SchedulerAction::Done {
@@ -1338,7 +1338,7 @@ impl DagScheduler {
 
 impl DagScheduler {
     /// Process a single `TaskEvent` and return any cancel actions needed.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     fn process_event(&mut self, event: TaskEvent) -> Vec<SchedulerAction> {
         let TaskEvent {
             task_id,

@@ -408,7 +408,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn insert_edge_typed(
         &self,
         source_entity_id: i64,
@@ -1079,7 +1079,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub async fn find_entities_ranked(
         &self,
         query: &str,
@@ -2434,7 +2434,8 @@ impl GraphStore {
     /// - [`MemoryError::SupersedeDepthExceeded`] — chain depth cap would be exceeded.
     /// - [`MemoryError::Sqlx`] / [`MemoryError::Db`] — database errors.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_lines)]
+    // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub async fn insert_or_supersede_with_metrics(
         &self,
         source_entity_id: i64,
@@ -2596,7 +2597,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Propagates errors from [`Self::insert_or_supersede_with_metrics`].
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn insert_or_supersede(
         &self,
         source_entity_id: i64,

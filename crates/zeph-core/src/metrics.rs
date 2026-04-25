@@ -212,7 +212,7 @@ pub struct TurnTimings {
 /// use [`StaticMetricsInit`] and `AgentBuilder::with_static_metrics` instead of
 /// adding a raw `send_modify` call in the runner.
 #[derive(Debug, Clone, Default)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct MetricsSnapshot {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,

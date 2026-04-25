@@ -150,7 +150,7 @@ impl CostTracker {
     ///
     /// Cache token counts are optional (pass 0 when not available). Cost is computed
     /// using model-specific pricing including cache read/write rates.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub fn record_usage(
         &self,
         provider_name: &str,

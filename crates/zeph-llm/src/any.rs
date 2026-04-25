@@ -6,6 +6,18 @@
 //! [`AnyProvider`] lets callers hold and clone any backend without generics or
 //! `Box<dyn LlmProvider>`. The macro `delegate_provider!` generates the
 //! match-over-variants boilerplate for every [`LlmProvider`] method delegation.
+//!
+//! # TODO (D1 — deferred: make `LlmProvider` object-safe, replace `AnyProvider` enum)
+//!
+//! `LlmProvider` is not object-safe today because of the `chat_typed<T: DeserializeOwned>` and
+//! `embed_batch` methods. The goal is to make it object-safe so the enum can be replaced by
+//! `Arc<dyn LlmProvider + Send + Sync>`, eliminating the need to patch this crate when adding a
+//! new provider backend.
+//!
+//! **Blocked by:** full enumeration of `AnyProvider` match sites (router, cascade fallback,
+//! `chat_typed` callers), migration plan for structured-output extraction, and a streaming
+//! throughput benchmark gate. See critic review `.local/handoff/critic-review.md` §C3.
+//! Each step must be a separate PR; do NOT bundle with other refactors.
 
 #[cfg(feature = "candle")]
 use crate::candle_provider::CandleProvider;

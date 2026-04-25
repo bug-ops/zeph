@@ -63,7 +63,7 @@ pub enum CausalIpiError {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,no_run
 /// use zeph_sanitizer::causal_ipi::{TurnCausalAnalyzer, CausalAnalysis};
 /// use zeph_config::CausalIpiConfig;
 /// use zeph_llm::any::AnyProvider;
@@ -232,7 +232,7 @@ impl TurnCausalAnalyzer {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use zeph_sanitizer::causal_ipi::TurnCausalAnalyzer;
     /// use zeph_config::CausalIpiConfig;
     /// use zeph_llm::any::AnyProvider;

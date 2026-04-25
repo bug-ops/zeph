@@ -35,7 +35,7 @@ use super::types::{EdgeType, GraphFact};
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
 pub async fn graph_recall(
     store: &GraphStore,
     embeddings: Option<&crate::embedding_store::EmbeddingStore>,
@@ -378,7 +378,7 @@ pub(crate) async fn find_seed_entities(
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 pub async fn graph_recall_activated(
     store: &GraphStore,
     embeddings: Option<&EmbeddingStore>,

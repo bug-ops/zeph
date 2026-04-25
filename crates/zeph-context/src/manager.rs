@@ -190,7 +190,7 @@ impl ContextManager {
     /// Apply budget and compaction thresholds from config.
     ///
     /// Must be called once after config is resolved. Safe to call again when config reloads.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub fn apply_budget_config(
         &mut self,
         budget_tokens: usize,

@@ -55,7 +55,7 @@ impl ToolExecutor for SkillLoaderExecutor {
         let skill_name: String = params.skill_name.chars().take(128).collect();
         let body = {
             let guard = self.registry.read();
-            guard.get_body(&skill_name).map(str::to_owned)
+            guard.body(&skill_name).map(str::to_owned)
         };
 
         let summary = match body {

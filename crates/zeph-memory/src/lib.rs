@@ -92,6 +92,7 @@ pub mod router;
 pub mod semantic;
 pub mod snapshot;
 pub mod store;
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod token_counter;
 pub mod types;

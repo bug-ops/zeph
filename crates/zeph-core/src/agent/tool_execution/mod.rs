@@ -521,7 +521,7 @@ impl<C: Channel> Agent<C> {
             self.skill_state
                 .active_skill_names
                 .iter()
-                .filter_map(|name| reg.get_skill(name).ok())
+                .filter_map(|name| reg.skill(name).ok())
                 .collect()
         };
         let env: std::collections::HashMap<String, String> = active_skills

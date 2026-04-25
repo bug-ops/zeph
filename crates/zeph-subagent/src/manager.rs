@@ -596,7 +596,7 @@ impl SubAgentManager {
     /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded, or
     /// [`SubAgentError::Invalid`] if the agent requests `bypass_permissions` but the config
     /// does not allow it (`allow_bypass_permissions: false`).
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
     pub fn spawn(
         &mut self,
         def_name: &str,
@@ -1307,6 +1307,7 @@ impl SubAgentManager {
     /// Panics if the internal agent entry is missing after a successful `spawn` call.
     /// This is a programming error and should never occur in normal operation.
     #[allow(clippy::too_many_arguments)]
+    // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     /// Spawn a sub-agent and attach a completion callback invoked when the agent terminates.
     ///
     /// The callback receives the agent handle ID and the agent's result.
@@ -1320,7 +1321,7 @@ impl SubAgentManager {
     ///
     /// Panics if the internal agent entry is missing after a successful `spawn` call.
     /// This is a programming error and should never occur in normal operation.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub fn spawn_for_task<F>(
         &mut self,
         def_name: &str,

@@ -239,7 +239,7 @@ impl BanditState {
     /// `memory_hit_confidence`: MAR signal. When `>= memory_confidence_threshold`, cheap
     /// providers receive a boost proportional to `(1 - cost_estimate) * confidence * cost_weight`.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub fn select(
         &self,
         providers: &[String],

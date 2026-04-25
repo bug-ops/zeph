@@ -311,7 +311,7 @@ pub(crate) async fn handle_skill_command(
             }
 
             let raw = registry
-                .get_body(&name)
+                .body(&name)
                 .map_err(|e| anyhow::anyhow!("{e}"))?
                 .to_owned();
 

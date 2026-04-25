@@ -502,7 +502,7 @@ pub struct SkillMiningConfig {
 /// score_threshold = 0.25
 /// ```
 #[derive(Debug, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct IndexConfig {
     /// Enable code indexing. Default: `false`.
     #[serde(default)]

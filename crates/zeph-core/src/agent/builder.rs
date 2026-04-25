@@ -19,6 +19,23 @@
 //! architecture audit). Until that sprint lands, the fake-builder pattern is the deliberate
 //! choice and callers must use `build()` to validate configuration at the point of construction.
 //!
+//! # TODO (A2 — deferred: typestate builder)
+//!
+//! Replace the fake builder with `AgentBuilder<C, ProviderSet, MemorySet>` using phantom
+//! typestate so that omitting `with_provider_pool` or `with_memory` becomes a compile error
+//! rather than a runtime panic in `build()`. Target design:
+//!
+//! ```text
+//! Agent::new()          -> AgentBuilder<C, NoProvider, NoMemory>
+//! .with_provider_pool() -> AgentBuilder<C, HasProvider, NoMemory>
+//! .with_memory()        -> AgentBuilder<C, HasProvider, HasMemory>
+//! .build()              // only impl'd for AgentBuilder<C, HasProvider, _>
+//! ```
+//!
+//! **Blocked by:** A1 decomposition (the 25+ sub-states must be separated before phantom types
+//! can track required subsets), and the 30+ construction sites spanning multiple crates. Must be
+//! split across ≥4 PRs. Requires its own SDD spec. See critic review §C1.
+//!
 //! # Call ordering constraints
 //!
 //! Some setters have explicit ordering requirements documented in their `# Panics` sections:

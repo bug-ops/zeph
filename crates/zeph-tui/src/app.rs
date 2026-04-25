@@ -359,7 +359,7 @@ pub struct ElicitationState {
 /// - [`with_metrics_rx`](Self::with_metrics_rx) — live metrics watch channel.
 /// - [`with_cancel_signal`](Self::with_cancel_signal) — Ctrl-C cancel notify.
 /// - [`with_command_tx`](Self::with_command_tx) — slash-command dispatch channel.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct App {
     // SESSION-LOCAL state (10 fields relocated into SessionSlot)
     pub(crate) sessions: SessionRegistry,
@@ -1725,7 +1725,7 @@ impl App {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     fn execute_plan_graph_command(&mut self, cmd: TuiCommand) {
         match cmd {
             TuiCommand::PlanStatus => {
@@ -2292,7 +2292,7 @@ impl App {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     fn handle_insert_key(&mut self, key: KeyEvent) {
         if self.slash_autocomplete.is_some() {
             self.handle_slash_autocomplete_key(key);

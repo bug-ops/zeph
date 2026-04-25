@@ -72,7 +72,7 @@ impl<C: Channel> Agent<C> {
     /// Non-interactive: the skill is saved immediately with quarantined trust level.
     /// The generated preview is returned in the output so the user can review it.
     /// Use `/skill remove <name>` to discard an unwanted skill.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     async fn handle_skill_create_as_string(
         &mut self,
         description: &str,
@@ -246,7 +246,7 @@ impl<C: Channel> Agent<C> {
             return Ok("Usage: /skill reject <name> <reason>".to_owned());
         };
         // SEC-PH1-001: validate skill exists in registry before writing to DB
-        if self.skill_state.registry.read().get_skill(name).is_err() {
+        if self.skill_state.registry.read().skill(name).is_err() {
             return Ok(format!("Unknown skill: \"{name}\"."));
         }
         let reason = reason_parts.join(" ");

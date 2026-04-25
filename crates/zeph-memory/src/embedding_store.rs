@@ -171,7 +171,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the Qdrant upsert or `SQLite` insert fails.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn store_with_tool_context(
         &self,
         message_id: MessageId,
@@ -245,7 +245,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the Qdrant upsert or `SQLite` insert fails.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn store(
         &self,
         message_id: MessageId,
@@ -312,7 +312,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the Qdrant upsert or `SQLite` insert fails.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn store_with_category(
         &self,
         message_id: MessageId,
