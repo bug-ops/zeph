@@ -443,7 +443,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         #[cfg(feature = "bench")]
         Some(Command::Bench { command: bench_cmd }) => {
-            return crate::commands::bench::handle_bench_command(&bench_cmd, cli.config.as_deref());
+            return crate::commands::bench::handle_bench_command(&bench_cmd, cli.config.as_deref())
+                .await;
         }
         #[cfg(all(unix, feature = "scheduler"))]
         Some(Command::Serve {

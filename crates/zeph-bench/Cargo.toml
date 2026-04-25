@@ -20,6 +20,8 @@ tokio = { workspace = true, features = ["time"] }
 zeph-config.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true
+zeph-skills.workspace = true
+zeph-tools.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
