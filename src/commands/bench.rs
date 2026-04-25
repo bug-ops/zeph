@@ -9,8 +9,9 @@ use zeph_bench::{
     ResultWriter, RunOptions, RunStatus, apply_deterministic_overrides,
     baseline::BaselineComparison,
     loaders::{
-        FramesEvaluator, FramesLoader, GaiaEvaluator, GaiaLoader, LocomoEvaluator, LocomoLoader,
-        LongMemEvalEvaluator, LongMemEvalLoader, TauBenchEvaluator, TauBenchLoader,
+        AirlineEnv, FramesEvaluator, FramesLoader, GaiaEvaluator, GaiaLoader, LocomoEvaluator,
+        LocomoLoader, LongMemEvalEvaluator, LongMemEvalLoader, RetailEnv, Tau2BenchLoader,
+        tau2_bench::loader::db_json_path,
     },
 };
 use zeph_core::config::{Config, SecretResolver as _};
@@ -78,6 +79,12 @@ async fn handle_run_baseline(
 ) -> anyhow::Result<()> {
     match dataset {
         "longmemeval" | "locomo" => {}
+        "tau2-bench-retail" | "tau2-bench-airline" => {
+            anyhow::bail!(
+                "--baseline is not supported for tool-driven datasets ({dataset}); \
+                 baselines apply only to memory-evaluation datasets (longmemeval, locomo)"
+            );
+        }
         other => {
             anyhow::bail!(
                 "--baseline is supported only for memory-relevant datasets (longmemeval, locomo). \
@@ -252,6 +259,12 @@ fn handle_list() {
 }
 
 fn handle_download(dataset: &str) -> anyhow::Result<()> {
+    match dataset {
+        "tau2-bench" | "tau2-bench-retail" | "tau2-bench-airline" => {
+            return download_tau2_bench();
+        }
+        _ => {}
+    }
     let reg = DatasetRegistry::new();
     if reg.get(dataset).is_none() {
         eprintln!(
@@ -262,6 +275,73 @@ fn handle_download(dataset: &str) -> anyhow::Result<()> {
     eprintln!("Dataset download is not yet implemented for '{dataset}'.");
     eprintln!("See the dataset URL in `zeph bench list` output for manual download instructions.");
     std::process::exit(1);
+}
+
+/// Clone `sierra-research/tau2-bench` and copy the JSON data files for retail and airline.
+///
+/// Produces:
+/// ```text
+/// <cache>/zeph-bench/tau2-bench/
+/// ├── retail/{tasks.json,db.json,split_tasks.json}
+/// └── airline/{tasks.json,db.json,split_tasks.json}
+/// ```
+///
+/// Requires `git` on PATH. No Python execution is needed — tau2-bench stores all
+/// task data as pure JSON.
+fn download_tau2_bench() -> anyhow::Result<()> {
+    let cache = dirs::cache_dir()
+        .ok_or_else(|| anyhow::anyhow!("no cache directory found (dirs::cache_dir returned None)"))?
+        .join("zeph-bench")
+        .join("tau2-bench");
+
+    let repo = cache.join("repo");
+
+    if !repo.exists() {
+        // TODO(critic): clone to `repo.tmp` and rename atomically; current logic skips re-clone
+        // on partial state. See critic-tau-bench-v2.md S4.
+        let repo_str = repo
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("cache path contains non-UTF8 characters"))?;
+
+        let status = std::process::Command::new("git")
+            .args([
+                "clone",
+                "--depth=1",
+                "https://github.com/sierra-research/tau2-bench",
+                repo_str,
+            ])
+            .status()
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    anyhow::anyhow!(
+                        "git is required for `bench download` but was not found on PATH"
+                    )
+                } else {
+                    anyhow::anyhow!("git clone failed: {e}")
+                }
+            })?;
+
+        if !status.success() {
+            anyhow::bail!("git clone failed with exit code: {:?}", status.code());
+        }
+    }
+
+    for domain in ["retail", "airline"] {
+        let src = repo.join("data/tau2/domains").join(domain);
+        let dst = cache.join(domain);
+        std::fs::create_dir_all(&dst)?;
+        for fname in ["tasks.json", "db.json", "split_tasks.json"] {
+            std::fs::copy(src.join(fname), dst.join(fname))
+                .map_err(|e| anyhow::anyhow!("copy {domain}/{fname}: {e}"))?;
+        }
+    }
+
+    println!("tau2-bench data ready at {}", cache.display());
+    println!(
+        "Run: zeph bench run --dataset tau2-bench-retail --data-file {}/retail/tasks.json --output <dir>",
+        cache.display()
+    );
+    Ok(())
 }
 
 fn handle_show(results: &std::path::Path) -> anyhow::Result<()> {
@@ -389,12 +469,34 @@ async fn dispatch_run(
         "longmemeval" => Ok(runner
             .run_dataset(&LongMemEvalLoader, &LongMemEvalEvaluator, data_path, opts)
             .await?),
-        "tau-bench" => Ok(runner
-            .run_dataset(&TauBenchLoader, &TauBenchEvaluator, data_path, opts)
-            .await?),
+        "tau2-bench-retail" => {
+            let db = db_json_path(data_path)?;
+            let env_factory = |_s: &zeph_bench::Scenario| RetailEnv::new_from_seed(&db);
+            Ok(runner
+                .run_dataset_with_env_factory(
+                    &Tau2BenchLoader::retail(),
+                    env_factory,
+                    data_path,
+                    opts,
+                )
+                .await?)
+        }
+        "tau2-bench-airline" => {
+            let db = db_json_path(data_path)?;
+            let env_factory = |_s: &zeph_bench::Scenario| AirlineEnv::new_from_seed(&db);
+            Ok(runner
+                .run_dataset_with_env_factory(
+                    &Tau2BenchLoader::airline(),
+                    env_factory,
+                    data_path,
+                    opts,
+                )
+                .await?)
+        }
         other => {
             eprintln!(
-                "error: no built-in runner for dataset '{other}'. Supported: locomo, gaia, frames, longmemeval, tau-bench."
+                "error: no built-in runner for dataset '{other}'. \
+                 Supported: locomo, gaia, frames, longmemeval, tau2-bench-retail, tau2-bench-airline."
             );
             std::process::exit(1);
         }

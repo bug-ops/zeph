@@ -55,7 +55,7 @@ pub struct DatasetMeta {
 
 /// Registry of all datasets that `zeph-bench` knows about.
 ///
-/// The registry is pre-populated with five built-in datasets on construction and
+/// The registry is pre-populated with six built-in datasets on construction and
 /// provides case-insensitive lookup by name. It is the authoritative source for
 /// the `bench list` CLI subcommand.
 ///
@@ -66,7 +66,8 @@ pub struct DatasetMeta {
 /// | `longmemeval` | JSONL | `HuggingFace` xiaowu0162/longmemeval |
 /// | `locomo` | JSON | `HuggingFace` lmlab/locomo |
 /// | `frames` | JSONL | `HuggingFace` google/frames-benchmark |
-/// | `tau-bench` | JSON | GitHub sierra-research/tau-bench |
+/// | `tau2-bench-retail` | JSON | GitHub sierra-research/tau2-bench |
+/// | `tau2-bench-airline` | JSON | GitHub sierra-research/tau2-bench |
 /// | `gaia` | JSONL | `HuggingFace` gaia-benchmark/GAIA |
 ///
 /// # Examples
@@ -77,7 +78,7 @@ pub struct DatasetMeta {
 /// let registry = DatasetRegistry::new();
 ///
 /// // List all datasets.
-/// assert_eq!(registry.list().len(), 5);
+/// assert_eq!(registry.list().len(), 6);
 ///
 /// // Lookup is case-insensitive.
 /// assert!(registry.get("GAIA").is_some());
@@ -121,9 +122,15 @@ impl DatasetRegistry {
                     format: DatasetFormat::Jsonl,
                 },
                 DatasetMeta {
-                    name: "tau-bench",
-                    description: "tau-bench: tool-augmented user simulation benchmark",
-                    url: "https://github.com/sierra-research/tau-bench",
+                    name: "tau2-bench-retail",
+                    description: "tau2-bench retail domain: customer service tool-use evaluation",
+                    url: "https://github.com/sierra-research/tau2-bench",
+                    format: DatasetFormat::Json,
+                },
+                DatasetMeta {
+                    name: "tau2-bench-airline",
+                    description: "tau2-bench airline domain: flight reservation tool-use evaluation",
+                    url: "https://github.com/sierra-research/tau2-bench",
                     format: DatasetFormat::Json,
                 },
                 DatasetMeta {
@@ -191,9 +198,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_contains_five_datasets() {
+    fn registry_contains_six_datasets() {
         let reg = DatasetRegistry::new();
-        assert_eq!(reg.list().len(), 5);
+        assert_eq!(reg.list().len(), 6);
     }
 
     #[test]

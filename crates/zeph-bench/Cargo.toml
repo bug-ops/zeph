@@ -13,11 +13,13 @@ publish = true
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
+zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true

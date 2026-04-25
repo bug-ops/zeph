@@ -41,8 +41,25 @@ use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 
 use crate::channel::BenchmarkChannel;
 use crate::error::BenchError;
+use crate::loaders::tau2_bench::{ActionTrace, TauBenchEvaluator};
 use crate::results::{BenchRun, RunStatus, ScenarioResult};
 use crate::scenario::{DatasetLoader, Evaluator, Scenario};
+
+/// Controls how the runner processes the agent's raw text response.
+///
+/// Used by [`BenchRunner::run_one_with_executor`] to select the appropriate
+/// system prompt and post-processing behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseMode {
+    /// Inject a "shortest possible answer" system prompt and strip markdown from the response.
+    ///
+    /// Used by all knowledge-retrieval datasets (GAIA, LOCOMO, FRAMES, `LongMemEval`).
+    TerseAnswer,
+    /// Inject a tool-use system prompt; return the raw agent response without post-processing.
+    ///
+    /// Used by tau2-bench where the evaluation is based on the action trace, not text output.
+    ToolUse,
+}
 
 /// Controls whether `SemanticMemory` is wired into the agent during a benchmark run.
 ///
@@ -278,6 +295,83 @@ impl BenchRunner {
         Ok(run)
     }
 
+    /// Run all scenarios from `path` through a per-scenario env executor and return a [`BenchRun`].
+    ///
+    /// This is the execution path for tool-driven datasets (tau2-bench). For each scenario:
+    /// 1. Calls `env_factory(scenario)` to build a fresh `(ToolExecutor, ActionTrace)`.
+    /// 2. Builds a fresh `TauBenchEvaluator` from the scenario metadata and the trace.
+    /// 3. Runs the agent with the env executor and the tool-use system prompt.
+    /// 4. Scores the response via the evaluator (reads the populated trace).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BenchError`] if the dataset cannot be loaded, the env factory fails, or
+    /// `TauBenchEvaluator::from_scenario` fails (malformed metadata).
+    pub async fn run_dataset_with_env_factory<L, F, X>(
+        &self,
+        loader: &L,
+        env_factory: F,
+        path: &Path,
+        opts: RunOptions,
+    ) -> Result<BenchRun, BenchError>
+    where
+        L: DatasetLoader,
+        F: Fn(&Scenario) -> Result<(X, ActionTrace), BenchError>,
+        X: ToolExecutor + Send + Sync + 'static,
+    {
+        let scenarios = loader.load(path)?;
+        let model_id = self.provider.model_identifier().to_owned();
+
+        let mut run = BenchRun {
+            dataset: loader.name().to_owned(),
+            model: model_id,
+            run_id: uuid(),
+            started_at: now_rfc3339(),
+            finished_at: String::new(),
+            status: RunStatus::Running,
+            results: vec![],
+            aggregate: crate::results::Aggregate::default(),
+        };
+
+        for scenario in &scenarios {
+            if opts.completed_ids.contains(&scenario.id) {
+                continue;
+            }
+            if let Some(ref filter) = opts.scenario_filter
+                && &scenario.id != filter
+            {
+                continue;
+            }
+
+            let (executor, trace) = env_factory(scenario)?;
+            let evaluator = TauBenchEvaluator::from_scenario(scenario, trace)?;
+
+            let t0 = Instant::now();
+            let response_text = Box::pin(self.run_one_with_executor(
+                scenario,
+                executor,
+                opts.memory_mode,
+                ResponseMode::ToolUse,
+            ))
+            .await?;
+            let elapsed_ms = u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+            let eval = evaluator.evaluate(scenario, &response_text);
+            let excerpt = response_text.chars().take(200).collect::<String>();
+
+            run.results.push(ScenarioResult {
+                scenario_id: scenario.id.clone(),
+                score: eval.score,
+                response_excerpt: excerpt,
+                error: None,
+                elapsed_ms,
+            });
+            run.recompute_aggregate();
+        }
+
+        Ok(run)
+    }
+
     /// Run a single scenario through a fresh agent and return the last response text.
     ///
     /// A concise-answer system prompt is injected via [`InstructionBlock`] so the model
@@ -299,39 +393,55 @@ impl BenchRunner {
         scenario: &Scenario,
         memory_mode: MemoryMode,
     ) -> Result<String, BenchError> {
+        Box::pin(self.run_one_with_executor(
+            scenario,
+            NoopExecutor,
+            memory_mode,
+            ResponseMode::TerseAnswer,
+        ))
+        .await
+    }
+
+    /// Core execution: run one scenario with the given executor and response mode.
+    ///
+    /// Called by both [`run_dataset`] (with `NoopExecutor` + `TerseAnswer`) and
+    /// [`run_dataset_with_env_factory`] (with the domain env + `ToolUse`).
+    async fn run_one_with_executor<X: ToolExecutor + Send + Sync + 'static>(
+        &self,
+        scenario: &Scenario,
+        executor: X,
+        memory_mode: MemoryMode,
+        mode: ResponseMode,
+    ) -> Result<String, BenchError> {
         let prompt = scenario.primary_prompt()?.to_owned();
         let channel = BenchmarkChannel::new(vec![prompt]);
         // TODO(multi-turn-history): when loaders emit multiple user turns, push each in
         // order and seed assistant turns into the channel as captured-history.
         let registry = SkillRegistry::empty();
 
-        // Force the model to emit only the shortest possible answer. This is the primary
-        // driver of score improvement — without this, models produce full sentences that
-        // fail both token-F1 and exact-match evaluators.
-        let blocks = vec![InstructionBlock {
-            source: PathBuf::from("<bench-system-prompt>"),
-            content: concat!(
+        let system_content = match mode {
+            ResponseMode::TerseAnswer => concat!(
                 "You are an evaluation assistant. ",
                 "Answer every question with the shortest possible response. ",
                 "Give only the final answer — no explanation, no full sentences, ",
                 "no punctuation unless it is part of the answer. ",
                 "If the answer is a single word or number, respond with only that word or number."
-            )
-            .to_owned(),
+            ),
+            ResponseMode::ToolUse => concat!(
+                "You are a customer-service agent. ",
+                "Use the available tools to help the user. ",
+                "Always call a tool when one applies; do not ask the user to perform actions you can perform yourself. ",
+                "When you have completed the user's request, respond with a brief confirmation."
+            ),
+        };
+
+        let blocks = vec![InstructionBlock {
+            source: PathBuf::from("<bench-system-prompt>"),
+            content: system_content.to_owned(),
         }];
 
-        // TODO(C-2): wire a real ToolExecutor for baseline runs on tool-driven datasets
-        // (gaia, tau-bench, frames). For now --baseline is gated to longmemeval/locomo
-        // in the CLI dispatcher.
-        let base_agent = Agent::new(
-            self.provider.clone(),
-            channel,
-            registry,
-            None,
-            1,
-            NoopExecutor,
-        )
-        .with_instruction_blocks(blocks);
+        let base_agent = Agent::new(self.provider.clone(), channel, registry, None, 1, executor)
+            .with_instruction_blocks(blocks);
 
         // Optionally wire SemanticMemory when the caller requests memory-on mode.
         let (mut agent, scenario_db) = if memory_mode == MemoryMode::On
@@ -411,7 +521,14 @@ impl BenchRunner {
             .last()
             .map(|r| r.text)
             .unwrap_or_default();
-        Ok(post_process_response(&raw))
+
+        Ok(match mode {
+            ResponseMode::TerseAnswer => post_process_response(&raw),
+            // Verified: dropping send_tool_output does NOT affect the agent loop's tool-result
+            // feedback to the LLM. Tool outputs flow via Agent's internal MessagePart::ToolResult,
+            // not via the channel. See crates/zeph-core/src/agent/tool_execution/native.rs.
+            ResponseMode::ToolUse => raw,
+        })
     }
 }
 

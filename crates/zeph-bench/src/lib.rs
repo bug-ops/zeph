@@ -81,7 +81,7 @@ pub use deterministic::apply_deterministic_overrides;
 pub use error::BenchError;
 pub use isolation::BenchIsolation;
 pub use results::{Aggregate, BenchRun, ResultWriter, RunStatus, ScenarioResult};
-pub use runner::{BenchMemoryParams, BenchRunner, MemoryMode, RunOptions};
+pub use runner::{BenchMemoryParams, BenchRunner, MemoryMode, ResponseMode, RunOptions};
 pub use scenario::{
     DatasetLoader, EvalResult, Evaluator, Role, Scenario, Turn, exact_match,
     gaia_normalized_exact_match, token_f1,

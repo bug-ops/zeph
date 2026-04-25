@@ -32,6 +32,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `zeph-bench`: full tau2-bench environment support — in-memory retail and airline domain executors
+  (`RetailEnv`, `AirlineEnv`) implementing `ToolExecutor`; `TauBenchEvaluator` scoring tool-call
+  traces via `Action.compare_with_tool_call` semantics; `Tau2BenchLoader` replacing the old
+  string-match `tau-bench` loader; `run_dataset_with_env_factory` runner method for tool-driven
+  datasets; `ResponseMode::ToolUse` with a customer-service system prompt; `bench download
+  --dataset tau2-bench` git-clone download; `bench run --dataset tau2-bench-retail/airline`
+  dispatch (closes #3417, Phase 1: ACTION-only scoring).
 - `zeph-bench`: aggregate `median_score`, `stddev` (population), and `error_count` statistics on
   `BenchRun.aggregate`; all three fields are persisted in `results.json` and included in
   `summary.md`.

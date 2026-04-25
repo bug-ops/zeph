@@ -9,7 +9,8 @@
 //! | FRAMES | [`FramesLoader`] | [`FramesEvaluator`] | Exact match (case-insensitive) |
 //! | GAIA | [`GaiaLoader`] | [`GaiaEvaluator`] | GAIA-normalized exact match |
 //! | LongMemEval | [`LongMemEvalLoader`] | [`LongMemEvalEvaluator`] | Exact match + token F1 |
-//! | tau-bench | [`TauBenchLoader`] | [`TauBenchEvaluator`] | Task completion rate |
+//! | tau2-bench-retail | [`tau2_bench::Tau2BenchLoader`] | [`tau2_bench::TauBenchEvaluator`] | Action trace |
+//! | tau2-bench-airline | [`tau2_bench::Tau2BenchLoader`] | [`tau2_bench::TauBenchEvaluator`] | Action trace |
 //!
 //! [`DatasetLoader`]: crate::DatasetLoader
 //! [`Evaluator`]: crate::Evaluator
@@ -18,10 +19,10 @@ pub mod frames;
 pub mod gaia;
 pub mod locomo;
 pub mod longmemeval;
-pub mod tau_bench;
+pub mod tau2_bench;
 
 pub use frames::{FramesEvaluator, FramesLoader};
 pub use gaia::{GaiaEvaluator, GaiaLoader};
 pub use locomo::{LocomoEvaluator, LocomoLoader};
 pub use longmemeval::{LongMemEvalEvaluator, LongMemEvalLoader};
-pub use tau_bench::{TauBenchEvaluator, TauBenchLoader};
+pub use tau2_bench::{AirlineEnv, RetailEnv, Tau2BenchLoader, TauBenchEvaluator};
