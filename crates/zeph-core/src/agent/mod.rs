@@ -363,12 +363,9 @@ impl<C: Channel> Agent<C> {
     /// # Examples
     ///
     /// ```no_run
-    /// use zeph_core::agent::Agent;
-    /// use zeph_bench::BenchmarkChannel;
-    ///
-    /// // After agent.run().await, recover the channel to inspect responses.
-    /// // let channel = agent.into_channel();
-    /// // let responses = channel.into_responses();
+    /// # use zeph_core::agent::Agent;
+    /// // After agent.run().await completes, consume the agent to retrieve the channel.
+    /// // let channel: MyChannel = agent.into_channel();
     /// ```
     #[must_use]
     pub fn into_channel(self) -> C {
