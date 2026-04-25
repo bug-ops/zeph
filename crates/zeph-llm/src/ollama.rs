@@ -465,7 +465,7 @@ impl LlmProvider for OllamaProvider {
         tracing::instrument(
             name = "llm.embed",
             skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
+            fields(provider = self.name(), model = self.embedding_model)
         )
     )]
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {

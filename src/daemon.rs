@@ -517,8 +517,8 @@ pub(crate) async fn run_daemon(
             config.memory.trajectory.clone(),
             config.memory.category.clone(),
         )
-        .with_embedding_provider(embedding_provider)
-        .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), provider.clone()),
+        .with_embedding_provider(embedding_provider.clone())
+        .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), embedding_provider),
     )
     .await;
 

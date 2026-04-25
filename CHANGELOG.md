@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-core`, `zeph-llm`: tool schema filter now receives the embedding provider instead of the
+  main chat provider in `runner.rs` and `daemon.rs`; eliminates 1536-vs-768-dim mismatch that
+  caused all tool similarity scores to be 0.0 (fixes #3413).
+- `zeph-llm`: `OllamaProvider::embed()` tracing span now records the actual embedding model name
+  (`self.embedding_model`) instead of the chat model name (`self.model_identifier()`), making
+  `llm.embed` spans in Perfetto/Jaeger unambiguous (fixes #3414).
+
 ### Changed
 
 - `zeph-vault`: split 1302-line `lib.rs` into four module files (`age.rs`, `arc.rs`, `env.rs`,

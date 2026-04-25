@@ -1792,8 +1792,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.trajectory.clone(),
         config.memory.category.clone(),
     )
-    .with_embedding_provider(embedding_provider)
-    .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), provider.clone())
+    .with_embedding_provider(embedding_provider.clone())
+    .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), embedding_provider)
     .await;
 
     // Wire JsonEventLayer when --json is active so tool_call / tool_result events
