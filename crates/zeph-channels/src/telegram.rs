@@ -173,7 +173,7 @@ impl TelegramChannel {
     /// # Errors
     ///
     /// Returns an error if the bot cannot be initialized.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub fn start(mut self) -> Result<Self, ChannelError> {
         if self.allowed_users.is_empty() {
             tracing::error!("telegram.allowed_users is empty; refusing to start an open bot");
@@ -351,7 +351,7 @@ impl TelegramChannel {
 
     async fn send_or_edit(&mut self) -> Result<(), ChannelError> {
         let Some(chat_id) = self.chat_id else {
-            return Err(ChannelError::Other("no active chat".into()));
+            return Err(ChannelError::NoActiveSession);
         };
 
         let text = if self.accumulated.is_empty() {
@@ -569,16 +569,16 @@ impl Channel for TelegramChannel {
     ///
     /// # Errors
     ///
-    /// Returns `Err(ChannelError::Other)` if no active chat has been
-    /// established yet (i.e. `recv` has never returned a message) or if the
-    /// Telegram API call fails.
+    /// Returns `Err(ChannelError::NoActiveSession)` if no active chat has been
+    /// established yet (i.e. `recv` has never returned a message), or
+    /// `Err(ChannelError::Other)` if the Telegram API call fails.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "channel.telegram.send", skip_all, fields(msg_len = %text.len()))
     )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         let Some(chat_id) = self.chat_id else {
-            return Err(ChannelError::Other("no active chat".into()));
+            return Err(ChannelError::NoActiveSession);
         };
 
         let formatted_text = markdown_to_telegram(text);

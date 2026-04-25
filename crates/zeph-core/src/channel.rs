@@ -129,7 +129,15 @@ pub enum ChannelError {
     #[error("confirmation cancelled")]
     ConfirmCancelled,
 
-    /// Catch-all for provider-specific errors.
+    /// No active session is established yet (no message has been received).
+    ///
+    /// Occurs when `send` or related methods are called before any message has
+    /// arrived on the channel (i.e., `recv` has never returned successfully).
+    #[error("no active session")]
+    NoActiveSession,
+
+    /// Catch-all for third-party API errors (Telegram, Discord, Slack, etc.)
+    /// that do not map to a more specific variant.
     #[error("{0}")]
     Other(String),
 }

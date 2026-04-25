@@ -20,6 +20,10 @@ pub enum LlmError {
     #[error("JSON parse failed: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// An I/O error occurred (e.g. reading or writing a cache file).
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
     /// The provider returned HTTP 429 (too many requests). Callers should back off and retry.
     #[error("rate limited")]
     RateLimited,
@@ -91,19 +95,32 @@ pub enum LlmError {
     #[error("invalid input for {provider}: {message}")]
     InvalidInput { provider: String, message: String },
 
+    /// A provider returned a non-success HTTP status that does not map to any more specific variant.
+    ///
+    /// This covers non-retriable API failures such as authentication errors (401/403),
+    /// server errors (500/503), and unexpected 4xx responses that are not `InvalidInput`,
+    /// `RateLimited`, or `ContextLengthExceeded`. Callers should not retry on this error.
+    #[error("{provider} API request failed (status {status})")]
+    ApiError { provider: String, status: u16 },
+
+    /// Catch-all for provider-specific errors that do not yet have a typed variant.
+    ///
+    /// # Deprecation
+    ///
+    /// Prefer adding a typed variant or propagating a specific source error. This variant
+    /// exists for backward compatibility and will be removed once all callsites are migrated.
     #[error("{0}")]
     Other(String),
 }
 
 impl LlmError {
     /// Returns true if this error indicates the context/prompt is too long for the model.
+    ///
+    /// Providers must return [`LlmError::ContextLengthExceeded`] directly; this predicate
+    /// does not inspect error message strings.
     #[must_use]
     pub fn is_context_length_error(&self) -> bool {
-        match self {
-            Self::ContextLengthExceeded => true,
-            Self::Other(msg) => is_context_length_message(msg),
-            _ => false,
-        }
+        matches!(self, Self::ContextLengthExceeded)
     }
 
     /// Returns true if this error indicates that a beta header was rejected by the API.
@@ -127,8 +144,12 @@ impl LlmError {
     }
 }
 
-fn is_context_length_message(msg: &str) -> bool {
-    let lower = msg.to_lowercase();
+/// Check whether a raw API error body text indicates a context-length error.
+///
+/// Used at the provider transport layer to convert HTTP 400 bodies into
+/// [`LlmError::ContextLengthExceeded`] before the error reaches callers.
+pub(crate) fn body_is_context_length_error(body: &str) -> bool {
+    let lower = body.to_lowercase();
     lower.contains("maximum number of tokens")
         || lower.contains("context length exceeded")
         || lower.contains("maximum context length")
@@ -149,23 +170,15 @@ mod tests {
     }
 
     #[test]
-    fn other_with_claude_message_is_detected() {
-        let e = LlmError::Other("maximum number of tokens exceeded".into());
-        assert!(e.is_context_length_error());
-    }
-
-    #[test]
-    fn other_with_openai_message_is_detected() {
-        let e = LlmError::Other(
-            "This model's maximum context length is 4096 tokens. context_length_exceeded".into(),
+    fn other_variant_is_not_context_length_error() {
+        // The `Other` path no longer triggers context-length classification.
+        // Providers must return `ContextLengthExceeded` directly.
+        assert!(
+            !LlmError::Other("maximum number of tokens exceeded".into()).is_context_length_error()
         );
-        assert!(e.is_context_length_error());
-    }
-
-    #[test]
-    fn other_with_ollama_message_is_detected() {
-        let e = LlmError::Other("context length exceeded for model".into());
-        assert!(e.is_context_length_error());
+        assert!(
+            !LlmError::Other("context length exceeded for model".into()).is_context_length_error()
+        );
     }
 
     #[test]
@@ -231,5 +244,40 @@ mod tests {
         let s = e.to_string();
         assert!(s.contains("openai"));
         assert!(s.contains("input too long"));
+    }
+
+    #[test]
+    fn api_error_display() {
+        let e = LlmError::ApiError {
+            provider: "claude".into(),
+            status: 503,
+        };
+        let s = e.to_string();
+        assert!(s.contains("claude"));
+        assert!(s.contains("503"));
+    }
+
+    #[test]
+    fn body_is_context_length_error_detects_known_messages() {
+        assert!(body_is_context_length_error(
+            "maximum number of tokens exceeded"
+        ));
+        assert!(body_is_context_length_error(
+            "This model's maximum context length is 4096 tokens. context_length_exceeded"
+        ));
+        assert!(body_is_context_length_error(
+            "context length exceeded for model"
+        ));
+        assert!(body_is_context_length_error("prompt is too long"));
+        assert!(body_is_context_length_error(
+            "input too long for this model"
+        ));
+    }
+
+    #[test]
+    fn body_is_context_length_error_ignores_unrelated_messages() {
+        assert!(!body_is_context_length_error("some unrelated error"));
+        assert!(!body_is_context_length_error("rate limit exceeded"));
+        assert!(!body_is_context_length_error("authentication failed"));
     }
 }

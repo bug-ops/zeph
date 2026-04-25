@@ -213,8 +213,8 @@ async fn gemini_chat_stream_error_on_failed_request() {
     assert!(result.is_err());
     let err = result.err().unwrap().to_string();
     assert!(
-        err.contains("PERMISSION_DENIED"),
-        "error must include API status: {err}"
+        err.contains("403"),
+        "error must include HTTP status code: {err}"
     );
 }
 
@@ -1107,8 +1107,8 @@ async fn gap1_http_error_response_maps_to_llm_error_other() {
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("PERMISSION_DENIED"),
-        "error must include API status: {err}"
+        err.contains("403"),
+        "error must include HTTP status code: {err}"
     );
 }
 
@@ -1453,8 +1453,8 @@ async fn gemini_embed_api_error_403() {
 
     let err = p.embed("test").await.unwrap_err().to_string();
     assert!(
-        err.contains("PERMISSION_DENIED"),
-        "error must contain status: {err}"
+        err.contains("403"),
+        "error must contain HTTP status code: {err}"
     );
 }
 
@@ -1750,8 +1750,8 @@ async fn list_models_remote_auth_error() {
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("auth error"),
-        "error must mention auth error: {err}"
+        err.contains("401"),
+        "error must mention HTTP status code: {err}"
     );
 }
 

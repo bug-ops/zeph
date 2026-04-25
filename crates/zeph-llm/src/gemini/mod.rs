@@ -117,12 +117,15 @@ impl GeminiProvider {
     ///
     /// # Errors
     ///
-    /// Returns [`LlmError::Other`] if `budget` is outside the valid range.
+    /// Returns [`LlmError::InvalidInput`] if `budget` is outside the valid range.
     pub fn with_thinking_budget(mut self, budget: i32) -> Result<Self, LlmError> {
         if budget != -1 && !(0..=32768).contains(&budget) {
-            return Err(LlmError::Other(format!(
-                "thinking_budget {budget} is out of range; valid: -1 (dynamic), 0 (disable), 1-32768"
-            )));
+            return Err(LlmError::InvalidInput {
+                provider: "gemini".into(),
+                message: format!(
+                    "thinking_budget {budget} is out of range; valid: -1 (dynamic), 0 (disable), 1-32768"
+                ),
+            });
         }
         self.thinking_budget = Some(budget);
         Ok(self)
@@ -398,17 +401,13 @@ impl GeminiProvider {
         .await?;
 
         let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Err(LlmError::Other(format!(
-                "Gemini API auth error listing models: {status}"
-            )));
-        }
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             tracing::debug!(status = %status, body = %body, "Gemini list_models_remote error");
-            return Err(LlmError::Other(format!(
-                "Gemini list models failed: {status}"
-            )));
+            return Err(LlmError::ApiError {
+                provider: "gemini".into(),
+                status: status.as_u16(),
+            });
         }
 
         let list: GeminiModelList = response.json().await?;
@@ -446,17 +445,20 @@ fn parse_gemini_error(body: &str, status: reqwest::StatusCode) -> LlmError {
         if err_resp.error.status == "RESOURCE_EXHAUSTED" {
             return LlmError::RateLimited;
         }
+        if crate::error::body_is_context_length_error(&err_resp.error.message) {
+            return LlmError::ContextLengthExceeded;
+        }
         tracing::error!(
             code = err_resp.error.code,
             status = %err_resp.error.status,
             "Gemini API error: {}", err_resp.error.message
         );
-        LlmError::Other(format!(
-            "Gemini API error ({}): {}",
-            err_resp.error.status, err_resp.error.message
-        ))
     } else {
-        LlmError::Other(format!("Gemini API request failed (status {status})"))
+        tracing::error!("Gemini API request failed (status {status}): {body}");
+    }
+    LlmError::ApiError {
+        provider: "gemini".into(),
+        status: status.as_u16(),
     }
 }
 
@@ -1289,9 +1291,8 @@ impl LlmProvider for GeminiProvider {
         let body_text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
-            // Check for 400 before delegating to parse_gemini_error, which maps all
-            // non-rate-limited errors to LlmError::Other. A 400 means the input itself
-            // is invalid; retrying on another provider would fail identically.
+            // Check for 400 before delegating to parse_gemini_error; a 400 means the
+            // input itself is invalid and retrying on another provider would fail identically.
             if status == reqwest::StatusCode::BAD_REQUEST {
                 return Err(LlmError::InvalidInput {
                     provider: "gemini".into(),

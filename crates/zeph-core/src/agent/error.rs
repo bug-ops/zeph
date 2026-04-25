@@ -21,6 +21,10 @@ pub enum AgentError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A `tokio::task::spawn_blocking` call failed to complete (task panicked or was cancelled).
+    #[error("blocking task failed: {0}")]
+    SpawnBlocking(#[from] tokio::task::JoinError),
+
     /// Agent received a shutdown signal and exited the run loop cleanly.
     #[error("agent shut down")]
     Shutdown,
@@ -37,6 +41,28 @@ pub enum AgentError {
     #[error("schema validation failed: {0}")]
     SchemaValidation(String),
 
+    /// An orchestration or DAG planning operation failed.
+    #[error("orchestration error: {0}")]
+    OrchestrationError(String),
+
+    /// An unknown slash command or subcommand was received.
+    #[error("unknown command: {0}")]
+    UnknownCommand(String),
+
+    /// Skill file operation failed (invalid name or skill not found).
+    #[error("skill error: {0}")]
+    SkillOperation(String),
+
+    /// Context assembly or index retrieval failed.
+    #[error("context error: {0}")]
+    ContextError(String),
+
+    /// Catch-all for errors that do not yet have a specific typed variant.
+    ///
+    /// # Deprecation
+    ///
+    /// Prefer adding a typed variant over using `Other`. This variant exists for
+    /// backward compatibility and will be removed once all callsites are migrated.
     #[error("{0}")]
     Other(String),
 }
@@ -78,9 +104,18 @@ mod tests {
     }
 
     #[test]
-    fn agent_error_detects_context_length_from_other_message() {
-        let e = AgentError::Llm(zeph_llm::LlmError::Other("context length exceeded".into()));
+    fn agent_error_detects_context_length_from_typed_variant() {
+        // Providers must return ContextLengthExceeded directly, not Other.
+        let e = AgentError::Llm(zeph_llm::LlmError::ContextLengthExceeded);
         assert!(e.is_context_length_error());
+    }
+
+    #[test]
+    fn agent_error_other_with_context_message_not_detected() {
+        // The `Other` path no longer triggers context-length classification;
+        // providers are responsible for returning ContextLengthExceeded directly.
+        let e = AgentError::Llm(zeph_llm::LlmError::Other("context length exceeded".into()));
+        assert!(!e.is_context_length_error());
     }
 
     #[test]
@@ -139,5 +174,23 @@ mod tests {
     fn agent_error_non_no_providers_returns_false() {
         let e = AgentError::Other("other".into());
         assert!(!e.is_no_providers());
+    }
+
+    #[test]
+    fn orchestration_error_display() {
+        let e = AgentError::OrchestrationError("planner failed".into());
+        assert!(e.to_string().contains("planner failed"));
+    }
+
+    #[test]
+    fn unknown_command_display() {
+        let e = AgentError::UnknownCommand("/foo".into());
+        assert!(e.to_string().contains("/foo"));
+    }
+
+    #[test]
+    fn skill_operation_display() {
+        let e = AgentError::SkillOperation("skill not found".into());
+        assert!(e.to_string().contains("skill not found"));
     }
 }

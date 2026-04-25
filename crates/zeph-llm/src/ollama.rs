@@ -185,9 +185,10 @@ impl OllamaProvider {
     ///
     /// Returns an error if the connection to Ollama fails.
     pub async fn health_check(&self) -> Result<(), LlmError> {
-        self.client.list_local_models().await.map_err(|e| {
-            LlmError::Other(format!("failed to connect to Ollama — is it running? {e}"))
-        })?;
+        self.client
+            .list_local_models()
+            .await
+            .map_err(|_| LlmError::Unavailable)?;
         Ok(())
     }
 
@@ -978,8 +979,7 @@ mod tests {
         let provider =
             OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into());
         let result = provider.health_check().await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Ollama"));
+        assert!(matches!(result, Err(crate::LlmError::Unavailable)));
     }
 
     #[test]

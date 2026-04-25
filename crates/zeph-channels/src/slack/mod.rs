@@ -92,7 +92,7 @@ impl SlackChannel {
         let channel_id = self
             .channel_id
             .as_deref()
-            .ok_or_else(|| ChannelError::Other("no active channel".into()))?;
+            .ok_or_else(|| ChannelError::NoActiveSession)?;
 
         let text = if self.accumulated.is_empty() {
             "..."
@@ -178,7 +178,7 @@ impl Channel for SlackChannel {
         let channel_id = self
             .channel_id
             .as_deref()
-            .ok_or_else(|| ChannelError::Other("no active channel".into()))?;
+            .ok_or_else(|| ChannelError::NoActiveSession)?;
 
         self.api
             .post_message(channel_id, text)
@@ -328,7 +328,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn confirm_returns_err_without_active_channel() {
         // confirm() calls send() first. Without channel_id, send() returns
-        // Err("no active channel") and confirm() propagates it via `?`.
+        // Err(ChannelError::NoActiveSession) and confirm() propagates it via `?`.
         // This test verifies that confirm() is callable and errors correctly.
         let mut ch = make_channel();
         // channel_id is None in make_channel() — send() will fail immediately.

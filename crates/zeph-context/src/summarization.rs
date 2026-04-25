@@ -84,7 +84,7 @@ pub async fn summarize_structured(
             next_steps_empty = summary.next_steps.is_empty(),
             "structured summary incomplete: mandatory fields missing, falling back to prose"
         );
-        return Err(zeph_llm::LlmError::Other(
+        return Err(zeph_llm::LlmError::StructuredParse(
             "structured summary missing mandatory fields".into(),
         ));
     }
@@ -94,7 +94,7 @@ pub async fn summarize_structured(
             error = %msg,
             "structured summary failed field validation, falling back to prose"
         );
-        return Err(zeph_llm::LlmError::Other(msg));
+        return Err(zeph_llm::LlmError::StructuredParse(msg));
     }
 
     Ok(summary)
@@ -129,7 +129,7 @@ pub async fn single_pass_summary(
 ///
 /// # Errors
 /// Returns [`zeph_llm::LlmError`] when all summarization attempts fail.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
 pub async fn summarize_with_llm(
     deps: &SummarizationDeps,
     messages: &[Message],

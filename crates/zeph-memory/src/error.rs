@@ -50,6 +50,19 @@ pub enum MemoryError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
+    /// A mutex or `RwLock` was poisoned by a panicking thread.
+    ///
+    /// This indicates a programming error (a thread panicked while holding the lock).
+    /// The inner string describes which lock was poisoned.
+    #[error("lock poisoned: {0}")]
+    LockPoisoned(String),
+
+    /// Catch-all for errors that do not yet have a specific typed variant.
+    ///
+    /// # Deprecation
+    ///
+    /// Prefer adding a typed variant over using `Other`. This variant exists for
+    /// backward compatibility and will be removed once all callsites are migrated.
     #[error("{0}")]
     Other(String),
 

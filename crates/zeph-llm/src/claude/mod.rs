@@ -94,7 +94,7 @@ use self::types::MIN_MAX_TOKENS_WITH_THINKING;
 /// - [`with_cache_user_messages`](Self::with_cache_user_messages) — prompt caching
 /// - [`with_status_tx`](Self::with_status_tx) — real-time status events for the UI
 /// - [`with_generation_overrides`](Self::with_generation_overrides) — temperature / top-p
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct ClaudeProvider {
     client: reqwest::Client,
     api_key: String,
@@ -382,15 +382,21 @@ impl ClaudeProvider {
             const MIN_BUDGET: u32 = 1_024;
             const MAX_BUDGET: u32 = 128_000;
             if !(MIN_BUDGET..=MAX_BUDGET).contains(&budget_tokens) {
-                return Err(LlmError::Other(format!(
-                    "budget_tokens {budget_tokens} is out of range [{MIN_BUDGET}, {MAX_BUDGET}]"
-                )));
+                return Err(LlmError::InvalidInput {
+                    provider: "claude".into(),
+                    message: format!(
+                        "budget_tokens {budget_tokens} is out of range [{MIN_BUDGET}, {MAX_BUDGET}]"
+                    ),
+                });
             }
             let max_tokens = self.max_tokens.max(MIN_MAX_TOKENS_WITH_THINKING);
             if budget_tokens >= max_tokens {
-                return Err(LlmError::Other(format!(
-                    "budget_tokens {budget_tokens} must be less than max_tokens {max_tokens}"
-                )));
+                return Err(LlmError::InvalidInput {
+                    provider: "claude".into(),
+                    message: format!(
+                        "budget_tokens {budget_tokens} must be less than max_tokens {max_tokens}"
+                    ),
+                });
             }
             self.max_tokens = max_tokens;
         } else {
@@ -415,7 +421,7 @@ impl ClaudeProvider {
     /// Fetch all available Claude models from the Anthropic API and cache them.
     ///
     /// Paginates until `has_more` is false.
-    /// 401/403 responses are returned as `LlmError::Other` without touching the cache.
+    /// Non-success HTTP responses are returned as [`LlmError::ApiError`] without touching the cache.
     ///
     /// # Errors
     ///
@@ -450,19 +456,13 @@ impl ClaudeProvider {
                 .await?;
 
             let status = resp.status();
-            if status == reqwest::StatusCode::UNAUTHORIZED
-                || status == reqwest::StatusCode::FORBIDDEN
-            {
-                return Err(LlmError::Other(format!(
-                    "Claude API auth error listing models: {status}"
-                )));
-            }
             if !status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
                 tracing::debug!(status = %status, body = %body, "Claude list_models_remote error body");
-                return Err(LlmError::Other(format!(
-                    "Claude list models failed: {status}"
-                )));
+                return Err(LlmError::ApiError {
+                    provider: "claude".into(),
+                    status: status.as_u16(),
+                });
             }
 
             let page: serde_json::Value = resp.json().await?;
@@ -836,9 +836,15 @@ impl ClaudeProvider {
                 });
             }
             tracing::error!("Claude API error {status}: {text}");
-            return Err(LlmError::Other(format!(
-                "Claude API request failed (status {status})"
-            )));
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && crate::error::body_is_context_length_error(&text)
+            {
+                return Err(LlmError::ContextLengthExceeded);
+            }
+            return Err(LlmError::ApiError {
+                provider: "claude".into(),
+                status: status.as_u16(),
+            });
         }
 
         if Self::has_image_parts(messages) {
@@ -899,9 +905,15 @@ impl ClaudeProvider {
                 });
             }
             tracing::error!("Claude API streaming request error {status}: {text}");
-            return Err(LlmError::Other(format!(
-                "Claude API streaming request failed (status {status})"
-            )));
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && crate::error::body_is_context_length_error(&text)
+            {
+                return Err(LlmError::ContextLengthExceeded);
+            }
+            return Err(LlmError::ApiError {
+                provider: "claude".into(),
+                status: status.as_u16(),
+            });
         }
 
         Ok(response)
@@ -1075,9 +1087,15 @@ impl LlmProvider for ClaudeProvider {
                     header: ANTHROPIC_BETA_COMPACT.into(),
                 });
             }
-            return Err(LlmError::Other(format!(
-                "Claude API request failed (status {status})"
-            )));
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && crate::error::body_is_context_length_error(&text)
+            {
+                return Err(LlmError::ContextLengthExceeded);
+            }
+            return Err(LlmError::ApiError {
+                provider: "claude".into(),
+                status: status.as_u16(),
+            });
         }
 
         let resp: ToolApiResponse = serde_json::from_str(&text)?;
@@ -1260,9 +1278,15 @@ impl LlmProvider for ClaudeProvider {
                 });
             }
             tracing::error!("Claude API error {status}: {text}");
-            return Err(LlmError::Other(format!(
-                "Claude API request failed (status {status})"
-            )));
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && crate::error::body_is_context_length_error(&text)
+            {
+                return Err(LlmError::ContextLengthExceeded);
+            }
+            return Err(LlmError::ApiError {
+                provider: "claude".into(),
+                status: status.as_u16(),
+            });
         }
 
         let resp: ToolApiResponse = serde_json::from_str(&text)?;

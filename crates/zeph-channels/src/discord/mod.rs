@@ -95,7 +95,7 @@ impl DiscordChannel {
         let channel_id = self
             .channel_id
             .clone()
-            .ok_or_else(|| ChannelError::Other("no active channel".into()))?;
+            .ok_or_else(|| ChannelError::NoActiveSession)?;
 
         let text = if self.accumulated.is_empty() {
             "...".to_owned()
@@ -196,7 +196,7 @@ impl Channel for DiscordChannel {
         let channel_id = self
             .channel_id
             .as_deref()
-            .ok_or_else(|| ChannelError::Other("no active channel".into()))?;
+            .ok_or_else(|| ChannelError::NoActiveSession)?;
 
         if text.len() <= MAX_MESSAGE_LEN {
             self.rest

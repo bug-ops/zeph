@@ -12,6 +12,7 @@ use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
 use crate::compatible::CompatibleProvider;
 use crate::gemini::GeminiProvider;
+#[cfg(any(test, feature = "testing"))]
 use crate::mock::MockProvider;
 use crate::ollama::OllamaProvider;
 use crate::openai::OpenAiProvider;
@@ -39,6 +40,7 @@ macro_rules! delegate_provider {
             AnyProvider::Compatible($p) => $expr,
             AnyProvider::Router($p) => $expr,
             AnyProvider::Triage($p) => $expr,
+            #[cfg(any(test, feature = "testing"))]
             AnyProvider::Mock($p) => $expr,
         }
     };
@@ -64,6 +66,10 @@ pub enum AnyProvider {
     Router(Box<RouterProvider>),
     /// Complexity triage router: pre-classifies each request and delegates to the appropriate tier.
     Triage(Box<TriageRouter>),
+    /// A mock provider for use in tests and benchmarks.
+    ///
+    /// Only available with the `testing` feature or in `#[cfg(test)]` contexts.
+    #[cfg(any(test, feature = "testing"))]
     Mock(MockProvider),
 }
 
@@ -156,6 +162,7 @@ impl AnyProvider {
                 .unwrap_or_default()),
             #[cfg(feature = "candle")]
             AnyProvider::Candle(_) => Ok(vec![]),
+            #[cfg(any(test, feature = "testing"))]
             AnyProvider::Mock(p) => Ok(p.models.clone()),
         }
     }
@@ -235,6 +242,7 @@ impl AnyProvider {
             Self::OpenAi(p) => Self::OpenAi(p.with_generation_overrides(overrides)),
             Self::Gemini(p) => Self::Gemini(p.with_generation_overrides(overrides)),
             Self::Compatible(p) => Self::Compatible(p.with_generation_overrides(overrides)),
+            #[cfg(any(test, feature = "testing"))]
             Self::Mock(p) => Self::Mock(p.with_generation_overrides(overrides)),
             #[cfg(feature = "candle")]
             Self::Candle(p) => {
@@ -294,6 +302,7 @@ impl AnyProvider {
             Self::Ollama(_) => {}
             #[cfg(feature = "candle")]
             Self::Candle(_) => {}
+            #[cfg(any(test, feature = "testing"))]
             Self::Mock(_) => {}
         }
     }

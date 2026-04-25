@@ -33,6 +33,7 @@ zeph-memory.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 zeph-llm.workspace = true
+zeph-memory = { workspace = true, features = ["testing"] }
 
 [features]
 default = []

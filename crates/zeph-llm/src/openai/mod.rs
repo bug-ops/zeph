@@ -236,9 +236,10 @@ impl OpenAiProvider {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             tracing::debug!(status = %status, body = %body, "OpenAI list_models_remote error body");
-            return Err(LlmError::Other(format!(
-                "OpenAI list models failed: {status}"
-            )));
+            return Err(LlmError::ApiError {
+                provider: "openai".into(),
+                status: status.as_u16(),
+            });
         }
 
         let page: serde_json::Value = resp.json().await?;
@@ -354,9 +355,15 @@ impl OpenAiProvider {
 
         if !status.is_success() {
             tracing::error!("OpenAI API error {status}: {text}");
-            return Err(LlmError::Other(format!(
-                "OpenAI API request failed (status {status})"
-            )));
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && crate::error::body_is_context_length_error(&text)
+            {
+                return Err(LlmError::ContextLengthExceeded);
+            }
+            return Err(LlmError::ApiError {
+                provider: "openai".into(),
+                status: status.as_u16(),
+            });
         }
 
         let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
@@ -422,9 +429,15 @@ impl OpenAiProvider {
         if !status.is_success() {
             let text = response.text().await.map_err(LlmError::Http)?;
             tracing::error!("OpenAI API streaming request error {status}: {text}");
-            return Err(LlmError::Other(format!(
-                "OpenAI API streaming request failed (status {status})"
-            )));
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && crate::error::body_is_context_length_error(&text)
+            {
+                return Err(LlmError::ContextLengthExceeded);
+            }
+            return Err(LlmError::ApiError {
+                provider: "openai".into(),
+                status: status.as_u16(),
+            });
         }
 
         Ok(response)
@@ -524,9 +537,10 @@ impl LlmProvider for OpenAiProvider {
                     message: body_text,
                 });
             }
-            return Err(LlmError::Other(format!(
-                "OpenAI embedding request failed (status {status})"
-            )));
+            return Err(LlmError::ApiError {
+                provider: "openai".into(),
+                status: status.as_u16(),
+            });
         }
 
         let resp: EmbeddingResponse = serde_json::from_str(&body_text)?;
@@ -579,9 +593,10 @@ impl LlmProvider for OpenAiProvider {
                     message: body_text,
                 });
             }
-            return Err(LlmError::Other(format!(
-                "OpenAI batch embedding failed (status {status})"
-            )));
+            return Err(LlmError::ApiError {
+                provider: "openai".into(),
+                status: status.as_u16(),
+            });
         }
 
         let resp: EmbeddingResponse = serde_json::from_str(&body_text)?;
@@ -767,9 +782,15 @@ impl LlmProvider for OpenAiProvider {
         let text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
-            return Err(LlmError::Other(format!(
-                "OpenAI API request failed (status {status})"
-            )));
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && crate::error::body_is_context_length_error(&text)
+            {
+                return Err(LlmError::ContextLengthExceeded);
+            }
+            return Err(LlmError::ApiError {
+                provider: "openai".into(),
+                status: status.as_u16(),
+            });
         }
 
         let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
@@ -872,6 +893,9 @@ impl LlmProvider for OpenAiProvider {
 
         if status == reqwest::StatusCode::BAD_REQUEST {
             tracing::warn!("OpenAI tool chat 400 bad request: {text}");
+            if crate::error::body_is_context_length_error(&text) {
+                return Err(LlmError::ContextLengthExceeded);
+            }
             return Err(LlmError::InvalidInput {
                 provider: self.name().to_owned(),
                 message: text,
@@ -880,9 +904,10 @@ impl LlmProvider for OpenAiProvider {
 
         if !status.is_success() {
             tracing::error!("OpenAI API error {status}: {text}");
-            return Err(LlmError::Other(format!(
-                "OpenAI API request failed (status {status})"
-            )));
+            return Err(LlmError::ApiError {
+                provider: "openai".into(),
+                status: status.as_u16(),
+            });
         }
 
         self.decode_tool_chat_response(&text)
