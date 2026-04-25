@@ -31,7 +31,7 @@ pub(crate) fn handle_migrate_config(
     let mut step_results: Vec<(&str, MigrationResult)> = Vec::with_capacity(MIGRATIONS.len());
     for migration in MIGRATIONS.iter() {
         let result = migration.apply(&current)?;
-        current = result.output.clone();
+        current.clone_from(&result.output);
         step_results.push((migration.name(), result));
     }
 
