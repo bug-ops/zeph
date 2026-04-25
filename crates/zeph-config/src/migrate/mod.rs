@@ -2910,6 +2910,127 @@ pub fn migrate_focus_auto_consolidate_min_window(
     })
 }
 
+/// Add `[session]` with `provider_persistence = true` to configs that lack the section (#3308).
+///
+/// Provider persistence was verified stable in CI-608 (restored persisted provider preference
+/// from `SQLite`). Configs that already declare `[session]` or the commented `# [session]` are
+/// returned unchanged.
+///
+/// # Errors
+///
+/// Infallible in practice; `Result` matches the migration convention.
+pub fn migrate_session_provider_persistence(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if toml_src
+        .lines()
+        .any(|l| l.trim() == "[session]" || l.trim() == "# [session]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [session] — session-scoped user experience settings (#3308).\n\
+         [session]\n\
+         # Persist the last-used provider per channel across restarts.\n\
+         # When true, the agent saves the active provider name to SQLite after each\n\
+         # /provider switch and restores it on the next session start for the same channel.\n\
+         provider_persistence = true\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["session".to_owned()],
+    })
+}
+
+/// Add `[memory.retrieval]` with `query_bias_correction = true` if the section is absent.
+///
+/// `query_bias_correction` shifts first-person queries toward the user profile centroid
+/// (MM-F3, #3341) and is verified working in CI-604/CI-605. It is a no-op when the persona
+/// table is empty, so enabling it by default is safe.
+///
+/// Idempotent: the section header (live or commented) suppresses re-injection.
+///
+/// # Errors
+///
+/// Infallible in practice; `Result` matches the migration convention.
+pub fn migrate_memory_retrieval_query_bias(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    // Already handled by migrate_memory_retrieval_config if the whole section is absent.
+    // This step only splices the key into an existing [memory.retrieval] section.
+    if !toml_src.lines().any(|l| l.trim() == "[memory.retrieval]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Idempotent: key already present (active or as comment).
+    if toml_src
+        .lines()
+        .any(|l| l.trim().starts_with("query_bias_correction"))
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# MM-F3 (#3341): shift first-person queries toward the user profile centroid.\n\
+         # No-op when the persona table is empty.\n\
+         # query_bias_correction = true\n";
+    let output = insert_after_section(toml_src, "memory.retrieval", comment);
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.retrieval.query_bias_correction".to_owned()],
+    })
+}
+
+/// Add a commented-out `[memory.persona]` stub to configs that lack the section.
+///
+/// The persona profile drives query-bias correction (MM-F3, #3341) and is verified working
+/// in CI-604/CI-605. Adding the stub makes the section discoverable via `migrate-config`.
+///
+/// # Errors
+///
+/// Infallible in practice; `Result` matches the migration convention.
+pub fn migrate_memory_persona_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src
+        .lines()
+        .any(|l| l.trim() == "[memory.persona]" || l.trim() == "# [memory.persona]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [memory.persona] — user persona profile for query-bias correction (#3341).\n\
+         # Verified working in CI-604/CI-605. No-op when disabled.\n\
+         # [memory.persona]\n\
+         # enabled = true\n\
+         # min_messages = 2       # minimum user messages before persona extraction fires\n\
+         # min_confidence = 0.5   # minimum extraction confidence threshold (0.0–1.0)\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.persona".to_owned()],
+    })
+}
+
 // ── Migration trait and registry ────────────────────────────────────────────────────────────────
 
 /// A single idempotent config migration step.
@@ -2955,15 +3076,16 @@ use steps::{
     MigrateEgressConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
     MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateMagicDocsConfig,
     MigrateMcpElicitationConfig, MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
-    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryReasoning,
-    MigrateMemoryReasoningJudge, MigrateMemoryRetrieval, MigrateMicrocompactConfig,
-    MigrateOrchestrationPersistence, MigrateOtelFilter, MigratePlannerModelToProvider,
-    MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
+    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
+    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
+    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
+    MigrateOtelFilter, MigratePlannerModelToProvider, MigrateQualityConfig, MigrateSandboxConfig,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionProviderPersistence,
     MigrateSessionRecapConfig, MigrateShellTransactional, MigrateSttToProvider,
     MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateVigilConfig,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–35).
+/// Ordered registry of all sequential migration steps (steps 1–38).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -3008,7 +3130,7 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateQualityConfig),
             Box::new(MigrateAcpSubagentsConfig),
             Box::new(MigrateHooksPermissionDeniedConfig),
-            // Steps 26–35 (most recent migrations)
+            // Steps 26–35 (most recent migrations, pre-stable-defaults)
             Box::new(MigrateMemoryGraph),
             Box::new(MigrateSchedulerDaemon),
             Box::new(MigrateMemoryRetrieval),
@@ -3019,6 +3141,10 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateMemoryHebbianSpread),
             Box::new(MigrateHooksTurnComplete),
             Box::new(MigrateFocusAutoConsolidateMinWindow),
+            // Steps 36–38 (stable-defaults: flip verified-stable config keys to on)
+            Box::new(MigrateSessionProviderPersistence),
+            Box::new(MigrateMemoryRetrievalQueryBias),
+            Box::new(MigrateMemoryPersonaConfig),
         ]
     });
 
@@ -3037,8 +3163,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            35,
-            "MIGRATIONS registry must contain all 35 sequential steps"
+            38,
+            "MIGRATIONS registry must contain all 38 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -4624,8 +4750,8 @@ prompt_cache_ttl = "1h"
     // ── Migration registry ────────────────────────────────────────────────────
 
     #[test]
-    fn registry_has_thirty_five_entries() {
-        assert_eq!(MIGRATIONS.len(), 35);
+    fn registry_has_thirty_eight_entries() {
+        assert_eq!(MIGRATIONS.len(), 38);
     }
 
     #[test]
@@ -4664,7 +4790,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_preserves_order_matches_dispatch() {
-        // Names must follow the documented step order (steps 1–35).
+        // Names must follow the documented step order (steps 1–38).
         let expected = [
             "migrate_stt_to_provider",
             "migrate_planner_model_to_provider",
@@ -4701,6 +4827,9 @@ prompt_cache_ttl = "1h"
             "migrate_memory_hebbian_spread_config",
             "migrate_hooks_turn_complete_config",
             "migrate_focus_auto_consolidate_min_window",
+            "migrate_session_provider_persistence",
+            "migrate_memory_retrieval_query_bias",
+            "migrate_memory_persona_config",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);

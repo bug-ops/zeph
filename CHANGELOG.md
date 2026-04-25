@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Enable `task-metrics` and `self-check` as default Cargo features; the default binary now emits
+  `cost.cps_cents` / `task.class.*` metrics and runs agent invariant checks without needing
+  `--features full`. Both features have been verified across CI-593b..CI-613 with no regressions.
+- Default config: enable `memory.retrieval` (depth=40, `query_bias_correction=true`), verified
+  in CI-604/CI-605 (MM-F1/MM-F3); enable `memory.persona` (`enabled=true`), substrate for
+  query-bias correction; enable `session.provider_persistence=true`, verified in CI-608 (#3308);
+  uncomment `memory.hebbian` block with `enabled=false` (opt-in, discoverable).
+- Default config: document `memory.graph.spreading_activation` as `enabled=true` in the
+  commented `[memory.graph]` example block — verified working in CI-608 (activated=4 facts=15).
+- Config migration: added steps 36–38 (`migrate_session_provider_persistence`,
+  `migrate_memory_retrieval_query_bias`, `migrate_memory_persona_config`) so existing user
+  configs receive the new defaults on `zeph --migrate-config`.
+
 ### Fixed
 
 - `zeph-memory`: `EmbeddingRegistry::search_raw` now validates query vector dimension against the

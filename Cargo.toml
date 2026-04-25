@@ -186,7 +186,7 @@ description = "Lightweight AI agent with hybrid inference, skills-first architec
 readme = "README.md"
 
 [features]
-default = ["scheduler", "sqlite"]
+default = ["scheduler", "sqlite", "task-metrics", "self-check"]
 
 # === Use-case bundles ===
 desktop = ["tui"]

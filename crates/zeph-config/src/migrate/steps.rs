@@ -3,6 +3,8 @@
 
 //! Migration step wrapper structs — one per sequential migration in [`super::MIGRATIONS`].
 //!
+//! Steps 1–35 are pre-existing; steps 36–38 were added for the stable-defaults flip.
+//!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
 //! registry can hold `Box<dyn Migration>` values.
@@ -16,13 +18,14 @@ use super::{
     migrate_magic_docs_config, migrate_mcp_elicitation_config, migrate_mcp_trust_levels,
     migrate_memory_graph_config, migrate_memory_hebbian_config,
     migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
-    migrate_memory_reasoning_config, migrate_memory_reasoning_judge_config,
-    migrate_memory_retrieval_config, migrate_microcompact_config,
+    migrate_memory_persona_config, migrate_memory_reasoning_config,
+    migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
+    migrate_memory_retrieval_query_bias, migrate_microcompact_config,
     migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
     migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
-    migrate_scheduler_daemon_config, migrate_session_recap_config, migrate_shell_transactional,
-    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
-    migrate_vigil_config,
+    migrate_scheduler_daemon_config, migrate_session_provider_persistence,
+    migrate_session_recap_config, migrate_shell_transactional, migrate_stt_to_provider,
+    migrate_supervisor_config, migrate_telemetry_config, migrate_vigil_config,
 };
 
 // ── Wrapper structs for all 35 sequential migration steps ───────────────────────────────────────
@@ -409,5 +412,38 @@ impl Migration for MigrateFocusAutoConsolidateMinWindow {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_focus_auto_consolidate_min_window(toml_src)
+    }
+}
+
+pub(super) struct MigrateSessionProviderPersistence;
+impl Migration for MigrateSessionProviderPersistence {
+    fn name(&self) -> &'static str {
+        "migrate_session_provider_persistence"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_session_provider_persistence(toml_src)
+    }
+}
+
+pub(super) struct MigrateMemoryRetrievalQueryBias;
+impl Migration for MigrateMemoryRetrievalQueryBias {
+    fn name(&self) -> &'static str {
+        "migrate_memory_retrieval_query_bias"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_memory_retrieval_query_bias(toml_src)
+    }
+}
+
+pub(super) struct MigrateMemoryPersonaConfig;
+impl Migration for MigrateMemoryPersonaConfig {
+    fn name(&self) -> &'static str {
+        "migrate_memory_persona_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_memory_persona_config(toml_src)
     }
 }
