@@ -423,7 +423,47 @@ max_hops = 2
 recall_limit = 10
 ```
 
+### Hebbian Reinforcement
+
+Hebbian updates strengthen edge weights in the graph when facts are recalled. After retrieving a fact from the graph, the edges traversed during retrieval are incremented by a configurable learning rate, making frequently-used relationships stronger over time.
+
+```toml
+[memory.hebbian]
+enabled = false                    # disabled by default; opt-in
+hebbian_lr = 0.1                   # learning rate for weight increment
+```
+
+When enabled, the system records every graph retrieval and applies weight updates fire-and-forget in the background.
+
+### HeLa-Mem Spreading Activation Retrieval
+
+HeLa-Mem (Hebbian-Latent Memory) extends graph retrieval with spreading activation: starting from the top-1 ANN anchor node, the system performs breadth-first search through the graph, propagating edge weights (`path_weight = Π edge.weight`). Each visited node is scored as `path_weight × cosine(query, entity)`, with negative cosine clamped to 0.0. Multi-path convergence keeps the maximum `path_weight`.
+
+```toml
+[memory.hebbian]
+spreading_activation = true        # enable spreading activation (default: false)
+spread_depth = 3                   # BFS depth limit (default: 2)
+spread_edge_types = ["related_to", "contradicts"]  # filter edges by type (empty = all)
+step_budget_ms = 8                 # per-step timeout in milliseconds (default: 8)
+```
+
+An 8 ms circuit breaker emits a WARN log and returns empty results on budget exhaustion. Isolated anchors (no outgoing edges) fall back to a synthetic `HelaFact` scored by the real anchor cosine.
+
 See [Graph Memory](graph-memory.md) for the full concept guide.
+
+## ReasoningBank — Distilled Reasoning Strategy Memory
+
+After each assistant turn, a three-stage pipeline (self-judge → distillation → store) extracts reasoning strategies and stores them as a new kind of memory. A ≤3-sentence strategy summary captures how the agent solved a problem and can be retrieved in future turns.
+
+```toml
+[memory.reasoning]
+enabled = false                   # disabled by default; opt-in
+store_limit = 100                 # max entries in reasoning_strategies table (default: 100)
+self_judge_window = 2             # messages to evaluate (default: 2 = final user+assistant exchange)
+min_assistant_chars = 50          # skip trivial responses shorter than this (default: 50)
+```
+
+Strategies are stored in SQLite and retrieved at context-build time by embedding similarity. The system maintains an LRU eviction with hot-row protection: frequently-used strategies are kept even under eviction pressure.
 
 ## Session Summary on Shutdown
 
@@ -624,6 +664,18 @@ min_turns_between_updates = 5    # turns between updates for the same file
 update_provider           = ""   # provider name; falls back to primary
 max_iterations            = 4    # max iterations per update call
 ```
+
+## Query Bias Correction
+
+First-person queries ("What did I do last week?") are shifted toward the user's profile centroid embedding before vector search. This improves recall of past user-specific decisions and preferences.
+
+```toml
+[memory.retrieval]
+query_bias_correction = true       # enable bias correction (default: false)
+query_bias_profile_weight = 0.25   # blend weight: 0.25 = 25% centroid, 75% query (default: 0.25)
+```
+
+The profile centroid is cached with a 300-second TTL in a bounded `RwLock`. Computation failures are non-sticky: the system falls through to the previous cache or disables bias for that turn.
 
 ## Store Routing
 

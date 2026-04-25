@@ -182,3 +182,75 @@ Each hook definition (`HookDef`) carries:
 | `fail_closed` | `bool` | `false` | When `true`, a hook failure blocks the agent turn; when `false`, failures are logged as warnings |
 
 Multiple hooks for the same event are executed in declaration order. If `fail_closed = true` on any hook, a failure in that hook stops execution of subsequent hooks for that event.
+
+### `TurnComplete`
+
+Fires after each agent turn completes. This hook does not block the turn — it runs fire-and-forget in the background and allows notification integrations, logging, or external system updates to happen after the agent responds.
+
+Hook commands receive environment variables describing the turn outcome:
+
+| Variable | Description |
+|----------|-------------|
+| `ZEPH_TURN_DURATION_MS` | Turn latency in milliseconds |
+| `ZEPH_TURN_STATUS` | `success`, `error`, or `cancelled` |
+| `ZEPH_TURN_PREVIEW` | First 150 chars of redacted agent response |
+| `ZEPH_TURN_LLM_REQUESTS` | Number of LLM API calls made this turn |
+
+**Use cases:**
+- Send a custom notification via a webhook
+- Log turn metrics to an external service
+- Sync agent state to an external system after each turn
+
+```toml
+[[hooks.turn_complete]]
+type         = "command"
+command      = "curl"
+args         = ["-X", "POST", "http://localhost:9999/webhook", "-d", "status=$ZEPH_TURN_STATUS"]
+timeout_secs = 5
+fail_closed  = false
+```
+
+When a `[notifications]` block is configured, `turn_complete` hooks share the same `should_fire` gate — the hook only runs if notifications are also configured to fire. When `[notifications]` is absent or `enabled = false`, `turn_complete` hooks fire on every turn.
+
+### `PermissionDenied`
+
+Fires when a tool execution is blocked by a `RuntimeLayer::before_tool` permission check. This allows you to log or audit blocked tool calls before they reach the user or external systems.
+
+Hook commands receive:
+
+| Variable | Description |
+|----------|-------------|
+| `ZEPH_DENIED_TOOL` | Name of the blocked tool |
+| `ZEPH_DENY_REASON` | Reason the tool was denied (e.g., `"blocked by before_tool layer"`) |
+
+**Use cases:**
+- Log security audit events to a central system
+- Alert on suspicious tool invocation patterns
+- Track which policies are enforcing restrictions
+
+```toml
+[[hooks.permission_denied]]
+type         = "command"
+command      = "logger"
+args         = ["-t", "zeph-security", "Denied tool: $ZEPH_DENIED_TOOL - $ZEPH_DENY_REASON"]
+timeout_secs = 5
+fail_closed  = false
+```
+
+## MCP Tool Hooks
+
+Hooks support direct MCP tool invocation via `type = "mcp_tool"`. When `type = "mcp_tool"`, the hook invokes a tool on a connected MCP server instead of spawning a subprocess.
+
+```toml
+[[hooks.cwd_changed]]
+type     = "mcp_tool"
+server   = "filesystem"        # MCP server id
+tool     = "write_file"        # MCP tool name
+args     = {"path": "/tmp/log", "contents": "Changed to $ZEPH_NEW_CWD"}
+fail_closed = false            # ignored if server unavailable
+```
+
+MCP tool hooks require the MCP manager to be active. If the server is unavailable, the hook result depends on `fail_closed`:
+
+- `fail_closed = false` (default): error is logged and the turn continues
+- `fail_closed = true`: turn is blocked until the tool succeeds or timeout expires

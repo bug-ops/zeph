@@ -73,6 +73,20 @@ The same table is available in the TUI via the `/cost` command. Providers are so
 
 Completion token counts use the `output_tokens` field from the API response (OpenAI, Ollama, and Compatible providers). Streaming paths retain a byte-length heuristic (`response.len() / 4`) as a fallback when the provider returns no usage data. Structured-output calls (`chat_typed`) also record usage so `eval_budget_tokens` enforcement reflects real token counts.
 
+### Cost Per Successful Task (CPS)
+
+CPS measures the average cost of reaching a successful agent turn (one where the LLM responded without errors). This metric is more meaningful than raw token cost because it factors in failed turns, retries, and provider switching.
+
+The `/cost` command displays CPS alongside token costs:
+
+```
+Cost per successful task: $0.0089 (123 successful turns, $1.09 total)
+```
+
+CPS resets daily at UTC midnight alongside the cost budget. Use it to track whether your agent is becoming more or less efficient over time.
+
+**In code:** access via `MetricsSnapshot.cost_cps_cents` and `MetricsSnapshot.cost_successful_tasks`.
+
 ## TaskSupervisor Metrics
 
 Zeph uses a `TaskSupervisor` to manage background tasks (embedding, memory consolidation, file watching, etc.). Task metrics provide CPU and wall-time measurement for performance debugging.

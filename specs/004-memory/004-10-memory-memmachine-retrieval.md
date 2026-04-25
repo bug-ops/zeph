@@ -9,7 +9,7 @@ tags:
   - retrieval
   - research
 created: 2026-04-24
-status: draft
+status: implemented
 related:
   - "[[MOC-specs]]"
   - "[[constitution]]"
@@ -93,14 +93,22 @@ Zeph's memory subsystem currently applies most optimization effort at **ingestio
 
 ```toml
 [memory.retrieval]
-depth = 20                          # ANN candidates before MMR
-search_prompt_template = ""         # empty = built-in default
+depth = 0                           # ANN candidate count; 0 = legacy recall_limit * 2
+search_prompt_template = ""         # query-side embedding template with {query} placeholder
 query_bias_correction = true        # first-person vs topic detection
+query_bias_profile_weight = 0.25    # blend weight for profile centroid shift
 context_format = "structured"       # "structured" | "plain"
 
 [memory.episodes]
 preserve_raw = true                 # store verbatim episodes alongside summaries
 ```
+
+> [!note] Implementation details for MM-F3 (query bias correction)
+> First-person queries are shifted toward the user's profile centroid embedding before vector
+> search. Centroid cached in a TTL-bounded `RwLock<Option<CachedCentroid>>` (default TTL 300 s).
+> Computation failure is non-sticky: falls through to previous cache or no-op.
+> Tracing spans: `memory.query_bias.apply` and `memory.query_bias.centroid` with structured
+> debug events for bias applied/skipped, centroid computed, and centroid cache hits (#3379).
 
 ### 3.2 Query Bias Correction
 
@@ -136,11 +144,11 @@ User mentioned preference for concise code responses and dislikes verbose explan
 
 ## 5. Acceptance Criteria
 
-- [ ] `depth` config field respected; ANN fetch count matches configured value
-- [ ] Query bias correction active by default; measurable embedding shift for first-person queries vs topic queries
-- [ ] Raw episodes stored when `preserve_raw = true`; existing summarization pipeline unaffected
-- [ ] Structured context format renders correctly in CLI and TUI memory recall output
-- [ ] `cargo nextest run -p zeph-memory` passes with no regressions
+- [x] `depth` config field (`0` = legacy fallback to `recall_limit * 2`) implemented; `search_prompt_template` with `{query}` placeholder; `context_format` `structured`/`plain` switching (MM-F1/F2/F5 — implemented #3340, #3353)
+- [x] Query bias correction: profile centroid fetched and blended with `query_bias_profile_weight`; TTL cache prevents redundant centroid computation (MM-F3 — implemented #3341, #3371, tracing #3379)
+- [x] Episode preservation unconditional (data-integrity invariant): eviction sweep excludes episode-bound message IDs (MM-F4 — implemented #3341)
+- [x] Structured context format renders in CLI and TUI
+- [x] `cargo nextest run -p zeph-memory` passes with no regressions
 
 ---
 

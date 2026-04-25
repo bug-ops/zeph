@@ -1292,6 +1292,88 @@ Zeph exposes a `GET /agent.json` endpoint on the HTTP transport that returns a J
 
 When the active model changes (via `/model` command, ACP `set_session_config_option`, or provider fallback), Zeph emits a `SessionInfoUpdate` notification containing the current model name. IDEs can use this to update their model indicator in real time.
 
+## ACP 0.11 Migration and Builder API
+
+Zeph now uses the ACP 0.11 builder API for agent spawning. The `Agent.builder()` pattern replaces direct `impl acp::Agent` construction, and all future connections use the `run_agent()` helper. This migration brings:
+
+- Improved API ergonomics and type safety
+- `Arc<ConnectionTo<Client>>` instead of `Rc<RefCell>`
+- All `!Send` constraints removed; sessions run on plain `tokio::spawn` without needing `LocalSet`
+- Better tracing instrumentation via `instrument(span)` on all four session spawning paths
+
+The public API remains stable — this is an implementation detail that IDE clients do not need to change for.
+
+## ACP Sub-Agent Spawning
+
+Zeph now supports spawning child processes as ACP sub-agents via the `zeph acp run-agent` CLI command (feature-gated behind `acp`):
+
+```bash
+zeph acp run-agent --command "<CMD>" [--prompt "<TEXT>"] [--cwd "<DIR>"] [--timeout "<SECS>"]
+```
+
+Sub-agents:
+- Run in environment-isolated child processes (no `ZEPH_*` secrets leak)
+- Communicate over stdio using the ACP protocol
+- Support graceful cancellation via `session/cancel`
+- Are visible to parent agents for orchestrated multi-agent workflows
+
+## ACP Configuration Enhancements
+
+### Additional Directories Allowlist
+
+Restrict which filesystem paths an ACP session is allowed to access:
+
+```toml
+[acp]
+additional_directories = ["/workspace", "/tmp"]
+```
+
+Requests to access paths outside this list are rejected at session start. Feature-gated by `unstable-session-add-dirs`.
+
+### Auth Methods Configuration
+
+Strict validation of authentication methods at startup:
+
+```toml
+[acp]
+auth_methods = ["agent"]  # Only "agent" is accepted (default and only MVP option)
+```
+
+Unknown methods are rejected with a clear error. Feature-gated by `unstable-auth-methods`.
+
+### Message IDs Echo
+
+When enabled, the client's `message_id` from the prompt is echoed back on all streamed chunks and the `PromptResponse`, enabling full message correlation:
+
+```toml
+[acp]
+message_ids_enabled = true
+```
+
+Feature-gated by `unstable-message-id`.
+
+### CLI Overrides
+
+All three ACP configuration options can be overridden at runtime:
+
+```bash
+zeph --acp-additional-dir /workspace --acp-additional-dir /tmp \
+     --acp-auth-method agent \
+     --acp-message-ids
+```
+
+CLI values take precedence over config file values.
+
+### TUI Commands
+
+New read-only commands in TUI command palette:
+
+| Command | Description |
+|---------|-------------|
+| `/acp dirs` | List configured additional directories |
+| `/acp auth-methods` | Show configured auth methods |
+| `/acp status` | Show ACP server status |
+
 ## Protocol Version
 
-Zeph targets `agent-client-protocol` version 0.10.3 with schema version 0.11.3.
+Zeph targets `agent-client-protocol` version 0.11.1 with schema version 0.11.3 and supports all ACP 0.11 builder API features.

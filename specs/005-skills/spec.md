@@ -457,6 +457,67 @@ The tool returns a confirmation message with the skill's name and first 200 char
 
 ---
 
+## Skill Evaluator
+
+External-feedback skill evaluator (#3319, #3350). After skill generation, a critic LLM call
+scores the skill on three dimensions before writing to disk.
+
+Config section `[skills.evaluation]` (disabled by default):
+
+```toml
+[skills.evaluation]
+enabled = false
+evaluate_provider = "fast"   # named provider reference
+weight_correctness = 0.50
+weight_reusability = 0.25
+weight_specificity = 0.25
+pass_threshold = 0.60        # minimum weighted score to accept skill
+```
+
+Behavior: `SkillEvaluationConfig` passed to `SkillEvaluator`; if evaluator errors, skill is
+accepted (fail-open). Tracing spans under `skills.eval.*`.
+
+### Key Invariants
+
+- Evaluation is optional and fail-open — a missing or erroring evaluator must never block skill creation
+- `evaluate_provider` resolves via named `[[llm.providers]]` reference
+- NEVER write skill to disk if score < `pass_threshold` (when evaluation is enabled and succeeds)
+
+## Proactive World-Knowledge Exploration
+
+Proactive skill generation before each LLM call (#3320, #3350). The agent classifies the
+query domain (keyword-based) and generates a `world-knowledge-{domain}` SKILL.md when none exists.
+
+Config section `[skills.proactive_exploration]` (disabled by default):
+
+```toml
+[skills.proactive_exploration]
+enabled = false
+generate_provider = "fast"   # named provider reference
+```
+
+**MVP trade-off**: generated skill is visible from the **next** turn (not the current one), to
+keep turn latency bounded. Tracing spans under `core.proactive.*`.
+
+### Key Invariants
+
+- Generated skill is intentionally deferred to the next turn — NEVER inject into the current turn's context
+- Domain classification is keyword-based (no LLM call) — NEVER use LLM for domain classification
+
+## Bare-Mode Skip
+
+`build_skill_matcher` is skipped in `--bare` mode to prevent the `zeph_skills` Qdrant collection
+from being destroyed on CI startup (#3390, #3395).
+
+The embed provider model name used for Qdrant collection versioning must be stable — a changing
+model name causes collection oscillation and near-zero cosine scores (#3391). The stable embed
+provider model name is resolved once at bootstrap from `[[llm.providers]]` with `embed = true`.
+
+### Key Invariants
+
+- NEVER call `build_skill_matcher` in `--bare` mode
+- Qdrant collection name for skills must be derived from a stable embed model name, not the resolved display name of the active provider
+
 ## SKILL.md Injection Sanitization
 
 

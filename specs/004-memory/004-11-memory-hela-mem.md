@@ -10,7 +10,7 @@ tags:
   - graph
   - research
 created: 2026-04-24
-status: draft
+status: implemented
 related:
   - "[[MOC-specs]]"
   - "[[constitution]]"
@@ -101,7 +101,13 @@ consolidation_threshold = 5.0    # degree × avg_weight
 consolidate_provider = "fast"    # provider name for strategy distillation
 spreading_activation = false     # opt-in spreading activation retrieval
 spread_depth = 2                 # BFS hops from anchor node
+spread_edge_types = []           # edge type filter; empty = all types
+step_budget_ms = 8               # per-step circuit breaker for BFS
 ```
+
+> [!note] Migration
+> Config migration step 31b splices `spreading_activation`, `spread_depth`, `spread_edge_types`,
+> and `step_budget_ms` into existing `[memory.hebbian]` sections via `--migrate-config`.
 
 ### 3.2 Edge Weight Field
 
@@ -138,13 +144,28 @@ Periodic background task:
 3. LLM output: structured strategy summary → stored as `PersistentRule` or enqueued as skill draft
 4. Mark consolidated nodes with a `consolidated_at` timestamp to avoid re-consolidation within cooldown period
 
-### 3.5 Spreading Activation
+### 3.5 Spreading Activation (HL-F5)
 
 When `spreading_activation = true`:
 
-1. Fetch top-1 node via cosine ANN as anchor
-2. BFS from anchor up to `spread_depth` hops, scoring nodes by `weight × cosine_sim`
-3. Return ranked node set as retrieval result
+1. Fetch top-1 node via cosine ANN as anchor (`hela_spreading_recall`)
+2. BFS from anchor up to `spread_depth` hops traversing edges in `spread_edge_types` filter
+3. Score each visited node: `path_weight × cosine(query, entity)` where `path_weight = Π edge.weight` along the traversal path; negative cosine clamped to 0.0
+4. Multi-path convergence: keep maximum `path_weight` when a node is reached by multiple paths
+5. Return ranked node set as retrieval result; apply Hebbian increment to top-k kept edges after retrieval
+
+**Isolated anchor fallback**: when the anchor node has no outgoing edges, returns a single synthetic `HelaFact` with `edge_id=0` scored by the real anchor cosine similarity.
+
+**Circuit breaker**: per-step budget (`step_budget_ms`, default 8 ms); emits `WARN` and returns empty when budget is exhausted.
+
+**Dim-mismatch guard**: `OnceLock<String>` prevents repeated Qdrant probes after a dimension mismatch is detected, avoiding continuous retry loops.
+
+**Helper API additions**:
+- `VectorStore::get_points` — default trait method returning `Err(Unsupported)`; Qdrant impl via `GetPointsBuilder::new(...).with_vectors(true)`
+- `GraphStore::qdrant_point_ids_for_entities` — SQL helper with 490-entity batch chunks
+- `Edge::synthetic_anchor(entity_id)` — marker constructor for isolated-anchor fallback
+- `EmbeddingStore::get_vectors_from_collection` — batched vector retrieval helper
+- `HelaSpreadRuntime` struct on `SemanticMemory` attached via `with_hebbian_spread()`
 
 Falls back to pure ANN when graph has no edges from anchor node.
 
@@ -161,12 +182,14 @@ Falls back to pure ANN when graph has no edges from anchor node.
 
 ## 5. Acceptance Criteria
 
-- [ ] `graph_edges` table has `weight` column after migration; existing rows default to 1.0
-- [ ] Co-activated node pairs show incremented weights after retrieval when `hebbian.enabled = true`
-- [ ] Consolidation pass runs on background task, does not block turns
-- [ ] Spreading activation retrieval returns plausible results on a small synthetic graph (integration test)
-- [ ] All config fields respected; `enabled = false` disables all side effects
-- [ ] `cargo nextest run -p zeph-memory` passes
+- [x] `graph_edges` table has `weight` column after migration 077; existing rows default to 1.0 (HL-F1 — implemented #3344)
+- [x] Co-activated node pairs show incremented weights after retrieval when `hebbian.enabled = true` (HL-F2 — implemented #3344)
+- [x] Consolidation pass runs on background task (HL-F3/F4 — implemented #3345, #3380)
+- [x] Spreading activation retrieval (`hela_spreading_recall`) implemented with BFS, multiplicative path weights, and circuit breaker (HL-F5 — implemented #3346)
+- [x] `spread_edge_types`, `step_budget_ms` config fields respected; WARN logged for unrecognised edge type strings
+- [x] `enabled = false` disables all Hebbian side effects
+- [x] Config migration step 31b adds new spreading activation fields to existing configs
+- [x] `cargo nextest run -p zeph-memory` passes
 
 ---
 

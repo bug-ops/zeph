@@ -313,6 +313,25 @@ Instead of writing SKILL.md manually, use `/skill create` with a natural languag
 
 Zeph generates a complete SKILL.md with frontmatter, instructions, and examples. The skill is saved to your skills directory and hot-reloaded immediately. Duplicate detection prevents creating skills that overlap with existing ones.
 
+Generated skills are scored on correctness, reusability, and specificity before being written to disk. A separate critic LLM evaluates the skill and filters out low-quality generations.
+
+### Skill Evaluation Configuration
+
+Control how generated skills are evaluated:
+
+```toml
+[skills.evaluation]
+enabled = true                    # enable external critic (default: true)
+correctness_weight = 0.50         # importance of correctness (0.0-1.0)
+reusability_weight = 0.25         # importance of broad applicability
+specificity_weight = 0.25         # importance of precise instruction
+pass_threshold = 0.60             # minimum score to accept (0.0-1.0)
+```
+
+When a generated skill scores below `pass_threshold`, it is rejected and the generation process is retried. If `enabled = false`, all generated skills are accepted without evaluation (fail-open).
+
+Evaluation is disabled by default for generated skills from `--init` to keep initial setup fast; enable it in your config if you want quality gates on all subsequent `/skill create` commands.
+
 See [NL Skill Generation](../advanced/nl-skill-generation.md) for details on generation from descriptions and GitHub repository mining.
 
 ## Next Steps

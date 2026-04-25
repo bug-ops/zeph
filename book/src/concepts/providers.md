@@ -138,6 +138,38 @@ type = "claude"   # ollama, claude, openai, gemini, candle, compatible
 model = "claude-sonnet-4-6"
 ```
 
+At runtime, use the `/provider <name>` command to switch providers:
+
+```
+> /provider claude
+Switched to Claude (claude-sonnet-4-6)
+```
+
+The chosen provider is now the active provider for this channel. On the next session start, Zeph automatically restores the last-used provider for that channel.
+
+### Provider Persistence
+
+Zeph remembers the last provider you used per channel (CLI, TUI, Telegram). When you restart or switch channels, your preferred provider is restored automatically:
+
+- **CLI/TUI**: last provider is saved globally (both share the same `channel_id = ""`)
+- **Telegram**: last provider is saved per chat (when configured with per-chat wiring)
+
+Enable persistence with:
+
+```toml
+[session]
+provider_persistence = true     # default: enabled
+```
+
+Disable it to always start with the default provider:
+
+```toml
+[session]
+provider_persistence = false
+```
+
+Provider preferences are stored in SQLite alongside session metadata. If you switch providers and the session crashes before a successful turn, the previous provider preference is restored on the next session start.
+
 ## Response Caching
 
 Enable SQLite-backed response caching to avoid redundant LLM calls for identical requests. The cache key is a blake3 hash of the full message history and model name. Streaming responses bypass the cache.

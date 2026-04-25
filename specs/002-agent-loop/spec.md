@@ -94,6 +94,8 @@ Agent<C: Channel> {
 - **Provider can be swapped at runtime** via `provider_override` without restarting the agent
 - **Hot-reload events** (skills, instructions, config) are processed between turns, never mid-turn
 - **Message queue takes priority** over channel recv — injected messages run before user input
+- **Context prep timeout** (`[timeouts] context_prep_timeout_secs`, default 30 s): `advance_context_lifecycle` wrapped with wall-clock timeout; turn proceeds with degraded cached context on expiry instead of stalling (#3357, #3373)
+- **NoProviders backoff** (`[timeouts] no_providers_backoff_secs`, default 2 s): after `NoProviders` error the agent records failure timestamp and sleeps; context preparation is skipped on the next turn if still within the backoff window, preventing busy-wait (#3357, #3373)
 
 ## Context Pressure Management
 
@@ -177,6 +179,54 @@ Active subgoal messages (tier 1.0) have their MIG reduction capped so they are n
 - `subgoal` and `SideQuest` strategies must never be active simultaneously — hard error at startup
 - NEVER evict Active-tier messages by scoring — their relevance is 1.0 (protected)
 - NEVER run subgoal extraction synchronously in the tool loop — only between turns
+
+## Focus Strategy Auto-Consolidation
+
+`run_focus_auto_consolidation` (#3313, #3388): when the Focus compression strategy is active,
+a periodic auto-consolidation pass merges similar focus segments to reduce fragmentation.
+
+- Controlled by `[memory.focus] auto_consolidate_min_window` (default 4 turns); `0` is rejected at
+  startup validation — `Config::validate()` rejects zero with a clear error (#3387, #3392)
+- `FocusState::should_auto_consolidate()` returns `false` until the configured number of turns has elapsed
+- The O(K²) pairwise MIG scoring loop is offloaded to `tokio::task::spawn_blocking` to prevent
+  stalling the async executor on long sessions (#3386, #3398)
+
+### Key Invariants
+
+- `auto_consolidate_min_window = 0` MUST be rejected at config validation — it would trigger LLM on every compress call
+- Auto-consolidation runs on `spawn_blocking` — never on the async executor thread pool
+- Consolidation is guarded by turn count; no-op until the window has elapsed
+
+## Provider Preference Persistence
+
+Provider preference per channel is persisted to SQLite (#3308, #3385):
+
+- Last-used provider (set via `/provider <name>`) saved after each successful switch
+- Restored automatically on next session start
+- Identity keyed by `(channel_type, channel_id)`; CLI/TUI use `channel_id = ""`
+- Controlled by `[session] provider_persistence = true` (default enabled)
+- Migrations: SQLite `079_channel_preferences.sql`, Postgres `075_channel_preferences.sql`
+
+### Key Invariants
+
+- Provider preference restore is best-effort — if the stored provider name no longer exists, fall back silently to the default
+- NEVER block session startup on preference load failure
+
+## Compaction Progress UX
+
+`MetricsSnapshot` gains four fields for compaction observability (#3314, #3385):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `context_max_tokens` | `u64` | Effective context window for the active provider |
+| `compaction_last_before` | `u64` | Token count before the last hard compaction |
+| `compaction_last_after` | `u64` | Token count after the last hard compaction |
+| `compaction_last_at_ms` | `u64` | Wall-clock timestamp of the last compaction (0 = never) |
+
+- `Agent::publish_context_budget()` resolves effective context window from `context_manager.budget.max_tokens()` and publishes to `MetricsSnapshot` after provider pool construction and on every `/provider` switch
+- `INFO` log (`tokens_before`, `tokens_after`, `saved`) and transient `send_status("Compacting: {b}→{a} tokens")` emitted after each successful hard compaction
+- TUI: `context_gauge` widget (color-coded: green < 70%, yellow 70–90%, red > 90%); hidden when `context_max_tokens == 0`
+- TUI: `compaction_badge` widget shows `"{before}k→{after}k (-{saved}k) {elapsed}"`; hidden until first compaction this session
 
 ## Hard Compaction Post-Processing: Orphaned `tool_result` Strip
 

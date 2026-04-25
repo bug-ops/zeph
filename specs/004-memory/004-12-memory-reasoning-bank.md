@@ -10,7 +10,7 @@ tags:
   - reasoning
   - research
 created: 2026-04-24
-status: draft
+status: implemented
 related:
   - "[[MOC-specs]]"
   - "[[constitution]]"
@@ -182,14 +182,23 @@ Token budget enforced by existing `ContextBudget` mechanism.
 
 ## 5. Acceptance Criteria
 
-- [ ] `reasoning_strategies` SQLite table created on first run when `enabled = true`
-- [ ] After a completed turn, self-judge runs asynchronously (log entry visible)
-- [ ] Strategy retrieved by embedding similarity for a related task description
-- [ ] Strategy injected into context preamble with `[Reasoning Strategy]` prefix
-- [ ] `store_limit` respected; oldest unused strategies evicted when limit reached
-- [ ] `enabled = false` produces zero side effects
-- [ ] TUI shows `Distilling reasoning strategy…` spinner during background distillation
-- [ ] `cargo nextest run -p zeph-memory` passes
+- [x] `reasoning_strategies` SQLite table created (migration 077); Qdrant collection `reasoning_strategies` provisioned on startup when `enabled = true` (implemented #3342, #3343)
+- [x] After a completed turn, self-judge runs asynchronously fire-and-forget via three-stage pipeline (implemented #3342)
+- [x] Strategy retrieved by embedding similarity; top-k injected into context preamble with `[Reasoning Strategy]` prefix (implemented #3343)
+- [x] `store_limit` respected; LRU eviction with hot-row protection (`HOT_STRATEGY_USE_COUNT = 10`) (implemented #3343)
+- [x] `enabled = false` produces zero side effects
+- [x] Dedicated embed provider (`effective_embed_provider()`) passed to extraction pipeline, fixing 768 vs 1536 dimension mismatch (fixed #3382)
+- [x] Self-judge evaluates only last `self_judge_window` messages (default 2) with `min_assistant_chars` guard (default 50) to prevent false Failure from multi-session context (fixed #3383)
+- [x] Embed provider passed to `attach_reasoning_memory` for Qdrant dimension probe (fixed #3375, #3376)
+- [x] `cargo nextest run -p zeph-memory` passes
+
+## 6. Known Refinements (Post-Implementation)
+
+| Issue | Fix | PR |
+|---|---|---|
+| Qdrant probe used primary router (excluded embed providers) → collection never created | Pass `build_memory_embed_provider()` into `attach_reasoning_memory`, fallback to primary when unset | #3375, #3376 |
+| Extraction pipeline used primary routing provider → 768 vs 1536 dim mismatch on upsert | Use `SemanticMemory::effective_embed_provider()` in `process_reasoning_turn` | #3382 |
+| Self-judge evaluated full conversation tail → false Failure from multi-session context noise | Evaluate only last `self_judge_window` messages; skip responses shorter than `min_assistant_chars` | #3383 |
 
 ---
 

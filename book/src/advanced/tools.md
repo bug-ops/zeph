@@ -109,6 +109,42 @@ In addition to `web_scrape` (CSS-selector-based extraction), `WebScrapeExecutor`
 |-----------|----------|-------------|
 | `url` | Yes | HTTPS URL to fetch |
 
+## ShellExecutor — Background Shell Execution
+
+The `bash` tool accepts an optional `background` parameter. When `true`, the command is spawned immediately and a stub message `[background] started run_id=<uuid>` is returned to close the LLM's `tool_use_id`. The actual completion arrives as a synthetic user message at the start of the next turn (drain-on-next-turn pattern).
+
+```json
+{
+  "command": "cargo build --release",
+  "background": true
+}
+```
+
+Returns immediately:
+
+```
+[background] started run_id=abc-123
+```
+
+On the next turn, the completion is injected as a synthetic user-role message:
+
+```
+[background complete] run_id=abc-123 exit_code=0
+<command output...>
+```
+
+This pattern decouples long-running operations from the prompt round-trip latency. The LLM can respond to the user or execute other tasks while the background process runs.
+
+**Configuration:**
+
+```toml
+[tools.shell]
+max_background_runs = 8           # maximum concurrent background tasks (default: 8)
+background_timeout_secs = 1800    # timeout for background commands in seconds (default: 1800 = 30 minutes)
+```
+
+When a background task exceeds `background_timeout_secs`, it is killed and a completion stub with `exit_code=124` is sent on the next turn.
+
 ## DiagnosticsExecutor
 
 `DiagnosticsExecutor` runs `cargo check` or `cargo clippy --message-format=json` in the project directory and returns a structured list of diagnostics. Each diagnostic includes:

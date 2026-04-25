@@ -36,17 +36,25 @@ related:
 
 ## Overview
 
-Reactive hooks allow operators to run shell commands (or scripts) in response to
-agent lifecycle events. Two event types are supported:
+Reactive hooks allow operators to run shell commands or invoke MCP tools in response to
+agent lifecycle events. Five event types are supported:
 
 | Event | Trigger |
 |---|---|
 | `cwd_changed` | Agent working directory changes (via `set_working_directory` tool) |
 | `file_changed` | A watched file or directory subtree is modified on disk |
+| `permission_denied` | A tool execution is short-circuited by a `RuntimeLayer::before_tool` check |
+| `turn_complete` | An agent turn completes (after all tool calls and LLM response) |
+| `post_tool_use` | After any tool invocation completes (carries `ZEPH_TOOL_DURATION_MS`) |
 
 Hooks are defined as arrays under `[hooks]` in `config.toml`. Each entry specifies
-the shell command and optional glob filters. Multiple hooks per event are supported
-and run sequentially.
+a hook action and optional filters. Multiple hooks per event are supported and run
+sequentially.
+
+> [!note] Action types
+> Two action types are available: `type = "command"` (default) runs a shell command;
+> `type = "mcp_tool"` invokes an MCP server tool directly without spawning a subprocess.
+> See the **Action Types** section below.
 
 ---
 
@@ -54,25 +62,52 @@ and run sequentially.
 
 ```toml
 [[hooks.cwd_changed]]
+type = "command"
 command = "echo 'cwd changed to $ZEPH_NEW_CWD'"
-# No additional filter fields for cwd_changed
 
 [[hooks.file_changed]]
+type = "command"
 command = "cargo check"
 glob = "src/**/*.rs"    # optional; only fire when changed path matches this glob
+
+[[hooks.permission_denied]]
+type = "command"
+command = "echo 'tool $ZEPH_DENIED_TOOL blocked: $ZEPH_DENY_REASON'"
+
+[[hooks.turn_complete]]
+type = "command"
+command = "osascript -e 'display notification \"$ZEPH_TURN_PREVIEW\" with title \"Zeph\"'"
+
+[[hooks.post_tool_use]]
+type = "command"
+command = "echo 'tool took ${ZEPH_TOOL_DURATION_MS}ms'"
 ```
 
-Multiple entries of the same type are permitted:
+Multiple entries of the same type are permitted.
+
+## Action Types
+
+### `type = "command"` (default)
+
+Runs a shell command via the same shell executor infrastructure as the `bash` tool.
+
+### `type = "mcp_tool"`
+
+Invokes an MCP server tool directly without spawning a subprocess (#3293). Requires
+the MCP manager to be active; fails according to `fail_closed` if unavailable.
 
 ```toml
-[[hooks.file_changed]]
-command = "cargo fmt --check"
-glob = "**/*.rs"
-
-[[hooks.file_changed]]
-command = "python check_config.py"
-glob = "config.toml"
+[[hooks.cwd_changed]]
+type = "mcp_tool"
+server = "my-server"
+tool = "notify"
+args = { message = "cwd changed" }    # optional static args
 ```
+
+> [!warning]
+> `HookDef.hook_type + command` fields replaced by `HookDef.action: HookAction`
+> (serde-flattened) as a breaking config change (#3293). Existing TOML with
+> `type = "command"` deserializes correctly — no manual migration needed.
 
 ---
 
@@ -85,9 +120,18 @@ Hooks receive context via environment variables injected into the shell command:
 | `ZEPH_OLD_CWD` | `cwd_changed` | Previous working directory (absolute path) |
 | `ZEPH_NEW_CWD` | `cwd_changed` | New working directory (absolute path) |
 | `ZEPH_CHANGED_PATH` | `file_changed` | Absolute path of the changed file or directory |
+| `ZEPH_DENIED_TOOL` | `permission_denied` | Name of the tool that was blocked |
+| `ZEPH_DENY_REASON` | `permission_denied` | Human-readable reason from `LayerDenial.reason` |
+| `ZEPH_TURN_DURATION_MS` | `turn_complete` | Wall-clock duration of the turn in milliseconds |
+| `ZEPH_TURN_STATUS` | `turn_complete` | `"success"` or `"error"` |
+| `ZEPH_TURN_PREVIEW` | `turn_complete` | Redacted short preview of the LLM response |
+| `ZEPH_TURN_LLM_REQUESTS` | `turn_complete` | Number of LLM requests in the turn |
+| `ZEPH_TOOL_DURATION_MS` | `post_tool_use` | Wall-clock duration of the tool call in milliseconds |
 
-These variables are always set for the relevant event type. For `file_changed`,
-`ZEPH_CHANGED_PATH` is the canonicalized absolute path of the change event.
+> [!note] `turn_complete` gate
+> When a `[notifications]` notifier is configured, `turn_complete` shares its `should_fire`
+> gate (respects `only_on_error`, `min_turn_duration_ms`, etc.). When no notifier is present,
+> `turn_complete` fires on every turn unconditionally.
 
 ---
 
@@ -150,7 +194,11 @@ working directory.
 - Hooks do NOT receive agent conversation context — they are environment-aware but not LLM-aware
 - `set_working_directory` must fire `cwd_changed` hooks synchronously before returning `ToolOutput` — the new cwd must be committed first
 - `FileChangeWatcher` debounce is mandatory — raw filesystem events must never bypass it
+- File change watcher is skipped in `--bare` mode — `with_hooks_config` is guarded by `!exec_mode.bare` in `runner.rs` (#3362)
 - Hook execution is never on the agent hot path — always background task
+- `permission_denied` hook fires when `RuntimeLayer::before_tool` short-circuits execution; `LayerDenial.reason` is propagated to `ZEPH_DENY_REASON` (#3310)
+- `turn_complete` is added to `HooksConfig` and `HooksConfig::is_empty()` check (#3327)
+- `type = "mcp_tool"` action requires MCP manager active; must fail gracefully per `fail_closed` setting when unavailable (#3293)
 - NEVER inject hook stdout into the agent's conversation context
 - NEVER run hooks with elevated privileges — they inherit the agent process permissions only
 - If `[hooks]` section is absent from config, all hook lists are empty and no hooks fire — zero-cost when unused

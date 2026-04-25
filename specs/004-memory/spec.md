@@ -92,6 +92,32 @@ SemanticMemory (Arc)
 
 ---
 
+## Experience Compression Spectrum
+
+`[memory.compression_spectrum]` (disabled by default, #3305, #3350): introduces
+`CompressionLevel` (Episodic / Procedural / Declarative) and a `RetrievalPolicy` that
+skips episodic recall when the token budget is below configurable thresholds. A background
+`PromotionEngine` scans recent episodic memory and promotes repeated patterns to SKILL.md
+entries (off hot path, via `JoinSet`).
+
+`ExperienceStore` records tool outcomes fire-and-forget via `TaskClass::Telemetry`;
+evolution sweep runs every N user turns; both gate on `memory.graph.experience.enabled`
+with zero overhead when disabled (#3318, #3349).
+
+### Key Invariants
+
+- `PromotionEngine` runs off the hot path — NEVER on the agent turn thread
+- `ExperienceStore` wiring must be guarded by `memory.graph.experience.enabled`
+- `MemoryError::Promotion` is a distinct error variant in `zeph-memory` (thiserror, no anyhow)
+
+## Sub-Specifications
+
+| Sub-spec | Feature |
+|---|---|
+| [[004-10-memory-memmachine-retrieval]] | MemMachine retrieval depth, query bias correction, episode preservation |
+| [[004-11-memory-hela-mem]] | HeLa-Mem Hebbian edge weights, consolidation, spreading activation |
+| [[004-12-memory-reasoning-bank]] | ReasoningBank distilled strategy memory, self-judge pipeline |
+
 ## Integration Points
 
 - [[002-agent-loop/spec]] — context assembly calls recall pipeline

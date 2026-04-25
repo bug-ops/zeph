@@ -99,6 +99,18 @@ zeph classifiers download             # pre-cache all models
 zeph classifiers download --model pii|injection|all
 ```
 
+## Internal Tool Bypass
+
+The ML injection classifier (DeBERTa) is bypassed for outputs from internal Zeph tools that produce only Zeph-generated text (#3384, #3394, #3396). The pattern-based sanitizer continues to run on these outputs for telemetry purposes.
+
+**Bypassed tool names** (exact match on unnamespaced tool name):
+`invoke_skill`, `load_skill`, `memory_save`, `memory_search`, `compress_context`,
+`complete_focus`, `start_focus`, `schedule_periodic`, `schedule_deferred`, `cancel_task`
+
+**Adversarial-MCP guard**: colon-namespaced tool names (e.g. `server:invoke_skill`) are NEVER matched against the bypass allowlist — only bare names qualify. This prevents a malicious MCP server from registering a tool named `server:invoke_skill` to escape ML classification.
+
+Unit test `skip_ml_fires_for_internal_tool_names` in `zeph-core` proves this invariant (#3396).
+
 ## Key Invariants
 
 - Every NER chunk (including middle and last) must be framed with `[CLS]` at position 0 and `[SEP]` at end
@@ -110,3 +122,4 @@ zeph classifiers download --model pii|injection|all
 - NEVER load models on startup — lazy-load on first use
 - NEVER apply PII redaction when `pii_enabled = false`, even if NER model is loaded
 - NEVER emit a `WARN` security scan false-positive for `.bundled` skill content
+- NEVER match colon-namespaced tool names (e.g. `server:invoke_skill`) against the internal tool bypass allowlist — bare names only
