@@ -1079,7 +1079,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub async fn find_entities_ranked(
         &self,
         query: &str,
@@ -2436,7 +2436,7 @@ impl GraphStore {
     #[allow(clippy::too_many_arguments)]
     // TODO(B3): refactor into a builder or config struct to reduce argument count
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub async fn insert_or_supersede_with_metrics(
         &self,
         source_entity_id: i64,

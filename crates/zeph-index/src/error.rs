@@ -28,7 +28,7 @@ pub enum IndexError {
     ///
     /// Raised when [`tokio::fs::read_to_string`] or [`std::fs::read_to_string`] fail,
     /// for example because a file was deleted between discovery and indexing.
-    #[error("IO error: {0}")]
+    #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
     /// `SQLite` database error from `sqlx`.

@@ -125,7 +125,7 @@ struct EntityWorkItem {
 ///    directions is only inserted once, keeping `edges_created` accurate.
 ///
 /// Errors are logged and not propagated — this is a best-effort background enrichment step.
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
 pub async fn link_memory_notes(
     entity_ids: &[i64],
     pool: DbPool,
@@ -289,7 +289,7 @@ pub async fn link_memory_notes(
     feature = "profiling",
     tracing::instrument(name = "memory.graph_extract", skip_all, fields(entities = tracing::field::Empty, edges = tracing::field::Empty))
 )]
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
 pub async fn extract_and_store(
     content: String,
     context_messages: Vec<String>,
@@ -472,7 +472,7 @@ impl SemanticMemory {
     /// When `config.note_linking.enabled` is `true` and an embedding store is available,
     /// `link_memory_notes` runs after successful extraction inside the same task, bounded
     /// by `config.note_linking.timeout_secs`.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub fn spawn_graph_extraction(
         &self,
         content: String,

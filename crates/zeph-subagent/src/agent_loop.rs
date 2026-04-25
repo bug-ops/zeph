@@ -198,7 +198,7 @@ async fn handle_tool_step(
     }
 }
 
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
 pub(super) async fn run_agent_loop(
     args: AgentLoopArgs,
 ) -> Result<String, super::error::SubAgentError> {

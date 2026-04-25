@@ -318,7 +318,7 @@ impl ToolExecutor for WebScrapeExecutor {
         feature = "profiling",
         tracing::instrument(name = "tool.web_scrape", skip_all)
     )]
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         match call.tool_id.as_str() {
             "web_scrape" => {

@@ -72,7 +72,7 @@ impl<C: Channel> Agent<C> {
     /// Non-interactive: the skill is saved immediately with quarantined trust level.
     /// The generated preview is returned in the output so the user can review it.
     /// Use `/skill remove <name>` to discard an unwanted skill.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     async fn handle_skill_create_as_string(
         &mut self,
         description: &str,

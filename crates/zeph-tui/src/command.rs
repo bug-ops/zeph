@@ -159,7 +159,7 @@ pub struct CommandEntry {
 /// assert!(registry.iter().any(|e| e.id == "app:quit"));
 /// ```
 #[must_use]
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
 pub fn command_registry() -> &'static [CommandEntry] {
     static COMMANDS: &[CommandEntry] = &[
         CommandEntry {

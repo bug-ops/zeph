@@ -89,7 +89,7 @@ impl ConfigMigrator {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            reference_src: include_str!("../config/default.toml"),
+            reference_src: include_str!("../../config/default.toml"),
         }
     }
 
@@ -1102,7 +1102,7 @@ fn replace_llm_section(toml_str: &str, new_llm_section: &str) -> String {
 /// Returns `MigrateError::Parse` if the input TOML is invalid.
 /// Returns `MigrateError::InvalidStructure` if `[llm.stt].model` is present but the `[llm]`
 /// key is absent or not a table, making mutation impossible.
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
 pub fn migrate_stt_to_provider(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
 
@@ -2948,392 +2948,20 @@ pub trait Migration: Send + Sync {
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError>;
 }
 
-// ── Wrapper structs for all 35 sequential migration steps ───────────────────────────────────────
-
-struct MigrateSttToProvider;
-impl Migration for MigrateSttToProvider {
-    fn name(&self) -> &'static str {
-        "migrate_stt_to_provider"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_stt_to_provider(toml_src)
-    }
-}
-
-struct MigratePlannerModelToProvider;
-impl Migration for MigratePlannerModelToProvider {
-    fn name(&self) -> &'static str {
-        "migrate_planner_model_to_provider"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_planner_model_to_provider(toml_src)
-    }
-}
-
-struct MigrateMcpTrustLevels;
-impl Migration for MigrateMcpTrustLevels {
-    fn name(&self) -> &'static str {
-        "migrate_mcp_trust_levels"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_mcp_trust_levels(toml_src)
-    }
-}
-
-struct MigrateAgentRetryToToolsRetry;
-impl Migration for MigrateAgentRetryToToolsRetry {
-    fn name(&self) -> &'static str {
-        "migrate_agent_retry_to_tools_retry"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_agent_retry_to_tools_retry(toml_src)
-    }
-}
-
-struct MigrateDatabaseUrl;
-impl Migration for MigrateDatabaseUrl {
-    fn name(&self) -> &'static str {
-        "migrate_database_url"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_database_url(toml_src)
-    }
-}
-
-struct MigrateShellTransactional;
-impl Migration for MigrateShellTransactional {
-    fn name(&self) -> &'static str {
-        "migrate_shell_transactional"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_shell_transactional(toml_src)
-    }
-}
-
-struct MigrateAgentBudgetHint;
-impl Migration for MigrateAgentBudgetHint {
-    fn name(&self) -> &'static str {
-        "migrate_agent_budget_hint"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_agent_budget_hint(toml_src)
-    }
-}
-
-struct MigrateForgettingConfig;
-impl Migration for MigrateForgettingConfig {
-    fn name(&self) -> &'static str {
-        "migrate_forgetting_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_forgetting_config(toml_src)
-    }
-}
-
-struct MigrateCompressionPredictorConfig;
-impl Migration for MigrateCompressionPredictorConfig {
-    fn name(&self) -> &'static str {
-        "migrate_compression_predictor_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_compression_predictor_config(toml_src)
-    }
-}
-
-struct MigrateMicrocompactConfig;
-impl Migration for MigrateMicrocompactConfig {
-    fn name(&self) -> &'static str {
-        "migrate_microcompact_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_microcompact_config(toml_src)
-    }
-}
-
-struct MigrateAutodreamConfig;
-impl Migration for MigrateAutodreamConfig {
-    fn name(&self) -> &'static str {
-        "migrate_autodream_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_autodream_config(toml_src)
-    }
-}
-
-struct MigrateMagicDocsConfig;
-impl Migration for MigrateMagicDocsConfig {
-    fn name(&self) -> &'static str {
-        "migrate_magic_docs_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_magic_docs_config(toml_src)
-    }
-}
-
-struct MigrateTelemetryConfig;
-impl Migration for MigrateTelemetryConfig {
-    fn name(&self) -> &'static str {
-        "migrate_telemetry_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_telemetry_config(toml_src)
-    }
-}
-
-struct MigrateSupervisorConfig;
-impl Migration for MigrateSupervisorConfig {
-    fn name(&self) -> &'static str {
-        "migrate_supervisor_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_supervisor_config(toml_src)
-    }
-}
-
-struct MigrateOtelFilter;
-impl Migration for MigrateOtelFilter {
-    fn name(&self) -> &'static str {
-        "migrate_otel_filter"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_otel_filter(toml_src)
-    }
-}
-
-struct MigrateEgressConfig;
-impl Migration for MigrateEgressConfig {
-    fn name(&self) -> &'static str {
-        "migrate_egress_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_egress_config(toml_src)
-    }
-}
-
-struct MigrateVigilConfig;
-impl Migration for MigrateVigilConfig {
-    fn name(&self) -> &'static str {
-        "migrate_vigil_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_vigil_config(toml_src)
-    }
-}
-
-struct MigrateSandboxConfig;
-impl Migration for MigrateSandboxConfig {
-    fn name(&self) -> &'static str {
-        "migrate_sandbox_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_sandbox_config(toml_src)
-    }
-}
-
-struct MigrateSandboxEgressFilter;
-impl Migration for MigrateSandboxEgressFilter {
-    fn name(&self) -> &'static str {
-        "migrate_sandbox_egress_filter"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_sandbox_egress_filter(toml_src)
-    }
-}
-
-struct MigrateOrchestrationPersistence;
-impl Migration for MigrateOrchestrationPersistence {
-    fn name(&self) -> &'static str {
-        "migrate_orchestration_persistence"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_orchestration_persistence(toml_src)
-    }
-}
-
-struct MigrateSessionRecapConfig;
-impl Migration for MigrateSessionRecapConfig {
-    fn name(&self) -> &'static str {
-        "migrate_session_recap_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_session_recap_config(toml_src)
-    }
-}
-
-struct MigrateMcpElicitationConfig;
-impl Migration for MigrateMcpElicitationConfig {
-    fn name(&self) -> &'static str {
-        "migrate_mcp_elicitation_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_mcp_elicitation_config(toml_src)
-    }
-}
-
-struct MigrateQualityConfig;
-impl Migration for MigrateQualityConfig {
-    fn name(&self) -> &'static str {
-        "migrate_quality_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_quality_config(toml_src)
-    }
-}
-
-struct MigrateAcpSubagentsConfig;
-impl Migration for MigrateAcpSubagentsConfig {
-    fn name(&self) -> &'static str {
-        "migrate_acp_subagents_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_acp_subagents_config(toml_src)
-    }
-}
-
-struct MigrateHooksPermissionDeniedConfig;
-impl Migration for MigrateHooksPermissionDeniedConfig {
-    fn name(&self) -> &'static str {
-        "migrate_hooks_permission_denied_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_hooks_permission_denied_config(toml_src)
-    }
-}
-
-struct MigrateMemoryGraph;
-impl Migration for MigrateMemoryGraph {
-    fn name(&self) -> &'static str {
-        "migrate_memory_graph_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_memory_graph_config(toml_src)
-    }
-}
-
-struct MigrateSchedulerDaemon;
-impl Migration for MigrateSchedulerDaemon {
-    fn name(&self) -> &'static str {
-        "migrate_scheduler_daemon_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_scheduler_daemon_config(toml_src)
-    }
-}
-
-struct MigrateMemoryRetrieval;
-impl Migration for MigrateMemoryRetrieval {
-    fn name(&self) -> &'static str {
-        "migrate_memory_retrieval_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_memory_retrieval_config(toml_src)
-    }
-}
-
-struct MigrateMemoryReasoning;
-impl Migration for MigrateMemoryReasoning {
-    fn name(&self) -> &'static str {
-        "migrate_memory_reasoning_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_memory_reasoning_config(toml_src)
-    }
-}
-
-struct MigrateMemoryReasoningJudge;
-impl Migration for MigrateMemoryReasoningJudge {
-    fn name(&self) -> &'static str {
-        "migrate_memory_reasoning_judge_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_memory_reasoning_judge_config(toml_src)
-    }
-}
-
-struct MigrateMemoryHebbian;
-impl Migration for MigrateMemoryHebbian {
-    fn name(&self) -> &'static str {
-        "migrate_memory_hebbian_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_memory_hebbian_config(toml_src)
-    }
-}
-
-struct MigrateMemoryHebbianConsolidation;
-impl Migration for MigrateMemoryHebbianConsolidation {
-    fn name(&self) -> &'static str {
-        "migrate_memory_hebbian_consolidation_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_memory_hebbian_consolidation_config(toml_src)
-    }
-}
-
-struct MigrateMemoryHebbianSpread;
-impl Migration for MigrateMemoryHebbianSpread {
-    fn name(&self) -> &'static str {
-        "migrate_memory_hebbian_spread_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_memory_hebbian_spread_config(toml_src)
-    }
-}
-
-struct MigrateHooksTurnComplete;
-impl Migration for MigrateHooksTurnComplete {
-    fn name(&self) -> &'static str {
-        "migrate_hooks_turn_complete_config"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_hooks_turn_complete_config(toml_src)
-    }
-}
-
-struct MigrateFocusAutoConsolidateMinWindow;
-impl Migration for MigrateFocusAutoConsolidateMinWindow {
-    fn name(&self) -> &'static str {
-        "migrate_focus_auto_consolidate_min_window"
-    }
-
-    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
-        migrate_focus_auto_consolidate_min_window(toml_src)
-    }
-}
+mod steps;
+use steps::{
+    MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
+    MigrateAutodreamConfig, MigrateCompressionPredictorConfig, MigrateDatabaseUrl,
+    MigrateEgressConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
+    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateMagicDocsConfig,
+    MigrateMcpElicitationConfig, MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
+    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryReasoning,
+    MigrateMemoryReasoningJudge, MigrateMemoryRetrieval, MigrateMicrocompactConfig,
+    MigrateOrchestrationPersistence, MigrateOtelFilter, MigratePlannerModelToProvider,
+    MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
+    MigrateSessionRecapConfig, MigrateShellTransactional, MigrateSttToProvider,
+    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateVigilConfig,
+};
 
 /// Ordered registry of all sequential migration steps (steps 1–35).
 ///
@@ -3615,7 +3243,7 @@ name = "Test"
     #[test]
     fn full_config_produces_zero_additions() {
         // Migrating the reference config itself should add nothing new.
-        let reference = include_str!("../config/default.toml");
+        let reference = include_str!("../../config/default.toml");
         let migrator = ConfigMigrator::new();
         let result = migrator.migrate(reference).expect("migrate reference");
         assert_eq!(
@@ -3663,7 +3291,7 @@ name = "Test"
         // used by ConfigMigrator) contains a [tools.policy] section. This ensures that
         // `zeph --migrate-config` will surface the section to users as a discoverable commented
         // block, even if it cannot be injected as a live sub-table via toml_edit's round-trip.
-        let reference = include_str!("../config/default.toml");
+        let reference = include_str!("../../config/default.toml");
         assert!(
             reference.contains("[tools.policy]"),
             "default.toml must contain [tools.policy] section so migrate-config can surface it"
@@ -3678,7 +3306,7 @@ name = "Test"
     fn migrate_reference_contains_probe_section() {
         // default.toml must contain the probe section comment block so users can discover it
         // when reading the file directly or after running --migrate-config.
-        let reference = include_str!("../config/default.toml");
+        let reference = include_str!("../../config/default.toml");
         assert!(
             reference.contains("[memory.compression.probe]"),
             "default.toml must contain [memory.compression.probe] section comment"
@@ -4397,7 +4025,7 @@ trust_level = "untrusted"
 
     #[test]
     fn embedded_default_mentions_tools_sandbox() {
-        let default_src = include_str!("../config/default.toml");
+        let default_src = include_str!("../../config/default.toml");
         assert!(
             default_src.contains("tools.sandbox"),
             "embedded default.toml must include tools.sandbox for ConfigMigrator discovery"
@@ -4875,7 +4503,7 @@ prompt_cache_ttl = "1h"
     #[test]
     fn migrate_adds_pr4_acp_keys_commented() {
         let migrator = ConfigMigrator::new();
-        let input = include_str!("../tests/fixtures/acp_pr4_v0_19.toml");
+        let input = include_str!("../../tests/fixtures/acp_pr4_v0_19.toml");
         let out = migrator.migrate(input).expect("migrate");
         assert!(
             out.output.contains("# additional_directories = []"),

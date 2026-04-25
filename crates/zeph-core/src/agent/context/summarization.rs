@@ -429,7 +429,7 @@ impl<C: Channel> Agent<C> {
         end.max(1)
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub(in crate::agent) async fn compact_context(
         &mut self,
     ) -> Result<CompactionOutcome, super::super::error::AgentError> {
@@ -2433,7 +2433,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// This eliminates the 5-second latency spike on every Soft tier compaction that made
     /// `task_aware`/`mig` strategies non-functional for cloud LLM providers.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub(in crate::agent) fn maybe_refresh_task_goal(&mut self) {
         use std::hash::Hash as _;
 
@@ -2616,7 +2616,7 @@ impl<C: Channel> Agent<C> {
     /// Transition detection: the LLM's `COMPLETED:` signal drives transitions (S3 fix).
     /// When `COMPLETED: NONE`, the same subgoal continues (`extend_active`).
     /// When `COMPLETED:` is non-NONE, a new subgoal is created (`complete_active` + `push_active`).
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub(in crate::agent) fn maybe_refresh_subgoal(&mut self) {
         use std::hash::Hash as _;
 

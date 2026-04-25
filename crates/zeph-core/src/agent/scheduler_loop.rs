@@ -230,7 +230,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     // cannot be split without introducing shared mutable state across async boundaries.
     #[allow(clippy::too_many_lines)]
     // TODO(B2): extract sub-functions or move logic to reduce function length
-    // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     /// Drive the [`DagScheduler`] tick loop until it emits `SchedulerAction::Done`.
     ///
     /// Each iteration yields at `wait_event()`, during which `channel.recv()` is polled

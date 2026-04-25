@@ -645,7 +645,7 @@ impl McpManager {
         feature = "profiling",
         tracing::instrument(name = "mcp.connect_all", skip_all, fields(connected = tracing::field::Empty, failed = tracing::field::Empty))
     )]
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub async fn connect_all(&self) -> (Vec<McpTool>, Vec<ServerConnectOutcome>) {
         let allowed = self.allowed_commands.clone();
         let suppress = self.suppress_stderr;
@@ -773,7 +773,7 @@ impl McpManager {
     ///
     /// # Panics
     ///
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub async fn connect_oauth_deferred(&self) {
         let last_refresh = Arc::clone(&self.last_refresh);
         let limits = IngestLimits {
@@ -1197,7 +1197,7 @@ impl McpManager {
     ///
     /// # Panics
     ///
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub async fn add_server(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
         // Early check under read lock (fast path for duplicates)
         {

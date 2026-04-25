@@ -435,7 +435,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub(super) async fn finalize_plan_execution(
         &mut self,
         completed_graph: zeph_orchestration::TaskGraph,
@@ -624,7 +624,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
     // ----- _as_string variants (used by AgentAccess / CommandHandler) -----
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub(super) async fn handle_plan_goal_as_string(
         &mut self,
         goal: &str,
@@ -805,7 +805,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     // too_many_lines: sequential status×action dispatch table; branching is inherent
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub(super) async fn handle_plan_resume_as_string(&mut self, graph_id: Option<&str>) -> String {
         use zeph_orchestration::{GraphId, GraphStatus, TaskStatus};
 

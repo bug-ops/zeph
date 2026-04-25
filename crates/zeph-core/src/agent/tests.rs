@@ -5465,7 +5465,7 @@ mod shutdown_summary_tests {
     // tool_a returns [error], triggering self-reflection which calls chat() → Text.
     // tool_b returns success with FilterStats. The remaining-tools loop processes tool_b.
     #[tokio::test]
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     async fn filter_stats_metrics_recorded_in_self_reflection_remaining_tools_loop() {
         use crate::config::LearningConfig;
         use crate::metrics::MetricsSnapshot;

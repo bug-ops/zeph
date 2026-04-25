@@ -863,7 +863,7 @@ async fn orphan_alias_cleanup_on_entity_delete() {
 /// - `graph_edges` survive (FK cascade did not wipe them)
 #[tokio::test]
 #[cfg(feature = "sqlite")]
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
 async fn migration_024_backfill_preserves_entities_and_edges() {
     use sqlx::Acquire as _;
     use sqlx::ConnectOptions as _;

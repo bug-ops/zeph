@@ -1725,7 +1725,7 @@ impl App {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     fn execute_plan_graph_command(&mut self, cmd: TuiCommand) {
         match cmd {
             TuiCommand::PlanStatus => {
@@ -2292,7 +2292,7 @@ impl App {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     fn handle_insert_key(&mut self, key: KeyEvent) {
         if self.slash_autocomplete.is_some() {
             self.handle_slash_autocomplete_key(key);

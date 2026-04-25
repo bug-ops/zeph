@@ -144,7 +144,7 @@ pub async fn start_consolidation_loop(
     feature = "profiling",
     tracing::instrument(name = "memory.consolidation_loop", skip_all)
 )]
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
 pub async fn run_consolidation_sweep(
     store: &SqliteStore,
     provider: &AnyProvider,

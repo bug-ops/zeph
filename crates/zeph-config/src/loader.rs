@@ -61,7 +61,7 @@ impl Config {
     /// # Errors
     ///
     /// Returns an error if any value is out of range.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.memory.history_limit > 10_000 {
             return Err(ConfigError::Validation(format!(
@@ -325,7 +325,7 @@ impl Config {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     fn validate_provider_names(&self) -> Result<(), ConfigError> {
         use std::collections::HashSet;
         let known: HashSet<String> = self

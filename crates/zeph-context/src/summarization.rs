@@ -129,7 +129,7 @@ pub async fn single_pass_summary(
 ///
 /// # Errors
 /// Returns [`zeph_llm::LlmError`] when all summarization attempts fail.
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
 pub async fn summarize_with_llm(
     deps: &SummarizationDeps,
     messages: &[Message],

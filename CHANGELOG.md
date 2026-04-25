@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-vault`: split 1302-line `lib.rs` into four module files (`age.rs`, `arc.rs`, `env.rs`,
+  `mock.rs`); `lib.rs` now contains only the `VaultProvider` trait, `default_vault_dir`, and
+  re-exports. No public API changes.
+- `zeph-sanitizer`: extracted `ContentSanitizer` struct and all `impl` blocks from 2313-line
+  `lib.rs` into a new `sanitizer.rs` sibling module; `lib.rs` reduces to ~1500 lines of tests
+  and re-exports. No public API changes.
+- `zeph-config`: split 5080-line `migrate.rs` into `migrate/mod.rs` (migration logic and registry)
+  and `migrate/steps.rs` (35 wrapper structs delegating to free functions). No public API changes.
+- `zeph-skills`, `zeph-index`: standardized `#[error("IO error")]` to `#[error("I/O error")]` in
+  error message strings for consistency with other crates.
+- workspace: replaced 63 occurrences of `// deferred to a future structural refactor` inline
+  comments with `// TODO(review): file a tracking issue for this decomposition` so each location
+  is visible to search tooling and reviewers.
+
 - `zeph-config`: extended `MIGRATIONS` registry to cover all 35 sequential migration steps
   (previously only the 10 most recent were registered). `src/commands/migrate.rs` now iterates
   `MIGRATIONS` instead of calling each migration free function individually, eliminating ~150 lines

@@ -510,7 +510,7 @@ impl<C: Channel> Agent<C> {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     async fn process_successful_tool_output(
         &mut self,
         output: zeph_tools::executor::ToolOutput,
@@ -830,7 +830,7 @@ impl<C: Channel> Agent<C> {
         Ok(None)
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     async fn call_chat_with_tools(
         &mut self,
         tool_defs: &[ToolDefinition],
@@ -1119,7 +1119,7 @@ impl<C: Channel> Agent<C> {
 
     #[allow(clippy::too_many_lines)]
     // TODO(B2): extract sub-functions or move logic to reduce function length
-    // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     // parallel tool execution with DAG scheduling, retry, self-reflection, cancellation — inherently sequential control flow
     #[cfg_attr(
         feature = "profiling",
@@ -2886,7 +2886,7 @@ impl<C: Channel> Agent<C> {
     /// If `complete_focus` is called without an active focus session, or the checkpoint marker
     /// is not found in the message history, an `[error]` result is returned to the LLM so it
     /// knows the state is invalid rather than silently succeeding.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub(crate) fn handle_focus_tool(
         &mut self,
         tool_name: &str,
@@ -3053,7 +3053,7 @@ impl<C: Channel> Agent<C> {
     /// Guards:
     /// - Returns error if a focus session is active (would interfere with focus boundaries).
     /// - Returns error if a compression is already in progress (concurrency guard).
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub(crate) async fn handle_compress_context(&mut self) -> String {
         use zeph_llm::provider::LlmProvider as _;
 

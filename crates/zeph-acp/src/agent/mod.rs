@@ -1042,7 +1042,7 @@ impl ZephAcpAgentState {
 
     #[allow(clippy::too_many_lines)]
     // TODO(B2): extract sub-functions or move logic to reduce function length
-    // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     #[tracing::instrument(skip_all, name = "acp.handler.new_session")]
     pub(crate) async fn do_new_session(
         &self,
@@ -1165,7 +1165,7 @@ impl ZephAcpAgentState {
     }
 
     #[tracing::instrument(skip_all, name = "acp.handler.prompt", fields(session_id = %args.session_id))]
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub(crate) async fn do_prompt(
         &self,
         args: acp::schema::PromptRequest,
@@ -2707,7 +2707,7 @@ pub(crate) mod handlers;
 /// ).await
 /// # }
 /// ```
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
 pub async fn run_agent(
     state: Arc<ZephAcpAgentState>,
     transport: impl acp::ConnectTo<acp::Agent>,

@@ -152,7 +152,7 @@ impl EmbeddingRegistry {
     /// # Errors
     ///
     /// Returns [`EmbeddingRegistryError`] on Qdrant or embedding failures.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     pub async fn sync<T: Embeddable>(
         &mut self,
         items: &[T],

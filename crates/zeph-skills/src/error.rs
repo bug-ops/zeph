@@ -23,7 +23,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum SkillError {
     /// Filesystem or IO failure.
-    #[error("IO error: {0}")]
+    #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
     /// Qdrant client error (boxed to keep the variant size small).

@@ -2140,7 +2140,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     async fn handle_agent_command(&mut self, cmd: zeph_subagent::AgentCommand) -> Option<String> {
         use zeph_subagent::AgentCommand;
 
@@ -2829,7 +2829,7 @@ impl<C: Channel> Agent<C> {
     /// Phase 2 (schedule, this turn): rebuild cursors and spawn a background `tokio::spawn`
     /// task for the LLM call. The result is stored in `pending_sidequest_result` and applied
     /// next turn, so the current agent turn is never blocked by the LLM call.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
     fn maybe_sidequest_eviction(&mut self) {
         use zeph_llm::provider::{Message, MessageMetadata, Role};
 
