@@ -20,6 +20,7 @@ evaluation: no tools, no memory, no MCP — raw model capability only.
 |---------|--------|-----------|------------|-------------|
 | LOCOMO | Token F1 ≥ 0.5 | 11 | **1.0000** | 11/11 |
 | GAIA | GAIA normalized exact | 8 | **1.0000** | 8/8 |
+| FRAMES | Normalized exact match | 7 | **1.0000** | 7/7 |
 | LongMemEval | Exact match + Token F1 | 6 | **1.0000** | 6/6 |
 | tau-bench | Task completion (exact) | 5 | **1.0000** | 5/5 |
 
