@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `run_focus_auto_consolidation` now offloads the O(K²) pairwise MIG scoring loop to
+  `tokio::task::spawn_blocking`, preventing long-session consolidation passes from
+  stalling the async executor (#3386).
+
 ### Added
 
 - HL-F5 HeLa-Mem spreading activation retrieval (#3346). `hela_spreading_recall` performs BFS

@@ -677,8 +677,20 @@ pub(crate) async fn run_focus_auto_consolidation(
         return Ok(None);
     }
 
-    let tc = TokenCounter::default();
-    let scores = score_blocks_mig(messages, Some(task_goal).filter(|s| !s.is_empty()), &tc);
+    // Clone inputs so the O(K²) pairwise loop can run on a blocking thread without
+    // stalling the async executor during long sessions.
+    let messages_owned: Vec<Message> = messages.to_vec();
+    let task_goal_owned = task_goal.to_string();
+    let scores = tokio::task::spawn_blocking(move || {
+        let tc = TokenCounter::default();
+        score_blocks_mig(
+            &messages_owned,
+            Some(task_goal_owned.as_str()).filter(|s| !s.is_empty()),
+            &tc,
+        )
+    })
+    .await
+    .map_err(|e| format!("score_blocks_mig panicked: {e}"))?;
 
     // Find the oldest contiguous run of messages with MIG ≤ 0 of length ≥ min_window.
     // `scores` is indexed by their original message positions via `msg_index`.
