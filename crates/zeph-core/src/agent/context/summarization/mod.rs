@@ -434,6 +434,7 @@ mod scheduling;
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use zeph_context::summarization::extract_overflow_ref;
 
     #[test]
