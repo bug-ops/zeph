@@ -9,6 +9,9 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
 
 use futures::StreamExt as _;
 use qdrant_client::qdrant::{PointStruct, value::Kind};
@@ -82,12 +85,6 @@ impl From<serde_json::Error> for EmbeddingRegistryError {
     }
 }
 
-impl From<std::num::TryFromIntError> for EmbeddingRegistryError {
-    fn from(e: std::num::TryFromIntError) -> Self {
-        Self::DimensionProbe(e.to_string())
-    }
-}
-
 // Ollama appends :latest when no tag is specified; treat the two as equivalent.
 fn normalize_model_name(name: &str) -> &str {
     name.strip_suffix(":latest").unwrap_or(name)
@@ -119,6 +116,12 @@ fn model_has_changed(
 /// Owns a [`QdrantOps`] instance, a collection name and a UUID namespace for
 /// deterministic point IDs (uuid v5).  The in-memory `hashes` map enables
 /// O(1) delta detection between syncs.
+///
+/// The `cached_dim` field caches the collection's vector dimension after the first successful
+/// [`sync`](Self::sync) so that [`search_raw`](Self::search_raw) can validate the query vector
+/// dimension without an extra Qdrant round-trip on every call.  When a mismatch is detected,
+/// `search_raw` returns [`EmbeddingRegistryError::DimensionProbe`] instead of silently issuing a
+/// gRPC search that would return near-zero cosine scores (Qdrant gRPC behaviour on dim mismatch).
 #[derive(Clone)]
 pub struct EmbeddingRegistry {
     ops: QdrantOps,
@@ -127,6 +130,9 @@ pub struct EmbeddingRegistry {
     hashes: HashMap<String, String>,
     /// Maximum number of embedding requests dispatched concurrently during a sync.
     pub concurrency: usize,
+    /// Vector dimension confirmed during the last successful `sync`.  Shared via `Arc` so
+    /// `Clone` works without invalidating the cached value across cloned instances.
+    cached_dim: Arc<RwLock<Option<u64>>>,
 }
 
 impl std::fmt::Debug for EmbeddingRegistry {
@@ -147,6 +153,7 @@ impl EmbeddingRegistry {
             namespace,
             hashes: HashMap::new(),
             concurrency: 4,
+            cached_dim: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -301,11 +308,21 @@ impl EmbeddingRegistry {
 
     /// Search the collection, returning raw scored Qdrant points.
     ///
+    /// Validates that the query vector dimension matches the collection before issuing the gRPC
+    /// call.  Qdrant gRPC silently returns near-zero cosine scores (~0.022) when dimensions
+    /// mismatch instead of returning an error — this guard prevents that silent failure.
+    ///
+    /// The dimension is checked against the cache populated by the most recent [`sync`](Self::sync)
+    /// call.  If no sync has occurred (cache is `None`) the check is skipped to avoid blocking
+    /// reads before the first sync.
+    ///
     /// Consumers map the payloads to their domain types.
     ///
     /// # Errors
     ///
-    /// Returns [`EmbeddingRegistryError`] if embedding or Qdrant search fails.
+    /// Returns [`EmbeddingRegistryError::DimensionProbe`] when the query vector dimension does not
+    /// match the stored collection dimension.  Returns [`EmbeddingRegistryError::Embedding`] if the
+    /// embed function fails, or [`EmbeddingRegistryError::VectorStore`] on Qdrant search failure.
     pub async fn search_raw(
         &self,
         query: &str,
@@ -315,6 +332,40 @@ impl EmbeddingRegistry {
         let query_vec = embed_fn(query)
             .await
             .map_err(|e| EmbeddingRegistryError::Embedding(e.to_string()))?;
+
+        // Guard: Qdrant gRPC returns near-zero cosine scores when the query vector dimension
+        // does not match the stored collection dimension (issue #3418).  Check the cache first
+        // (populated by sync); fall back to a live Qdrant probe only when the cache is empty.
+        let collection_dim: Option<u64> = *self.cached_dim.read().await;
+
+        let collection_dim = if collection_dim.is_some() {
+            collection_dim
+        } else {
+            // Cache miss: ask Qdrant directly (first search before any sync), then populate cache.
+            let probed = self
+                .ops
+                .get_collection_vector_size(&self.collection)
+                .await
+                .map_err(|e| {
+                    EmbeddingRegistryError::VectorStore(VectorStoreError::Collection(e.to_string()))
+                })?;
+            if let Some(d) = probed {
+                self.set_cached_dim(d).await;
+            }
+            probed
+        };
+
+        if let Some(stored_dim) = collection_dim {
+            // Safe: a Vec<f32> with 4B+ elements is impossible in practice on any 64-bit platform.
+            let query_dim = query_vec.len() as u64;
+            if query_dim != stored_dim {
+                return Err(EmbeddingRegistryError::DimensionProbe(format!(
+                    "query vector dimension {query_dim} does not match collection '{}' \
+                     dimension {stored_dim}; re-run sync to rebuild the collection",
+                    self.collection
+                )));
+            }
+        }
 
         let Ok(limit_u64) = u64::try_from(limit) else {
             return Ok(Vec::new());
@@ -394,6 +445,7 @@ impl EmbeddingRegistry {
                 dimensions = vector_size,
                 "created Qdrant collection"
             );
+            self.set_cached_dim(vector_size).await;
             return Ok(());
         }
 
@@ -420,6 +472,7 @@ impl EmbeddingRegistry {
         let vector_size = self.probe_vector_size(embed_fn).await?;
 
         if existing_size == Some(vector_size) {
+            self.set_cached_dim(vector_size).await;
             return Ok(());
         }
 
@@ -446,8 +499,14 @@ impl EmbeddingRegistry {
             dimensions = vector_size,
             "created Qdrant collection"
         );
+        self.set_cached_dim(vector_size).await;
 
         Ok(())
+    }
+
+    /// Store `dim` in the dimension cache so `search_raw` can validate without a Qdrant round-trip.
+    async fn set_cached_dim(&self, dim: u64) {
+        *self.cached_dim.write().await = Some(dim);
     }
 
     async fn probe_vector_size(
@@ -457,7 +516,8 @@ impl EmbeddingRegistry {
         let probe = embed_fn("dimension probe")
             .await
             .map_err(|e| EmbeddingRegistryError::DimensionProbe(e.to_string()))?;
-        Ok(u64::try_from(probe.len())?)
+        // Safe: a Vec<f32> with 4B+ elements is impossible in practice on any 64-bit platform.
+        Ok(probe.len() as u64)
     }
 
     async fn recreate_collection(
@@ -602,6 +662,52 @@ mod tests {
         };
         let result = reg.search_raw("query", 5, embed_fn).await;
         assert!(result.is_err());
+    }
+
+    /// Validates the dimension mismatch guard in `search_raw` (issue #3418).
+    ///
+    /// When the cached collection dimension differs from the query vector dimension,
+    /// `search_raw` must return `Err(EmbeddingRegistryError::DimensionProbe)` instead of
+    /// issuing a gRPC search that would silently return near-zero cosine scores.
+    #[tokio::test]
+    async fn search_raw_dimension_mismatch_returns_error() {
+        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ns = uuid::Uuid::from_bytes([0u8; 16]);
+        let reg = EmbeddingRegistry::new(ops, "test_dim_guard", ns);
+
+        // Simulate that the collection was created with 4-dim vectors.
+        reg.set_cached_dim(4).await;
+
+        // Query with a 2-dim vector (different model / dimension).
+        let embed_fn = |_: &str| -> EmbedFuture { Box::pin(async { Ok(vec![1.0_f32, 0.0]) }) };
+        let result = reg.search_raw("query", 5, embed_fn).await;
+        assert!(
+            matches!(result, Err(EmbeddingRegistryError::DimensionProbe(_))),
+            "expected DimensionProbe error on dimension mismatch, got: {result:?}"
+        );
+    }
+
+    /// Validates that `search_raw` does not reject a correctly-dimensioned query.
+    ///
+    /// When the cached dimension matches the query vector, the guard must pass and
+    /// the error (if any) comes from the Qdrant network call — not from the guard itself.
+    #[tokio::test]
+    async fn search_raw_matching_dimension_passes_guard() {
+        let ops = QdrantOps::new("http://127.0.0.1:1").unwrap(); // unreachable — forces network error
+        let ns = uuid::Uuid::from_bytes([0u8; 16]);
+        let reg = EmbeddingRegistry::new(ops, "test_dim_pass", ns);
+
+        // Simulate a 2-dim collection.
+        reg.set_cached_dim(2).await;
+
+        // Query with a matching 2-dim vector.
+        let embed_fn = |_: &str| -> EmbedFuture { Box::pin(async { Ok(vec![1.0_f32, 0.0]) }) };
+        let result = reg.search_raw("query", 5, embed_fn).await;
+        // The guard passes; the error is from the unreachable Qdrant instance.
+        assert!(
+            !matches!(result, Err(EmbeddingRegistryError::DimensionProbe(_))),
+            "guard must not fire when dimensions match"
+        );
     }
 
     #[tokio::test]
@@ -789,6 +895,47 @@ mod tests {
         assert_eq!(
             stats.added, 2,
             "two items should be upserted, failed one skipped"
+        );
+    }
+
+    /// Validates the full dimension-mismatch guard path against a live Qdrant instance (issue #3418).
+    ///
+    /// Creates a collection with 4-dim vectors via `sync`, then attempts a search with a 2-dim
+    /// query vector.  The guard in `search_raw` must return `Err(DimensionProbe)` before any
+    /// gRPC call reaches Qdrant, preventing the silent near-zero cosine score failure.
+    #[tokio::test]
+    #[ignore = "requires Docker for Qdrant"]
+    async fn search_raw_dimension_mismatch_returns_error_live() {
+        use testcontainers::GenericImage;
+        use testcontainers::core::{ContainerPort, WaitFor};
+        use testcontainers::runners::AsyncRunner;
+
+        let container = GenericImage::new("qdrant/qdrant", "v1.16.0")
+            .with_wait_for(WaitFor::message_on_stdout("gRPC listening"))
+            .with_wait_for(WaitFor::seconds(1))
+            .with_exposed_port(ContainerPort::Tcp(6334))
+            .start()
+            .await
+            .unwrap();
+        let port = container.get_host_port_ipv4(6334).await.unwrap();
+        let ops = QdrantOps::new(&format!("http://127.0.0.1:{port}")).unwrap();
+        let ns = uuid::Uuid::new_v4();
+        let mut reg = EmbeddingRegistry::new(ops, "test_dim_guard_live", ns);
+
+        // Sync with 4-dim vectors so the collection and cache are established.
+        let items = [make_item("a", "alpha")];
+        let embed_fn_4d =
+            |_: &str| -> EmbedFuture { Box::pin(async { Ok(vec![1.0_f32, 0.0, 0.0, 0.0]) }) };
+        reg.sync(&items, "model-4d", embed_fn_4d, None)
+            .await
+            .unwrap();
+
+        // Search with a 2-dim query (simulates a model switch without re-sync).
+        let embed_fn_2d = |_: &str| -> EmbedFuture { Box::pin(async { Ok(vec![1.0_f32, 0.0]) }) };
+        let result = reg.search_raw("query", 5, embed_fn_2d).await;
+        assert!(
+            matches!(result, Err(EmbeddingRegistryError::DimensionProbe(_))),
+            "dimension mismatch must return DimensionProbe error, not silent near-zero scores; got: {result:?}"
         );
     }
 }

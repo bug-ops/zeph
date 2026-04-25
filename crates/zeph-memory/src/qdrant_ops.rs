@@ -94,10 +94,17 @@ impl QdrantOps {
     /// Returns the configured vector size of an existing collection, or `None` if it cannot be
     /// determined (e.g. named-vector collections, or `collection_info` fails gracefully).
     ///
+    /// Used by [`crate::EmbeddingRegistry`] to validate query vector dimensions before issuing
+    /// gRPC searches. Qdrant gRPC silently returns near-zero cosine scores when the query vector
+    /// dimension does not match the stored collection dimension (unlike REST which returns 400).
+    ///
     /// # Errors
     ///
     /// Returns an error only on hard Qdrant communication failures.
-    async fn get_collection_vector_size(&self, collection: &str) -> QdrantResult<Option<u64>> {
+    pub(crate) async fn get_collection_vector_size(
+        &self,
+        collection: &str,
+    ) -> QdrantResult<Option<u64>> {
         let info = self
             .client
             .collection_info(collection)
