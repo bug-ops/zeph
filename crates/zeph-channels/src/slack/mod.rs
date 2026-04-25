@@ -92,7 +92,7 @@ impl SlackChannel {
         let channel_id = self
             .channel_id
             .as_deref()
-            .ok_or_else(|| ChannelError::NoActiveSession)?;
+            .ok_or(ChannelError::NoActiveSession)?;
 
         let text = if self.accumulated.is_empty() {
             "..."
@@ -178,7 +178,7 @@ impl Channel for SlackChannel {
         let channel_id = self
             .channel_id
             .as_deref()
-            .ok_or_else(|| ChannelError::NoActiveSession)?;
+            .ok_or(ChannelError::NoActiveSession)?;
 
         self.api
             .post_message(channel_id, text)

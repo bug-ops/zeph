@@ -87,7 +87,7 @@ pub struct ChatExtras {
 impl ChatExtras {
     /// Return a `ChatExtras` with the given entropy value.
     ///
-    /// Used by [`MockProvider`](crate::mock::MockProvider) and OpenAI/Ollama providers.
+    /// Used by `MockProvider` (test-only, enabled via `testing` feature) and OpenAI/Ollama providers.
     ///
     /// # Examples
     ///
