@@ -1258,7 +1258,7 @@ impl Default for HebbianConfig {
             hebbian_lr: 0.1,
             consolidation_interval_secs: 3600,
             consolidation_threshold: 5.0,
-            consolidate_provider: "fast".to_owned(),
+            consolidate_provider: String::new(),
             max_candidates_per_sweep: 10,
             consolidation_cooldown_secs: 86_400,
             consolidation_prompt_timeout_secs: 30,
