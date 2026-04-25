@@ -316,7 +316,7 @@ impl ResultWriter {
     pub fn new(output_dir: impl Into<PathBuf>) -> Result<Self, BenchError> {
         let output_dir = output_dir.into();
         if !output_dir.exists() {
-            std::fs::create_dir(&output_dir)?;
+            std::fs::create_dir_all(&output_dir)?;
         }
         Ok(Self { output_dir })
     }

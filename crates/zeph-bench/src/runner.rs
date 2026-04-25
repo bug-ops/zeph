@@ -375,6 +375,13 @@ impl BenchRunner {
             );
             tracing::debug!(scenario_id = %scenario.id, "bench: memory init done");
 
+            // Seed the sessions table so persist_message does not fail with FK violation.
+            let conv_id = memory
+                .sqlite()
+                .create_conversation()
+                .await
+                .map_err(|e| BenchError::InvalidFormat(format!("create_conversation: {e}")))?;
+
             // summarization_threshold = 100_000 deliberately suppresses LLM-driven
             // compaction during bench runs. Compaction calls another LLM round-trip
             // with non-deterministic timing/output, which would violate FR-003
@@ -382,8 +389,7 @@ impl BenchRunner {
             // long-context memory effects without silently capping LongMemEval scores
             // below their theoretical maximum. history_limit = 200 covers the longest
             // LongMemEval session without truncation.
-            let wired_agent =
-                base_agent.with_memory(memory, zeph_memory::ConversationId(1), 200, 20, 100_000);
+            let wired_agent = base_agent.with_memory(memory, conv_id, 200, 20, 100_000);
             (wired_agent, Some(scenario_db))
         } else {
             (base_agent, None)
