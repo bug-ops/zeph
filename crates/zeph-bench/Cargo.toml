@@ -23,6 +23,7 @@ zeph-llm.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+zeph-llm = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true
