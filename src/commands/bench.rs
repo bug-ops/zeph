@@ -5,8 +5,8 @@ use crate::bootstrap::{
     create_named_provider, create_provider, parse_vault_args, resolve_config_path,
 };
 use zeph_bench::{
-    BenchCommand, BenchMemoryParams, BenchRunner, DatasetRegistry, MemoryMode, ResultWriter,
-    RunOptions, RunStatus, apply_deterministic_overrides,
+    BenchCommand, BenchMemoryParams, BenchRun, BenchRunner, DatasetRegistry, MemoryMode,
+    ResultWriter, RunOptions, RunStatus, apply_deterministic_overrides,
     baseline::BaselineComparison,
     loaders::{
         FramesEvaluator, FramesLoader, GaiaEvaluator, GaiaLoader, LocomoEvaluator, LocomoLoader,
@@ -76,9 +76,6 @@ async fn handle_run_baseline(
     no_deterministic: bool,
     config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    // Gate --baseline to memory-relevant datasets only.
-    // Tool-driven datasets (gaia, frames, tau-bench) use NoopExecutor, making
-    // the memory-on pass meaningless (C-2).
     match dataset {
         "longmemeval" | "locomo" => {}
         other => {
@@ -110,7 +107,6 @@ async fn handle_run_baseline(
     };
     let provider = apply_deterministic_overrides(raw_provider, no_deterministic);
 
-    // Completed IDs are shared across both passes to allow partial resume.
     let base_completed_ids = if resume {
         let off_writer = ResultWriter::new(output.join("baseline").join("memory-off"))?;
         off_writer
@@ -121,70 +117,35 @@ async fn handle_run_baseline(
         std::collections::HashSet::new()
     };
 
-    let base_opts = RunOptions {
-        scenario_filter: scenario.map(ToOwned::to_owned),
-        completed_ids: base_completed_ids,
-        memory_mode: MemoryMode::Off,
-    };
-
-    // Each pass gets a distinct run_id so SQLite paths and result files don't collide.
-    let off_run_id = format!("bench-off-{}", baseline_run_id_suffix());
-    let on_run_id = format!("bench-on-{}", baseline_run_id_suffix());
-
     let data_dir = output.join("bench-data");
     std::fs::create_dir_all(&data_dir)?;
 
-    let off_dir = output.join("baseline").join("memory-off");
-    let on_dir = output.join("baseline").join("memory-on");
+    let (off_run, off_writer) = run_memory_off_pass(
+        dataset,
+        &data_path,
+        output,
+        scenario,
+        base_completed_ids,
+        provider.clone(),
+        no_deterministic,
+    )
+    .await?;
 
-    // --- Memory-off pass ---
-    let off_runner = BenchRunner::new(provider.clone(), no_deterministic);
-    let off_writer = ResultWriter::new(&off_dir)?;
-    let off_opts = RunOptions {
-        memory_mode: MemoryMode::Off,
-        ..base_opts
-    };
-    let mut off_run = dispatch_run(&off_runner, dataset, &data_path, off_opts).await?;
-    off_run.status = RunStatus::Completed;
-    off_run.finished_at = finished_at_now();
-    off_run.run_id = off_run_id;
-    off_run.recompute_aggregate();
-    off_writer.write(&off_run)?;
-    println!(
-        "Memory-off pass complete: mean score {:.4} ({}/{} exact)",
-        off_run.aggregate.mean_score, off_run.aggregate.exact_match, off_run.aggregate.total
-    );
+    let (on_run, on_writer) = run_memory_on_pass(
+        dataset,
+        &data_path,
+        output,
+        scenario,
+        &data_dir,
+        &config.llm.embedding_model.clone(),
+        provider,
+        no_deterministic,
+    )
+    .await?;
 
-    // --- Memory-on pass ---
-    let memory_params = BenchMemoryParams {
-        data_dir: data_dir.clone(),
-        embedding_model: config.llm.embedding_model.clone(),
-        run_id: on_run_id.clone(),
-        dataset: dataset.to_owned(),
-    };
-    let on_runner =
-        BenchRunner::new(provider.clone(), no_deterministic).with_memory_params(memory_params);
-    let on_writer = ResultWriter::new(&on_dir)?;
-    let on_opts = RunOptions {
-        scenario_filter: scenario.map(ToOwned::to_owned),
-        completed_ids: std::collections::HashSet::new(),
-        memory_mode: MemoryMode::On,
-    };
-    let mut on_run = dispatch_run(&on_runner, dataset, &data_path, on_opts).await?;
-    on_run.status = RunStatus::Completed;
-    on_run.finished_at = finished_at_now();
-    on_run.run_id = on_run_id;
-    on_run.recompute_aggregate();
-    on_writer.write(&on_run)?;
-    println!(
-        "Memory-on pass complete: mean score {:.4} ({}/{} exact)",
-        on_run.aggregate.mean_score, on_run.aggregate.exact_match, on_run.aggregate.total
-    );
-
-    // --- Comparison (reuse existing baseline::BaselineComparison) ---
-    let cmp = BaselineComparison::compute(&on_run, &off_run);
     let baseline_dir = output.join("baseline");
     std::fs::create_dir_all(&baseline_dir)?;
+    let cmp = BaselineComparison::compute(&on_run, &off_run);
     cmp.write_comparison_json(&baseline_dir)?;
     cmp.write_delta_table(&baseline_dir.join("summary.md"))?;
 
@@ -199,6 +160,75 @@ async fn handle_run_baseline(
         baseline_dir.join("comparison.json").display()
     );
     Ok(())
+}
+
+async fn run_memory_off_pass(
+    dataset: &str,
+    data_path: &std::path::Path,
+    output: &std::path::Path,
+    scenario: Option<&str>,
+    completed_ids: std::collections::HashSet<String>,
+    provider: zeph_llm::any::AnyProvider,
+    no_deterministic: bool,
+) -> anyhow::Result<(BenchRun, ResultWriter)> {
+    let dir = output.join("baseline").join("memory-off");
+    let writer = ResultWriter::new(&dir)?;
+    let opts = RunOptions {
+        scenario_filter: scenario.map(ToOwned::to_owned),
+        completed_ids,
+        memory_mode: MemoryMode::Off,
+    };
+    let runner = BenchRunner::new(provider, no_deterministic);
+    let mut run = dispatch_run(&runner, dataset, data_path, opts).await?;
+    run.status = RunStatus::Completed;
+    run.finished_at = finished_at_now();
+    run.run_id = format!("bench-off-{}", baseline_run_id_suffix());
+    run.recompute_aggregate();
+    writer.write(&run)?;
+    println!(
+        "Memory-off pass complete: mean score {:.4} ({}/{} exact)",
+        run.aggregate.mean_score, run.aggregate.exact_match, run.aggregate.total
+    );
+    Ok((run, writer))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_memory_on_pass(
+    dataset: &str,
+    data_path: &std::path::Path,
+    output: &std::path::Path,
+    scenario: Option<&str>,
+    data_dir: &std::path::Path,
+    embedding_model: &str,
+    provider: zeph_llm::any::AnyProvider,
+    no_deterministic: bool,
+) -> anyhow::Result<(BenchRun, ResultWriter)> {
+    let run_id = format!("bench-on-{}", baseline_run_id_suffix());
+    let memory_params = BenchMemoryParams {
+        data_dir: data_dir.to_path_buf(),
+        embedding_model: embedding_model.to_owned(),
+        run_id: run_id.clone(),
+        dataset: dataset.to_owned(),
+    };
+    let dir = output.join("baseline").join("memory-on");
+    let writer = ResultWriter::new(&dir)?;
+    let opts = RunOptions {
+        scenario_filter: scenario.map(ToOwned::to_owned),
+        completed_ids: std::collections::HashSet::new(),
+        memory_mode: MemoryMode::On,
+    };
+    let runner = BenchRunner::new(provider, no_deterministic).with_memory_params(memory_params);
+    let mut run = dispatch_run(&runner, dataset, data_path, opts).await?;
+    run.status = RunStatus::Completed;
+    run.finished_at = finished_at_now();
+    run.run_id = run_id;
+    run.recompute_aggregate();
+    writer.write(&run)?;
+    println!(
+        "Memory-on pass complete: mean score {:.4} ({}/{} exact)",
+        run.aggregate.mean_score, run.aggregate.exact_match, run.aggregate.total
+    );
+    Ok((run, writer))
 }
 
 /// Generate a short unique suffix for baseline run IDs.
