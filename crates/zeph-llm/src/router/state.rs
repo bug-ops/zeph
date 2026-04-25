@@ -1,15 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Shared cross-strategy state for [`RouterProvider`].
+//! Shared cross-strategy state for [`crate::router::RouterProvider`].
 //!
 //! [`RouterState`] owns all `Arc`-wrapped signals that multiple routing strategies
 //! read or mutate concurrently: the provider list, turn counter, MAR confidence,
 //! reputation attribution pointer, and embed-call telemetry. Grouping these here
 //! separates *what is shared* from *per-strategy configuration*, which lives on
-//! [`RouterProvider`] directly.
-//!
-//! [`RouterProvider`]: super::RouterProvider
+//! [`crate::router::RouterProvider`] directly.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,7 +18,7 @@ use parking_lot::Mutex;
 use crate::any::AnyProvider;
 use crate::provider::LlmProvider;
 
-/// Shared runtime signals for [`RouterProvider`].
+/// Shared runtime signals for [`crate::router::RouterProvider`].
 ///
 /// Every field is already `Arc`-wrapped, so cloning `RouterState` is O(1) — atomic
 /// reference-count increments only. This is the same cost as the previous per-field
@@ -63,7 +61,7 @@ pub struct RouterState {
 
     /// MAR (Memory-Augmented Routing) signal for the current turn.
     ///
-    /// Set by the agent via [`RouterProvider::set_memory_confidence`] before each
+    /// Set by the agent via `RouterProvider::set_memory_confidence` before each
     /// `chat` / `chat_stream` call. Read by `bandit_select_provider` to bias toward
     /// cheaper providers when memory recall confidence is high.
     pub last_memory_confidence: Arc<Mutex<Option<f32>>>,

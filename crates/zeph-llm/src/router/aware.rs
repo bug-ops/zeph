@@ -3,8 +3,8 @@
 
 //! Sealed extension trait for router-specific quality-signal methods.
 //!
-//! [`RouterAware`] exposes the subset of [`RouterProvider`] methods that only make sense
-//! when the underlying provider is a multi-provider router:
+//! [`RouterAware`] exposes the subset of [`crate::router::RouterProvider`] methods that only
+//! make sense when the underlying provider is a multi-provider router:
 //!
 //! - [`RouterAware::set_memory_confidence`] — MAR (Memory-Augmented Routing) signal
 //! - [`RouterAware::record_quality_outcome`] — RAPS (Reputation-Aware Provider Selection) signal
@@ -25,10 +25,8 @@
 //! }
 //! ```
 //!
-//! When the provider is not a [`RouterProvider`], both methods are no-ops that emit a
-//! `tracing::trace!` event so the drop is observable in trace JSON.
-//!
-//! [`RouterProvider`]: super::RouterProvider
+//! When the provider is not a [`crate::router::RouterProvider`], both methods are no-ops that
+//! emit a `tracing::trace!` event so the drop is observable in trace JSON.
 
 use crate::any::AnyProvider;
 use crate::provider::LlmProvider;
@@ -40,7 +38,7 @@ mod sealed {
 
 /// Extension trait for router-specific quality-signal methods.
 ///
-/// Implemented only on [`RouterProvider`] and [`AnyProvider`]. The trait is sealed to
+/// Implemented only on [`crate::router::RouterProvider`] and [`AnyProvider`]. The trait is sealed to
 /// prevent external implementations — quality signals are only meaningful for multi-provider
 /// routers, and the `AnyProvider` impl provides the correct no-op + trace for non-router
 /// variants.
