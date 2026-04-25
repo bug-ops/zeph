@@ -517,6 +517,7 @@ impl McpClient {
     /// `McpError::Timeout` if the handshake exceeds `timeout`, or
     /// `McpError::Connection` if the handshake fails.
     #[allow(clippy::too_many_arguments)]
+    // TODO(B3): refactor into a builder or config struct to reduce argument count
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     #[cfg_attr(
         feature = "profiling",

@@ -1307,6 +1307,7 @@ impl SubAgentManager {
     /// Panics if the internal agent entry is missing after a successful `spawn` call.
     /// This is a programming error and should never occur in normal operation.
     #[allow(clippy::too_many_arguments)]
+    // TODO(B3): refactor into a builder or config struct to reduce argument count
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     /// Spawn a sub-agent and attach a completion callback invoked when the agent terminates.
     ///

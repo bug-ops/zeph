@@ -1041,6 +1041,7 @@ impl ZephAcpAgentState {
     }
 
     #[allow(clippy::too_many_lines)]
+    // TODO(B2): extract sub-functions or move logic to reduce function length
     // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     #[tracing::instrument(skip_all, name = "acp.handler.new_session")]
     pub(crate) async fn do_new_session(

@@ -437,6 +437,7 @@ impl<C: Channel> Agent<C> {
     /// When `true` and `guard_memory_writes` is enabled, only `SQLite` is written — the message
     /// is saved for conversation continuity but will not pollute semantic search (M2, D2).
     #[allow(clippy::too_many_lines)]
+    // TODO(B2): extract sub-functions or move logic to reduce function length
     // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     #[cfg_attr(
         feature = "profiling",

@@ -2434,6 +2434,7 @@ impl GraphStore {
     /// - [`MemoryError::SupersedeDepthExceeded`] — chain depth cap would be exceeded.
     /// - [`MemoryError::Sqlx`] / [`MemoryError::Db`] — database errors.
     #[allow(clippy::too_many_arguments)]
+    // TODO(B3): refactor into a builder or config struct to reduce argument count
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     pub async fn insert_or_supersede_with_metrics(

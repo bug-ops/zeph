@@ -229,6 +229,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     // shutdown signal) — each branch requires distinct cancel/fail/ignore semantics that
     // cannot be split without introducing shared mutable state across async boundaries.
     #[allow(clippy::too_many_lines)]
+    // TODO(B2): extract sub-functions or move logic to reduce function length
     // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     /// Drive the [`DagScheduler`] tick loop until it emits `SchedulerAction::Done`.
     ///

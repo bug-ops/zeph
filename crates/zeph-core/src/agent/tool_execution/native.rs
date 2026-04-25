@@ -1118,6 +1118,7 @@ impl<C: Channel> Agent<C> {
     }
 
     #[allow(clippy::too_many_lines)]
+    // TODO(B2): extract sub-functions or move logic to reduce function length
     // long function; decomposition would require extracting state into additional structs — deferred to a future structural refactor
     // parallel tool execution with DAG scheduling, retry, self-reflection, cancellation — inherently sequential control flow
     #[cfg_attr(
