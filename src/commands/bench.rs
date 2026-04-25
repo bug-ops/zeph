@@ -9,6 +9,7 @@ use zeph_bench::{
     apply_deterministic_overrides,
     loaders::{
         FramesEvaluator, FramesLoader, GaiaEvaluator, GaiaLoader, LocomoEvaluator, LocomoLoader,
+        LongMemEvalEvaluator, LongMemEvalLoader, TauBenchEvaluator, TauBenchLoader,
     },
 };
 use zeph_core::config::{Config, SecretResolver as _};
@@ -191,9 +192,15 @@ async fn dispatch_run(
         "frames" => Ok(runner
             .run_dataset(&FramesLoader, &FramesEvaluator, data_path, opts)
             .await?),
+        "longmemeval" => Ok(runner
+            .run_dataset(&LongMemEvalLoader, &LongMemEvalEvaluator, data_path, opts)
+            .await?),
+        "tau-bench" => Ok(runner
+            .run_dataset(&TauBenchLoader, &TauBenchEvaluator, data_path, opts)
+            .await?),
         other => {
             eprintln!(
-                "error: no built-in runner for dataset '{other}'. Supported: locomo, gaia, frames."
+                "error: no built-in runner for dataset '{other}'. Supported: locomo, gaia, frames, longmemeval, tau-bench."
             );
             std::process::exit(1);
         }

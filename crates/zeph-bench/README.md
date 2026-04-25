@@ -20,6 +20,8 @@ evaluation: no tools, no memory, no MCP — raw model capability only.
 |---------|--------|-----------|------------|-------------|
 | LOCOMO | Token F1 ≥ 0.5 | 11 | **1.0000** | 11/11 |
 | GAIA | GAIA normalized exact | 8 | **1.0000** | 8/8 |
+| LongMemEval | Exact match + Token F1 | 6 | **1.0000** | 6/6 |
+| tau-bench | Task completion (exact) | 5 | **1.0000** | 5/5 |
 
 > [!NOTE]
 > Baseline mode injects a concise-answer system prompt and post-processes responses
@@ -117,8 +119,8 @@ impl Evaluator for MyEvaluator {
 | [LOCOMO](https://github.com/snap-research/locomo) | JSON | Token F1 ≥ 0.5 | Ready |
 | [GAIA](https://huggingface.co/datasets/gaia-benchmark/GAIA) | JSONL | Normalized exact match | Ready |
 | [FRAMES](https://huggingface.co/datasets/google/frames-benchmark) | JSONL | Normalized exact match | Ready |
-| LongMemEval | JSON | Token F1 | Loader ready, CLI not wired |
-| tau-bench | JSON | Pass@1 | Loader ready, CLI not wired |
+| LongMemEval | JSONL | Exact match + Token F1 | Ready |
+| tau-bench | JSON | Task completion (exact) | Ready |
 
 > [!IMPORTANT]
 > Requires Rust 1.95 or later.
