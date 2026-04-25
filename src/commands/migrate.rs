@@ -13,13 +13,13 @@ use zeph_core::config::migrate::{
     migrate_magic_docs_config, migrate_mcp_elicitation_config, migrate_mcp_trust_levels,
     migrate_memory_graph_config, migrate_memory_hebbian_config,
     migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
-    migrate_memory_reasoning_config,
-    migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
-    migrate_microcompact_config, migrate_orchestration_persistence, migrate_otel_filter,
-    migrate_planner_model_to_provider, migrate_quality_config, migrate_sandbox_config,
-    migrate_sandbox_egress_filter, migrate_scheduler_daemon_config, migrate_session_recap_config,
-    migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
-    migrate_telemetry_config, migrate_vigil_config,
+    migrate_memory_reasoning_config, migrate_memory_reasoning_judge_config,
+    migrate_memory_retrieval_config, migrate_microcompact_config,
+    migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
+    migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
+    migrate_scheduler_daemon_config, migrate_session_recap_config, migrate_shell_transactional,
+    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
+    migrate_vigil_config,
 };
 
 /// Handle the `zeph migrate-config` command.
@@ -173,13 +173,11 @@ pub(crate) fn handle_migrate_config(
     let after_hebbian_consolidation = hebbian_consolidation_result.output;
 
     // Step 31b: splice HL-F5 spreading-activation fields into [memory.hebbian] if absent (#3346).
-    let hebbian_spread_result =
-        migrate_memory_hebbian_spread_config(&after_hebbian_consolidation)?;
+    let hebbian_spread_result = migrate_memory_hebbian_spread_config(&after_hebbian_consolidation)?;
     let after_hebbian_spread = hebbian_spread_result.output;
 
     // Step 32: add commented-out [[hooks.turn_complete]] block if absent (#3308).
-    let hooks_turn_complete_result =
-        migrate_hooks_turn_complete_config(&after_hebbian_spread)?;
+    let hooks_turn_complete_result = migrate_hooks_turn_complete_config(&after_hebbian_spread)?;
     let after_hooks_turn_complete = hooks_turn_complete_result.output;
 
     // Step 33: inject auto_consolidate_min_window into [agent.focus] if absent (#3313).
