@@ -117,7 +117,11 @@ pub struct LocomoEvaluator;
 
 impl Evaluator for LocomoEvaluator {
     fn evaluate(&self, scenario: &Scenario, agent_response: &str) -> EvalResult {
-        let score = token_f1(agent_response, &scenario.expected);
+        // Normalize both sides before scoring: lowercase and keep only alphanumeric/whitespace.
+        // This ensures "4." and "Leonardo da Vinci." match their expected forms.
+        let normalized_response = normalize_for_f1(agent_response);
+        let normalized_expected = normalize_for_f1(&scenario.expected);
+        let score = token_f1(&normalized_response, &normalized_expected);
         EvalResult {
             scenario_id: scenario.id.clone(),
             score,
@@ -125,6 +129,18 @@ impl Evaluator for LocomoEvaluator {
             details: format!("token_f1={score:.4}"),
         }
     }
+}
+
+/// Normalize a string for token-F1 scoring: lowercase and strip non-alphanumeric characters.
+///
+/// This mirrors the normalization used in the original `SQuAD` evaluation script and
+/// ensures that punctuation differences (e.g., "Paris." vs "Paris") do not penalize
+/// otherwise correct answers.
+fn normalize_for_f1(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase()
 }
 
 #[cfg(test)]

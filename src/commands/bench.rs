@@ -111,10 +111,10 @@ async fn handle_run(
     // The bench command is dispatched before AppBuilder runs, so we must
     // initialize the vault here to populate config.secrets.
     let vault_args = parse_vault_args(&config, None, None, None);
-    if let Some(vault) = crate::bootstrap::build_vault_provider(&vault_args) {
-        if let Err(e) = config.resolve_secrets(vault.as_ref()).await {
-            tracing::warn!("vault secret resolution failed: {e}");
-        }
+    if let Some(vault) = crate::bootstrap::build_vault_provider(&vault_args)
+        && let Err(e) = config.resolve_secrets(vault.as_ref()).await
+    {
+        tracing::warn!("vault secret resolution failed: {e}");
     }
 
     let raw_provider = if let Some(name) = provider_name {

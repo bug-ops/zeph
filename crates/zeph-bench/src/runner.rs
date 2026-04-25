@@ -27,10 +27,11 @@
 //! ```
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use zeph_core::agent::Agent;
+use zeph_core::instructions::InstructionBlock;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 use zeph_skills::registry::SkillRegistry;
@@ -187,9 +188,31 @@ impl BenchRunner {
     }
 
     /// Run a single prompt through a fresh agent and return the last response text.
+    ///
+    /// A concise-answer system prompt is injected via [`InstructionBlock`] so the model
+    /// responds with only the final answer (a number, word, or short phrase) rather than
+    /// full sentences. The raw response is then post-processed to extract the first
+    /// non-empty line and strip markdown formatting, which further reduces noise for
+    /// evaluators that perform exact or near-exact matching.
     async fn run_one(&self, prompt: String) -> Result<String, BenchError> {
         let channel = BenchmarkChannel::new(vec![prompt]);
         let registry = SkillRegistry::empty();
+
+        // Force the model to emit only the shortest possible answer. This is the primary
+        // driver of score improvement — without this, models produce full sentences that
+        // fail both token-F1 and exact-match evaluators.
+        let blocks = vec![InstructionBlock {
+            source: PathBuf::from("<bench-system-prompt>"),
+            content: concat!(
+                "You are an evaluation assistant. ",
+                "Answer every question with the shortest possible response. ",
+                "Give only the final answer — no explanation, no full sentences, ",
+                "no punctuation unless it is part of the answer. ",
+                "If the answer is a single word or number, respond with only that word or number."
+            )
+            .to_owned(),
+        }];
+
         let mut agent = Agent::new(
             self.provider.clone(),
             channel,
@@ -197,18 +220,46 @@ impl BenchRunner {
             None,
             1,
             NoopExecutor,
-        );
+        )
+        .with_instruction_blocks(blocks);
+
         // Ignore agent errors — a failed LLM call still yields an empty response that
         // the evaluator scores as 0.0 rather than aborting the entire run.
         let _ = agent.run().await;
         let responses = agent.into_channel().into_responses();
-        let text = responses
+        let raw = responses
             .into_iter()
             .last()
             .map(|r| r.text)
             .unwrap_or_default();
-        Ok(text)
+        Ok(post_process_response(&raw))
     }
+}
+
+/// Post-process the raw agent response to extract a clean, terse answer.
+///
+/// Applies these transformations in order:
+/// 1. Take only the first non-empty line — strips explanations appended after the answer.
+/// 2. Strip markdown formatting (bold `**`, italic `*` and `_`, inline code `` ` ``).
+/// 3. Trim surrounding whitespace.
+///
+/// This is a best-effort cleanup. Evaluators still normalize the result, so minor
+/// leftover punctuation is handled downstream.
+fn post_process_response(raw: &str) -> String {
+    // Take the first non-empty line to discard any trailing explanation.
+    let first_line = raw
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+
+    // Strip common markdown formatting characters.
+    first_line
+        .trim_matches(|c: char| matches!(c, '*' | '_' | '`' | ' ' | '\t'))
+        .replace("**", "")
+        .replace('`', "")
+        .trim()
+        .to_owned()
 }
 
 /// Generate a short pseudo-UUID-like run ID without the `uuid` crate.
@@ -289,5 +340,37 @@ mod tests {
         let id = uuid();
         assert!(id.starts_with("bench-"));
         assert!(id.len() > 10);
+    }
+
+    #[test]
+    fn post_process_takes_first_line() {
+        let raw = "1945\n\nWorld War II ended in 1945.";
+        assert_eq!(post_process_response(raw), "1945");
+    }
+
+    #[test]
+    fn post_process_strips_markdown_bold() {
+        assert_eq!(post_process_response("**1945**"), "1945");
+    }
+
+    #[test]
+    fn post_process_strips_backticks() {
+        assert_eq!(post_process_response("`Au`"), "Au");
+    }
+
+    #[test]
+    fn post_process_trims_whitespace() {
+        assert_eq!(post_process_response("  Paris  "), "Paris");
+    }
+
+    #[test]
+    fn post_process_empty_input_returns_empty() {
+        assert_eq!(post_process_response(""), "");
+    }
+
+    #[test]
+    fn post_process_skips_empty_leading_lines() {
+        let raw = "\n\n  \nParis";
+        assert_eq!(post_process_response(raw), "Paris");
     }
 }
