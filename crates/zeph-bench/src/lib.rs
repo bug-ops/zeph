@@ -58,6 +58,7 @@
 //! | [`isolation`] | Per-scenario storage isolation ([`BenchIsolation`]) |
 //! | [`loaders`] | Concrete loaders for LOCOMO, FRAMES, GAIA, LongMemEval, and tau-bench |
 //! | [`results`] | Result types and [`ResultWriter`] |
+//! | [`runner`] | [`BenchRunner`] that drives the agent loop over a dataset |
 //! | [`scenario`] | Core traits ([`DatasetLoader`], [`Evaluator`]) and scoring helpers |
 
 pub mod baseline;
@@ -69,6 +70,7 @@ pub mod error;
 pub mod isolation;
 pub mod loaders;
 pub mod results;
+pub mod runner;
 pub mod scenario;
 
 pub use baseline::{BaselineComparison, ScenarioDelta};
@@ -79,6 +81,7 @@ pub use deterministic::apply_deterministic_overrides;
 pub use error::BenchError;
 pub use isolation::BenchIsolation;
 pub use results::{Aggregate, BenchRun, ResultWriter, RunStatus, ScenarioResult};
+pub use runner::{BenchRunner, RunOptions};
 pub use scenario::{
     DatasetLoader, EvalResult, Evaluator, Scenario, exact_match, gaia_normalized_exact_match,
     token_f1,

@@ -45,6 +45,13 @@ pub enum BenchCommand {
         #[arg(long)]
         output: std::path::PathBuf,
 
+        /// Path to the local dataset file (JSON or JSONL).
+        ///
+        /// Required until automatic download is implemented. Obtain the file manually
+        /// from the URL shown by `zeph bench list`.
+        #[arg(long)]
+        data_file: Option<std::path::PathBuf>,
+
         /// Run only the scenario with this ID (runs all scenarios if omitted)
         #[arg(long)]
         scenario: Option<String>,

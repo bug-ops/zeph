@@ -1449,5 +1449,25 @@ impl AppBuilder {
     }
 }
 
+/// Build a [`VaultProvider`] from pre-parsed [`VaultArgs`], returning `None` for unknown backends.
+///
+/// Used by commands that need vault access before [`AppBuilder`] is constructed.
+#[must_use]
+pub fn build_vault_provider(args: &VaultArgs) -> Option<Box<dyn VaultProvider>> {
+    match args.backend.as_str() {
+        "env" => Some(Box::new(EnvVaultProvider)),
+        "age" => {
+            let key = args.key_path.as_deref()?;
+            let path = args.vault_path.as_deref()?;
+            let provider =
+                AgeVaultProvider::new(std::path::Path::new(key), std::path::Path::new(path))
+                    .ok()?;
+            let arc = Arc::new(RwLock::new(provider));
+            Some(Box::new(zeph_core::vault::ArcAgeVaultProvider(arc)))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests;
