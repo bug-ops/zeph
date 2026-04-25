@@ -1452,6 +1452,7 @@ impl AppBuilder {
 /// Build a [`VaultProvider`] from pre-parsed [`VaultArgs`], returning `None` for unknown backends.
 ///
 /// Used by commands that need vault access before [`AppBuilder`] is constructed.
+#[cfg(feature = "bench")]
 #[must_use]
 pub fn build_vault_provider(args: &VaultArgs) -> Option<Box<dyn VaultProvider>> {
     match args.backend.as_str() {
