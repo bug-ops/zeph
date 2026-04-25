@@ -1453,6 +1453,67 @@ impl SemanticMemory {
         crate::graph::strategy_classifier::classify_retrieval_strategy(&self.provider, query).await
     }
 
+    /// Retrieve graph facts via HL-F5 spreading activation from the top-1 ANN anchor (#3346).
+    ///
+    /// Returns an empty vec when no graph store is configured, Qdrant is unavailable,
+    /// or `hebbian_spread.enabled = false`.  The outer 200 ms timeout ensures the
+    /// agent loop is never blocked by a slow Qdrant response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the embed call or any database query fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "memory.recall_graph_hela",
+            skip_all,
+            fields(result_count = tracing::field::Empty)
+        )
+    )]
+    pub async fn recall_graph_hela(
+        &self,
+        query: &str,
+        limit: usize,
+        params: crate::graph::HelaSpreadParams,
+    ) -> Result<Vec<crate::graph::HelaFact>, MemoryError> {
+        let Some(store) = &self.graph_store else {
+            return Ok(Vec::new());
+        };
+        let Some(embeddings) = &self.qdrant else {
+            return Ok(Vec::new());
+        };
+
+        let store = Arc::clone(store);
+        let embeddings = Arc::clone(embeddings);
+        let provider = self.provider.clone();
+        let hebbian_enabled = self.hebbian_enabled;
+        let hebbian_lr = self.hebbian_lr;
+
+        let results = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            crate::graph::hela_spreading_recall(
+                &store,
+                &embeddings,
+                &provider,
+                query,
+                limit,
+                &params,
+                hebbian_enabled,
+                hebbian_lr,
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            tracing::warn!("memory.recall_graph_hela: outer 200ms timeout exceeded");
+            Ok(Vec::new())
+        })?;
+
+        #[cfg(feature = "profiling")]
+        tracing::Span::current().record("result_count", results.len());
+
+        Ok(results)
+    }
+
     /// Increment access count and update `last_accessed` for a batch of message IDs.
     ///
     /// Skips the update if `message_ids` is empty to avoid an invalid `IN ()` clause.
@@ -1651,6 +1712,7 @@ mod tests {
             profile_centroid_ttl_secs: 300,
             hebbian_enabled: false,
             hebbian_lr: 0.1,
+            hebbian_spread: crate::HelaSpreadRuntime::default(),
         }
     }
 

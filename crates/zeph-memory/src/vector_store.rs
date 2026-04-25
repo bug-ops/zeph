@@ -32,6 +32,9 @@ pub enum VectorStoreError {
     Scroll(String),
     #[error("serialization error: {0}")]
     Serialization(String),
+    /// Operation is not supported by this backend (e.g. `get_points` on `DbVectorStore`).
+    #[error("operation unsupported: {0}")]
+    Unsupported(String),
 }
 
 /// A vector point to be stored in or retrieved from a [`VectorStore`].
@@ -171,5 +174,27 @@ pub trait VectorStore: Send + Sync {
         _fields: &[&str],
     ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
         Box::pin(async { Ok(()) })
+    }
+
+    /// Batched vector + payload retrieval by point IDs.
+    ///
+    /// Returns one [`VectorPoint`] per matched id (missing ids are silently dropped).
+    /// Backends that cannot return vectors return `Err(VectorStoreError::Unsupported)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VectorStoreError::Unsupported`] when the backend does not support
+    /// direct point retrieval with vectors (e.g. `DbVectorStore`, `InMemoryVectorStore`
+    /// unless overridden in tests).
+    fn get_points(
+        &self,
+        _collection: &str,
+        _ids: Vec<String>,
+    ) -> BoxFuture<'_, Result<Vec<VectorPoint>, VectorStoreError>> {
+        Box::pin(async {
+            Err(VectorStoreError::Unsupported(
+                "get_points not implemented for this backend".into(),
+            ))
+        })
     }
 }

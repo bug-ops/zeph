@@ -66,6 +66,7 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
         profile_centroid_ttl_secs: 300,
         hebbian_enabled: false,
         hebbian_lr: 0.1,
+        hebbian_spread: crate::HelaSpreadRuntime::default(),
     }
 }
 
@@ -164,6 +165,7 @@ async fn effective_embed_provider_routes_to_dedicated_embed_provider() {
         profile_centroid_ttl_secs: 300,
         hebbian_enabled: false,
         hebbian_lr: 0.1,
+        hebbian_spread: crate::HelaSpreadRuntime::default(),
     };
 
     assert!(
@@ -566,6 +568,7 @@ async fn store_correction_embedding_sqlite_clean_db_roundtrip() {
         profile_centroid_ttl_secs: 300,
         hebbian_enabled: false,
         hebbian_lr: 0.1,
+        hebbian_spread: crate::HelaSpreadRuntime::default(),
     };
 
     memory

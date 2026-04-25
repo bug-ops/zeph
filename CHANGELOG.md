@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- HL-F5 HeLa-Mem spreading activation retrieval (#3346). `hela_spreading_recall` performs BFS
+  from the top-1 ANN anchor in `zeph_graph_entities`, propagating multiplicative edge weights
+  (`path_weight = Π edge.weight`). Each visited node is scored as `path_weight × cosine(query,
+  entity)` with negative cosine clamped to 0.0. Multi-path convergence keeps the maximum
+  `path_weight`. Isolated anchor fallback returns a single synthetic `HelaFact` (edge id=0)
+  scored by the real anchor cosine. Per-step 8 ms circuit breaker emits WARN and returns empty
+  on budget exhaustion. Hebbian reinforcement increments edge weights on truncated top-k kept
+  edges. Dim-mismatch guard via `OnceLock<String>` prevents repeated Qdrant probes after
+  detection. New config fields under `[memory.hebbian]`: `spreading_activation`, `spread_depth`,
+  `spread_edge_types`, `step_budget_ms`. New `HelaSpreadRuntime` struct on `SemanticMemory`
+  attached via `with_hebbian_spread()`. Config migration step 31b splices the four fields into
+  existing configs. WARN logged for unrecognised edge type strings in `spread_edge_types`.
+- `VectorStore::get_points` default trait method returning `Err(Unsupported)` for backends that
+  cannot return raw vectors; Qdrant impl via `GetPointsBuilder::new(...).with_vectors(true)`.
+- `GraphStore::qdrant_point_ids_for_entities` SQL helper (490-entity batch chunks).
+- `Edge::synthetic_anchor(entity_id)` marker constructor for the isolated-anchor fallback path.
+- `EmbeddingStore::get_vectors_from_collection` batched vector retrieval helper.
+- Tracing spans on `apply_query_bias` (`memory.query_bias.apply`) and `profile_centroid_cached`
+  (`memory.query_bias.centroid`) with structured debug events for bias applied/skipped,
+  centroid computed, and centroid cache hits (#3379).
 - Provider preference persistence per channel (#3308). The last-used provider (set via
   `/provider <name>`) is now saved to `SQLite` after each successful switch and automatically
   restored on the next session start. Identity is keyed by `(channel_type, channel_id)` —

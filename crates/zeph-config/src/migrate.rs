@@ -2762,6 +2762,63 @@ pub fn migrate_memory_hebbian_consolidation_config(
     })
 }
 
+/// Splice missing HL-F5 spreading-activation fields into an existing `[memory.hebbian]` section
+/// (HL-F5, #3346).
+///
+/// Three branches:
+/// - Section absent → no-op (handled by `migrate_memory_hebbian_config`).
+/// - Section present but missing HL-F5 fields → append commented-out defaults.
+/// - Section present with all fields → no-op.
+///
+/// # Errors
+///
+/// Infallible in practice; `Result` matches the migration convention.
+pub fn migrate_memory_hebbian_spread_config(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    let has_section = toml_src.lines().any(|l| l.trim() == "[memory.hebbian]");
+
+    if !has_section {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Check if all HL-F5 fields are already present (active or commented).
+    let has_spreading = toml_src
+        .lines()
+        .any(|l| l.trim().starts_with("spreading_activation"));
+    let has_depth = toml_src
+        .lines()
+        .any(|l| l.trim().starts_with("spread_depth"));
+    let has_budget = toml_src
+        .lines()
+        .any(|l| l.trim().starts_with("step_budget_ms"));
+
+    if has_spreading && has_depth && has_budget {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let extra = "\n# HL-F5 spreading-activation fields (#3346) — splice into existing [memory.hebbian] section:\n\
+        # spreading_activation = false   # opt-in BFS from top-1 ANN anchor; requires enabled=true\n\
+        # spread_depth = 2               # BFS hops, clamped [1,6]\n\
+        # spread_edge_types = []         # MAGMA edge types to traverse; empty = all\n\
+        # step_budget_ms = 8             # per-step circuit-breaker timeout (anchor ANN / edges / vectors)\n";
+
+    let output = format!("{toml_src}{extra}");
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.hebbian.spreading_activation".to_owned()],
+    })
+}
+
 /// Append a commented-out `[[hooks.turn_complete]]` block to `toml_src` when it is absent (#3308).
 ///
 /// Idempotent: if a `[[hooks.turn_complete]]` or `# [[hooks.turn_complete]]` line already exists,

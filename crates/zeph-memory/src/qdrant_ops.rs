@@ -11,10 +11,11 @@ use std::collections::HashMap;
 
 use crate::vector_store::BoxFuture;
 use qdrant_client::Qdrant;
+use qdrant_client::qdrant::vector_output::Vector as VectorVariant;
 use qdrant_client::qdrant::{
-    CreateCollectionBuilder, DeletePointsBuilder, Distance, Filter, PointId, PointStruct,
-    PointsIdsList, ScoredPoint, ScrollPointsBuilder, SearchPointsBuilder, UpsertPointsBuilder,
-    VectorParamsBuilder, value::Kind,
+    CreateCollectionBuilder, DeletePointsBuilder, Distance, Filter, GetPointsBuilder, PointId,
+    PointStruct, PointsIdsList, ScoredPoint, ScrollPointsBuilder, SearchPointsBuilder,
+    UpsertPointsBuilder, VectorParamsBuilder, value::Kind,
 };
 
 type QdrantResult<T> = Result<T, Box<qdrant_client::QdrantError>>;
@@ -464,6 +465,55 @@ impl crate::vector_store::VectorStore for QdrantOps {
             Ok(())
         })
     }
+
+    fn get_points(
+        &self,
+        collection: &str,
+        ids: Vec<String>,
+    ) -> BoxFuture<'_, Result<Vec<crate::VectorPoint>, crate::VectorStoreError>> {
+        let collection = collection.to_owned();
+        Box::pin(async move {
+            if ids.is_empty() {
+                return Ok(Vec::new());
+            }
+            let point_ids: Vec<PointId> = ids.into_iter().map(PointId::from).collect();
+            let response = self
+                .client
+                .get_points(
+                    GetPointsBuilder::new(&collection, point_ids)
+                        .with_vectors(true)
+                        .with_payload(true),
+                )
+                .await
+                .map_err(|e| crate::VectorStoreError::Search(e.to_string()))?;
+
+            let mut result = Vec::with_capacity(response.result.len());
+            for point in response.result {
+                let Some(id_str) = point_id_to_string(point.id) else {
+                    continue;
+                };
+                // Use VectorsOutput::get_vector() to extract the default dense vector.
+                let vector = match point.vectors.and_then(|v| v.get_vector()) {
+                    Some(VectorVariant::Dense(dv)) => dv.data,
+                    _ => continue,
+                };
+                let payload: HashMap<String, serde_json::Value> = point
+                    .payload
+                    .into_iter()
+                    .filter_map(|(k, v)| {
+                        let json = qdrant_value_to_json(v.kind?)?;
+                        Some((k, json))
+                    })
+                    .collect();
+                result.push(crate::VectorPoint {
+                    id: id_str,
+                    vector,
+                    payload,
+                });
+            }
+            Ok(result)
+        })
+    }
 }
 
 fn vector_filter_to_qdrant(filter: crate::VectorFilter) -> Filter {
@@ -495,29 +545,37 @@ fn field_condition_to_qdrant(cond: crate::FieldCondition) -> qdrant_client::qdra
     }
 }
 
+/// Convert a Qdrant [`qdrant_client::qdrant::PointId`] to its string representation.
+///
+/// Returns `None` when the id variant is unrecognised.
+fn point_id_to_string(pid: Option<qdrant_client::qdrant::PointId>) -> Option<String> {
+    match pid?.point_id_options? {
+        qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u) => Some(u),
+        qdrant_client::qdrant::point_id::PointIdOptions::Num(n) => Some(n.to_string()),
+    }
+}
+
+/// Convert a Qdrant [`Kind`] to a `serde_json::Value`.
+///
+/// Returns `None` for unsupported kinds (structs, lists, nulls).
+fn qdrant_value_to_json(kind: Kind) -> Option<serde_json::Value> {
+    match kind {
+        Kind::StringValue(s) => Some(serde_json::Value::String(s)),
+        Kind::IntegerValue(i) => Some(serde_json::Value::Number(i.into())),
+        Kind::DoubleValue(d) => serde_json::Number::from_f64(d).map(serde_json::Value::Number),
+        Kind::BoolValue(b) => Some(serde_json::Value::Bool(b)),
+        _ => None,
+    }
+}
+
 fn scored_point_to_vector(point: ScoredPoint) -> crate::ScoredVectorPoint {
     let payload: HashMap<String, serde_json::Value> = point
         .payload
         .into_iter()
-        .filter_map(|(k, v)| {
-            let json_val = match v.kind? {
-                Kind::StringValue(s) => serde_json::Value::String(s),
-                Kind::IntegerValue(i) => serde_json::Value::Number(i.into()),
-                Kind::DoubleValue(d) => {
-                    serde_json::Number::from_f64(d).map(serde_json::Value::Number)?
-                }
-                Kind::BoolValue(b) => serde_json::Value::Bool(b),
-                _ => return None,
-            };
-            Some((k, json_val))
-        })
+        .filter_map(|(k, v)| Some((k, qdrant_value_to_json(v.kind?)?)))
         .collect();
 
-    let id = match point.id.and_then(|pid| pid.point_id_options) {
-        Some(qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u)) => u,
-        Some(qdrant_client::qdrant::point_id::PointIdOptions::Num(n)) => n.to_string(),
-        None => String::new(),
-    };
+    let id = point_id_to_string(point.id).unwrap_or_default();
 
     crate::ScoredVectorPoint {
         id,

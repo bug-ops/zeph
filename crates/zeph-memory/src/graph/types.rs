@@ -208,6 +208,41 @@ pub struct Edge {
     pub weight: f32,
 }
 
+impl Edge {
+    /// Create a synthetic marker edge for the isolated-anchor fallback in HL-F5 (#3346).
+    ///
+    /// Properties:
+    /// - `id = 0`: Real edges are auto-incremented starting at 1, so 0 is a safe sentinel.
+    /// - `source == target == entity_id`: self-loop encodes the anchor node.
+    /// - `weight = 1.0`, `edge_type = Semantic`, all temporal fields are empty strings.
+    ///
+    /// Callers detect the synthetic marker via `edge.id == 0`.
+    #[must_use]
+    pub fn synthetic_anchor(entity_id: i64) -> Self {
+        Self {
+            id: 0,
+            source_entity_id: entity_id,
+            target_entity_id: entity_id,
+            relation: String::new(),
+            fact: String::new(),
+            confidence: 1.0,
+            valid_from: String::new(),
+            valid_to: None,
+            created_at: String::new(),
+            expired_at: None,
+            source_message_id: None,
+            qdrant_point_id: None,
+            edge_type: EdgeType::Semantic,
+            retrieval_count: 0,
+            last_retrieved_at: None,
+            superseded_by: None,
+            canonical_relation: String::new(),
+            supersedes: None,
+            weight: 1.0,
+        }
+    }
+}
+
 /// A Louvain-detected community (cluster) of related entities.
 ///
 /// Communities provide coarse-grained grouping for graph eviction and summarization.

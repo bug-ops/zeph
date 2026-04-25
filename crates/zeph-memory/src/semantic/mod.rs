@@ -105,6 +105,23 @@ pub(crate) enum QueryIntent {
     Other,
 }
 
+/// HL-F5 runtime wiring for spreading activation (mirror of `[memory.hebbian]` spread fields).
+///
+/// Built from config at bootstrap and attached via [`SemanticMemory::with_hebbian_spread`].
+#[derive(Debug, Clone, Default)]
+pub struct HelaSpreadRuntime {
+    /// `true` when `[memory.hebbian] enabled = true` AND `spreading_activation = true`.
+    pub enabled: bool,
+    /// BFS hops, already clamped to `[1, 6]` by the caller.
+    pub depth: u32,
+    /// Soft upper bound on the visited-node set.
+    pub max_visited: usize,
+    /// MAGMA edge-type filter for BFS traversal.
+    pub edge_types: Vec<crate::graph::EdgeType>,
+    /// Per-step circuit-breaker duration.
+    pub step_budget: Option<std::time::Duration>,
+}
+
 /// High-level semantic memory orchestrator combining `SQLite` and Qdrant.
 ///
 /// Instantiate via [`SemanticMemory::new`] or the `AppBuilder` integration.
@@ -191,6 +208,8 @@ pub struct SemanticMemory {
     pub(crate) hebbian_enabled: bool,
     /// Weight increment applied per recall traversal when `hebbian_enabled = true` (HL-F2, #3344).
     pub(crate) hebbian_lr: f32,
+    /// HL-F5 spreading activation runtime config (#3346).
+    pub(crate) hebbian_spread: HelaSpreadRuntime,
 }
 
 impl SemanticMemory {
@@ -306,6 +325,7 @@ impl SemanticMemory {
             profile_centroid_ttl_secs: 300,
             hebbian_enabled: false,
             hebbian_lr: 0.1,
+            hebbian_spread: HelaSpreadRuntime::default(),
         })
     }
 
@@ -367,6 +387,7 @@ impl SemanticMemory {
             profile_centroid_ttl_secs: 300,
             hebbian_enabled: false,
             hebbian_lr: 0.1,
+            hebbian_spread: HelaSpreadRuntime::default(),
         })
     }
 
@@ -508,6 +529,16 @@ impl SemanticMemory {
         self
     }
 
+    /// Configure HL-F5 spreading activation runtime parameters (HL-F5, #3346).
+    ///
+    /// Has no effect when `hebbian_spread.enabled = false` (the default).
+    /// Call this after `with_graph_store` and `with_hebbian` during bootstrap.
+    #[must_use]
+    pub fn with_hebbian_spread(mut self, runtime: HelaSpreadRuntime) -> Self {
+        self.hebbian_spread = runtime;
+        self
+    }
+
     /// Configure Hebbian edge-weight reinforcement (HL-F2, #3344).
     ///
     /// When `enabled` is `true`, `lr` is added to the `weight` column of each traversed
@@ -541,24 +572,35 @@ impl SemanticMemory {
     /// if the query is not first-person, or if the profile centroid is unavailable.
     /// Logs a single WARN on dimension mismatch and returns the original embedding.
     pub(crate) async fn apply_query_bias(&self, query: &str, embedding: Vec<f32>) -> Vec<f32> {
+        let _span = tracing::info_span!("memory.query_bias.apply").entered();
         if !self.query_bias_correction {
+            tracing::debug!(reason = "disabled", "query-bias: skipping");
             return embedding;
         }
         if Self::classify_query_intent(query) != QueryIntent::FirstPerson {
+            tracing::debug!(reason = "not_first_person", "query-bias: skipping");
             return embedding;
         }
         let Some(centroid) = self.profile_centroid_cached().await else {
+            tracing::debug!(reason = "no_centroid", "query-bias: skipping");
             return embedding;
         };
         if centroid.len() != embedding.len() {
             tracing::warn!(
                 centroid_dim = centroid.len(),
                 query_dim = embedding.len(),
+                reason = "dim_mismatch",
                 "query-bias: dimension mismatch between profile centroid and query embedding — skipping bias"
             );
             return embedding;
         }
         let w = self.query_bias_profile_weight;
+        tracing::debug!(
+            intent = "first_person",
+            centroid_dim = centroid.len(),
+            weight = w,
+            "query-bias: applying profile bias"
+        );
         embedding
             .iter()
             .zip(centroid.iter())
@@ -571,12 +613,21 @@ impl SemanticMemory {
     /// Holds the read lock only to check freshness; releases it before any `.await`.
     /// On compute failure, preserves the previous cache value (non-sticky miss).
     pub(crate) async fn profile_centroid_cached(&self) -> Option<Vec<f32>> {
+        let _span = tracing::info_span!("memory.query_bias.centroid").entered();
         // Fast path: check freshness under read lock without holding it across await.
         {
             let guard = self.profile_centroid.read().await;
             if let Some(c) = &*guard
                 && c.computed_at.elapsed().as_secs() < self.profile_centroid_ttl_secs
             {
+                let ttl_remaining = self
+                    .profile_centroid_ttl_secs
+                    .saturating_sub(c.computed_at.elapsed().as_secs());
+                tracing::debug!(
+                    centroid_dim = c.vector.len(),
+                    ttl_remaining_secs = ttl_remaining,
+                    "query-bias: centroid cache hit"
+                );
                 return Some(c.vector.clone());
             }
         }
@@ -585,6 +636,7 @@ impl SemanticMemory {
         let mut guard = self.profile_centroid.write().await;
         match computed {
             Some(v) => {
+                tracing::debug!(centroid_dim = v.len(), "query-bias: centroid computed");
                 *guard = Some(CachedCentroid {
                     vector: v.clone(),
                     computed_at: Instant::now(),
@@ -803,6 +855,7 @@ impl SemanticMemory {
             profile_centroid_ttl_secs: 300,
             hebbian_enabled: false,
             hebbian_lr: 0.1,
+            hebbian_spread: HelaSpreadRuntime::default(),
         }
     }
 
@@ -883,6 +936,7 @@ impl SemanticMemory {
             profile_centroid_ttl_secs: 300,
             hebbian_enabled: false,
             hebbian_lr: 0.1,
+            hebbian_spread: HelaSpreadRuntime::default(),
         })
     }
 

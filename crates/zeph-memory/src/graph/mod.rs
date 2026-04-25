@@ -24,7 +24,8 @@ pub use store::GraphStore;
 pub use types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType, Episode, GraphFact};
 
 pub use activation::{
-    ActivatedFact, ActivatedNode, SpreadingActivation, SpreadingActivationParams,
+    ActivatedFact, ActivatedNode, HelaFact, HelaSpreadParams, SpreadingActivation,
+    SpreadingActivationParams, hela_spreading_recall,
 };
 pub use belief_revision::{BeliefRevisionConfig, find_superseded_edges};
 pub use community::{

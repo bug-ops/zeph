@@ -104,6 +104,7 @@ async fn test_apply_query_bias_dimension_mismatch_returns_unchanged() {
         profile_centroid_ttl_secs: 300,
         hebbian_enabled: false,
         hebbian_lr: 0.1,
+        hebbian_spread: crate::HelaSpreadRuntime::default(),
     };
 
     let embedding = vec![0.1_f32, 0.2, 0.3];

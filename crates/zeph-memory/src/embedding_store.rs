@@ -557,6 +557,30 @@ impl EmbeddingStore {
         Ok(results)
     }
 
+    /// Retrieve raw vectors for the given Qdrant point IDs from `collection`.
+    ///
+    /// Returns a map of `point_id → embedding`. Missing ids are silently dropped.
+    /// Returns an empty map when the backend does not support vector retrieval
+    /// (e.g. `DbVectorStore` / `InMemoryVectorStore` without an override).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying store returns a non-`Unsupported` error.
+    pub async fn get_vectors_from_collection(
+        &self,
+        collection: &str,
+        point_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, Vec<f32>>, MemoryError> {
+        if point_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        match self.ops.get_points(collection, point_ids.to_vec()).await {
+            Ok(points) => Ok(points.into_iter().map(|p| (p.id, p.vector)).collect()),
+            Err(crate::VectorStoreError::Unsupported(_)) => Ok(std::collections::HashMap::new()),
+            Err(e) => Err(MemoryError::VectorStore(e)),
+        }
+    }
+
     /// Fetch raw vectors for the given message IDs from the `SQLite` vector store.
     ///
     /// Returns an empty map when using Qdrant backend (vectors not locally stored).

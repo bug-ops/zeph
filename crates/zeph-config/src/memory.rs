@@ -1232,6 +1232,23 @@ pub struct HebbianConfig {
     /// Maximum number of neighbouring entity summaries passed to the LLM per candidate
     /// (HL-F4, #3345). Default: `20`.
     pub consolidation_max_neighbors: usize,
+    /// Enable HL-F5 spreading activation from the top-1 ANN anchor (HL-F5, #3346).
+    ///
+    /// When `true` and `enabled = true`, `recall_graph_hela` performs BFS from the
+    /// nearest entity anchor, scoring nodes by `path_weight × cosine`. Default: `false`.
+    pub spreading_activation: bool,
+    /// BFS depth for HL-F5 spreading activation. Clamped to `[1, 6]`. Default: `2`.
+    pub spread_depth: u32,
+    /// MAGMA edge-type filter for HL-F5 spreading activation.
+    ///
+    /// Accepted values: `"semantic"`, `"temporal"`, `"causal"`, `"entity"`.
+    /// Empty = traverse all edge types. Default: `[]`.
+    pub spread_edge_types: Vec<String>,
+    /// Per-step circuit-breaker timeout for HL-F5 in milliseconds.
+    ///
+    /// Any internal step (anchor ANN, edges batch, vectors batch) that exceeds this
+    /// duration triggers an `Ok(Vec::new())` fallback with a `WARN`. Default: `8`.
+    pub step_budget_ms: u64,
 }
 
 impl Default for HebbianConfig {
@@ -1246,6 +1263,10 @@ impl Default for HebbianConfig {
             consolidation_cooldown_secs: 86_400,
             consolidation_prompt_timeout_secs: 30,
             consolidation_max_neighbors: 20,
+            spreading_activation: false,
+            spread_depth: 2,
+            spread_edge_types: Vec::new(),
+            step_budget_ms: 8,
         }
     }
 }

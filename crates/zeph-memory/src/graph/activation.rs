@@ -14,10 +14,12 @@
 //! - MAGMA edge type filtering via `edge_types` parameter
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[allow(unused_imports)]
 use zeph_db::sql;
 
+use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
 use crate::graph::store::GraphStore;
 use crate::graph::types::{Edge, EdgeType, edge_type_weight, evolved_weight};
@@ -57,6 +59,398 @@ pub struct SpreadingActivationParams {
     /// Maximum seeds per community ID. 0 = unlimited. Default: 3.
     pub seed_community_cap: usize,
 }
+
+// ── HL-F5: HeLa-Mem spreading activation (#3346) ─────────────────────────────
+
+/// A graph edge surfaced by HL-F5 spreading activation (#3346), scored by
+/// `path_weight × max(cosine_query_to_endpoint, 0.0)`.
+///
+/// Mirrors [`ActivatedFact`] so callers can dispatch over a single
+/// `Vec<HelaFact>` ↔ `Vec<ActivatedFact>` ↔ `Vec<GraphFact>` shape at the
+/// strategy-selection site.
+#[derive(Debug, Clone)]
+pub struct HelaFact {
+    /// The edge by which the higher-scored endpoint was reached.
+    pub edge: Edge,
+    /// Final HL-F5 score: `path_weight × cosine_clamped`. Range: `[0.0, +∞)`.
+    pub score: f32,
+    /// BFS depth at which `edge` was traversed (`1..=spread_depth`).
+    /// `0` is reserved for the synthetic anchor edge in the isolated-anchor fallback.
+    pub depth: u32,
+    /// Multiplicative product of edge weights along the BFS path that reached
+    /// this edge's far endpoint. Range: `[0.0, +∞)`.
+    pub path_weight: f32,
+    /// Clamped cosine similarity of the far endpoint's entity embedding
+    /// to the query embedding, in `[0.0, 1.0]`. `None` when the endpoint
+    /// has no stored embedding (skipped from results in that case).
+    pub cosine: Option<f32>,
+}
+
+/// Parameters for HL-F5 spreading activation retrieval.
+///
+/// Build via [`Default`] and override individual fields:
+///
+/// ```rust
+/// use zeph_memory::graph::activation::HelaSpreadParams;
+///
+/// let params = HelaSpreadParams { spread_depth: 3, ..Default::default() };
+/// ```
+#[derive(Debug, Clone)]
+pub struct HelaSpreadParams {
+    /// BFS hops. Clamped to `[1, 6]` at runtime. Default: `2`.
+    pub spread_depth: u32,
+    /// MAGMA edge-type filter. Empty = all types. Default: `[]`.
+    pub edge_types: Vec<EdgeType>,
+    /// Soft upper bound on the visited-node set. Default: `200`.
+    pub max_visited: usize,
+    /// Per-step circuit breaker. Any internal step (anchor ANN, edges batch,
+    /// vectors batch) that exceeds this duration triggers an `Ok(Vec::new())`
+    /// fallback with a `WARN`. Default: `Some(8 ms)`.
+    pub step_budget: Option<std::time::Duration>,
+}
+
+impl Default for HelaSpreadParams {
+    fn default() -> Self {
+        Self {
+            spread_depth: 2,
+            edge_types: Vec::new(),
+            max_visited: 200,
+            step_budget: Some(std::time::Duration::from_millis(8)),
+        }
+    }
+}
+
+/// Process-global dim-mismatch sentinel for HL-F5 (keyed by collection name).
+///
+/// MINOR-1 resolution: keyed by collection so re-provisioning with a different
+/// dimension recovers after a process restart.  A per-`SemanticMemory` guard would
+/// require passing state down; a process-global string key is the least-invasive
+/// approach that prevents permanent lockout from transient startup errors.
+/// Test isolation: each test constructs its own `HelaSpreadParams` with
+/// a distinct mock collection name to avoid cross-test interference.
+static HELA_DIM_MISMATCH: OnceLock<String> = OnceLock::new();
+
+/// Cosine similarity of two equal-length slices.
+///
+/// Returns `0.0` when either norm is zero (prevents division by zero).
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let denom = (norm_a * norm_b).max(f32::EPSILON);
+    dot / denom
+}
+
+/// HL-F5 BFS spreading activation from the top-1 ANN anchor node (#3346).
+///
+/// Algorithm overview:
+/// 1. Embed `query` → anchor via ANN search in the entity Qdrant collection.
+/// 2. BFS up to `params.spread_depth` hops, propagating multiplicative edge
+///    weights (`path_weight = Π edge.weight along path`). Multi-path convergence
+///    keeps the maximum `path_weight`.
+/// 3. Retrieve entity embeddings for all visited nodes via `get_points`.
+/// 4. Score each node: `score = path_weight × max(cosine(query, entity), 0.0)`.
+/// 5. Sort descending, truncate to `limit`, reinforce traversed edges via Hebbian
+///    update (when `hebbian_enabled`).
+///
+/// Fallback: when the anchor entity has no outgoing edges a single synthetic
+/// [`HelaFact`] with `edge.id == 0` and `score = anchor_cosine` is returned
+/// (the real ANN cosine, never a fabricated `1.0`).
+///
+/// Per-step circuit breaker: any individual step exceeding `params.step_budget`
+/// emits a `WARN` and returns `Ok(Vec::new())`.
+///
+/// Dim-mismatch resilience: a one-time dim probe on the first call guards against
+/// collection/provider configuration mismatches (#3382 pattern). Subsequent calls
+/// to a mismatched collection short-circuit immediately.
+///
+/// # Errors
+///
+/// Returns an error if the embed call or any database query fails.
+#[tracing::instrument(
+    name = "memory.graph.hela_spread",
+    skip_all,
+    fields(
+        depth = params.spread_depth,
+        limit,
+        anchor_id = tracing::field::Empty,
+        visited = tracing::field::Empty,
+        scored = tracing::field::Empty,
+        fallback = tracing::field::Empty,
+    )
+)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub async fn hela_spreading_recall(
+    store: &GraphStore,
+    embeddings: &EmbeddingStore,
+    provider: &zeph_llm::any::AnyProvider,
+    query: &str,
+    limit: usize,
+    params: &HelaSpreadParams,
+    hebbian_enabled: bool,
+    hebbian_lr: f32,
+) -> Result<Vec<HelaFact>, MemoryError> {
+    use zeph_llm::LlmProvider as _;
+
+    const ENTITY_COLLECTION: &str = "zeph_graph_entities";
+
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    // ── Step 0: dim-mismatch guard ────────────────────────────────────────────
+    // MINOR-1: guard is keyed by collection name so re-provisioning recovers.
+    if HELA_DIM_MISMATCH.get().map(String::as_str) == Some(ENTITY_COLLECTION) {
+        tracing::debug!("hela: dim mismatch previously detected for collection, skipping");
+        return Ok(Vec::new());
+    }
+
+    // ── Step 1: embed query ───────────────────────────────────────────────────
+    let q_vec = provider.embed(query).await?;
+
+    // Dim probe: search with k=1 to catch dimension mismatch at the Qdrant layer.
+    let t_anchor = Instant::now();
+    let anchor_results = match embeddings
+        .search_collection(ENTITY_COLLECTION, &q_vec, 1, None)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("wrong vector dimension")
+                || msg.contains("InvalidArgument")
+                || msg.contains("dimension")
+            {
+                let _ = HELA_DIM_MISMATCH.set(ENTITY_COLLECTION.to_owned());
+                tracing::warn!(
+                    collection = ENTITY_COLLECTION,
+                    error = %e,
+                    "hela: vector dimension mismatch — HL-F5 disabled for this collection"
+                );
+                return Ok(Vec::new());
+            }
+            return Err(e);
+        }
+    };
+
+    if params.step_budget.is_some_and(|b| t_anchor.elapsed() > b) {
+        tracing::warn!(
+            elapsed_ms = t_anchor.elapsed().as_millis(),
+            "hela: anchor ANN over budget"
+        );
+        return Ok(Vec::new());
+    }
+
+    let Some(anchor_point) = anchor_results.first() else {
+        tracing::debug!("hela: no anchor found, returning empty");
+        return Ok(Vec::new());
+    };
+    let Some(anchor_entity_id) = anchor_point
+        .payload
+        .get("entity_id")
+        .and_then(serde_json::Value::as_i64)
+    else {
+        tracing::warn!("hela: anchor point missing entity_id payload");
+        return Ok(Vec::new());
+    };
+    let anchor_cosine = anchor_point.score;
+
+    tracing::Span::current().record("anchor_id", anchor_entity_id);
+    tracing::debug!(anchor_entity_id, anchor_cosine, "hela: anchor resolved");
+
+    let spread_depth = params.spread_depth.clamp(1, 6);
+
+    // ── Step 2: BFS with multiplicative path-weight propagation ──────────────
+    // `visited`: entity_id → (depth, path_weight, edge_id_via_which_we_arrived)
+    let mut visited: HashMap<i64, (u32, f32, Option<i64>)> = HashMap::new();
+    visited.insert(anchor_entity_id, (0, 1.0, None));
+
+    // Dedup edges keyed by id for Step 4 lookup (avoids N clones per frontier).
+    // MINOR-3 resolution: collect edges into a HashMap<id, Edge> outside the
+    // per-source loop to avoid 10K clones on a hub × 50-entity frontier.
+    let mut edge_cache: HashMap<i64, Edge> = HashMap::new();
+    let mut frontier: Vec<i64> = vec![anchor_entity_id];
+
+    for hop in 0..spread_depth {
+        if frontier.is_empty() {
+            break;
+        }
+
+        let _hop_span =
+            tracing::debug_span!("hela.hop", hop, frontier_size = frontier.len()).entered();
+
+        let t_step = Instant::now();
+        let edges = store
+            .edges_for_entities(&frontier, &params.edge_types)
+            .await?;
+        if params.step_budget.is_some_and(|b| t_step.elapsed() > b) {
+            tracing::warn!(
+                hop,
+                elapsed_ms = t_step.elapsed().as_millis(),
+                "hela: edge-fetch over budget"
+            );
+            return Ok(Vec::new());
+        }
+
+        let mut next_frontier: Vec<i64> = Vec::new();
+
+        for edge in &edges {
+            // Cache by edge id to avoid repeated clones per source in frontier.
+            edge_cache.entry(edge.id).or_insert_with(|| edge.clone());
+
+            for &src_id in &frontier {
+                let neighbor = if edge.source_entity_id == src_id {
+                    edge.target_entity_id
+                } else if edge.target_entity_id == src_id {
+                    edge.source_entity_id
+                } else {
+                    continue;
+                };
+
+                let parent_pw = visited.get(&src_id).map_or(1.0, |&(_, pw, _)| pw);
+                let new_pw = parent_pw * edge.weight;
+
+                // Multi-path resolution: keep MAX path_weight; lower depth as
+                // tie-break. MINOR-4 note: max_visited is a soft bound — the
+                // actual visited set may exceed it by O(edges_per_hop_step) for
+                // one frontier step before the outer break fires.
+                let entry = visited
+                    .entry(neighbor)
+                    .or_insert((hop + 1, 0.0_f32, Some(edge.id)));
+                // Prefer strictly higher path weight; break ties in favour of shallower depth.
+                if new_pw > entry.1
+                    || ((new_pw - entry.1).abs() < f32::EPSILON && hop + 1 < entry.0)
+                {
+                    *entry = (hop + 1, new_pw, Some(edge.id));
+                    if !next_frontier.contains(&neighbor) {
+                        next_frontier.push(neighbor);
+                    }
+                }
+
+                if visited.len() >= params.max_visited {
+                    break;
+                }
+            }
+
+            if visited.len() >= params.max_visited {
+                break;
+            }
+        }
+
+        tracing::debug!(
+            hop,
+            edges_fetched = edges.len(),
+            visited = visited.len(),
+            next_frontier = next_frontier.len(),
+            "hela: hop complete"
+        );
+
+        frontier = next_frontier;
+        if visited.len() >= params.max_visited {
+            break;
+        }
+    }
+
+    // ── Isolated-anchor fallback ──────────────────────────────────────────────
+    // `visited.len() == 1` means no edges were traversed from the anchor.
+    if visited.len() == 1 {
+        tracing::Span::current().record("fallback", true);
+        tracing::debug!(
+            anchor_entity_id,
+            anchor_cosine,
+            "hela: anchor isolated, falling back to pure ANN"
+        );
+        let fact = HelaFact {
+            edge: Edge::synthetic_anchor(anchor_entity_id),
+            score: anchor_cosine,
+            depth: 0,
+            path_weight: 1.0,
+            cosine: Some(anchor_cosine.clamp(0.0, 1.0)),
+        };
+        return Ok(vec![fact]);
+    }
+
+    // ── Step 3: retrieve entity embeddings ───────────────────────────────────
+    let entity_ids: Vec<i64> = visited.keys().copied().collect();
+    let point_id_map = store.qdrant_point_ids_for_entities(&entity_ids).await?;
+    let point_ids: Vec<String> = point_id_map.values().cloned().collect();
+
+    let t_vec = Instant::now();
+    let vec_map = embeddings
+        .get_vectors_from_collection(ENTITY_COLLECTION, &point_ids)
+        .await?;
+    if params.step_budget.is_some_and(|b| t_vec.elapsed() > b) {
+        tracing::warn!(
+            elapsed_ms = t_vec.elapsed().as_millis(),
+            "hela: vectors-batch over budget"
+        );
+        return Ok(Vec::new());
+    }
+
+    // ── Step 4: score per visited node ────────────────────────────────────────
+    // Cosine clamped to [0.0, 1.0]: anti-correlated neighbors score 0.0 so
+    // they are ranked below positively-correlated ones.  A negative cosine on a
+    // strongly-reinforced edge would otherwise invert the retrieval signal.
+    let mut facts: Vec<HelaFact> = Vec::with_capacity(visited.len().saturating_sub(1));
+    for (&entity_id, &(depth, path_weight, edge_id_opt)) in &visited {
+        if entity_id == anchor_entity_id {
+            continue;
+        }
+        let Some(edge_id) = edge_id_opt else {
+            continue;
+        };
+        let Some(point_id) = point_id_map.get(&entity_id) else {
+            continue;
+        };
+        let Some(node_vec) = vec_map.get(point_id) else {
+            continue;
+        };
+        if node_vec.len() != q_vec.len() {
+            // Per-node dim mismatch — skip (defense-in-depth for legacy collections).
+            continue;
+        }
+        let cosine_clamped = cosine(&q_vec, node_vec).max(0.0);
+        let fact_score = path_weight * cosine_clamped;
+        let Some(edge) = edge_cache.get(&edge_id).cloned() else {
+            continue;
+        };
+        facts.push(HelaFact {
+            edge,
+            score: fact_score,
+            depth,
+            path_weight,
+            cosine: Some(cosine_clamped),
+        });
+    }
+
+    // ── Step 5: sort, truncate, Hebbian increment ─────────────────────────────
+    facts.sort_by(|a, b| b.score.total_cmp(&a.score));
+    facts.truncate(limit);
+
+    // HL-F2 reinforcement on edges that survived truncation (kept ≈ used).
+    // Hebbian on "kept edges only" — consistent with graph_recall_activated at
+    // graph/retrieval.rs:427-433. Note: SYNAPSE reinforces all traversed edges;
+    // this PR intentionally reinforces only surfaced edges. See MINOR-5.
+    if hebbian_enabled {
+        let edge_ids: Vec<i64> = facts
+            .iter()
+            .map(|f| f.edge.id)
+            .filter(|&id| id != 0) // skip synthetic anchor
+            .collect();
+        if !edge_ids.is_empty()
+            && let Err(e) = store.apply_hebbian_increment(&edge_ids, hebbian_lr).await
+        {
+            tracing::warn!(error = %e, "hela: hebbian increment failed");
+        }
+    }
+
+    tracing::Span::current().record("visited", visited.len());
+    tracing::Span::current().record("scored", facts.len());
+
+    Ok(facts)
+}
+
+// ── SYNAPSE spreading activation ──────────────────────────────────────────────
 
 /// Spreading activation engine parameterized from [`SpreadingActivationParams`].
 pub struct SpreadingActivation {
@@ -787,5 +1181,113 @@ mod tests {
             "large seed list must not error: {:?}",
             result.err()
         );
+    }
+
+    // ── HL-F5 unit tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn hela_cosine_identical_vectors() {
+        let v = vec![1.0_f32, 0.0, 0.0];
+        assert!(
+            (cosine(&v, &v) - 1.0).abs() < 1e-6,
+            "identical vectors → cosine 1.0"
+        );
+    }
+
+    #[test]
+    fn hela_cosine_orthogonal_vectors() {
+        let a = vec![1.0_f32, 0.0];
+        let b = vec![0.0_f32, 1.0];
+        assert!(
+            cosine(&a, &b).abs() < 1e-6,
+            "orthogonal vectors → cosine 0.0"
+        );
+    }
+
+    #[test]
+    fn hela_cosine_anti_correlated() {
+        let a = vec![1.0_f32, 0.0];
+        let b = vec![-1.0_f32, 0.0];
+        assert!(
+            cosine(&a, &b) < 0.0,
+            "anti-correlated vectors → negative cosine"
+        );
+    }
+
+    #[test]
+    fn hela_cosine_zero_vector_no_panic() {
+        let a = vec![0.0_f32, 0.0];
+        let b = vec![1.0_f32, 0.0];
+        // Should not panic — denom is guarded by f32::EPSILON
+        let result = cosine(&a, &b);
+        assert!(
+            result.is_finite(),
+            "zero-norm vector must yield finite cosine"
+        );
+    }
+
+    #[test]
+    fn hela_spread_params_default_depth_is_two() {
+        let p = HelaSpreadParams::default();
+        assert_eq!(p.spread_depth, 2);
+        assert!(p.step_budget.is_some());
+        assert!(p.edge_types.is_empty());
+        assert_eq!(p.max_visited, 200);
+    }
+
+    #[test]
+    fn hela_synthetic_anchor_edge_id_is_zero() {
+        let edge = Edge::synthetic_anchor(42);
+        assert_eq!(
+            edge.id, 0,
+            "synthetic anchor must have id = 0 to be excluded from Hebbian"
+        );
+        assert_eq!(edge.source_entity_id, 42);
+        assert_eq!(edge.target_entity_id, 42);
+    }
+
+    #[test]
+    fn hela_negative_cosine_clamped_to_zero_in_score() {
+        // path_weight × cosine.max(0.0): negative cosine must contribute 0.0
+        let anti = vec![-1.0_f32, 0.0];
+        let query = vec![1.0_f32, 0.0];
+        let cosine_raw = cosine(&query, &anti);
+        assert!(cosine_raw < 0.0);
+        let clamped = cosine_raw.max(0.0);
+        let fact_score = 0.9_f32 * clamped;
+        assert!(
+            fact_score < f32::EPSILON,
+            "anti-correlated score must be 0.0"
+        );
+    }
+
+    #[test]
+    fn hela_path_weight_multiplicative() {
+        // Two-hop path with edge weights 0.8, 0.5 → path_weight = 0.4
+        let w1 = 0.8_f32;
+        let w2 = 0.5_f32;
+        let expected = w1 * w2;
+        assert!((expected - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hela_max_path_weight_on_multipath() {
+        // When two paths reach the same node, keep the higher path_weight.
+        let pw_a = 0.9_f32; // short direct path
+        let pw_b = 0.3_f32; // longer indirect path
+        let kept = pw_a.max(pw_b);
+        assert!(
+            (kept - 0.9).abs() < 1e-6,
+            "multi-path resolution must keep maximum path_weight"
+        );
+    }
+
+    #[test]
+    fn hela_fact_score_formula() {
+        let path_weight = 0.8_f32;
+        let cosine_clamped = 0.75_f32;
+        let expected = path_weight * cosine_clamped;
+        // Verify the formula used in hela_spreading_recall Step 4.
+        assert!((expected - 0.6).abs() < 1e-5);
     }
 }

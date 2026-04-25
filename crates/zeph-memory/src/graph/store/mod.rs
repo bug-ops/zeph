@@ -1395,6 +1395,43 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Resolve entity IDs to their Qdrant point IDs in a single batched `SELECT` (HL-F5, #3346).
+    ///
+    /// Entities without a `qdrant_point_id` are silently omitted from the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn qdrant_point_ids_for_entities(
+        &self,
+        entity_ids: &[i64],
+    ) -> Result<HashMap<i64, String>, MemoryError> {
+        // Chunk to stay under SQLite variable limit.
+        const MAX_BATCH: usize = 490;
+        if entity_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut result: HashMap<i64, String> = HashMap::with_capacity(entity_ids.len());
+        for chunk in entity_ids.chunks(MAX_BATCH) {
+            let placeholders = zeph_db::placeholder_list(1, chunk.len());
+            let sql = format!(
+                "SELECT id, qdrant_point_id \
+                 FROM graph_entities \
+                 WHERE id IN ({placeholders}) \
+                   AND qdrant_point_id IS NOT NULL"
+            );
+            let mut q = zeph_db::query_as::<_, (i64, String)>(&sql);
+            for id in chunk {
+                q = q.bind(*id);
+            }
+            let rows = q.fetch_all(&self.pool).await?;
+            for (entity_id, point_id) in rows {
+                result.insert(entity_id, point_id);
+            }
+        }
+        Ok(result)
+    }
+
     /// Apply multiplicative decay to `retrieval_count` for un-retrieved active edges.
     ///
     /// Only edges with `retrieval_count > 0` and `last_retrieved_at < (now - interval_secs)`

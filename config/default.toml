@@ -367,6 +367,10 @@ importance_weight = 0.15
 # [memory.hebbian]                       # HL-F1/F2 (#3344) Hebbian edge reinforcement
 # enabled = false                        # opt-in master switch; no DB writes when false
 # hebbian_lr = 0.1                       # weight increment per co-activation (typical range 0.01–0.5)
+# spreading_activation = false           # HL-F5 (#3346): BFS from top-1 ANN anchor; requires enabled=true
+# spread_depth = 2                       # BFS hops for spreading activation, clamped [1, 6]
+# spread_edge_types = []                 # MAGMA edge types to traverse; empty = all types
+# step_budget_ms = 8                     # per-step circuit-breaker (anchor ANN / edges batch / vectors batch)
 
 # Code RAG: AST-based code indexing and hybrid retrieval
 # Requires Qdrant for semantic retrieval; tree-sitter grammars are always available

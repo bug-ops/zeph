@@ -343,6 +343,7 @@ async fn memory_with_in_memory_vector_store() -> (
         profile_centroid_ttl_secs: 300,
         hebbian_enabled: false,
         hebbian_lr: 0.1,
+        hebbian_spread: crate::HelaSpreadRuntime::default(),
     };
 
     (memory, embedding_store)
