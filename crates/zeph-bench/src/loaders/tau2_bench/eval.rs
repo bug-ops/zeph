@@ -51,14 +51,14 @@ impl TauBenchEvaluator {
     /// Build an evaluator for `scenario`.
     ///
     /// Reads `scenario.metadata["evaluation_criteria"]` and deserializes it into
-    /// typed [`EvaluationCriteria`]. Only `requestor = "assistant"` actions are
+    /// typed `EvaluationCriteria`. Only `requestor = "assistant"` actions are
     /// retained in the gold set — user-simulator actions are not scored.
     ///
     /// # Errors
     ///
     /// Returns [`BenchError::InvalidFormat`] when:
     /// - `evaluation_criteria` key is absent from metadata.
-    /// - The value cannot be deserialized into [`EvaluationCriteria`].
+    /// - The value cannot be deserialized into `EvaluationCriteria`.
     ///
     /// A malformed scenario is always a hard failure — never silently passes.
     pub fn from_scenario(scenario: &Scenario, trace: ActionTrace) -> Result<Self, BenchError> {

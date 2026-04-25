@@ -45,7 +45,7 @@ impl DataPaths {
 /// Loads tau2-bench scenarios for a single domain.
 ///
 /// The loader reads `tasks.json`, parses each [`Task`] into a [`Scenario`], and
-/// stores the serialised [`EvaluationCriteria`] in `scenario.metadata` for the
+/// stores the serialised `EvaluationCriteria` JSON in `scenario.metadata` for the
 /// evaluator to retrieve per-scenario at runtime.
 ///
 /// # Path convention

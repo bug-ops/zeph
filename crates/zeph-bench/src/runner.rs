@@ -404,8 +404,8 @@ impl BenchRunner {
 
     /// Core execution: run one scenario with the given executor and response mode.
     ///
-    /// Called by both [`run_dataset`] (with `NoopExecutor` + `TerseAnswer`) and
-    /// [`run_dataset_with_env_factory`] (with the domain env + `ToolUse`).
+    /// Called by both [`BenchRunner::run_dataset`] (with `NoopExecutor` + `TerseAnswer`) and
+    /// [`BenchRunner::run_dataset_with_env_factory`] (with the domain env + `ToolUse`).
     async fn run_one_with_executor<X: ToolExecutor + Send + Sync + 'static>(
         &self,
         scenario: &Scenario,
