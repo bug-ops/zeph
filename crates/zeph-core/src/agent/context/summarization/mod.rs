@@ -434,10 +434,7 @@ mod scheduling;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::agent::context::summarization::scheduling::parse_subgoal_extraction_response;
     use zeph_context::summarization::extract_overflow_ref;
-    use zeph_llm::provider::MessageMetadata;
 
     #[test]
     fn extract_overflow_ref_returns_uuid_when_present() {
@@ -1216,7 +1213,6 @@ mod tests {
 
 #[cfg(test)]
 mod subgoal_extraction_tests {
-    use super::*;
     use crate::agent::context::summarization::scheduling::parse_subgoal_extraction_response;
 
     #[test]
