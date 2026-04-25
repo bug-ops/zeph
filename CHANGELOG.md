@@ -8,12 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.20.0] - 2026-04-25
 
-### Changed
-
-- `run_focus_auto_consolidation` now offloads the O(K²) pairwise MIG scoring loop to
-  `tokio::task::spawn_blocking`, preventing long-session consolidation passes from
-  stalling the async executor (#3386).
-
 ### Added
 
 - HL-F5 HeLa-Mem spreading activation retrieval (#3346). `hela_spreading_recall` performs BFS
@@ -28,6 +22,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `spread_edge_types`, `step_budget_ms`. New `HelaSpreadRuntime` struct on `SemanticMemory`
   attached via `with_hebbian_spread()`. Config migration step 31b splices the four fields into
   existing configs. WARN logged for unrecognised edge type strings in `spread_edge_types`.
+- HL-F1: `Edge.weight: f32` field (default `1.0`) for Hebbian reinforcement in the graph store
+  (`crates/zeph-memory`). SQLite migration 077 adds `graph_edges.weight REAL NOT NULL DEFAULT 1.0`
+  and the `idx_summaries_message_range` partial index. Postgres is out of scope pending resolution
+  of the 069–076 migration drift (#3344).
+- HL-F2: Hebbian update on recall — `GraphStore::apply_hebbian_increment` increments edge weights
+  for traversed edges; wired fire-and-forget into all four graph retrieval paths. Controlled by
+  `[memory.hebbian] enabled = false` (opt-in) and `hebbian_lr = 0.1` (#3344).
 - `VectorStore::get_points` default trait method returning `Err(Unsupported)` for backends that
   cannot return raw vectors; Qdrant impl via `GetPointsBuilder::new(...).with_vectors(true)`.
 - `GraphStore::qdrant_point_ids_for_entities` SQL helper (490-entity batch chunks).
@@ -36,6 +37,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Tracing spans on `apply_query_bias` (`memory.query_bias.apply`) and `profile_centroid_cached`
   (`memory.query_bias.centroid`) with structured debug events for bias applied/skipped,
   centroid computed, and centroid cache hits (#3379).
+- MM-F3: Query-bias correction — first-person queries are shifted toward the user's profile centroid
+  embedding before vector search. `[memory.retrieval] query_bias_correction = true` and
+  `query_bias_profile_weight = 0.25` control the blend. Centroid is cached in a TTL-bounded
+  `RwLock<Option<CachedCentroid>>` (default 300 s); computation failure is non-sticky and
+  falls through to the previous cache or no-op (#3341).
+- MM-F4: Episode preservation is now unconditional (data-integrity invariant): the eviction sweep
+  calls `MessageStore::filter_out_preserved_episode_ids` to exclude any message ID that falls within
+  a summary's `[first_message_id, last_message_id]` range before soft-deleting. No config flag
+  required (#3341).
+- `[memory.retrieval]` config section: `depth` (ANN candidate count, `0` = legacy `recall_limit * 2`),
+  `search_prompt_template` (query-side embedding template with `{query}` placeholder),
+  `context_format` (`structured` / `plain` — memory snippet rendering in agent context).
+  MemMachine MM-F1/F2/F5 (#3340).
+- **ReasoningBank** (#3342, #3343): distilled reasoning strategy memory. After each assistant turn
+  a fire-and-forget three-stage pipeline (self-judge → distillation → store) extracts a ≤3-sentence
+  strategy summary and writes it to a new `reasoning_strategies` SQLite table. At context-build time
+  top-k strategies are retrieved by embedding similarity and injected into the prompt preamble. LRU
+  eviction with hot-row protection (configurable `store_limit`, `HOT_STRATEGY_USE_COUNT = 10`) keeps
+  the table bounded. Fully opt-in: `memory.reasoning.enabled = false` by default. New migration:
+  `crates/zeph-db/migrations/sqlite/077_reasoning_strategies.sql`.
+- Experience compression spectrum (`[memory.compression_spectrum]`): introduces `CompressionLevel`
+  (Episodic / Procedural / Declarative) and a `RetrievalPolicy` that skips episodic recall when
+  the token budget is below configurable thresholds. A background `PromotionEngine` scans recent
+  episodic memory and promotes repeated patterns to SKILL.md entries (off hot path, via JoinSet).
+  Spans: `memory.compression.*` (#3305).
+- `SkillEvaluationConfig`, `ProactiveExplorationConfig`, `CompressionSpectrumConfig` TOML sections
+  with `#[serde(default)]` — all disabled by default; existing configs parse unchanged.
+- `MemoryError::Promotion` variant in `zeph-memory` for promotion scan failures (thiserror,
+  no anyhow in library crates).
 - Provider preference persistence per channel (#3308). The last-used provider (set via
   `/provider <name>`) is now saved to `SQLite` after each successful switch and automatically
   restored on the next session start. Identity is keyed by `(channel_type, channel_id)` —
@@ -48,9 +78,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   configured; fires on every turn when no notifier is present. Adds `turn_complete` field to
   `HooksConfig` and `HooksConfigSnapshot`; `HooksConfig::is_empty()` updated accordingly.
   Commented-out macOS example added to `config/default.toml`.
-- `specs/UX/mention-routing.md` — research spec assessing `@agent` mention routing feasibility
-  for Zeph's TUI. Documents the Goose reference pattern, required changes, and defers
-  implementation pending `AgentRegistry` infrastructure (#3327).
+- Hook actions now support `type = "mcp_tool"` to invoke MCP server tools directly without
+  spawning a subprocess (#3293). Hooks can set `server`, `tool`, and optional `args` fields.
+  Requires the MCP manager to be active; fails according to `fail_closed` if unavailable.
+- New `[hooks.permission_denied]` event fires when a tool execution is short-circuited by a
+  `RuntimeLayer::before_tool` check (#3292). `Command` hooks receive `ZEPH_DENIED_TOOL` and
+  `ZEPH_DENY_REASON` environment variables.
+- `config/default.toml` now includes commented examples for all lifecycle hook events:
+  `[[hooks.cwd_changed]]`, `[[hooks.permission_denied]]`, and `[hooks.file_changed]`, covering
+  both `type = "command"` and `type = "mcp_tool"` action variants (#3323).
+- `McpDispatch` trait in `zeph-subagent` decouples hook execution from `zeph-mcp` — implementors
+  are wired by `zeph-core` at call sites.
+- `LayerDenial` struct replaces the bare `BeforeToolResult` type alias: layers now carry an explicit
+  `reason: String` that is propagated into the `ZEPH_DENY_REASON` hook env var (#3310).
 - Compaction progress UX improvements (#3314):
   - `MetricsSnapshot` gains four new fields: `context_max_tokens`, `compaction_last_before`,
     `compaction_last_after`, and `compaction_last_at_ms` (all `u64`, default 0 = unknown/never).
@@ -65,25 +105,132 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     red > 90%); hides gracefully when `context_max_tokens == 0` (displays `"—"`).
   - TUI: new `compaction_badge` widget shows `"{before}k→{after}k (-{saved}k) {elapsed}"` as a
     persistent side-panel entry; hidden until the first compaction occurs this session.
+- External-feedback skill evaluator (`[skills.evaluation]`): generated skills are now scored on
+  correctness, reusability, and specificity by a separate critic LLM call before being written to
+  disk. Weights (default 0.50/0.25/0.25) and pass threshold (default 0.60) are configurable.
+  Defaults to fail-open: if the evaluator errors, the skill is accepted. Spans: `skills.eval.*`
+  (#3319).
+- Proactive world-knowledge exploration (`[skills.proactive_exploration]`): before each LLM call
+  the agent classifies the query domain (keyword-based) and generates a `world-knowledge-{domain}`
+  SKILL.md when none exists. The generated skill is visible from the **next** turn (not the
+  current one — intentional MVP trade-off to keep turn latency bounded). Spans: `core.proactive.*`
+  (#3320).
+- Background shell execution (#3328): `bash` tool call accepts `background: bool` parameter.
+  When `true`, the command is spawned immediately and a `[background] started run_id=…`
+  stub is returned to close the LLM's `tool_use_id`. Completion is delivered as a synthetic
+  user-role block at the start of the next turn (drain-on-next-turn pattern, N1 invariant:
+  all pending completions are merged with the real user message into a single user-role block
+  to satisfy strict Anthropic alternation). `ShellExecutor` gains `spawn_background()`,
+  `shutdown()`, and `with_background_completion_tx()`. `ToolEventTx` is now a bounded
+  `mpsc::Sender<ToolEvent>` (cap 1024). New config fields: `tools.shell.max_background_runs`
+  (default 8) and `tools.shell.background_timeout_secs` (default 1800). New supervisor task
+  class `BackgroundShell` isolated from `Enrichment`. `agent.supervisor.background_shell_limit`
+  added to `TaskSupervisorConfig`.
+- Per-turn completion notifications (#3328 / #3329): `zeph-core` gains a `Notifier` that fires
+  after each agent turn via macOS native banners (`osascript`, stdin-fed to prevent injection)
+  and/or an ntfy-compatible JSON webhook. Gate conditions: master `enabled` switch,
+  zero-LLM-success skip (slash commands / cache hits), `only_on_error`, and a duration
+  threshold (`min_turn_duration_ms`). Error turns always fire regardless of duration.
+  Secrets are redacted via `scrub_content` before any payload leaves the process.
+  `zeph notify test` CLI subcommand and `/notify-test` slash command fire a test notification.
+  New `[notifications]` config section with commented defaults in `default.toml`.
+- CPS (cost per successful task) metric in `CostTracker`: `record_successful_task()`, `cps()`,
+  and `successful_tasks()` methods; daily reset consistent with existing cost reset (#2194).
+- `cost_cps_cents: Option<f64>` and `cost_successful_tasks: u64` fields in `AgentMetrics`;
+  updated after each successful turn in `native.rs` and `plan.rs` (#2194).
+- Qwen-2.5-7B Ollama provider entry (commented) in `.local/config/testing.toml` as `slm-medium`
+  for cost-optimised medium-complexity tasks per arXiv:2510.03847 (#2194).
+- Spec `specs/048-slm-cost-metrics/spec.md` documenting SLM survey findings and CPS metric
+  contract (#2194).
+- `specs/UX/mention-routing.md` — research spec assessing `@agent` mention routing feasibility
+  for Zeph's TUI. Documents the Goose reference pattern, required changes, and defers
+  implementation pending `AgentRegistry` infrastructure (#3327).
+- feat(a2a): AgentCard modality capability declarations (images/audio/files) (#3326).
+- feat(core): Focus strategy auto-consolidation via `run_focus_auto_consolidation` (#3313).
+- **feat(acp): ACP client sub-agent** (#3272) — `zeph-acp` gains a `client` module with
+  `SubagentConfig`, `SubagentHandle`, `spawn_subagent`, and `run_session`; spawns an
+  ACP-compatible child process via `tokio::process::Command` with `env_clear()` + whitelist
+  so no `ZEPH_*` secrets leak; biased `tokio::select!` in the driver loop allows
+  `session/cancel` to preempt in-flight reads within one poll cycle; `drain_until_stop`
+  collects text chunks and exposes `StopReason` via `RunOutcome`; 11 unit tests cover env
+  isolation, cwd, error display, and config helpers.
+- **feat(cli): `zeph acp run-agent` command** (#3272) — new `acp run-agent --command <CMD>
+  [--prompt <TEXT>] [--cwd <DIR>] [--timeout <SECS>]` sub-command for one-shot sub-agent
+  delegation; reads prompt from stdin when `--prompt` is omitted; feature-gated behind `acp`.
+- **feat(cli): `zeph acp subagent list` command** (#3272) — stub command that directs the user
+  to configure sub-agent presets in `[acp.subagents]`.
+- Add `zeph-acp` handler module scaffolding for ACP 0.11 migration (PR 1, epic #3265).
+- Add `unstable-auth-methods`, `unstable-message-id`, `unstable-session-add-dirs`,
+  `unstable-boolean-config` optional features to `zeph-acp`.
+- **feat(acp): `additional_directories` request-side allowlist** (#3270, PR 4) —
+  `AcpConfig.additional_directories` (Vec of validated paths); `AdditionalDir` newtype with
+  traversal and reserved-prefix checks; `validate_additional_directories` rejects session
+  requests with non-allowed paths at session start; feature-gated by `unstable-session-add-dirs`.
+- **feat(acp): `auth_methods` strict config** (#3270, PR 4) — `AcpConfig.auth_methods` with
+  custom `Deserialize` that rejects unknown variants at startup; MVP accepts `"agent"` only;
+  `AcpAuthMethod` enum; feature-gated by `unstable-auth-methods`; `initialize` response built
+  dynamically from config.
+- **feat(acp): `message_ids_enabled` echo** (#3270, PR 4) — `AcpConfig.message_ids_enabled`;
+  client `message_id` stored per-session via `std::sync::Mutex<Option<String>>`; echoed on
+  `PromptResponse.user_message_id` and all streamed chunks via `apply_message_id_to_chunk`;
+  feature-gated by `unstable-message-id`.
+- **feat(cli): ACP config overrides** (#3270, PR 4) — `--acp-additional-dir <PATH>` (repeatable),
+  `--acp-auth-method <METHOD>` (repeatable, validated), `--acp-message-ids` /
+  `--no-acp-message-ids` boolean pair; CLI overrides take precedence over config file values.
+- **feat(tui): ACP read-only commands** (#3270, PR 4) — `/acp dirs`, `/acp auth-methods`,
+  `/acp status` slash commands in TUI command palette; all are read-only status queries.
+- **feat(init): ACP wizard prompts** (#3270, PR 4) — `--init` wizard `step_acp` extended with
+  prompts for additional_directories, auth_methods preset, and message_ids_enabled toggle.
+- **feat(config): ACP migration fixture** (#3270, PR 4) — `migrate_adds_pr4_acp_keys_commented`
+  test verifies pre-PR4 configs are upgraded with commented-out new keys.
+- `/subagent spawn <command>` slash command is now intercepted in the core agent loop and works
+  in CLI, piped, and bare modes — previously fell through to the LLM (#3302). Without ACP
+  support, the command returns a clear "not available" message. `AcpSubagentSpawnFn` callback
+  type bridges `zeph-core` ↔ `zeph-acp` without a direct crate dependency.
 
-- HL-F1: `Edge.weight: f32` field (default `1.0`) for Hebbian reinforcement in the graph store
-  (`crates/zeph-memory`). SQLite migration 077 adds `graph_edges.weight REAL NOT NULL DEFAULT 1.0`
-  and the `idx_summaries_message_range` partial index. Postgres is out of scope pending resolution
-  of the 069–076 migration drift (#3344).
-- HL-F2: Hebbian update on recall — `GraphStore::apply_hebbian_increment` increments edge weights
-  for traversed edges; wired fire-and-forget into all four graph retrieval paths. Controlled by
-  `[memory.hebbian] enabled = false` (opt-in) and `hebbian_lr = 0.1` (#3344).
-- MM-F3: Query-bias correction — first-person queries are shifted toward the user's profile centroid
-  embedding before vector search. `[memory.retrieval] query_bias_correction = true` and
-  `query_bias_profile_weight = 0.25` control the blend. Centroid is cached in a TTL-bounded
-  `RwLock<Option<CachedCentroid>>` (default 300 s); computation failure is non-sticky and
-  falls through to the previous cache or no-op (#3341).
-- MM-F4: Episode preservation is now unconditional (data-integrity invariant): the eviction sweep
-  calls `MessageStore::filter_out_preserved_episode_ids` to exclude any message ID that falls within
-  a summary's `[first_message_id, last_message_id]` range before soft-deleting. No config flag
-  required (#3341).
-- feat(a2a): AgentCard modality capability declarations (images/audio/files) (#3326)
-- feat(core): Focus strategy auto-consolidation via `run_focus_auto_consolidation` (#3313)
+### Changed
+
+- `run_focus_auto_consolidation` now offloads the O(K²) pairwise MIG scoring loop to
+  `tokio::task::spawn_blocking`, preventing long-session consolidation passes from
+  stalling the async executor (#3386).
+- **BREAKING (config):** `HookDef.hook_type + command` fields replaced by `HookDef.action:
+  HookAction` (serde-flattened). Existing TOML with `type = "command"` deserializes correctly
+  — no manual migration needed. Internal Rust code constructing `HookDef` must use
+  `action: HookAction::Command { command: "..." }` (#3293).
+- **BREAKING (config):** Renamed `MigrationResult::added_count` → `changed_count` and
+  `sections_added` → `sections_changed` to reflect that migrations now report both additions
+  and removals (#3282).
+- **`zeph-acp`**: `AgentSpawner` future bound no longer requires `Send` — spawner closures
+  produce `Pin<Box<dyn Future<Output = ()> + 'static>>` (no `+ Send`); all agent sessions
+  now run on `spawn_local` inside a `LocalSet`. Callers that previously required `Send` on
+  the spawner future must be updated.
+- **`zeph-acp`**: `transport::bridge` module removed — bridge logic is now inline in
+  `transport::http::spawn_agent_connection`; update any direct imports of
+  `crate::transport::bridge`.
+- ACP: migrated to agent-client-protocol 0.11.1 builder API (`Agent.builder()` / `run_agent()`
+  pattern); `Rc<RefCell>` replaced with `Arc`; added handler tracing spans; config schema
+  extensions (additional_directories, auth_methods, message_ids_enabled).
+- **feat(acp): migrate `zeph-acp` to ACP 0.11 builder API** (#3267, PR 2, epic #3265) —
+  bumps `agent-client-protocol` to 0.11.1 and adds `agent-client-protocol-tokio = "0.11.1"`;
+  renames `ZephAcpAgent` → `ZephAcpAgentState` and removes all `!Send` constraints
+  (`LocalSet`, `Rc`, `RefCell` eliminated); replaces `impl acp::Agent` with `run_agent()`
+  using the `Agent.builder()` pattern; rewrites `stdio.rs` to use `acp::ByteStreams`;
+  updates all executors to use `Arc<ConnectionTo<Client>>`; switches outbound ext-method
+  calls from `ExtRequest` to `UntypedMessage`; gates ACP 0.10-era tests with `#[cfg(any())]`.
+- **`zeph-acp`**: integration tests rewritten for ACP 0.11 builder API using
+  `acp::Client.connect_with` and `serve_connection`; `#[cfg(any())]` gate removed; 6 real
+  loopback tests cover initialize, new_session, cancel, unknown ext method, load_session
+  error, and session list (#3269, PR 3).
+- **`zeph-acp`**: add `acp.session.agent_loop` tracing spans (`.instrument(span)`) to all four
+  `spawn_local` sites in `agent/mod.rs` (`do_new_session`, `do_load_session`, `do_fork_session`,
+  `do_resume_session`) for per-session observability in local Chrome JSON traces.
+- **`zeph-acp`**: refresh `AgentSpawner` doc comment to accurately describe `LocalSet`
+  requirement and `!Send` constraint.
+- `DbGraphStore` renamed to `TaskGraphStore` in `zeph-memory` for clarity (previously confused
+  with knowledge-graph `GraphStore`). This is a breaking API change for external callers (#3253).
+- `migrate_compression_predictor_config` now strips any `[memory.compression.predictor]` section
+  (active or commented-out) from user configs instead of adding it, to clean up stale sections
+  injected by previous `--migrate-config` runs (#3251).
 
 ### Fixed
 
@@ -127,7 +274,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   destruction on CI startup (#3390).
 - skills: use stable embed provider model name for Qdrant collection versioning to prevent
   collection oscillation and near-zero cosine scores (#3391).
-
 - `--bare` mode now skips the file change watcher: `with_hooks_config` is no longer called
   unconditionally in `runner.rs` — it is guarded by `!exec_mode.bare`, preventing background
   filesystem watch threads from starting in minimal sessions (#3362).
@@ -161,150 +307,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `--bare` mode now skips MCP `connect_all` and the background refresh task, gateway server spawn,
   and `agent.with_graph_config()` activation — all three were previously unconditional (#3298).
   Bare mode is a minimal LLM round-trip with no external service dependencies as documented.
-
-### Added
-
-- External-feedback skill evaluator (`[skills.evaluation]`): generated skills are now scored on
-  correctness, reusability, and specificity by a separate critic LLM call before being written to
-  disk. Weights (default 0.50/0.25/0.25) and pass threshold (default 0.60) are configurable.
-  Defaults to fail-open: if the evaluator errors, the skill is accepted. Spans: `skills.eval.*`
-  (#3319).
-- Proactive world-knowledge exploration (`[skills.proactive_exploration]`): before each LLM call
-  the agent classifies the query domain (keyword-based) and generates a `world-knowledge-{domain}`
-  SKILL.md when none exists. The generated skill is visible from the **next** turn (not the
-  current one — intentional MVP trade-off to keep turn latency bounded). Spans: `core.proactive.*`
-  (#3320).
-- Experience compression spectrum (`[memory.compression_spectrum]`): introduces `CompressionLevel`
-  (Episodic / Procedural / Declarative) and a `RetrievalPolicy` that skips episodic recall when
-  the token budget is below configurable thresholds. A background `PromotionEngine` scans recent
-  episodic memory and promotes repeated patterns to SKILL.md entries (off hot path, via JoinSet).
-  Spans: `memory.compression.*` (#3305).
-- `SkillEvaluationConfig`, `ProactiveExplorationConfig`, `CompressionSpectrumConfig` TOML sections
-  with `#[serde(default)]` — all disabled by default; existing configs parse unchanged.
-- `MemoryError::Promotion` variant in `zeph-memory` for promotion scan failures (thiserror,
-  no anyhow in library crates).
-- `[memory.retrieval]` config section: `depth` (ANN candidate count, `0` = legacy `recall_limit * 2`),
-  `search_prompt_template` (query-side embedding template with `{query}` placeholder),
-  `context_format` (`structured` / `plain` — memory snippet rendering in agent context).
-  MemMachine MM-F1/F2/F5 (#3340).
-- Background shell execution (#3328): `bash` tool call accepts `background: bool` parameter.
-  When `true`, the command is spawned immediately and a `[background] started run_id=…`
-  stub is returned to close the LLM's `tool_use_id`. Completion is delivered as a synthetic
-  user-role block at the start of the next turn (drain-on-next-turn pattern, N1 invariant:
-  all pending completions are merged with the real user message into a single user-role block
-  to satisfy strict Anthropic alternation). `ShellExecutor` gains `spawn_background()`,
-  `shutdown()`, and `with_background_completion_tx()`. `ToolEventTx` is now a bounded
-  `mpsc::Sender<ToolEvent>` (cap 1024). New config fields: `tools.shell.max_background_runs`
-  (default 8) and `tools.shell.background_timeout_secs` (default 1800). New supervisor task
-  class `BackgroundShell` isolated from `Enrichment`. `agent.supervisor.background_shell_limit`
-  added to `TaskSupervisorConfig`.
-- Per-turn completion notifications (#3328 / #3329): `zeph-core` gains a `Notifier` that fires
-  after each agent turn via macOS native banners (`osascript`, stdin-fed to prevent injection)
-  and/or an ntfy-compatible JSON webhook. Gate conditions: master `enabled` switch,
-  zero-LLM-success skip (slash commands / cache hits), `only_on_error`, and a duration
-  threshold (`min_turn_duration_ms`). Error turns always fire regardless of duration.
-  Secrets are redacted via `scrub_content` before any payload leaves the process.
-  `zeph notify test` CLI subcommand and `/notify-test` slash command fire a test notification.
-  New `[notifications]` config section with commented defaults in `default.toml`.
-- **ReasoningBank** (#3342, #3343): distilled reasoning strategy memory. After each assistant turn
-  a fire-and-forget three-stage pipeline (self-judge → distillation → store) extracts a ≤3-sentence
-  strategy summary and writes it to a new `reasoning_strategies` SQLite table. At context-build time
-  top-k strategies are retrieved by embedding similarity and injected into the prompt preamble. LRU
-  eviction with hot-row protection (configurable `store_limit`, `HOT_STRATEGY_USE_COUNT = 10`) keeps
-  the table bounded. Fully opt-in: `memory.reasoning.enabled = false` by default. New migration:
-  `crates/zeph-db/migrations/sqlite/077_reasoning_strategies.sql`.
-- CPS (cost per successful task) metric in `CostTracker`: `record_successful_task()`, `cps()`,
-  and `successful_tasks()` methods; daily reset consistent with existing cost reset (#2194).
-- `cost_cps_cents: Option<f64>` and `cost_successful_tasks: u64` fields in `AgentMetrics`;
-  updated after each successful turn in `native.rs` and `plan.rs` (#2194).
-- Qwen-2.5-7B Ollama provider entry (commented) in `.local/config/testing.toml` as `slm-medium`
-  for cost-optimised medium-complexity tasks per arXiv:2510.03847 (#2194).
-- Spec `specs/048-slm-cost-metrics/spec.md` documenting SLM survey findings and CPS metric
-  contract (#2194).
-- Hook actions now support `type = "mcp_tool"` to invoke MCP server tools directly without spawning a subprocess (#3293). Hooks can set `server`, `tool`, and optional `args` fields. Requires the MCP manager to be active; fails according to `fail_closed` if unavailable.
-- New `[hooks.permission_denied]` event fires when a tool execution is short-circuited by a `RuntimeLayer::before_tool` check (#3292). `Command` hooks receive `ZEPH_DENIED_TOOL` and `ZEPH_DENY_REASON` environment variables.
-- `McpDispatch` trait in `zeph-subagent` decouples hook execution from `zeph-mcp` — implementors are wired by `zeph-core` at call sites.
-- `/subagent spawn <command>` slash command is now intercepted in the core agent loop and works in CLI, piped, and bare modes — previously fell through to the LLM (#3302). Without ACP support, the command returns a clear "not available" message. `AcpSubagentSpawnFn` callback type bridges `zeph-core` ↔ `zeph-acp` without a direct crate dependency.
-- `LayerDenial` struct replaces the bare `BeforeToolResult` type alias: layers now carry an explicit `reason: String` that is propagated into the `ZEPH_DENY_REASON` hook env var (#3310). The previously hardcoded `"blocked by before_tool layer"` string is removed.
-- `config/default.toml` now includes commented examples for all lifecycle hook events: `[[hooks.cwd_changed]]`, `[[hooks.permission_denied]]`, and `[hooks.file_changed]`, covering both `type = "command"` and `type = "mcp_tool"` action variants (#3323).
-
-### Changed
-
-- **BREAKING (config):** `HookDef.hook_type + command` fields replaced by `HookDef.action: HookAction` (serde-flattened). Existing TOML with `type = "command"` deserializes correctly — no manual migration needed. Internal Rust code constructing `HookDef` must use `action: HookAction::Command { command: "..." }` (#3293).
+- **fix(acp): stale `current_message_id` leak across turns** (#3270, review fix) — `do_prompt`
+  previously wrote `current_message_id` before the `output_rx.take()` check; if a prompt was
+  rejected as "already in progress" the slot held the stale id from the failed request; moved
+  write to after successful `output_rx.take()`.
+- **fix(acp): empty `auth_methods = []` silently fell back to default** (#3270, review fix) —
+  empty list in config or from CLI now causes a hard error at startup; operator intent is
+  honoured rather than silently replaced.
+- **fix(acp): invalid CLI `--acp-additional-dir`/`--acp-auth-method` silently dropped**
+  (#3270, review fix) — changed `filter_map(...).ok()` to map errors and return early via `?`;
+  binary now exits non-zero on invalid CLI input.
+- **perf(acp): per-event `sessions.lock()` re-read of `current_message_id`** (#3270, review
+  fix) — captured `turn_mid` once at drain start instead of re-locking per chunk event.
 
 ### Removed
 
-- `admission_rl` module (RL-based admission classifier, never wired into production) (#3250). SQLite table `admission_rl_weights` remains (migrations are append-only).
-- `compression_predictor` module and `CompressionPredictorConfig` config field (linear regression compaction predictor, never called in production) (#3251). SQLite tables `compression_predictor_training` and `compression_predictor_weights` remain (append-only).
+- `admission_rl` module (RL-based admission classifier, never wired into production) (#3250).
+  SQLite table `admission_rl_weights` remains (migrations are append-only).
+- `compression_predictor` module and `CompressionPredictorConfig` config field (linear regression
+  compaction predictor, never called in production) (#3251). SQLite tables
+  `compression_predictor_training` and `compression_predictor_weights` remain (append-only).
 - CLI subcommand `zeph memory predictor-status` (backed by removed module) (#3251).
 - TUI command `predictor-status` (backed by removed module) (#3251).
 - `SqliteGraphStore` type alias — use `TaskGraphStore` instead (#3253).
-
-### Changed
-
-- **BREAKING (config):** Renamed `MigrationResult::added_count` → `changed_count` and `sections_added` → `sections_changed` to reflect that migrations now report both additions and removals (#3282).
-- `DbGraphStore` renamed to `TaskGraphStore` in `zeph-memory` for clarity (previously confused with knowledge-graph `GraphStore`). This is a breaking API change for external callers. (#3253).
-- `migrate_compression_predictor_config` now strips any `[memory.compression.predictor]` section (active or commented-out) from user configs instead of adding it, to clean up stale sections injected by previous `--migrate-config` runs (#3251).
-
-### Breaking Changes
-
-- **`zeph-acp`**: `AgentSpawner` future bound no longer requires `Send` — spawner closures
-  produce `Pin<Box<dyn Future<Output = ()> + 'static>>` (no `+ Send`); all agent sessions
-  now run on `spawn_local` inside a `LocalSet`. Callers that previously required `Send` on
-  the spawner future must be updated.
-- **`zeph-acp`**: `transport::bridge` module removed — bridge logic is now inline in
-  `transport::http::spawn_agent_connection`; update any direct imports of
-  `crate::transport::bridge`.
-
-### Removed
-
-- Remove `LlmRoutingStrategy::Task` unimplemented variant and associated `LlmConfig::routes` field (#3248); `--migrate-config` warns and drops the keys automatically
-- Remove unreachable per-provider `coe_enabled`/`with_coe` logprobs branches from `OllamaProvider`, `OpenAiProvider`, `CompatibleProvider` (#3249)
-- Move test-only context/assembler.rs helpers into `assembler_helpers` test module in `zeph-core` (#3254)
-
-### Changed
-
-- ACP: migrated to agent-client-protocol 0.11.1 builder API (`Agent.builder()` / `run_agent()` pattern); `Rc<RefCell>` replaced with `Arc`; added handler tracing spans; config schema extensions (additional_directories, auth_methods, message_ids_enabled)
-
-- **`zeph-acp`**: integration tests rewritten for ACP 0.11 builder API using `acp::Client.connect_with`
-  and `serve_connection`; `#[cfg(any())]` gate removed; 6 real loopback tests cover initialize,
-  new_session, cancel, unknown ext method, load_session error, and session list (#3269, PR 3).
-- **`zeph-acp`**: add `acp.session.agent_loop` tracing spans (`.instrument(span)`) to all four
-  `spawn_local` sites in `agent/mod.rs` (`do_new_session`, `do_load_session`, `do_fork_session`,
-  `do_resume_session`) for per-session observability in local Chrome JSON traces.
-- **`zeph-acp`**: refresh `AgentSpawner` doc comment to accurately describe `LocalSet` requirement
-  and `!Send` constraint.
-
-- **feat(acp): migrate `zeph-acp` to ACP 0.11 builder API** (#3267, PR 2, epic #3265) —
-  bumps `agent-client-protocol` to 0.11.1 and adds `agent-client-protocol-tokio = "0.11.1"`;
-  renames `ZephAcpAgent` → `ZephAcpAgentState` and removes all `!Send` constraints
-  (`LocalSet`, `Rc`, `RefCell` eliminated); replaces `impl acp::Agent` with `run_agent()`
-  using the `Agent.builder()` pattern; rewrites `stdio.rs` to use `acp::ByteStreams`;
-  updates all executors to use `Arc<ConnectionTo<Client>>`; switches outbound ext-method
-  calls from `ExtRequest` to `UntypedMessage`; gates ACP 0.10-era tests with `#[cfg(any())]`.
-
-### Added
-
-- **feat(acp): ACP client sub-agent** (#3272) — `zeph-acp` gains a `client` module with `SubagentConfig`, `SubagentHandle`, `spawn_subagent`, and `run_session`; spawns an ACP-compatible child process via `tokio::process::Command` with `env_clear()` + whitelist so no `ZEPH_*` secrets leak; biased `tokio::select!` in the driver loop allows `session/cancel` to preempt in-flight reads within one poll cycle; `drain_until_stop` collects text chunks and exposes `StopReason` via `RunOutcome`; 11 unit tests cover env isolation, cwd, error display, and config helpers.
-- **feat(cli): `zeph acp run-agent` command** (#3272) — new `acp run-agent --command <CMD> [--prompt <TEXT>] [--cwd <DIR>] [--timeout <SECS>]` sub-command for one-shot sub-agent delegation; reads prompt from stdin when `--prompt` is omitted; feature-gated behind `acp`.
-- **feat(cli): `zeph acp subagent list` command** (#3272) — stub command that directs the user to configure sub-agent presets in `[acp.subagents]`.
-
-- Add `zeph-acp` handler module scaffolding for ACP 0.11 migration (PR 1, epic #3265)
-- Add `unstable-auth-methods`, `unstable-message-id`, `unstable-session-add-dirs`, `unstable-boolean-config` optional features to `zeph-acp`
-- **feat(acp): `additional_directories` request-side allowlist** (#3270, PR 4) — `AcpConfig.additional_directories` (Vec of validated paths); `AdditionalDir` newtype with traversal and reserved-prefix checks; `validate_additional_directories` rejects session requests with non-allowed paths at session start; feature-gated by `unstable-session-add-dirs`
-- **feat(acp): `auth_methods` strict config** (#3270, PR 4) — `AcpConfig.auth_methods` with custom `Deserialize` that rejects unknown variants at startup; MVP accepts `"agent"` only; `AcpAuthMethod` enum; feature-gated by `unstable-auth-methods`; `initialize` response built dynamically from config
-- **feat(acp): `message_ids_enabled` echo** (#3270, PR 4) — `AcpConfig.message_ids_enabled`; client `message_id` stored per-session via `std::sync::Mutex<Option<String>>`; echoed on `PromptResponse.user_message_id` and all streamed chunks via `apply_message_id_to_chunk`; feature-gated by `unstable-message-id`
-- **feat(cli): ACP config overrides** (#3270, PR 4) — `--acp-additional-dir <PATH>` (repeatable), `--acp-auth-method <METHOD>` (repeatable, validated), `--acp-message-ids` / `--no-acp-message-ids` boolean pair; CLI overrides take precedence over config file values
-- **feat(tui): ACP read-only commands** (#3270, PR 4) — `/acp dirs`, `/acp auth-methods`, `/acp status` slash commands in TUI command palette; all are read-only status queries
-- **feat(init): ACP wizard prompts** (#3270, PR 4) — `--init` wizard `step_acp` extended with prompts for additional_directories, auth_methods preset, and message_ids_enabled toggle
-- **feat(config): ACP migration fixture** (#3270, PR 4) — `migrate_adds_pr4_acp_keys_commented` test verifies pre-PR4 configs are upgraded with commented-out new keys
-
-### Fixed
-
-- **fix(acp): stale `current_message_id` leak across turns** (#3270, review fix) — `do_prompt` previously wrote `current_message_id` before the `output_rx.take()` check; if a prompt was rejected as "already in progress" the slot held the stale id from the failed request; moved write to after successful `output_rx.take()`
-- **fix(acp): empty `auth_methods = []` silently fell back to default** (#3270, review fix) — empty list in config or from CLI now causes a hard error at startup; operator intent is honoured rather than silently replaced
-- **fix(acp): invalid CLI `--acp-additional-dir`/`--acp-auth-method` silently dropped** (#3270, review fix) — changed `filter_map(...).ok()` to map errors and return early via `?`; binary now exits non-zero on invalid CLI input
-- **perf(acp): per-event `sessions.lock()` re-read of `current_message_id`** (#3270, review fix) — captured `turn_mid` once at drain start instead of re-locking per chunk event
+- `LlmRoutingStrategy::Task` unimplemented variant and associated `LlmConfig::routes` field
+  (#3248); `--migrate-config` warns and drops the keys automatically.
+- Unreachable per-provider `coe_enabled`/`with_coe` logprobs branches from `OllamaProvider`,
+  `OpenAiProvider`, `CompatibleProvider` (#3249).
+- Test-only context/assembler.rs helpers moved into `assembler_helpers` test module in
+  `zeph-core` (#3254).
 
 ## [0.19.3] - 2026-04-19
 
