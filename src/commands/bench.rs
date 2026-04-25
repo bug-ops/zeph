@@ -5,8 +5,9 @@ use crate::bootstrap::{
     create_named_provider, create_provider, parse_vault_args, resolve_config_path,
 };
 use zeph_bench::{
-    BenchCommand, BenchRunner, DatasetRegistry, ResultWriter, RunOptions, RunStatus,
-    apply_deterministic_overrides,
+    BenchCommand, BenchMemoryParams, BenchRunner, DatasetRegistry, MemoryMode, ResultWriter,
+    RunOptions, RunStatus, apply_deterministic_overrides,
+    baseline::BaselineComparison,
     loaders::{
         FramesEvaluator, FramesLoader, GaiaEvaluator, GaiaLoader, LocomoEvaluator, LocomoLoader,
         LongMemEvalEvaluator, LongMemEvalLoader, TauBenchEvaluator, TauBenchLoader,
@@ -30,24 +31,186 @@ pub(crate) async fn handle_bench_command(
             data_file,
             scenario,
             provider: provider_name,
-            baseline: _,
+            baseline,
             resume,
             no_deterministic,
         } => {
-            handle_run(
-                dataset,
-                output,
-                data_file.as_deref(),
-                scenario.as_deref(),
-                provider_name.as_deref(),
-                *resume,
-                *no_deterministic,
-                config_path,
-            )
-            .await
+            if *baseline {
+                handle_run_baseline(
+                    dataset,
+                    output,
+                    data_file.as_deref(),
+                    scenario.as_deref(),
+                    provider_name.as_deref(),
+                    *resume,
+                    *no_deterministic,
+                    config_path,
+                )
+                .await
+            } else {
+                handle_run(
+                    dataset,
+                    output,
+                    data_file.as_deref(),
+                    scenario.as_deref(),
+                    provider_name.as_deref(),
+                    *resume,
+                    *no_deterministic,
+                    config_path,
+                )
+                .await
+            }
         }
         BenchCommand::Show { results } => handle_show(results),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_run_baseline(
+    dataset: &str,
+    output: &std::path::Path,
+    data_file: Option<&std::path::Path>,
+    scenario: Option<&str>,
+    provider_name: Option<&str>,
+    resume: bool,
+    no_deterministic: bool,
+    config_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    // Gate --baseline to memory-relevant datasets only.
+    // Tool-driven datasets (gaia, frames, tau-bench) use NoopExecutor, making
+    // the memory-on pass meaningless (C-2).
+    match dataset {
+        "longmemeval" | "locomo" => {}
+        other => {
+            anyhow::bail!(
+                "--baseline is supported only for memory-relevant datasets (longmemeval, locomo). \
+                 Dataset '{other}' requires tool execution which is not wired in bench mode. \
+                 See the issue tracker for tool-executor support."
+            );
+        }
+    }
+
+    let data_path = resolve_data_path(dataset, data_file);
+    let path = resolve_config_path(config_path);
+    let mut config = Config::load(&path).unwrap_or_default();
+
+    let vault_args = parse_vault_args(&config, None, None, None);
+    if let Some(vault) = crate::bootstrap::build_vault_provider(&vault_args)
+        && let Err(e) = config.resolve_secrets(vault.as_ref()).await
+    {
+        tracing::warn!("vault secret resolution failed: {e}");
+    }
+
+    let raw_provider = if let Some(name) = provider_name {
+        create_named_provider(name, &config)
+            .map_err(|e| anyhow::anyhow!("failed to resolve provider '{name}': {e}"))?
+    } else {
+        create_provider(&config)
+            .map_err(|e| anyhow::anyhow!("failed to create default provider: {e}"))?
+    };
+    let provider = apply_deterministic_overrides(raw_provider, no_deterministic);
+
+    // Completed IDs are shared across both passes to allow partial resume.
+    let base_completed_ids = if resume {
+        let off_writer = ResultWriter::new(output.join("baseline").join("memory-off"))?;
+        off_writer
+            .load_existing()?
+            .map(|r| r.completed_ids())
+            .unwrap_or_default()
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    let base_opts = RunOptions {
+        scenario_filter: scenario.map(ToOwned::to_owned),
+        completed_ids: base_completed_ids,
+        memory_mode: MemoryMode::Off,
+    };
+
+    // Each pass gets a distinct run_id so SQLite paths and result files don't collide.
+    let off_run_id = format!("bench-off-{}", baseline_run_id_suffix());
+    let on_run_id = format!("bench-on-{}", baseline_run_id_suffix());
+
+    let data_dir = output.join("bench-data");
+    std::fs::create_dir_all(&data_dir)?;
+
+    let off_dir = output.join("baseline").join("memory-off");
+    let on_dir = output.join("baseline").join("memory-on");
+
+    // --- Memory-off pass ---
+    let off_runner = BenchRunner::new(provider.clone(), no_deterministic);
+    let off_writer = ResultWriter::new(&off_dir)?;
+    let off_opts = RunOptions {
+        memory_mode: MemoryMode::Off,
+        ..base_opts
+    };
+    let mut off_run = dispatch_run(&off_runner, dataset, &data_path, off_opts).await?;
+    off_run.status = RunStatus::Completed;
+    off_run.finished_at = finished_at_now();
+    off_run.run_id = off_run_id;
+    off_run.recompute_aggregate();
+    off_writer.write(&off_run)?;
+    println!(
+        "Memory-off pass complete: mean score {:.4} ({}/{} exact)",
+        off_run.aggregate.mean_score, off_run.aggregate.exact_match, off_run.aggregate.total
+    );
+
+    // --- Memory-on pass ---
+    let memory_params = BenchMemoryParams {
+        data_dir: data_dir.clone(),
+        embedding_model: config.llm.embedding_model.clone(),
+        run_id: on_run_id.clone(),
+        dataset: dataset.to_owned(),
+    };
+    let on_runner =
+        BenchRunner::new(provider.clone(), no_deterministic).with_memory_params(memory_params);
+    let on_writer = ResultWriter::new(&on_dir)?;
+    let on_opts = RunOptions {
+        scenario_filter: scenario.map(ToOwned::to_owned),
+        completed_ids: std::collections::HashSet::new(),
+        memory_mode: MemoryMode::On,
+    };
+    let mut on_run = dispatch_run(&on_runner, dataset, &data_path, on_opts).await?;
+    on_run.status = RunStatus::Completed;
+    on_run.finished_at = finished_at_now();
+    on_run.run_id = on_run_id;
+    on_run.recompute_aggregate();
+    on_writer.write(&on_run)?;
+    println!(
+        "Memory-on pass complete: mean score {:.4} ({}/{} exact)",
+        on_run.aggregate.mean_score, on_run.aggregate.exact_match, on_run.aggregate.total
+    );
+
+    // --- Comparison (reuse existing baseline::BaselineComparison) ---
+    let cmp = BaselineComparison::compute(&on_run, &off_run);
+    let baseline_dir = output.join("baseline");
+    std::fs::create_dir_all(&baseline_dir)?;
+    cmp.write_comparison_json(&baseline_dir)?;
+    cmp.write_delta_table(&baseline_dir.join("summary.md"))?;
+
+    println!(
+        "Baseline complete: aggregate delta = {:+.4}",
+        cmp.aggregate_delta
+    );
+    println!("Off run: {}", off_writer.results_path().display());
+    println!("On  run: {}", on_writer.results_path().display());
+    println!(
+        "Comparison: {}",
+        baseline_dir.join("comparison.json").display()
+    );
+    Ok(())
+}
+
+/// Generate a short unique suffix for baseline run IDs.
+fn baseline_run_id_suffix() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    format!("{secs:x}-{ns:x}")
 }
 
 fn handle_list() {
@@ -140,6 +303,7 @@ async fn handle_run(
     let opts = RunOptions {
         scenario_filter: scenario.map(ToOwned::to_owned),
         completed_ids,
+        memory_mode: MemoryMode::Off,
     };
 
     let runner = BenchRunner::new(provider, no_deterministic);

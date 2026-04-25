@@ -74,12 +74,12 @@ impl DatasetLoader for LocomoLoader {
         let mut scenarios = Vec::new();
         for session in sessions {
             for (idx, qa) in session.qa.iter().enumerate() {
-                scenarios.push(Scenario {
-                    id: format!("{}_{}", session.session_id, idx),
-                    prompt: qa.question.clone(),
-                    expected: qa.answer.clone(),
-                    metadata: serde_json::Value::Null,
-                });
+                scenarios.push(Scenario::single(
+                    format!("{}_{}", session.session_id, idx),
+                    qa.question.clone(),
+                    qa.answer.clone(),
+                    serde_json::Value::Null,
+                ));
             }
         }
         Ok(scenarios)
@@ -98,12 +98,12 @@ impl DatasetLoader for LocomoLoader {
 /// use zeph_bench::{Scenario, loaders::LocomoEvaluator};
 /// use zeph_bench::scenario::Evaluator;
 ///
-/// let scenario = Scenario {
-///     id: "s1_0".into(),
-///     prompt: "What is the capital of France?".into(),
-///     expected: "Paris".into(),
-///     metadata: serde_json::Value::Null,
-/// };
+/// let scenario = Scenario::single(
+///     "s1_0",
+///     "What is the capital of France?",
+///     "Paris",
+///     serde_json::Value::Null,
+/// );
 ///
 /// let result = LocomoEvaluator.evaluate(&scenario, "Paris");
 /// assert!((result.score - 1.0).abs() < f64::EPSILON);
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn load_maps_prompt_and_expected() {
         let scenarios = load_from_str(FIXTURE);
-        assert_eq!(scenarios[0].prompt, "What is Rust?");
+        assert_eq!(scenarios[0].primary_prompt().unwrap(), "What is Rust?");
         assert_eq!(scenarios[0].expected, "A systems programming language");
     }
 

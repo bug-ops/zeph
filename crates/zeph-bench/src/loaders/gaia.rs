@@ -139,12 +139,12 @@ impl DatasetLoader for GaiaLoader {
                 "annotator_metadata": record.annotator_metadata,
             });
 
-            scenarios.push(Scenario {
-                id: record.task_id,
-                prompt: record.question,
-                expected: record.final_answer,
+            scenarios.push(Scenario::single(
+                record.task_id,
+                record.question,
+                record.final_answer,
                 metadata,
-            });
+            ));
         }
         Ok(scenarios)
     }
@@ -167,12 +167,7 @@ impl DatasetLoader for GaiaLoader {
 /// use zeph_bench::{Scenario, loaders::GaiaEvaluator};
 /// use zeph_bench::scenario::Evaluator;
 ///
-/// let scenario = Scenario {
-///     id: "t1".into(),
-///     prompt: "Capital of Japan?".into(),
-///     expected: "Tokyo".into(),
-///     metadata: serde_json::json!({"level": 1}),
-/// };
+/// let scenario = Scenario::single("t1", "Capital of Japan?", "Tokyo", serde_json::json!({"level": 1}));
 ///
 /// // Article "The" is stripped before comparison.
 /// assert!(GaiaEvaluator.evaluate(&scenario, "The Tokyo").passed);
@@ -237,7 +232,10 @@ mod tests {
     #[test]
     fn load_maps_prompt_and_expected() {
         let scenarios = load_from_str(FIXTURE, None);
-        assert_eq!(scenarios[0].prompt, "What year did WWII end?");
+        assert_eq!(
+            scenarios[0].primary_prompt().unwrap(),
+            "What year did WWII end?"
+        );
         assert_eq!(scenarios[0].expected, "1945");
     }
 

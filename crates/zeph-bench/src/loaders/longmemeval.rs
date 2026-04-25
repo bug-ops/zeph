@@ -77,15 +77,15 @@ impl DatasetLoader for LongMemEvalLoader {
             let item: LongMemEvalItem = serde_json::from_str(trimmed)
                 .map_err(|e| BenchError::InvalidFormat(format!("line {}: {e}", idx + 1)))?;
 
-            scenarios.push(Scenario {
-                id: item.question_id,
-                prompt: item.question,
-                expected: item.answer,
-                metadata: serde_json::json!({
+            scenarios.push(Scenario::single(
+                item.question_id,
+                item.question,
+                item.answer,
+                serde_json::json!({
                     "session_id": item.session_id,
                     "sessions": item.sessions,
                 }),
-            });
+            ));
         }
         Ok(scenarios)
     }
@@ -103,12 +103,7 @@ impl DatasetLoader for LongMemEvalLoader {
 /// use zeph_bench::{Scenario, loaders::LongMemEvalEvaluator};
 /// use zeph_bench::scenario::Evaluator;
 ///
-/// let scenario = Scenario {
-///     id: "q1".into(),
-///     prompt: "What is Rust?".into(),
-///     expected: "A systems language".into(),
-///     metadata: serde_json::Value::Null,
-/// };
+/// let scenario = Scenario::single("q1", "What is Rust?", "A systems language", serde_json::Value::Null);
 ///
 /// let result = LongMemEvalEvaluator.evaluate(&scenario, "A systems language");
 /// assert!(result.passed);
@@ -162,7 +157,7 @@ mod tests {
     #[test]
     fn load_maps_prompt_and_expected() {
         let scenarios = load_from_str(FIXTURE);
-        assert_eq!(scenarios[0].prompt, "What is Rust?");
+        assert_eq!(scenarios[0].primary_prompt().unwrap(), "What is Rust?");
         assert_eq!(scenarios[0].expected, "A systems language");
     }
 

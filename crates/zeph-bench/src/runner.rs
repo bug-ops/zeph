@@ -28,19 +28,72 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use zeph_core::agent::Agent;
 use zeph_core::instructions::InstructionBlock;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
+use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::registry::SkillRegistry;
 use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 
 use crate::channel::BenchmarkChannel;
 use crate::error::BenchError;
 use crate::results::{BenchRun, RunStatus, ScenarioResult};
-use crate::scenario::{DatasetLoader, Evaluator};
+use crate::scenario::{DatasetLoader, Evaluator, Scenario};
+
+/// Controls whether `SemanticMemory` is wired into the agent during a benchmark run.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::runner::MemoryMode;
+///
+/// assert_eq!(MemoryMode::default(), MemoryMode::Off);
+/// ```
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMode {
+    /// No `SemanticMemory` — current default behaviour.
+    #[default]
+    Off,
+    /// Wire a `SQLite`-backed `SemanticMemory` into the agent via `Agent::with_memory`.
+    On,
+}
+
+/// Parameters required to construct a per-scenario `SQLite`-backed `SemanticMemory`.
+///
+/// Populated by [`BenchRunner::with_memory_params`] and consumed inside
+/// [`BenchRunner::run_one`] when `opts.memory_mode == MemoryMode::On`.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::PathBuf;
+/// use zeph_bench::runner::BenchMemoryParams;
+///
+/// let params = BenchMemoryParams {
+///     data_dir: PathBuf::from("/tmp/bench"),
+///     embedding_model: "nomic-embed-text".into(),
+///     run_id: "bench-abc".into(),
+///     dataset: "locomo".into(),
+/// };
+/// assert!(params.data_dir.to_string_lossy().contains("bench"));
+/// ```
+#[derive(Debug, Clone)]
+pub struct BenchMemoryParams {
+    /// Directory where per-scenario `SQLite` files live (deleted between scenarios).
+    ///
+    /// The derived path always contains the `bench-` segment (NFR-001).
+    pub data_dir: PathBuf,
+    /// Embedding model name passed to `SemanticMemory`.
+    pub embedding_model: String,
+    /// Run ID used to namespace bench artifacts; matches the outer `BenchRun.run_id`.
+    pub run_id: String,
+    /// Dataset name used to namespace bench artifacts.
+    pub dataset: String,
+}
 
 /// Options that control which scenarios are executed and whether to resume a prior run.
 ///
@@ -49,12 +102,13 @@ use crate::scenario::{DatasetLoader, Evaluator};
 /// # Examples
 ///
 /// ```
-/// use zeph_bench::runner::RunOptions;
+/// use zeph_bench::runner::{RunOptions, MemoryMode};
 ///
 /// // Run all scenarios.
 /// let opts = RunOptions::default();
 /// assert!(opts.scenario_filter.is_none());
 /// assert!(opts.completed_ids.is_empty());
+/// assert_eq!(opts.memory_mode, MemoryMode::Off);
 /// ```
 #[derive(Debug, Default)]
 pub struct RunOptions {
@@ -62,6 +116,8 @@ pub struct RunOptions {
     pub scenario_filter: Option<String>,
     /// Set of scenario IDs already completed in a prior run (used for `--resume`).
     pub completed_ids: HashSet<String>,
+    /// Whether to wire a `SemanticMemory` backend into the agent for this run.
+    pub memory_mode: MemoryMode,
 }
 
 /// Minimal no-op tool executor for baseline benchmark runs.
@@ -79,8 +135,8 @@ impl ToolExecutor for NoopExecutor {
 /// Drives [`Agent<BenchmarkChannel>`] over a dataset and collects scored results.
 ///
 /// Each call to [`run_dataset`][BenchRunner::run_dataset] creates a fresh agent per
-/// scenario (baseline mode: no tools, no memory, no MCP). Scenarios can be filtered
-/// and prior runs can be resumed via [`RunOptions`].
+/// scenario (baseline mode: no tools, no MCP). Memory is optionally wired via
+/// [`BenchRunner::with_memory_params`] and [`RunOptions::memory_mode`].
 ///
 /// # Examples
 ///
@@ -93,6 +149,11 @@ impl ToolExecutor for NoopExecutor {
 /// ```
 pub struct BenchRunner {
     provider: AnyProvider,
+    /// Parameters for constructing per-scenario `SQLite`-backed `SemanticMemory`.
+    ///
+    /// Set via [`BenchRunner::with_memory_params`]; required when
+    /// `RunOptions::memory_mode == MemoryMode::On`.
+    memory_params: Option<BenchMemoryParams>,
 }
 
 impl BenchRunner {
@@ -113,7 +174,37 @@ impl BenchRunner {
     /// ```
     #[must_use]
     pub fn new(provider: AnyProvider, _no_deterministic: bool) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            memory_params: None,
+        }
+    }
+
+    /// Attach `SemanticMemory` parameters for memory-on benchmark runs.
+    ///
+    /// When set, a per-scenario `SQLite`-backed `SemanticMemory` is constructed inside
+    /// [`run_one`][BenchRunner::run_one] whenever `opts.memory_mode == MemoryMode::On`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::PathBuf;
+    /// use zeph_bench::runner::{BenchRunner, BenchMemoryParams};
+    /// use zeph_llm::{any::AnyProvider, mock::MockProvider};
+    ///
+    /// let provider = AnyProvider::Mock(MockProvider::with_responses(vec![]));
+    /// let params = BenchMemoryParams {
+    ///     data_dir: PathBuf::from("/tmp/bench-data"),
+    ///     embedding_model: "nomic-embed-text".into(),
+    ///     run_id: "bench-abc".into(),
+    ///     dataset: "locomo".into(),
+    /// };
+    /// let runner = BenchRunner::new(provider, false).with_memory_params(params);
+    /// ```
+    #[must_use]
+    pub fn with_memory_params(mut self, params: BenchMemoryParams) -> Self {
+        self.memory_params = Some(params);
+        self
     }
 
     /// Run all matching scenarios from `path` through the agent and return a [`BenchRun`].
@@ -168,7 +259,7 @@ impl BenchRunner {
             }
 
             let t0 = Instant::now();
-            let response_text = Box::pin(self.run_one(scenario.prompt.clone())).await?;
+            let response_text = Box::pin(self.run_one(scenario, opts.memory_mode)).await?;
             let elapsed_ms = u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX);
 
             let eval = evaluator.evaluate(scenario, &response_text);
@@ -187,15 +278,31 @@ impl BenchRunner {
         Ok(run)
     }
 
-    /// Run a single prompt through a fresh agent and return the last response text.
+    /// Run a single scenario through a fresh agent and return the last response text.
     ///
     /// A concise-answer system prompt is injected via [`InstructionBlock`] so the model
     /// responds with only the final answer (a number, word, or short phrase) rather than
     /// full sentences. The raw response is then post-processed to extract the first
     /// non-empty line and strip markdown formatting, which further reduces noise for
     /// evaluators that perform exact or near-exact matching.
-    async fn run_one(&self, prompt: String) -> Result<String, BenchError> {
+    ///
+    /// When `memory_mode == MemoryMode::On`, a per-scenario `SQLite`-backed
+    /// `SemanticMemory` is constructed and wired into the agent. The database file is
+    /// deleted after the scenario completes (best-effort, NFR-001).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BenchError::InvalidFormat`] when the scenario has no user turn or when
+    /// `SemanticMemory` initialisation fails.
+    async fn run_one(
+        &self,
+        scenario: &Scenario,
+        memory_mode: MemoryMode,
+    ) -> Result<String, BenchError> {
+        let prompt = scenario.primary_prompt()?.to_owned();
         let channel = BenchmarkChannel::new(vec![prompt]);
+        // TODO(multi-turn-history): when loaders emit multiple user turns, push each in
+        // order and seed assistant turns into the channel as captured-history.
         let registry = SkillRegistry::empty();
 
         // Force the model to emit only the shortest possible answer. This is the primary
@@ -213,7 +320,10 @@ impl BenchRunner {
             .to_owned(),
         }];
 
-        let mut agent = Agent::new(
+        // TODO(C-2): wire a real ToolExecutor for baseline runs on tool-driven datasets
+        // (gaia, tau-bench, frames). For now --baseline is gated to longmemeval/locomo
+        // in the CLI dispatcher.
+        let base_agent = Agent::new(
             self.provider.clone(),
             channel,
             registry,
@@ -223,10 +333,73 @@ impl BenchRunner {
         )
         .with_instruction_blocks(blocks);
 
+        // Optionally wire SemanticMemory when the caller requests memory-on mode.
+        let (mut agent, scenario_db) = if memory_mode == MemoryMode::On
+            && let Some(ref params) = self.memory_params
+        {
+            // One SQLite file per scenario gives strict isolation (NFR-001 choice (a)).
+            // This is more files than a per-run DB, but eliminates any cross-scenario
+            // memory bleed and avoids needing BenchIsolation::reset() between scenarios.
+            let scenario_db = params
+                .data_dir
+                .join(format!("bench-{}-{}.db", params.run_id, scenario.id));
+            debug_assert!(
+                scenario_db.to_string_lossy().contains("bench-"),
+                "NFR-001: bench SQLite path must be namespaced with 'bench-'"
+            );
+
+            tracing::debug!(
+                scenario_id = %scenario.id,
+                path = %scenario_db.display(),
+                "bench: memory init start"
+            );
+            let memory = Arc::new(
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    SemanticMemory::with_sqlite_backend(
+                        scenario_db.to_string_lossy().as_ref(),
+                        self.provider.clone(),
+                        &params.embedding_model,
+                        0.7,
+                        0.3,
+                    ),
+                )
+                .await
+                .map_err(|_| {
+                    BenchError::InvalidFormat(format!(
+                        "SemanticMemory init timed out for scenario '{}'",
+                        scenario.id
+                    ))
+                })?
+                .map_err(|e| BenchError::InvalidFormat(format!("SemanticMemory init: {e}")))?,
+            );
+            tracing::debug!(scenario_id = %scenario.id, "bench: memory init done");
+
+            // summarization_threshold = 100_000 deliberately suppresses LLM-driven
+            // compaction during bench runs. Compaction calls another LLM round-trip
+            // with non-deterministic timing/output, which would violate FR-003
+            // (deterministic runs). recall_limit = 20 is generous enough to surface
+            // long-context memory effects without silently capping LongMemEval scores
+            // below their theoretical maximum. history_limit = 200 covers the longest
+            // LongMemEval session without truncation.
+            let wired_agent =
+                base_agent.with_memory(memory, zeph_memory::ConversationId(1), 200, 20, 100_000);
+            (wired_agent, Some(scenario_db))
+        } else {
+            (base_agent, None)
+        };
+
         // Ignore agent errors — a failed LLM call still yields an empty response that
         // the evaluator scores as 0.0 rather than aborting the entire run.
         let _ = agent.run().await;
         let responses = agent.into_channel().into_responses();
+
+        // Best-effort cleanup: delete per-scenario SQLite file after the run.
+        // Failure is intentionally ignored — NFR-001 is hygiene, not correctness.
+        if let Some(ref db_path) = scenario_db {
+            let _ = std::fs::remove_file(db_path);
+        }
+
         let raw = responses
             .into_iter()
             .last()
@@ -324,6 +497,47 @@ mod tests {
         let opts = RunOptions::default();
         assert!(opts.scenario_filter.is_none());
         assert!(opts.completed_ids.is_empty());
+        assert_eq!(opts.memory_mode, MemoryMode::Off);
+    }
+
+    #[test]
+    fn memory_mode_default_is_off() {
+        assert_eq!(MemoryMode::default(), MemoryMode::Off);
+    }
+
+    #[test]
+    fn with_memory_params_sets_isolation() {
+        use zeph_llm::{any::AnyProvider, mock::MockProvider};
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![]));
+        let params = BenchMemoryParams {
+            data_dir: std::path::PathBuf::from("/tmp/bench-data"),
+            embedding_model: "nomic-embed-text".into(),
+            run_id: "bench-abc".into(),
+            dataset: "locomo".into(),
+        };
+        let runner = BenchRunner::new(provider, false).with_memory_params(params.clone());
+        assert!(runner.memory_params.is_some());
+        let stored = runner.memory_params.unwrap();
+        assert_eq!(stored.run_id, "bench-abc");
+        assert_eq!(stored.dataset, "locomo");
+    }
+
+    #[test]
+    fn nfr_001_sqlite_path_namespaced() {
+        let params = BenchMemoryParams {
+            data_dir: std::path::PathBuf::from("/tmp/bench-data"),
+            embedding_model: "nomic-embed-text".into(),
+            run_id: "run-xyz".into(),
+            dataset: "locomo".into(),
+        };
+        let scenario_id = "s1_0";
+        let scenario_db = params
+            .data_dir
+            .join(format!("bench-{}-{}.db", params.run_id, scenario_id));
+        assert!(
+            scenario_db.to_string_lossy().contains("bench-"),
+            "NFR-001: SQLite path must contain bench- prefix"
+        );
     }
 
     #[test]

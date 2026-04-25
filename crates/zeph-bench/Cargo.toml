@@ -17,9 +17,11 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
 zeph-config.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true
+zeph-memory.workspace = true
 zeph-skills.workspace = true
 zeph-tools.workspace = true
 

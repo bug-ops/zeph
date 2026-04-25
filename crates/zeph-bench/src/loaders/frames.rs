@@ -78,12 +78,12 @@ impl DatasetLoader for FramesLoader {
 
             let metadata = record.reasoning_types.unwrap_or(serde_json::Value::Null);
 
-            scenarios.push(Scenario {
-                id: format!("frames_{line_number}"),
-                prompt: record.prompt,
-                expected: record.answer,
+            scenarios.push(Scenario::single(
+                format!("frames_{line_number}"),
+                record.prompt,
+                record.answer,
                 metadata,
-            });
+            ));
         }
         Ok(scenarios)
     }
@@ -104,12 +104,7 @@ impl DatasetLoader for FramesLoader {
 /// use zeph_bench::{Scenario, loaders::FramesEvaluator};
 /// use zeph_bench::scenario::Evaluator;
 ///
-/// let scenario = Scenario {
-///     id: "frames_0".into(),
-///     prompt: "Capital of France?".into(),
-///     expected: "Paris".into(),
-///     metadata: serde_json::Value::Null,
-/// };
+/// let scenario = Scenario::single("frames_0", "Capital of France?", "Paris", serde_json::Value::Null);
 ///
 /// // Case-insensitive and punctuation-stripped.
 /// assert!(FramesEvaluator.evaluate(&scenario, "paris").passed);
@@ -162,7 +157,7 @@ mod tests {
     #[test]
     fn load_maps_prompt_and_expected() {
         let scenarios = load_from_str(FIXTURE);
-        assert_eq!(scenarios[0].prompt, "What is 2+2?");
+        assert_eq!(scenarios[0].primary_prompt().unwrap(), "What is 2+2?");
         assert_eq!(scenarios[0].expected, "4");
     }
 

@@ -10103,9 +10103,11 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "zeph-config",
  "zeph-core",
  "zeph-llm",
+ "zeph-memory",
  "zeph-skills",
  "zeph-tools",
 ]

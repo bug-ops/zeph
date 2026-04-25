@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-bench`: aggregate `median_score`, `stddev` (population), and `error_count` statistics on
+  `BenchRun.aggregate`; all three fields are persisted in `results.json` and included in
+  `summary.md`.
+- `zeph-bench`: multi-turn `Scenario` via `Vec<Turn>` with `Role::{User,Assistant}`; all built-in
+  loaders construct via the new `Scenario::single` constructor; `primary_prompt()` returns
+  `Result<&str, BenchError>` so malformed scenarios surface immediately.
+- `zeph-bench`: `--baseline` dual-run for memory-relevant datasets (`longmemeval`, `locomo`);
+  runs memory-off and memory-on passes sequentially, writes
+  `baseline/memory-{off,on}/results.json` and `baseline/comparison.json` reusing the existing
+  `baseline::BaselineComparison`; non-memory datasets (`gaia`, `frames`, `tau-bench`) reject
+  `--baseline` with a clear error.
+- `zeph-bench`: `MemoryMode::{Off,On}` and `BenchMemoryParams` on `BenchRunner`; memory-on pass
+  wires a `SQLite`-only `SemanticMemory` per scenario (no Qdrant), with
+  `summarization_threshold = 100_000` to preserve run determinism (FR-003).
+
 ### Fixed
 
 - `zeph-core`, `zeph-llm`: tool schema filter now receives the embedding provider instead of the
@@ -14,6 +31,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-llm`: `OllamaProvider::embed()` tracing span now records the actual embedding model name
   (`self.embedding_model`) instead of the chat model name (`self.model_identifier()`), making
   `llm.embed` spans in Perfetto/Jaeger unambiguous (fixes #3414).
+
+### Changed
+
+- `zeph-bench`: `Scenario.prompt: String` replaced by `turns: Vec<Turn>`; loaders construct via
+  `Scenario::single`; `runner::RunOptions` gains `memory_mode: MemoryMode` field (default `Off`).
+- `zeph-bench`: `ResultWriter::new` uses `create_dir_all` for nested output directories.
 
 ### Changed
 

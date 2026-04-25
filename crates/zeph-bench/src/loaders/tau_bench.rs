@@ -65,14 +65,16 @@ impl DatasetLoader for TauBenchLoader {
 
         let scenarios = tasks
             .into_iter()
-            .map(|t| Scenario {
-                id: t.task_id,
-                prompt: t.instruction,
-                expected: t.ground_truth,
-                metadata: serde_json::json!({
-                    "domain": t.domain,
-                    "expected_actions": t.expected_actions,
-                }),
+            .map(|t| {
+                Scenario::single(
+                    t.task_id,
+                    t.instruction,
+                    t.ground_truth,
+                    serde_json::json!({
+                        "domain": t.domain,
+                        "expected_actions": t.expected_actions,
+                    }),
+                )
             })
             .collect();
         Ok(scenarios)
@@ -91,12 +93,7 @@ impl DatasetLoader for TauBenchLoader {
 /// use zeph_bench::{Scenario, loaders::TauBenchEvaluator};
 /// use zeph_bench::scenario::Evaluator;
 ///
-/// let scenario = Scenario {
-///     id: "retail_001".into(),
-///     prompt: "Find a product".into(),
-///     expected: "found item XYZ".into(),
-///     metadata: serde_json::Value::Null,
-/// };
+/// let scenario = Scenario::single("retail_001", "Find a product", "found item XYZ", serde_json::Value::Null);
 ///
 /// let result = TauBenchEvaluator.evaluate(&scenario, "found item XYZ");
 /// assert!(result.passed);
@@ -160,7 +157,7 @@ mod tests {
     #[test]
     fn load_maps_prompt_and_expected() {
         let scenarios = load_from_str(FIXTURE);
-        assert_eq!(scenarios[0].prompt, "Find product X");
+        assert_eq!(scenarios[0].primary_prompt().unwrap(), "Find product X");
         assert_eq!(scenarios[0].expected, "Product X found");
     }
 

@@ -81,10 +81,15 @@ pub struct ScenarioResult {
 /// let agg = Aggregate {
 ///     total: 100,
 ///     mean_score: 0.72,
+///     median_score: 0.70,
+///     stddev: 0.15,
 ///     exact_match: 55,
+///     error_count: 3,
 ///     total_elapsed_ms: 240_000,
 /// };
 /// assert_eq!(agg.total, 100);
+/// assert_eq!(agg.error_count, 3);
+/// assert!((agg.median_score - 0.70).abs() < f64::EPSILON);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Aggregate {
@@ -92,8 +97,23 @@ pub struct Aggregate {
     pub total: usize,
     /// Arithmetic mean of all per-scenario scores.
     pub mean_score: f64,
+    /// Median per-scenario score.
+    ///
+    /// For an even number of results, the median is the average of the two middle values.
+    /// Returns `0.0` when `total == 0`.
+    pub median_score: f64,
+    /// Population standard deviation of per-scenario scores (divide by N).
+    ///
+    /// The scenario set is treated as the full population of interest, not a sample.
+    /// Returns `0.0` when `total <= 1`.
+    pub stddev: f64,
     /// Count of scenarios where `score >= 1.0` (exact match).
     pub exact_match: usize,
+    /// Count of scenarios where `score == 0.0` and `error` is `Some(_)`.
+    ///
+    /// A non-zero value indicates the agent failed to produce a response (e.g. timeout,
+    /// LLM API error) rather than simply giving the wrong answer.
+    pub error_count: usize,
     /// Sum of [`ScenarioResult::elapsed_ms`] across all scenarios.
     pub total_elapsed_ms: u64,
 }
@@ -178,21 +198,54 @@ impl BenchRun {
     /// assert_eq!(run.aggregate.total, 1);
     /// assert!((run.aggregate.mean_score - 1.0).abs() < f64::EPSILON);
     /// assert_eq!(run.aggregate.exact_match, 1);
+    /// assert_eq!(run.aggregate.error_count, 0);
     /// ```
     pub fn recompute_aggregate(&mut self) {
         let total = self.results.len();
+
+        if total == 0 {
+            self.aggregate = Aggregate::default();
+            return;
+        }
+
         #[allow(clippy::cast_precision_loss)]
-        let mean_score = if total == 0 {
-            0.0
+        let mean_score = self.results.iter().map(|r| r.score).sum::<f64>() / total as f64;
+
+        // Median: sort scores, average the two middle values for even N.
+        let mut sorted_scores: Vec<f64> = self.results.iter().map(|r| r.score).collect();
+        sorted_scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        #[allow(clippy::cast_precision_loss)]
+        let median_score = if total % 2 == 1 {
+            sorted_scores[total / 2]
         } else {
-            self.results.iter().map(|r| r.score).sum::<f64>() / total as f64
+            f64::midpoint(sorted_scores[total / 2 - 1], sorted_scores[total / 2])
         };
+
+        // Population standard deviation (divide by N).
+        #[allow(clippy::cast_precision_loss)]
+        let variance = self
+            .results
+            .iter()
+            .map(|r| (r.score - mean_score).powi(2))
+            .sum::<f64>()
+            / total as f64;
+        let stddev = variance.sqrt();
+
         let exact_match = self.results.iter().filter(|r| r.score >= 1.0).count();
+        let error_count = self
+            .results
+            .iter()
+            .filter(|r| r.score == 0.0 && r.error.is_some())
+            .count();
         let total_elapsed_ms = self.results.iter().map(|r| r.elapsed_ms).sum();
+
         self.aggregate = Aggregate {
             total,
             mean_score,
+            median_score,
+            stddev,
             exact_match,
+            error_count,
             total_elapsed_ms,
         };
     }
@@ -350,8 +403,13 @@ impl ResultWriter {
         }
         let _ = writeln!(
             md,
-            "- **Mean score**: {:.4} ({}/{} exact)\n",
-            run.aggregate.mean_score, run.aggregate.exact_match, run.aggregate.total
+            "- **Mean score**: {:.4} (median: {:.4}, stddev: {:.4})\n",
+            run.aggregate.mean_score, run.aggregate.median_score, run.aggregate.stddev
+        );
+        let _ = writeln!(
+            md,
+            "- **Exact match**: {}/{} | **Errors**: {}\n",
+            run.aggregate.exact_match, run.aggregate.total, run.aggregate.error_count
         );
 
         md.push_str("| scenario_id | score | response_excerpt | error |\n");
@@ -417,8 +475,54 @@ mod tests {
         run.recompute_aggregate();
         assert_eq!(run.aggregate.total, 2);
         assert!((run.aggregate.mean_score - 0.5).abs() < f64::EPSILON);
+        // median for [0.0, 1.0] sorted = average of middle two = 0.5
+        assert!((run.aggregate.median_score - 0.5).abs() < f64::EPSILON);
+        // population stddev: mean=0.5, variance=((1.0-0.5)^2+(0.0-0.5)^2)/2 = 0.25, stddev=0.5
+        assert!((run.aggregate.stddev - 0.5).abs() < f64::EPSILON);
         assert_eq!(run.aggregate.exact_match, 1);
+        // s2 has score=0.0 and error=Some("timeout")
+        assert_eq!(run.aggregate.error_count, 1);
         assert_eq!(run.aggregate.total_elapsed_ms, 6000);
+    }
+
+    #[test]
+    fn recompute_aggregate_single_result() {
+        let mut run = make_run();
+        run.results.retain(|r| r.scenario_id == "s1");
+        run.recompute_aggregate();
+        assert_eq!(run.aggregate.total, 1);
+        assert!((run.aggregate.mean_score - 1.0).abs() < f64::EPSILON);
+        assert!((run.aggregate.median_score - 1.0).abs() < f64::EPSILON);
+        assert!(run.aggregate.stddev.abs() < f64::EPSILON);
+        assert_eq!(run.aggregate.error_count, 0);
+    }
+
+    #[test]
+    fn recompute_aggregate_empty_results() {
+        let mut run = make_run();
+        run.results.clear();
+        run.recompute_aggregate();
+        assert_eq!(run.aggregate.total, 0);
+        assert!(run.aggregate.mean_score.abs() < f64::EPSILON);
+        assert!(run.aggregate.median_score.abs() < f64::EPSILON);
+        assert!(run.aggregate.stddev.abs() < f64::EPSILON);
+        assert_eq!(run.aggregate.error_count, 0);
+    }
+
+    #[test]
+    fn recompute_aggregate_error_count_only_zero_score_with_error() {
+        let mut run = make_run();
+        // Add a scenario with score=0.0 but no error — should NOT count as error
+        run.results.push(ScenarioResult {
+            scenario_id: "s3".into(),
+            score: 0.0,
+            response_excerpt: "wrong answer".into(),
+            error: None,
+            elapsed_ms: 100,
+        });
+        run.recompute_aggregate();
+        // s2 has error, s3 does not — error_count should be 1
+        assert_eq!(run.aggregate.error_count, 1);
     }
 
     #[test]

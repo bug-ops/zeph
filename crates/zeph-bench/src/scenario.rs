@@ -5,37 +5,139 @@ use std::path::Path;
 
 use crate::error::BenchError;
 
+/// Role of a turn in a multi-turn scenario conversation.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::scenario::Role;
+///
+/// assert!(matches!(Role::User, Role::User));
+/// assert!(matches!(Role::Assistant, Role::Assistant));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Role {
+    /// A message from the human user.
+    User,
+    /// A message from the AI assistant.
+    Assistant,
+}
+
+/// One turn in a multi-turn scenario conversation.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_bench::scenario::{Role, Turn};
+///
+/// let turn = Turn { role: Role::User, content: "What is the capital of France?".into() };
+/// assert!(matches!(turn.role, Role::User));
+/// ```
+#[derive(Debug, Clone)]
+pub struct Turn {
+    /// Who authored this turn.
+    pub role: Role,
+    /// Text content of the turn.
+    pub content: String,
+}
+
 /// A single benchmark scenario loaded from a dataset file.
 ///
 /// Each scenario represents one question/task that will be presented to the agent.
 /// The `id` field is used to correlate agent responses with ground-truth answers and
 /// to skip already-completed scenarios during a `--resume` run.
 ///
+/// Construct via [`Scenario::single`] for single-turn scenarios (all built-in loaders),
+/// or push [`Turn`]s directly into [`Scenario::turns`] for multi-turn scenarios.
+///
 /// # Examples
 ///
 /// ```
 /// use zeph_bench::Scenario;
 ///
-/// let scenario = Scenario {
-///     id: "gaia_t42".into(),
-///     prompt: "What is the boiling point of water in Celsius?".into(),
-///     expected: "100".into(),
-///     metadata: serde_json::json!({"level": 1}),
-/// };
+/// let scenario = Scenario::single(
+///     "gaia_t42",
+///     "What is the boiling point of water in Celsius?",
+///     "100",
+///     serde_json::json!({"level": 1}),
+/// );
 /// assert_eq!(scenario.id, "gaia_t42");
+/// assert_eq!(scenario.primary_prompt().unwrap(), "What is the boiling point of water in Celsius?");
 /// ```
 #[derive(Debug, Clone)]
 pub struct Scenario {
     /// Unique identifier within the dataset (e.g. `"frames_0"`, `"s1_2"`).
     pub id: String,
-    /// The question or task text fed verbatim to the agent.
-    pub prompt: String,
+    /// Ordered turns in this scenario. Non-empty by contract of [`Scenario::single`].
+    ///
+    /// Direct construction is allowed for multi-turn scenarios; callers must ensure
+    /// at least one [`Role::User`] turn is present before calling [`Scenario::primary_prompt`].
+    pub turns: Vec<Turn>,
     /// The gold-standard answer used for scoring.
     pub expected: String,
     /// Dataset-specific extras such as difficulty level or `reasoning_types`.
     ///
     /// Set to [`serde_json::Value::Null`] when the dataset has no extra metadata.
     pub metadata: serde_json::Value,
+}
+
+impl Scenario {
+    /// Convenience constructor for single-turn scenarios.
+    ///
+    /// Wraps `prompt` in a one-element [`Vec<Turn>`] with [`Role::User`]. All built-in
+    /// dataset loaders use this constructor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_bench::Scenario;
+    ///
+    /// let s = Scenario::single("id1", "What year?", "2026", serde_json::Value::Null);
+    /// assert_eq!(s.primary_prompt().unwrap(), "What year?");
+    /// ```
+    #[must_use]
+    pub fn single(
+        id: impl Into<String>,
+        prompt: impl Into<String>,
+        expected: impl Into<String>,
+        metadata: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            turns: vec![Turn {
+                role: Role::User,
+                content: prompt.into(),
+            }],
+            expected: expected.into(),
+            metadata,
+        }
+    }
+
+    /// Returns the content of the first [`Role::User`] turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BenchError::InvalidFormat`] when `turns` is empty or contains no
+    /// [`Role::User`] entry. Loaders must construct via [`Scenario::single`] or push
+    /// at least one user turn.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_bench::Scenario;
+    ///
+    /// let s = Scenario::single("id1", "hello", "world", serde_json::Value::Null);
+    /// assert_eq!(s.primary_prompt().unwrap(), "hello");
+    /// ```
+    pub fn primary_prompt(&self) -> Result<&str, BenchError> {
+        self.turns
+            .iter()
+            .find(|t| matches!(t.role, Role::User))
+            .map(|t| t.content.as_str())
+            .ok_or_else(|| {
+                BenchError::InvalidFormat(format!("scenario '{}' has no user turn", self.id))
+            })
+    }
 }
 
 /// Result of evaluating one agent response against the expected answer.
@@ -324,5 +426,62 @@ mod tests {
     fn gaia_normalized_subscript_digits_match_ascii() {
         // Model may respond with Unicode subscript "H₂O" — must match ASCII "H2O".
         assert!(gaia_normalized_exact_match("H\u{2082}O", "H2O"));
+    }
+
+    #[test]
+    fn single_constructs_one_user_turn() {
+        let s = Scenario::single("id1", "hello", "world", serde_json::Value::Null);
+        assert_eq!(s.turns.len(), 1);
+        assert!(matches!(s.turns[0].role, Role::User));
+        assert_eq!(s.turns[0].content, "hello");
+        assert_eq!(s.expected, "world");
+    }
+
+    #[test]
+    fn primary_prompt_returns_first_user_turn_content() {
+        let s = Scenario::single("id1", "What year?", "2026", serde_json::Value::Null);
+        assert_eq!(s.primary_prompt().unwrap(), "What year?");
+    }
+
+    #[test]
+    fn primary_prompt_skips_leading_assistant_turns() {
+        let s = Scenario {
+            id: "id2".into(),
+            turns: vec![
+                Turn {
+                    role: Role::Assistant,
+                    content: "I am ready.".into(),
+                },
+                Turn {
+                    role: Role::User,
+                    content: "What is Rust?".into(),
+                },
+            ],
+            expected: "A systems language".into(),
+            metadata: serde_json::Value::Null,
+        };
+        assert_eq!(s.primary_prompt().unwrap(), "What is Rust?");
+    }
+
+    #[test]
+    fn primary_prompt_errors_when_no_user_turn() {
+        let s = Scenario {
+            id: "id3".into(),
+            turns: vec![Turn {
+                role: Role::Assistant,
+                content: "assistant only".into(),
+            }],
+            expected: String::new(),
+            metadata: serde_json::Value::Null,
+        };
+        assert!(s.primary_prompt().is_err());
+
+        let empty = Scenario {
+            id: "id4".into(),
+            turns: vec![],
+            expected: String::new(),
+            metadata: serde_json::Value::Null,
+        };
+        assert!(empty.primary_prompt().is_err());
     }
 }
