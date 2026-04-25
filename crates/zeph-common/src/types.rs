@@ -3,11 +3,13 @@
 
 //! Strongly-typed identifiers and shared tool types across `zeph-*` crates.
 //!
-//! This module defines `ToolName`, `SessionId`, and `ToolDefinition` — types shared
-//! by multiple crates without creating cross-crate dependencies.
+//! This module defines `ToolName`, `ProviderName`, `SkillName`, `SessionId`, and
+//! `ToolDefinition` — types shared by multiple crates without creating cross-crate
+//! dependencies.
 //!
-//! `ToolName` and `SessionId` use `#[serde(transparent)]` for zero-cost serialization
-//! compatibility: the JSON wire format is unchanged relative to plain `String` fields.
+//! `ToolName`, `ProviderName`, `SkillName`, and `SessionId` use `#[serde(transparent)]`
+//! for zero-cost serialization compatibility: the JSON wire format is unchanged relative
+//! to plain `String` fields.
 
 use std::borrow::Borrow;
 use std::fmt;
@@ -170,6 +172,297 @@ impl PartialEq<ToolName> for str {
 
 impl PartialEq<ToolName> for String {
     fn eq(&self, other: &ToolName) -> bool {
+        self.as_str() == other.0.as_ref()
+    }
+}
+
+// ── ProviderName ─────────────────────────────────────────────────────────────
+
+/// Strongly-typed LLM provider name.
+///
+/// `ProviderName` identifies a configured provider by its name field (e.g., `"fast"`,
+/// `"quality"`, `"ollama-local"`). Names come from `[[llm.providers]] name = "…"` in the
+/// TOML config; subsystems reference providers by this name via `*_provider` fields.
+///
+/// # Inner type: `Arc<str>`
+///
+/// The inner type is `Arc<str>`. Provider names are cloned widely across subsystem config
+/// structs, metric labels, and log spans. `Arc<str>` makes all clones O(1).
+///
+/// # No `Deref<Target=str>`
+///
+/// `ProviderName` does **not** implement `Deref<Target=str>`. Use `.as_str()` for explicit
+/// string conversion and `.clone()` to duplicate.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::ProviderName;
+///
+/// let name = ProviderName::new("fast");
+/// assert_eq!(name.as_str(), "fast");
+/// assert_eq!(name, "fast");
+///
+/// // Clone is O(1) — Arc reference count increment only.
+/// let name2 = name.clone();
+/// assert_eq!(name, name2);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProviderName(Arc<str>);
+
+impl ProviderName {
+    /// Construct a `ProviderName` from any value convertible to `Arc<str>`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::ProviderName;
+    ///
+    /// let name = ProviderName::new("quality");
+    /// assert_eq!(name.as_str(), "quality");
+    /// ```
+    #[must_use]
+    pub fn new(s: impl Into<Arc<str>>) -> Self {
+        Self(s.into())
+    }
+
+    /// Return the inner string slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::ProviderName;
+    ///
+    /// let name = ProviderName::new("ollama-local");
+    /// assert_eq!(name.as_str(), "ollama-local");
+    /// ```
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for ProviderName {
+    /// Returns an empty `ProviderName`.
+    ///
+    /// Exists solely for `#[serde(default)]` on optional fields. Do not use in
+    /// application code — an empty name will fail provider lookup.
+    fn default() -> Self {
+        Self(Arc::from(""))
+    }
+}
+
+impl fmt::Display for ProviderName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for ProviderName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for ProviderName {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for ProviderName {
+    fn from(s: &str) -> Self {
+        Self(Arc::from(s))
+    }
+}
+
+impl From<String> for ProviderName {
+    fn from(s: String) -> Self {
+        Self(Arc::from(s.as_str()))
+    }
+}
+
+impl FromStr for ProviderName {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from(s))
+    }
+}
+
+impl PartialEq<str> for ProviderName {
+    fn eq(&self, other: &str) -> bool {
+        self.0.as_ref() == other
+    }
+}
+
+impl PartialEq<&str> for ProviderName {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.as_ref() == *other
+    }
+}
+
+impl PartialEq<String> for ProviderName {
+    fn eq(&self, other: &String) -> bool {
+        self.0.as_ref() == other.as_str()
+    }
+}
+
+impl PartialEq<ProviderName> for str {
+    fn eq(&self, other: &ProviderName) -> bool {
+        self == other.0.as_ref()
+    }
+}
+
+impl PartialEq<ProviderName> for String {
+    fn eq(&self, other: &ProviderName) -> bool {
+        self.as_str() == other.0.as_ref()
+    }
+}
+
+// ── SkillName ────────────────────────────────────────────────────────────────
+
+/// Strongly-typed skill name identifier.
+///
+/// `SkillName` identifies a skill by its canonical name (e.g., `"rust-agents"`,
+/// `"readme-generator"`). Names come from `SKILL.md` frontmatter `name:` fields and
+/// are used at match time, invocation routing, and telemetry.
+///
+/// # Inner type: `Arc<str>`
+///
+/// The inner type is `Arc<str>`. Skill names are referenced from multiple subsystems
+/// (registry, matcher, invoker, TUI) during a single agent turn. `Arc<str>` makes all
+/// clones O(1).
+///
+/// # No `Deref<Target=str>`
+///
+/// `SkillName` does **not** implement `Deref<Target=str>`. Use `.as_str()` for explicit
+/// string conversion and `.clone()` to duplicate.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::SkillName;
+///
+/// let name = SkillName::new("rust-agents");
+/// assert_eq!(name.as_str(), "rust-agents");
+/// assert_eq!(name, "rust-agents");
+///
+/// // Clone is O(1) — Arc reference count increment only.
+/// let name2 = name.clone();
+/// assert_eq!(name, name2);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SkillName(Arc<str>);
+
+impl SkillName {
+    /// Construct a `SkillName` from any value convertible to `Arc<str>`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::SkillName;
+    ///
+    /// let name = SkillName::new("readme-generator");
+    /// assert_eq!(name.as_str(), "readme-generator");
+    /// ```
+    #[must_use]
+    pub fn new(s: impl Into<Arc<str>>) -> Self {
+        Self(s.into())
+    }
+
+    /// Return the inner string slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::SkillName;
+    ///
+    /// let name = SkillName::new("rust-agents");
+    /// assert_eq!(name.as_str(), "rust-agents");
+    /// ```
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for SkillName {
+    /// Returns an empty `SkillName`.
+    ///
+    /// Exists solely for `#[serde(default)]` on optional fields. Do not use in
+    /// application code — an empty name will fail skill lookup.
+    fn default() -> Self {
+        Self(Arc::from(""))
+    }
+}
+
+impl fmt::Display for SkillName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for SkillName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for SkillName {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for SkillName {
+    fn from(s: &str) -> Self {
+        Self(Arc::from(s))
+    }
+}
+
+impl From<String> for SkillName {
+    fn from(s: String) -> Self {
+        Self(Arc::from(s.as_str()))
+    }
+}
+
+impl FromStr for SkillName {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from(s))
+    }
+}
+
+impl PartialEq<str> for SkillName {
+    fn eq(&self, other: &str) -> bool {
+        self.0.as_ref() == other
+    }
+}
+
+impl PartialEq<&str> for SkillName {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.as_ref() == *other
+    }
+}
+
+impl PartialEq<String> for SkillName {
+    fn eq(&self, other: &String) -> bool {
+        self.0.as_ref() == other.as_str()
+    }
+}
+
+impl PartialEq<SkillName> for str {
+    fn eq(&self, other: &SkillName) -> bool {
+        self == other.0.as_ref()
+    }
+}
+
+impl PartialEq<SkillName> for String {
+    fn eq(&self, other: &SkillName) -> bool {
         self.as_str() == other.0.as_ref()
     }
 }
@@ -501,5 +794,101 @@ mod tests {
     fn session_id_from_str_parses() {
         let id: SessionId = "my-session".parse().unwrap();
         assert_eq!(id.as_str(), "my-session");
+    }
+
+    #[test]
+    fn provider_name_construction_and_equality() {
+        let name = ProviderName::new("fast");
+        assert_eq!(name.as_str(), "fast");
+        assert_eq!(name, "fast");
+        assert_eq!(name, "fast".to_owned());
+    }
+
+    #[test]
+    fn provider_name_clone_is_cheap() {
+        let name = ProviderName::new("quality");
+        let name2 = name.clone();
+        assert_eq!(name, name2);
+        assert!(Arc::ptr_eq(&name.0, &name2.0));
+    }
+
+    #[test]
+    fn provider_name_from_impls() {
+        let from_str: ProviderName = ProviderName::from("fast");
+        let from_string: ProviderName = ProviderName::from("fast".to_owned());
+        let parsed: ProviderName = "fast".parse().unwrap();
+        assert_eq!(from_str, from_string);
+        assert_eq!(from_str, parsed);
+    }
+
+    #[test]
+    fn provider_name_as_hashmap_key() {
+        use std::collections::HashMap;
+        let mut map: HashMap<ProviderName, u32> = HashMap::new();
+        map.insert(ProviderName::new("fast"), 1);
+        assert_eq!(map.get("fast"), Some(&1));
+    }
+
+    #[test]
+    fn provider_name_display() {
+        let name = ProviderName::new("ollama-local");
+        assert_eq!(format!("{name}"), "ollama-local");
+    }
+
+    #[test]
+    fn provider_name_serde_transparent() {
+        let name = ProviderName::new("quality");
+        let json = serde_json::to_string(&name).unwrap();
+        assert_eq!(json, r#""quality""#);
+        let back: ProviderName = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, name);
+    }
+
+    #[test]
+    fn skill_name_construction_and_equality() {
+        let name = SkillName::new("rust-agents");
+        assert_eq!(name.as_str(), "rust-agents");
+        assert_eq!(name, "rust-agents");
+        assert_eq!(name, "rust-agents".to_owned());
+    }
+
+    #[test]
+    fn skill_name_clone_is_cheap() {
+        let name = SkillName::new("readme-generator");
+        let name2 = name.clone();
+        assert_eq!(name, name2);
+        assert!(Arc::ptr_eq(&name.0, &name2.0));
+    }
+
+    #[test]
+    fn skill_name_from_impls() {
+        let from_str: SkillName = SkillName::from("rust-agents");
+        let from_string: SkillName = SkillName::from("rust-agents".to_owned());
+        let parsed: SkillName = "rust-agents".parse().unwrap();
+        assert_eq!(from_str, from_string);
+        assert_eq!(from_str, parsed);
+    }
+
+    #[test]
+    fn skill_name_as_hashmap_key() {
+        use std::collections::HashMap;
+        let mut map: HashMap<SkillName, u32> = HashMap::new();
+        map.insert(SkillName::new("rust-agents"), 1);
+        assert_eq!(map.get("rust-agents"), Some(&1));
+    }
+
+    #[test]
+    fn skill_name_display() {
+        let name = SkillName::new("readme-generator");
+        assert_eq!(format!("{name}"), "readme-generator");
+    }
+
+    #[test]
+    fn skill_name_serde_transparent() {
+        let name = SkillName::new("rust-agents");
+        let json = serde_json::to_string(&name).unwrap();
+        assert_eq!(json, r#""rust-agents""#);
+        let back: SkillName = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, name);
     }
 }

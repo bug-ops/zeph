@@ -501,7 +501,7 @@ async fn build_acp_deps(
         embedding_provider,
         registry,
         matcher,
-        max_active_skills: config.skills.max_active_skills,
+        max_active_skills: config.skills.max_active_skills.get(),
         tool_executor,
         skill_paths,
         skill_reload_tx,

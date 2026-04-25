@@ -379,7 +379,7 @@ impl TelegramChannel {
                         .send_message(chat_id, chunk)
                         .parse_mode(ParseMode::MarkdownV2)
                         .await
-                        .map_err(ChannelError::other)?;
+                        .map_err(ChannelError::telegram)?;
                     self.message_id = Some(msg.id);
                     tracing::debug!("new message sent with id: {:?}", msg.id);
                 }
@@ -416,10 +416,10 @@ impl TelegramChannel {
                                 .send_message(chat_id, &formatted_text)
                                 .parse_mode(ParseMode::MarkdownV2)
                                 .await
-                                .map_err(ChannelError::other)?;
+                                .map_err(ChannelError::telegram)?;
                             self.message_id = Some(msg.id);
                         } else {
-                            return Err(ChannelError::other(e));
+                            return Err(ChannelError::telegram(e));
                         }
                     } else {
                         tracing::debug!("message edited successfully");
@@ -448,7 +448,7 @@ impl TelegramChannel {
                             .send_message(chat_id, chunk)
                             .parse_mode(ParseMode::MarkdownV2)
                             .await
-                            .map_err(ChannelError::other)?;
+                            .map_err(ChannelError::telegram)?;
                         self.message_id = Some(msg.id);
                         tracing::debug!("overflow chunk sent with id: {:?}", msg.id);
                     }
@@ -571,7 +571,7 @@ impl Channel for TelegramChannel {
     ///
     /// Returns `Err(ChannelError::NoActiveSession)` if no active chat has been
     /// established yet (i.e. `recv` has never returned a message), or
-    /// `Err(ChannelError::Other)` if the Telegram API call fails.
+    /// `Err(ChannelError::Telegram)` if the Telegram API call fails.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "channel.telegram.send", skip_all, fields(msg_len = %text.len()))
@@ -593,7 +593,7 @@ impl Channel for TelegramChannel {
                 .send_message(chat_id, &formatted_text)
                 .parse_mode(ParseMode::MarkdownV2)
                 .await
-                .map_err(ChannelError::other)?;
+                .map_err(ChannelError::telegram)?;
         } else {
             let chunks = crate::markdown::utf8_chunks(&formatted_text, MAX_MESSAGE_LEN);
             for chunk in chunks {
@@ -601,7 +601,7 @@ impl Channel for TelegramChannel {
                     .send_message(chat_id, chunk)
                     .parse_mode(ParseMode::MarkdownV2)
                     .await
-                    .map_err(ChannelError::other)?;
+                    .map_err(ChannelError::telegram)?;
             }
         }
 
@@ -683,7 +683,7 @@ impl Channel for TelegramChannel {
         self.bot
             .send_chat_action(chat_id, ChatAction::Typing)
             .await
-            .map_err(ChannelError::other)?;
+            .map_err(ChannelError::telegram)?;
         Ok(())
     }
 

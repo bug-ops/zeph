@@ -33,7 +33,7 @@ pub const OVERFLOW_NOTICE_PREFIX: &str = "[full output stored \u{2014} ID: ";
 pub use policy::{PolicyLlmClient, PolicyMessage, PolicyRole};
 pub use spawner::BlockingSpawner;
 pub use trust_level::SkillTrustLevel;
-pub use types::{SessionId, ToolDefinition, ToolName};
+pub use types::{ProviderName, SessionId, SkillName, ToolDefinition, ToolName};
 
 #[cfg(feature = "treesitter")]
 pub mod treesitter;

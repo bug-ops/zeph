@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+// TODO(critic): remove async_trait once rmcp drops the #[async_trait] macro from CredentialStore.
+// As of rmcp 1.5, CredentialStore is still defined with #[async_trait], requiring implementors to do the same.
 use async_trait::async_trait;
 use dashmap::DashMap;
 use http::{HeaderName, HeaderValue};

@@ -470,7 +470,7 @@ pub(crate) async fn run_daemon(
             loopback_channel,
             registry,
             matcher,
-            config.skills.max_active_skills,
+            config.skills.max_active_skills.get(),
             tool_executor,
         )
         .apply_session_config(session_config)

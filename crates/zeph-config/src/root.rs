@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 
 use serde::{Deserialize, Serialize};
 use zeph_common::secret::Secret;
@@ -180,7 +181,7 @@ impl Default for Config {
             },
             skills: SkillsConfig {
                 paths: default_skill_paths(),
-                max_active_skills: 5,
+                max_active_skills: NonZeroUsize::new(5).expect("5 is non-zero"),
                 disambiguation_threshold: 0.20,
                 min_injection_score: 0.20,
                 cosine_weight: 0.7,

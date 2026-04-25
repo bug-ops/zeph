@@ -190,7 +190,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                 mgr.release_reservation(reserved);
             }
-            error::AgentError::OrchestrationError(e.to_string())
+            error::OrchestrationFailure::SchedulerInit(e.to_string())
         })?;
 
         let provider_names: Vec<&str> = self
@@ -205,7 +205,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                 if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
                     mgr.release_reservation(reserved);
                 }
-                error::AgentError::OrchestrationError(e.to_string())
+                error::OrchestrationFailure::VerifyConfig(e.to_string())
             })?;
 
         Ok((scheduler, reserved))
@@ -707,7 +707,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     .plan_with_hint(goal, &available_agents, topology_hint)
                     .await
             };
-            result.map_err(|e| error::AgentError::OrchestrationError(e.to_string()))?
+            result.map_err(|e| error::OrchestrationFailure::PlannerError(e.to_string()))?
         };
 
         self.orchestration.pending_goal_embedding = goal_embedding;
@@ -979,7 +979,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .count();
 
         dag::reset_for_retry(&mut graph)
-            .map_err(|e| error::AgentError::OrchestrationError(e.to_string()))?;
+            .map_err(|e| error::OrchestrationFailure::RetryReset(e.to_string()))?;
 
         for task in &mut graph.tasks {
             if task.status == zeph_orchestration::TaskStatus::Running {

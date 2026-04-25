@@ -73,7 +73,6 @@ zeph-tools.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]
-async-trait = { workspace = true }
 axum = { workspace = true, features = ["ws"] }
 tempfile.workspace = true
 tokio-tungstenite = { workspace = true, features = ["connect"] }

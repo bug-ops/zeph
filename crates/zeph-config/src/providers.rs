@@ -10,6 +10,14 @@ use zeph_llm::{CacheTtl, GeminiThinkingLevel, ThinkingConfig};
 ///
 /// Using a dedicated type instead of bare `String` makes provider cross-references
 /// explicit in the type system and enables validation at config load time.
+///
+/// # Note
+///
+/// `zeph-common` now defines a canonical `ProviderName(Arc<str>)` newtype. This
+/// config-local type uses `String` and exists for backward compat within `zeph-config`.
+///
+/// TODO(critic): migrate to `zeph_common::ProviderName` once `zeph-config` → `zeph-common`
+/// dependency inversion (A-1) lands.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ProviderName(String);

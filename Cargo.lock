@@ -10057,7 +10057,6 @@ dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-tokio",
  "async-stream",
- "async-trait",
  "axum 0.8.9",
  "base64 0.22.1",
  "blake3",

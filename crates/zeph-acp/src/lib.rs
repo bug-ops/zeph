@@ -68,6 +68,8 @@
 //! # }
 //! ```
 
+// TODO(critic): A-4 — evaluate channel-adapter collapse after spec 013 amendment for Send/!Send agent variant.
+
 pub mod agent;
 pub mod client;
 pub(crate) mod custom;

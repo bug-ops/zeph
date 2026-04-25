@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::num::NonZeroUsize;
+
 use crate::providers::{ProviderEntry, SttConfig, default_stt_language, default_stt_provider};
 use crate::root::Config;
 
@@ -114,8 +116,9 @@ impl Config {
     fn apply_env_overrides_core_1b(&mut self) {
         if let Ok(v) = std::env::var("ZEPH_SKILLS_MAX_ACTIVE")
             && let Ok(n) = v.parse::<usize>()
+            && let Some(nz) = NonZeroUsize::new(n)
         {
-            self.skills.max_active_skills = n;
+            self.skills.max_active_skills = nz;
         }
         if let Ok(v) = std::env::var("ZEPH_SKILLS_LEARNING_ENABLED")
             && let Ok(enabled) = v.parse::<bool>()

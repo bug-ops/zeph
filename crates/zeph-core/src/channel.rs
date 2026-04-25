@@ -136,13 +136,34 @@ pub enum ChannelError {
     #[error("no active session")]
     NoActiveSession,
 
-    /// Catch-all for third-party API errors (Telegram, Discord, Slack, etc.)
-    /// that do not map to a more specific variant.
+    /// A Telegram Bot API request failed.
+    ///
+    /// Wraps the teloxide `RequestError` as a string to avoid a direct
+    /// `teloxide` dependency in `zeph-core`. The `zeph-channels` adapter
+    /// constructs this variant before returning `ChannelError` to the agent.
+    #[error("telegram error: {0}")]
+    Telegram(String),
+
+    /// Catch-all for third-party API errors that do not map to a more specific variant.
     #[error("{0}")]
     Other(String),
 }
 
 impl ChannelError {
+    /// Create a `Telegram` error from any displayable teloxide error.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use zeph_core::channel::ChannelError;
+    ///
+    /// let err = ChannelError::telegram(teloxide_err);
+    /// assert!(matches!(err, ChannelError::Telegram(_)));
+    /// ```
+    pub fn telegram(e: impl std::fmt::Display) -> Self {
+        Self::Telegram(e.to_string())
+    }
+
     /// Create a catch-all error from any displayable error.
     ///
     /// Converts the error message to a string and wraps it in the `Other` variant.

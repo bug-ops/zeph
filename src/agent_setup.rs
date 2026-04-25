@@ -1505,7 +1505,7 @@ mod tests {
             CliChannel::new(),
             registry,
             None,
-            config.skills.max_active_skills,
+            config.skills.max_active_skills.get(),
             NoopExec,
         )
     }

@@ -64,6 +64,8 @@
 //! std::fs::write("config.toml", &result.output).unwrap();
 //! ```
 
+// TODO(critic): post-v1.0 — re-evaluate ConfigSection derive macro for the 131 config structs.
+
 pub mod agent;
 pub mod channels;
 pub mod classifiers;

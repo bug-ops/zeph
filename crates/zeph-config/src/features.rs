@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::num::NonZeroUsize;
+
 use serde::{Deserialize, Serialize};
 
 use crate::defaults::{default_skill_paths, default_true};
@@ -40,8 +42,8 @@ fn default_hybrid_search() -> bool {
     true
 }
 
-fn default_max_active_skills() -> usize {
-    5
+fn default_max_active_skills() -> NonZeroUsize {
+    NonZeroUsize::new(5).expect("5 is non-zero")
 }
 
 fn default_index_watch() -> bool {
@@ -232,7 +234,7 @@ pub struct SkillsConfig {
     #[serde(default = "default_skill_paths")]
     pub paths: Vec<String>,
     #[serde(default = "default_max_active_skills")]
-    pub max_active_skills: usize,
+    pub max_active_skills: NonZeroUsize,
     #[serde(default = "default_disambiguation_threshold")]
     pub disambiguation_threshold: f32,
     #[serde(default = "default_min_injection_score")]

@@ -2671,7 +2671,7 @@ impl<C: Channel> Agent<C> {
         self.memory_state.persistence.recall_limit = config.memory.semantic.recall_limit;
         self.memory_state.compaction.summarization_threshold =
             config.memory.summarization_threshold;
-        self.skill_state.max_active_skills = config.skills.max_active_skills;
+        self.skill_state.max_active_skills = config.skills.max_active_skills.get();
         self.skill_state.disambiguation_threshold = config.skills.disambiguation_threshold;
         self.skill_state.min_injection_score = config.skills.min_injection_score;
         self.skill_state.cosine_weight = config.skills.cosine_weight.clamp(0.0, 1.0);

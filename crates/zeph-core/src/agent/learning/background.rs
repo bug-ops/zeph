@@ -31,9 +31,9 @@ pub(super) async fn write_skill_file(
     body: &str,
 ) -> Result<(), super::super::error::AgentError> {
     if skill_name.contains('/') || skill_name.contains('\\') || skill_name.contains("..") {
-        return Err(super::super::error::AgentError::SkillOperation(format!(
-            "invalid skill name: {skill_name}"
-        )));
+        return Err(
+            super::super::error::SkillOperationFailure::InvalidName(skill_name.to_owned()).into(),
+        );
     }
     for base in skill_paths {
         let skill_dir = base.join(skill_name);
@@ -45,9 +45,7 @@ pub(super) async fn write_skill_file(
             return Ok(());
         }
     }
-    Err(super::super::error::AgentError::SkillOperation(format!(
-        "skill directory not found for {skill_name}"
-    )))
+    Err(super::super::error::SkillOperationFailure::DirectoryNotFound(skill_name.to_owned()).into())
 }
 
 /// Naive parser for `SQLite` datetime strings (e.g. "2024-01-15 10:30:00") to Unix seconds.

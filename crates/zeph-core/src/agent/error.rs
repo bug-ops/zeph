@@ -1,6 +1,59 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+/// Typed orchestration failure.
+///
+/// Wraps errors from DAG scheduling, planning, and config verification. Each variant
+/// preserves the upstream error string because the upstream types (from `zeph-orchestration`)
+/// are heterogeneous — they do not share a common `std::error::Error` implementation that
+/// would allow `#[from]` chains without loss of information.
+#[derive(Debug, thiserror::Error)]
+pub enum OrchestrationFailure {
+    /// DAG scheduler failed to initialize or resume.
+    #[error("scheduler error: {0}")]
+    SchedulerInit(String),
+
+    /// Provider/task config verification failed.
+    #[error("config verification error: {0}")]
+    VerifyConfig(String),
+
+    /// Planner failed to produce a valid task graph.
+    #[error("planner error: {0}")]
+    PlannerError(String),
+
+    /// DAG reset for retry failed.
+    #[error("retry reset error: {0}")]
+    RetryReset(String),
+
+    /// Catch-all for orchestration errors not yet mapped to a specific variant.
+    #[error("{0}")]
+    Generic(String),
+}
+
+/// Typed skill file operation failure.
+///
+/// Returned when skill name validation or skill directory lookup fails.
+#[derive(Debug, thiserror::Error)]
+pub enum SkillOperationFailure {
+    /// Skill name contains path-traversal characters (`/`, `\`, `..`).
+    #[error("invalid skill name: {0}")]
+    InvalidName(String),
+
+    /// No skill directory found for the given name in any configured path.
+    #[error("skill directory not found: {0}")]
+    DirectoryNotFound(String),
+
+    /// Catch-all for skill operation errors not yet mapped to a specific variant.
+    #[error("{0}")]
+    Generic(String),
+}
+
+/// Top-level error type for the agent loop.
+///
+/// All fallible agent operations return `Result<T, AgentError>`. Variants are kept
+/// typed where the upstream error has a known shape; string-bearing variants only
+/// exist where the upstream is a heterogeneous `dyn Error` that cannot be boxed
+/// without breaking existing bounds.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error(transparent)]
@@ -43,7 +96,7 @@ pub enum AgentError {
 
     /// An orchestration or DAG planning operation failed.
     #[error("orchestration error: {0}")]
-    OrchestrationError(String),
+    OrchestrationError(#[from] OrchestrationFailure),
 
     /// An unknown slash command or subcommand was received.
     #[error("unknown command: {0}")]
@@ -51,20 +104,11 @@ pub enum AgentError {
 
     /// Skill file operation failed (invalid name or skill not found).
     #[error("skill error: {0}")]
-    SkillOperation(String),
+    SkillOperation(#[from] SkillOperationFailure),
 
     /// Context assembly or index retrieval failed.
     #[error("context error: {0}")]
     ContextError(String),
-
-    /// Catch-all for errors that do not yet have a specific typed variant.
-    ///
-    /// # Deprecation
-    ///
-    /// Prefer adding a typed variant over using `Other`. This variant exists for
-    /// backward compatibility and will be removed once all callsites are migrated.
-    #[error("{0}")]
-    Other(String),
 }
 
 impl AgentError {
@@ -120,7 +164,7 @@ mod tests {
 
     #[test]
     fn agent_error_non_llm_variant_not_detected() {
-        let e = AgentError::Other("something went wrong".into());
+        let e = AgentError::ContextError("something went wrong".into());
         assert!(!e.is_context_length_error());
     }
 
@@ -160,7 +204,7 @@ mod tests {
 
     #[test]
     fn agent_error_non_llm_variant_not_beta_rejected() {
-        let e = AgentError::Other("something went wrong".into());
+        let e = AgentError::ContextError("something went wrong".into());
         assert!(!e.is_beta_header_rejected());
     }
 
@@ -172,14 +216,39 @@ mod tests {
 
     #[test]
     fn agent_error_non_no_providers_returns_false() {
-        let e = AgentError::Other("other".into());
+        let e = AgentError::ContextError("other".into());
         assert!(!e.is_no_providers());
     }
 
     #[test]
     fn orchestration_error_display() {
-        let e = AgentError::OrchestrationError("planner failed".into());
+        let e =
+            AgentError::OrchestrationError(OrchestrationFailure::Generic("planner failed".into()));
         assert!(e.to_string().contains("planner failed"));
+    }
+
+    #[test]
+    fn orchestration_failure_variants_display() {
+        assert!(
+            OrchestrationFailure::SchedulerInit("dag error".into())
+                .to_string()
+                .contains("dag error")
+        );
+        assert!(
+            OrchestrationFailure::VerifyConfig("bad config".into())
+                .to_string()
+                .contains("bad config")
+        );
+        assert!(
+            OrchestrationFailure::PlannerError("plan failed".into())
+                .to_string()
+                .contains("plan failed")
+        );
+        assert!(
+            OrchestrationFailure::RetryReset("reset failed".into())
+                .to_string()
+                .contains("reset failed")
+        );
     }
 
     #[test]
@@ -190,7 +259,22 @@ mod tests {
 
     #[test]
     fn skill_operation_display() {
-        let e = AgentError::SkillOperation("skill not found".into());
-        assert!(e.to_string().contains("skill not found"));
+        let e =
+            AgentError::SkillOperation(SkillOperationFailure::DirectoryNotFound("my-skill".into()));
+        assert!(e.to_string().contains("my-skill"));
+    }
+
+    #[test]
+    fn skill_operation_failure_variants_display() {
+        assert!(
+            SkillOperationFailure::InvalidName("bad/name".into())
+                .to_string()
+                .contains("bad/name")
+        );
+        assert!(
+            SkillOperationFailure::DirectoryNotFound("foo".into())
+                .to_string()
+                .contains("foo")
+        );
     }
 }

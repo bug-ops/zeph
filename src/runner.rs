@@ -1727,7 +1727,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         channel,
         registry,
         matcher,
-        config.skills.max_active_skills,
+        config.skills.max_active_skills.get(),
         tool_executor,
     )
     .apply_session_config(session_config)
