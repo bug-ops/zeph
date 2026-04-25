@@ -95,15 +95,23 @@ fn normalize_model_name(name: &str) -> &str {
 
 /// Returns `true` when any stored point uses a model name that is semantically different
 /// from `config_model` after normalizing `:latest` suffixes.
+///
+/// A missing `embedding_model` field (legacy points from pre-#3395 sessions) is treated as a
+/// mismatch: the vector was produced by an unknown model and must be regenerated.
 fn model_has_changed(
     existing: &HashMap<String, HashMap<String, String>>,
     config_model: &str,
 ) -> bool {
-    existing.values().any(|stored| {
-        stored
-            .get("embedding_model")
-            .is_some_and(|m| normalize_model_name(m) != normalize_model_name(config_model))
-    })
+    if config_model.is_empty() {
+        return false;
+    }
+    existing
+        .values()
+        .any(|stored| match stored.get("embedding_model") {
+            Some(m) => normalize_model_name(m) != normalize_model_name(config_model),
+            // Absent field means the point was written before the model was recorded; treat as mismatch.
+            None => true,
+        })
 }
 
 /// Generic Qdrant-backed embedding registry.
@@ -639,6 +647,25 @@ mod tests {
     #[test]
     fn model_has_changed_empty_existing_is_false() {
         assert!(!model_has_changed(&HashMap::new(), "any-model"));
+    }
+
+    #[test]
+    fn model_has_changed_absent_field_with_config_model_is_true() {
+        // Legacy points have no embedding_model field; treat as mismatch to force recreation.
+        let mut point = HashMap::new();
+        point.insert("content_hash".to_owned(), "abc".to_owned());
+        let mut map = HashMap::new();
+        map.insert("k1".to_owned(), point);
+        assert!(model_has_changed(&map, "nomic-embed-text-v2-moe"));
+    }
+
+    #[test]
+    fn model_has_changed_absent_field_with_empty_config_model_is_false() {
+        let mut point = HashMap::new();
+        point.insert("content_hash".to_owned(), "abc".to_owned());
+        let mut map = HashMap::new();
+        map.insert("k1".to_owned(), point);
+        assert!(!model_has_changed(&map, ""));
     }
 
     // ── concurrency guard ─────────────────────────────────────────────────────
