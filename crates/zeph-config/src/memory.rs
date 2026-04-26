@@ -219,7 +219,7 @@ fn default_shutdown_summary_max_messages() -> usize {
 }
 
 fn default_shutdown_summary_timeout_secs() -> u64 {
-    10
+    30
 }
 
 fn validate_tier_similarity_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>

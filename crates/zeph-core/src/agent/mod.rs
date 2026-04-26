@@ -747,6 +747,14 @@ impl<C: Channel> Agent<C> {
         // Abort learning tasks (JoinSet detached at turn boundaries but not on shutdown).
         self.learning_engine.learning_tasks.abort_all();
 
+        // Allow cancelled tasks to release their HTTP connections before the summary LLM call.
+        // abort_all() posts cancellation signals but does not drain tasks; aborted futures only
+        // observe cancellation at their next .await point. Without yielding here the summary
+        // call races in-flight enrichment HTTP connections for the same API rate-limit budget.
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+
         self.maybe_store_shutdown_summary().await;
         self.maybe_store_session_digest().await;
 

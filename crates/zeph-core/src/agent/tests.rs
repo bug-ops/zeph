@@ -5315,8 +5315,8 @@ mod shutdown_summary_tests {
             "default max_messages must be 20"
         );
         assert_eq!(
-            agent.memory_state.compaction.shutdown_summary_timeout_secs, 10,
-            "default timeout_secs must be 10"
+            agent.memory_state.compaction.shutdown_summary_timeout_secs, 30,
+            "default timeout_secs must be 30"
         );
     }
 

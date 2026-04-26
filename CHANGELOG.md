@@ -43,6 +43,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   dropped below the `min_injection_score` threshold and making skill injection non-functional.
   A cached dimension (populated at sync time) is checked first; on cache miss the collection is
   probed once and the result cached for subsequent calls. (#3418)
+- `zeph-core`: shutdown summary LLM calls no longer timeout on multi-turn sessions. Increased
+  `shutdown_summary_timeout_secs` default from 10 to 30 (matching `extraction_timeout_secs`) and
+  added a cooperative yield loop between `abort_all()` and `maybe_store_shutdown_summary()` so
+  cancelled enrichment tasks can release their HTTP connections before the summary LLM call
+  competes for the API rate-limit budget. (#3431)
 
 ### Added
 

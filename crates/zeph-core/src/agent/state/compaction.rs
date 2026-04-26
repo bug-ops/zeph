@@ -45,7 +45,7 @@ impl Default for MemoryCompactionState {
             shutdown_summary: true,
             shutdown_summary_min_messages: 4,
             shutdown_summary_max_messages: 20,
-            shutdown_summary_timeout_secs: 10,
+            shutdown_summary_timeout_secs: 30,
             structured_summaries: false,
             digest_config: crate::config::DigestConfig::default(),
             cached_session_digest: None,
