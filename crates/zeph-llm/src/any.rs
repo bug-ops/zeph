@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// TODO(arch-revised-2026-04-26): Full AnyProvider→Arc<dyn LlmProviderDyn> migration
+// spans 883 call sites and is deferred to epic/m49+/anyprovider-deprecation.
+// PR 7a (LlmProviderDyn adapter, no call-site changes) and PR 7b (router/cascade
+// only) land in m48; remaining ~880 sites are per-feature-area follow-ups requiring
+// /specs/<area>/llm-dyn-migration.md. See arch-assessment-revised-2026-04-26T02-04-23.md.
+
 //! Type-erased provider enum wrapping all concrete backends.
 //!
 //! [`AnyProvider`] lets callers hold and clone any backend without generics or

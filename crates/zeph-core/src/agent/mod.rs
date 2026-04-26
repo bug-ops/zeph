@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// TODO(arch-revised-2026-04-26): agent/ module split deferred to epic/m49+/agent-split.
+// Hard prerequisite: 100% task_supervisor adoption (currently 10/31 raw tokio::spawn
+// sites in this directory). See arch-assessment-revised-2026-04-26T02-04-23.md PR 1
+// and PR 8. Do not split this file until PR 1 is merged and a /specs/ entry exists.
+
 mod acp_commands;
 mod agent_access_impl;
 pub(crate) mod agent_supervisor;

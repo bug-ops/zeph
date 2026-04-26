@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// TODO(arch-revised-2026-04-26): TUI Reducer/Action decomposition deferred to
+// epic/m49+/tui-reducer. Blocked until /specs/<area>/tui-reducer.md is authored
+// via /sdd. See arch-assessment-revised-2026-04-26T02-04-23.md PR 9.
+
 use std::sync::Arc;
 
 use tokio::sync::{Notify, mpsc, oneshot, watch};
