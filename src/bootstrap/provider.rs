@@ -520,7 +520,11 @@ fn build_single_provider_from_pool(
     pool: &[ProviderEntry],
     config: &Config,
 ) -> Result<AnyProvider, BootstrapError> {
-    let primary_idx = pool.iter().position(|e| e.default).unwrap_or(0);
+    let primary_idx = pool
+        .iter()
+        .position(|e| e.default)
+        .or_else(|| pool.iter().position(|e| !e.embed))
+        .unwrap_or(0);
     let primary = &pool[primary_idx];
     match build_provider_from_entry(primary, config) {
         Ok(p) => Ok(p),

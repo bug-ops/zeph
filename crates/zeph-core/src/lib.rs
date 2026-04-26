@@ -149,7 +149,7 @@ pub mod vault {
     /// This provider reads secrets from process environment variables and is
     /// intended **exclusively for development and testing**. Never enable this
     /// feature in production builds. Use [`AgeVaultProvider`] instead.
-    #[cfg(any(test, feature = "env-vault"))]
+    #[cfg(feature = "env-vault")]
     pub use zeph_vault::EnvVaultProvider;
 
     #[cfg(any(test, feature = "mock"))]

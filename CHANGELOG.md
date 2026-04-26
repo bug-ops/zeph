@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(core): remove `test` arm from `EnvVaultProvider` re-export cfg gate in `zeph-core/src/lib.rs`
+  so that `cargo nextest run -p zeph-core` (no explicit `--features env-vault`) compiles cleanly
+  (#3485, regressed by #3479).
+- fix(bootstrap): `build_single_provider_from_pool` now skips embed-only entries when selecting
+  the fallback provider index, preventing an embed model from being used for chat when no provider
+  has `default = true` (#3484).
+
 - fix(focus): `complete_focus` called in a batch with other tools no longer orphans the
   current-turn tool results (#3476). The truncation in `complete_focus_tool` now preserves
   the current turn's assistant `tool_calls` message so that the subsequent `User(tool_results)`
