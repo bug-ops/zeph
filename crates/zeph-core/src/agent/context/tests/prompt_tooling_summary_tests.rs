@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use tokio::sync::watch;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
@@ -12,10 +11,9 @@ use crate::agent::agent_tests::{
     MockChannel, MockToolExecutor, create_test_registry, mock_provider, mock_provider_failing,
 };
 use crate::agent::context::assembler_helpers;
-use crate::agent::context::{cap_summary, chunk_messages as _, truncate_chars};
+use crate::agent::context::{cap_summary, truncate_chars};
 use crate::agent::context_manager::CompactionState;
 use crate::agent::state::MemoryState;
-use crate::context::ContextBudget;
 
 // Helper: add a tool call/result message pair using ToolResult parts.
 fn make_tool_pair(agent: &mut Agent<MockChannel>, tool_name: &str) {

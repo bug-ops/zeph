@@ -276,50 +276,6 @@ impl ToolExecutor for DispatchingExecutor {
     }
 }
 
-/// Fails permanently on the first call (index 0) and succeeds on all subsequent calls.
-/// Used to test that a batch with one permanent error still emits `ToolResult` for every call.
-struct FirstFailsExecutor {
-    call_count: std::sync::Arc<AtomicUsize>,
-}
-
-impl ToolExecutor for FirstFailsExecutor {
-    fn execute(
-        &self,
-        _response: &str,
-    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
-        std::future::ready(Ok(None))
-    }
-
-    fn execute_tool_call(
-        &self,
-        call: &ToolCall,
-    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
-        let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-        let tool_id = call.tool_id.clone();
-        async move {
-            if idx == 0 {
-                let _ = tool_id;
-                Err(ToolError::InvalidParams {
-                    message: "permanent error".to_owned(),
-                })
-            } else {
-                Ok(Some(ToolOutput {
-                    tool_name: tool_id,
-                    summary: "ok".to_owned(),
-                    blocks_executed: 1,
-                    diff: None,
-                    filter_stats: None,
-                    streamed: false,
-                    terminal_id: None,
-                    locations: None,
-                    raw_response: None,
-                    claim_source: None,
-                }))
-            }
-        }
-    }
-}
-
 /// Builds a minimal `ToolUseRequest` for test use.
 fn make_tool_use_request(id: &str, name: &str) -> zeph_llm::provider::ToolUseRequest {
     zeph_llm::provider::ToolUseRequest {

@@ -21,8 +21,7 @@ pub(crate) use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 
 pub(crate) use crate::agent::message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
 pub(crate) use crate::agent::{
-    Agent, CODE_CONTEXT_PREFIX, CROSS_SESSION_PREFIX, RECALL_PREFIX, SUMMARY_PREFIX,
-    TOOL_OUTPUT_SUFFIX, format_tool_output, recv_optional, shutdown_signal,
+    Agent, TOOL_OUTPUT_SUFFIX, format_tool_output, recv_optional, shutdown_signal,
 };
 pub(crate) use crate::channel::{Attachment, AttachmentKind, Channel, ChannelMessage};
 pub(crate) use crate::config::{SecurityConfig, TimeoutConfig};

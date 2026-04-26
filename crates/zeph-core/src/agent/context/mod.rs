@@ -8,8 +8,6 @@ mod assembly;
 pub(crate) mod retrieved;
 mod summarization;
 
-#[cfg(test)]
-use super::Message;
 use super::{Agent, Channel};
 
 pub(super) use crate::text::truncate_to_chars as truncate_chars;

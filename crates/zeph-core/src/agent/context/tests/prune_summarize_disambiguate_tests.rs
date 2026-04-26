@@ -14,7 +14,6 @@ use crate::agent::agent_tests::{
     MockChannel, MockToolExecutor, create_test_registry, mock_provider, mock_provider_failing,
 };
 use crate::agent::context_manager::CompactionTier;
-use crate::agent::{RECALL_PREFIX, SUMMARY_PREFIX};
 use crate::context::ContextBudget;
 
 async fn create_memory_with_summaries(
