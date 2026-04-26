@@ -135,7 +135,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - features: "desktop,ide,server,chat,pdf,scheduler"
+          - features: "desktop,ide,server,chat,pdf,scheduler,testing"
             label: desktop-ide-server-chat-pdf-scheduler
           - features: bench
             label: bench
