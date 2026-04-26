@@ -114,7 +114,7 @@ fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{TaskId, TaskResult, TaskStatus};
+    use crate::graph::{TaskResult, TaskStatus};
     use crate::scheduler::tests::*;
 
     #[test]

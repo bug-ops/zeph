@@ -631,7 +631,7 @@ mod tests {
     #![allow(clippy::default_trait_access)]
 
     use super::*;
-    use crate::graph::{FailureStrategy, GraphStatus, TaskGraph, TaskNode, TaskStatus};
+    use crate::graph::{GraphStatus, TaskGraph, TaskNode, TaskStatus};
 
     pub(super) fn make_node(id: u32, deps: &[u32]) -> TaskNode {
         let mut n = TaskNode::new(

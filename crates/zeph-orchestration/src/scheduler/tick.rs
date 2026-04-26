@@ -727,8 +727,6 @@ mod tests {
 
     #[test]
     fn test_completion_event_marks_deps_ready() {
-        use crate::graph::TaskResult;
-
         let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
         let mut scheduler = make_scheduler(graph);
 
