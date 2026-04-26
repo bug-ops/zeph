@@ -72,58 +72,18 @@ impl<C: Channel> Agent<C> {
     /// Non-interactive: the skill is saved immediately with quarantined trust level.
     /// The generated preview is returned in the output so the user can review it.
     /// Use `/skill remove <name>` to discard an unwanted skill.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3457): decompose into smaller helpers
     async fn handle_skill_create_as_string(
         &mut self,
         description: &str,
     ) -> Result<String, super::super::error::AgentError> {
-        if description.trim().is_empty() {
-            return Ok(
-                "Usage: /skill create <description>\n\nExample:\n  /skill create fetch weather data from wttr.in and display current conditions".to_owned()
-            );
+        if let Err(msg) = validate_skill_create_input(description) {
+            return Ok(msg);
         }
 
-        if description.chars().count() > 2048 {
-            return Ok("Description too long (max 2048 characters).".to_owned());
-        }
-
-        let input_scan = zeph_skills::scanner::scan_skill_body(description);
-        if input_scan.has_matches() {
-            return Ok("Input blocked: injection patterns detected in description.".to_owned());
-        }
-
-        // Determine output directory: generation_output_dir > managed_dir > first skill_path.
-        let output_dir = if let Some(ref dir) = self.skill_state.generation_output_dir {
-            dir.clone()
-        } else if let Some(ref dir) = self.skill_state.managed_dir {
-            dir.clone()
-        } else if let Some(first) = self.skill_state.skill_paths.first() {
-            first.clone()
-        } else {
-            return Ok(
-                "No skill output directory configured. Set skills.generation_output_dir or skills.paths.".to_owned()
-            );
+        let (output_dir, mut output) = match self.resolve_generation_output_dir() {
+            Ok(pair) => pair,
+            Err(msg) => return Ok(msg),
         };
-
-        let mut output = String::new();
-
-        // Warn if output_dir is not in watched skill_paths (hot-reload may miss the new skill).
-        let is_watched = self
-            .skill_state
-            .skill_paths
-            .iter()
-            .any(|p| output_dir.starts_with(p) || p == &output_dir);
-        if !is_watched {
-            tracing::warn!(
-                output_dir = %output_dir.display(),
-                "generation_output_dir is not in skills.paths — hot-reload may not pick up the new skill"
-            );
-            let _ = write!(
-                output,
-                "Warning: {} is not listed in skills.paths. The generated skill may not be hot-reloaded automatically.\n\n",
-                output_dir.display()
-            );
-        }
 
         let generation_provider =
             self.resolve_background_provider(&self.skill_state.generation_provider_name.clone());
@@ -149,61 +109,114 @@ impl<C: Channel> Agent<C> {
         };
 
         // Dedup check: compare against existing registry embeddings.
-        if let Some(ref matcher) = self.skill_state.matcher {
-            let skill_text = format!("{} {}", generated.meta.description, generated.content);
-            let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = {
-                let registry = self.skill_state.registry.read();
-                registry.all_meta().into_iter().cloned().collect()
-            };
-            let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> =
-                all_meta_owned.iter().collect();
-            let embed_provider = self.embedding_provider.clone();
-            let embed_fn = move |text: &str| -> zeph_skills::matcher::EmbedFuture {
-                let owned = text.to_owned();
-                let p = embed_provider.clone();
-                Box::pin(async move { p.embed(&owned).await })
-            };
-            let matches = match matcher
-                .match_skills(&all_meta_refs, &skill_text, 1, false, embed_fn)
-                .await
-            {
-                zeph_skills::MatchResult::Scored(v) => v,
-                zeph_skills::MatchResult::InfraError => Vec::new(),
-            };
-            if let Some(best) = matches.first()
-                && best.score > 0.85
-                && let Some(meta) = all_meta_refs.get(best.index)
-            {
-                generated.warnings.push(format!(
-                    "Similar skill exists: **{}** (similarity: {:.2}). Consider using the existing skill instead.",
-                    meta.name, best.score
-                ));
-            }
-        }
+        self.dedup_check_against_registry(&mut generated).await;
 
         if generated.has_injection_patterns {
-            output.push_str("Injection patterns detected in generated skill. Skipping save.\n\n");
-            let _ = write!(
-                output,
-                "Generated skill **{}** (NOT saved):\n\n```\n{}\n```",
-                generated.name, generated.content
-            );
-            if !generated.warnings.is_empty() {
-                output.push_str("\n\n**Warnings:**");
-                for w in &generated.warnings {
-                    output.push('\n');
-                    output.push_str("- ");
-                    output.push_str(w);
-                }
-            }
+            output.push_str(&format_generated_skill_blocked(&generated));
             return Ok(output);
         }
 
         // Auto-save with quarantined trust (non-interactive path).
-        match generator.approve_and_save(&generated).await {
+        self.save_and_quarantine_generated_skill(&generator, &generated, &mut output)
+            .await;
+
+        Ok(output)
+    }
+
+    /// Pick the skill output directory and build the initial warning prefix for the output string.
+    ///
+    /// Returns `(dir, output_prefix)` where `output_prefix` may be empty or contain a hot-reload
+    /// warning. Returns `Err(message)` when no directory is configured at all.
+    fn resolve_generation_output_dir(&self) -> Result<(std::path::PathBuf, String), String> {
+        let output_dir = if let Some(ref dir) = self.skill_state.generation_output_dir {
+            dir.clone()
+        } else if let Some(ref dir) = self.skill_state.managed_dir {
+            dir.clone()
+        } else if let Some(first) = self.skill_state.skill_paths.first() {
+            first.clone()
+        } else {
+            return Err(
+                "No skill output directory configured. Set skills.generation_output_dir or skills.paths.".to_owned()
+            );
+        };
+
+        let mut output = String::new();
+
+        // Warn if output_dir is not in watched skill_paths (hot-reload may miss the new skill).
+        let is_watched = self
+            .skill_state
+            .skill_paths
+            .iter()
+            .any(|p| output_dir.starts_with(p) || p == &output_dir);
+        if !is_watched {
+            tracing::warn!(
+                output_dir = %output_dir.display(),
+                "generation_output_dir is not in skills.paths — hot-reload may not pick up the new skill"
+            );
+            let _ = write!(
+                output,
+                "Warning: {} is not listed in skills.paths. The generated skill may not be hot-reloaded automatically.\n\n",
+                output_dir.display()
+            );
+        }
+
+        Ok((output_dir, output))
+    }
+
+    /// Run embedding-based similarity check and append a warning to `generated.warnings` if a
+    /// similar skill already exists.
+    ///
+    /// The registry read guard is released before `match_skills(...).await` to avoid holding a
+    /// lock across an await point.
+    async fn dedup_check_against_registry(&mut self, generated: &mut zeph_skills::GeneratedSkill) {
+        let Some(ref matcher) = self.skill_state.matcher else {
+            return;
+        };
+        let skill_text = format!("{} {}", generated.meta.description, generated.content);
+        // Clone registry meta before .await — read guard must be dropped before the embed call.
+        let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = {
+            let registry = self.skill_state.registry.read();
+            registry.all_meta().into_iter().cloned().collect()
+        };
+        let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
+        let embed_provider = self.embedding_provider.clone();
+        let embed_fn = move |text: &str| -> zeph_skills::matcher::EmbedFuture {
+            let owned = text.to_owned();
+            let p = embed_provider.clone();
+            Box::pin(async move { p.embed(&owned).await })
+        };
+        let scored = match matcher
+            .match_skills(&all_meta_refs, &skill_text, 1, false, embed_fn)
+            .await
+        {
+            zeph_skills::MatchResult::Scored(v) => v,
+            zeph_skills::MatchResult::InfraError => Vec::new(),
+        };
+        if let Some(best) = scored.first()
+            && best.score > 0.85
+            && let Some(meta) = all_meta_refs.get(best.index)
+        {
+            generated.warnings.push(format!(
+                "Similar skill exists: **{}** (similarity: {:.2}). Consider using the existing skill instead.",
+                meta.name, best.score
+            ));
+        }
+    }
+
+    /// Auto-save the generated skill and register quarantined trust, appending status text to
+    /// `output`.
+    async fn save_and_quarantine_generated_skill(
+        &mut self,
+        generator: &zeph_skills::SkillGenerator,
+        generated: &zeph_skills::GeneratedSkill,
+        output: &mut String,
+    ) {
+        // Clone Arc before .await to avoid holding &self across suspension points.
+        let memory = self.memory_state.persistence.memory.clone();
+        match generator.approve_and_save(generated).await {
             Ok(path) => {
                 // Register quarantined trust so hot-reload does not grant implicit trust.
-                if let Some(ref memory) = self.memory_state.persistence.memory {
+                if let Some(ref memory) = memory {
                     let _ = memory
                         .sqlite()
                         .set_skill_trust_level(&generated.name, "quarantined")
@@ -233,8 +246,6 @@ impl<C: Channel> Agent<C> {
                 let _ = write!(output, "Failed to save skill: {e}");
             }
         }
-
-        Ok(output)
     }
 
     async fn handle_skill_reject_as_string(
@@ -469,4 +480,44 @@ impl<C: Channel> Agent<C> {
 
         Ok(format!("Reset \"{name}\" to original v1."))
     }
+}
+
+/// Validate the `/skill create` description input.
+///
+/// Returns `Err(user-facing message)` if the description is empty, too long, or contains
+/// injection patterns. Returns `Ok(())` otherwise.
+fn validate_skill_create_input(description: &str) -> Result<(), String> {
+    if description.trim().is_empty() {
+        return Err(
+            "Usage: /skill create <description>\n\nExample:\n  /skill create fetch weather data from wttr.in and display current conditions".to_owned()
+        );
+    }
+    if description.chars().count() > 2048 {
+        return Err("Description too long (max 2048 characters).".to_owned());
+    }
+    let input_scan = zeph_skills::scanner::scan_skill_body(description);
+    if input_scan.has_matches() {
+        return Err("Input blocked: injection patterns detected in description.".to_owned());
+    }
+    Ok(())
+}
+
+/// Build the output string for a generated skill that was blocked due to injection patterns.
+fn format_generated_skill_blocked(generated: &zeph_skills::GeneratedSkill) -> String {
+    let mut output =
+        String::from("Injection patterns detected in generated skill. Skipping save.\n\n");
+    let _ = write!(
+        output,
+        "Generated skill **{}** (NOT saved):\n\n```\n{}\n```",
+        generated.name, generated.content
+    );
+    if !generated.warnings.is_empty() {
+        output.push_str("\n\n**Warnings:**");
+        for w in &generated.warnings {
+            output.push('\n');
+            output.push_str("- ");
+            output.push_str(w);
+        }
+    }
+    output
 }

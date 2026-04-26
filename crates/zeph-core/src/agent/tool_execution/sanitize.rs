@@ -50,6 +50,21 @@ fn is_internal_tool(tool_name: &str) -> bool {
     !tool_name.contains(':') && INTERNAL_TOOLS.contains(&tool_name)
 }
 
+/// Build the `ContentSource` that describes a tool's trust level for the sanitizer.
+fn build_tool_output_source(tool_name: &str) -> ContentSource {
+    if tool_name.contains(':') || tool_name == "mcp" {
+        ContentSource::new(ContentSourceKind::McpResponse).with_identifier(tool_name)
+    } else if tool_name == "web-scrape" || tool_name == "web_scrape" || tool_name == "fetch" {
+        ContentSource::new(ContentSourceKind::WebScrape).with_identifier(tool_name)
+    } else if tool_name == "memory_search" {
+        ContentSource::new(ContentSourceKind::MemoryRetrieval)
+            .with_identifier(tool_name)
+            .with_memory_hint(MemorySourceHint::ConversationHistory)
+    } else {
+        ContentSource::new(ContentSourceKind::ToolResult).with_identifier(tool_name)
+    }
+}
+
 impl<C: Channel> Agent<C> {
     /// Sanitize tool output body before inserting it into the LLM message history.
     ///
@@ -58,23 +73,12 @@ impl<C: Channel> Agent<C> {
     ///
     /// This is the SOLE sanitization point for tool output data flows. Do not add
     /// redundant sanitization in leaf crates (zeph-tools, zeph-mcp).
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3454): decompose into smaller helpers
     pub(super) async fn sanitize_tool_output(
         &mut self,
         body: &str,
         tool_name: &str,
     ) -> (String, bool) {
-        let source = if tool_name.contains(':') || tool_name == "mcp" {
-            ContentSource::new(ContentSourceKind::McpResponse).with_identifier(tool_name)
-        } else if tool_name == "web-scrape" || tool_name == "web_scrape" || tool_name == "fetch" {
-            ContentSource::new(ContentSourceKind::WebScrape).with_identifier(tool_name)
-        } else if tool_name == "memory_search" {
-            ContentSource::new(ContentSourceKind::MemoryRetrieval)
-                .with_identifier(tool_name)
-                .with_memory_hint(MemorySourceHint::ConversationHistory)
-        } else {
-            ContentSource::new(ContentSourceKind::ToolResult).with_identifier(tool_name)
-        };
+        let source = build_tool_output_source(tool_name);
         let kind = source.kind;
         #[cfg(feature = "classifiers")]
         let memory_hint = source.memory_hint;
@@ -82,33 +86,7 @@ impl<C: Channel> Agent<C> {
         let _ = source.memory_hint;
         let sanitized = self.security.sanitizer.sanitize(body, source);
         let has_injection_flags = !sanitized.injection_flags.is_empty();
-        if has_injection_flags {
-            tracing::warn!(
-                tool = %tool_name,
-                flags = sanitized.injection_flags.len(),
-                "injection patterns detected in tool output"
-            );
-            self.update_metrics(|m| {
-                let flag_count = sanitized.injection_flags.len() as u64;
-                m.sanitizer_injection_flags += flag_count;
-                if sanitized.source.kind == zeph_sanitizer::ContentSourceKind::ToolResult {
-                    m.sanitizer_injection_fp_local += flag_count;
-                }
-            });
-            let detail = sanitized
-                .injection_flags
-                .first()
-                .map_or_else(String::new, |f| {
-                    format!("Detected pattern: {}", f.pattern_name)
-                });
-            self.push_security_event(
-                crate::metrics::SecurityEventCategory::InjectionFlag,
-                tool_name,
-                detail,
-            );
-            let urls = zeph_sanitizer::exfiltration::extract_flagged_urls(&sanitized.body);
-            self.security.flagged_urls.extend(urls);
-        }
+        self.record_injection_flags(&sanitized, tool_name);
         if sanitized.was_truncated {
             self.update_metrics(|m| m.sanitizer_truncations += 1);
             self.push_security_event(
@@ -120,162 +98,261 @@ impl<C: Channel> Agent<C> {
         self.update_metrics(|m| m.sanitizer_runs += 1);
 
         #[cfg(feature = "classifiers")]
+        if let Some(result) = self
+            .apply_classifier_verdict(body, tool_name, memory_hint)
+            .await
         {
-            // Synthetic outputs from the utility gate are trusted internal content — never
-            // classify them. Only real tool output from external sources needs ML inspection.
-            let is_utility_gate_synthetic =
-                body.starts_with("[skipped]") || body.starts_with("[stopped]");
-            let skip_ml = matches!(
-                memory_hint,
-                Some(
-                    zeph_sanitizer::MemorySourceHint::ConversationHistory
-                        | zeph_sanitizer::MemorySourceHint::LlmSummary
-                )
-            ) || is_policy_blocked_output(body)
-                || is_utility_gate_synthetic
-                || is_internal_tool(tool_name);
-            if !skip_ml && self.security.sanitizer.has_classifier_backend() {
-                let ml_verdict = self.security.sanitizer.classify_injection(body).await;
-                match ml_verdict {
-                    zeph_sanitizer::InjectionVerdict::Blocked => {
-                        tracing::warn!(tool = %tool_name, "ML classifier blocked tool output");
-                        self.update_metrics(|m| m.classifier_tool_blocks += 1);
-                        self.push_security_event(
-                            crate::metrics::SecurityEventCategory::InjectionBlocked,
-                            tool_name,
-                            "ML classifier blocked tool output",
-                        );
-                        return (
-                            "[tool output blocked: injection detected by classifier]".into(),
-                            true,
-                        );
-                    }
-                    zeph_sanitizer::InjectionVerdict::Suspicious => {
-                        tracing::warn!(
-                            tool = %tool_name,
-                            "ML classifier: suspicious tool output"
-                        );
-                        self.update_metrics(|m| m.classifier_tool_suspicious += 1);
-                    }
-                    zeph_sanitizer::InjectionVerdict::Clean => {}
-                }
-            }
+            return result;
         }
 
         let is_cross_boundary = self.security.is_acp_session
             && self.runtime.security.content_isolation.mcp_to_acp_boundary
             && kind == ContentSourceKind::McpResponse;
-        if is_cross_boundary {
-            tracing::warn!(
-                tool = %tool_name,
-                mcp_server_id = tool_name.split(':').next().unwrap_or("unknown"),
-                "MCP tool result crossing ACP trust boundary"
-            );
-            self.push_security_event(
-                crate::metrics::SecurityEventCategory::CrossBoundaryMcpToAcp,
-                tool_name,
-                "MCP result force-quarantined for ACP session",
-            );
-            if let Some(ref logger) = self.tool_orchestrator.audit_logger {
-                let entry = zeph_tools::AuditEntry {
-                    timestamp: zeph_tools::chrono_now(),
-                    tool: tool_name.into(),
-                    command: String::new(),
-                    result: zeph_tools::AuditResult::Success,
-                    duration_ms: 0,
-                    error_category: None,
-                    error_domain: Some("security".to_owned()),
-                    error_phase: None,
-                    claim_source: None,
-                    mcp_server_id: tool_name.split(':').next().map(ToOwned::to_owned),
-                    injection_flagged: has_injection_flags,
-                    embedding_anomalous: false,
-                    cross_boundary_mcp_to_acp: true,
-                    adversarial_policy_decision: None,
-                    exit_code: None,
-                    truncated: false,
-                    caller_id: None,
-                    policy_match: None,
-                    correlation_id: None,
-                    vigil_risk: None,
-                };
-                let logger = std::sync::Arc::clone(logger);
-                self.lifecycle.supervisor.spawn(
-                    super::super::agent_supervisor::TaskClass::Telemetry,
-                    "audit-log-sanitize",
-                    async move { logger.log(&entry).await },
-                );
-            }
-            if let Some(ref qs) = self.security.quarantine_summarizer {
-                match qs.extract_facts(&sanitized, &self.security.sanitizer).await {
-                    Ok((facts, flags)) => {
-                        self.update_metrics(|m| m.quarantine_invocations += 1);
-                        let escaped =
-                            zeph_sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
-                        return (
-                            zeph_sanitizer::ContentSanitizer::apply_spotlight(
-                                &escaped,
-                                &sanitized.source,
-                                &flags,
-                            ),
-                            has_injection_flags,
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            tool = %tool_name,
-                            error = %e,
-                            "cross-boundary quarantine failed, using spotlighted output"
-                        );
-                        self.update_metrics(|m| m.quarantine_failures += 1);
-                    }
-                }
-            }
+
+        if is_cross_boundary
+            && let Some(result) = self
+                .handle_cross_boundary_quarantine(&sanitized, tool_name, has_injection_flags)
+                .await
+        {
+            return result;
         }
 
         if !is_cross_boundary
-            && self.security.sanitizer.is_enabled()
-            && let Some(ref qs) = self.security.quarantine_summarizer
-            && qs.should_quarantine(kind)
+            && let Some(result) = self
+                .handle_quarantine_summary(&sanitized, tool_name, kind, has_injection_flags)
+                .await
         {
-            match qs.extract_facts(&sanitized, &self.security.sanitizer).await {
-                Ok((facts, flags)) => {
-                    self.update_metrics(|m| m.quarantine_invocations += 1);
-                    self.push_security_event(
-                        crate::metrics::SecurityEventCategory::Quarantine,
-                        tool_name,
-                        "Content quarantined, facts extracted",
-                    );
-                    let escaped = zeph_sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
-                    return (
-                        zeph_sanitizer::ContentSanitizer::apply_spotlight(
-                            &escaped,
-                            &sanitized.source,
-                            &flags,
-                        ),
-                        has_injection_flags,
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        tool = %tool_name,
-                        error = %e,
-                        "quarantine failed, using original sanitized output"
-                    );
-                    self.update_metrics(|m| m.quarantine_failures += 1);
-                    self.push_security_event(
-                        crate::metrics::SecurityEventCategory::Quarantine,
-                        tool_name,
-                        format!("Quarantine failed: {e}"),
-                    );
-                }
-            }
+            return result;
         }
 
         let body = self.scrub_pii_union(&sanitized.body, tool_name).await;
         let body = self.apply_guardrail_to_tool_output(body, tool_name).await;
 
         (body, has_injection_flags)
+    }
+
+    /// Record injection-flag metrics and security events for a sanitized output.
+    fn record_injection_flags(
+        &mut self,
+        sanitized: &zeph_sanitizer::SanitizedContent,
+        tool_name: &str,
+    ) {
+        if sanitized.injection_flags.is_empty() {
+            return;
+        }
+        tracing::warn!(
+            tool = %tool_name,
+            flags = sanitized.injection_flags.len(),
+            "injection patterns detected in tool output"
+        );
+        self.update_metrics(|m| {
+            let flag_count = sanitized.injection_flags.len() as u64;
+            m.sanitizer_injection_flags += flag_count;
+            if sanitized.source.kind == zeph_sanitizer::ContentSourceKind::ToolResult {
+                m.sanitizer_injection_fp_local += flag_count;
+            }
+        });
+        let detail = sanitized
+            .injection_flags
+            .first()
+            .map_or_else(String::new, |f| {
+                format!("Detected pattern: {}", f.pattern_name)
+            });
+        self.push_security_event(
+            crate::metrics::SecurityEventCategory::InjectionFlag,
+            tool_name,
+            detail,
+        );
+        let urls = zeph_sanitizer::exfiltration::extract_flagged_urls(&sanitized.body);
+        self.security.flagged_urls.extend(urls);
+    }
+
+    /// Run the ML classifier on `body` and return an early result if the output is blocked
+    /// or if the classification verdict warrants it. Returns `None` to continue normal flow.
+    ///
+    /// Synthetic outputs from the utility gate are trusted internal content and are never
+    /// classified. Memory-hinted outputs and first-party tool outputs are also exempt.
+    #[cfg(feature = "classifiers")]
+    async fn apply_classifier_verdict(
+        &mut self,
+        body: &str,
+        tool_name: &str,
+        memory_hint: Option<zeph_sanitizer::MemorySourceHint>,
+    ) -> Option<(String, bool)> {
+        // Synthetic outputs from the utility gate are trusted internal content — never
+        // classify them. Only real tool output from external sources needs ML inspection.
+        let is_utility_gate_synthetic =
+            body.starts_with("[skipped]") || body.starts_with("[stopped]");
+        let skip_ml = matches!(
+            memory_hint,
+            Some(
+                zeph_sanitizer::MemorySourceHint::ConversationHistory
+                    | zeph_sanitizer::MemorySourceHint::LlmSummary
+            )
+        ) || is_policy_blocked_output(body)
+            || is_utility_gate_synthetic
+            || is_internal_tool(tool_name);
+        if !skip_ml && self.security.sanitizer.has_classifier_backend() {
+            let ml_verdict = self.security.sanitizer.classify_injection(body).await;
+            match ml_verdict {
+                zeph_sanitizer::InjectionVerdict::Blocked => {
+                    tracing::warn!(tool = %tool_name, "ML classifier blocked tool output");
+                    self.update_metrics(|m| m.classifier_tool_blocks += 1);
+                    self.push_security_event(
+                        crate::metrics::SecurityEventCategory::InjectionBlocked,
+                        tool_name,
+                        "ML classifier blocked tool output",
+                    );
+                    return Some((
+                        "[tool output blocked: injection detected by classifier]".into(),
+                        true,
+                    ));
+                }
+                zeph_sanitizer::InjectionVerdict::Suspicious => {
+                    tracing::warn!(
+                        tool = %tool_name,
+                        "ML classifier: suspicious tool output"
+                    );
+                    self.update_metrics(|m| m.classifier_tool_suspicious += 1);
+                }
+                zeph_sanitizer::InjectionVerdict::Clean => {}
+            }
+        }
+        None
+    }
+
+    /// Handle the cross-ACP-boundary quarantine path for MCP tool results.
+    ///
+    /// Logs a trust-boundary warning, fires an audit entry, and attempts fact extraction.
+    /// Returns `Some((body, has_injection_flags))` if quarantine produced an early result,
+    /// or `None` to continue normal processing.
+    async fn handle_cross_boundary_quarantine(
+        &mut self,
+        sanitized: &zeph_sanitizer::SanitizedContent,
+        tool_name: &str,
+        has_injection_flags: bool,
+    ) -> Option<(String, bool)> {
+        tracing::warn!(
+            tool = %tool_name,
+            mcp_server_id = tool_name.split(':').next().unwrap_or("unknown"),
+            "MCP tool result crossing ACP trust boundary"
+        );
+        self.push_security_event(
+            crate::metrics::SecurityEventCategory::CrossBoundaryMcpToAcp,
+            tool_name,
+            "MCP result force-quarantined for ACP session",
+        );
+        if let Some(ref logger) = self.tool_orchestrator.audit_logger {
+            let entry = zeph_tools::AuditEntry {
+                timestamp: zeph_tools::chrono_now(),
+                tool: tool_name.into(),
+                command: String::new(),
+                result: zeph_tools::AuditResult::Success,
+                duration_ms: 0,
+                error_category: None,
+                error_domain: Some("security".to_owned()),
+                error_phase: None,
+                claim_source: None,
+                mcp_server_id: tool_name.split(':').next().map(ToOwned::to_owned),
+                injection_flagged: has_injection_flags,
+                embedding_anomalous: false,
+                cross_boundary_mcp_to_acp: true,
+                adversarial_policy_decision: None,
+                exit_code: None,
+                truncated: false,
+                caller_id: None,
+                policy_match: None,
+                correlation_id: None,
+                vigil_risk: None,
+            };
+            let logger = std::sync::Arc::clone(logger);
+            self.lifecycle.supervisor.spawn(
+                super::super::agent_supervisor::TaskClass::Telemetry,
+                "audit-log-sanitize",
+                async move { logger.log(&entry).await },
+            );
+        }
+        if let Some(ref qs) = self.security.quarantine_summarizer {
+            match qs.extract_facts(sanitized, &self.security.sanitizer).await {
+                Ok((facts, flags)) => {
+                    self.update_metrics(|m| m.quarantine_invocations += 1);
+                    let escaped = zeph_sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
+                    return Some((
+                        zeph_sanitizer::ContentSanitizer::apply_spotlight(
+                            &escaped,
+                            &sanitized.source,
+                            &flags,
+                        ),
+                        has_injection_flags,
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        tool = %tool_name,
+                        error = %e,
+                        "cross-boundary quarantine failed, using spotlighted output"
+                    );
+                    self.update_metrics(|m| m.quarantine_failures += 1);
+                }
+            }
+        }
+        None
+    }
+
+    /// Handle standard quarantine summarization for non-cross-boundary tool outputs.
+    ///
+    /// Returns `Some((body, has_injection_flags))` if quarantine produced an early result,
+    /// or `None` to continue normal processing.
+    async fn handle_quarantine_summary(
+        &mut self,
+        sanitized: &zeph_sanitizer::SanitizedContent,
+        tool_name: &str,
+        kind: ContentSourceKind,
+        has_injection_flags: bool,
+    ) -> Option<(String, bool)> {
+        if !(self.security.sanitizer.is_enabled()
+            && self
+                .security
+                .quarantine_summarizer
+                .as_ref()
+                .is_some_and(|qs| qs.should_quarantine(kind)))
+        {
+            return None;
+        }
+        let qs = self.security.quarantine_summarizer.as_ref()?;
+        match qs.extract_facts(sanitized, &self.security.sanitizer).await {
+            Ok((facts, flags)) => {
+                self.update_metrics(|m| m.quarantine_invocations += 1);
+                self.push_security_event(
+                    crate::metrics::SecurityEventCategory::Quarantine,
+                    tool_name,
+                    "Content quarantined, facts extracted",
+                );
+                let escaped = zeph_sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
+                Some((
+                    zeph_sanitizer::ContentSanitizer::apply_spotlight(
+                        &escaped,
+                        &sanitized.source,
+                        &flags,
+                    ),
+                    has_injection_flags,
+                ))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    tool = %tool_name,
+                    error = %e,
+                    "quarantine failed, using original sanitized output"
+                );
+                self.update_metrics(|m| m.quarantine_failures += 1);
+                self.push_security_event(
+                    crate::metrics::SecurityEventCategory::Quarantine,
+                    tool_name,
+                    format!("Quarantine failed: {e}"),
+                );
+                None
+            }
+        }
     }
 }
 

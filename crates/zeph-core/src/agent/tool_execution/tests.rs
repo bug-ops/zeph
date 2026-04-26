@@ -2445,6 +2445,161 @@ impl ToolExecutor for FixedOutputExecutor {
     }
 }
 
+/// Returns success for the first `execute_tool_call` invocation and `[error]` output for all
+/// subsequent ones. Used to test batch behavior when one tool in a batch fails.
+struct FirstSuccessExecutor {
+    call_count: std::sync::Arc<std::sync::Mutex<usize>>,
+}
+
+impl ToolExecutor for FirstSuccessExecutor {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
+    }
+
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        let tool_id = call.tool_id.clone();
+        let call_count = std::sync::Arc::clone(&self.call_count);
+        async move {
+            let mut count = call_count.lock().unwrap();
+            let n = *count;
+            *count += 1;
+            drop(count);
+            let summary = if n == 0 {
+                "success output".to_owned()
+            } else {
+                "[error] tool failed".to_owned()
+            };
+            Ok(Some(ToolOutput {
+                tool_name: tool_id,
+                summary,
+                blocks_executed: 1,
+                diff: None,
+                filter_stats: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }))
+        }
+    }
+}
+
+/// Dispatches by `tool_id` to cover three outcomes in a single batch:
+/// - `"tool-success"`: always succeeds, not retryable.
+/// - `"tool-retryable"`: fails on call index 1 (transient), succeeds otherwise; `is_tool_retryable = true`.
+/// - `"tool-nonretryable"`: always transient error; `is_tool_retryable = false`.
+struct DispatchingExecutor {
+    call_count: AtomicUsize,
+}
+
+impl ToolExecutor for DispatchingExecutor {
+    fn execute(
+        &self,
+        _: &str,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
+    }
+
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+        let tool_id = call.tool_id.clone();
+        async move {
+            match tool_id.as_str() {
+                "tool-success" => Ok(Some(ToolOutput {
+                    tool_name: tool_id,
+                    summary: "ok".into(),
+                    blocks_executed: 1,
+                    diff: None,
+                    filter_stats: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                    claim_source: None,
+                })),
+                "tool-retryable" if idx == 1 => Err(ToolError::Execution(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "transient",
+                ))),
+                "tool-retryable" => Ok(Some(ToolOutput {
+                    tool_name: tool_id,
+                    summary: "retried-ok".into(),
+                    blocks_executed: 1,
+                    diff: None,
+                    filter_stats: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                    claim_source: None,
+                })),
+                _ => Err(ToolError::Execution(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "always-transient",
+                ))),
+            }
+        }
+    }
+
+    fn is_tool_retryable(&self, tool_id: &str) -> bool {
+        tool_id == "tool-retryable"
+    }
+}
+
+/// Fails permanently on the first call (index 0) and succeeds on all subsequent calls.
+/// Used to test that a batch with one permanent error still emits `ToolResult` for every call.
+struct FirstFailsExecutor {
+    call_count: std::sync::Arc<AtomicUsize>,
+}
+
+impl ToolExecutor for FirstFailsExecutor {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
+    }
+
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+        let tool_id = call.tool_id.clone();
+        async move {
+            if idx == 0 {
+                let _ = tool_id;
+                Err(ToolError::InvalidParams {
+                    message: "permanent error".to_owned(),
+                })
+            } else {
+                Ok(Some(ToolOutput {
+                    tool_name: tool_id,
+                    summary: "ok".to_owned(),
+                    blocks_executed: 1,
+                    diff: None,
+                    filter_stats: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                    claim_source: None,
+                }))
+            }
+        }
+    }
+}
+
 /// Builds a minimal `ToolUseRequest` for test use.
 fn make_tool_use_request(id: &str, name: &str) -> zeph_llm::provider::ToolUseRequest {
     zeph_llm::provider::ToolUseRequest {
@@ -2897,58 +3052,12 @@ async fn self_reflection_single_tool_failure_produces_one_tool_result() {
 // Second tool fails → reflection fires → early return must append ToolResult for 2nd (is_error)
 // and a synthetic [skipped] ToolResult for the 3rd. Total: 3 ToolResults for 3 ToolUses.
 #[tokio::test]
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3454): decompose into smaller helpers
 async fn self_reflection_middle_tool_failure_no_orphans() {
     use std::sync::{Arc, Mutex};
 
     use super::super::agent_tests::{MockChannel, mock_provider};
     use crate::config::LearningConfig;
     use zeph_llm::provider::MessagePart;
-
-    // Executor that returns success for the first call and error for subsequent calls.
-    struct FirstSuccessExecutor {
-        call_count: Arc<Mutex<usize>>,
-    }
-
-    impl ToolExecutor for FirstSuccessExecutor {
-        fn execute(
-            &self,
-            _response: &str,
-        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
-            std::future::ready(Ok(None))
-        }
-
-        fn execute_tool_call(
-            &self,
-            call: &ToolCall,
-        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
-            let tool_id = call.tool_id.clone();
-            let call_count = Arc::clone(&self.call_count);
-            async move {
-                let mut count = call_count.lock().unwrap();
-                let n = *count;
-                *count += 1;
-                drop(count);
-                let summary = if n == 0 {
-                    "success output".to_owned()
-                } else {
-                    "[error] tool failed".to_owned()
-                };
-                Ok(Some(ToolOutput {
-                    tool_name: tool_id,
-                    summary,
-                    blocks_executed: 1,
-                    diff: None,
-                    filter_stats: None,
-                    streamed: false,
-                    terminal_id: None,
-                    locations: None,
-                    raw_response: None,
-                    claim_source: None,
-                }))
-            }
-        }
-    }
 
     let executor = FirstSuccessExecutor {
         call_count: Arc::new(Mutex::new(0)),
@@ -3566,75 +3675,9 @@ async fn transient_error_on_non_retryable_executor_is_not_retried() {
 // tool[2] is non-retryable-transient-always-fail. Verifies all three complete with
 // the correct outcome and the retry fires only for tool[1].
 #[tokio::test]
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3454): decompose into smaller helpers
 async fn mixed_retryable_and_non_retryable_batch() {
     use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use zeph_llm::provider::MessagePart;
-
-    // Use a single dispatching executor that branches by tool_id, covering:
-    // - "tool-success": always succeeds, not retryable (default)
-    // - "tool-retryable": first call transient, second call ok; is_tool_retryable=true
-    // - "tool-nonretryable": always transient, is_tool_retryable=false
-    struct DispatchingExecutor {
-        call_count: AtomicUsize,
-    }
-    impl ToolExecutor for DispatchingExecutor {
-        fn execute(
-            &self,
-            _: &str,
-        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
-            std::future::ready(Ok(None))
-        }
-        fn execute_tool_call(
-            &self,
-            call: &ToolCall,
-        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
-            let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-            let tool_id = call.tool_id.clone();
-            async move {
-                match tool_id.as_str() {
-                    "tool-success" => Ok(Some(ToolOutput {
-                        tool_name: tool_id,
-                        summary: "ok".into(),
-                        blocks_executed: 1,
-                        diff: None,
-                        filter_stats: None,
-                        streamed: false,
-                        terminal_id: None,
-                        locations: None,
-                        raw_response: None,
-                        claim_source: None,
-                    })),
-                    // tool-retryable: fail on first call (idx 1), succeed after that
-                    "tool-retryable" if idx == 1 => Err(ToolError::Execution(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "transient",
-                    ))),
-                    "tool-retryable" => Ok(Some(ToolOutput {
-                        tool_name: tool_id,
-                        summary: "retried-ok".into(),
-                        blocks_executed: 1,
-                        diff: None,
-                        filter_stats: None,
-                        streamed: false,
-                        terminal_id: None,
-                        locations: None,
-                        raw_response: None,
-                        claim_source: None,
-                    })),
-                    // tool-nonretryable: always transient error
-                    _ => Err(ToolError::Execution(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "always-transient",
-                    ))),
-                }
-            }
-        }
-        fn is_tool_retryable(&self, tool_id: &str) -> bool {
-            tool_id == "tool-retryable"
-        }
-    }
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -4290,55 +4333,11 @@ async fn sanitize_tool_output_memory_save_still_uses_tool_result() {
 // After the fix, both ToolResults must be present in a single User message that immediately
 // follows the Assistant{ToolUse} message, with no interleaved messages in between.
 #[tokio::test]
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3454): decompose into smaller helpers
 async fn test_parallel_tool_calls_permanent_error_emits_tool_result() {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::super::agent_tests::{MockChannel, create_test_registry, mock_provider};
     use zeph_llm::provider::{MessagePart, Role};
-
-    struct FirstFailsExecutor {
-        call_count: Arc<AtomicUsize>,
-    }
-
-    impl ToolExecutor for FirstFailsExecutor {
-        fn execute(
-            &self,
-            _response: &str,
-        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
-            std::future::ready(Ok(None))
-        }
-
-        fn execute_tool_call(
-            &self,
-            call: &ToolCall,
-        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
-            let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-            let tool_id = call.tool_id.clone();
-            async move {
-                if idx == 0 {
-                    let _ = tool_id;
-                    Err(ToolError::InvalidParams {
-                        message: "permanent error".to_owned(),
-                    })
-                } else {
-                    Ok(Some(ToolOutput {
-                        tool_name: tool_id,
-                        summary: "ok".to_owned(),
-                        blocks_executed: 1,
-                        diff: None,
-                        filter_stats: None,
-                        streamed: false,
-                        terminal_id: None,
-                        locations: None,
-                        raw_response: None,
-                        claim_source: None,
-                    }))
-                }
-            }
-        }
-    }
 
     let executor = FirstFailsExecutor {
         call_count: Arc::new(AtomicUsize::new(0)),

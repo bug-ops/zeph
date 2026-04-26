@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- refactor(zeph-core): decompose long functions in `agent/tool_execution/` (#3457).
+  All `#[allow(clippy::too_many_lines)]` suppressions removed from `native.rs`,
+  `sanitize.rs`, and `tests.rs` by extracting private helpers:
+  `check_exfiltration_urls`, `preprocess_focus_compress_calls`,
+  `stamp_and_send_tier_start`, `check_call_gates`, `handle_utility_gate`,
+  `run_before_tool_hooks`, `build_tier_call_futures`, `execute_tier_join`,
+  `apply_tier_results`, `run_causal_ipi_post_probe`, `classify_tool_result`,
+  `record_tool_execution_telemetry`, `handle_tool_failure_outcomes`,
+  `fire_vigil_audit_entry`, `record_tool_experience`, `process_one_tool_result`.
+  Pure structural refactoring — no behavioral changes.
+
 ### Added
 
 - A2A: `AgentCard` served at `/.well-known/agent.json` now accurately reflects the agent's
@@ -27,6 +40,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reaps child processes via `pkill`, then sends SIGKILL. `ShellExecutor::shutdown` also
   applies this escalation against captured process IDs. Gated with `#[cfg(unix)]`;
   Windows falls back to `child.kill()` as before. (#3449)
+- `zeph-core`: decompose long functions in the learning and security-state subsystems to remove
+  `#[allow(clippy::too_many_lines)]` suppressions. Extracted private helpers in
+  `agent/learning/skill_commands.rs` (`validate_skill_create_input`,
+  `resolve_generation_output_dir`, `dedup_check_against_registry`,
+  `format_generated_skill_blocked`, `save_and_quarantine_generated_skill`),
+  `agent/learning/trust.rs` (`cross_session_rollout_ok_for_promote`,
+  `cross_session_rollout_ok_for_demote`, `try_auto_promote`, `try_auto_demote`), and
+  `agent/state/security.rs` (`run_ner_classifier`). No behavioral changes. (#3457)
 
 ### Refactored
 
