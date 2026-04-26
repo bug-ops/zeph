@@ -1951,7 +1951,6 @@ impl ZephAcpAgentState {
                  /model <id> — switch the active model\n\
                  /mode <code|architect|ask> — switch session mode\n\
                  /clear — clear session history\n\
-                 /compact — summarize and compact context\n\
                  /review [path] — review recent changes (read-only)"
                 .to_owned(),
             "/model" => self.handle_model_command(session_id, arg)?,
@@ -2651,7 +2650,6 @@ fn is_acp_native_slash_command(trimmed_text: &str) -> bool {
         || trimmed_text.starts_with("/review")
         || trimmed_text == "/model"
         || trimmed_text.starts_with("/model ")
-        || trimmed_text == "/compact"
 }
 
 /// Map `(cancelled, stop_hint)` to the ACP `StopReason` wire value.
