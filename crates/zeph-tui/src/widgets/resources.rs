@@ -28,7 +28,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     frame.render_widget(resources, area);
 }
 
-fn append_llm_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsSnapshot) {
+fn append_llm_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot) {
     lines.push(Line::from("  LLM"));
     lines.push(Line::from(format!(
         "    Provider: {}",
@@ -50,8 +50,8 @@ fn append_llm_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsSnapshot) 
     }
 }
 
-fn append_session_section<'a>(
-    lines: &mut Vec<Line<'a>>,
+fn append_session_section(
+    lines: &mut Vec<Line<'_>>,
     metrics: &MetricsSnapshot,
     collapsed: bool,
 ) {
@@ -106,7 +106,7 @@ fn append_session_section<'a>(
     }
 }
 
-fn append_infra_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsSnapshot, collapsed: bool) {
+fn append_infra_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, collapsed: bool) {
     if collapsed {
         let mut infra_parts: Vec<String> = Vec::new();
         if !metrics.vault_backend.is_empty() {
@@ -151,7 +151,7 @@ fn append_infra_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsSnapshot
     }
 }
 
-fn append_shell_background_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsSnapshot) {
+fn append_shell_background_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot) {
     if metrics.shell_background_runs.is_empty() {
         return;
     }
@@ -176,7 +176,7 @@ fn append_shell_background_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &Metr
     }
 }
 
-fn append_turn_latency_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsSnapshot) {
+fn append_turn_latency_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot) {
     if metrics.timing_sample_count == 0 {
         return;
     }
@@ -200,7 +200,7 @@ fn append_turn_latency_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsS
     }
 }
 
-fn append_classifier_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsSnapshot) {
+fn append_classifier_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot) {
     let clf = &metrics.classifier;
     let has_data =
         clf.injection.call_count > 0 || clf.pii.call_count > 0 || clf.feedback.call_count > 0;
