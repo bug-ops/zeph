@@ -73,7 +73,7 @@ pub struct SpeculativeMetrics {
 ///
 /// ```rust,no_run
 /// use std::sync::Arc;
-/// use zeph_tools::config::SpeculativeConfig;
+/// use zeph_config::tools::SpeculativeConfig;
 /// use zeph_core::agent::speculative::SpeculationEngine;
 ///
 /// # async fn example(executor: Arc<dyn zeph_tools::ErasedToolExecutor>) {

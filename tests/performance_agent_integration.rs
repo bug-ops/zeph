@@ -260,7 +260,7 @@ async fn tool_executor_overhead_is_minimal() {
 
 #[tokio::test]
 async fn agent_respects_configured_timeout() {
-    use zeph_tools::config::ShellConfig;
+    use zeph_tools::ShellConfig;
     use zeph_tools::shell::ShellExecutor;
 
     // Create executor with 1-second timeout
@@ -283,7 +283,7 @@ async fn agent_respects_configured_timeout() {
 
 #[tokio::test]
 async fn shell_executor_default_blocked_patterns() {
-    use zeph_tools::config::ShellConfig;
+    use zeph_tools::ShellConfig;
     use zeph_tools::shell::ShellExecutor;
 
     let shell_config = ShellConfig {
@@ -317,7 +317,7 @@ async fn shell_executor_default_blocked_patterns() {
 
 #[tokio::test]
 async fn shell_executor_allows_safe_commands() {
-    use zeph_tools::config::ShellConfig;
+    use zeph_tools::ShellConfig;
     use zeph_tools::shell::ShellExecutor;
 
     let shell_config = ShellConfig {
@@ -342,7 +342,7 @@ async fn shell_executor_allows_safe_commands() {
 
 #[tokio::test]
 async fn shell_executor_case_insensitive_blocking() {
-    use zeph_tools::config::ShellConfig;
+    use zeph_tools::ShellConfig;
     use zeph_tools::shell::ShellExecutor;
 
     let shell_config = ShellConfig {
@@ -367,7 +367,7 @@ async fn shell_executor_case_insensitive_blocking() {
 
 #[tokio::test]
 async fn integration_agent_tool_executor_types() {
-    use zeph_tools::config::ShellConfig;
+    use zeph_tools::ShellConfig;
     use zeph_tools::shell::ShellExecutor;
 
     let provider = mock_provider("test");
@@ -441,7 +441,7 @@ async fn agent_throughput_multiple_responses() {
 
 #[tokio::test]
 async fn tool_executor_pattern_matching_overhead() {
-    use zeph_tools::config::ShellConfig;
+    use zeph_tools::ShellConfig;
     use zeph_tools::shell::ShellExecutor;
 
     let shell_config = ShellConfig {
