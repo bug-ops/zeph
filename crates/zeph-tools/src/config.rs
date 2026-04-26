@@ -35,7 +35,7 @@ pub fn validate_sandbox_denied_domains(config: &SandboxConfig) -> Result<(), Str
 /// # Examples
 ///
 /// ```no_run
-/// use zeph_tools::config::{ToolsConfig, build_permission_policy};
+/// use zeph_tools::{ToolsConfig, build_permission_policy};
 /// use zeph_tools::AutonomyLevel;
 ///
 /// let config = ToolsConfig::default();

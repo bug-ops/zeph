@@ -2214,8 +2214,7 @@ mod tests {
                 .compression
                 .probe
                 .probe_provider
-                .as_ref()
-                .map(|p| p.as_str()),
+                .as_deref(),
             Some("fast")
         );
     }

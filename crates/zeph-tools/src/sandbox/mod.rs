@@ -25,7 +25,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use zeph_tools::sandbox::{build_sandbox, SandboxPolicy, SandboxProfile};
+//! use zeph_tools::{build_sandbox, SandboxPolicy, SandboxProfile};
 //! use tokio::process::Command;
 //!
 //! # fn example() -> Result<(), Box<dyn std::error::Error>> {

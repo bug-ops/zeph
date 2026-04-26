@@ -752,7 +752,7 @@ mod tests {
         let restored: CompactionProbeConfig = serde_json::from_str(&json).expect("deserialize");
         assert!(restored.enabled);
         assert_eq!(
-            restored.probe_provider.as_ref().map(|p| p.as_str()),
+            restored.probe_provider.as_deref(),
             Some("fast")
         );
         assert!((restored.threshold - 0.65).abs() < 0.001);

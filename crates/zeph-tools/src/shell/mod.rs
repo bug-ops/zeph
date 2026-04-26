@@ -223,7 +223,7 @@ pub(crate) struct BashParams {
 /// # Example
 ///
 /// ```rust,no_run
-/// use zeph_tools::{ShellExecutor, ToolExecutor, config::ShellConfig};
+/// use zeph_tools::{ShellExecutor, ToolExecutor, ShellConfig};
 ///
 /// # async fn example() {
 /// let executor = ShellExecutor::new(&ShellConfig::default());

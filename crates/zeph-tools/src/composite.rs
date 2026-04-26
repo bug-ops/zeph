@@ -22,8 +22,7 @@ use crate::registry::ToolDef;
 ///
 /// ```rust
 /// use zeph_tools::{
-///     CompositeExecutor, ShellExecutor, WebScrapeExecutor,
-///     config::{ShellConfig, ScrapeConfig},
+///     CompositeExecutor, ShellExecutor, WebScrapeExecutor, ShellConfig, ScrapeConfig,
 /// };
 ///
 /// let shell = ShellExecutor::new(&ShellConfig::default());
