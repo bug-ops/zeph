@@ -179,14 +179,18 @@ impl AnyProvider {
         }
     }
 
-    /// Persist router state to disk if this provider is a `RouterProvider` with Thompson strategy.
+    /// Persist router state to disk if this provider is a `RouterProvider`.
     ///
-    /// No-op for all other provider variants.
-    pub fn save_router_state(&self) {
+    /// Saves Thompson, reputation, and bandit state concurrently using
+    /// [`tokio::task::spawn_blocking`]. No-op for all other provider variants.
+    pub async fn save_router_state(&self) {
         if let Self::Router(p) = self {
-            p.save_thompson_state();
-            p.save_reputation_state();
-            p.save_bandit_state();
+            // Run all three saves concurrently — each is independent I/O.
+            tokio::join!(
+                p.save_thompson_state(),
+                p.save_reputation_state(),
+                p.save_bandit_state(),
+            );
         }
     }
 

@@ -546,14 +546,22 @@ impl RouterProvider {
     }
 
     /// Persist current bandit state to disk. No-op if bandit strategy is not active.
-    pub fn save_bandit_state(&self) {
+    ///
+    /// Uses [`tokio::task::spawn_blocking`] so it is safe to call from any async context.
+    pub async fn save_bandit_state(&self) {
         let (Some(bandit), Some(path)) = (&self.bandit, &self.bandit_state_path) else {
             return;
         };
-        let state = bandit.lock();
-        if let Err(e) = state.save(path) {
-            tracing::warn!(error = %e, "failed to save bandit state");
-        }
+        let bandit = Arc::clone(bandit);
+        let path = path.clone();
+        tokio::task::spawn_blocking(move || {
+            let state = bandit.lock();
+            if let Err(e) = state.save(&path) {
+                tracing::warn!(error = %e, "failed to save bandit state");
+            }
+        })
+        .await
+        .unwrap_or_else(|e| tracing::warn!(error = %e, "bandit state save task panicked"));
     }
 
     /// Return bandit diagnostic stats: `(provider_name, pulls, mean_reward)`.
@@ -644,14 +652,21 @@ impl RouterProvider {
     }
 
     /// Persist current reputation state to disk. No-op if reputation is disabled.
-    pub fn save_reputation_state(&self) {
+    /// Uses [`tokio::task::spawn_blocking`] so it is safe to call from any async context.
+    pub async fn save_reputation_state(&self) {
         let (Some(reputation), Some(path)) = (&self.reputation, &self.reputation_state_path) else {
             return;
         };
-        let state = reputation.lock();
-        if let Err(e) = state.save(path) {
-            tracing::warn!(error = %e, "failed to save reputation state");
-        }
+        let reputation = Arc::clone(reputation);
+        let path = path.clone();
+        tokio::task::spawn_blocking(move || {
+            let state = reputation.lock();
+            if let Err(e) = state.save(&path) {
+                tracing::warn!(error = %e, "failed to save reputation state");
+            }
+        })
+        .await
+        .unwrap_or_else(|e| tracing::warn!(error = %e, "reputation state save task panicked"));
     }
 
     /// Return reputation stats for all tracked providers: (name, alpha, beta, mean, observations).
@@ -726,19 +741,22 @@ impl RouterProvider {
     ///
     /// No-op if Thompson strategy is not active.
     ///
-    /// # Note
-    ///
-    /// This performs synchronous I/O. Called at agent shutdown from an async context;
-    /// acceptable since it runs after all in-flight requests have completed.
-    // FIXME: if called mid-request, use `tokio::task::spawn_blocking` instead.
-    pub fn save_thompson_state(&self) {
+    /// Uses [`tokio::task::spawn_blocking`] so it is safe to call from any async context,
+    /// including mid-request paths.
+    pub async fn save_thompson_state(&self) {
         let (Some(thompson), Some(path)) = (&self.thompson, &self.thompson_state_path) else {
             return;
         };
-        let state = thompson.lock();
-        if let Err(e) = state.save(path) {
-            tracing::warn!(error = %e, "failed to save Thompson router state");
-        }
+        let thompson = Arc::clone(thompson);
+        let path = path.clone();
+        tokio::task::spawn_blocking(move || {
+            let state = thompson.lock();
+            if let Err(e) = state.save(&path) {
+                tracing::warn!(error = %e, "failed to save Thompson router state");
+            }
+        })
+        .await
+        .unwrap_or_else(|e| tracing::warn!(error = %e, "Thompson state save task panicked"));
     }
 
     /// Hash a query string to a `u64` cache key.
@@ -1365,6 +1383,28 @@ impl RouterProvider {
     }
 }
 
+/// Record a provider error during the fallback loop and emit a warning log.
+///
+/// Shared by [`RouterProvider::chat`] and [`RouterProvider::chat_stream`] to avoid
+/// duplicating error-path bookkeeping. Not part of the public API.
+fn record_fallback_error(
+    router: &RouterProvider,
+    provider_name: &str,
+    error: &LlmError,
+    elapsed_ms: u64,
+    status_tx: Option<&StatusTx>,
+    log_msg: &'static str,
+) {
+    router.record_availability(provider_name, false, elapsed_ms);
+    if error.is_rate_limited() {
+        router.record_availability(provider_name, false, 0);
+    }
+    if let Some(tx) = status_tx {
+        let _ = tx.send(format!("router: {provider_name} failed, falling back"));
+    }
+    tracing::warn!(provider = provider_name, error = %error, "{}", log_msg);
+}
+
 impl LlmProvider for RouterProvider {
     fn context_window(&self) -> Option<usize> {
         self.state
@@ -1381,8 +1421,9 @@ impl LlmProvider for RouterProvider {
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
         let router = self.clone();
-        // TODO: DRY — `chat` and `chat_stream` share the same fallback loop pattern.
-        // Refactor into a shared helper once the API stabilizes.
+        // NOTE: `chat` and `chat_stream` share error-path logic via `record_fallback_error`.
+        // Their success paths diverge (quality gate + CoE vs. plain stream-open), so a
+        // shared loop helper would reduce clarity without removing significant duplication.
         Box::pin(async move {
             // Increment turn counter once per top-level chat() call. All concurrent sub-calls
             // (tool schema fetches, embed probes) that re-enter chat() will see the same
@@ -1517,18 +1558,14 @@ impl LlmProvider for RouterProvider {
                         return Ok(r);
                     }
                     Err(e) => {
-                        router.record_availability(
+                        record_fallback_error(
+                            &router,
                             p.name(),
-                            false,
+                            &e,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                            status_tx.as_ref(),
+                            "router fallback",
                         );
-                        if e.is_rate_limited() {
-                            router.record_availability(p.name(), false, 0);
-                        }
-                        if let Some(ref tx) = status_tx {
-                            let _ = tx.send(format!("router: {} failed, falling back", p.name()));
-                        }
-                        tracing::warn!(provider = p.name(), error = %e, "router fallback");
                     }
                 }
             }
@@ -1550,6 +1587,8 @@ impl LlmProvider for RouterProvider {
         let messages = messages.to_vec();
         let router = self.clone();
         Box::pin(async move {
+            // NOTE: see DRY design decision above `chat()` — error path shared via
+            // `record_fallback_error`; success paths diverge intentionally.
             if router.strategy == RouterStrategy::Cascade {
                 // Cascade: pass Arc slice directly — no Vec allocation on the hot path.
                 return router
@@ -1589,18 +1628,14 @@ impl LlmProvider for RouterProvider {
                         return Ok(r);
                     }
                     Err(e) => {
-                        router.record_availability(
+                        record_fallback_error(
+                            &router,
                             p.name(),
-                            false,
+                            &e,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                            status_tx.as_ref(),
+                            "router stream fallback",
                         );
-                        if e.is_rate_limited() {
-                            router.record_availability(p.name(), false, 0);
-                        }
-                        if let Some(ref tx) = status_tx {
-                            let _ = tx.send(format!("router: {} failed, falling back", p.name()));
-                        }
-                        tracing::warn!(provider = p.name(), error = %e, "router stream fallback");
                     }
                 }
             }
@@ -2515,10 +2550,10 @@ mod tests {
         assert!(r.thompson.is_some());
     }
 
-    #[test]
-    fn save_thompson_state_noop_without_thompson() {
+    #[tokio::test]
+    async fn save_thompson_state_noop_without_thompson() {
         let r = RouterProvider::new(vec![]);
-        r.save_thompson_state(); // should not panic
+        r.save_thompson_state().await; // should not panic
     }
 
     #[test]

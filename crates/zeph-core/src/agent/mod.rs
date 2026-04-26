@@ -667,7 +667,7 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("Shutting down...").await;
 
         // CRIT-1: persist Thompson state accumulated during this session.
-        self.provider.save_router_state();
+        self.provider.save_router_state().await;
 
         // Persist AdaptOrch Beta-arm table alongside Thompson state.
         if let Some(ref advisor) = self.orchestration.topology_advisor
