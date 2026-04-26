@@ -2209,12 +2209,7 @@ mod tests {
         };
         let config = build_config(&state);
         assert_eq!(
-            config
-                .memory
-                .compression
-                .probe
-                .probe_provider
-                .as_deref(),
+            config.memory.compression.probe.probe_provider.as_deref(),
             Some("fast")
         );
     }
