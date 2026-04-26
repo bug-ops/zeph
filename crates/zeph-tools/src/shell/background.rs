@@ -48,9 +48,7 @@ pub(crate) struct BackgroundHandle {
     pub started_at: Instant,
     /// Cancellation token. Cancel to request graceful shutdown.
     pub abort: CancellationToken,
-    /// OS process ID, if known. Reserved for future SIGTERM escalation on shutdown.
-    // TODO(#3449): use once safe signal-sending wrapper (e.g. nix crate) is available.
-    #[allow(dead_code)]
+    /// OS process ID, if known. Used for SIGTERM/SIGKILL escalation on Unix during shutdown.
     pub child_pid: Option<u32>,
 }
 

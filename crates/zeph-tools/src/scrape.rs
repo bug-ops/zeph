@@ -318,7 +318,6 @@ impl ToolExecutor for WebScrapeExecutor {
         feature = "profiling",
         tracing::instrument(name = "tool.web_scrape", skip_all)
     )]
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3450): decompose into smaller helpers
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         match call.tool_id.as_str() {
             "web_scrape" => {
@@ -330,46 +329,16 @@ impl ToolExecutor for WebScrapeExecutor {
                     .await;
                 #[allow(clippy::cast_possible_truncation)]
                 let duration_ms = start.elapsed().as_millis() as u64;
-                match result {
-                    Ok(output) => {
-                        self.log_audit(
-                            "web_scrape",
-                            &instruction.url,
-                            AuditResult::Success,
-                            duration_ms,
-                            None,
-                            call.caller_id.clone(),
-                            Some(correlation_id),
-                        )
-                        .await;
-                        Ok(Some(ToolOutput {
-                            tool_name: ToolName::new("web-scrape"),
-                            summary: output,
-                            blocks_executed: 1,
-                            filter_stats: None,
-                            diff: None,
-                            streamed: false,
-                            terminal_id: None,
-                            locations: None,
-                            raw_response: None,
-                            claim_source: Some(ClaimSource::WebScrape),
-                        }))
-                    }
-                    Err(e) => {
-                        let audit_result = tool_error_to_audit_result(&e);
-                        self.log_audit(
-                            "web_scrape",
-                            &instruction.url,
-                            audit_result,
-                            duration_ms,
-                            Some(&e),
-                            call.caller_id.clone(),
-                            Some(correlation_id),
-                        )
-                        .await;
-                        Err(e)
-                    }
-                }
+                self.run_with_audit(
+                    "web_scrape",
+                    "web-scrape",
+                    &instruction.url,
+                    call.caller_id.clone(),
+                    correlation_id,
+                    duration_ms,
+                    result,
+                )
+                .await
             }
             "fetch" => {
                 let p: FetchParams = deserialize_params(&call.params)?;
@@ -380,46 +349,16 @@ impl ToolExecutor for WebScrapeExecutor {
                     .await;
                 #[allow(clippy::cast_possible_truncation)]
                 let duration_ms = start.elapsed().as_millis() as u64;
-                match result {
-                    Ok(output) => {
-                        self.log_audit(
-                            "fetch",
-                            &p.url,
-                            AuditResult::Success,
-                            duration_ms,
-                            None,
-                            call.caller_id.clone(),
-                            Some(correlation_id),
-                        )
-                        .await;
-                        Ok(Some(ToolOutput {
-                            tool_name: ToolName::new("fetch"),
-                            summary: output,
-                            blocks_executed: 1,
-                            filter_stats: None,
-                            diff: None,
-                            streamed: false,
-                            terminal_id: None,
-                            locations: None,
-                            raw_response: None,
-                            claim_source: Some(ClaimSource::WebScrape),
-                        }))
-                    }
-                    Err(e) => {
-                        let audit_result = tool_error_to_audit_result(&e);
-                        self.log_audit(
-                            "fetch",
-                            &p.url,
-                            audit_result,
-                            duration_ms,
-                            Some(&e),
-                            call.caller_id.clone(),
-                            Some(correlation_id),
-                        )
-                        .await;
-                        Err(e)
-                    }
-                }
+                self.run_with_audit(
+                    "fetch",
+                    "fetch",
+                    &p.url,
+                    call.caller_id.clone(),
+                    correlation_id,
+                    duration_ms,
+                    result,
+                )
+                .await
             }
             _ => Ok(None),
         }
@@ -443,6 +382,59 @@ fn tool_error_to_audit_result(e: &ToolError) -> AuditResult {
 }
 
 impl WebScrapeExecutor {
+    #[allow(clippy::too_many_arguments)]
+    async fn run_with_audit(
+        &self,
+        audit_tool_name: &str,
+        public_tool_name: &str,
+        audit_command: &str,
+        caller_id: Option<String>,
+        correlation_id: String,
+        duration_ms: u64,
+        result: Result<String, ToolError>,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        match result {
+            Ok(output) => {
+                self.log_audit(
+                    audit_tool_name,
+                    audit_command,
+                    AuditResult::Success,
+                    duration_ms,
+                    None,
+                    caller_id,
+                    Some(correlation_id),
+                )
+                .await;
+                Ok(Some(ToolOutput {
+                    tool_name: ToolName::new(public_tool_name),
+                    summary: output,
+                    blocks_executed: 1,
+                    filter_stats: None,
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                    claim_source: Some(ClaimSource::WebScrape),
+                }))
+            }
+            Err(e) => {
+                let audit_result = tool_error_to_audit_result(&e);
+                self.log_audit(
+                    audit_tool_name,
+                    audit_command,
+                    audit_result,
+                    duration_ms,
+                    Some(&e),
+                    caller_id,
+                    Some(correlation_id),
+                )
+                .await;
+                Err(e)
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn log_audit(
         &self,

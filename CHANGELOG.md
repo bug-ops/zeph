@@ -16,6 +16,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Card construction is extracted into a private `build_default_card` helper in `daemon.rs`
   for testability. (#3378)
 
+### Changed
+
+- `zeph-tools`: replaced shell-out signal sending with safe `nix`-based SIGTERM/SIGKILL
+  escalation in the shell executor. `kill_process_tree` now sends SIGTERM, waits 250 ms,
+  reaps child processes via `pkill`, then sends SIGKILL. `ShellExecutor::shutdown` also
+  applies this escalation against captured process IDs. Gated with `#[cfg(unix)]`;
+  Windows falls back to `child.kill()` as before. (#3449)
+
+### Refactored
+
+- `zeph-tools`: decomposed long functions in shell and scrape executors to satisfy
+  `clippy::too_many_lines`. `execute_block` was split into `capture_snapshot_for`,
+  `maybe_rollback`, `classify_and_audit`, and `apply_output_filter`; `execute_bash` was
+  split into `build_bash_command`, `apply_sandbox`, `spawn_output_readers`,
+  `run_bash_stream`, and `finalize_envelope`; `execute_tool_call` in `WebScrapeExecutor`
+  was deduplicated via `run_with_audit`. (#3450)
+
 ### Fixed
 
 - `zeph-bench`: `BookReservationParams`, `UpdateReservationFlightsParams`, and

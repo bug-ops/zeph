@@ -57,6 +57,10 @@ const DEFAULT_BLOCKED: &[&str] = &[
     "reboot", "halt",
 ];
 
+/// Graceful period between SIGTERM and SIGKILL during process escalation.
+#[cfg(unix)]
+const GRACEFUL_TERM_MS: Duration = Duration::from_millis(250);
+
 /// The default list of blocked command patterns used by [`ShellExecutor`].
 ///
 /// Includes highly destructive commands (`rm -rf /`, `mkfs`, `dd if=`), privilege
@@ -469,7 +473,6 @@ impl ShellExecutor {
         }))
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3450): decompose into smaller helpers
     async fn execute_block(
         &self,
         block: &str,
@@ -478,38 +481,7 @@ impl ShellExecutor {
         self.check_permissions(block, skip_confirm).await?;
         self.validate_sandbox(block)?;
 
-        // Take a transactional snapshot before executing write commands.
-        let mut snapshot_warning: Option<String> = None;
-        let snapshot = if self.transactional && is_write_command(block) {
-            let paths = affected_paths(block, &self.transaction_scope_matchers);
-            if paths.is_empty() {
-                None
-            } else {
-                match TransactionSnapshot::capture(&paths, self.max_snapshot_bytes) {
-                    Ok(snap) => {
-                        tracing::debug!(
-                            files = snap.file_count(),
-                            bytes = snap.total_bytes(),
-                            "transaction snapshot captured"
-                        );
-                        Some(snap)
-                    }
-                    Err(e) if self.snapshot_required => {
-                        return Err(ToolError::SnapshotFailed {
-                            reason: e.to_string(),
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(err = %e, "transaction snapshot failed, proceeding without rollback");
-                        snapshot_warning =
-                            Some(format!("[warn] snapshot failed: {e}; rollback unavailable"));
-                        None
-                    }
-                }
-            }
-        } else {
-            None
-        };
+        let (snapshot, snapshot_warning) = self.capture_snapshot_for(block)?;
 
         if let Some(ref tx) = self.tool_event_tx {
             let sandbox_profile = self
@@ -554,117 +526,20 @@ impl ShellExecutor {
         #[allow(clippy::cast_possible_truncation)]
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        // Perform auto-rollback if configured and the exit code qualifies.
         if let Some(snap) = snapshot {
-            let should_rollback = self.auto_rollback
-                && if self.auto_rollback_exit_codes.is_empty() {
-                    exit_code >= 2
-                } else {
-                    self.auto_rollback_exit_codes.contains(&exit_code)
-                };
-            if should_rollback {
-                match snap.rollback() {
-                    Ok(report) => {
-                        tracing::info!(
-                            restored = report.restored_count,
-                            deleted = report.deleted_count,
-                            "transaction rollback completed"
-                        );
-                        self.log_audit(
-                            block,
-                            AuditResult::Rollback {
-                                restored: report.restored_count,
-                                deleted: report.deleted_count,
-                            },
-                            duration_ms,
-                            None,
-                            Some(exit_code),
-                            false,
-                        )
-                        .await;
-                        if let Some(ref tx) = self.tool_event_tx {
-                            // Terminal event: must deliver. Use send().await.
-                            let _ = tx
-                                .send(ToolEvent::Rollback {
-                                    tool_name: ToolName::new("bash"),
-                                    command: block.to_owned(),
-                                    restored_count: report.restored_count,
-                                    deleted_count: report.deleted_count,
-                                })
-                                .await;
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(err = %e, "transaction rollback failed");
-                    }
-                }
-            }
-            // On success (no rollback): snapshot dropped here; TempDir auto-cleans.
+            self.maybe_rollback(snap, block, exit_code, duration_ms)
+                .await;
         }
 
-        let is_timeout = out.contains("[error] command timed out");
-        let audit_result = if is_timeout {
-            AuditResult::Timeout
-        } else if out.contains("[error]") || out.contains("[stderr]") {
-            AuditResult::Error {
-                message: out.clone(),
-            }
-        } else {
-            AuditResult::Success
-        };
-        if is_timeout {
-            self.log_audit(
-                block,
-                audit_result,
-                duration_ms,
-                None,
-                Some(exit_code),
-                false,
-            )
-            .await;
+        if let Some(err) = self
+            .classify_and_audit(block, &out, exit_code, duration_ms)
+            .await
+        {
             self.emit_completed(block, &out, false, None, None).await;
-            return Err(ToolError::Timeout {
-                timeout_secs: self.timeout.as_secs(),
-            });
+            return Err(err);
         }
 
-        if let Some(category) = classify_shell_exit(exit_code, &out) {
-            self.emit_completed(block, &out, false, None, None).await;
-            return Err(ToolError::Shell {
-                exit_code,
-                category,
-                message: out.lines().take(3).collect::<Vec<_>>().join("; "),
-            });
-        }
-
-        let sanitized = sanitize_output(&out);
-        let mut per_block_stats: Option<FilterStats> = None;
-        let filtered = if let Some(ref registry) = self.output_filter_registry {
-            match registry.apply(block, &sanitized, exit_code) {
-                Some(fr) => {
-                    tracing::debug!(
-                        command = block,
-                        raw = fr.raw_chars,
-                        filtered = fr.filtered_chars,
-                        savings_pct = fr.savings_pct(),
-                        "output filter applied"
-                    );
-                    per_block_stats = Some(FilterStats {
-                        raw_chars: fr.raw_chars,
-                        filtered_chars: fr.filtered_chars,
-                        raw_lines: fr.raw_lines,
-                        filtered_lines: fr.filtered_lines,
-                        confidence: Some(fr.confidence),
-                        command: Some(block.to_owned()),
-                        kept_lines: fr.kept_lines.clone(),
-                    });
-                    fr.output
-                }
-                None => sanitized,
-            }
-        } else {
-            sanitized
-        };
+        let (filtered, per_block_stats) = self.apply_output_filter(block, &out, exit_code);
 
         self.emit_completed(
             block,
@@ -678,6 +553,13 @@ impl ShellExecutor {
         // Mark truncated if output was shortened during filtering.
         envelope.truncated = filtered.len() < out.len();
 
+        let audit_result = if out.contains("[error]") || out.contains("[stderr]") {
+            AuditResult::Error {
+                message: out.clone(),
+            }
+        } else {
+            AuditResult::Success
+        };
         self.log_audit(
             block,
             audit_result,
@@ -688,12 +570,166 @@ impl ShellExecutor {
         )
         .await;
 
-        let output_line = if let Some(warn) = snapshot_warning {
-            format!("{warn}\n$ {block}\n{filtered}")
-        } else {
-            format!("$ {block}\n{filtered}")
+        let output_line = match snapshot_warning {
+            Some(warn) => format!("{warn}\n$ {block}\n{filtered}"),
+            None => format!("$ {block}\n{filtered}"),
         };
         Ok((output_line, per_block_stats, envelope))
+    }
+
+    fn capture_snapshot_for(
+        &self,
+        block: &str,
+    ) -> Result<(Option<TransactionSnapshot>, Option<String>), ToolError> {
+        if !self.transactional || !is_write_command(block) {
+            return Ok((None, None));
+        }
+        let paths = affected_paths(block, &self.transaction_scope_matchers);
+        if paths.is_empty() {
+            return Ok((None, None));
+        }
+        match TransactionSnapshot::capture(&paths, self.max_snapshot_bytes) {
+            Ok(snap) => {
+                tracing::debug!(
+                    files = snap.file_count(),
+                    bytes = snap.total_bytes(),
+                    "transaction snapshot captured"
+                );
+                Ok((Some(snap), None))
+            }
+            Err(e) if self.snapshot_required => Err(ToolError::SnapshotFailed {
+                reason: e.to_string(),
+            }),
+            Err(e) => {
+                tracing::warn!(err = %e, "transaction snapshot failed, proceeding without rollback");
+                Ok((
+                    None,
+                    Some(format!("[warn] snapshot failed: {e}; rollback unavailable")),
+                ))
+            }
+        }
+    }
+
+    async fn maybe_rollback(
+        &self,
+        snap: TransactionSnapshot,
+        block: &str,
+        exit_code: i32,
+        duration_ms: u64,
+    ) {
+        let should_rollback = self.auto_rollback
+            && if self.auto_rollback_exit_codes.is_empty() {
+                exit_code >= 2
+            } else {
+                self.auto_rollback_exit_codes.contains(&exit_code)
+            };
+        if !should_rollback {
+            // Snapshot dropped here; TempDir auto-cleans.
+            return;
+        }
+        match snap.rollback() {
+            Ok(report) => {
+                tracing::info!(
+                    restored = report.restored_count,
+                    deleted = report.deleted_count,
+                    "transaction rollback completed"
+                );
+                self.log_audit(
+                    block,
+                    AuditResult::Rollback {
+                        restored: report.restored_count,
+                        deleted: report.deleted_count,
+                    },
+                    duration_ms,
+                    None,
+                    Some(exit_code),
+                    false,
+                )
+                .await;
+                if let Some(ref tx) = self.tool_event_tx {
+                    // Terminal event: must deliver. Use send().await.
+                    let _ = tx
+                        .send(ToolEvent::Rollback {
+                            tool_name: ToolName::new("bash"),
+                            command: block.to_owned(),
+                            restored_count: report.restored_count,
+                            deleted_count: report.deleted_count,
+                        })
+                        .await;
+                }
+            }
+            Err(e) => {
+                tracing::error!(err = %e, "transaction rollback failed");
+            }
+        }
+    }
+
+    async fn classify_and_audit(
+        &self,
+        block: &str,
+        out: &str,
+        exit_code: i32,
+        duration_ms: u64,
+    ) -> Option<ToolError> {
+        if out.contains("[error] command timed out") {
+            self.log_audit(
+                block,
+                AuditResult::Timeout,
+                duration_ms,
+                None,
+                Some(exit_code),
+                false,
+            )
+            .await;
+            return Some(ToolError::Timeout {
+                timeout_secs: self.timeout.as_secs(),
+            });
+        }
+
+        if let Some(category) = classify_shell_exit(exit_code, out) {
+            return Some(ToolError::Shell {
+                exit_code,
+                category,
+                message: out.lines().take(3).collect::<Vec<_>>().join("; "),
+            });
+        }
+
+        None
+    }
+
+    fn apply_output_filter(
+        &self,
+        block: &str,
+        out: &str,
+        exit_code: i32,
+    ) -> (String, Option<FilterStats>) {
+        let sanitized = sanitize_output(out);
+        if let Some(ref registry) = self.output_filter_registry {
+            match registry.apply(block, &sanitized, exit_code) {
+                Some(fr) => {
+                    tracing::debug!(
+                        command = block,
+                        raw = fr.raw_chars,
+                        filtered = fr.filtered_chars,
+                        savings_pct = fr.savings_pct(),
+                        "output filter applied"
+                    );
+                    let stats = FilterStats {
+                        raw_chars: fr.raw_chars,
+                        filtered_chars: fr.filtered_chars,
+                        raw_lines: fr.raw_lines,
+                        filtered_lines: fr.filtered_lines,
+                        confidence: Some(fr.confidence),
+                        command: Some(block.to_owned()),
+                        kept_lines: fr.kept_lines.clone(),
+                    };
+                    (fr.output, Some(stats))
+                }
+                None => (sanitized, None),
+            }
+        } else {
+            (sanitized, None)
+        }
     }
 
     async fn emit_completed(
@@ -1013,127 +1049,67 @@ impl ShellExecutor {
         self.check_permissions(command, false).await?;
         self.validate_sandbox(command)?;
 
-        // Check cap under lock.
+        // Check cap under lock, then register the handle and spawn.
         let run_id = RunId::new();
-        {
-            let mut runs = self.background_runs.lock();
-            if runs.len() >= self.max_background_runs {
-                return Err(ToolError::Blocked {
-                    command: format!(
-                        "background run cap reached (max_background_runs={})",
-                        self.max_background_runs
-                    ),
-                });
-            }
-            let abort = CancellationToken::new();
-            runs.insert(
-                run_id,
-                BackgroundHandle {
-                    command: command.to_owned(),
-                    started_at: std::time::Instant::now(),
-                    abort: abort.clone(),
-                    child_pid: None,
-                },
-            );
-            drop(runs);
-
-            let tool_event_tx = self.tool_event_tx.clone();
-            let background_completion_tx = self.background_completion_tx.clone();
-            let background_runs = Arc::clone(&self.background_runs);
-            let timeout = self.background_timeout;
-            let env_blocklist = self.env_blocklist.clone();
-            let skill_env_snapshot: Option<std::collections::HashMap<String, String>> =
-                self.skill_env.read().clone();
-            let command_owned = command.to_owned();
-
-            tokio::spawn(async move {
-                let started_at = std::time::Instant::now();
-                let (_, out) = execute_bash(
-                    &command_owned,
-                    timeout,
-                    tool_event_tx.as_ref(),
-                    Some(&abort),
-                    skill_env_snapshot.as_ref(),
-                    &env_blocklist,
-                    None,
-                )
-                .await;
-
-                #[allow(clippy::cast_possible_truncation)]
-                let elapsed_ms = started_at.elapsed().as_millis() as u64;
-                let success = !out.contains("[error]");
-                let exit_code = i32::from(!success);
-                let truncated = crate::executor::truncate_tool_output_at(&out, 4096);
-
-                // Remove from registry.
-                background_runs.lock().remove(&run_id);
-
-                // Deliver terminal event to the TUI/channel adapter.
-                if let Some(ref tx) = tool_event_tx {
-                    let _ = tx
-                        .send(ToolEvent::Completed {
-                            tool_name: ToolName::new("bash"),
-                            command: command_owned.clone(),
-                            output: truncated.clone(),
-                            success,
-                            filter_stats: None,
-                            diff: None,
-                            run_id: Some(run_id),
-                        })
-                        .await;
-                }
-
-                // Deliver completion to the agent for injection into the next turn.
-                if let Some(ref tx) = background_completion_tx {
-                    let completion = BackgroundCompletion {
-                        run_id,
-                        exit_code,
-                        output: truncated,
-                        success,
-                        elapsed_ms,
-                        command: command_owned,
-                    };
-                    if tx.send(completion).await.is_err() {
-                        tracing::warn!(
-                            run_id = %run_id,
-                            "background completion channel closed; agent may have shut down"
-                        );
-                    }
-                }
-
-                tracing::debug!(
-                    run_id = %run_id,
-                    exit_code,
-                    elapsed_ms,
-                    "background shell run completed"
-                );
+        let mut runs = self.background_runs.lock();
+        if runs.len() >= self.max_background_runs {
+            return Err(ToolError::Blocked {
+                command: format!(
+                    "background run cap reached (max_background_runs={})",
+                    self.max_background_runs
+                ),
             });
         }
+        let abort = CancellationToken::new();
+        runs.insert(
+            run_id,
+            BackgroundHandle {
+                command: command.to_owned(),
+                started_at: std::time::Instant::now(),
+                abort: abort.clone(),
+                child_pid: None,
+            },
+        );
+        drop(runs);
+
+        let tool_event_tx = self.tool_event_tx.clone();
+        let background_completion_tx = self.background_completion_tx.clone();
+        let background_runs = Arc::clone(&self.background_runs);
+        let timeout = self.background_timeout;
+        let env_blocklist = self.env_blocklist.clone();
+        let skill_env_snapshot: Option<std::collections::HashMap<String, String>> =
+            self.skill_env.read().clone();
+        let command_owned = command.to_owned();
+
+        tokio::spawn(run_background_task(
+            run_id,
+            command_owned,
+            timeout,
+            abort,
+            background_runs,
+            tool_event_tx,
+            background_completion_tx,
+            skill_env_snapshot,
+            env_blocklist,
+        ));
 
         Ok(run_id)
     }
 
     /// Cancel all in-flight background runs.
     ///
-    /// Called during agent shutdown. Each cancelled run emits a
-    /// `ToolEvent::Completed { success: false }` event. Cancellation is cooperative:
-    /// the spawned tasks detect the token and exit on the next check point.
-    ///
-    /// # Note
-    ///
-    /// SIGTERM/SIGKILL escalation is deferred to a future enhancement
-    /// (requires a safe OS-signal abstraction). The `CancellationToken` is
-    /// sufficient for the process-local case.
-    // TODO(#3449): add SIGTERM+SIGKILL escalation via a safe signal wrapper (e.g. nix crate).
+    /// Called during agent shutdown. On Unix, issues SIGTERM/SIGKILL escalation
+    /// against each captured process ID before cancelling the token. Each cancelled
+    /// run emits a `ToolEvent::Completed { success: false }` event.
     pub async fn shutdown(&self) {
         use std::sync::atomic::Ordering;
 
         self.shutting_down.store(true, Ordering::Release);
 
-        let handles: Vec<(RunId, String, CancellationToken)> = {
+        let handles: Vec<(RunId, String, CancellationToken, Option<u32>)> = {
             let runs = self.background_runs.lock();
             runs.iter()
-                .map(|(id, h)| (*id, h.command.clone(), h.abort.clone()))
+                .map(|(id, h)| (*id, h.command.clone(), h.abort.clone(), h.child_pid))
                 .collect()
         };
 
@@ -1146,8 +1122,13 @@ impl ShellExecutor {
             "cancelling background shell runs for shutdown"
         );
 
-        for (run_id, command, abort) in &handles {
+        for (run_id, command, abort, pid_opt) in &handles {
             abort.cancel();
+
+            #[cfg(unix)]
+            if let Some(pid) = pid_opt {
+                send_signal_with_escalation(*pid).await;
+            }
 
             if let Some(ref tx) = self.tool_event_tx {
                 let _ = tx
@@ -1165,6 +1146,173 @@ impl ShellExecutor {
         }
 
         self.background_runs.lock().clear();
+    }
+}
+
+/// Drive a background shell run from spawn to completion.
+///
+/// This function is the body of the [`tokio::spawn`] task created by
+/// [`ShellExecutor::spawn_background`]. It is extracted into a named async fn so
+/// the spawner stays within the 100-line limit enforced by `clippy::too_many_lines`.
+///
+/// The child process is spawned here (not in the caller) so its PID can be written
+/// back into the [`BackgroundHandle`] registry before the stream loop starts. This
+/// makes the SIGTERM/SIGKILL escalation path in [`ShellExecutor::shutdown`] reachable.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn run_background_task(
+    run_id: RunId,
+    command: String,
+    timeout: Duration,
+    abort: CancellationToken,
+    background_runs: Arc<Mutex<HashMap<RunId, BackgroundHandle>>>,
+    tool_event_tx: Option<ToolEventTx>,
+    background_completion_tx: Option<tokio::sync::mpsc::Sender<BackgroundCompletion>>,
+    skill_env_snapshot: Option<std::collections::HashMap<String, String>>,
+    env_blocklist: Vec<String>,
+) {
+    use std::process::Stdio;
+
+    let started_at = std::time::Instant::now();
+
+    // Build and spawn the child directly so we can capture its PID and write it
+    // back into the registry before entering the stream loop. Calling execute_bash
+    // would hide the child handle and leave child_pid = None, making the
+    // SIGTERM/SIGKILL escalation path in shutdown() unreachable.
+    let mut cmd = build_bash_command(&command, skill_env_snapshot.as_ref(), &env_blocklist);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(ref e) => {
+            let (_, out) = spawn_error_envelope(e);
+            background_runs.lock().remove(&run_id);
+            emit_completed(tool_event_tx.as_ref(), &command, out.clone(), false, run_id).await;
+            if let Some(ref tx) = background_completion_tx {
+                let _ = tx
+                    .send(BackgroundCompletion {
+                        run_id,
+                        exit_code: 1,
+                        output: out,
+                        success: false,
+                        elapsed_ms: 0,
+                        command,
+                    })
+                    .await;
+            }
+            return;
+        }
+    };
+
+    // Write PID back so shutdown() can reach the SIGTERM/SIGKILL escalation path.
+    if let Some(pid) = child.id()
+        && let Some(handle) = background_runs.lock().get_mut(&run_id)
+    {
+        handle.child_pid = Some(pid);
+    }
+
+    // stdout/stderr are guaranteed piped — set above before spawn.
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    let mut line_rx = spawn_output_readers(stdout, stderr);
+
+    let mut combined = String::new();
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+    let timeout_secs = timeout.as_secs();
+
+    let (_, out) = match run_bash_stream(
+        &command,
+        deadline,
+        Some(&abort),
+        tool_event_tx.as_ref(),
+        &mut line_rx,
+        &mut combined,
+        &mut stdout_buf,
+        &mut stderr_buf,
+        &mut child,
+    )
+    .await
+    {
+        BashLoopOutcome::TimedOut => (
+            ShellOutputEnvelope {
+                stdout: stdout_buf,
+                stderr: format!("{stderr_buf}command timed out after {timeout_secs}s"),
+                exit_code: 1,
+                truncated: false,
+            },
+            format!("[error] command timed out after {timeout_secs}s"),
+        ),
+        BashLoopOutcome::Cancelled => (
+            ShellOutputEnvelope {
+                stdout: stdout_buf,
+                stderr: format!("{stderr_buf}operation aborted"),
+                exit_code: 130,
+                truncated: false,
+            },
+            "[cancelled] operation aborted".to_string(),
+        ),
+        BashLoopOutcome::StreamClosed => {
+            finalize_envelope(&mut child, combined, stdout_buf, stderr_buf).await
+        }
+    };
+
+    #[allow(clippy::cast_possible_truncation)]
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    let success = !out.contains("[error]");
+    let exit_code = i32::from(!success);
+    let truncated = crate::executor::truncate_tool_output_at(&out, 4096);
+
+    background_runs.lock().remove(&run_id);
+    emit_completed(
+        tool_event_tx.as_ref(),
+        &command,
+        truncated.clone(),
+        success,
+        run_id,
+    )
+    .await;
+
+    if let Some(ref tx) = background_completion_tx {
+        let completion = BackgroundCompletion {
+            run_id,
+            exit_code,
+            output: truncated,
+            success,
+            elapsed_ms,
+            command,
+        };
+        if tx.send(completion).await.is_err() {
+            tracing::warn!(
+                run_id = %run_id,
+                "background completion channel closed; agent may have shut down"
+            );
+        }
+    }
+
+    tracing::debug!(run_id = %run_id, exit_code, elapsed_ms, "background shell run completed");
+}
+
+/// Emit a `ToolEvent::Completed` to `tool_event_tx` if it is set.
+async fn emit_completed(
+    tool_event_tx: Option<&ToolEventTx>,
+    command: &str,
+    output: String,
+    success: bool,
+    run_id: RunId,
+) {
+    if let Some(tx) = tool_event_tx {
+        let _ = tx
+            .send(ToolEvent::Completed {
+                tool_name: ToolName::new("bash"),
+                command: command.to_owned(),
+                output,
+                success,
+                filter_stats: None,
+                diff: None,
+                run_id: Some(run_id),
+            })
+            .await;
     }
 }
 
@@ -1512,16 +1660,59 @@ fn extract_bash_blocks(text: &str) -> Vec<&str> {
     crate::executor::extract_fenced_blocks(text, "bash")
 }
 
+/// Send SIGTERM to a process, wait [`GRACEFUL_TERM_MS`], then send SIGKILL.
+///
+/// `pkill -KILL -P <pid>` is issued before the final SIGKILL to reap any
+/// child processes that bash may have spawned. Note: `pkill -P` sends SIGKILL
+/// to the *children* of `pid`, not to `pid` itself.
+///
+/// **ESRCH on SIGKILL is safe and expected.** If the process exited voluntarily
+/// during the grace period, the OS returns `ESRCH` ("no such process") for the
+/// SIGKILL call; this is silently swallowed and not treated as an error.
+///
+/// **PID reuse caveat.** If bash exits during the 250 ms window and the OS
+/// recycles its PID before `kill(SIGKILL)` is issued, the SIGKILL could
+/// theoretically reach an unrelated process. In practice the 250 ms window is
+/// too short for PID recycling under normal load, so this is treated as an
+/// acceptable trade-off for MVP.
+#[cfg(unix)]
+async fn send_signal_with_escalation(pid: u32) {
+    use nix::errno::Errno;
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+
+    let Ok(pid_i32) = i32::try_from(pid) else {
+        return;
+    };
+    let target = Pid::from_raw(pid_i32);
+
+    if let Err(e) = kill(target, Signal::SIGTERM)
+        && e != Errno::ESRCH
+    {
+        tracing::debug!(pid, err = %e, "SIGTERM failed");
+    }
+    tokio::time::sleep(GRACEFUL_TERM_MS).await;
+    // Kill children of pid (not pid itself); ESRCH if none exist is harmless.
+    let _ = Command::new("pkill")
+        .args(["-KILL", "-P", &pid.to_string()])
+        .status()
+        .await;
+    if let Err(e) = kill(target, Signal::SIGKILL)
+        && e != Errno::ESRCH
+    {
+        tracing::debug!(pid, err = %e, "SIGKILL failed");
+    }
+}
+
 /// Kill a child process and its descendants.
-/// On unix, sends SIGKILL to child processes via `pkill -KILL -P <pid>` before
-/// killing the parent, preventing zombie subprocesses.
+///
+/// On Unix, sends SIGTERM first, waits [`GRACEFUL_TERM_MS`], reaps descendants,
+/// then sends SIGKILL. Always finishes with [`tokio::process::Child::kill`] to
+/// ensure the `Child` reaper sees the dead process.
 async fn kill_process_tree(child: &mut tokio::process::Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
-        let _ = Command::new("pkill")
-            .args(["-KILL", "-P", &pid.to_string()])
-            .status()
-            .await;
+        send_signal_with_escalation(pid).await;
     }
     let _ = child.kill().await;
 }
@@ -1542,7 +1733,6 @@ pub struct ShellOutputEnvelope {
     pub truncated: bool,
 }
 
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3450): decompose into smaller helpers
 async fn execute_bash(
     code: &str,
     timeout: Duration,
@@ -1553,13 +1743,77 @@ async fn execute_bash(
     sandbox: Option<(&dyn Sandbox, &SandboxPolicy)>,
 ) -> (ShellOutputEnvelope, String) {
     use std::process::Stdio;
-    use tokio::io::{AsyncBufReadExt, BufReader};
 
     let timeout_secs = timeout.as_secs();
+    let mut cmd = build_bash_command(code, extra_env, env_blocklist);
 
+    if let Err(envelope_err) = apply_sandbox(&mut cmd, sandbox) {
+        return envelope_err;
+    }
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(ref e) => return spawn_error_envelope(e),
+    };
+
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    let mut line_rx = spawn_output_readers(stdout, stderr);
+
+    let mut combined = String::new();
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    match run_bash_stream(
+        code,
+        deadline,
+        cancel_token,
+        event_tx,
+        &mut line_rx,
+        &mut combined,
+        &mut stdout_buf,
+        &mut stderr_buf,
+        &mut child,
+    )
+    .await
+    {
+        BashLoopOutcome::TimedOut => {
+            let msg = format!("[error] command timed out after {timeout_secs}s");
+            (
+                ShellOutputEnvelope {
+                    stdout: stdout_buf,
+                    stderr: format!("{stderr_buf}command timed out after {timeout_secs}s"),
+                    exit_code: 1,
+                    truncated: false,
+                },
+                msg,
+            )
+        }
+        BashLoopOutcome::Cancelled => (
+            ShellOutputEnvelope {
+                stdout: stdout_buf,
+                stderr: format!("{stderr_buf}operation aborted"),
+                exit_code: 130,
+                truncated: false,
+            },
+            "[cancelled] operation aborted".to_string(),
+        ),
+        BashLoopOutcome::StreamClosed => {
+            finalize_envelope(&mut child, combined, stdout_buf, stderr_buf).await
+        }
+    }
+}
+
+fn build_bash_command(
+    code: &str,
+    extra_env: Option<&std::collections::HashMap<String, String>>,
+    env_blocklist: &[String],
+) -> Command {
     let mut cmd = Command::new("bash");
     cmd.arg("-c").arg(code);
-
     for (key, _) in std::env::vars() {
         if env_blocklist
             .iter()
@@ -1568,17 +1822,22 @@ async fn execute_bash(
             cmd.env_remove(&key);
         }
     }
-
     if let Some(env) = extra_env {
         cmd.envs(env);
     }
+    cmd
+}
 
+fn apply_sandbox(
+    cmd: &mut Command,
+    sandbox: Option<(&dyn Sandbox, &SandboxPolicy)>,
+) -> Result<(), (ShellOutputEnvelope, String)> {
     // Apply OS sandbox before setting stdio so the rewritten program is sandboxed.
     if let Some((sb, policy)) = sandbox
-        && let Err(err) = sb.wrap(&mut cmd, policy)
+        && let Err(err) = sb.wrap(cmd, policy)
     {
         let msg = format!("[error] sandbox setup failed: {err}");
-        return (
+        return Err((
             ShellOutputEnvelope {
                 stdout: String::new(),
                 stderr: msg.clone(),
@@ -1586,35 +1845,33 @@ async fn execute_bash(
                 truncated: false,
             },
             msg,
-        );
+        ));
     }
+    Ok(())
+}
 
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+fn spawn_error_envelope(e: &std::io::Error) -> (ShellOutputEnvelope, String) {
+    let msg = format!("[error] {e}");
+    (
+        ShellOutputEnvelope {
+            stdout: String::new(),
+            stderr: msg.clone(),
+            exit_code: 1,
+            truncated: false,
+        },
+        msg,
+    )
+}
 
-    let child_result = cmd.spawn();
+// Channel carries (is_stderr, line) so we can accumulate separate buffers
+// while still building a combined interleaved string for streaming and LLM context.
+fn spawn_output_readers(
+    stdout: tokio::process::ChildStdout,
+    stderr: tokio::process::ChildStderr,
+) -> tokio::sync::mpsc::Receiver<(bool, String)> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
 
-    let mut child = match child_result {
-        Ok(c) => c,
-        Err(e) => {
-            let msg = format!("[error] {e}");
-            return (
-                ShellOutputEnvelope {
-                    stdout: String::new(),
-                    stderr: msg.clone(),
-                    exit_code: 1,
-                    truncated: false,
-                },
-                msg,
-            );
-        }
-    };
-
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
-
-    // Channel carries (is_stderr, line) so we can accumulate separate buffers
-    // while still building a combined interleaved string for streaming and LLM context.
-    let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<(bool, String)>(64);
+    let (line_tx, line_rx) = tokio::sync::mpsc::channel::<(bool, String)>(64);
 
     let stdout_tx = line_tx.clone();
     tokio::spawn(async move {
@@ -1635,11 +1892,31 @@ async fn execute_bash(
         }
     });
 
-    let mut combined = String::new();
-    let mut stdout_buf = String::new();
-    let mut stderr_buf = String::new();
-    let deadline = tokio::time::Instant::now() + timeout;
+    line_rx
+}
 
+/// Terminal condition of the streaming select loop.
+///
+/// `kill_process_tree` is called inside this function before returning `TimedOut`
+/// or `Cancelled`, so the caller's envelope helpers can stay side-effect-free.
+enum BashLoopOutcome {
+    StreamClosed,
+    TimedOut,
+    Cancelled,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_bash_stream(
+    code: &str,
+    deadline: tokio::time::Instant,
+    cancel_token: Option<&CancellationToken>,
+    event_tx: Option<&ToolEventTx>,
+    line_rx: &mut tokio::sync::mpsc::Receiver<(bool, String)>,
+    combined: &mut String,
+    stdout_buf: &mut String,
+    stderr_buf: &mut String,
+    child: &mut tokio::process::Child,
+) -> BashLoopOutcome {
     loop {
         tokio::select! {
             line = line_rx.recv() => {
@@ -1665,21 +1942,12 @@ async fn execute_bash(
                             stdout_buf.push_str(&chunk);
                         }
                     }
-                    None => break,
+                    None => return BashLoopOutcome::StreamClosed,
                 }
             }
             () = tokio::time::sleep_until(deadline) => {
-                kill_process_tree(&mut child).await;
-                let msg = format!("[error] command timed out after {timeout_secs}s");
-                return (
-                    ShellOutputEnvelope {
-                        stdout: stdout_buf,
-                        stderr: format!("{stderr_buf}command timed out after {timeout_secs}s"),
-                        exit_code: 1,
-                        truncated: false,
-                    },
-                    msg,
-                );
+                kill_process_tree(child).await;
+                return BashLoopOutcome::TimedOut;
             }
             () = async {
                 match cancel_token {
@@ -1687,24 +1955,23 @@ async fn execute_bash(
                     None => std::future::pending().await,
                 }
             } => {
-                kill_process_tree(&mut child).await;
-                return (
-                    ShellOutputEnvelope {
-                        stdout: stdout_buf,
-                        stderr: format!("{stderr_buf}operation aborted"),
-                        exit_code: 130,
-                        truncated: false,
-                    },
-                    "[cancelled] operation aborted".to_string(),
-                );
+                kill_process_tree(child).await;
+                return BashLoopOutcome::Cancelled;
             }
         }
     }
+}
 
+async fn finalize_envelope(
+    child: &mut tokio::process::Child,
+    combined: String,
+    stdout_buf: String,
+    stderr_buf: String,
+) -> (ShellOutputEnvelope, String) {
     let status = child.wait().await;
     let exit_code = status.ok().and_then(|s| s.code()).unwrap_or(1);
 
-    let (envelope, combined) = if combined.is_empty() {
+    if combined.is_empty() {
         (
             ShellOutputEnvelope {
                 stdout: String::new(),
@@ -1724,8 +1991,7 @@ async fn execute_bash(
             },
             combined,
         )
-    };
-    (envelope, combined)
+    }
 }
 
 #[cfg(test)]

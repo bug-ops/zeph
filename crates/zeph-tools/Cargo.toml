@@ -60,6 +60,9 @@ default = []
 # Gates Linux-only landlock + seccompiler deps. macOS backend compiles unconditionally.
 sandbox = ["dep:landlock", "dep:seccompiler"]
 
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["signal", "process"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock    = { version = "0.4.4", optional = true }
 seccompiler = { version = "0.5.0", optional = true }

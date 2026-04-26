@@ -10626,6 +10626,7 @@ dependencies = [
  "globset",
  "insta",
  "landlock",
+ "nix 0.31.2",
  "parking_lot",
  "proptest",
  "regex",
