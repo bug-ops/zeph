@@ -6,7 +6,7 @@ use zeph_llm::provider::Role;
 use super::Agent;
 use super::context;
 use super::error;
-use super::feedback_detector;
+use zeph_agent_feedback as feedback_detector;
 
 /// Convert a `FeedbackVerdict` (from `LlmClassifier`) into a `CorrectionSignal`.
 ///

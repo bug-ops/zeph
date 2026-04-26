@@ -362,6 +362,7 @@ pub enum CorrectionKind {
 }
 
 impl CorrectionKind {
+    /// Returns the canonical string representation of this correction kind.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -387,6 +388,9 @@ pub struct FeedbackDetector {
 }
 
 impl FeedbackDetector {
+    /// Creates a new `FeedbackDetector` with the given confidence threshold.
+    ///
+    /// Signals below `confidence_threshold` are suppressed.
     #[must_use]
     pub fn new(confidence_threshold: f32) -> Self {
         Self {
@@ -432,7 +436,7 @@ impl FeedbackDetector {
         None
     }
 
-    fn check_self_correction(msg: &str) -> Option<CorrectionSignal> {
+    pub(crate) fn check_self_correction(msg: &str) -> Option<CorrectionSignal> {
         for (pattern, confidence) in &PATTERNS.self_correction {
             if pattern.is_match(msg) {
                 return Some(CorrectionSignal {
@@ -445,7 +449,7 @@ impl FeedbackDetector {
         None
     }
 
-    fn check_explicit_rejection(msg: &str) -> Option<CorrectionSignal> {
+    pub(crate) fn check_explicit_rejection(msg: &str) -> Option<CorrectionSignal> {
         for (pattern, confidence) in &PATTERNS.rejection {
             if pattern.is_match(msg) {
                 return Some(CorrectionSignal {
@@ -458,7 +462,7 @@ impl FeedbackDetector {
         None
     }
 
-    fn check_alternative_request(msg: &str) -> Option<CorrectionSignal> {
+    pub(crate) fn check_alternative_request(msg: &str) -> Option<CorrectionSignal> {
         for (pattern, confidence) in &PATTERNS.alternative {
             if pattern.is_match(msg) {
                 return Some(CorrectionSignal {
@@ -570,7 +574,7 @@ impl JudgeVerdict {
 
 /// Error variants for judge detector failures.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum JudgeError {
+pub enum JudgeError {
     #[error("LLM call failed: {0}")]
     Llm(#[from] zeph_llm::LlmError),
 }
@@ -583,18 +587,21 @@ pub(crate) enum JudgeError {
 /// Rate limiting is checked synchronously before spawning a background task.
 /// The spawned task receives only the provider and messages — it does not hold
 /// the detector and cannot affect the rate-limit counter.
-pub(crate) struct JudgeDetector {
+pub struct JudgeDetector {
     /// Lower bound: below this, regex "no correction" is trusted without judge.
     adaptive_low: f32,
     /// Upper bound: at or above this, regex "is correction" is trusted without judge.
     adaptive_high: f32,
     /// Sliding-window timestamps for rate limiting (owned, not shared across spawns).
-    call_times: VecDeque<Instant>,
+    pub(crate) call_times: VecDeque<Instant>,
 }
 
 impl JudgeDetector {
+    /// Creates a new `JudgeDetector` with adaptive thresholds.
+    ///
+    /// Logs a warning if `adaptive_low >= adaptive_high` (empty borderline zone).
     #[must_use]
-    pub(crate) fn new(adaptive_low: f32, adaptive_high: f32) -> Self {
+    pub fn new(adaptive_low: f32, adaptive_high: f32) -> Self {
         if adaptive_low >= adaptive_high {
             tracing::warn!(
                 adaptive_low,
@@ -616,7 +623,7 @@ impl JudgeDetector {
     /// - Signal is `None` (judge as fallback for missed patterns), OR
     /// - Signal confidence is in `[adaptive_low, adaptive_high)` (borderline zone).
     #[must_use]
-    pub(crate) fn should_invoke(&self, regex_signal: Option<&CorrectionSignal>) -> bool {
+    pub fn should_invoke(&self, regex_signal: Option<&CorrectionSignal>) -> bool {
         match regex_signal {
             None => true,
             Some(s) => s.confidence >= self.adaptive_low && s.confidence < self.adaptive_high,
@@ -627,7 +634,7 @@ impl JudgeDetector {
     ///
     /// Returns `true` if a call is allowed (slot consumed), `false` if the window is full.
     /// Must be called synchronously before spawning a background judge task.
-    pub(crate) fn check_rate_limit(&mut self) -> bool {
+    pub fn check_rate_limit(&mut self) -> bool {
         let now = Instant::now();
         // Evict timestamps outside the sliding window.
         self.call_times
@@ -640,10 +647,12 @@ impl JudgeDetector {
     }
 
     /// Build the judge prompt messages from the inputs.
-    pub(crate) fn build_messages(user_message: &str, assistant_response: &str) -> Vec<Message> {
-        let safe_user_msg = super::context::truncate_chars(user_message, JUDGE_USER_MSG_MAX_CHARS);
+    #[must_use]
+    pub fn build_messages(user_message: &str, assistant_response: &str) -> Vec<Message> {
+        let safe_user_msg =
+            zeph_common::text::truncate_to_chars(user_message, JUDGE_USER_MSG_MAX_CHARS);
         let safe_assistant =
-            super::context::truncate_chars(assistant_response, JUDGE_ASSISTANT_MAX_CHARS);
+            zeph_common::text::truncate_to_chars(assistant_response, JUDGE_ASSISTANT_MAX_CHARS);
         // Escape '<' and '>' in user content to reduce prompt-injection risk via
         // XML-like tags (e.g. a crafted "</user_message>" in user input).
         let escaped_user = safe_user_msg.replace('<', "&lt;").replace('>', "&gt;");
@@ -678,7 +687,7 @@ impl JudgeDetector {
     /// # Errors
     ///
     /// Returns [`JudgeError::Llm`] if the provider call fails.
-    pub(crate) async fn evaluate(
+    pub async fn evaluate(
         provider: &AnyProvider,
         user_message: &str,
         assistant_response: &str,

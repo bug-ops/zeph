@@ -277,8 +277,8 @@ pub(crate) struct RuntimeConfig {
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.
 pub(crate) struct FeedbackState {
-    pub(crate) detector: super::feedback_detector::FeedbackDetector,
-    pub(crate) judge: Option<super::feedback_detector::JudgeDetector>,
+    pub(crate) detector: zeph_agent_feedback::FeedbackDetector,
+    pub(crate) judge: Option<zeph_agent_feedback::JudgeDetector>,
     /// LLM-backed zero-shot classifier for `DetectorMode::Model`.
     /// When `Some`, `spawn_judge_correction_check` uses this instead of `JudgeDetector`.
     pub(crate) llm_classifier: Option<zeph_llm::classifier::llm::LlmClassifier>,
@@ -911,7 +911,7 @@ impl Default for DebugState {
 impl Default for FeedbackState {
     fn default() -> Self {
         Self {
-            detector: super::feedback_detector::FeedbackDetector::new(0.6),
+            detector: zeph_agent_feedback::FeedbackDetector::new(0.6),
             judge: None,
             llm_classifier: None,
         }

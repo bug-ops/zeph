@@ -10,7 +10,6 @@
 
 use std::collections::VecDeque;
 
-use crate::agent::feedback_detector::FeedbackDetector;
 use crate::agent::rate_limiter::{RateLimitConfig, ToolRateLimiter};
 use crate::agent::state::{
     ExperimentState, FeedbackState, HooksConfigSnapshot, InstructionState, MessageState,
@@ -18,6 +17,7 @@ use crate::agent::state::{
 };
 use crate::config::{SecurityConfig, TimeoutConfig};
 use crate::context::EnvironmentContext;
+use zeph_agent_feedback::FeedbackDetector;
 
 fn make_instruction_state() -> InstructionState {
     InstructionState {

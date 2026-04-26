@@ -20,7 +20,6 @@ pub(crate) mod context_manager;
 mod corrections;
 pub mod error;
 mod experiment_cmd;
-pub(super) mod feedback_detector;
 pub(crate) mod focus;
 mod index;
 mod learning;

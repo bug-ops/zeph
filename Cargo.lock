@@ -10084,6 +10084,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeph-agent-feedback"
+version = "0.20.0"
+dependencies = [
+ "regex",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zeph-common",
+ "zeph-llm",
+]
+
+[[package]]
 name = "zeph-bench"
 version = "0.20.0"
 dependencies = [
@@ -10245,6 +10260,7 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "uuid",
+ "zeph-agent-feedback",
  "zeph-commands",
  "zeph-common",
  "zeph-config",

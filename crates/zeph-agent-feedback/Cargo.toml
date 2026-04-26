@@ -1,0 +1,27 @@
+[package]
+name = "zeph-agent-feedback"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+description = "Implicit correction detection for the Zeph agent: regex-based and LLM-backed detectors"
+readme = "README.md"
+
+[dependencies]
+regex.workspace = true
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing.workspace = true
+zeph-common.workspace = true
+zeph-llm.workspace = true
+
+[lints]
+workspace = true
