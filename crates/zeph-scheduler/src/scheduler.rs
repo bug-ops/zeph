@@ -160,12 +160,19 @@ impl Scheduler {
         self.handlers.insert(kind.as_str().to_owned(), handler);
     }
 
-    /// Initialize the store, sync task definitions, and compute initial `next_run` for each task.
+    /// Initialize the store, sync task definitions, compute initial `next_run` for each task,
+    /// and hydrate any CLI-added periodic jobs that live only in the DB back into `self.tasks`.
+    ///
+    /// Static tasks registered via [`Scheduler::add_task`] are upserted into the store first.
+    /// Then all periodic jobs stored in the DB that are not already present in `self.tasks`
+    /// (by name) are reconstructed from their persisted `cron_expr` and appended — this ensures
+    /// that jobs added via the CLI (which write directly to the store) are visible to
+    /// [`Scheduler::tick`] and [`Scheduler::catch_up_missed`] on the next startup.
     ///
     /// # Errors
     ///
-    /// Returns an error if DB init, upsert, or `next_run` persistence fails.
-    pub async fn init(&self) -> Result<(), SchedulerError> {
+    /// Returns an error if DB init, upsert, `next_run` persistence, or job listing fails.
+    pub async fn init(&mut self) -> Result<(), SchedulerError> {
         self.store.init().await?;
         let now = Utc::now();
         for task in &self.tasks {
@@ -212,6 +219,62 @@ impl Scheduler {
                 }
             }
         }
+
+        // Hydrate periodic jobs added via CLI (or other out-of-process writers) that were
+        // persisted in the store but never registered in self.tasks. Without this step,
+        // tick() and catch_up_missed() silently ignore them on every restart.
+        let stored_jobs = self.store.list_jobs_full().await?;
+        // Collect owned strings to release the borrow on self.tasks before mutating it below.
+        let static_names: std::collections::HashSet<String> =
+            self.tasks.iter().map(|t| t.name.clone()).collect();
+
+        for job in stored_jobs {
+            if job.task_mode != "periodic" || static_names.contains(&job.name) {
+                continue;
+            }
+            match ScheduledTask::periodic(
+                job.name.clone(),
+                &job.cron_expr,
+                crate::task::TaskKind::from_str_kind(&job.kind),
+                serde_json::Value::Null,
+            ) {
+                Ok(task) => {
+                    // Compute next_run if not already stored (same logic as for static tasks).
+                    if self.store.get_next_run(&job.name).await?.is_none()
+                        && let Some(schedule) = task.cron_schedule()
+                    {
+                        match schedule.after(&now).next() {
+                            Some(next) => {
+                                if let Err(e) =
+                                    self.store.set_next_run(&job.name, &next.to_rfc3339()).await
+                                {
+                                    tracing::warn!(
+                                        task = %job.name,
+                                        "failed to persist next_run for hydrated job: {e}"
+                                    );
+                                }
+                            }
+                            None => {
+                                tracing::warn!(
+                                    task = %job.name,
+                                    "cron produces no future occurrence, skipping next_run"
+                                );
+                            }
+                        }
+                    }
+                    tracing::debug!(task = %job.name, "hydrated CLI-added periodic job from store");
+                    self.tasks.push(task);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        task = %job.name,
+                        cron_expr = %job.cron_expr,
+                        "skipping persisted job with invalid cron expression: {e}"
+                    );
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -967,6 +1030,104 @@ mod tests {
             scheduler.tasks.len(),
             0,
             "completed oneshot must be removed from tasks"
+        );
+    }
+
+    /// `init()` hydrates periodic jobs that were written to the store out-of-process
+    /// (e.g. via the CLI) and are NOT present in `self.tasks` at construction time.
+    ///
+    /// Regression test for fix #3499: before the fix, CLI-added jobs were never fired
+    /// because `init()` did not call `store.list_jobs_full()` to backfill `self.tasks`.
+    #[tokio::test]
+    async fn init_hydrates_cli_added_periodic_jobs_from_store() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+
+        // Simulate CLI insertion: write a periodic job directly to the store
+        // *before* the Scheduler is constructed — mimicking a CLI `schedule add` command
+        // that writes to the DB while the daemon is not running.
+        store.init().await.unwrap();
+        store
+            .upsert_job_with_mode(
+                "cli-job",
+                "0 * * * * *",
+                "health_check",
+                "periodic",
+                None,
+                "",
+            )
+            .await
+            .unwrap();
+
+        // Construct a fresh Scheduler with an empty task list (no add_task calls),
+        // pointing at the same pool that already has the CLI-added job.
+        let store2 = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store2, rx);
+
+        // Before init() self.tasks is empty.
+        assert_eq!(
+            scheduler.tasks.len(),
+            0,
+            "tasks must be empty before init()"
+        );
+
+        scheduler.init().await.unwrap();
+
+        // After init() the CLI-added periodic job must have been hydrated.
+        assert_eq!(
+            scheduler.tasks.len(),
+            1,
+            "init() must hydrate the CLI-added periodic job from the store"
+        );
+        assert_eq!(
+            scheduler.tasks[0].name, "cli-job",
+            "hydrated task name must match the DB row"
+        );
+
+        // next_run must have been computed and persisted.
+        let next_run = store.get_next_run("cli-job").await.unwrap();
+        assert!(
+            next_run.is_some(),
+            "init() must compute and persist next_run for the hydrated job"
+        );
+        let dt = next_run
+            .unwrap()
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .expect("next_run must be a valid RFC3339 timestamp");
+        assert!(
+            dt > chrono::Utc::now(),
+            "next_run must be in the future after hydration"
+        );
+    }
+
+    /// `init()` does NOT re-add jobs that are already present in `self.tasks` — avoids
+    /// duplicates when both `add_task()` and a DB record exist for the same name.
+    #[tokio::test]
+    async fn init_does_not_duplicate_static_tasks_already_in_tasks() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store, rx);
+
+        // Register via add_task (static path).
+        let task = ScheduledTask::new(
+            "static-job",
+            "0 * * * * *",
+            TaskKind::HealthCheck,
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        scheduler.add_task(task);
+
+        // init() upserts the task into the store AND then calls list_jobs_full().
+        // The job will be in both self.tasks AND the DB; hydration must skip it.
+        scheduler.init().await.unwrap();
+
+        assert_eq!(
+            scheduler.tasks.len(),
+            1,
+            "init() must not duplicate a static task that is already in self.tasks"
         );
     }
 

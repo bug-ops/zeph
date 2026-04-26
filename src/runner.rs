@@ -1718,6 +1718,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         None
     };
 
+    // Create the gateway injection channel before agent construction so the receiver
+    // can be wired into the channel wrapper.  The sender is stored and later passed to
+    // spawn_gateway_server.  When the `gateway` feature is disabled the channel is
+    // never created and `channel` is passed to the agent unchanged.
+    #[cfg(feature = "gateway")]
+    let (gateway_input_tx, gateway_input_rx) =
+        tokio::sync::mpsc::channel::<zeph_core::ChannelMessage>(64);
+    #[cfg(feature = "gateway")]
+    let channel = crate::gateway_spawn::GatewayChannel::new(channel, gateway_input_rx);
+
     let agent = Agent::new_with_registry_arc(
         provider.clone(),
         embedding_provider.clone(),
@@ -2580,6 +2590,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         crate::gateway_spawn::spawn_gateway_server(
             config,
             shutdown_rx.clone(),
+            gateway_input_tx.clone(),
             Some((std::sync::Arc::clone(&prom.registry), effective_path)),
         );
         Some(handle)
@@ -2590,7 +2601,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             );
         }
         if config.gateway.enabled {
-            crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone(), None);
+            crate::gateway_spawn::spawn_gateway_server(
+                config,
+                shutdown_rx.clone(),
+                gateway_input_tx.clone(),
+                None,
+            );
         }
         None
     };
@@ -2598,7 +2614,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // When `prometheus` feature is disabled, spawn gateway unconditionally if enabled.
     #[cfg(all(feature = "gateway", not(feature = "prometheus")))]
     if !exec_mode.bare && config.gateway.enabled {
-        crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone());
+        crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone(), gateway_input_tx);
     }
 
     let mut agent = agent;

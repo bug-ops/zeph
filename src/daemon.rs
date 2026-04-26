@@ -676,6 +676,10 @@ pub(crate) async fn run_daemon(
         .await;
 
     let a2a_sanitizer = zeph_core::ContentSanitizer::new(&config.security.content_isolation);
+    // Clone input_tx before consuming loopback_handle so the gateway can also inject
+    // messages into the agent loop after the A2A server takes ownership of the handle.
+    #[cfg(feature = "gateway")]
+    let gateway_input_tx = loopback_handle.input_tx.clone();
     spawn_a2a_server(
         config,
         shutdown_rx.clone(),
@@ -690,6 +694,7 @@ pub(crate) async fn run_daemon(
         spawn_gateway_server(
             config,
             shutdown_rx.clone(),
+            gateway_input_tx,
             // Daemon mode has no MetricsSnapshot watch channel — skip Prometheus sync.
             #[cfg(feature = "prometheus")]
             None,

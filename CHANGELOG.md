@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(scheduler): `Scheduler::init()` now hydrates CLI-added periodic jobs from the DB into
+  `self.tasks` on startup; jobs written via `zeph schedule add` are visible to `tick()` and
+  fire on their cron schedule without requiring a daemon restart (#3499).
+- fix(gateway): `spawn_gateway_server` now forwards webhook payloads to the agent loop via
+  `GatewayChannel<C>` instead of silently draining them; the wrapper merges webhook and
+  interactive input with interactive-first bias so live sessions stay responsive (#3500).
+
 - fix(config): `LlmConfig::effective_model()` now skips embed-only providers (`embed = true`)
   when resolving the display model, so `/status` shows the first chat-capable provider's model
   instead of the embed model name (#3488).
