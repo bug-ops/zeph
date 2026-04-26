@@ -71,7 +71,7 @@ impl SecurityState {
     /// Returns a [`PiiScrubResult`] with the scrubbed text and metric side-effects.
     /// The caller is responsible for applying metrics updates from the result.
     #[cfg_attr(not(feature = "classifiers"), allow(clippy::unused_async))]
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3457): decompose into smaller helpers
     pub(crate) async fn scrub_pii(&mut self, text: &str, tool_name: &str) -> PiiScrubResult {
         use zeph_sanitizer::pii::{merge_spans, redact_spans};
 

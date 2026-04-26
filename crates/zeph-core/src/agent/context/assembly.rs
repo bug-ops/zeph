@@ -481,7 +481,7 @@ impl<C: Channel> Agent<C> {
 
         // #3305 — Compression spectrum: compute remaining token ratio and advise recall tiers.
         //
-        // TODO(review): plumb `active_levels` into `ContextAssemblyInput` so the context
+        // TODO(#3455): plumb `active_levels` into `ContextAssemblyInput` so the context
         // assembler can skip expensive episodic recall when the budget is tight.
         // Requires a `retrieval_levels: &[CompressionLevel]` field in
         // `zeph_context::input::ContextAssemblyInput`.  Tracked as non-blocking out-of-scope item.

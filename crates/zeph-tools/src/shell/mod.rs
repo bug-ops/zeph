@@ -469,7 +469,7 @@ impl ShellExecutor {
         }))
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3450): decompose into smaller helpers
     async fn execute_block(
         &self,
         block: &str,
@@ -1124,7 +1124,7 @@ impl ShellExecutor {
     /// SIGTERM/SIGKILL escalation is deferred to a future enhancement
     /// (requires a safe OS-signal abstraction). The `CancellationToken` is
     /// sufficient for the process-local case.
-    // TODO(review): add SIGTERM+SIGKILL escalation via a safe signal wrapper (e.g. nix crate).
+    // TODO(#3449): add SIGTERM+SIGKILL escalation via a safe signal wrapper (e.g. nix crate).
     pub async fn shutdown(&self) {
         use std::sync::atomic::Ordering;
 
@@ -1542,7 +1542,7 @@ pub struct ShellOutputEnvelope {
     pub truncated: bool,
 }
 
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3450): decompose into smaller helpers
 async fn execute_bash(
     code: &str,
     timeout: Duration,

@@ -11,7 +11,7 @@ use crate::app::{App, InputMode};
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3446): decompose into smaller helpers
 pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     let theme = Theme::default();
 

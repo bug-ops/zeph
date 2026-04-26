@@ -553,7 +553,7 @@ impl ContentSanitizer {
     ///
     /// When no classifier backend is attached, also falls back to regex detection.
     #[cfg(feature = "classifiers")]
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3439): decompose into smaller helpers
     pub async fn classify_injection(&self, text: &str) -> InjectionVerdict {
         if !self.enabled {
             if Self::detect_injections(text).is_empty() {

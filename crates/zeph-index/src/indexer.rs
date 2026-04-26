@@ -244,7 +244,7 @@ impl CodeIndexer {
     /// # Errors
     ///
     /// Returns an error if the embedding probe or collection setup fails.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3458): decompose into smaller helpers
     pub async fn index_project(
         &self,
         root: &Path,

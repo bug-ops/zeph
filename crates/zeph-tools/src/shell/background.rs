@@ -43,13 +43,13 @@ pub(crate) struct BackgroundHandle {
     /// Command string, stored for shutdown reporting and TUI display.
     pub command: String,
     /// Wall-clock start time for elapsed reporting.
-    // TODO(review): expose via TUI panel for per-run elapsed display.
+    // TODO(#3448): expose via TUI panel for per-run elapsed display.
     #[allow(dead_code)]
     pub started_at: Instant,
     /// Cancellation token. Cancel to request graceful shutdown.
     pub abort: CancellationToken,
     /// OS process ID, if known. Reserved for future SIGTERM escalation on shutdown.
-    // TODO(review): use once safe signal-sending wrapper (e.g. nix crate) is available.
+    // TODO(#3449): use once safe signal-sending wrapper (e.g. nix crate) is available.
     #[allow(dead_code)]
     pub child_pid: Option<u32>,
 }

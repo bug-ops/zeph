@@ -18,7 +18,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3457): decompose into smaller helpers
     async fn check_trust_transition_inner(&self, skill_name: &str) {
         let Some(memory) = &self.memory_state.persistence.memory else {
             return;

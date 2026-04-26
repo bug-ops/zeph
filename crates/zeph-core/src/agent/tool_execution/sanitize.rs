@@ -58,7 +58,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// This is the SOLE sanitization point for tool output data flows. Do not add
     /// redundant sanitization in leaf crates (zeph-tools, zeph-mcp).
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3454): decompose into smaller helpers
     pub(super) async fn sanitize_tool_output(
         &mut self,
         body: &str,

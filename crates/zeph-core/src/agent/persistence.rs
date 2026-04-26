@@ -438,7 +438,7 @@ impl<C: Channel> Agent<C> {
     /// is saved for conversation continuity but will not pollute semantic search (M2, D2).
     #[allow(clippy::too_many_lines)]
     // TODO(B2): extract sub-functions or move logic to reduce function length
-    // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+    // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "agent.persist_message", skip_all)
@@ -666,7 +666,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Guards (enabled check, injection/tool-result skip) stay on the foreground path.
     /// The RPE check and actual extraction run in background (S2: no `send_status`).
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     async fn enqueue_graph_extraction_task(
         &mut self,
         content: &str,

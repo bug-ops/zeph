@@ -88,7 +88,7 @@ pub fn build_provider_for_switch(
 ///
 /// Returns `BootstrapError::Provider` when a required secret is missing or an entry is
 /// misconfigured (e.g. compatible provider without a name).
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3452): decompose into smaller helpers
 pub fn build_provider_from_entry(
     entry: &ProviderEntry,
     config: &Config,

@@ -215,7 +215,7 @@ impl CandleNerClassifier {
     /// - `S-X` is a single-token span of type X.
     /// - `E-X` closes an open span of type X.
     /// - `O` closes any open span.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3440): decompose into smaller helpers
     fn decode_bio_spans(
         id2label: &[String],
         token_labels: &[(usize, f32)],

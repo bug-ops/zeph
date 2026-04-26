@@ -1156,7 +1156,7 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns [`MemoryError`] if the underlying `SQLite` query fails.
-    // TODO(review): populate embeddings by fetching from Qdrant when available.
+    // TODO(#3444): populate embeddings by fetching from Qdrant when available.
     pub async fn load_promotion_window(
         &self,
         max_items: usize,

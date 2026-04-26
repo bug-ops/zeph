@@ -57,7 +57,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     frame.render_widget(list, inner);
 }
 
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3446): decompose into smaller helpers
 fn build_metric_items<'a>(
     metrics: &MetricsSnapshot,
     base: Style,

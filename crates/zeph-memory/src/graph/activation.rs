@@ -481,7 +481,7 @@ impl SpreadingActivation {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3443): decompose into smaller helpers
     pub async fn spread(
         &self,
         store: &GraphStore,

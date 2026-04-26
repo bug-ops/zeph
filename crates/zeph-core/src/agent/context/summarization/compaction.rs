@@ -8,7 +8,7 @@ use crate::agent::context::CompactionOutcome;
 use crate::channel::Channel;
 
 impl<C: Channel> Agent<C> {
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(review): file a tracking issue for this decomposition
+    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3456): decompose into smaller helpers
     pub(in crate::agent) async fn compact_context(
         &mut self,
     ) -> Result<CompactionOutcome, crate::agent::error::AgentError> {
