@@ -129,7 +129,6 @@ pub async fn single_pass_summary(
 ///
 /// # Errors
 /// Returns [`zeph_llm::LlmError`] when all summarization attempts fail.
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3442): decompose into smaller helpers
 pub async fn summarize_with_llm(
     deps: &SummarizationDeps,
     messages: &[Message],
@@ -149,10 +148,34 @@ pub async fn summarize_with_llm(
         return single_pass_summary(deps, messages, guidelines).await;
     }
 
-    // Summarize chunks with bounded concurrency to prevent runaway API calls
+    let partial_summaries = run_chunk_summaries(deps, chunks, guidelines).await;
+
+    if partial_summaries.is_empty() {
+        return single_pass_summary(deps, messages, guidelines).await;
+    }
+
+    let numbered = join_partial_summaries(&partial_summaries);
+
+    if deps.structured_summaries
+        && let Some(result) = try_structured_consolidation(deps, &numbered).await
+    {
+        return Ok(result);
+    }
+
+    prose_consolidation(deps, &numbered).await
+}
+
+/// Summarizes each chunk concurrently with bounded parallelism. Any chunk error discards all
+/// partials and forces single-pass fallback.
+async fn run_chunk_summaries(
+    deps: &SummarizationDeps,
+    chunks: Vec<Vec<Message>>,
+    guidelines: &str,
+) -> Vec<String> {
     let provider = deps.provider.clone();
     let guidelines_owned = guidelines.to_string();
     let timeout = deps.llm_timeout;
+
     let results: Vec<_> = futures::stream::iter(chunks.into_iter().map(|chunk| {
         let guidelines_ref = guidelines_owned.clone();
         let prompt = build_chunk_prompt(&chunk, &guidelines_ref);
@@ -175,7 +198,7 @@ pub async fn summarize_with_llm(
     .collect()
     .await;
 
-    let partial_summaries: Vec<String> = results
+    results
         .into_iter()
         .collect::<Result<Vec<_>, zeph_llm::LlmError>>()
         .unwrap_or_else(|e| {
@@ -183,78 +206,83 @@ pub async fn summarize_with_llm(
                 "chunked compaction: one or more chunks failed: {e:#}, falling back to single-pass"
             );
             Vec::new()
-        });
+        })
+}
 
-    if partial_summaries.is_empty() {
-        return single_pass_summary(deps, messages, guidelines).await;
-    }
-
-    // Consolidate partial summaries
-    let numbered = {
-        let cap: usize = partial_summaries.iter().map(|s| s.len() + 8).sum();
-        let mut buf = String::with_capacity(cap);
-        for (i, s) in partial_summaries.iter().enumerate() {
-            if i > 0 {
-                buf.push_str("\n\n");
-            }
-            let _ = write!(buf, "{}. {s}", i + 1);
+fn join_partial_summaries(partials: &[String]) -> String {
+    let cap: usize = partials.iter().map(|s| s.len() + 8).sum();
+    let mut buf = String::with_capacity(cap);
+    for (i, s) in partials.iter().enumerate() {
+        if i > 0 {
+            buf.push_str("\n\n");
         }
-        buf
-    };
+        let _ = write!(buf, "{}. {s}", i + 1);
+    }
+    buf
+}
 
-    if deps.structured_summaries {
-        let anchored_prompt = format!(
-            "<analysis>\n\
-             Merge these partial conversation summaries into a single structured summary.\n\
-             </analysis>\n\
-             \n\
-             Produce a JSON object with exactly these 5 fields:\n\
-             - session_intent: string — what the user is trying to accomplish\n\
-             - files_modified: string[] — file paths, function names, structs touched\n\
-             - decisions_made: string[] — each entry: \"Decision: X — Reason: Y\"\n\
-             - open_questions: string[] — unresolved questions or blockers\n\
-             - next_steps: string[] — concrete next actions\n\
-             \n\
-             Partial summaries:\n{numbered}"
-        );
-        let anchored_msgs = [Message {
-            role: Role::User,
-            content: anchored_prompt,
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-        match tokio::time::timeout(
-            timeout,
-            deps.provider
-                .chat_typed_erased::<AnchoredSummary>(&anchored_msgs),
-        )
-        .await
-        {
-            Ok(Ok(anchored)) if anchored.is_complete() => {
-                if let Some(ref cb) = deps.on_anchored_summary {
-                    cb(&anchored, false);
-                }
-                return Ok(crate::slot::cap_summary(anchored.to_markdown(), 16_000));
+async fn try_structured_consolidation(deps: &SummarizationDeps, numbered: &str) -> Option<String> {
+    let timeout = deps.llm_timeout;
+    let anchored_prompt = format!(
+        "<analysis>\n\
+         Merge these partial conversation summaries into a single structured summary.\n\
+         </analysis>\n\
+         \n\
+         Produce a JSON object with exactly these 5 fields:\n\
+         - session_intent: string — what the user is trying to accomplish\n\
+         - files_modified: string[] — file paths, function names, structs touched\n\
+         - decisions_made: string[] — each entry: \"Decision: X — Reason: Y\"\n\
+         - open_questions: string[] — unresolved questions or blockers\n\
+         - next_steps: string[] — concrete next actions\n\
+         \n\
+         Partial summaries:\n{numbered}"
+    );
+    let anchored_msgs = [Message {
+        role: Role::User,
+        content: anchored_prompt,
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    }];
+    match tokio::time::timeout(
+        timeout,
+        deps.provider
+            .chat_typed_erased::<AnchoredSummary>(&anchored_msgs),
+    )
+    .await
+    {
+        Ok(Ok(anchored)) if anchored.is_complete() => {
+            if let Some(ref cb) = deps.on_anchored_summary {
+                cb(&anchored, false);
             }
-            Ok(Ok(anchored)) => {
-                tracing::warn!(
-                    "chunked consolidation: structured summary incomplete, falling back to prose"
-                );
-                if let Some(ref cb) = deps.on_anchored_summary {
-                    cb(&anchored, true);
-                }
+            Some(crate::slot::cap_summary(anchored.to_markdown(), 16_000))
+        }
+        Ok(Ok(anchored)) => {
+            tracing::warn!(
+                "chunked consolidation: structured summary incomplete, falling back to prose"
+            );
+            if let Some(ref cb) = deps.on_anchored_summary {
+                cb(&anchored, true);
             }
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, "chunked consolidation: structured output failed, falling back to prose");
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "chunked consolidation: structured output timed out, falling back to prose"
-                );
-            }
+            None
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "chunked consolidation: structured output failed, falling back to prose");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                "chunked consolidation: structured output timed out, falling back to prose"
+            );
+            None
         }
     }
+}
 
+async fn prose_consolidation(
+    deps: &SummarizationDeps,
+    numbered: &str,
+) -> Result<String, zeph_llm::LlmError> {
+    let timeout = deps.llm_timeout;
     let consolidation_prompt = format!(
         "<analysis>\n\
          Merge these partial conversation summaries into a single structured compaction note.\n\
@@ -264,7 +292,6 @@ pub async fn summarize_with_llm(
          </analysis>\n\n\
          Partial summaries:\n{numbered}"
     );
-
     let consolidation_msgs = [Message {
         role: Role::User,
         content: consolidation_prompt,

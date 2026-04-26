@@ -16,7 +16,6 @@ impl DagScheduler {
     /// Process pending events and produce actions for the caller.
     ///
     /// Call `wait_event` after processing all actions to block until the next event.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3441): decompose into smaller helpers
     pub fn tick(&mut self) -> Vec<SchedulerAction> {
         if self.graph.status != GraphStatus::Running {
             return vec![SchedulerAction::Done {
@@ -26,23 +25,12 @@ impl DagScheduler {
 
         self.reanalyze_topology_if_dirty();
 
-        let mut actions = Vec::new();
-
-        // Drain events buffered by wait_event, then any new ones in the channel.
-        while let Some(event) = self.buffered_events.pop_front() {
-            let cancel_actions = self.process_event(event);
-            actions.extend(cancel_actions);
-        }
-        while let Ok(event) = self.event_rx.try_recv() {
-            let cancel_actions = self.process_event(event);
-            actions.extend(cancel_actions);
-        }
+        let mut actions = self.drain_events_into_actions();
 
         if self.graph.status != GraphStatus::Running {
             return actions;
         }
 
-        // Check for timed-out tasks.
         let timeout_actions = self.check_timeouts();
         actions.extend(timeout_actions);
 
@@ -50,16 +38,38 @@ impl DagScheduler {
             return actions;
         }
 
-        // Dispatch ready tasks up to max_parallel slots. Concurrency is pre-enforced here
-        // (topology-aware cap) and also enforced by SubAgentManager::spawn() returning
-        // ConcurrencyLimit when active + reserved >= max_concurrent.
-        // Non-transient spawn failures are handled by record_spawn_failure(); optimistic
-        // Running marks are reverted to Ready for ConcurrencyLimit errors.
+        let ready = self.ordered_ready_tasks();
+        let dispatch_actions = self.dispatch_ready_tasks(ready);
+        actions.extend(dispatch_actions);
+
+        actions.extend(self.emit_pending_predicate_actions());
+        actions.extend(self.check_graph_completion());
+
+        actions
+    }
+
+    /// Drain buffered and channel events, returning all resulting actions.
+    fn drain_events_into_actions(&mut self) -> Vec<SchedulerAction> {
+        let mut actions = Vec::new();
+        while let Some(event) = self.buffered_events.pop_front() {
+            actions.extend(self.process_event(event));
+        }
+        while let Ok(event) = self.event_rx.try_recv() {
+            actions.extend(self.process_event(event));
+        }
+        actions
+    }
+
+    /// Return ready task IDs ordered according to the active dispatch strategy.
+    ///
+    /// `CascadeAware` partitions tasks into preferred (healthy region) and deferred
+    /// (cascading region). `TreeOptimized` sorts by critical-path distance descending.
+    /// Sequential tasks are never reordered.
+    fn ordered_ready_tasks(&mut self) -> Vec<TaskId> {
         let raw_ready = dag::ready_tasks(&self.graph);
 
-        // CascadeAware: partition ready tasks into preferred (healthy region) and deferred
-        // (cascading region). Deferred tasks still run when no preferred tasks remain.
-        // Skip for Sequential tasks — they must not be reordered relative to each other.
+        // CascadeAware: preferred (healthy) tasks first, deferred (cascading) tasks last.
+        // Sequential tasks are exempt from reordering.
         let ready: Vec<TaskId> = if self.topology.strategy == DispatchStrategy::CascadeAware {
             if let Some(ref mut detector) = self.cascade_detector {
                 let graph = &self.graph;
@@ -71,7 +81,6 @@ impl DagScheduler {
                         raw_ready.into_iter().partition(|id| {
                             let is_sequential = self.graph.tasks[id.index()].execution_mode
                                 == ExecutionMode::Sequential;
-                            // Sequential tasks are never reordered.
                             is_sequential || !deprioritized.contains(id)
                         });
                     preferred.into_iter().chain(deferred).collect()
@@ -83,29 +92,32 @@ impl DagScheduler {
             raw_ready
         };
 
-        // TreeOptimized: sort ready tasks by critical-path distance descending
-        // (tasks deepest in the DAG go first — shortest distance to sinks).
-        // Skip for Sequential tasks to preserve their ordering invariant.
-        let ready: Vec<TaskId> = if self.topology.strategy == DispatchStrategy::TreeOptimized {
+        // TreeOptimized: sort by critical-path distance descending (deepest tasks first).
+        if self.topology.strategy == DispatchStrategy::TreeOptimized {
             let max_depth = self.topology.depth;
             let mut sortable = ready;
             sortable.sort_by_key(|id| {
                 let task_depth = self.topology.depths.get(id).copied().unwrap_or(0);
-                // Deeper tasks have smaller key → dispatched first.
                 max_depth.saturating_sub(task_depth)
             });
             sortable
         } else {
             ready
-        };
+        }
+    }
 
+    /// Dispatch ready tasks up to the available concurrency slots.
+    ///
+    /// Concurrency is pre-enforced here (topology-aware cap) and also enforced by
+    /// `SubAgentManager::spawn()` returning `ConcurrencyLimit` when slots are exhausted.
+    /// Non-transient spawn failures are handled by `record_spawn_failure()`; optimistic
+    /// Running marks are reverted to Ready for `ConcurrencyLimit` errors.
+    fn dispatch_ready_tasks(&mut self, ready: Vec<TaskId>) -> Vec<SchedulerAction> {
         self.advance_level_barrier_if_needed();
 
-        // Available dispatch slots for this tick.
+        let mut actions = Vec::new();
         let mut slots = self.max_parallel.saturating_sub(self.running.len());
 
-        // For sequential dispatch: track whether we already scheduled one sequential task
-        // this tick AND whether any sequential task is currently running.
         let mut sequential_spawned_this_tick = false;
         let has_running_sequential = self
             .running
@@ -168,12 +180,23 @@ impl DagScheduler {
             slots -= 1;
         }
 
-        // Idempotent predicate gate emission (S9): for every Completed task whose
-        // verify_predicate is set but predicate_outcome is None, emit VerifyPredicate.
-        // Re-emitted every tick until record_predicate_outcome() populates predicate_outcome.
-        // The caller must deduplicate in-flight evaluations (per-process HashSet in scheduler_loop.rs).
-        if self.verify_predicate_enabled {
-            for task in &self.graph.tasks {
+        actions
+    }
+
+    /// Emit `VerifyPredicate` actions for completed tasks whose predicate is unresolved.
+    ///
+    /// Idempotent — re-emitted every tick until `record_predicate_outcome()` populates
+    /// `predicate_outcome`. The caller deduplicates in-flight evaluations (per-process
+    /// `HashSet` in `scheduler_loop.rs`). S9 invariant: observation must not be gated on
+    /// the replan budget — `max_replans=0` still emits `Verify`.
+    fn emit_pending_predicate_actions(&self) -> Vec<SchedulerAction> {
+        if !self.verify_predicate_enabled {
+            return Vec::new();
+        }
+        self.graph
+            .tasks
+            .iter()
+            .filter_map(|task| {
                 if task.status == TaskStatus::Completed
                     && let (Some(predicate), None) =
                         (&task.verify_predicate, &task.predicate_outcome)
@@ -182,18 +205,16 @@ impl DagScheduler {
                         .result
                         .as_ref()
                         .map_or_else(String::new, |r| r.output.clone());
-                    actions.push(SchedulerAction::VerifyPredicate {
+                    Some(SchedulerAction::VerifyPredicate {
                         task_id: task.id,
                         predicate: predicate.clone(),
                         output,
-                    });
+                    })
+                } else {
+                    None
                 }
-            }
-        }
-
-        actions.extend(self.check_graph_completion());
-
-        actions
+            })
+            .collect()
     }
 
     /// Wait for the next event from a running sub-agent.
@@ -384,7 +405,7 @@ impl DagScheduler {
     /// Compute the current deferral backoff with exponential growth capped at 5 seconds.
     ///
     /// Each consecutive spawn failure due to concurrency limits doubles the base backoff.
-    pub(super) fn current_deferral_backoff(&self) -> Duration {
+    fn current_deferral_backoff(&self) -> Duration {
         const MAX_BACKOFF: Duration = Duration::from_secs(5);
         let multiplier = 1u32
             .checked_shl(self.consecutive_spawn_failures.min(10))
@@ -395,16 +416,42 @@ impl DagScheduler {
     }
 
     /// Process a single `TaskEvent` and return any cancel actions needed.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3441): decompose into smaller helpers
-    pub(super) fn process_event(&mut self, event: TaskEvent) -> Vec<SchedulerAction> {
+    fn process_event(&mut self, event: TaskEvent) -> Vec<SchedulerAction> {
         let TaskEvent {
             task_id,
             agent_handle_id,
             outcome,
         } = event;
 
-        // Guard against stale events from previous incarnations (e.g. after timeout+retry).
-        // A timed-out agent's event_tx outlives the timeout and may send a completion later.
+        let Some((duration_ms, agent_def_name)) =
+            self.consume_running_for_event(task_id, &agent_handle_id)
+        else {
+            return Vec::new();
+        };
+
+        match outcome {
+            TaskOutcome::Completed { output, artifacts } => self.handle_completed_outcome(
+                task_id,
+                agent_handle_id,
+                agent_def_name,
+                duration_ms,
+                output,
+                artifacts,
+            ),
+            TaskOutcome::Failed { error } => self.handle_failed_outcome(task_id, &error),
+        }
+    }
+
+    /// Validate and remove a task from the running map; return duration and agent def name.
+    ///
+    /// Returns `None` and logs a warning when the event is stale (wrong handle) or the
+    /// task is not in the running map at all. The C1 fix: duration is computed before
+    /// the running entry is removed.
+    fn consume_running_for_event(
+        &mut self,
+        task_id: TaskId,
+        agent_handle_id: &str,
+    ) -> Option<(u64, Option<String>)> {
         match self.running.get(&task_id) {
             Some(running) if running.agent_handle_id != agent_handle_id => {
                 tracing::warn!(
@@ -413,7 +460,7 @@ impl DagScheduler {
                     got = %agent_handle_id,
                     "discarding stale event from previous agent incarnation"
                 );
-                return Vec::new();
+                return None;
             }
             None => {
                 tracing::debug!(
@@ -421,12 +468,11 @@ impl DagScheduler {
                     agent_handle_id = %agent_handle_id,
                     "ignoring event for task not in running map"
                 );
-                return Vec::new();
+                return None;
             }
             Some(_) => {}
         }
 
-        // Compute duration BEFORE removing from running map (C1 fix).
         let duration_ms = self.running.get(&task_id).map_or(0, |r| {
             u64::try_from(r.started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
         });
@@ -434,142 +480,148 @@ impl DagScheduler {
 
         self.running.remove(&task_id);
 
-        match outcome {
-            TaskOutcome::Completed { output, artifacts } => {
-                self.graph.tasks[task_id.index()].status = TaskStatus::Completed;
-                self.graph.tasks[task_id.index()].result = Some(TaskResult {
-                    output: output.clone(),
-                    artifacts,
-                    duration_ms,
-                    agent_id: Some(agent_handle_id),
-                    agent_def: agent_def_name,
-                });
+        Some((duration_ms, agent_def_name))
+    }
 
-                // Completed tasks need no lineage chain going forward.
-                self.lineage_chains.remove(&task_id);
+    /// Apply the Completed outcome branch: update graph, unblock downstream tasks, emit actions.
+    fn handle_completed_outcome(
+        &mut self,
+        task_id: TaskId,
+        agent_handle_id: String,
+        agent_def_name: Option<String>,
+        duration_ms: u64,
+        output: String,
+        artifacts: Vec<std::path::PathBuf>,
+    ) -> Vec<SchedulerAction> {
+        self.graph.tasks[task_id.index()].status = TaskStatus::Completed;
+        self.graph.tasks[task_id.index()].result = Some(TaskResult {
+            output: output.clone(),
+            artifacts,
+            duration_ms,
+            agent_id: Some(agent_handle_id),
+            agent_def: agent_def_name,
+        });
 
-                // Record success in cascade detector.
-                if let Some(ref mut detector) = self.cascade_detector {
-                    detector.record_outcome(task_id, true, &self.graph);
-                }
+        self.lineage_chains.remove(&task_id);
 
-                // Mark newly unblocked tasks as Ready.
-                // Downstream tasks are unblocked immediately — verification does not gate dispatch.
-                let newly_ready = dag::ready_tasks(&self.graph);
-                for ready_id in newly_ready {
-                    if self.graph.tasks[ready_id.index()].status == TaskStatus::Pending {
-                        self.graph.tasks[ready_id.index()].status = TaskStatus::Ready;
-                    }
-                }
+        if let Some(ref mut detector) = self.cascade_detector {
+            detector.record_outcome(task_id, true, &self.graph);
+        }
 
-                // Emit Verify action when verify_completeness is enabled.
-                // The replan budget is enforced inside inject_tasks() — the observation
-                // (emitting Verify) must not be gated on the mutation budget, or tasks
-                // after budget exhaustion never receive verification at all.
-                // max_replans=0 still emits Verify; gaps are logged only (no inject_tasks call).
-                if self.verify_completeness {
-                    vec![SchedulerAction::Verify { task_id, output }]
-                } else {
-                    Vec::new()
-                }
-            }
-
-            TaskOutcome::Failed { error } => {
-                // SEC-ORCH-04: truncate error to avoid logging sensitive internal details.
-                let error_excerpt: String = error.chars().take(512).collect();
-                tracing::warn!(
-                    task_id = %task_id,
-                    error = %error_excerpt,
-                    "task failed"
-                );
-                self.graph.tasks[task_id.index()].status = TaskStatus::Failed;
-
-                // Record failure in cascade detector.
-                if let Some(ref mut detector) = self.cascade_detector {
-                    detector.record_outcome(task_id, false, &self.graph);
-                }
-
-                // Build error lineage chain from parent chains (S4 side-table).
-                // BEFORE propagate_failure so we can read the graph topology.
-                let deps: Vec<TaskId> = self.graph.tasks[task_id.index()].depends_on.clone();
-                let mut chain = ErrorLineage::default();
-                for parent_id in &deps {
-                    if let Some(parent_chain) = self.lineage_chains.get(parent_id) {
-                        chain.merge(parent_chain, self.lineage_ttl_secs);
-                    }
-                }
-                chain.push(LineageEntry {
-                    task_id,
-                    kind: LineageKind::Failed {
-                        error_class: classify_error(&error),
-                    },
-                    ts_ms: now_ms(),
-                });
-                self.lineage_chains.insert(task_id, chain.clone());
-
-                // Prune stale lineage entries to bound memory usage.
-                let ttl = self.lineage_ttl_secs;
-                self.lineage_chains.retain(|_, c| c.is_recent(ttl));
-
-                // Check fan-out abort signal from CascadeDetector.
-                let graph = &self.graph;
-                let threshold = self.cascade_failure_rate_abort_threshold;
-                if let Some(ref mut detector) = self.cascade_detector {
-                    match detector.evaluate_abort(graph, task_id, threshold) {
-                        crate::cascade::AbortDecision::FanOutCascade {
-                            region_root,
-                            failure_rate,
-                            region_size,
-                        } => {
-                            tracing::error!(
-                                root = %region_root,
-                                failure_rate = failure_rate,
-                                region_size = region_size,
-                                cause = "fan_out_rate",
-                                "cascade abort: fan-out failure rate threshold exceeded"
-                            );
-                            return self.abort_dag_with_lineage(region_root, chain.entries());
-                        }
-                        crate::cascade::AbortDecision::None => {}
-                    }
-                }
-
-                // Check linear-chain abort signal (consecutive failures in depends_on path).
-                if self.cascade_chain_threshold > 0
-                    && chain.consecutive_failed_len() >= self.cascade_chain_threshold
-                {
-                    let root_id = chain.first_entry().map_or(task_id, |e| e.task_id);
-                    tracing::error!(
-                        root = %root_id,
-                        chain_depth = chain.consecutive_failed_len(),
-                        threshold = self.cascade_chain_threshold,
-                        cause = "chain_threshold",
-                        "cascade abort: consecutive failure chain threshold exceeded"
-                    );
-                    return self.abort_dag_with_lineage(root_id, chain.entries());
-                }
-
-                let cancel_ids = dag::propagate_failure(&mut self.graph, task_id);
-                let mut actions = Vec::new();
-
-                for cancel_task_id in cancel_ids {
-                    if let Some(running) = self.running.remove(&cancel_task_id) {
-                        actions.push(SchedulerAction::Cancel {
-                            agent_handle_id: running.agent_handle_id,
-                        });
-                    }
-                }
-
-                if self.graph.status != GraphStatus::Running {
-                    self.graph.finished_at = Some(crate::graph::chrono_now());
-                    actions.push(SchedulerAction::Done {
-                        status: self.graph.status,
-                    });
-                }
-
-                actions
+        // Mark newly unblocked tasks as Ready.
+        // Downstream tasks are unblocked immediately — verification does not gate dispatch.
+        let newly_ready = dag::ready_tasks(&self.graph);
+        for ready_id in newly_ready {
+            if self.graph.tasks[ready_id.index()].status == TaskStatus::Pending {
+                self.graph.tasks[ready_id.index()].status = TaskStatus::Ready;
             }
         }
+
+        // Emit Verify action when verify_completeness is enabled.
+        // The replan budget is enforced inside inject_tasks() — the observation
+        // (emitting Verify) must not be gated on the mutation budget, or tasks
+        // after budget exhaustion never receive verification at all.
+        // max_replans=0 still emits Verify; gaps are logged only (no inject_tasks call).
+        if self.verify_completeness {
+            vec![SchedulerAction::Verify { task_id, output }]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Apply the Failed outcome branch: build lineage, evaluate cascade abort, propagate failure.
+    fn handle_failed_outcome(&mut self, task_id: TaskId, error: &str) -> Vec<SchedulerAction> {
+        // SEC-ORCH-04: truncate error to avoid logging sensitive internal details.
+        let error_excerpt: String = error.chars().take(512).collect();
+        tracing::warn!(
+            task_id = %task_id,
+            error = %error_excerpt,
+            "task failed"
+        );
+        self.graph.tasks[task_id.index()].status = TaskStatus::Failed;
+
+        if let Some(ref mut detector) = self.cascade_detector {
+            detector.record_outcome(task_id, false, &self.graph);
+        }
+
+        // Build error lineage chain from parent chains (S4 side-table).
+        // BEFORE propagate_failure so we can read the graph topology.
+        let deps: Vec<TaskId> = self.graph.tasks[task_id.index()].depends_on.clone();
+        let mut chain = ErrorLineage::default();
+        for parent_id in &deps {
+            if let Some(parent_chain) = self.lineage_chains.get(parent_id) {
+                chain.merge(parent_chain, self.lineage_ttl_secs);
+            }
+        }
+        chain.push(LineageEntry {
+            task_id,
+            kind: LineageKind::Failed {
+                error_class: classify_error(error),
+            },
+            ts_ms: now_ms(),
+        });
+        self.lineage_chains.insert(task_id, chain.clone());
+
+        let ttl = self.lineage_ttl_secs;
+        self.lineage_chains.retain(|_, c| c.is_recent(ttl));
+
+        // Check fan-out abort signal from CascadeDetector.
+        let graph = &self.graph;
+        let threshold = self.cascade_failure_rate_abort_threshold;
+        if let Some(ref mut detector) = self.cascade_detector {
+            match detector.evaluate_abort(graph, task_id, threshold) {
+                crate::cascade::AbortDecision::FanOutCascade {
+                    region_root,
+                    failure_rate,
+                    region_size,
+                } => {
+                    tracing::error!(
+                        root = %region_root,
+                        failure_rate = failure_rate,
+                        region_size = region_size,
+                        cause = "fan_out_rate",
+                        "cascade abort: fan-out failure rate threshold exceeded"
+                    );
+                    return self.abort_dag_with_lineage(region_root, chain.entries());
+                }
+                crate::cascade::AbortDecision::None => {}
+            }
+        }
+
+        // Check linear-chain abort signal (consecutive failures in depends_on path).
+        if self.cascade_chain_threshold > 0
+            && chain.consecutive_failed_len() >= self.cascade_chain_threshold
+        {
+            let root_id = chain.first_entry().map_or(task_id, |e| e.task_id);
+            tracing::error!(
+                root = %root_id,
+                chain_depth = chain.consecutive_failed_len(),
+                threshold = self.cascade_chain_threshold,
+                cause = "chain_threshold",
+                "cascade abort: consecutive failure chain threshold exceeded"
+            );
+            return self.abort_dag_with_lineage(root_id, chain.entries());
+        }
+
+        let cancel_ids = dag::propagate_failure(&mut self.graph, task_id);
+        let mut actions = Vec::new();
+
+        for cancel_task_id in cancel_ids {
+            if let Some(running) = self.running.remove(&cancel_task_id) {
+                actions.push(SchedulerAction::Cancel {
+                    agent_handle_id: running.agent_handle_id,
+                });
+            }
+        }
+
+        if self.graph.status != GraphStatus::Running {
+            self.graph.finished_at = Some(crate::graph::chrono_now());
+            actions.push(SchedulerAction::Done {
+                status: self.graph.status,
+            });
+        }
+
+        actions
     }
 
     /// Abort the DAG due to cascade failure; cancel all running tasks.
@@ -577,7 +629,7 @@ impl DagScheduler {
     /// Sets graph status to `Failed`, records `finished_at`, emits `Cancel` for all
     /// running tasks, and appends `Done`. The `chain` is logged here for the audit record.
     /// Callers must emit `tracing::error!` with root/cause before calling this.
-    pub(super) fn abort_dag_with_lineage(
+    fn abort_dag_with_lineage(
         &mut self,
         root: TaskId,
         chain: &[crate::lineage::LineageEntry],
@@ -614,7 +666,7 @@ impl DagScheduler {
     /// Cancel actions emitted here signal agents cooperatively. Tool operations in progress
     /// at the time of cancellation complete before the agent loop checks the cancellation
     /// token. Partially-written artifacts may remain on disk after cancellation.
-    pub(super) fn check_timeouts(&mut self) -> Vec<SchedulerAction> {
+    fn check_timeouts(&mut self) -> Vec<SchedulerAction> {
         let timed_out: Vec<(TaskId, String)> = self
             .running
             .iter()

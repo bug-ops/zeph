@@ -173,7 +173,6 @@ impl TelegramChannel {
     /// # Errors
     ///
     /// Returns an error if the bot cannot be initialized.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3445): decompose into smaller helpers
     pub fn start(mut self) -> Result<Self, ChannelError> {
         if self.allowed_users.is_empty() {
             tracing::error!("telegram.allowed_users is empty; refusing to start an open bot");
@@ -201,87 +200,7 @@ impl TelegramChannel {
                 let handler = Update::filter_message().endpoint(move |msg: Message, bot: Bot| {
                     let tx = tx.clone();
                     let allowed = allowed.clone();
-                    async move {
-                        let username = msg.from.as_ref().and_then(|u| u.username.clone());
-
-                        if !allowed.is_empty() {
-                            let is_allowed = username
-                                .as_deref()
-                                .is_some_and(|u| allowed.iter().any(|a| a == u));
-                            if !is_allowed {
-                                tracing::warn!(
-                                    "rejected message from unauthorized user: {:?}",
-                                    username
-                                );
-                                return respond(());
-                            }
-                        }
-
-                        let text = msg.text().unwrap_or_default().to_string();
-                        let mut attachments = Vec::new();
-
-                        let audio_file_id = msg
-                            .voice()
-                            .map(|v| (v.file.id.0.clone(), v.file.size))
-                            .or_else(|| msg.audio().map(|a| (a.file.id.0.clone(), a.file.size)));
-
-                        if let Some((file_id, file_size)) = audio_file_id {
-                            match download_file(&bot, file_id, file_size).await {
-                                Ok(data) => {
-                                    attachments.push(Attachment {
-                                        kind: AttachmentKind::Audio,
-                                        data,
-                                        filename: msg.audio().and_then(|a| a.file_name.clone()),
-                                    });
-                                }
-                                Err(e) => {
-                                    tracing::warn!("failed to download audio attachment: {e}");
-                                }
-                            }
-                        }
-
-                        // Handle photo attachments (pick the largest available size)
-                        if let Some(photos) = msg.photo()
-                            && let Some(photo) = photos.iter().max_by_key(|p| p.file.size)
-                        {
-                            if photo.file.size > MAX_IMAGE_BYTES {
-                                tracing::warn!(
-                                    size = photo.file.size,
-                                    max = MAX_IMAGE_BYTES,
-                                    "photo exceeds size limit, skipping"
-                                );
-                            } else {
-                                match download_file(&bot, photo.file.id.0.clone(), photo.file.size)
-                                    .await
-                                {
-                                    Ok(data) => {
-                                        attachments.push(Attachment {
-                                            kind: AttachmentKind::Image,
-                                            data,
-                                            filename: None,
-                                        });
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("failed to download photo attachment: {e}");
-                                    }
-                                }
-                            }
-                        }
-
-                        if text.is_empty() && attachments.is_empty() {
-                            return respond(());
-                        }
-
-                        let _ = tx
-                            .send(IncomingMessage {
-                                chat_id: msg.chat.id,
-                                text,
-                                attachments,
-                            })
-                            .await;
-
-                        respond(())
-                    }
+                    async move { handle_telegram_message(bot, msg, tx, allowed).await }
                 });
 
                 Dispatcher::builder(bot, handler)
@@ -459,6 +378,108 @@ impl TelegramChannel {
         self.last_edit = Some(Instant::now());
         Ok(())
     }
+}
+
+/// Returns `true` when `username` appears in `allowed`.
+///
+/// An empty `allowed` list is treated as "no restriction" and always returns
+/// `true`, but `start()` rejects empty lists before the listener is spawned,
+/// so in practice `allowed` is never empty at call time.
+fn is_user_authorized(username: Option<&str>, allowed: &[String]) -> bool {
+    allowed.is_empty() || username.is_some_and(|u| allowed.iter().any(|a| a == u))
+}
+
+/// Extract the audio file identifier and byte size from a message, if present.
+///
+/// Prefers a voice note over an audio file when both are present.
+fn extract_audio_attachment(msg: &Message) -> Option<(String, u32)> {
+    msg.voice()
+        .map(|v| (v.file.id.0.clone(), v.file.size))
+        .or_else(|| msg.audio().map(|a| (a.file.id.0.clone(), a.file.size)))
+}
+
+/// Extract the largest photo's file identifier and byte size from a message.
+///
+/// Returns `None` when the message contains no photo or the largest available
+/// size exceeds [`MAX_IMAGE_BYTES`].
+fn extract_photo_attachment(msg: &Message) -> Option<(String, u32)> {
+    let photos = msg.photo()?;
+    let photo = photos.iter().max_by_key(|p| p.file.size)?;
+    if photo.file.size > MAX_IMAGE_BYTES {
+        tracing::warn!(
+            size = photo.file.size,
+            max = MAX_IMAGE_BYTES,
+            "photo exceeds size limit, skipping"
+        );
+        return None;
+    }
+    Some((photo.file.id.0.clone(), photo.file.size))
+}
+
+/// Process one incoming Telegram update inside the dispatcher endpoint.
+///
+/// Checks authorization, downloads any media attachments, and forwards the
+/// assembled [`IncomingMessage`] to the agent via `tx`.  Returns
+/// `respond(())` in all branches so teloxide considers the update handled.
+async fn handle_telegram_message(
+    bot: Bot,
+    msg: Message,
+    tx: mpsc::Sender<IncomingMessage>,
+    allowed: Vec<String>,
+) -> Result<(), teloxide::RequestError> {
+    let username = msg.from.as_ref().and_then(|u| u.username.as_deref());
+
+    if !is_user_authorized(username, &allowed) {
+        tracing::warn!("rejected message from unauthorized user: {:?}", username);
+        return respond(());
+    }
+
+    let text = msg.text().unwrap_or_default().to_string();
+    let mut attachments = Vec::new();
+
+    if let Some((file_id, file_size)) = extract_audio_attachment(&msg) {
+        match download_file(&bot, file_id, file_size).await {
+            Ok(data) => {
+                attachments.push(Attachment {
+                    kind: AttachmentKind::Audio,
+                    data,
+                    filename: msg.audio().and_then(|a| a.file_name.clone()),
+                });
+            }
+            Err(e) => {
+                tracing::warn!("failed to download audio attachment: {e}");
+            }
+        }
+    }
+
+    if let Some((file_id, file_size)) = extract_photo_attachment(&msg) {
+        match download_file(&bot, file_id, file_size).await {
+            Ok(data) => {
+                attachments.push(Attachment {
+                    kind: AttachmentKind::Image,
+                    data,
+                    filename: None,
+                });
+            }
+            Err(e) => {
+                tracing::warn!("failed to download photo attachment: {e}");
+            }
+        }
+    }
+
+    if text.is_empty() && attachments.is_empty() {
+        return respond(());
+    }
+
+    let _ = tx
+        .send(IncomingMessage {
+            chat_id: msg.chat.id,
+            text,
+            attachments,
+        })
+        .await;
+
+    respond(())
 }
 
 async fn download_file(bot: &Bot, file_id: String, capacity: u32) -> Result<Vec<u8>, String> {
@@ -955,6 +976,26 @@ mod tests {
     // ---------------------------------------------------------------------------
     // Pure-function unit tests (no async, no network)
     // ---------------------------------------------------------------------------
+
+    #[test]
+    fn is_user_authorized_empty_allowed_permits_all() {
+        assert!(is_user_authorized(None, &[]));
+        assert!(is_user_authorized(Some("anyone"), &[]));
+    }
+
+    #[test]
+    fn is_user_authorized_known_user_is_permitted() {
+        let allowed = vec!["alice".to_string(), "bob".to_string()];
+        assert!(is_user_authorized(Some("alice"), &allowed));
+        assert!(is_user_authorized(Some("bob"), &allowed));
+    }
+
+    #[test]
+    fn is_user_authorized_unknown_user_is_rejected() {
+        let allowed = vec!["alice".to_string()];
+        assert!(!is_user_authorized(Some("eve"), &allowed));
+        assert!(!is_user_authorized(None, &allowed));
+    }
 
     #[test]
     fn is_command_detection() {
