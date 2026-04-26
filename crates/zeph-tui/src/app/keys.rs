@@ -253,9 +253,7 @@ impl App {
         if self.handle_plugin_command(&cmd) {
             return;
         }
-        if self.handle_acp_command(cmd) {
-            return;
-        }
+        self.handle_acp_command(cmd);
     }
 
     fn handle_plan_command(&mut self, cmd: &TuiCommand) -> bool {
