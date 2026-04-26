@@ -481,7 +481,6 @@ impl SpreadingActivation {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3443): decompose into smaller helpers
     pub async fn spread(
         &self,
         store: &GraphStore,
@@ -498,13 +497,58 @@ impl SpreadingActivation {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs().cast_signed());
 
-        // activation map: entity_id -> (score, depth_at_max)
-        let mut activation: HashMap<i64, (f32, u32)> = HashMap::new();
+        let mut activation = self.initialize_seeds(&seeds);
+        let mut activated_facts: Vec<ActivatedFact> = Vec::new();
 
-        // Phase 1: seed initialization — seeds bypass activation_threshold (they are
-        // query anchors per SYNAPSE semantics). Filter below-threshold seeds with a debug log.
+        for hop in 0..self.params.max_hops {
+            let active_nodes: Vec<(i64, f32)> = activation
+                .iter()
+                .filter(|(_, (score, _))| *score >= self.params.activation_threshold)
+                .map(|(&id, &(score, _))| (id, score))
+                .collect();
+
+            if active_nodes.is_empty() {
+                break;
+            }
+
+            let node_ids: Vec<i64> = active_nodes.iter().map(|(id, _)| *id).collect();
+            let edges = store.edges_for_entities(&node_ids, edge_types).await?;
+            let edge_count = edges.len();
+
+            let next_activation =
+                self.propagate_one_hop(hop, &active_nodes, &edges, &activation, now_secs);
+
+            let pruned_count = self.merge_and_prune(&mut activation, next_activation);
+
+            tracing::debug!(
+                hop,
+                active_nodes = active_nodes.len(),
+                edges_fetched = edge_count,
+                after_merge = activation.len(),
+                pruned = pruned_count,
+                "spreading activation: hop complete"
+            );
+
+            self.collect_activated_facts(&edges, &activation, &mut activated_facts);
+        }
+
+        let result = self.finalize(activation);
+
+        tracing::info!(
+            activated = result.len(),
+            facts = activated_facts.len(),
+            "spreading activation: complete"
+        );
+
+        Ok((result, activated_facts))
+    }
+
+    /// Populate the activation map from seed scores, filtering seeds below threshold.
+    fn initialize_seeds(&self, seeds: &HashMap<i64, f32>) -> HashMap<i64, (f32, u32)> {
+        let mut activation: HashMap<i64, (f32, u32)> = HashMap::new();
         let mut seed_count = 0usize;
-        for (entity_id, match_score) in &seeds {
+        // Seeds bypass activation_threshold (they are query anchors per SYNAPSE semantics).
+        for (entity_id, match_score) in seeds {
             if *match_score < self.params.activation_threshold {
                 tracing::debug!(
                     entity_id,
@@ -517,138 +561,131 @@ impl SpreadingActivation {
             activation.insert(*entity_id, (*match_score, 0));
             seed_count += 1;
         }
-
         tracing::debug!(
             seeds = seed_count,
             "spreading activation: initialized seeds"
         );
+        activation
+    }
 
-        // Collected activated facts (edges traversed with their activation scores).
-        let mut activated_facts: Vec<ActivatedFact> = Vec::new();
+    /// Compute the next-hop activation map by propagating through `edges`.
+    ///
+    /// Applies lateral inhibition (CRIT-02) and clamped multi-path convergence sums.
+    fn propagate_one_hop(
+        &self,
+        hop: u32,
+        active_nodes: &[(i64, f32)],
+        edges: &[Edge],
+        activation: &HashMap<i64, (f32, u32)>,
+        now_secs: i64,
+    ) -> HashMap<i64, (f32, u32)> {
+        let mut next_activation: HashMap<i64, (f32, u32)> = HashMap::new();
 
-        // Phase 2: iterative propagation
-        for hop in 0..self.params.max_hops {
-            // Collect nodes eligible for propagation this hop.
-            let active_nodes: Vec<(i64, f32)> = activation
-                .iter()
-                .filter(|(_, (score, _))| *score >= self.params.activation_threshold)
-                .map(|(&id, &(score, _))| (id, score))
-                .collect();
+        for edge in edges {
+            for &(active_id, node_score) in active_nodes {
+                let neighbor = if edge.source_entity_id == active_id {
+                    edge.target_entity_id
+                } else if edge.target_entity_id == active_id {
+                    edge.source_entity_id
+                } else {
+                    continue;
+                };
 
-            if active_nodes.is_empty() {
-                break;
-            }
-
-            let node_ids: Vec<i64> = active_nodes.iter().map(|(id, _)| *id).collect();
-
-            // Fetch edges for all active nodes in one batched query.
-            let edges = store.edges_for_entities(&node_ids, edge_types).await?;
-            let edge_count = edges.len();
-
-            let mut next_activation: HashMap<i64, (f32, u32)> = HashMap::new();
-
-            for edge in &edges {
-                // Determine which endpoint is the "source" (currently active) and
-                // which is the "neighbor" to receive activation.
-                for &(active_id, node_score) in &active_nodes {
-                    let neighbor = if edge.source_entity_id == active_id {
-                        edge.target_entity_id
-                    } else if edge.target_entity_id == active_id {
-                        edge.source_entity_id
-                    } else {
-                        continue;
-                    };
-
-                    // Lateral inhibition: skip neighbor if it already has high activation
-                    // in either the current map OR this hop's next_activation (CRIT-02 fix:
-                    // checks both maps to match SYNAPSE paper semantics and prevent runaway
-                    // activation when multiple paths converge in the same hop).
-                    let current_score = activation.get(&neighbor).map_or(0.0_f32, |&(s, _)| s);
-                    let next_score = next_activation.get(&neighbor).map_or(0.0_f32, |&(s, _)| s);
-                    if current_score >= self.params.inhibition_threshold
-                        || next_score >= self.params.inhibition_threshold
-                    {
-                        continue;
-                    }
-
-                    let recency = self.recency_weight(&edge.valid_from, now_secs);
-                    let edge_weight = evolved_weight(edge.retrieval_count, edge.confidence);
-                    let type_w = edge_type_weight(edge.edge_type);
-                    let spread_value =
-                        node_score * self.params.decay_lambda * edge_weight * recency * type_w;
-
-                    if spread_value < self.params.activation_threshold {
-                        continue;
-                    }
-
-                    // Use clamped sum (min(1.0, existing + spread_value)) to preserve the
-                    // multi-path convergence signal: nodes reachable via multiple paths
-                    // receive proportionally higher activation (see MAJOR-01 in critic review).
-                    let depth_at_max = hop + 1;
-                    let entry = next_activation
-                        .entry(neighbor)
-                        .or_insert((0.0, depth_at_max));
-                    let new_score = (entry.0 + spread_value).min(1.0);
-                    if new_score > entry.0 {
-                        entry.0 = new_score;
-                        entry.1 = depth_at_max;
-                    }
+                // Lateral inhibition: skip neighbor if it already has high activation
+                // in either the current map OR this hop's next_activation (CRIT-02 fix:
+                // checks both maps to match SYNAPSE paper semantics and prevent runaway
+                // activation when multiple paths converge in the same hop).
+                let current_score = activation.get(&neighbor).map_or(0.0_f32, |&(s, _)| s);
+                let next_score = next_activation.get(&neighbor).map_or(0.0_f32, |&(s, _)| s);
+                if current_score >= self.params.inhibition_threshold
+                    || next_score >= self.params.inhibition_threshold
+                {
+                    continue;
                 }
-            }
 
-            // Merge next_activation into activation (keep max depth-at-max for ties).
-            for (node_id, (new_score, new_depth)) in next_activation {
-                let entry = activation.entry(node_id).or_insert((0.0, new_depth));
+                let recency = self.recency_weight(&edge.valid_from, now_secs);
+                let edge_weight = evolved_weight(edge.retrieval_count, edge.confidence);
+                let type_w = edge_type_weight(edge.edge_type);
+                let spread_value =
+                    node_score * self.params.decay_lambda * edge_weight * recency * type_w;
+
+                if spread_value < self.params.activation_threshold {
+                    continue;
+                }
+
+                // Clamped sum preserves the multi-path convergence signal: nodes reachable
+                // via multiple paths receive proportionally higher activation (MAJOR-01).
+                let depth_at_max = hop + 1;
+                let entry = next_activation
+                    .entry(neighbor)
+                    .or_insert((0.0, depth_at_max));
+                let new_score = (entry.0 + spread_value).min(1.0);
                 if new_score > entry.0 {
                     entry.0 = new_score;
-                    entry.1 = new_depth;
-                }
-            }
-
-            // Per-hop pruning: enforce max_activated_nodes (SA-INV-04).
-            // After merging, if |activation| > max_activated_nodes, keep only top-N by score.
-            let pruned_count = if activation.len() > self.params.max_activated_nodes {
-                let before = activation.len();
-                let mut entries: Vec<(i64, (f32, u32))> = activation.drain().collect();
-                entries.sort_by(|(_, (a, _)), (_, (b, _))| b.total_cmp(a));
-                entries.truncate(self.params.max_activated_nodes);
-                activation = entries.into_iter().collect();
-                before - self.params.max_activated_nodes
-            } else {
-                0
-            };
-
-            tracing::debug!(
-                hop,
-                active_nodes = active_nodes.len(),
-                edges_fetched = edge_count,
-                after_merge = activation.len(),
-                pruned = pruned_count,
-                "spreading activation: hop complete"
-            );
-
-            // Collect edges from this hop as activated facts.
-            for edge in edges {
-                // Include only edges connecting two activated nodes.
-                let src_score = activation
-                    .get(&edge.source_entity_id)
-                    .map_or(0.0, |&(s, _)| s);
-                let tgt_score = activation
-                    .get(&edge.target_entity_id)
-                    .map_or(0.0, |&(s, _)| s);
-                if src_score >= self.params.activation_threshold
-                    && tgt_score >= self.params.activation_threshold
-                {
-                    let activation_score = src_score.max(tgt_score);
-                    activated_facts.push(ActivatedFact {
-                        edge,
-                        activation_score,
-                    });
+                    entry.1 = depth_at_max;
                 }
             }
         }
 
-        // Phase 3: collect nodes above threshold, sorted by activation score descending.
+        next_activation
+    }
+
+    /// Merge `next_activation` into `activation` and prune to `max_activated_nodes` (SA-INV-04).
+    ///
+    /// Returns the number of pruned nodes for tracing.
+    fn merge_and_prune(
+        &self,
+        activation: &mut HashMap<i64, (f32, u32)>,
+        next_activation: HashMap<i64, (f32, u32)>,
+    ) -> usize {
+        for (node_id, (new_score, new_depth)) in next_activation {
+            let entry = activation.entry(node_id).or_insert((0.0, new_depth));
+            if new_score > entry.0 {
+                entry.0 = new_score;
+                entry.1 = new_depth;
+            }
+        }
+
+        if activation.len() > self.params.max_activated_nodes {
+            let before = activation.len();
+            let mut entries: Vec<(i64, (f32, u32))> = activation.drain().collect();
+            entries.sort_by(|(_, (a, _)), (_, (b, _))| b.total_cmp(a));
+            entries.truncate(self.params.max_activated_nodes);
+            *activation = entries.into_iter().collect();
+            before - self.params.max_activated_nodes
+        } else {
+            0
+        }
+    }
+
+    /// Append edges whose both endpoints are above threshold to `activated_facts`.
+    fn collect_activated_facts(
+        &self,
+        edges: &[Edge],
+        activation: &HashMap<i64, (f32, u32)>,
+        activated_facts: &mut Vec<ActivatedFact>,
+    ) {
+        for edge in edges {
+            let src_score = activation
+                .get(&edge.source_entity_id)
+                .map_or(0.0, |&(s, _)| s);
+            let tgt_score = activation
+                .get(&edge.target_entity_id)
+                .map_or(0.0, |&(s, _)| s);
+            if src_score >= self.params.activation_threshold
+                && tgt_score >= self.params.activation_threshold
+            {
+                let activation_score = src_score.max(tgt_score);
+                activated_facts.push(ActivatedFact {
+                    edge: edge.clone(),
+                    activation_score,
+                });
+            }
+        }
+    }
+
+    /// Collect nodes above threshold into `Vec<ActivatedNode>`, sorted descending by score.
+    fn finalize(&self, activation: HashMap<i64, (f32, u32)>) -> Vec<ActivatedNode> {
         let mut result: Vec<ActivatedNode> = activation
             .into_iter()
             .filter(|(_, (score, _))| *score >= self.params.activation_threshold)
@@ -659,14 +696,7 @@ impl SpreadingActivation {
             })
             .collect();
         result.sort_by(|a, b| b.activation.total_cmp(&a.activation));
-
-        tracing::info!(
-            activated = result.len(),
-            facts = activated_facts.len(),
-            "spreading activation: complete"
-        );
-
-        Ok((result, activated_facts))
+        result
     }
 
     /// Compute temporal recency weight for an edge.

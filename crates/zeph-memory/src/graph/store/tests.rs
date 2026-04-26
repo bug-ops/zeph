@@ -863,14 +863,11 @@ async fn orphan_alias_cleanup_on_entity_delete() {
 /// - `graph_edges` survive (FK cascade did not wipe them)
 #[tokio::test]
 #[cfg(feature = "sqlite")]
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3443): decompose into smaller helpers
 async fn migration_024_backfill_preserves_entities_and_edges() {
     use sqlx::Acquire as _;
     use sqlx::ConnectOptions as _;
     use sqlx::sqlite::SqliteConnectOptions;
 
-    // Open an in-memory SQLite database with FK enforcement enabled (matches production).
-    // Pool size = 1 ensures all queries share the same underlying connection.
     let opts = SqliteConnectOptions::from_url(&"sqlite::memory:".parse().unwrap())
         .unwrap()
         .foreign_keys(true);
@@ -880,7 +877,20 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
         .await
         .unwrap();
 
-    // Create pre-023 schema (migration 021 state): no canonical_name column.
+    create_pre_023_schema(&pool).await;
+    let (alice_id, rust_id) = seed_pre_023_fixtures(&pool).await;
+
+    let mut conn = pool.acquire().await.unwrap();
+    let conn = conn.acquire().await.unwrap();
+
+    apply_migration_024(conn).await;
+
+    assert_canonical_names_backfilled(conn, (alice_id, rust_id)).await;
+    assert_aliases_seeded(conn, alice_id).await;
+    assert_edges_survived(conn).await;
+}
+
+async fn create_pre_023_schema(pool: &sqlx::SqlitePool) {
     sqlx::query(sql!(
         "CREATE TABLE graph_entities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -893,7 +903,7 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
             UNIQUE(name, entity_type)
          )"
     ))
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
 
@@ -913,32 +923,31 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
             qdrant_point_id TEXT
          )"
     ))
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
 
-    // Create FTS5 table and triggers (migration 023 state).
     sqlx::query(sql!(
         "CREATE VIRTUAL TABLE IF NOT EXISTS graph_entities_fts USING fts5(
             name, summary, content='graph_entities', content_rowid='id',
             tokenize='unicode61 remove_diacritics 2'
          )"
     ))
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
     sqlx::query(
         sql!("CREATE TRIGGER IF NOT EXISTS graph_entities_fts_insert AFTER INSERT ON graph_entities
          BEGIN INSERT INTO graph_entities_fts(rowid, name, summary) VALUES (new.id, new.name, COALESCE(new.summary, '')); END"),
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
     sqlx::query(
         sql!("CREATE TRIGGER IF NOT EXISTS graph_entities_fts_delete AFTER DELETE ON graph_entities
          BEGIN INSERT INTO graph_entities_fts(graph_entities_fts, rowid, name, summary) VALUES ('delete', old.id, old.name, COALESCE(old.summary, '')); END"),
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
     sqlx::query(
@@ -948,22 +957,23 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
              INSERT INTO graph_entities_fts(rowid, name, summary) VALUES (new.id, new.name, COALESCE(new.summary, ''));
          END"),
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
+}
 
-    // Insert pre-existing entities and an edge.
+async fn seed_pre_023_fixtures(pool: &sqlx::SqlitePool) -> (i64, i64) {
     let alice_id: i64 = sqlx::query_scalar(sql!(
         "INSERT INTO graph_entities (name, entity_type) VALUES ('Alice', 'person') RETURNING id"
     ))
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .unwrap();
 
     let rust_id: i64 = sqlx::query_scalar(sql!(
         "INSERT INTO graph_entities (name, entity_type) VALUES ('Rust', 'language') RETURNING id"
     ))
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .unwrap();
 
@@ -973,16 +983,18 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
     ))
     .bind(alice_id)
     .bind(rust_id)
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
 
-    // Apply migration 024 on a single pinned connection so PRAGMA foreign_keys = OFF
-    // takes effect on the same connection that executes DROP TABLE (required because
-    // PRAGMA foreign_keys is per-connection, not per-transaction).
-    let mut conn = pool.acquire().await.unwrap();
-    let conn = conn.acquire().await.unwrap();
+    (alice_id, rust_id)
+}
 
+/// Apply migration 024 SQL on a single pinned connection.
+///
+/// Must use a single connection so `PRAGMA foreign_keys = OFF` takes effect on the same
+/// connection that executes DROP TABLE (PRAGMA is per-connection, not per-transaction).
+async fn apply_migration_024(conn: &mut sqlx::SqliteConnection) {
     sqlx::query(sql!("PRAGMA foreign_keys = OFF"))
         .execute(&mut *conn)
         .await
@@ -1089,8 +1101,10 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
         .execute(&mut *conn)
         .await
         .unwrap();
+}
 
-    // Verify: canonical_name backfilled from name
+async fn assert_canonical_names_backfilled(conn: &mut sqlx::SqliteConnection, ids: (i64, i64)) {
+    let (alice_id, rust_id) = ids;
     let alice_canon: String = sqlx::query_scalar(sql!(
         "SELECT canonical_name FROM graph_entities WHERE id = ?1"
     ))
@@ -1114,8 +1128,9 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
         rust_canon, "Rust",
         "canonical_name should equal pre-migration name"
     );
+}
 
-    // Verify: aliases seeded
+async fn assert_aliases_seeded(conn: &mut sqlx::SqliteConnection, alice_id: i64) {
     let alice_aliases: Vec<String> = sqlx::query_scalar(sql!(
         "SELECT alias_name FROM graph_entity_aliases WHERE entity_id = ?1"
     ))
@@ -1127,8 +1142,9 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
         alice_aliases.contains(&"Alice".to_owned()),
         "initial alias should be seeded from entity name"
     );
+}
 
-    // Verify: graph_edges survived (FK cascade did not wipe them)
+async fn assert_edges_survived(conn: &mut sqlx::SqliteConnection) {
     let edge_count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM graph_edges"))
         .fetch_one(&mut *conn)
         .await

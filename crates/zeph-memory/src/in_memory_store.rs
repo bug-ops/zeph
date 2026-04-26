@@ -242,6 +242,31 @@ impl VectorStore for InMemoryVectorStore {
     fn health_check(&self) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
         Box::pin(async { Ok(true) })
     }
+
+    fn get_points(
+        &self,
+        collection: &str,
+        ids: Vec<String>,
+    ) -> BoxFuture<'_, Result<Vec<VectorPoint>, VectorStoreError>> {
+        let collection = collection.to_owned();
+        Box::pin(async move {
+            let cols = self.collections.read();
+            let col = cols.get(&collection).ok_or_else(|| {
+                VectorStoreError::Unsupported(format!("collection {collection} not found"))
+            })?;
+            let points = ids
+                .into_iter()
+                .filter_map(|id| {
+                    col.points.get(&id).map(|sp| VectorPoint {
+                        id: id.clone(),
+                        vector: sp.vector.clone(),
+                        payload: sp.payload.clone(),
+                    })
+                })
+                .collect();
+            Ok(points)
+        })
+    }
 }
 
 #[cfg(test)]

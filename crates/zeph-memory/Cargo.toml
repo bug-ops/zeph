@@ -47,7 +47,7 @@ default = ["sqlite"]
 pdf = ["dep:pdf-extract"]
 sqlite = ["zeph-db/sqlite"]
 postgres = ["zeph-db/postgres"]
-testing = []
+testing = ["zeph-llm/testing"]
 
 [[bench]]
 name = "token_estimation"

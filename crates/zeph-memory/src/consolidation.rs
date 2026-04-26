@@ -144,7 +144,6 @@ pub async fn start_consolidation_loop(
     feature = "profiling",
     tracing::instrument(name = "memory.consolidation_loop", skip_all)
 )]
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3443): decompose into smaller helpers
 pub async fn run_consolidation_sweep(
     store: &SqliteStore,
     provider: &AnyProvider,
@@ -152,134 +151,174 @@ pub async fn run_consolidation_sweep(
 ) -> Result<ConsolidationResult, MemoryError> {
     let mut result = ConsolidationResult::default();
 
-    // Find all conversations that have unconsolidated messages.
     let conv_ids = store.conversations_with_unconsolidated_messages().await?;
 
     for conv_id in conv_ids {
-        let candidates = store
-            .find_unconsolidated_messages(conv_id, config.sweep_batch_size)
-            .await?;
+        process_conversation(store, provider, config, conv_id, &mut result).await?;
+    }
 
-        if candidates.is_empty() {
+    Ok(result)
+}
+
+/// Process one conversation in a consolidation sweep.
+///
+/// Loads candidates, embeds them, clusters by similarity, and applies topology ops.
+/// Returns early (without error) if embeddings are unavailable or too few candidates exist.
+async fn process_conversation(
+    store: &SqliteStore,
+    provider: &AnyProvider,
+    config: &ConsolidationConfig,
+    conv_id: crate::types::ConversationId,
+    result: &mut ConsolidationResult,
+) -> Result<(), MemoryError> {
+    let candidates = store
+        .find_unconsolidated_messages(conv_id, config.sweep_batch_size)
+        .await?;
+
+    if candidates.is_empty() {
+        return Ok(());
+    }
+
+    if !provider.supports_embeddings() {
+        return Ok(());
+    }
+
+    let embedded = embed_candidates(provider, &candidates).await;
+
+    if embedded.len() < 2 {
+        return Ok(());
+    }
+
+    let clusters = cluster_by_similarity(&embedded, config.similarity_threshold);
+
+    for cluster in clusters {
+        if cluster.len() < 2 {
             continue;
         }
+        apply_topology_op(store, provider, conv_id, cluster, config, result).await;
+    }
 
-        // Embed all candidates for clustering.
-        if !provider.supports_embeddings() {
-            // No embedding support — cannot cluster, skip this conversation.
-            continue;
+    Ok(())
+}
+
+/// Embed all consolidation candidates for a single conversation.
+///
+/// Runs all embeds concurrently via `join_all`.  Candidates that fail to embed are logged
+/// and dropped; they will be retried in a future sweep cycle.
+async fn embed_candidates(
+    provider: &AnyProvider,
+    candidates: &[(crate::types::MessageId, String)],
+) -> Vec<(i64, String, Vec<f32>)> {
+    let futures: Vec<_> = candidates
+        .iter()
+        .map(|(id, content)| {
+            let id = id.0;
+            let content = content.clone();
+            async move { (id, content.clone(), provider.embed(&content).await) }
+        })
+        .collect();
+    let results = futures::future::join_all(futures).await;
+
+    let mut embedded: Vec<(i64, String, Vec<f32>)> = Vec::with_capacity(results.len());
+    for (id, content, embed_result) in results {
+        match embed_result {
+            Ok(vec) => embedded.push((id, content, vec)),
+            Err(e) => {
+                tracing::warn!(
+                    message_id = id,
+                    error = %e,
+                    "consolidation: failed to embed candidate, skipping"
+                );
+            }
         }
+    }
+    embedded
+}
 
-        let futures: Vec<_> = candidates
-            .iter()
-            .map(|(id, content)| {
-                let id = id.0;
-                let content = content.clone();
-                async move { (id, content.clone(), provider.embed(&content).await) }
-            })
-            .collect();
-        let results = futures::future::join_all(futures).await;
-
-        let mut embedded: Vec<(i64, String, Vec<f32>)> = Vec::with_capacity(results.len());
-        for (id, content, result) in results {
-            match result {
-                Ok(vec) => embedded.push((id, content, vec)),
+/// Propose and apply a topology op for a single cluster of similar messages.
+///
+/// Asks the LLM to produce a `TopologyOp` for the cluster and, if accepted, applies it
+/// via the store. Updates `result` counters in place; individual op failures are logged
+/// and do not propagate.
+async fn apply_topology_op(
+    store: &SqliteStore,
+    provider: &AnyProvider,
+    conv_id: crate::types::ConversationId,
+    cluster: Vec<(i64, String)>,
+    config: &ConsolidationConfig,
+    result: &mut ConsolidationResult,
+) {
+    let ops = propose_merge_op(provider, &cluster).await;
+    match ops {
+        None => {
+            tracing::debug!(
+                cluster_size = cluster.len(),
+                "consolidation: LLM returned no op for cluster, skipping"
+            );
+        }
+        Some(TopologyOp::Merge {
+            source_ids,
+            merged_content,
+            confidence,
+        }) => {
+            let source_msg_ids: Vec<crate::types::MessageId> = source_ids
+                .iter()
+                .map(|&id| crate::types::MessageId(id))
+                .collect();
+            match store
+                .apply_consolidation_merge(
+                    conv_id,
+                    "assistant",
+                    &merged_content,
+                    &source_msg_ids,
+                    confidence,
+                    config.confidence_threshold,
+                )
+                .await
+            {
+                Ok(true) => result.merges += 1,
+                Ok(false) => result.skipped += 1,
                 Err(e) => {
                     tracing::warn!(
-                        message_id = id,
                         error = %e,
-                        "consolidation: failed to embed candidate, skipping"
-                    );
-                }
-            }
-        }
-
-        if embedded.len() < 2 {
-            continue;
-        }
-
-        let clusters = cluster_by_similarity(&embedded, config.similarity_threshold);
-
-        for cluster in clusters {
-            if cluster.len() < 2 {
-                continue;
-            }
-
-            let ops = propose_merge_op(provider, &cluster).await;
-            match ops {
-                None => {
-                    tracing::debug!(
                         cluster_size = cluster.len(),
-                        "consolidation: LLM returned no op for cluster, skipping"
+                        "consolidation: merge failed"
                     );
                 }
-                Some(TopologyOp::Merge {
-                    source_ids,
-                    merged_content,
+            }
+        }
+        Some(TopologyOp::Update {
+            target_id,
+            new_content,
+            additional_source_ids,
+            confidence,
+        }) => {
+            let source_msg_ids: Vec<crate::types::MessageId> = additional_source_ids
+                .iter()
+                .map(|&id| crate::types::MessageId(id))
+                .collect();
+            match store
+                .apply_consolidation_update(
+                    crate::types::MessageId(target_id),
+                    &new_content,
+                    &source_msg_ids,
                     confidence,
-                }) => {
-                    let source_msg_ids: Vec<crate::types::MessageId> = source_ids
-                        .iter()
-                        .map(|&id| crate::types::MessageId(id))
-                        .collect();
-                    match store
-                        .apply_consolidation_merge(
-                            conv_id,
-                            "assistant",
-                            &merged_content,
-                            &source_msg_ids,
-                            confidence,
-                            config.confidence_threshold,
-                        )
-                        .await
-                    {
-                        Ok(true) => result.merges += 1,
-                        Ok(false) => result.skipped += 1,
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                cluster_size = cluster.len(),
-                                "consolidation: merge failed"
-                            );
-                        }
-                    }
-                }
-                Some(TopologyOp::Update {
-                    target_id,
-                    new_content,
-                    additional_source_ids,
-                    confidence,
-                }) => {
-                    let source_msg_ids: Vec<crate::types::MessageId> = additional_source_ids
-                        .iter()
-                        .map(|&id| crate::types::MessageId(id))
-                        .collect();
-                    match store
-                        .apply_consolidation_update(
-                            crate::types::MessageId(target_id),
-                            &new_content,
-                            &source_msg_ids,
-                            confidence,
-                            config.confidence_threshold,
-                        )
-                        .await
-                    {
-                        Ok(true) => result.updates += 1,
-                        Ok(false) => result.skipped += 1,
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                target_id,
-                                "consolidation: update failed"
-                            );
-                        }
-                    }
+                    config.confidence_threshold,
+                )
+                .await
+            {
+                Ok(true) => result.updates += 1,
+                Ok(false) => result.skipped += 1,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        target_id,
+                        "consolidation: update failed"
+                    );
                 }
             }
         }
     }
-
-    Ok(result)
 }
 
 /// A cluster: (representative embedding, list of (id, content) members).

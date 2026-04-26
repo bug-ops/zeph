@@ -125,7 +125,6 @@ struct EntityWorkItem {
 ///    directions is only inserted once, keeping `edges_created` accurate.
 ///
 /// Errors are logged and not propagated — this is a best-effort background enrichment step.
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3443): decompose into smaller helpers
 pub async fn link_memory_notes(
     entity_ids: &[i64],
     pool: DbPool,
@@ -133,14 +132,41 @@ pub async fn link_memory_notes(
     provider: AnyProvider,
     cfg: &NoteLinkingConfig,
 ) -> LinkingStats {
-    use futures::future;
-
     use crate::graph::GraphStore;
 
     let store = GraphStore::new(pool);
     let mut stats = LinkingStats::default();
 
-    // Phase 1: load entities from DB sequentially (cheap; avoids connection-pool contention).
+    let work_items = collect_note_link_work_items(entity_ids, &store).await;
+    if work_items.is_empty() {
+        return stats;
+    }
+
+    let valid = embed_work_items(&work_items, &provider).await;
+
+    let search_limit = cfg.top_k + 1; // +1 to account for self-match
+    let search_results = search_similar_for_items(&valid, &embedding_store, search_limit).await;
+
+    insert_similarity_edges(
+        &work_items,
+        &valid,
+        &search_results,
+        cfg,
+        &store,
+        &mut stats,
+    )
+    .await;
+
+    stats
+}
+
+/// Phase 1: load entities from the DB and build work items for embedding.
+///
+/// Processes entities sequentially to avoid connection-pool contention.
+async fn collect_note_link_work_items(
+    entity_ids: &[i64],
+    store: &crate::graph::GraphStore,
+) -> Vec<EntityWorkItem> {
     let mut work_items: Vec<EntityWorkItem> = Vec::with_capacity(entity_ids.len());
     for &entity_id in entity_ids {
         let entity = match store.find_entity_by_id(entity_id).await {
@@ -165,18 +191,23 @@ pub async fn link_memory_notes(
             self_point_id: entity.qdrant_point_id,
         });
     }
+    work_items
+}
 
-    if work_items.is_empty() {
-        return stats;
-    }
+/// Phase 2: embed all entity texts in parallel.
+///
+/// Returns `(work_idx, embedding)` pairs for successfully embedded items.
+/// Items that fail to embed are logged and dropped.
+async fn embed_work_items(
+    work_items: &[EntityWorkItem],
+    provider: &AnyProvider,
+) -> Vec<(usize, Vec<f32>)> {
+    use futures::future;
 
-    // Phase 2: embed all entity texts in parallel to reduce N serial HTTP round-trips to 1.
     let embed_results: Vec<_> =
         future::join_all(work_items.iter().map(|w| provider.embed(&w.embed_text))).await;
 
-    // Phase 3: search for similar entities in parallel for all successfully embedded entities.
-    let search_limit = cfg.top_k + 1; // +1 to account for self-match
-    let valid: Vec<(usize, Vec<f32>)> = embed_results
+    embed_results
         .into_iter()
         .enumerate()
         .filter_map(|(i, r)| match r {
@@ -189,9 +220,18 @@ pub async fn link_memory_notes(
                 None
             }
         })
-        .collect();
+        .collect()
+}
 
-    let search_results: Vec<_> = future::join_all(valid.iter().map(|(_, vec)| {
+/// Phase 3: search the embedding store for similar entities for each embedded work item.
+async fn search_similar_for_items(
+    valid: &[(usize, Vec<f32>)],
+    embedding_store: &EmbeddingStore,
+    search_limit: usize,
+) -> Vec<Result<Vec<crate::ScoredVectorPoint>, MemoryError>> {
+    use futures::future;
+
+    future::join_all(valid.iter().map(|(_, vec)| {
         embedding_store.search_collection(
             ENTITY_COLLECTION,
             vec,
@@ -199,12 +239,21 @@ pub async fn link_memory_notes(
             None::<VectorFilter>,
         )
     }))
-    .await;
+    .await
+}
 
-    // Phase 4: insert edges; deduplicate pairs seen from both A→B and B→A directions.
-    // Without deduplication, both directions call insert_edge for the same normalised pair and
-    // both return Ok (the second call updates confidence on the existing row), inflating
-    // edges_created by the number of bidirectional hits.
+/// Phase 4: insert similarity edges, deduplicating pairs seen from both A→B and B→A.
+///
+/// Without deduplication, both directions would call `insert_edge` for the same normalised
+/// pair and both return `Ok`, inflating `edges_created` by the number of bidirectional hits.
+async fn insert_similarity_edges(
+    work_items: &[EntityWorkItem],
+    valid: &[(usize, Vec<f32>)],
+    search_results: &[Result<Vec<crate::ScoredVectorPoint>, MemoryError>],
+    cfg: &NoteLinkingConfig,
+    store: &crate::graph::GraphStore,
+    stats: &mut LinkingStats,
+) {
     let mut seen_pairs = std::collections::HashSet::new();
 
     for ((work_idx, _), search_result) in valid.iter().zip(search_results.iter()) {
@@ -253,7 +302,6 @@ pub async fn link_memory_notes(
                 (target_id, w.entity_id)
             };
 
-            // Skip pairs already processed in this pass to avoid double-counting.
             if !seen_pairs.insert((src, tgt)) {
                 continue;
             }
@@ -271,8 +319,6 @@ pub async fn link_memory_notes(
             }
         }
     }
-
-    stats
 }
 
 /// Extract entities and edges from `content` and persist them to the graph store.
@@ -289,7 +335,6 @@ pub async fn link_memory_notes(
     feature = "profiling",
     tracing::instrument(name = "memory.graph_extract", skip_all, fields(entities = tracing::field::Empty, edges = tracing::field::Empty))
 )]
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3443): decompose into smaller helpers
 pub async fn extract_and_store(
     content: String,
     context_messages: Vec<String>,
@@ -306,20 +351,7 @@ pub async fn extract_and_store(
 
     let store = GraphStore::new(pool);
 
-    let pool = store.pool();
-    zeph_db::query(sql!(
-        "INSERT INTO graph_metadata (key, value) VALUES ('extraction_count', '0')
-         ON CONFLICT(key) DO NOTHING"
-    ))
-    .execute(pool)
-    .await?;
-    zeph_db::query(sql!(
-        "UPDATE graph_metadata
-         SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
-         WHERE key = 'extraction_count'"
-    ))
-    .execute(pool)
-    .await?;
+    bump_extraction_count(store.pool()).await?;
 
     let Some(result) = extractor.extract(&content, &ctx_refs).await? else {
         return Ok(ExtractionResult::default());
@@ -345,11 +377,59 @@ pub async fn extract_and_store(
         EntityResolver::new(&store)
     };
 
-    let mut entities_upserted = 0usize;
+    let (entity_name_to_id, entities_upserted) = upsert_entities(&resolver, &result.entities).await;
+    let edges_inserted = insert_edges(&resolver, &result.edges, &entity_name_to_id, &config).await;
+
+    store.checkpoint_wal().await?;
+
+    let new_entity_ids: Vec<i64> = entity_name_to_id.into_values().collect();
+
+    link_episode(&store, &config, &new_entity_ids).await;
+
+    #[cfg(feature = "profiling")]
+    {
+        let span = tracing::Span::current();
+        span.record("entities", entities_upserted);
+        span.record("edges", edges_inserted);
+    }
+
+    Ok(ExtractionResult {
+        stats: ExtractionStats {
+            entities_upserted,
+            edges_inserted,
+        },
+        entity_ids: new_entity_ids,
+    })
+}
+
+/// Increment the extraction counter in `graph_metadata`.
+async fn bump_extraction_count(pool: &DbPool) -> Result<(), MemoryError> {
+    zeph_db::query(sql!(
+        "INSERT INTO graph_metadata (key, value) VALUES ('extraction_count', '0')
+         ON CONFLICT(key) DO NOTHING"
+    ))
+    .execute(pool)
+    .await?;
+    zeph_db::query(sql!(
+        "UPDATE graph_metadata
+         SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+         WHERE key = 'extraction_count'"
+    ))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Upsert all extracted entities and return the name-to-id map and upsert count.
+async fn upsert_entities(
+    resolver: &crate::graph::EntityResolver<'_>,
+    entities: &[crate::graph::extractor::ExtractedEntity],
+) -> (std::collections::HashMap<String, i64>, usize) {
     let mut entity_name_to_id: std::collections::HashMap<String, i64> =
         std::collections::HashMap::new();
+    let mut entities_upserted = 0usize;
 
-    for entity in &result.entities {
+    for entity in entities {
         match resolver
             .resolve(&entity.name, &entity.entity_type, entity.summary.as_deref())
             .await
@@ -364,12 +444,23 @@ pub async fn extract_and_store(
         }
     }
 
+    (entity_name_to_id, entities_upserted)
+}
+
+/// Insert extracted edges that have both endpoints in `name_to_id`.
+///
+/// Returns the number of edges actually inserted.
+async fn insert_edges(
+    resolver: &crate::graph::EntityResolver<'_>,
+    edges: &[crate::graph::extractor::ExtractedEdge],
+    name_to_id: &std::collections::HashMap<String, i64>,
+    config: &GraphExtractionConfig,
+) -> usize {
     let mut edges_inserted = 0usize;
-    for edge in &result.edges {
-        let (Some(&src_id), Some(&tgt_id)) = (
-            entity_name_to_id.get(&edge.source),
-            entity_name_to_id.get(&edge.target),
-        ) else {
+    for edge in edges {
+        let (Some(&src_id), Some(&tgt_id)) =
+            (name_to_id.get(&edge.source), name_to_id.get(&edge.target))
+        else {
             tracing::debug!(
                 "graph: skipping edge {:?}->{:?}: entity not resolved",
                 edge.source,
@@ -423,41 +514,30 @@ pub async fn extract_and_store(
             }
         }
     }
+    edges_inserted
+}
 
-    store.checkpoint_wal().await?;
-
-    let new_entity_ids: Vec<i64> = entity_name_to_id.into_values().collect();
-
-    // GAAMA episode linking: link all extracted entities to the episode for this conversation.
-    if let Some(conv_id) = config.conversation_id {
-        match store.ensure_episode(conv_id).await {
-            Ok(episode_id) => {
-                for &entity_id in &new_entity_ids {
-                    if let Err(e) = store.link_entity_to_episode(episode_id, entity_id).await {
-                        tracing::debug!("episode linking skipped for entity {entity_id}: {e:#}");
-                    }
+/// Link extracted entities to their GAAMA episode when a conversation ID is configured.
+async fn link_episode(
+    store: &crate::graph::GraphStore,
+    config: &GraphExtractionConfig,
+    entity_ids: &[i64],
+) {
+    let Some(conv_id) = config.conversation_id else {
+        return;
+    };
+    match store.ensure_episode(conv_id).await {
+        Ok(episode_id) => {
+            for &entity_id in entity_ids {
+                if let Err(e) = store.link_entity_to_episode(episode_id, entity_id).await {
+                    tracing::debug!("episode linking skipped for entity {entity_id}: {e:#}");
                 }
             }
-            Err(e) => {
-                tracing::warn!("failed to ensure episode for conversation {conv_id}: {e:#}");
-            }
+        }
+        Err(e) => {
+            tracing::warn!("failed to ensure episode for conversation {conv_id}: {e:#}");
         }
     }
-
-    #[cfg(feature = "profiling")]
-    {
-        let span = tracing::Span::current();
-        span.record("entities", entities_upserted);
-        span.record("edges", edges_inserted);
-    }
-
-    Ok(ExtractionResult {
-        stats: ExtractionStats {
-            entities_upserted,
-            edges_inserted,
-        },
-        entity_ids: new_entity_ids,
-    })
 }
 
 impl SemanticMemory {
@@ -472,7 +552,6 @@ impl SemanticMemory {
     /// When `config.note_linking.enabled` is `true` and an embedding store is available,
     /// `link_memory_notes` runs after successful extraction inside the same task, bounded
     /// by `config.note_linking.timeout_secs`.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3443): decompose into smaller helpers
     pub fn spawn_graph_extraction(
         &self,
         content: String,
@@ -480,179 +559,233 @@ impl SemanticMemory {
         config: GraphExtractionConfig,
         post_extract_validator: PostExtractValidator,
     ) -> tokio::task::JoinHandle<()> {
-        let pool = self.sqlite.pool().clone();
-        let provider = self.provider.clone();
-        let failure_counter = self.community_detection_failures.clone();
-        let extraction_count = self.graph_extraction_count.clone();
-        let extraction_failures = self.graph_extraction_failures.clone();
-        // Clone the embedding store Arc before moving into the task.
-        let embedding_store = self.qdrant.clone();
+        let ctx = GraphExtractionTaskCtx {
+            pool: self.sqlite.pool().clone(),
+            provider: self.provider.clone(),
+            failure_counter: self.community_detection_failures.clone(),
+            extraction_count: self.graph_extraction_count.clone(),
+            extraction_failures: self.graph_extraction_failures.clone(),
+            embedding_store: self.qdrant.clone(),
+        };
 
-        tokio::spawn(async move {
-            let timeout_dur = std::time::Duration::from_secs(config.extraction_timeout_secs);
-            let extraction_result = tokio::time::timeout(
-                timeout_dur,
-                extract_and_store(
-                    content,
-                    context_messages,
-                    provider.clone(),
-                    pool.clone(),
-                    config.clone(),
-                    post_extract_validator,
-                    embedding_store.clone(),
-                ),
-            )
-            .await;
-
-            let (extraction_ok, new_entity_ids) = match extraction_result {
-                Ok(Ok(result)) => {
-                    tracing::debug!(
-                        entities = result.stats.entities_upserted,
-                        edges = result.stats.edges_inserted,
-                        "graph extraction completed"
-                    );
-                    extraction_count.fetch_add(1, Ordering::Relaxed);
-                    (true, result.entity_ids)
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!("graph extraction failed: {e:#}");
-                    extraction_failures.fetch_add(1, Ordering::Relaxed);
-                    (false, vec![])
-                }
-                Err(_elapsed) => {
-                    tracing::warn!("graph extraction timed out");
-                    extraction_failures.fetch_add(1, Ordering::Relaxed);
-                    (false, vec![])
-                }
-            };
-
-            // A-MEM note linking: run after successful extraction when enabled.
-            if extraction_ok
-                && config.note_linking.enabled
-                && !new_entity_ids.is_empty()
-                && let Some(store) = embedding_store
-            {
-                let linking_timeout =
-                    std::time::Duration::from_secs(config.note_linking.timeout_secs);
-                match tokio::time::timeout(
-                    linking_timeout,
-                    link_memory_notes(
-                        &new_entity_ids,
-                        pool.clone(),
-                        store,
-                        provider.clone(),
-                        &config.note_linking,
-                    ),
-                )
-                .await
-                {
-                    Ok(stats) => {
-                        tracing::debug!(
-                            entities_processed = stats.entities_processed,
-                            edges_created = stats.edges_created,
-                            "note linking completed"
-                        );
-                    }
-                    Err(_elapsed) => {
-                        tracing::debug!("note linking timed out (partial edges may exist)");
-                    }
-                }
-            }
-
-            if extraction_ok && config.community_refresh_interval > 0 {
-                use crate::graph::GraphStore;
-
-                let store = GraphStore::new(pool.clone());
-                let extraction_count = store.extraction_count().await.unwrap_or(0);
-                if extraction_count > 0
-                    && i64::try_from(config.community_refresh_interval)
-                        .is_ok_and(|interval| extraction_count % interval == 0)
-                {
-                    tracing::info!(extraction_count, "triggering community detection refresh");
-                    let store2 = GraphStore::new(pool);
-                    let provider2 = provider;
-                    let retention_days = config.expired_edge_retention_days;
-                    let max_cap = config.max_entities_cap;
-                    let max_prompt_bytes = config.community_summary_max_prompt_bytes;
-                    let concurrency = config.community_summary_concurrency;
-                    let edge_chunk_size = config.lpa_edge_chunk_size;
-                    let decay_lambda = config.link_weight_decay_lambda;
-                    let decay_interval_secs = config.link_weight_decay_interval_secs;
-                    tokio::spawn(async move {
-                        match crate::graph::community::detect_communities(
-                            &store2,
-                            &provider2,
-                            max_prompt_bytes,
-                            concurrency,
-                            edge_chunk_size,
-                        )
-                        .await
-                        {
-                            Ok(count) => {
-                                tracing::info!(communities = count, "community detection complete");
-                            }
-                            Err(e) => {
-                                tracing::warn!("community detection failed: {e:#}");
-                                failure_counter.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                        match crate::graph::community::run_graph_eviction(
-                            &store2,
-                            retention_days,
-                            max_cap,
-                        )
-                        .await
-                        {
-                            Ok(stats) => {
-                                tracing::info!(
-                                    expired_edges = stats.expired_edges_deleted,
-                                    orphan_entities = stats.orphan_entities_deleted,
-                                    capped_entities = stats.capped_entities_deleted,
-                                    "graph eviction complete"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!("graph eviction failed: {e:#}");
-                            }
-                        }
-
-                        // Time-based link weight decay — independent of eviction cycle.
-                        if decay_lambda > 0.0 && decay_interval_secs > 0 {
-                            let now_secs = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map_or(0, |d| d.as_secs());
-                            let last_decay = store2
-                                .get_metadata("last_link_weight_decay_at")
-                                .await
-                                .ok()
-                                .flatten()
-                                .and_then(|s| s.parse::<u64>().ok())
-                                .unwrap_or(0);
-                            if now_secs.saturating_sub(last_decay) >= decay_interval_secs {
-                                match store2
-                                    .decay_edge_retrieval_counts(decay_lambda, decay_interval_secs)
-                                    .await
-                                {
-                                    Ok(affected) => {
-                                        tracing::info!(affected, "link weight decay applied");
-                                        let _ = store2
-                                            .set_metadata(
-                                                "last_link_weight_decay_at",
-                                                &now_secs.to_string(),
-                                            )
-                                            .await;
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("link weight decay failed: {e:#}");
-                                    }
-                                }
-                            }
-                        }
-                    });
-                }
-            }
-        })
+        tokio::spawn(run_graph_extraction_task(
+            content,
+            context_messages,
+            config,
+            post_extract_validator,
+            ctx,
+        ))
     }
+}
+
+/// Owned context bundled for the spawned extraction task.
+///
+/// Bundles the Arcs that must be cloned before entering `tokio::spawn`.
+struct GraphExtractionTaskCtx {
+    pool: DbPool,
+    provider: AnyProvider,
+    failure_counter: Arc<std::sync::atomic::AtomicU64>,
+    extraction_count: Arc<std::sync::atomic::AtomicU64>,
+    extraction_failures: Arc<std::sync::atomic::AtomicU64>,
+    embedding_store: Option<Arc<EmbeddingStore>>,
+}
+
+/// Body of the spawned graph-extraction task.
+async fn run_graph_extraction_task(
+    content: String,
+    context_messages: Vec<String>,
+    config: GraphExtractionConfig,
+    post_extract_validator: PostExtractValidator,
+    ctx: GraphExtractionTaskCtx,
+) {
+    let timeout_dur = std::time::Duration::from_secs(config.extraction_timeout_secs);
+    let extraction_result = tokio::time::timeout(
+        timeout_dur,
+        extract_and_store(
+            content,
+            context_messages,
+            ctx.provider.clone(),
+            ctx.pool.clone(),
+            config.clone(),
+            post_extract_validator,
+            ctx.embedding_store.clone(),
+        ),
+    )
+    .await;
+
+    let (extraction_ok, new_entity_ids) = match extraction_result {
+        Ok(Ok(result)) => {
+            tracing::debug!(
+                entities = result.stats.entities_upserted,
+                edges = result.stats.edges_inserted,
+                "graph extraction completed"
+            );
+            ctx.extraction_count.fetch_add(1, Ordering::Relaxed);
+            (true, result.entity_ids)
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("graph extraction failed: {e:#}");
+            ctx.extraction_failures.fetch_add(1, Ordering::Relaxed);
+            (false, vec![])
+        }
+        Err(_elapsed) => {
+            tracing::warn!("graph extraction timed out");
+            ctx.extraction_failures.fetch_add(1, Ordering::Relaxed);
+            (false, vec![])
+        }
+    };
+
+    run_note_linking(
+        extraction_ok,
+        &new_entity_ids,
+        ctx.pool.clone(),
+        ctx.embedding_store,
+        ctx.provider.clone(),
+        &config,
+    )
+    .await;
+
+    maybe_refresh_communities(
+        extraction_ok,
+        ctx.pool,
+        ctx.provider,
+        ctx.failure_counter,
+        &config,
+    )
+    .await;
+}
+
+/// Run A-MEM note linking after successful extraction when enabled.
+async fn run_note_linking(
+    extraction_ok: bool,
+    new_entity_ids: &[i64],
+    pool: DbPool,
+    embedding_store: Option<Arc<EmbeddingStore>>,
+    provider: AnyProvider,
+    config: &GraphExtractionConfig,
+) {
+    if !extraction_ok || !config.note_linking.enabled || new_entity_ids.is_empty() {
+        return;
+    }
+    let Some(store) = embedding_store else {
+        return;
+    };
+    let linking_timeout = std::time::Duration::from_secs(config.note_linking.timeout_secs);
+    match tokio::time::timeout(
+        linking_timeout,
+        link_memory_notes(new_entity_ids, pool, store, provider, &config.note_linking),
+    )
+    .await
+    {
+        Ok(stats) => {
+            tracing::debug!(
+                entities_processed = stats.entities_processed,
+                edges_created = stats.edges_created,
+                "note linking completed"
+            );
+        }
+        Err(_elapsed) => {
+            tracing::debug!("note linking timed out (partial edges may exist)");
+        }
+    }
+}
+
+/// Trigger community detection, graph eviction, and link-weight decay when the extraction
+/// count hits the configured refresh interval.
+async fn maybe_refresh_communities(
+    extraction_ok: bool,
+    pool: DbPool,
+    provider: AnyProvider,
+    failure_counter: Arc<std::sync::atomic::AtomicU64>,
+    config: &GraphExtractionConfig,
+) {
+    use crate::graph::GraphStore;
+
+    if !extraction_ok || config.community_refresh_interval == 0 {
+        return;
+    }
+
+    let store = GraphStore::new(pool.clone());
+    let extraction_count = store.extraction_count().await.unwrap_or(0);
+    if extraction_count == 0
+        || !i64::try_from(config.community_refresh_interval)
+            .is_ok_and(|interval| extraction_count % interval == 0)
+    {
+        return;
+    }
+
+    tracing::info!(extraction_count, "triggering community detection refresh");
+    let store2 = GraphStore::new(pool);
+    let provider2 = provider;
+    let retention_days = config.expired_edge_retention_days;
+    let max_cap = config.max_entities_cap;
+    let max_prompt_bytes = config.community_summary_max_prompt_bytes;
+    let concurrency = config.community_summary_concurrency;
+    let edge_chunk_size = config.lpa_edge_chunk_size;
+    let decay_lambda = config.link_weight_decay_lambda;
+    let decay_interval_secs = config.link_weight_decay_interval_secs;
+    tokio::spawn(async move {
+        match crate::graph::community::detect_communities(
+            &store2,
+            &provider2,
+            max_prompt_bytes,
+            concurrency,
+            edge_chunk_size,
+        )
+        .await
+        {
+            Ok(count) => {
+                tracing::info!(communities = count, "community detection complete");
+            }
+            Err(e) => {
+                tracing::warn!("community detection failed: {e:#}");
+                failure_counter.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        match crate::graph::community::run_graph_eviction(&store2, retention_days, max_cap).await {
+            Ok(stats) => {
+                tracing::info!(
+                    expired_edges = stats.expired_edges_deleted,
+                    orphan_entities = stats.orphan_entities_deleted,
+                    capped_entities = stats.capped_entities_deleted,
+                    "graph eviction complete"
+                );
+            }
+            Err(e) => {
+                tracing::warn!("graph eviction failed: {e:#}");
+            }
+        }
+
+        // Time-based link weight decay — independent of eviction cycle.
+        if decay_lambda > 0.0 && decay_interval_secs > 0 {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let last_decay = store2
+                .get_metadata("last_link_weight_decay_at")
+                .await
+                .ok()
+                .flatten()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            if now_secs.saturating_sub(last_decay) >= decay_interval_secs {
+                match store2
+                    .decay_edge_retrieval_counts(decay_lambda, decay_interval_secs)
+                    .await
+                {
+                    Ok(affected) => {
+                        tracing::info!(affected, "link weight decay applied");
+                        let _ = store2
+                            .set_metadata("last_link_weight_decay_at", &now_secs.to_string())
+                            .await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("link weight decay failed: {e:#}");
+                    }
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]

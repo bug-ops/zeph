@@ -167,7 +167,6 @@ impl EmbeddingRegistry {
     /// # Errors
     ///
     /// Returns [`EmbeddingRegistryError`] on Qdrant or embedding failures.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3443): decompose into smaller helpers
     pub async fn sync<T: Embeddable>(
         &mut self,
         items: &[T],
@@ -199,75 +198,38 @@ impl EmbeddingRegistry {
             self.recreate_collection(&embed_fn).await?;
         }
 
-        // Collect items that need embedding.
-        let mut work_items: Vec<(String, String, &T)> = Vec::new();
-        for (key, (hash, item)) in &current {
-            let needs_update = if let Some(stored) = existing.get(key) {
-                model_changed || stored.get("content_hash").is_some_and(|h| h != hash)
-            } else {
-                true
-            };
+        let work_items = build_work_set(
+            &current,
+            &existing,
+            model_changed,
+            &mut stats,
+            &mut self.hashes,
+        );
 
-            if needs_update {
-                work_items.push((key.clone(), hash.clone(), *item));
-            } else {
-                stats.unchanged += 1;
-                self.hashes.insert(key.clone(), hash.clone());
-            }
-        }
+        // Pre-create futures, point IDs, and payloads before taking the mutable borrow on
+        // self.hashes to avoid a double-borrow on `self`.
+        let work_with_futures: Vec<(String, String, EmbedFuture, String, serde_json::Value)> =
+            work_items
+                .into_iter()
+                .map(|(key, hash, item)| {
+                    let text = item.embed_text().to_owned();
+                    let fut = embed_fn(&text);
+                    let point_id = self.point_id(&key);
+                    let payload = item.to_payload();
+                    (key, hash, fut, point_id, payload)
+                })
+                .collect();
 
-        let total = work_items.len();
-        // Clamp concurrency to at least 1: buffer_unordered(0) silently skips all futures.
-        let concurrency = self.concurrency.max(1);
-
-        // Stream results as they complete so on_progress fires in real time, not after collect.
-        let mut stream = futures::stream::iter(work_items.into_iter().map(|(key, hash, item)| {
-            let text = item.embed_text().to_owned();
-            let fut = embed_fn(&text);
-            async move { (key, hash, fut.await) }
-        }))
-        .buffer_unordered(concurrency);
-
-        let mut points_to_upsert = Vec::new();
-        let mut completed: usize = 0;
-        while let Some((key, hash, result)) = stream.next().await {
-            let vector = match result {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!("failed to embed item '{key}': {e:#}");
-                    continue;
-                }
-            };
-
-            let point_id = self.point_id(&key);
-            let item = current[&key].1;
-            let mut payload = item.to_payload();
-            if let Some(obj) = payload.as_object_mut() {
-                obj.insert(
-                    "content_hash".into(),
-                    serde_json::Value::String(hash.clone()),
-                );
-                obj.insert(
-                    "embedding_model".into(),
-                    serde_json::Value::String(embedding_model.to_owned()),
-                );
-            }
-            let payload_map = QdrantOps::json_to_payload(payload)?;
-
-            points_to_upsert.push(PointStruct::new(point_id, vector, payload_map));
-
-            if existing.contains_key(&key) {
-                stats.updated += 1;
-            } else {
-                stats.added += 1;
-            }
-            self.hashes.insert(key, hash);
-
-            completed += 1;
-            if let Some(ref cb) = on_progress {
-                cb(completed, total);
-            }
-        }
+        let points_to_upsert = embed_and_collect_points(
+            work_with_futures,
+            on_progress,
+            &existing,
+            embedding_model,
+            self.concurrency,
+            &mut stats,
+            &mut self.hashes,
+        )
+        .await?;
 
         if !points_to_upsert.is_empty() {
             self.ops
@@ -545,6 +507,111 @@ impl EmbeddingRegistry {
         }
         self.ensure_collection(embed_fn).await
     }
+}
+
+/// Determine which items need embedding and update stats for unchanged ones.
+///
+/// Returns a list of `(key, hash, item)` triples that require re-embedding.  Items whose
+/// stored hash matches the current hash are counted as `unchanged` in `stats` and their
+/// hashes are pre-populated in the `hashes` map.
+fn build_work_set<'a, T: Embeddable>(
+    current: &HashMap<String, (String, &'a T)>,
+    existing: &HashMap<String, HashMap<String, String>>,
+    model_changed: bool,
+    stats: &mut SyncStats,
+    hashes: &mut HashMap<String, String>,
+) -> Vec<(String, String, &'a T)> {
+    let mut work_items: Vec<(String, String, &'a T)> = Vec::new();
+    for (key, (hash, item)) in current {
+        let needs_update = if let Some(stored) = existing.get(key) {
+            model_changed || stored.get("content_hash").is_some_and(|h| h != hash)
+        } else {
+            true
+        };
+
+        if needs_update {
+            work_items.push((key.clone(), hash.clone(), *item));
+        } else {
+            stats.unchanged += 1;
+            hashes.insert(key.clone(), hash.clone());
+        }
+    }
+    work_items
+}
+
+/// Await each pre-created embed future and collect the resulting Qdrant points.
+///
+/// Await each pre-created embed future and collect the resulting Qdrant points.
+///
+/// `work_items` is `(key, hash, embed_future, point_id, item_payload)` — point IDs and payloads
+/// must be pre-computed to avoid a double-borrow on the `EmbeddingRegistry` when `hashes` is
+/// mutably borrowed.
+///
+/// Processes futures with bounded concurrency (`concurrency` parameter).  Calls `on_progress`
+/// after each successful embed.  Updates `stats.added`/`stats.updated` and `hashes` in place.
+///
+/// Returns a `Vec<PointStruct>` ready for upsert, or an error if payload serialization fails.
+#[allow(clippy::too_many_arguments)]
+async fn embed_and_collect_points(
+    work_items: Vec<(String, String, EmbedFuture, String, serde_json::Value)>,
+    on_progress: Option<Box<dyn Fn(usize, usize) + Send>>,
+    existing: &HashMap<String, HashMap<String, String>>,
+    embedding_model: &str,
+    concurrency: usize,
+    stats: &mut SyncStats,
+    hashes: &mut HashMap<String, String>,
+) -> Result<Vec<PointStruct>, EmbeddingRegistryError> {
+    let total = work_items.len();
+    // Clamp concurrency to at least 1: buffer_unordered(0) silently skips all futures.
+    let concurrency = concurrency.max(1);
+
+    // Stream results as they complete so on_progress fires in real time, not after collect.
+    let mut stream =
+        futures::stream::iter(work_items.into_iter().map(
+            |(key, hash, fut, point_id, payload)| async move {
+                (key, hash, fut.await, point_id, payload)
+            },
+        ))
+        .buffer_unordered(concurrency);
+
+    let mut points_to_upsert = Vec::new();
+    let mut completed: usize = 0;
+    while let Some((key, hash, result, point_id, mut payload)) = stream.next().await {
+        let vector = match result {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to embed item '{key}': {e:#}");
+                continue;
+            }
+        };
+
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "content_hash".into(),
+                serde_json::Value::String(hash.clone()),
+            );
+            obj.insert(
+                "embedding_model".into(),
+                serde_json::Value::String(embedding_model.to_owned()),
+            );
+        }
+        let payload_map = QdrantOps::json_to_payload(payload)?;
+
+        points_to_upsert.push(PointStruct::new(point_id, vector, payload_map));
+
+        if existing.contains_key(&key) {
+            stats.updated += 1;
+        } else {
+            stats.added += 1;
+        }
+        hashes.insert(key, hash);
+
+        completed += 1;
+        if let Some(ref cb) = on_progress {
+            cb(completed, total);
+        }
+    }
+    Ok(points_to_upsert)
 }
 
 #[cfg(test)]

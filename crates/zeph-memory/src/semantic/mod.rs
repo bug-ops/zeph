@@ -1150,13 +1150,19 @@ impl SemanticMemory {
     ///
     /// # Embedding note
     ///
-    /// `embedding` is returned as `None` in this MVP implementation. A future pass
-    /// will join with the Qdrant payload to populate embeddings inline.
+    /// When Qdrant is configured, embeddings are populated by fetching `chunk_index = 0`
+    /// vectors from the vector store via [`EmbeddingStore::get_vectors_for_messages`].
+    /// Messages whose vector cannot be retrieved are still returned with `embedding: None`;
+    /// the promotion engine skips those rows rather than re-embedding on the hot path.
+    ///
+    /// When Qdrant is not configured, all inputs carry `embedding: None`.
+    ///
+    /// Vectors whose dimension disagrees with the first non-empty vector in the batch
+    /// are dropped with a single `WARN` log and treated as missing.
     ///
     /// # Errors
     ///
-    /// Returns [`MemoryError`] if the underlying `SQLite` query fails.
-    // TODO(#3444): populate embeddings by fetching from Qdrant when available.
+    /// Returns [`MemoryError`] if the underlying `SQLite` query or vector store fetch fails.
     pub async fn load_promotion_window(
         &self,
         max_items: usize,
@@ -1179,6 +1185,34 @@ impl SemanticMemory {
         .fetch_all(self.sqlite.pool())
         .await?;
 
+        let mut vectors = if let Some(qdrant) = &self.qdrant {
+            let ids: Vec<_> = rows.iter().map(|(id, _, _)| *id).collect();
+            let mut raw = qdrant.get_vectors_for_messages(&ids).await?;
+
+            // Dimension validation: find reference dim from the first non-empty vector.
+            let ref_dim = raw.values().next().map(Vec::len);
+            if let Some(ref_dim) = ref_dim {
+                let mismatched: Vec<_> = raw
+                    .iter()
+                    .filter(|(_, v)| v.len() != ref_dim)
+                    .map(|(id, v)| (*id, v.len()))
+                    .collect();
+                if !mismatched.is_empty() {
+                    tracing::warn!(
+                        expected_dim = ref_dim,
+                        dropped_count = mismatched.len(),
+                        "load_promotion_window: dimension mismatch — dropping mismatched vectors"
+                    );
+                    for (id, _) in mismatched {
+                        raw.remove(&id);
+                    }
+                }
+            }
+            raw
+        } else {
+            std::collections::HashMap::new()
+        };
+
         Ok(rows
             .into_iter()
             .map(|(message_id, conversation_id, content)| {
@@ -1186,8 +1220,7 @@ impl SemanticMemory {
                     message_id,
                     conversation_id,
                     content,
-                    // Embeddings not wired yet — scan will skip rows with None.
-                    embedding: None,
+                    embedding: vectors.remove(&message_id),
                 }
             })
             .collect())

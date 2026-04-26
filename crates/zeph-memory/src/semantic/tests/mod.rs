@@ -606,6 +606,116 @@ fn session_summary_result_clone() {
     assert_eq!(result.conversation_id, cloned.conversation_id);
 }
 
+#[tokio::test]
+async fn load_promotion_window_populates_embeddings_from_qdrant() {
+    use crate::embedding_store::{EmbeddingStore, MessageKind};
+    use crate::in_memory_store::InMemoryVectorStore;
+
+    // Build a shared pool and embedding store so we can insert messages and
+    // store their embeddings before building SemanticMemory.
+    let sqlite = SqliteStore::new(":memory:").await.unwrap();
+    let pool = sqlite.pool().clone();
+    let mem_store = Box::new(InMemoryVectorStore::new());
+    let embed_store = EmbeddingStore::with_store(mem_store, pool.clone());
+    embed_store.ensure_collection(4).await.unwrap();
+
+    let cid = sqlite.create_conversation().await.unwrap();
+    let msg1 = sqlite.save_message(cid, "user", "hello").await.unwrap();
+    let msg2 = sqlite.save_message(cid, "user", "world").await.unwrap();
+
+    embed_store
+        .store(
+            msg1,
+            cid,
+            "user",
+            vec![1.0, 0.0, 0.0, 0.0],
+            MessageKind::Regular,
+            "m",
+            0,
+        )
+        .await
+        .unwrap();
+    embed_store
+        .store(
+            msg2,
+            cid,
+            "user",
+            vec![0.0, 1.0, 0.0, 0.0],
+            MessageKind::Regular,
+            "m",
+            0,
+        )
+        .await
+        .unwrap();
+
+    let qdrant = Some(Arc::new(embed_store));
+    let provider = test_provider();
+    let memory = SemanticMemory {
+        sqlite,
+        qdrant,
+        provider,
+        embed_provider: None,
+        embedding_model: "test-model".into(),
+        vector_weight: 0.7,
+        keyword_weight: 0.3,
+        temporal_decay: TemporalDecay::Disabled,
+        temporal_decay_half_life_days: 30,
+        mmr_reranking: MmrReranking::Disabled,
+        mmr_lambda: 0.7,
+        importance_scoring: ImportanceScoring::Disabled,
+        importance_weight: 0.15,
+        token_counter: Arc::new(TokenCounter::new()),
+        graph_store: None,
+        experience: None,
+        reasoning: None,
+        community_detection_failures: Arc::new(AtomicU64::new(0)),
+        graph_extraction_count: Arc::new(AtomicU64::new(0)),
+        graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        last_qdrant_warn: Arc::new(AtomicU64::new(0)),
+        tier_boost_semantic: 1.3,
+        admission_control: None,
+        quality_gate: None,
+        key_facts_dedup_threshold: 0.95,
+        embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        retrieval_depth: 0,
+        search_prompt_template: String::new(),
+        depth_below_limit_warned: Arc::new(AtomicBool::new(false)),
+        missing_placeholder_warned: Arc::new(AtomicBool::new(false)),
+        query_bias_correction: QueryBiasCorrection::Disabled,
+        query_bias_profile_weight: 0.25,
+        profile_centroid: tokio::sync::RwLock::new(None),
+        profile_centroid_ttl_secs: 300,
+        hebbian_reinforcement: HebbianReinforcement::Disabled,
+        hebbian_lr: 0.1,
+        hebbian_spread: crate::HelaSpreadRuntime::default(),
+    };
+
+    let window = memory.load_promotion_window(10).await.unwrap();
+    assert_eq!(window.len(), 2);
+    for input in &window {
+        assert!(
+            input.embedding.is_some(),
+            "expected embedding for message_id {:?}",
+            input.message_id
+        );
+    }
+}
+
+#[tokio::test]
+async fn load_promotion_window_no_qdrant_all_none() {
+    let memory = test_semantic_memory(false).await;
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    memory
+        .remember(cid, "user", "msg", None)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let window = memory.load_promotion_window(10).await.unwrap();
+    assert_eq!(window.len(), 1);
+    assert!(window[0].embedding.is_none());
+}
+
 use proptest::prelude::*;
 
 proptest! {

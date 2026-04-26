@@ -627,6 +627,74 @@ impl EmbeddingStore {
         Ok(map)
     }
 
+    /// Fetch embeddings for the given message IDs from the configured vector store.
+    ///
+    /// Resolves `message_id → qdrant_point_id` via `embeddings_metadata` (filtering to
+    /// `chunk_index = 0` so each message yields at most one vector), then retrieves the
+    /// vectors from the underlying [`VectorStore`].
+    ///
+    /// Returns a map from [`MessageId`] to embedding vector. Messages without an
+    /// `embeddings_metadata` row, or whose vector cannot be retrieved, are silently dropped.
+    /// When the backend returns [`crate::VectorStoreError::Unsupported`], an empty map is
+    /// returned without error (matches [`Self::get_vectors_from_collection`] semantics).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` metadata query or vector store retrieval fails.
+    pub async fn get_vectors_for_messages(
+        &self,
+        ids: &[MessageId],
+    ) -> Result<std::collections::HashMap<MessageId, Vec<f32>>, MemoryError> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let placeholders = zeph_db::placeholder_list(1, ids.len());
+        let query = format!(
+            "SELECT message_id, qdrant_point_id \
+             FROM embeddings_metadata \
+             WHERE message_id IN ({placeholders}) AND chunk_index = 0"
+        );
+        let mut q = zeph_db::query_as::<_, (MessageId, String)>(&query);
+        for &id in ids {
+            q = q.bind(id);
+        }
+        let rows: Vec<(MessageId, String)> = q.fetch_all(&self.pool).await?;
+
+        if rows.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        // Build reverse map: point_id → message_id for result translation.
+        let mut point_to_msg: std::collections::HashMap<String, MessageId> =
+            std::collections::HashMap::with_capacity(rows.len());
+        let point_ids: Vec<String> = rows
+            .into_iter()
+            .map(|(msg_id, point_id)| {
+                point_to_msg.insert(point_id.clone(), msg_id);
+                point_id
+            })
+            .collect();
+
+        let points = match self.ops.get_points(&self.collection, point_ids).await {
+            Ok(pts) => pts,
+            Err(crate::VectorStoreError::Unsupported(_)) => {
+                return Ok(std::collections::HashMap::new());
+            }
+            Err(e) => return Err(MemoryError::VectorStore(e)),
+        };
+
+        let result = points
+            .into_iter()
+            .filter_map(|p| {
+                let msg_id = point_to_msg.get(&p.id).copied()?;
+                Some((msg_id, p.vector))
+            })
+            .collect();
+
+        Ok(result)
+    }
+
     /// Check whether an embedding already exists for the given message ID.
     ///
     /// # Errors
@@ -906,5 +974,123 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_vectors_for_messages_returns_correct_vectors() {
+        let (store, sqlite) = setup_with_store().await;
+        let cid = sqlite.create_conversation().await.unwrap();
+        let msg1 = sqlite.save_message(cid, "user", "hello").await.unwrap();
+        let msg2 = sqlite.save_message(cid, "user", "world").await.unwrap();
+
+        store
+            .store(
+                msg1,
+                cid,
+                "user",
+                vec![1.0, 0.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "m",
+                0,
+            )
+            .await
+            .unwrap();
+        store
+            .store(
+                msg2,
+                cid,
+                "user",
+                vec![0.0, 1.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "m",
+                0,
+            )
+            .await
+            .unwrap();
+
+        let result = store.get_vectors_for_messages(&[msg1, msg2]).await.unwrap();
+        assert_eq!(result.len(), 2);
+        let v1 = result.get(&msg1).unwrap();
+        let v2 = result.get(&msg2).unwrap();
+        assert!((v1[0] - 1.0).abs() < f32::EPSILON);
+        assert!((v2[1] - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn get_vectors_for_messages_missing_id_is_dropped() {
+        let (store, sqlite) = setup_with_store().await;
+        let cid = sqlite.create_conversation().await.unwrap();
+        let msg1 = sqlite.save_message(cid, "user", "present").await.unwrap();
+        let msg_absent = MessageId(99_999);
+
+        store
+            .store(
+                msg1,
+                cid,
+                "user",
+                vec![1.0, 0.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "m",
+                0,
+            )
+            .await
+            .unwrap();
+
+        let result = store
+            .get_vectors_for_messages(&[msg1, msg_absent])
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key(&msg1));
+        assert!(!result.contains_key(&msg_absent));
+    }
+
+    #[tokio::test]
+    async fn get_vectors_for_messages_empty_input() {
+        let (store, _sqlite) = setup_with_store().await;
+        let result = store.get_vectors_for_messages(&[]).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_vectors_for_messages_chunk_index_0_only() {
+        // Store chunk_index=0 and chunk_index=1; only chunk_index=0 should be returned.
+        let (store, sqlite) = setup_with_store().await;
+        let cid = sqlite.create_conversation().await.unwrap();
+        let msg = sqlite.save_message(cid, "user", "chunked").await.unwrap();
+
+        store
+            .store(
+                msg,
+                cid,
+                "user",
+                vec![1.0, 0.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "m",
+                0,
+            )
+            .await
+            .unwrap();
+        store
+            .store(
+                msg,
+                cid,
+                "user",
+                vec![0.0, 0.0, 1.0, 0.0],
+                MessageKind::Regular,
+                "m",
+                1,
+            )
+            .await
+            .unwrap();
+
+        let result = store.get_vectors_for_messages(&[msg]).await.unwrap();
+        assert_eq!(result.len(), 1);
+        // Must be the chunk_index=0 vector
+        let v = result.get(&msg).unwrap();
+        assert!(
+            (v[0] - 1.0).abs() < f32::EPSILON,
+            "expected chunk_index=0 vector"
+        );
     }
 }

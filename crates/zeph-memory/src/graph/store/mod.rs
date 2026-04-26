@@ -1079,66 +1079,18 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3443): decompose into smaller helpers
     pub async fn find_entities_ranked(
         &self,
         query: &str,
         limit: usize,
     ) -> Result<Vec<(Entity, f32)>, MemoryError> {
-        // Row type for UNION ALL FTS5 query: (id, name, canonical_name, entity_type,
-        // summary, first_seen_at, last_seen_at, qdrant_point_id, fts_rank).
-        type EntityFtsRow = (
-            i64,
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-            String,
-            Option<String>,
-            f64,
-        );
-
-        const FTS5_OPERATORS: &[&str] = &["AND", "OR", "NOT", "NEAR"];
         let query = &query[..query.floor_char_boundary(512)];
-        let sanitized = sanitize_fts_query(query);
-        if sanitized.is_empty() {
+        let Some(fts_query) = build_fts_query(query) else {
             return Ok(vec![]);
-        }
-        let fts_query: String = sanitized
-            .split_whitespace()
-            .filter(|t| !FTS5_OPERATORS.contains(t))
-            .map(|t| format!("{t}*"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if fts_query.is_empty() {
-            return Ok(vec![]);
-        }
+        };
 
         let limit_i64 = i64::try_from(limit)?;
-
-        // UNION ALL with outer ORDER BY preserves FTS5 BM25 ordering through LIMIT.
-        // Alias matches get a fixed raw score of 0.5 (below any real BM25 match).
-        let ranked_fts_sql = format!(
-            "SELECT * FROM ( \
-                 SELECT e.id, e.name, e.canonical_name, e.entity_type, e.summary, \
-                        e.first_seen_at, e.last_seen_at, e.qdrant_point_id, \
-                        -bm25(graph_entities_fts, 10.0, 1.0) AS fts_rank \
-                 FROM graph_entities_fts fts \
-                 JOIN graph_entities e ON e.id = fts.rowid \
-                 WHERE graph_entities_fts MATCH ? \
-                 UNION ALL \
-                 SELECT e.id, e.name, e.canonical_name, e.entity_type, e.summary, \
-                        e.first_seen_at, e.last_seen_at, e.qdrant_point_id, \
-                        0.5 AS fts_rank \
-                 FROM graph_entity_aliases a \
-                 JOIN graph_entities e ON e.id = a.entity_id \
-                 WHERE a.alias_name LIKE ? ESCAPE '\\' {} \
-             ) \
-             ORDER BY fts_rank DESC \
-             LIMIT ?",
-            <ActiveDialect as zeph_db::dialect::Dialect>::COLLATE_NOCASE,
-        );
+        let ranked_fts_sql = build_ranked_fts_sql();
         let rows: Vec<EntityFtsRow> = zeph_db::query_as(&ranked_fts_sql)
             .bind(&fts_query)
             .bind(format!(
@@ -1157,47 +1109,7 @@ impl GraphStore {
             return Ok(vec![]);
         }
 
-        // Normalize FTS scores to [0, 1] by dividing by max; guard against div-by-zero.
-        let max_score: f64 = rows.iter().map(|r| r.8).fold(0.0_f64, f64::max);
-        let max_score = if max_score <= 0.0 { 1.0 } else { max_score };
-
-        // Deduplicate by entity ID (keep first/highest-ranked occurrence).
-        let mut seen_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
-        let mut result: Vec<(Entity, f32)> = Vec::with_capacity(rows.len());
-        for (
-            id,
-            name,
-            canonical_name,
-            entity_type_str,
-            summary,
-            first_seen_at,
-            last_seen_at,
-            qdrant_point_id,
-            raw_score,
-        ) in rows
-        {
-            if !seen_ids.insert(id) {
-                continue;
-            }
-            let entity_type = entity_type_str
-                .parse()
-                .unwrap_or(super::types::EntityType::Concept);
-            let entity = Entity {
-                id,
-                name,
-                canonical_name,
-                entity_type,
-                summary,
-                first_seen_at,
-                last_seen_at,
-                qdrant_point_id,
-            };
-            #[allow(clippy::cast_possible_truncation)]
-            let normalized = (raw_score / max_score).clamp(0.0, 1.0) as f32;
-            result.push((entity, normalized));
-        }
-
-        Ok(result)
+        Ok(normalize_and_dedup(rows))
     }
 
     /// Compute structural scores (degree + edge type diversity) for a batch of entity IDs.
@@ -2436,7 +2348,6 @@ impl GraphStore {
     #[allow(clippy::too_many_arguments)]
     // TODO(B3): refactor into a builder or config struct to reduce argument count
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3443): decompose into smaller helpers
     pub async fn insert_or_supersede_with_metrics(
         &self,
         source_entity_id: i64,
@@ -2461,128 +2372,48 @@ impl GraphStore {
 
         let mut tx = zeph_db::begin(&self.pool).await?;
 
-        // Check for byte-identical active edge (FR-015 reassertion path).
-        let identical: Option<i64> = zeph_db::query_scalar(sql!(
-            "SELECT id FROM graph_edges
-             WHERE source_entity_id = ?
-               AND target_entity_id = ?
-               AND canonical_relation = ?
-               AND edge_type = ?
-               AND fact = ?
-               AND valid_to IS NULL
-               AND expired_at IS NULL
-             LIMIT 1"
-        ))
-        .bind(source_entity_id)
-        .bind(target_entity_id)
-        .bind(canonical_relation)
-        .bind(edge_type_str)
-        .bind(fact)
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        if let Some(existing_id) = identical {
-            // FR-015: byte-identical reassertion — record event, do not insert new edge.
-            #[allow(clippy::cast_possible_wrap)]
-            let asserted_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            zeph_db::query(sql!(
-                "INSERT INTO edge_reassertions (head_edge_id, asserted_at, episode_id, confidence)
-                 VALUES (?, ?, ?, ?)"
-            ))
-            .bind(existing_id)
-            .bind(asserted_at)
-            .bind(episode_raw)
-            .bind(f64::from(confidence))
-            .execute(&mut *tx)
-            .await?;
+        if let Some(existing_id) = find_identical_active_edge(
+            &mut tx,
+            source_entity_id,
+            target_entity_id,
+            canonical_relation,
+            edge_type_str,
+            fact,
+        )
+        .await?
+        {
+            record_reassertion(&mut tx, existing_id, episode_raw, confidence).await?;
             tx.commit().await?;
             return Ok(existing_id);
         }
 
-        // Find the current active head for (src, canonical_relation, edge_type) — may differ in target.
-        let prior_head: Option<i64> = zeph_db::query_scalar(sql!(
-            "SELECT id FROM graph_edges
-             WHERE source_entity_id = ?
-               AND canonical_relation = ?
-               AND edge_type = ?
-               AND valid_to IS NULL
-               AND expired_at IS NULL
-             ORDER BY created_at DESC
-             LIMIT 1"
-        ))
-        .bind(source_entity_id)
-        .bind(canonical_relation)
-        .bind(edge_type_str)
-        .fetch_optional(&mut *tx)
-        .await?;
+        let prior_head =
+            find_prior_active_head(&mut tx, source_entity_id, canonical_relation, edge_type_str)
+                .await?;
 
-        // Cycle guard: inserting a supersede pointer from new_id → prior_head is safe as long as
-        // prior_head does not already appear in the ancestry of new_id. Since new_id doesn't exist
-        // yet there is no ancestry to walk; the cycle risk is that prior_head's own chain contains
-        // a node that will point back. We prevent this by capping depth, which also bounds cycles.
-        // NOTE: We run this inside the transaction using sqlx directly to avoid a second pool
-        // acquire (SQLite connection pool is typically size 1 in tests and development).
+        // Cycle guard: depth cap also bounds cycles. Run inside the transaction using sqlx
+        // directly to avoid a second pool acquire (SQLite pool is typically size 1 in tests).
         if let Some(head_id) = prior_head {
-            let cap = i64::try_from(SUPERSEDE_DEPTH_CAP + 1).unwrap_or(i64::MAX);
-            let depth: Option<i64> = sqlx::query_scalar(
-                "WITH RECURSIVE chain(id, depth) AS (
-                   SELECT supersedes, 1 FROM graph_edges WHERE id = ? AND supersedes IS NOT NULL
-                   UNION ALL
-                   SELECT e.supersedes, c.depth + 1
-                   FROM graph_edges e JOIN chain c ON e.id = c.id
-                   WHERE e.supersedes IS NOT NULL AND c.depth < ?
-                 )
-                 SELECT MAX(depth) FROM chain",
-            )
-            .bind(head_id)
-            .bind(cap)
-            .fetch_optional(&mut *tx)
-            .await?
-            .flatten();
-            let d = usize::try_from(depth.unwrap_or(0)).unwrap_or(usize::MAX);
-            if d > SUPERSEDE_DEPTH_CAP {
-                return Err(MemoryError::SupersedeDepthExceeded(head_id));
-            }
+            check_supersede_depth_in_tx(&mut tx, head_id).await?;
         }
 
-        // Insert the new edge.
         let supersedes_val: Option<i64> = if set_supersedes { prior_head } else { None };
-        let new_id: i64 = zeph_db::query_scalar(sql!(
-            "INSERT INTO graph_edges
-             (source_entity_id, target_entity_id, relation, canonical_relation, fact,
-              confidence, episode_id, edge_type, supersedes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-             RETURNING id"
-        ))
-        .bind(source_entity_id)
-        .bind(target_entity_id)
-        .bind(relation)
-        .bind(canonical_relation)
-        .bind(fact)
-        .bind(f64::from(confidence))
-        .bind(episode_raw)
-        .bind(edge_type_str)
-        .bind(supersedes_val)
-        .fetch_one(&mut *tx)
+        let new_id = insert_new_edge(
+            &mut tx,
+            source_entity_id,
+            target_entity_id,
+            relation,
+            canonical_relation,
+            fact,
+            confidence,
+            episode_raw,
+            edge_type_str,
+            supersedes_val,
+        )
         .await?;
 
-        // Invalidate prior head and record supersession pointer.
         if let Some(head_id) = prior_head {
-            zeph_db::query(sql!(
-                "UPDATE graph_edges
-                 SET valid_to = CURRENT_TIMESTAMP,
-                     expired_at = CURRENT_TIMESTAMP,
-                     superseded_by = ?
-                 WHERE id = ?"
-            ))
-            .bind(new_id)
-            .bind(head_id)
-            .execute(&mut *tx)
-            .await?;
-
+            invalidate_prior_head(&mut tx, head_id, new_id).await?;
             if let Some(m) = metrics {
                 m.supersedes_total
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2669,6 +2500,283 @@ impl GraphStore {
         }
         Ok(d)
     }
+}
+
+// ── insert_or_supersede helpers ───────────────────────────────────────────────
+// All helpers take `&mut zeph_db::DbTransaction` so they run inside the caller's transaction
+// without acquiring a second connection (SQLite pool is typically size 1 in tests).
+
+type Tx<'a> = zeph_db::DbTransaction<'a>;
+
+/// Look up a byte-identical active edge (FR-015 reassertion path).
+///
+/// Returns the existing edge ID when all columns match exactly, or `None` otherwise.
+async fn find_identical_active_edge(
+    tx: &mut Tx<'_>,
+    src: i64,
+    tgt: i64,
+    canon: &str,
+    edge_type_str: &str,
+    fact: &str,
+) -> Result<Option<i64>, MemoryError> {
+    Ok(zeph_db::query_scalar(sql!(
+        "SELECT id FROM graph_edges
+         WHERE source_entity_id = ?
+           AND target_entity_id = ?
+           AND canonical_relation = ?
+           AND edge_type = ?
+           AND fact = ?
+           AND valid_to IS NULL
+           AND expired_at IS NULL
+         LIMIT 1"
+    ))
+    .bind(src)
+    .bind(tgt)
+    .bind(canon)
+    .bind(edge_type_str)
+    .bind(fact)
+    .fetch_optional(&mut **tx)
+    .await?)
+}
+
+/// Record a reassertion event for an existing edge (FR-015).
+async fn record_reassertion(
+    tx: &mut Tx<'_>,
+    head_id: i64,
+    episode_raw: Option<i64>,
+    confidence: f32,
+) -> Result<(), MemoryError> {
+    #[allow(clippy::cast_possible_wrap)]
+    let asserted_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    zeph_db::query(sql!(
+        "INSERT INTO edge_reassertions (head_edge_id, asserted_at, episode_id, confidence)
+         VALUES (?, ?, ?, ?)"
+    ))
+    .bind(head_id)
+    .bind(asserted_at)
+    .bind(episode_raw)
+    .bind(f64::from(confidence))
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Find the current active head edge for `(src, canonical_relation, edge_type)`.
+async fn find_prior_active_head(
+    tx: &mut Tx<'_>,
+    src: i64,
+    canon: &str,
+    edge_type_str: &str,
+) -> Result<Option<i64>, MemoryError> {
+    Ok(zeph_db::query_scalar(sql!(
+        "SELECT id FROM graph_edges
+         WHERE source_entity_id = ?
+           AND canonical_relation = ?
+           AND edge_type = ?
+           AND valid_to IS NULL
+           AND expired_at IS NULL
+         ORDER BY created_at DESC
+         LIMIT 1"
+    ))
+    .bind(src)
+    .bind(canon)
+    .bind(edge_type_str)
+    .fetch_optional(&mut **tx)
+    .await?)
+}
+
+/// Verify the supersede chain depth for `head_id` does not exceed [`SUPERSEDE_DEPTH_CAP`].
+///
+/// Returns `Err(MemoryError::SupersedeDepthExceeded)` when the cap would be exceeded.
+async fn check_supersede_depth_in_tx(tx: &mut Tx<'_>, head_id: i64) -> Result<(), MemoryError> {
+    let cap = i64::try_from(SUPERSEDE_DEPTH_CAP + 1).unwrap_or(i64::MAX);
+    let depth: Option<i64> = sqlx::query_scalar(
+        "WITH RECURSIVE chain(id, depth) AS (
+           SELECT supersedes, 1 FROM graph_edges WHERE id = ? AND supersedes IS NOT NULL
+           UNION ALL
+           SELECT e.supersedes, c.depth + 1
+           FROM graph_edges e JOIN chain c ON e.id = c.id
+           WHERE e.supersedes IS NOT NULL AND c.depth < ?
+         )
+         SELECT MAX(depth) FROM chain",
+    )
+    .bind(head_id)
+    .bind(cap)
+    .fetch_optional(&mut **tx)
+    .await?
+    .flatten();
+    let d = usize::try_from(depth.unwrap_or(0)).unwrap_or(usize::MAX);
+    if d > SUPERSEDE_DEPTH_CAP {
+        return Err(MemoryError::SupersedeDepthExceeded(head_id));
+    }
+    Ok(())
+}
+
+/// Insert a new edge row and return its generated ID.
+#[allow(clippy::too_many_arguments)]
+async fn insert_new_edge(
+    tx: &mut Tx<'_>,
+    src: i64,
+    tgt: i64,
+    relation: &str,
+    canonical_relation: &str,
+    fact: &str,
+    confidence: f32,
+    episode_raw: Option<i64>,
+    edge_type_str: &str,
+    supersedes_val: Option<i64>,
+) -> Result<i64, MemoryError> {
+    Ok(zeph_db::query_scalar(sql!(
+        "INSERT INTO graph_edges
+         (source_entity_id, target_entity_id, relation, canonical_relation, fact,
+          confidence, episode_id, edge_type, supersedes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         RETURNING id"
+    ))
+    .bind(src)
+    .bind(tgt)
+    .bind(relation)
+    .bind(canonical_relation)
+    .bind(fact)
+    .bind(f64::from(confidence))
+    .bind(episode_raw)
+    .bind(edge_type_str)
+    .bind(supersedes_val)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+/// Mark the prior head edge as superseded by `new_id`.
+async fn invalidate_prior_head(
+    tx: &mut Tx<'_>,
+    head_id: i64,
+    new_id: i64,
+) -> Result<(), MemoryError> {
+    zeph_db::query(sql!(
+        "UPDATE graph_edges
+         SET valid_to = CURRENT_TIMESTAMP,
+             expired_at = CURRENT_TIMESTAMP,
+             superseded_by = ?
+         WHERE id = ?"
+    ))
+    .bind(new_id)
+    .bind(head_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+// ── FTS helpers ───────────────────────────────────────────────────────────────
+
+/// Row type for the UNION ALL FTS5 query in `find_entities_ranked`.
+type EntityFtsRow = (
+    i64,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    f64,
+);
+
+/// Sanitize and tokenize `query` into an FTS5 query string.
+///
+/// Returns `None` when the input is empty or contains only FTS5 operator tokens,
+/// indicating no search should be attempted.
+fn build_fts_query(query: &str) -> Option<String> {
+    const FTS5_OPERATORS: &[&str] = &["AND", "OR", "NOT", "NEAR"];
+    let sanitized = sanitize_fts_query(query);
+    if sanitized.is_empty() {
+        return None;
+    }
+    let fts_query: String = sanitized
+        .split_whitespace()
+        .filter(|t| !FTS5_OPERATORS.contains(t))
+        .map(|t| format!("{t}*"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if fts_query.is_empty() {
+        None
+    } else {
+        Some(fts_query)
+    }
+}
+
+/// Build the UNION ALL FTS5 SQL for entity ranked search.
+///
+/// The SQL selects entities by direct FTS5 match (negated BM25) and by alias LIKE match
+/// (fixed score 0.5), then orders by score descending with a LIMIT applied outside.
+fn build_ranked_fts_sql() -> String {
+    format!(
+        "SELECT * FROM ( \
+             SELECT e.id, e.name, e.canonical_name, e.entity_type, e.summary, \
+                    e.first_seen_at, e.last_seen_at, e.qdrant_point_id, \
+                    -bm25(graph_entities_fts, 10.0, 1.0) AS fts_rank \
+             FROM graph_entities_fts fts \
+             JOIN graph_entities e ON e.id = fts.rowid \
+             WHERE graph_entities_fts MATCH ? \
+             UNION ALL \
+             SELECT e.id, e.name, e.canonical_name, e.entity_type, e.summary, \
+                    e.first_seen_at, e.last_seen_at, e.qdrant_point_id, \
+                    0.5 AS fts_rank \
+             FROM graph_entity_aliases a \
+             JOIN graph_entities e ON e.id = a.entity_id \
+             WHERE a.alias_name LIKE ? ESCAPE '\\' {} \
+         ) \
+         ORDER BY fts_rank DESC \
+         LIMIT ?",
+        <ActiveDialect as zeph_db::dialect::Dialect>::COLLATE_NOCASE,
+    )
+}
+
+/// Normalize FTS scores to `[0, 1]` and deduplicate by entity ID.
+///
+/// Deduplication keeps the first (highest-ranked) occurrence of each entity ID.
+fn normalize_and_dedup(rows: Vec<EntityFtsRow>) -> Vec<(Entity, f32)> {
+    // Guard against div-by-zero when all scores are 0.
+    let max_score: f64 = rows.iter().map(|r| r.8).fold(0.0_f64, f64::max);
+    let max_score = if max_score <= 0.0 { 1.0 } else { max_score };
+
+    let mut seen_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut result: Vec<(Entity, f32)> = Vec::with_capacity(rows.len());
+    for (
+        id,
+        name,
+        canonical_name,
+        entity_type_str,
+        summary,
+        first_seen_at,
+        last_seen_at,
+        qdrant_point_id,
+        raw_score,
+    ) in rows
+    {
+        if !seen_ids.insert(id) {
+            continue;
+        }
+        let entity_type = entity_type_str
+            .parse()
+            .unwrap_or(super::types::EntityType::Concept);
+        let entity = Entity {
+            id,
+            name,
+            canonical_name,
+            entity_type,
+            summary,
+            first_seen_at,
+            last_seen_at,
+            qdrant_point_id,
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let normalized = (raw_score / max_score).clamp(0.0, 1.0) as f32;
+        result.push((entity, normalized));
+    }
+    result
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
