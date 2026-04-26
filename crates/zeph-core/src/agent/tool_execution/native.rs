@@ -3417,7 +3417,32 @@ impl<C: Channel> Agent<C> {
         self.focus.complete();
 
         // Remove the checkpoint and all messages after it (bracketed phase cleanup).
+        // Guard: when complete_focus is called in the same batch as other tools, the
+        // current turn's assistant message (tool_calls) was already pushed at an index
+        // > checkpoint_pos and would be erased by truncate(). Preserve it so the
+        // subsequent tool results have a valid parent message (OpenAI 422 guard — #3476).
+        let current_turn_assistant = {
+            let last_idx = self.msg.messages.len().saturating_sub(1);
+            if last_idx >= checkpoint_pos {
+                self.msg.messages.last().and_then(|m| {
+                    if m.role == Role::Assistant
+                        && m.parts
+                            .iter()
+                            .any(|p| matches!(p, MessagePart::ToolUse { .. }))
+                    {
+                        Some(m.clone())
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            }
+        };
         self.msg.messages.truncate(checkpoint_pos);
+        if let Some(assistant_msg) = current_turn_assistant {
+            self.msg.messages.push(assistant_msg);
+        }
         self.recompute_prompt_tokens();
         // C1 fix: mark compacted so maybe_compact() does not double-fire this turn.
         // cooldown=0: focus truncation does not impose post-compaction cooldown.
@@ -4039,6 +4064,73 @@ mod tests {
         assert!(
             agent.msg.messages.len() < before_len + 3,
             "bracketed messages must be truncated after complete_focus"
+        );
+    }
+
+    /// Regression test for #3476: when complete_focus is called in a batch with other
+    /// tools, the current turn's assistant tool_calls message must be preserved after
+    /// truncation so the subsequent tool results have a valid parent.
+    #[test]
+    fn complete_focus_in_batch_preserves_current_turn_assistant_message() {
+        let mut agent = make_agent();
+        call_focus_tool(
+            &mut agent,
+            "start_focus",
+            &serde_json::json!({"scope": "test"}),
+        );
+        // Simulate a mixed batch: push a bracketed message inside the focus window...
+        agent
+            .msg
+            .messages
+            .push(Message::from_legacy(Role::User, "some work"));
+        // ...then simulate the agent pushing the current-turn assistant message
+        // (containing ToolUse parts for [read, complete_focus]) before preprocess runs.
+        let batch_assistant = Message::from_parts(
+            Role::Assistant,
+            vec![
+                MessagePart::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "read".to_string(),
+                    input: serde_json::json!({"path": "/tmp/x"}),
+                },
+                MessagePart::ToolUse {
+                    id: "call-2".to_string(),
+                    name: "complete_focus".to_string(),
+                    input: serde_json::json!({"summary": "done"}),
+                },
+            ],
+        );
+        agent.push_message(batch_assistant);
+
+        // Now call complete_focus (as preprocess_focus_compress_calls would).
+        let result = call_focus_tool(
+            &mut agent,
+            "complete_focus",
+            &serde_json::json!({"summary": "learned stuff"}),
+        );
+        assert!(
+            !result.starts_with("[error]"),
+            "complete_focus must not error: {result}"
+        );
+
+        // The current-turn assistant message must still be the last assistant message
+        // so that the upcoming tool results have a valid parent.
+        let last_assistant = agent
+            .msg
+            .messages
+            .iter()
+            .rfind(|m| m.role == Role::Assistant);
+        assert!(
+            last_assistant.is_some(),
+            "current-turn assistant message must be preserved after truncation (#3476)"
+        );
+        let last_assistant = last_assistant.unwrap();
+        assert!(
+            last_assistant
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. })),
+            "preserved assistant message must have ToolUse parts"
         );
     }
 

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(focus): `complete_focus` called in a batch with other tools no longer orphans the
+  current-turn tool results (#3476). The truncation in `complete_focus_tool` now preserves
+  the current turn's assistant `tool_calls` message so that the subsequent `User(tool_results)`
+  message has a valid parent, preventing a 422 from the OpenAI API on the next LLM call.
+
 ### Added
 
 - context: plumb compression-spectrum `active_levels` through `ContextAssemblyInput` (#3455).
