@@ -76,6 +76,150 @@ impl std::fmt::Debug for CandleNerClassifier {
     }
 }
 
+/// Mutable state machine for BIO/BIOES span decoding.
+///
+/// Encapsulates the cursor fields and span accumulator that were previously local variables
+/// in `decode_bio_spans`. Each `handle_*` method corresponds to one BIO/BIOES prefix token.
+struct BioDecoderState {
+    spans: Vec<NerSpan>,
+    current_label: Option<String>,
+    current_start: usize,
+    current_end: usize,
+    current_score_sum: f32,
+    current_token_count: usize,
+}
+
+impl BioDecoderState {
+    fn new(capacity_hint: usize) -> Self {
+        Self {
+            spans: Vec::with_capacity(capacity_hint),
+            current_label: None,
+            current_start: 0,
+            current_end: 0,
+            current_score_sum: 0.0,
+            current_token_count: 0,
+        }
+    }
+
+    /// Push the currently open span (if any) into `self.spans` and reset cursor state.
+    ///
+    /// Mirrors the `close_span` closure at original `ner.rs:231-248`. The reset is folded
+    /// in here so callers (`handle_b`, `handle_i`, `handle_s`, `handle_e`, `handle_o`)
+    /// don't need to zero fields manually — they overwrite them immediately after if needed.
+    fn close_current(&mut self) {
+        if self.current_end > self.current_start && self.current_token_count > 0 {
+            // count is always small (sequence length), f32 precision loss is acceptable.
+            #[allow(clippy::cast_precision_loss)]
+            let avg_score = self.current_score_sum / self.current_token_count as f32;
+            self.spans.push(NerSpan {
+                label: self.current_label.clone().unwrap_or_default(),
+                score: avg_score,
+                start: self.current_start,
+                end: self.current_end,
+            });
+        }
+        self.current_label = None;
+        self.current_score_sum = 0.0;
+        self.current_token_count = 0;
+    }
+
+    /// Handle a `B-X` token: close any open span, then start a new one. (ner.rs:268-285)
+    fn handle_b(&mut self, entity_type: &str, offset_start: usize, offset_end: usize, score: f32) {
+        self.close_current();
+        self.current_label = Some(entity_type.to_owned());
+        self.current_start = offset_start;
+        self.current_end = offset_end;
+        self.current_score_sum = score;
+        self.current_token_count = 1;
+    }
+
+    /// Handle an `I-X` token: extend the current span if types match, otherwise start new.
+    /// (ner.rs:286-310)
+    fn handle_i(&mut self, entity_type: &str, offset_start: usize, offset_end: usize, score: f32) {
+        if self.current_label.as_deref() == Some(entity_type) {
+            // Continue current span.
+            self.current_end = offset_end;
+            self.current_score_sum += score;
+            self.current_token_count += 1;
+        } else {
+            // Mismatch or no open span: close previous and start new.
+            self.close_current();
+            self.current_label = Some(entity_type.to_owned());
+            self.current_start = offset_start;
+            self.current_end = offset_end;
+            self.current_score_sum = score;
+            self.current_token_count = 1;
+        }
+    }
+
+    /// Handle an `S-X` token: close any open span, emit this token as a single-token span.
+    /// (ner.rs:311-331)
+    fn handle_s(&mut self, entity_type: &str, offset_start: usize, offset_end: usize, score: f32) {
+        self.close_current();
+        if offset_end > offset_start {
+            self.spans.push(NerSpan {
+                label: entity_type.to_owned(),
+                score,
+                start: offset_start,
+                end: offset_end,
+            });
+        }
+    }
+
+    /// Handle an `E-X` token: close the current span if types match, otherwise treat as
+    /// an unexpected end token (close previous, emit this token as its own span). (ner.rs:332-370)
+    ///
+    /// Ordering is critical: increment the E-token's contribution to score and count
+    /// BEFORE calling `close_current`, so the closed span includes this token's weight.
+    fn handle_e(&mut self, entity_type: &str, offset_start: usize, offset_end: usize, score: f32) {
+        if self.current_label.as_deref() == Some(entity_type) {
+            // Increment first so the E-token's score and count are included in the closed span.
+            self.current_end = offset_end;
+            self.current_score_sum += score;
+            self.current_token_count += 1;
+            self.close_current();
+        } else {
+            // Unexpected E-X: close previous, emit this token as a span.
+            self.close_current();
+            if offset_end > offset_start {
+                self.spans.push(NerSpan {
+                    label: entity_type.to_owned(),
+                    score,
+                    start: offset_start,
+                    end: offset_end,
+                });
+            }
+        }
+    }
+
+    /// Handle an `O` or unknown token: close any open span. (ner.rs:371-386)
+    fn handle_o(&mut self) {
+        self.close_current();
+    }
+
+    fn into_spans(self) -> Vec<NerSpan> {
+        self.spans
+    }
+}
+
+/// Parse a BIO/BIOES label string into `(prefix, entity_type)`.
+///
+/// Mirrors the inline prefix-parsing block at original `ner.rs:255-265`.
+/// Returns `("O", "")` for the `O` label and any unrecognised strings.
+fn parse_bio_label(label_str: &str) -> (&'static str, &str) {
+    if let Some(rest) = label_str.strip_prefix("B-") {
+        ("B", rest)
+    } else if let Some(rest) = label_str.strip_prefix("I-") {
+        ("I", rest)
+    } else if let Some(rest) = label_str.strip_prefix("S-") {
+        ("S", rest)
+    } else if let Some(rest) = label_str.strip_prefix("E-") {
+        ("E", rest)
+    } else {
+        ("O", "")
+    }
+}
+
 impl CandleNerClassifier {
     /// Create a new NER classifier that will load `repo_id` from `HuggingFace` Hub on first use.
     #[must_use]
@@ -215,190 +359,26 @@ impl CandleNerClassifier {
     /// - `S-X` is a single-token span of type X.
     /// - `E-X` closes an open span of type X.
     /// - `O` closes any open span.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3440): decompose into smaller helpers
     fn decode_bio_spans(
         id2label: &[String],
         token_labels: &[(usize, f32)],
         offsets: &[(usize, usize)],
     ) -> Vec<NerSpan> {
-        let mut spans: Vec<NerSpan> = Vec::new();
-        let mut current_label: Option<String> = None;
-        let mut current_start: usize = 0;
-        let mut current_end: usize = 0;
-        let mut current_score_sum: f32 = 0.0;
-        let mut current_token_count: usize = 0;
-
-        let close_span = |spans: &mut Vec<NerSpan>,
-                          label: &str,
-                          start: usize,
-                          end: usize,
-                          score_sum: f32,
-                          count: usize| {
-            if end > start && count > 0 {
-                // count is always small (sequence length), f32 precision loss is acceptable.
-                #[allow(clippy::cast_precision_loss)]
-                let avg_score = score_sum / count as f32;
-                spans.push(NerSpan {
-                    label: label.to_owned(),
-                    score: avg_score,
-                    start,
-                    end,
-                });
-            }
-        };
-
+        let mut state = BioDecoderState::new(token_labels.len() / 2);
         for (pos, &(label_idx, score)) in token_labels.iter().enumerate() {
             let label_str = id2label.get(label_idx).map_or("O", String::as_str);
             let (offset_start, offset_end) = offsets.get(pos).copied().unwrap_or((0, 0));
-
-            // Parse BIO/BIOES prefix and entity type.
-            let (prefix, entity_type) = if let Some(rest) = label_str.strip_prefix("B-") {
-                ("B", rest)
-            } else if let Some(rest) = label_str.strip_prefix("I-") {
-                ("I", rest)
-            } else if let Some(rest) = label_str.strip_prefix("S-") {
-                ("S", rest)
-            } else if let Some(rest) = label_str.strip_prefix("E-") {
-                ("E", rest)
-            } else {
-                ("O", "")
-            };
-
+            let (prefix, entity_type) = parse_bio_label(label_str);
             match prefix {
-                "B" => {
-                    // Close any open span before starting a new one.
-                    if let Some(ref lbl) = current_label.take() {
-                        close_span(
-                            &mut spans,
-                            lbl,
-                            current_start,
-                            current_end,
-                            current_score_sum,
-                            current_token_count,
-                        );
-                    }
-                    current_label = Some(entity_type.to_owned());
-                    current_start = offset_start;
-                    current_end = offset_end;
-                    current_score_sum = score;
-                    current_token_count = 1;
-                }
-                "I" => {
-                    if current_label.as_deref() == Some(entity_type) {
-                        // Continue current span.
-                        current_end = offset_end;
-                        current_score_sum += score;
-                        current_token_count += 1;
-                    } else {
-                        // Mismatch or no open span: close previous and start new.
-                        if let Some(ref lbl) = current_label.take() {
-                            close_span(
-                                &mut spans,
-                                lbl,
-                                current_start,
-                                current_end,
-                                current_score_sum,
-                                current_token_count,
-                            );
-                        }
-                        current_label = Some(entity_type.to_owned());
-                        current_start = offset_start;
-                        current_end = offset_end;
-                        current_score_sum = score;
-                        current_token_count = 1;
-                    }
-                }
-                "S" => {
-                    // Single-token span: close previous and emit immediately.
-                    if let Some(ref lbl) = current_label.take() {
-                        close_span(
-                            &mut spans,
-                            lbl,
-                            current_start,
-                            current_end,
-                            current_score_sum,
-                            current_token_count,
-                        );
-                    }
-                    if offset_end > offset_start {
-                        spans.push(NerSpan {
-                            label: entity_type.to_owned(),
-                            score,
-                            start: offset_start,
-                            end: offset_end,
-                        });
-                    }
-                }
-                "E" => {
-                    // End of span: close if type matches.
-                    if current_label.as_deref() == Some(entity_type) {
-                        current_end = offset_end;
-                        current_score_sum += score;
-                        current_token_count += 1;
-                        let lbl = current_label.take().unwrap_or_default();
-                        close_span(
-                            &mut spans,
-                            &lbl,
-                            current_start,
-                            current_end,
-                            current_score_sum,
-                            current_token_count,
-                        );
-                        current_score_sum = 0.0;
-                        current_token_count = 0;
-                    } else {
-                        // Unexpected E-X: close previous, emit this token as a span.
-                        if let Some(ref lbl) = current_label.take() {
-                            close_span(
-                                &mut spans,
-                                lbl,
-                                current_start,
-                                current_end,
-                                current_score_sum,
-                                current_token_count,
-                            );
-                        }
-                        if offset_end > offset_start {
-                            spans.push(NerSpan {
-                                label: entity_type.to_owned(),
-                                score,
-                                start: offset_start,
-                                end: offset_end,
-                            });
-                        }
-                    }
-                }
-                _ => {
-                    // "O" or unknown: close any open span.
-                    if let Some(ref lbl) = current_label.take() {
-                        close_span(
-                            &mut spans,
-                            lbl,
-                            current_start,
-                            current_end,
-                            current_score_sum,
-                            current_token_count,
-                        );
-                    }
-                    current_score_sum = 0.0;
-                    current_token_count = 0;
-                }
+                "B" => state.handle_b(entity_type, offset_start, offset_end, score),
+                "I" => state.handle_i(entity_type, offset_start, offset_end, score),
+                "S" => state.handle_s(entity_type, offset_start, offset_end, score),
+                "E" => state.handle_e(entity_type, offset_start, offset_end, score),
+                _ => state.handle_o(),
             }
         }
-
-        // Close any span still open at end of sequence.
-        if let Some(ref lbl) = current_label {
-            close_span(
-                &mut spans,
-                lbl,
-                current_start,
-                current_end,
-                current_score_sum,
-                current_token_count,
-            );
-        }
-
-        spans
+        state.close_current();
+        state.into_spans()
     }
 
     /// Tokenize, chunk, run NER, decode spans, and aggregate across chunks.

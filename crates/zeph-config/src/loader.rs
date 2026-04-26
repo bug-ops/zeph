@@ -61,8 +61,30 @@ impl Config {
     /// # Errors
     ///
     /// Returns an error if any value is out of range.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3438): decompose into smaller helpers
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.validate_scalar_bounds()?;
+        self.validate_memory_compression()?;
+        self.validate_memory_probe_and_graph()?;
+        self.validate_mcp_servers()?;
+        self.experiments
+            .validate()
+            .map_err(ConfigError::Validation)?;
+        if self.orchestration.plan_cache.enabled {
+            self.orchestration
+                .plan_cache
+                .validate()
+                .map_err(ConfigError::Validation)?;
+        }
+        self.validate_orchestration()?;
+        self.validate_focus_and_sidequest()?;
+        self.validate_llm_and_skills()?;
+        self.validate_provider_names()?;
+        self.validate_mcp_misc()?;
+        Ok(())
+    }
+
+    /// Validate scalar bounds for memory, agent, a2a, and gateway fields.
+    fn validate_scalar_bounds(&self) -> Result<(), ConfigError> {
         if self.memory.history_limit > 10_000 {
             return Err(ConfigError::Validation(format!(
                 "history_limit must be <= 10000, got {}",
@@ -106,6 +128,11 @@ impl Config {
                 "tool_call_cutoff must be >= 1".into(),
             ));
         }
+        Ok(())
+    }
+
+    /// Validate memory compression strategy bounds and compaction thresholds.
+    fn validate_memory_compression(&self) -> Result<(), ConfigError> {
         if let crate::memory::CompressionStrategy::Proactive {
             threshold_tokens,
             max_summary_tokens,
@@ -146,6 +173,11 @@ impl Config {
                 self.memory.soft_compaction_threshold, self.memory.hard_compaction_threshold,
             )));
         }
+        Ok(())
+    }
+
+    /// Validate memory probe thresholds and graph temporal decay rate.
+    fn validate_memory_probe_and_graph(&self) -> Result<(), ConfigError> {
         if self.memory.graph.temporal_decay_rate < 0.0
             || self.memory.graph.temporal_decay_rate > 10.0
         {
@@ -189,50 +221,44 @@ impl Config {
                 ));
             }
         }
-        // MCP server validation
-        {
-            use std::collections::HashSet;
-            let mut seen_oauth_vault_keys: HashSet<String> = HashSet::new();
-            for s in &self.mcp.servers {
-                // headers and oauth are mutually exclusive
-                if !s.headers.is_empty() && s.oauth.as_ref().is_some_and(|o| o.enabled) {
+        Ok(())
+    }
+
+    /// Validate MCP server entries for header/oauth exclusivity and vault key uniqueness.
+    fn validate_mcp_servers(&self) -> Result<(), ConfigError> {
+        use std::collections::HashSet;
+        let mut seen_oauth_vault_keys: HashSet<String> = HashSet::new();
+        for s in &self.mcp.servers {
+            // headers and oauth are mutually exclusive
+            if !s.headers.is_empty() && s.oauth.as_ref().is_some_and(|o| o.enabled) {
+                return Err(ConfigError::Validation(format!(
+                    "MCP server '{}': cannot use both 'headers' and 'oauth' simultaneously",
+                    s.id
+                )));
+            }
+            // vault key collision detection
+            if s.oauth.as_ref().is_some_and(|o| o.enabled) {
+                let key = format!("ZEPH_MCP_OAUTH_{}", s.id.to_uppercase().replace('-', "_"));
+                if !seen_oauth_vault_keys.insert(key.clone()) {
                     return Err(ConfigError::Validation(format!(
-                        "MCP server '{}': cannot use both 'headers' and 'oauth' simultaneously",
+                        "MCP server '{}' has vault key collision ('{key}'): another server \
+                         with the same normalized ID already uses this key",
                         s.id
                     )));
                 }
-                // vault key collision detection
-                if s.oauth.as_ref().is_some_and(|o| o.enabled) {
-                    let key = format!("ZEPH_MCP_OAUTH_{}", s.id.to_uppercase().replace('-', "_"));
-                    if !seen_oauth_vault_keys.insert(key.clone()) {
-                        return Err(ConfigError::Validation(format!(
-                            "MCP server '{}' has vault key collision ('{key}'): another server \
-                             with the same normalized ID already uses this key",
-                            s.id
-                        )));
-                    }
-                }
             }
         }
+        Ok(())
+    }
 
-        self.experiments
-            .validate()
-            .map_err(ConfigError::Validation)?;
-
-        if self.orchestration.plan_cache.enabled {
-            self.orchestration
-                .plan_cache
-                .validate()
-                .map_err(ConfigError::Validation)?;
-        }
-
+    /// Validate orchestration thresholds and cascade settings.
+    fn validate_orchestration(&self) -> Result<(), ConfigError> {
         let ct = self.orchestration.completeness_threshold;
         if !ct.is_finite() || !(0.0..=1.0).contains(&ct) {
             return Err(ConfigError::Validation(format!(
                 "orchestration.completeness_threshold must be in [0.0, 1.0], got {ct}"
             )));
         }
-
         // Cascade chain threshold must not be 1 — that would abort on every single failure.
         if self.orchestration.cascade_chain_threshold == 1 {
             return Err(ConfigError::Validation(
@@ -241,14 +267,12 @@ impl Config {
                     .into(),
             ));
         }
-
         let cfrat = self.orchestration.cascade_failure_rate_abort_threshold;
         if !cfrat.is_finite() || !(0.0..=1.0).contains(&cfrat) {
             return Err(ConfigError::Validation(format!(
                 "orchestration.cascade_failure_rate_abort_threshold must be in [0.0, 1.0], got {cfrat}"
             )));
         }
-
         if self.orchestration.lineage_ttl_secs == 0 {
             return Err(ConfigError::Validation(
                 "orchestration.lineage_ttl_secs must be > 0; \
@@ -256,8 +280,11 @@ impl Config {
                     .into(),
             ));
         }
+        Ok(())
+    }
 
-        // Focus config validation
+    /// Validate focus and sidequest interval and ratio constraints.
+    fn validate_focus_and_sidequest(&self) -> Result<(), ConfigError> {
         if self.agent.focus.compression_interval == 0 {
             return Err(ConfigError::Validation(
                 "agent.focus.compression_interval must be >= 1".into(),
@@ -275,8 +302,6 @@ impl Config {
                     .into(),
             ));
         }
-
-        // SideQuest config validation
         if self.memory.sidequest.interval_turns == 0 {
             return Err(ConfigError::Validation(
                 "memory.sidequest.interval_turns must be >= 1".into(),
@@ -291,7 +316,11 @@ impl Config {
                 self.memory.sidequest.max_eviction_ratio
             )));
         }
+        Ok(())
+    }
 
+    /// Validate LLM semantic cache threshold and skill evaluation weight sum.
+    fn validate_llm_and_skills(&self) -> Result<(), ConfigError> {
         let sct = self.llm.semantic_cache_threshold;
         if !(sct.is_finite() && (0.0..=1.0).contains(&sct)) {
             return Err(ConfigError::Validation(format!(
@@ -299,7 +328,6 @@ impl Config {
                  (override via ZEPH_LLM_SEMANTIC_CACHE_THRESHOLD env var)"
             )));
         }
-
         // Skill evaluation weight-sum validation (#3319).
         if self.skills.evaluation.enabled {
             let weight_sum = self.skills.evaluation.weight_correctness
@@ -311,9 +339,11 @@ impl Config {
                 )));
             }
         }
+        Ok(())
+    }
 
-        self.validate_provider_names()?;
-
+    /// Validate miscellaneous MCP output schema hint size.
+    fn validate_mcp_misc(&self) -> Result<(), ConfigError> {
         if self.mcp.output_schema_hint_bytes < 64 {
             return Err(ConfigError::Validation(format!(
                 "mcp.output_schema_hint_bytes must be >= 64, got {}; \
@@ -321,20 +351,33 @@ impl Config {
                 self.mcp.output_schema_hint_bytes
             )));
         }
-
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3438): decompose into smaller helpers
     fn validate_provider_names(&self) -> Result<(), ConfigError> {
-        use std::collections::HashSet;
-        let known: HashSet<String> = self
-            .llm
+        let known = self.known_provider_names();
+        self.validate_named_provider_refs(&known)?;
+        self.validate_optional_provider_refs(&known)?;
+        Ok(())
+    }
+
+    /// Build the set of declared provider names from all `[[llm.providers]]` entries.
+    fn known_provider_names(&self) -> std::collections::HashSet<String> {
+        self.llm
             .providers
             .iter()
             .map(super::providers::ProviderEntry::effective_name)
-            .collect();
+            .collect()
+    }
 
+    /// Validate every required `*_provider` field references a declared provider.
+    ///
+    /// The field table lists all 19 subsystem provider references. Each non-empty value must
+    /// match a name in `known`.
+    fn validate_named_provider_refs(
+        &self,
+        known: &std::collections::HashSet<String>,
+    ) -> Result<(), ConfigError> {
         let fields: &[(&str, &crate::providers::ProviderName)] = &[
             (
                 "memory.tiers.scene_provider",
@@ -422,7 +465,14 @@ impl Config {
                 )));
             }
         }
+        Ok(())
+    }
 
+    /// Validate optional provider references in complexity routing and router bandit config.
+    fn validate_optional_provider_refs(
+        &self,
+        known: &std::collections::HashSet<String>,
+    ) -> Result<(), ConfigError> {
         if let Some(triage) = self
             .llm
             .complexity_routing

@@ -1084,6 +1084,179 @@ fn replace_llm_section(toml_str: &str, new_llm_section: &str) -> String {
     out
 }
 
+/// Fields extracted from `[llm.stt]` that drive the migration decision.
+struct SttFields {
+    model: Option<String>,
+    base_url: Option<String>,
+    provider_hint: String,
+}
+
+/// Extract migration-relevant fields from `[llm.stt]` in the parsed document.
+fn extract_stt_fields(doc: &toml_edit::DocumentMut) -> SttFields {
+    let stt_table = doc
+        .get("llm")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|llm| llm.get("stt"))
+        .and_then(toml_edit::Item::as_table);
+
+    let model = stt_table
+        .and_then(|stt| stt.get("model"))
+        .and_then(toml_edit::Item::as_str)
+        .map(ToOwned::to_owned);
+
+    let base_url = stt_table
+        .and_then(|stt| stt.get("base_url"))
+        .and_then(toml_edit::Item::as_str)
+        .map(ToOwned::to_owned);
+
+    let provider_hint = stt_table
+        .and_then(|stt| stt.get("provider"))
+        .and_then(toml_edit::Item::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_default();
+
+    SttFields {
+        model,
+        base_url,
+        provider_hint,
+    }
+}
+
+/// Find the index of the first `[[llm.providers]]` entry that matches `target_type` or
+/// `provider_hint`, giving priority to explicit name/type matches over type-only matches.
+fn find_matching_provider_index(
+    doc: &toml_edit::DocumentMut,
+    target_type: &str,
+    provider_hint: &str,
+) -> Option<usize> {
+    let providers = doc
+        .get("llm")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|llm| llm.get("providers"))
+        .and_then(toml_edit::Item::as_array_of_tables)?;
+
+    providers.iter().enumerate().find_map(|(i, t)| {
+        let name = t
+            .get("name")
+            .and_then(toml_edit::Item::as_str)
+            .unwrap_or("");
+        let ptype = t
+            .get("type")
+            .and_then(toml_edit::Item::as_str)
+            .unwrap_or("");
+        // Match by explicit name hint or by type when hint is a legacy backend string.
+        let name_match =
+            !provider_hint.is_empty() && (name == provider_hint || ptype == provider_hint);
+        let type_match = ptype == target_type;
+        if name_match || type_match {
+            Some(i)
+        } else {
+            None
+        }
+    })
+}
+
+/// Attach `stt_model` (and optionally `base_url`) to an existing `[[llm.providers]]` entry
+/// at `idx`. Ensures the entry has an explicit `name` (W2 guard) and returns that name.
+fn attach_stt_to_existing_provider(
+    doc: &mut toml_edit::DocumentMut,
+    idx: usize,
+    stt_model: &str,
+    stt_base_url: Option<&str>,
+) -> Result<String, MigrateError> {
+    let llm_mut = doc
+        .get_mut("llm")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure(
+            "[llm] table not accessible for mutation",
+        ))?;
+    let providers_mut = llm_mut
+        .get_mut("providers")
+        .and_then(toml_edit::Item::as_array_of_tables_mut)
+        .ok_or(MigrateError::InvalidStructure(
+            "[[llm.providers]] array not accessible for mutation",
+        ))?;
+    let entry = providers_mut
+        .iter_mut()
+        .nth(idx)
+        .ok_or(MigrateError::InvalidStructure(
+            "[[llm.providers]] entry index out of range during mutation",
+        ))?;
+
+    // W2: ensure explicit name.
+    let existing_name = entry
+        .get("name")
+        .and_then(toml_edit::Item::as_str)
+        .map(ToOwned::to_owned);
+    let entry_name = existing_name.unwrap_or_else(|| {
+        let t = entry
+            .get("type")
+            .and_then(toml_edit::Item::as_str)
+            .unwrap_or("openai");
+        format!("{t}-stt")
+    });
+    entry.insert("name", toml_edit::value(entry_name.clone()));
+    entry.insert("stt_model", toml_edit::value(stt_model));
+    if let Some(url) = stt_base_url
+        && entry.get("base_url").is_none()
+    {
+        entry.insert("base_url", toml_edit::value(url));
+    }
+    Ok(entry_name)
+}
+
+/// Append a new `[[llm.providers]]` entry carrying `stt_model`, creating the array if absent.
+/// Returns the name assigned to the new entry.
+fn append_new_stt_provider(
+    doc: &mut toml_edit::DocumentMut,
+    target_type: &str,
+    stt_model: &str,
+    stt_base_url: Option<&str>,
+) -> Result<String, MigrateError> {
+    let new_name = if target_type == "candle" {
+        "local-whisper".to_owned()
+    } else {
+        "openai-stt".to_owned()
+    };
+    let mut new_entry = toml_edit::Table::new();
+    new_entry.insert("name", toml_edit::value(new_name.clone()));
+    new_entry.insert("type", toml_edit::value(target_type));
+    new_entry.insert("stt_model", toml_edit::value(stt_model));
+    if let Some(url) = stt_base_url {
+        new_entry.insert("base_url", toml_edit::value(url));
+    }
+    let llm_mut = doc
+        .get_mut("llm")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure(
+            "[llm] table not accessible for mutation",
+        ))?;
+    if let Some(item) = llm_mut.get_mut("providers") {
+        if let Some(arr) = item.as_array_of_tables_mut() {
+            arr.push(new_entry);
+        }
+    } else {
+        let mut arr = toml_edit::ArrayOfTables::new();
+        arr.push(new_entry);
+        llm_mut.insert("providers", toml_edit::Item::ArrayOfTables(arr));
+    }
+    Ok(new_name)
+}
+
+/// Update `[llm.stt]`: set `provider` to `resolved_provider_name` and strip `model`/`base_url`.
+fn rewrite_stt_section(doc: &mut toml_edit::DocumentMut, resolved_provider_name: &str) {
+    if let Some(stt_table) = doc
+        .get_mut("llm")
+        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(|llm| llm.get_mut("stt"))
+        .and_then(toml_edit::Item::as_table_mut)
+    {
+        stt_table.insert("provider", toml_edit::value(resolved_provider_name));
+        stt_table.remove("model");
+        stt_table.remove("base_url");
+    }
+}
+
 /// Migrate an old `[llm.stt]` section (with `model` / `base_url` fields) to the new format
 /// where those fields live on a `[[llm.providers]]` entry via `stt_model`.
 ///
@@ -1102,41 +1275,12 @@ fn replace_llm_section(toml_str: &str, new_llm_section: &str) -> String {
 /// Returns `MigrateError::Parse` if the input TOML is invalid.
 /// Returns `MigrateError::InvalidStructure` if `[llm.stt].model` is present but the `[llm]`
 /// key is absent or not a table, making mutation impossible.
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3438): decompose into smaller helpers
 pub fn migrate_stt_to_provider(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
-
-    // Extract fields from [llm.stt] if present.
-    let stt_model = doc
-        .get("llm")
-        .and_then(toml_edit::Item::as_table)
-        .and_then(|llm| llm.get("stt"))
-        .and_then(toml_edit::Item::as_table)
-        .and_then(|stt| stt.get("model"))
-        .and_then(toml_edit::Item::as_str)
-        .map(ToOwned::to_owned);
-
-    let stt_base_url = doc
-        .get("llm")
-        .and_then(toml_edit::Item::as_table)
-        .and_then(|llm| llm.get("stt"))
-        .and_then(toml_edit::Item::as_table)
-        .and_then(|stt| stt.get("base_url"))
-        .and_then(toml_edit::Item::as_str)
-        .map(ToOwned::to_owned);
-
-    let stt_provider_hint = doc
-        .get("llm")
-        .and_then(toml_edit::Item::as_table)
-        .and_then(|llm| llm.get("stt"))
-        .and_then(toml_edit::Item::as_table)
-        .and_then(|stt| stt.get("provider"))
-        .and_then(toml_edit::Item::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_default();
+    let stt = extract_stt_fields(&doc);
 
     // Nothing to migrate if [llm.stt] does not exist or already lacks the old fields.
-    if stt_model.is_none() && stt_base_url.is_none() {
+    if stt.model.is_none() && stt.base_url.is_none() {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -1144,133 +1288,24 @@ pub fn migrate_stt_to_provider(toml_src: &str) -> Result<MigrationResult, Migrat
         });
     }
 
-    let stt_model = stt_model.unwrap_or_else(|| "whisper-1".to_owned());
+    let stt_model = stt.model.unwrap_or_else(|| "whisper-1".to_owned());
 
     // Determine the target provider type based on provider hint.
-    let target_type = match stt_provider_hint.as_str() {
+    let target_type = match stt.provider_hint.as_str() {
         "candle-whisper" | "candle" => "candle",
         _ => "openai",
     };
 
-    // Find or create a [[llm.providers]] entry to attach stt_model to.
-    // Priority: entry whose effective name matches the hint, else first entry of matching type.
-    let providers = doc
-        .get("llm")
-        .and_then(toml_edit::Item::as_table)
-        .and_then(|llm| llm.get("providers"))
-        .and_then(toml_edit::Item::as_array_of_tables);
-
-    let matching_idx = providers.and_then(|arr| {
-        arr.iter().enumerate().find_map(|(i, t)| {
-            let name = t
-                .get("name")
-                .and_then(toml_edit::Item::as_str)
-                .unwrap_or("");
-            let ptype = t
-                .get("type")
-                .and_then(toml_edit::Item::as_str)
-                .unwrap_or("");
-            // Match by explicit name hint or by type when hint is a legacy backend string.
-            let name_match = !stt_provider_hint.is_empty()
-                && (name == stt_provider_hint || ptype == stt_provider_hint);
-            let type_match = ptype == target_type;
-            if name_match || type_match {
-                Some(i)
-            } else {
-                None
-            }
-        })
-    });
-
-    // Determine the final provider name to write into [llm.stt].provider.
-    let resolved_provider_name: String;
-
-    if let Some(idx) = matching_idx {
-        // Attach stt_model to the existing entry.
-        let llm_mut = doc
-            .get_mut("llm")
-            .and_then(toml_edit::Item::as_table_mut)
-            .ok_or(MigrateError::InvalidStructure(
-                "[llm] table not accessible for mutation",
-            ))?;
-        let providers_mut = llm_mut
-            .get_mut("providers")
-            .and_then(toml_edit::Item::as_array_of_tables_mut)
-            .ok_or(MigrateError::InvalidStructure(
-                "[[llm.providers]] array not accessible for mutation",
-            ))?;
-        let entry = providers_mut
-            .iter_mut()
-            .nth(idx)
-            .ok_or(MigrateError::InvalidStructure(
-                "[[llm.providers]] entry index out of range during mutation",
-            ))?;
-
-        // W2: ensure explicit name.
-        let existing_name = entry
-            .get("name")
-            .and_then(toml_edit::Item::as_str)
-            .map(ToOwned::to_owned);
-        let entry_name = existing_name.unwrap_or_else(|| {
-            let t = entry
-                .get("type")
-                .and_then(toml_edit::Item::as_str)
-                .unwrap_or("openai");
-            format!("{t}-stt")
-        });
-        entry.insert("name", toml_edit::value(entry_name.clone()));
-        entry.insert("stt_model", toml_edit::value(stt_model.clone()));
-        if stt_base_url.is_some() && entry.get("base_url").is_none() {
-            entry.insert(
-                "base_url",
-                toml_edit::value(stt_base_url.as_deref().unwrap_or_default()),
-            );
+    let resolved_name = match find_matching_provider_index(&doc, target_type, &stt.provider_hint) {
+        Some(idx) => {
+            attach_stt_to_existing_provider(&mut doc, idx, &stt_model, stt.base_url.as_deref())?
         }
-        resolved_provider_name = entry_name;
-    } else {
-        // No matching entry — append a new [[llm.providers]] block.
-        let new_name = if target_type == "candle" {
-            "local-whisper".to_owned()
-        } else {
-            "openai-stt".to_owned()
-        };
-        let mut new_entry = toml_edit::Table::new();
-        new_entry.insert("name", toml_edit::value(new_name.clone()));
-        new_entry.insert("type", toml_edit::value(target_type));
-        new_entry.insert("stt_model", toml_edit::value(stt_model.clone()));
-        if let Some(ref url) = stt_base_url {
-            new_entry.insert("base_url", toml_edit::value(url.clone()));
+        None => {
+            append_new_stt_provider(&mut doc, target_type, &stt_model, stt.base_url.as_deref())?
         }
-        // Ensure [[llm.providers]] array exists.
-        let llm_mut = doc
-            .get_mut("llm")
-            .and_then(toml_edit::Item::as_table_mut)
-            .ok_or(MigrateError::InvalidStructure(
-                "[llm] table not accessible for mutation",
-            ))?;
-        if let Some(item) = llm_mut.get_mut("providers") {
-            if let Some(arr) = item.as_array_of_tables_mut() {
-                arr.push(new_entry);
-            }
-        } else {
-            let mut arr = toml_edit::ArrayOfTables::new();
-            arr.push(new_entry);
-            llm_mut.insert("providers", toml_edit::Item::ArrayOfTables(arr));
-        }
-        resolved_provider_name = new_name;
-    }
+    };
 
-    // Update [llm.stt]: set provider name, remove old fields.
-    if let Some(stt_table) = doc
-        .get_mut("llm")
-        .and_then(toml_edit::Item::as_table_mut)
-        .and_then(|llm| llm.get_mut("stt"))
-        .and_then(toml_edit::Item::as_table_mut)
-    {
-        stt_table.insert("provider", toml_edit::value(resolved_provider_name.clone()));
-        stt_table.remove("model");
-        stt_table.remove("base_url");
-    }
+    rewrite_stt_section(&mut doc, &resolved_name);
 
     Ok(MigrationResult {
         output: doc.to_string(),

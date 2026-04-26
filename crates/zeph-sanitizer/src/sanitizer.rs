@@ -107,6 +107,19 @@ pub struct ContentSanitizer {
     classifier_metrics: Option<std::sync::Arc<zeph_llm::ClassifierMetrics>>,
 }
 
+/// Outcome of Stage 1 (binary classifier) in `classify_injection`.
+///
+/// `Refine` means Stage 2 may further refine the verdict.
+/// `Final` means the verdict is already settled and Stage 2 must be skipped
+/// (regex fallback path on error or timeout).
+#[cfg(feature = "classifiers")]
+enum BinaryStageOutcome {
+    /// Stage 1 succeeded; Stage 2 may still refine `v`.
+    Refine(InjectionVerdict),
+    /// Stage 1 hit an error or timeout; `v` is the regex fallback and Stage 2 must not run.
+    Final(InjectionVerdict),
+}
+
 impl ContentSanitizer {
     /// Build a sanitizer from the given configuration.
     ///
@@ -535,6 +548,154 @@ impl ContentSanitizer {
         }
     }
 
+    /// Run the regex injection detector and return the appropriate verdict.
+    ///
+    /// Returns `Clean` when no patterns match; otherwise returns the configured
+    /// enforcement-mode verdict. Collapses four byte-identical inline blocks from
+    /// the original `classify_injection` body (lines 558-562, 565-570, 605-610, 612-620).
+    #[cfg(feature = "classifiers")]
+    fn regex_fallback_verdict(&self, text: &str) -> InjectionVerdict {
+        if Self::detect_injections(text).is_empty() {
+            InjectionVerdict::Clean
+        } else {
+            self.regex_verdict()
+        }
+    }
+
+    /// Map a binary classifier score to an [`InjectionVerdict`].
+    ///
+    /// `is_positive` gates both threshold branches: a high-confidence negative-class
+    /// result always returns `Clean`, regardless of score. This mirrors the original
+    /// guard at `sanitizer.rs:586, 598`.
+    #[cfg(feature = "classifiers")]
+    fn binary_score_to_verdict(
+        &self,
+        score: f32,
+        label: &str,
+        is_positive: bool,
+    ) -> InjectionVerdict {
+        if is_positive && score >= self.injection_threshold {
+            tracing::warn!(
+                label = %label,
+                score = score,
+                threshold = self.injection_threshold,
+                "ML classifier hard-threshold hit"
+            );
+            // enforcement_mode determines whether hard threshold blocks or just warns
+            match self.enforcement_mode {
+                zeph_config::InjectionEnforcementMode::Block => InjectionVerdict::Blocked,
+                zeph_config::InjectionEnforcementMode::Warn => InjectionVerdict::Suspicious,
+            }
+        } else if is_positive && score >= self.injection_threshold_soft {
+            tracing::warn!(score = score, "injection_classifier soft_signal");
+            InjectionVerdict::Suspicious
+        } else {
+            InjectionVerdict::Clean
+        }
+    }
+
+    /// Run Stage 1 (binary classifier) within the shared deadline.
+    ///
+    /// Returns [`BinaryStageOutcome::Refine`] on a successful classifier call; the
+    /// caller may then pass the verdict to Stage 2.
+    ///
+    /// Returns [`BinaryStageOutcome::Final`] on classifier error or timeout; the
+    /// verdict is the regex fallback and the caller **must not** invoke Stage 2.
+    #[cfg(feature = "classifiers")]
+    async fn run_binary_stage(
+        &self,
+        backend: &dyn zeph_llm::classifier::ClassifierBackend,
+        text: &str,
+        deadline: std::time::Instant,
+    ) -> BinaryStageOutcome {
+        let t0 = std::time::Instant::now();
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match tokio::time::timeout(remaining, backend.classify(text)).await {
+            Ok(Ok(result)) => {
+                if let Some(ref m) = self.classifier_metrics {
+                    m.record(
+                        zeph_llm::classifier::ClassifierTask::Injection,
+                        t0.elapsed(),
+                    );
+                }
+                BinaryStageOutcome::Refine(self.binary_score_to_verdict(
+                    result.score,
+                    &result.label,
+                    result.is_positive,
+                ))
+            }
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "classifier inference error, falling back to regex");
+                BinaryStageOutcome::Final(self.regex_fallback_verdict(text))
+            }
+            Err(_) => {
+                tracing::error!(
+                    timeout_ms = self.classifier_timeout_ms,
+                    "classifier timed out, falling back to regex"
+                );
+                BinaryStageOutcome::Final(self.regex_fallback_verdict(text))
+            }
+        }
+    }
+
+    /// Run Stage 2 (three-class `AlignSentinel` refinement) within the shared deadline.
+    ///
+    /// Downgrades `binary_verdict` to `Clean` when the three-class model returns
+    /// `AlignedInstruction` (above threshold) or `NoInstruction`.
+    ///
+    /// Returns `binary_verdict` unchanged on deadline exhaustion, classifier error,
+    /// classifier timeout, `MisalignedInstruction`, `Unknown`, or
+    /// `AlignedInstruction` below threshold.
+    #[cfg(feature = "classifiers")]
+    async fn refine_with_three_class(
+        &self,
+        text: &str,
+        deadline: std::time::Instant,
+        binary_verdict: InjectionVerdict,
+    ) -> InjectionVerdict {
+        let Some(ref tc_backend) = self.three_class_backend else {
+            return binary_verdict;
+        };
+
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            tracing::warn!("three-class refinement skipped: shared timeout budget exhausted");
+            return binary_verdict;
+        }
+
+        match tokio::time::timeout(remaining, tc_backend.classify(text)).await {
+            Ok(Ok(result)) => {
+                let class = InstructionClass::from_label(&result.label);
+                match class {
+                    InstructionClass::AlignedInstruction
+                        if result.score >= self.three_class_threshold =>
+                    {
+                        tracing::debug!(
+                            label = %result.label,
+                            score = result.score,
+                            "three-class: aligned instruction, downgrading to Clean"
+                        );
+                        InjectionVerdict::Clean
+                    }
+                    InstructionClass::NoInstruction => {
+                        tracing::debug!("three-class: no instruction, downgrading to Clean");
+                        InjectionVerdict::Clean
+                    }
+                    // MisalignedInstruction, Unknown, or AlignedInstruction below threshold
+                    _ => binary_verdict,
+                }
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "three-class classifier error, keeping binary verdict");
+                binary_verdict
+            }
+            Err(_) => {
+                tracing::warn!("three-class classifier timed out, keeping binary verdict");
+                binary_verdict
+            }
+        }
+    }
+
     /// ML-backed injection detection (async, separate from the sync [`sanitize`](Self::sanitize) pipeline).
     ///
     /// Stage 1: binary `DeBERTa` classifier with dual-threshold scoring.
@@ -553,116 +714,32 @@ impl ContentSanitizer {
     ///
     /// When no classifier backend is attached, also falls back to regex detection.
     #[cfg(feature = "classifiers")]
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3439): decompose into smaller helpers
     pub async fn classify_injection(&self, text: &str) -> InjectionVerdict {
         if !self.enabled {
-            if Self::detect_injections(text).is_empty() {
-                return InjectionVerdict::Clean;
-            }
-            return self.regex_verdict();
+            return self.regex_fallback_verdict(text);
         }
 
         let Some(ref backend) = self.classifier else {
-            if Self::detect_injections(text).is_empty() {
-                return InjectionVerdict::Clean;
-            }
-            return self.regex_verdict();
+            return self.regex_fallback_verdict(text);
         };
 
         let deadline = std::time::Instant::now()
             + std::time::Duration::from_millis(self.classifier_timeout_ms);
 
         // Stage 1: binary classifier
-        let t0 = std::time::Instant::now();
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        let binary_verdict = match tokio::time::timeout(remaining, backend.classify(text)).await {
-            Ok(Ok(result)) => {
-                if let Some(ref m) = self.classifier_metrics {
-                    m.record(
-                        zeph_llm::classifier::ClassifierTask::Injection,
-                        t0.elapsed(),
-                    );
-                }
-                if result.is_positive && result.score >= self.injection_threshold {
-                    tracing::warn!(
-                        label = %result.label,
-                        score = result.score,
-                        threshold = self.injection_threshold,
-                        "ML classifier hard-threshold hit"
-                    );
-                    // enforcement_mode determines whether hard threshold blocks or just warns
-                    match self.enforcement_mode {
-                        zeph_config::InjectionEnforcementMode::Block => InjectionVerdict::Blocked,
-                        zeph_config::InjectionEnforcementMode::Warn => InjectionVerdict::Suspicious,
-                    }
-                } else if result.is_positive && result.score >= self.injection_threshold_soft {
-                    tracing::warn!(score = result.score, "injection_classifier soft_signal");
-                    InjectionVerdict::Suspicious
-                } else {
-                    InjectionVerdict::Clean
-                }
-            }
-            Ok(Err(e)) => {
-                tracing::error!(error = %e, "classifier inference error, falling back to regex");
-                if Self::detect_injections(text).is_empty() {
-                    return InjectionVerdict::Clean;
-                }
-                return self.regex_verdict();
-            }
-            Err(_) => {
-                tracing::error!(
-                    timeout_ms = self.classifier_timeout_ms,
-                    "classifier timed out, falling back to regex"
-                );
-                if Self::detect_injections(text).is_empty() {
-                    return InjectionVerdict::Clean;
-                }
-                return self.regex_verdict();
-            }
+        let binary_verdict = match self
+            .run_binary_stage(backend.as_ref(), text, deadline)
+            .await
+        {
+            BinaryStageOutcome::Final(v) => return v, // regex fallback — skip Stage 2
+            BinaryStageOutcome::Refine(v) => v,
         };
 
         // Stage 2: three-class refinement on flagged content
-        if binary_verdict != InjectionVerdict::Clean
-            && let Some(ref tc_backend) = self.three_class_backend
-        {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                tracing::warn!("three-class refinement skipped: shared timeout budget exhausted");
-                return binary_verdict;
-            }
-            match tokio::time::timeout(remaining, tc_backend.classify(text)).await {
-                Ok(Ok(result)) => {
-                    let class = InstructionClass::from_label(&result.label);
-                    match class {
-                        InstructionClass::AlignedInstruction
-                            if result.score >= self.three_class_threshold =>
-                        {
-                            tracing::debug!(
-                                label = %result.label,
-                                score = result.score,
-                                "three-class: aligned instruction, downgrading to Clean"
-                            );
-                            return InjectionVerdict::Clean;
-                        }
-                        InstructionClass::NoInstruction => {
-                            tracing::debug!("three-class: no instruction, downgrading to Clean");
-                            return InjectionVerdict::Clean;
-                        }
-                        _ => {
-                            // MisalignedInstruction, Unknown, or AlignedInstruction below threshold
-                        }
-                    }
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!(
-                        error = %e,
-                        "three-class classifier error, keeping binary verdict"
-                    );
-                }
-                Err(_) => {
-                    tracing::warn!("three-class classifier timed out, keeping binary verdict");
-                }
-            }
+        if binary_verdict != InjectionVerdict::Clean && self.three_class_backend.is_some() {
+            return self
+                .refine_with_three_class(text, deadline, binary_verdict)
+                .await;
         }
 
         binary_verdict
