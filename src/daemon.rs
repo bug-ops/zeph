@@ -338,11 +338,10 @@ pub(crate) async fn run_daemon(
         zeph_tools::OutputFilterRegistry::new(false)
     };
     let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
-        .with_permissions(
-            config
-                .tools
-                .permission_policy(config.security.autonomy_level),
-        )
+        .with_permissions(zeph_tools::build_permission_policy(
+            &config.tools,
+            config.security.autonomy_level,
+        ))
         .with_output_filters(filter_registry);
     if config.tools.sandbox.enabled {
         let denied_present = !config.tools.sandbox.denied_domains.is_empty();

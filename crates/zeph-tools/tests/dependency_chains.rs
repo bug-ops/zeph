@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use zeph_tools::config::ToolDependency;
+use zeph_config::tools::{DependencyConfig, ToolDependency, ToolsConfig};
 use zeph_tools::schema_filter::{InclusionReason, ToolDependencyGraph, ToolFilterResult};
 
 // ---------------------------------------------------------------------------
@@ -679,7 +679,7 @@ fn toml_dependency_config_deserializes() {
         requires = ["format_results"]
     "#;
 
-    let config: zeph_tools::config::ToolsConfig = toml::from_str(toml_str).unwrap();
+    let config: ToolsConfig = toml::from_str(toml_str).unwrap();
     let dep = &config.dependencies;
 
     assert!(dep.enabled);
@@ -701,7 +701,7 @@ fn toml_dependency_config_deserializes() {
 /// Default `DependencyConfig`: disabled, defaults for boost values.
 #[test]
 fn dependency_config_default_disabled() {
-    let config = zeph_tools::config::DependencyConfig::default();
+    let config = DependencyConfig::default();
     assert!(
         !config.enabled,
         "dependency config must be disabled by default"
@@ -715,7 +715,7 @@ fn dependency_config_default_disabled() {
 #[test]
 fn toml_empty_dependencies_section_uses_defaults() {
     let toml_str = "[dependencies]";
-    let config: zeph_tools::config::ToolsConfig = toml::from_str(toml_str).unwrap();
+    let config: ToolsConfig = toml::from_str(toml_str).unwrap();
     let dep = &config.dependencies;
 
     assert!(!dep.enabled);
