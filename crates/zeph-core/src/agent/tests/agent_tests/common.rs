@@ -8,6 +8,9 @@
 
 pub(crate) use std::sync::{Arc, Mutex};
 
+type ToolOutputResult = Result<Option<ToolOutput>, ToolError>;
+type EnvSnapshot = Option<std::collections::HashMap<String, String>>;
+
 #[allow(unused_imports)]
 pub(crate) use sqlx::prelude::*;
 pub(crate) use tokio::sync::{Notify, mpsc, watch};
@@ -176,12 +179,12 @@ impl Channel for MockChannel {
 }
 
 pub(crate) struct MockToolExecutor {
-    outputs: Arc<Mutex<Vec<Result<Option<ToolOutput>, ToolError>>>>,
-    pub(crate) captured_env: Arc<Mutex<Vec<Option<std::collections::HashMap<String, String>>>>>,
+    outputs: Arc<Mutex<Vec<ToolOutputResult>>>,
+    pub(crate) captured_env: Arc<Mutex<Vec<EnvSnapshot>>>,
 }
 
 impl MockToolExecutor {
-    pub(crate) fn new(outputs: Vec<Result<Option<ToolOutput>, ToolError>>) -> Self {
+    pub(crate) fn new(outputs: Vec<ToolOutputResult>) -> Self {
         Self {
             outputs: Arc::new(Mutex::new(outputs)),
             captured_env: Arc::new(Mutex::new(Vec::new())),
