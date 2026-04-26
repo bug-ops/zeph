@@ -1842,6 +1842,11 @@ impl LlmProvider for RouterProvider {
         "router"
     }
 
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn model_identifier(&self) -> &str {
+        "router"
+    }
+
     fn supports_tool_use(&self) -> bool {
         self.state
             .providers
