@@ -187,7 +187,7 @@ description = "Lightweight AI agent with hybrid inference, skills-first architec
 readme = "README.md"
 
 [features]
-default = ["scheduler", "sqlite", "task-metrics", "self-check"]
+default = ["scheduler", "sqlite", "task-metrics", "self-check", "env-vault"]
 
 # === Use-case bundles ===
 desktop = ["tui"]
@@ -196,6 +196,7 @@ server  = ["gateway", "a2a", "otel", "prometheus"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf"]
 full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "task-metrics", "sandbox", "self-check"]
+env-vault  = ["zeph-core/env-vault"]
 sandbox    = ["zeph-tools/sandbox"]
 self-check = ["zeph-core/self-check"]
 bench      = ["dep:zeph-bench"]

@@ -337,11 +337,11 @@ pub type SendAgentSpawner = AgentSpawner;
 
 /// Sender half for delivering session notifications to the per-session drainer.
 pub(crate) type NotifySender =
-    mpsc::UnboundedSender<(acp::schema::SessionNotification, oneshot::Sender<()>)>;
+    mpsc::Sender<(acp::schema::SessionNotification, oneshot::Sender<()>)>;
 
 /// Receiver half paired with [`NotifySender`].
 pub(crate) type NotifyReceiver =
-    mpsc::UnboundedReceiver<(acp::schema::SessionNotification, oneshot::Sender<()>)>;
+    mpsc::Receiver<(acp::schema::SessionNotification, oneshot::Sender<()>)>;
 
 pub(crate) struct SessionEntry {
     pub(crate) input_tx: mpsc::Sender<ChannelMessage>,
@@ -728,6 +728,7 @@ impl ZephAcpAgentState {
         };
         let (ack_tx, ack_rx) = oneshot::channel();
         tx.send((notification, ack_tx))
+            .await
             .map_err(|_| acp::Error::internal_error().data("notification channel closed"))?;
         ack_rx
             .await
@@ -747,7 +748,9 @@ impl ZephAcpAgentState {
             .map(|e| e.notify_tx.clone());
         if let Some(tx) = tx {
             let (ack_tx, _) = oneshot::channel();
-            tx.send((notification, ack_tx)).ok();
+            if let Err(e) = tx.try_send((notification, ack_tx)) {
+                tracing::warn!(error = %e, "session notification dropped: channel full or closed");
+            }
         }
     }
 
@@ -2454,7 +2457,9 @@ impl ZephAcpAgentState {
                 );
                 let notification = acp::schema::SessionNotification::new(sid, update);
                 let (tx, _rx) = oneshot::channel();
-                notify_tx.send((notification, tx)).ok();
+                if let Err(e) = notify_tx.send((notification, tx)).await {
+                    tracing::debug!(error = %e, "session title notification dropped");
+                }
             });
         }
     }
@@ -2467,7 +2472,9 @@ impl ZephAcpAgentState {
         shell_executor: Option<AcpShellExecutor>,
         provider_override: Arc<RwLock<Option<AnyProvider>>>,
     ) -> SessionEntry {
-        let (notify_tx, notify_rx) = mpsc::unbounded_channel();
+        // Bounded: prevents a misbehaving IDE from buffering notifications without limit.
+        // 256 slots cover any realistic burst between drainer loop iterations.
+        let (notify_tx, notify_rx) = mpsc::channel(256);
         let now_ms = u64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

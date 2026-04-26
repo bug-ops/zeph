@@ -190,7 +190,7 @@ fn save_persisted(path: &Path, perms: &PersistedPermissions) {
 /// (filesystem, shell) its own handle to the same underlying channel.
 #[derive(Clone)]
 pub struct AcpPermissionGate {
-    request_tx: mpsc::UnboundedSender<PermissionRequest>,
+    request_tx: mpsc::Sender<PermissionRequest>,
     cache: Arc<RwLock<HashMap<String, PermissionDecision>>>,
 }
 
@@ -255,7 +255,9 @@ impl AcpPermissionGate {
             }
         }
 
-        let (tx, rx) = mpsc::unbounded_channel::<PermissionRequest>();
+        // Bounded: each permission check is request-response; 64 slots are sufficient
+        // for concurrent tool calls. Excess is backpressured via the async send below.
+        let (tx, rx) = mpsc::channel::<PermissionRequest>(64);
         let cache: Arc<RwLock<HashMap<String, PermissionDecision>>> =
             Arc::new(RwLock::new(initial));
         let cache_clone = Arc::clone(&cache);
@@ -339,6 +341,7 @@ impl AcpPermissionGate {
                 tool_call,
                 reply: reply_tx,
             })
+            .await
             .map_err(|_| AcpError::ChannelClosed)?;
 
         reply_rx.await.map_err(|_| AcpError::ChannelClosed)?
@@ -347,7 +350,7 @@ impl AcpPermissionGate {
 
 async fn run_permission_handler(
     conn: std::sync::Arc<acp::ConnectionTo<acp::Client>>,
-    mut rx: mpsc::UnboundedReceiver<PermissionRequest>,
+    mut rx: mpsc::Receiver<PermissionRequest>,
     cache: Arc<RwLock<HashMap<String, PermissionDecision>>>,
     permission_file: PathBuf,
 ) {

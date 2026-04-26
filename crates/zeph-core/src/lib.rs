@@ -137,9 +137,20 @@ pub use zeph_tools::executor::DiffData;
 // Re-export vault module to preserve internal import paths (e.g., `crate::vault::VaultProvider`).
 pub mod vault {
     pub use zeph_vault::{
-        AgeVaultError, AgeVaultProvider, ArcAgeVaultProvider, EnvVaultProvider, Secret, VaultError,
-        VaultProvider, default_vault_dir,
+        AgeVaultError, AgeVaultProvider, ArcAgeVaultProvider, Secret, VaultError, VaultProvider,
+        default_vault_dir,
     };
+
+    /// Environment-variable backed vault provider, available only when the
+    /// `env-vault` feature is enabled.
+    ///
+    /// # Security
+    ///
+    /// This provider reads secrets from process environment variables and is
+    /// intended **exclusively for development and testing**. Never enable this
+    /// feature in production builds. Use [`AgeVaultProvider`] instead.
+    #[cfg(any(test, feature = "env-vault"))]
+    pub use zeph_vault::EnvVaultProvider;
 
     #[cfg(any(test, feature = "mock"))]
     pub use zeph_vault::MockVaultProvider;

@@ -40,6 +40,10 @@ impl DebugAccess for DebugState {
                 return None;
             }
             let base = std::path::PathBuf::from(&file);
+            // NOTE: raw spawn_blocking is intentional — this is a one-shot debug command
+            // invoked by the user (not an agent hot-path task). The task_supervisor semaphore
+            // guards CPU-bound agent work; gating a rare log-tail read there would add overhead
+            // with no meaningful benefit.
             tokio::task::spawn_blocking(move || {
                 let actual = log_commands::resolve_current_log_file(&base);
                 actual.and_then(|p| log_commands::read_log_tail(&p, n))

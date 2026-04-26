@@ -151,6 +151,9 @@ async fn run_tty_reader(mut history: Option<InputHistory>, tx: mpsc::Sender<Chan
             .map(|h| h.entries().iter().cloned().collect())
             .unwrap_or_default();
 
+        // NOTE: raw spawn_blocking is correct here — this is interactive terminal I/O (crossterm
+        // raw mode), not a CPU-bound agent task. Routing through task_supervisor's semaphore
+        // would starve the UI when 8 agent tasks are in-flight.
         let Ok(Ok(result)) =
             tokio::task::spawn_blocking(move || line_editor::read_line("You: ", &entries)).await
         else {
@@ -454,6 +457,8 @@ impl Channel for CliChannel {
             return Ok(false);
         }
         let prompt = format!("{prompt} [y/N]: ");
+        // NOTE: raw spawn_blocking is intentional — interactive terminal readline; not an agent
+        // task, so the task_supervisor semaphore does not apply.
         let result = tokio::task::spawn_blocking(move || line_editor::read_line(&prompt, &[]))
             .await
             .map_err(ChannelError::other)?
@@ -506,6 +511,8 @@ impl Channel for CliChannel {
         for field in &request.fields {
             let prompt = build_field_prompt(field);
             let field_name = field.name.clone();
+            // NOTE: raw spawn_blocking is intentional — interactive terminal readline; not an
+            // agent task, so the task_supervisor semaphore does not apply.
             let result = tokio::task::spawn_blocking(move || line_editor::read_line(&prompt, &[]))
                 .await
                 .map_err(ChannelError::other)?

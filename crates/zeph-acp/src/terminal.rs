@@ -45,6 +45,13 @@ const MAX_STDIN_BYTES: usize = 65_536;
 /// Bounded stdin channel capacity (back-pressure). MED-02.
 const STDIN_CHANNEL_CAPACITY: usize = 16;
 
+/// Bounded terminal message channel capacity.
+///
+/// Each concurrent bash/release/stdin tool call occupies one slot. 64 is
+/// sufficient for any realistic IDE session; excess messages are dropped with
+/// a warning rather than growing memory without bound.
+const TERMINAL_CHANNEL_CAPACITY: usize = 64;
+
 /// Stdin rate-limit interval — 100 msg/sec. MED-02.
 const STDIN_RATE_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -129,7 +136,7 @@ enum TerminalMessage {
 #[derive(Clone)]
 pub struct AcpShellExecutor {
     session_id: acp::schema::SessionId,
-    request_tx: mpsc::UnboundedSender<TerminalMessage>,
+    request_tx: mpsc::Sender<TerminalMessage>,
     permission_gate: Option<AcpPermissionGate>,
     timeout: Duration,
 }
@@ -161,7 +168,7 @@ impl AcpShellExecutor {
         permission_gate: Option<AcpPermissionGate>,
         timeout: Duration,
     ) -> (Self, impl std::future::Future<Output = ()>) {
-        let (tx, rx) = mpsc::unbounded_channel::<TerminalMessage>();
+        let (tx, rx) = mpsc::channel::<TerminalMessage>(TERMINAL_CHANNEL_CAPACITY);
         let handler = async move { run_terminal_handler(conn, rx).await };
         (
             Self {
@@ -180,12 +187,15 @@ impl AcpShellExecutor {
     /// `ToolCallContent::Terminal(terminal_id)` is emitted so that the IDE can
     /// still display the terminal output when it processes the notification.
     pub fn release_terminal(&self, terminal_id: String) {
-        self.request_tx
-            .send(TerminalMessage::Release(TerminalReleaseRequest {
+        if let Err(e) = self
+            .request_tx
+            .try_send(TerminalMessage::Release(TerminalReleaseRequest {
                 session_id: self.session_id.clone(),
                 terminal_id,
             }))
-            .ok();
+        {
+            tracing::warn!(error = %e, "terminal release dropped: handler channel full or closed");
+        }
     }
 
     async fn handle_bash_stdin(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
@@ -249,6 +259,7 @@ impl AcpShellExecutor {
                 data,
                 reply: reply_tx,
             }))
+            .await
             .map_err(|_| ToolError::InvalidParams {
                 message: "terminal handler closed".into(),
             })?;
@@ -297,6 +308,7 @@ impl AcpShellExecutor {
                 reply: reply_tx,
                 stream_tx,
             }))
+            .await
             .map_err(|_| AcpError::ChannelClosed)?;
         reply_rx.await.map_err(|_| AcpError::ChannelClosed)?
     }
@@ -497,7 +509,7 @@ async fn run_stdin_pump(
 
 async fn run_terminal_handler(
     conn: Arc<acp::ConnectionTo<acp::Client>>,
-    mut rx: mpsc::UnboundedReceiver<TerminalMessage>,
+    mut rx: mpsc::Receiver<TerminalMessage>,
 ) {
     // Maps terminal_id -> (bounded stdin sender, CancellationToken). MED-02, REQ-P23-4.
     let mut stdin_pumps: std::collections::HashMap<

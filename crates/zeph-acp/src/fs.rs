@@ -33,6 +33,13 @@ use crate::permission::AcpPermissionGate;
 
 const MAX_WRITE_BYTES: usize = 10 * 1024 * 1024; // REQ-P31-5: 10 MiB
 
+/// Bounded fs request channel capacity.
+///
+/// Each read/write tool call occupies one slot. 64 slots handle any realistic
+/// burst of concurrent file operations; excess requests are backpressured via
+/// the async send in each request method.
+const FS_CHANNEL_CAPACITY: usize = 64;
+
 fn is_binary(content: &[u8]) -> bool {
     content.contains(&0) // REQ-P31-6: null byte detection
 }
@@ -81,7 +88,7 @@ enum FsRequest {
 #[derive(Clone)]
 pub struct AcpFileExecutor {
     session_id: acp::schema::SessionId,
-    request_tx: mpsc::UnboundedSender<FsRequest>,
+    request_tx: mpsc::Sender<FsRequest>,
     can_read: bool,
     can_write: bool,
     cwd: PathBuf,
@@ -102,7 +109,7 @@ impl AcpFileExecutor {
         permission_gate: Option<AcpPermissionGate>,
     ) -> (Self, impl std::future::Future<Output = ()> + Send + 'static) {
         let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-        let (tx, rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, rx) = mpsc::channel::<FsRequest>(FS_CHANNEL_CAPACITY);
         let handler = async move { run_fs_handler(conn, rx).await };
         (
             Self {
@@ -141,6 +148,7 @@ impl AcpFileExecutor {
                 limit,
                 reply: reply_tx,
             })
+            .await
             .map_err(|_| AcpError::ChannelClosed)?;
         reply_rx.await.map_err(|_| AcpError::ChannelClosed)?
     }
@@ -154,6 +162,7 @@ impl AcpFileExecutor {
                 content,
                 reply: reply_tx,
             })
+            .await
             .map_err(|_| AcpError::ChannelClosed)?;
         reply_rx.await.map_err(|_| AcpError::ChannelClosed)?
     }
@@ -166,6 +175,7 @@ impl AcpFileExecutor {
                 path,
                 reply: reply_tx,
             })
+            .await
             .map_err(|_| AcpError::ChannelClosed)?;
         reply_rx.await.map_err(|_| AcpError::ChannelClosed)?
     }
@@ -587,7 +597,7 @@ impl AcpFileExecutor {
 
 async fn run_fs_handler(
     conn: Arc<acp::ConnectionTo<acp::Client>>,
-    mut rx: mpsc::UnboundedReceiver<FsRequest>,
+    mut rx: mpsc::Receiver<FsRequest>,
 ) {
     while let Some(req) = rx.recv().await {
         match req {
@@ -806,7 +816,7 @@ mod tests {
 
     #[test]
     fn tool_definitions_gated_by_capabilities() {
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec_read_only = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx.clone(),
@@ -863,7 +873,7 @@ mod tests {
         std::fs::write(dir.path().join("file.txt"), "hello").unwrap();
         std::fs::create_dir(dir.path().join("subdir")).unwrap();
 
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx,
@@ -894,7 +904,7 @@ mod tests {
         std::fs::write(dir.path().join("foo.rs"), "fn main() {}").unwrap();
         std::fs::write(dir.path().join("bar.toml"), "[package]").unwrap();
 
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx,
@@ -979,7 +989,7 @@ mod tests {
     async fn list_directory_nonexistent_returns_error() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let nonexistent = tmp.path().join("nonexistent_dir_zeph");
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx,
@@ -1005,7 +1015,7 @@ mod tests {
     #[tokio::test]
     async fn list_directory_empty_dir_returns_empty_array() {
         let dir = tempfile::tempdir().unwrap();
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx,
@@ -1031,7 +1041,7 @@ mod tests {
     #[tokio::test]
     async fn find_path_no_matches_returns_empty_summary() {
         let dir = tempfile::tempdir().unwrap();
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx,
@@ -1058,7 +1068,7 @@ mod tests {
     #[tokio::test]
     async fn find_path_invalid_glob_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx,
@@ -1084,7 +1094,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_directory_capability_disabled_returns_none() {
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx,
@@ -1107,7 +1117,7 @@ mod tests {
     #[tokio::test]
     async fn find_path_capability_disabled_returns_none() {
         let dir = tempfile::tempdir().unwrap();
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx,
@@ -1134,7 +1144,7 @@ mod tests {
     #[tokio::test]
     async fn find_path_traversal_in_pattern_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx,
@@ -1160,7 +1170,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_path_missing_path_param_returns_error() {
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx,
@@ -1487,7 +1497,7 @@ mod tests {
         // Create a normal file inside sandbox.
         std::fs::write(sandbox.path().join("normal.txt"), "ok").unwrap();
 
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx,
@@ -1530,7 +1540,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.path().join("secret.txt"), &link).unwrap();
         std::fs::write(sandbox.path().join("normal.txt"), "ok").unwrap();
 
-        let (tx, _rx) = mpsc::unbounded_channel::<FsRequest>();
+        let (tx, _rx) = mpsc::channel::<FsRequest>(1);
         let exec = AcpFileExecutor {
             session_id: acp::schema::SessionId::new("s"),
             request_tx: tx,

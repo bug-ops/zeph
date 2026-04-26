@@ -40,7 +40,9 @@ use zeph_skills::watcher::{SkillEvent, SkillWatcher};
 use zeph_core::config::{Config, SecretResolver};
 use zeph_core::config_watcher::{ConfigEvent, ConfigWatcher};
 use zeph_core::vault::AgeVaultProvider;
-use zeph_core::vault::{EnvVaultProvider, VaultProvider};
+#[cfg(any(test, feature = "env-vault"))]
+use zeph_core::vault::EnvVaultProvider;
+use zeph_core::vault::VaultProvider;
 
 pub struct AppBuilder {
     config: Config,
@@ -114,6 +116,7 @@ impl AppBuilder {
             Box<dyn VaultProvider>,
             Option<Arc<RwLock<AgeVaultProvider>>>,
         ) = match vault_args.backend.as_str() {
+            #[cfg(feature = "env-vault")]
             "env" => (Box::new(EnvVaultProvider), None),
             "age" => {
                 let key = vault_args.key_path.ok_or_else(|| {
@@ -1456,6 +1459,7 @@ impl AppBuilder {
 #[must_use]
 pub fn build_vault_provider(args: &VaultArgs) -> Option<Box<dyn VaultProvider>> {
     match args.backend.as_str() {
+        #[cfg(feature = "env-vault")]
         "env" => Some(Box::new(EnvVaultProvider)),
         "age" => {
             let key = args.key_path.as_deref()?;
