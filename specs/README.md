@@ -38,6 +38,7 @@ Spec IDs (001–044) follow a logical grouping:
 - **046**: MARCH Proposer+Checker quality pipeline
 - **047**: CLI execution modes (--bare, --json, -y, /loop, /recap)
 - **048**: SLM cost metrics survey and CPS metric contract
+- **049**: Agent god-object decomposition (Services aggregator + AgentRuntime newtype)
 
 ---
 
@@ -117,3 +118,4 @@ Spec IDs (001–044) follow a logical grouping:
 | `008-mcp/008-4-elicitation.md` | MCP server-driven elicitation (protocol 2025-06-18): `elicitation/create` routing to active channel, sensitive field warnings, Sandboxed trust hard-reject, Telegram timeout, URL field decline (#3218) | `zeph-mcp`, `zeph-channels` |
 | `UX/mention-routing.md` | @agent mention routing: Goose pattern analysis, feasibility for Zeph TUI/A2A, verdict to defer pending `AgentRegistry` infrastructure (#3327) | `zeph-core`, `zeph-tui`, `zeph-a2a` |
 | `048-slm-cost-metrics/spec.md` | SLM survey findings (arXiv:2510.03847), CPS (cost per successful task) metric contract, `record_successful_task()` / `cps()` API, daily reset semantics | `zeph-core` |
+| `049-agent-decomposition/spec.md` | Agent god-object Phase 2 (#3509): split `Agent<C>` 25+ direct sub-state fields into `services: Services` (background subsystems) and `runtime: AgentRuntime` (config, lifecycle, providers, metrics, debug, instructions); pure refactor, no API change, separately borrowable; `TurnContext` boundary sketched for P2-prereq-3 | `zeph-core` |
