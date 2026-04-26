@@ -44,7 +44,7 @@ mod pre_execution_audit_tests {
     #[tokio::test]
     async fn pre_execution_block_writes_audit_entry() {
         use crate::config::{SecurityConfig, TimeoutConfig};
-        use zeph_tools::verifier::{
+        use zeph_config::tools::{
             FirewallVerifierConfig, PreExecutionVerifierConfig, UrlGroundingVerifierConfig,
         };
 

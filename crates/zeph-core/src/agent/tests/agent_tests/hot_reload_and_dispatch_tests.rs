@@ -14,7 +14,7 @@ use super::*;
 #[test]
 fn hot_reload_rebuilds_shell_blocklist() {
     use crate::config::Config;
-    use zeph_tools::config::ShellConfig;
+    use zeph_config::tools::ShellConfig;
 
     // ShellExecutor with network allowed (no NETWORK_COMMANDS auto-added to blocklist).
     let base_cfg = ShellConfig {
