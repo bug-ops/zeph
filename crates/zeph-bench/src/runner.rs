@@ -250,6 +250,17 @@ impl BenchRunner {
         E: Evaluator,
     {
         let scenarios = loader.load(path)?;
+
+        if let Some(ref filter) = opts.scenario_filter
+            && !scenarios.iter().any(|s| &s.id == filter)
+        {
+            return Err(BenchError::InvalidFormat(format!(
+                "scenario '{}' not found in dataset '{}'",
+                filter,
+                loader.name()
+            )));
+        }
+
         let model_id = self.provider.model_identifier().to_owned();
 
         let mut run = BenchRun {
@@ -320,6 +331,17 @@ impl BenchRunner {
         X: ToolExecutor + Send + Sync + 'static,
     {
         let scenarios = loader.load(path)?;
+
+        if let Some(ref filter) = opts.scenario_filter
+            && !scenarios.iter().any(|s| &s.id == filter)
+        {
+            return Err(BenchError::InvalidFormat(format!(
+                "scenario '{}' not found in dataset '{}'",
+                filter,
+                loader.name()
+            )));
+        }
+
         let model_id = self.provider.model_identifier().to_owned();
 
         let mut run = BenchRun {
