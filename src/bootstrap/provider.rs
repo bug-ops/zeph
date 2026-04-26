@@ -516,7 +516,7 @@ fn build_triage_provider(
 }
 
 /// Pick the default (or first) provider from the pool with fallback on failure.
-fn build_single_provider_from_pool(
+pub(crate) fn build_single_provider_from_pool(
     pool: &[ProviderEntry],
     config: &Config,
 ) -> Result<AnyProvider, BootstrapError> {
@@ -644,5 +644,32 @@ mod tests {
             .find(|e| !e.embed)
             .map_or_else(String::new, ProviderEntry::effective_name);
         assert_eq!(active, "chat");
+    }
+
+    #[test]
+    fn build_single_provider_skips_embed_only_first_entry() {
+        use super::build_single_provider_from_pool;
+
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.providers = vec![
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("embedder".into()),
+                model: Some("nomic-embed-text".into()),
+                embed: true,
+                ..ProviderEntry::default()
+            },
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("chat".into()),
+                model: Some("qwen3:8b".into()),
+                embed: false,
+                ..ProviderEntry::default()
+            },
+        ];
+        // build_single_provider_from_pool must select the non-embed entry (index 1) as primary.
+        // For Ollama, provider construction succeeds without a live server.
+        let result = build_single_provider_from_pool(&config.llm.providers, &config);
+        assert!(result.is_ok(), "expected Ok but got: {result:?}");
     }
 }

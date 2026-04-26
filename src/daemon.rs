@@ -449,9 +449,32 @@ pub(crate) async fn run_daemon(
             ),
         )));
 
+    let mcp_embed_provider = {
+        let discovery = &config.mcp.tool_discovery;
+        if discovery.embedding_provider.is_empty() {
+            provider.clone()
+        } else {
+            match crate::bootstrap::create_named_provider(&discovery.embedding_provider, config) {
+                Ok(p) => {
+                    tracing::info!(
+                        provider = %discovery.embedding_provider,
+                        "Using dedicated embed provider for MCP registry"
+                    );
+                    p
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %discovery.embedding_provider,
+                        "MCP registry embed_provider resolution failed, using main provider: {e:#}"
+                    );
+                    provider.clone()
+                }
+            }
+        }
+    };
     let mcp_registry = create_mcp_registry(
         config,
-        &provider,
+        &mcp_embed_provider,
         &mcp_tools,
         &embed_model,
         app.qdrant_ops(),
