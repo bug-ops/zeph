@@ -10183,6 +10183,7 @@ dependencies = [
  "insta",
  "ordered-float 5.3.0",
  "regex",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -10191,10 +10192,6 @@ dependencies = [
  "toml_edit",
  "tracing",
  "zeph-common",
- "zeph-llm",
- "zeph-mcp",
- "zeph-memory",
- "zeph-tools",
 ]
 
 [[package]]
@@ -10412,6 +10409,7 @@ dependencies = [
  "uuid",
  "wiremock",
  "zeph-common",
+ "zeph-config",
 ]
 
 [[package]]
@@ -10439,6 +10437,7 @@ dependencies = [
  "url",
  "uuid",
  "zeph-common",
+ "zeph-config",
  "zeph-db",
  "zeph-llm",
  "zeph-memory",
@@ -10478,6 +10477,7 @@ dependencies = [
  "tracing-test",
  "uuid",
  "zeph-common",
+ "zeph-config",
  "zeph-db",
  "zeph-llm",
 ]
@@ -10673,6 +10673,7 @@ dependencies = [
  "uuid",
  "wiremock",
  "zeph-common",
+ "zeph-config",
 ]
 
 [[package]]

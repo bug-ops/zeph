@@ -705,10 +705,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     // Validate denied_domains after all merges so config-file + CLI entries are both checked.
-    app.config()
-        .tools
-        .sandbox
-        .validate_denied_domains()
+    zeph_tools::validate_sandbox_denied_domains(&app.config().tools.sandbox)
         .map_err(|e| anyhow::anyhow!("invalid tools.sandbox.denied_domains: {e}"))?;
 
     // CLI --no-sandbox-fallback sets fail_if_unavailable.
@@ -742,9 +739,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let budget_tokens = app.auto_budget_tokens(&provider);
 
     let config = app.config();
-    let permission_policy = config
-        .tools
-        .permission_policy(config.security.autonomy_level);
+    let permission_policy =
+        zeph_tools::build_permission_policy(&config.tools, config.security.autonomy_level);
 
     #[cfg(feature = "tui")]
     let with_tool_events = cli.tui && cfg!(feature = "tui");

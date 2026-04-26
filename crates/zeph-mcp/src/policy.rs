@@ -14,7 +14,6 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use dashmap::DashMap;
-use serde::{Deserialize, Serialize};
 
 use zeph_common::ToolName;
 
@@ -76,26 +75,8 @@ pub fn check_data_flow(
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-/// Rate limit configuration for a single MCP server.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RateLimit {
-    /// Maximum number of tool calls allowed per minute across all tools on this server.
-    pub max_calls_per_minute: u32,
-}
-
-/// Per-server MCP policy.
-///
-/// No policy present = allow all (backward compatible default).
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
-pub struct McpPolicy {
-    /// Allowlist of tool names. `None` means all tools are allowed (subject to `denied_tools`).
-    pub allowed_tools: Option<Vec<String>>,
-    /// Denylist of tool names. Takes precedence over `allowed_tools`.
-    pub denied_tools: Vec<String>,
-    /// Optional rate limit for this server.
-    pub rate_limit: Option<RateLimit>,
-}
+// McpPolicy and RateLimit are defined in zeph-config and re-exported here.
+pub use zeph_config::{McpPolicy, RateLimit};
 
 /// Reason a policy check blocked a tool call.
 ///

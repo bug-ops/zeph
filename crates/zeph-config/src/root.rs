@@ -4,9 +4,9 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 
+use crate::tools::ToolsConfig;
 use serde::{Deserialize, Serialize};
 use zeph_common::secret::Secret;
-use zeph_tools::ToolsConfig;
 
 use crate::agent::{AgentConfig, FocusConfig, SubAgentConfig};
 use crate::channels::{A2aServerConfig, DiscordConfig, McpConfig, SlackConfig, TelegramConfig};
@@ -226,11 +226,11 @@ impl Default for Config {
                 sqlite_pool_size: 5,
                 sessions: SessionsConfig::default(),
                 documents: DocumentConfig::default(),
-                eviction: zeph_memory::EvictionConfig::default(),
+                eviction: crate::memory::EvictionConfig::default(),
                 compression: CompressionConfig::default(),
                 sidequest: SidequestConfig::default(),
                 graph: GraphConfig::default(),
-                compression_guidelines: zeph_memory::CompressionGuidelinesConfig::default(),
+                compression_guidelines: crate::memory::CompressionGuidelinesConfig::default(),
                 shutdown_summary: true,
                 shutdown_summary_min_messages: 4,
                 shutdown_summary_max_messages: 20,

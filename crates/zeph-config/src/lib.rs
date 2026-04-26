@@ -80,6 +80,7 @@ pub mod hooks;
 pub mod learning;
 mod loader;
 pub mod logging;
+pub mod mcp_security;
 pub mod memory;
 pub mod metrics;
 pub mod migrate;
@@ -93,6 +94,7 @@ pub mod security;
 pub mod session;
 pub mod subagent;
 pub mod telemetry;
+pub mod tools;
 pub mod ui;
 pub mod vigil;
 
@@ -102,9 +104,9 @@ pub use agent::{
 };
 pub use channels::{
     A2aServerConfig, ChannelSkillsConfig, DiscordConfig, IbctKeyConfig, McpConfig, McpOAuthConfig,
-    McpServerConfig, McpTrustLevel, OAuthTokenStorage, SlackConfig, TelegramConfig,
-    ToolDiscoveryConfig, ToolDiscoveryStrategyConfig, ToolPruningConfig, TrustCalibrationConfig,
-    is_skill_allowed,
+    McpPolicy, McpServerConfig, McpTrustLevel, OAuthTokenStorage, RateLimit, SlackConfig,
+    TelegramConfig, ToolDiscoveryConfig, ToolDiscoveryStrategyConfig, ToolPruningConfig,
+    TrustCalibrationConfig, is_skill_allowed,
 };
 pub use cli::{CliConfig, LoopConfig};
 pub use defaults::{
@@ -126,6 +128,7 @@ pub use features::{
 pub use hooks::{FileChangedConfig, HooksConfig};
 pub use learning::{DetectorMode, LearningConfig};
 pub use logging::{LogRotation, LoggingConfig};
+pub use mcp_security::{CapabilityClass, DataSensitivity, FlaggedParameter, ToolSecurityMeta};
 pub use memory::{
     AdmissionConfig, AdmissionStrategy, AdmissionWeights, AutoDreamConfig, BeliefRevisionConfig,
     CategoryConfig, CompressionConfig, CompressionStrategy, ContextFormat, ContextStrategy,
@@ -138,10 +141,10 @@ pub use memory::{
 pub use metrics::MetricsConfig;
 pub use notifications::NotificationsConfig;
 pub use providers::{
-    BanditConfig, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
-    CoeConfig, ComplexityRoutingConfig, GenerationParams, LlmConfig, LlmRoutingStrategy,
-    MAX_TOKENS_CAP, ProviderEntry, ProviderKind, ProviderName, RouterConfig, RouterStrategyConfig,
-    SttConfig, TierMapping, validate_pool,
+    BanditConfig, CacheTtl, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
+    CoeConfig, ComplexityRoutingConfig, GeminiThinkingLevel, GenerationParams, LlmConfig,
+    LlmRoutingStrategy, MAX_TOKENS_CAP, ProviderEntry, ProviderKind, ProviderName, RouterConfig,
+    RouterStrategyConfig, SttConfig, ThinkingConfig, ThinkingEffort, TierMapping, validate_pool,
 };
 pub use providers::{default_stt_language, default_stt_provider};
 pub use quality::{QualityConfig, TriggerPolicy};

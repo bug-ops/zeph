@@ -6,13 +6,11 @@
 pub(crate) mod declarative;
 pub mod security;
 
-use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use parking_lot::Mutex;
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // FilterConfidence (#440)
@@ -256,47 +254,9 @@ pub(crate) fn default_true() -> bool {
     true
 }
 
-/// Configuration for output filters.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct FilterConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
-    #[serde(default)]
-    pub security: SecurityFilterConfig,
-
-    /// Directory containing a `filters.toml` override file.
-    /// Falls back to embedded defaults when `None` or when the file is absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filters_path: Option<PathBuf>,
-}
-
-impl Default for FilterConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            security: SecurityFilterConfig::default(),
-            filters_path: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SecurityFilterConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub extra_patterns: Vec<String>,
-}
-
-impl Default for SecurityFilterConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            extra_patterns: Vec::new(),
-        }
-    }
-}
+// `FilterConfig` and `SecurityFilterConfig` are pure-data config types defined in
+// zeph-config and re-exported here.
+pub use zeph_config::tools::{FilterConfig, SecurityFilterConfig};
 
 // ---------------------------------------------------------------------------
 // OutputFilterRegistry

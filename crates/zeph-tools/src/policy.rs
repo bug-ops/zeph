@@ -9,73 +9,17 @@
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::SkillTrustLevel;
+
+// Config types are defined in zeph-config and re-exported here.
+pub use zeph_config::tools::{DefaultEffect, PolicyConfig, PolicyEffect, PolicyRuleConfig};
 
 // Max rules to prevent startup OOM from misconfigured policy files.
 const MAX_RULES: usize = 256;
 // Max regex pattern length in bytes.
 const MAX_REGEX_LEN: usize = 1024;
-
-/// Effect applied when a rule matches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PolicyEffect {
-    Allow,
-    Deny,
-}
-
-/// Default effect when no rule matches.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DefaultEffect {
-    Allow,
-    #[default]
-    Deny,
-}
-
-fn default_deny() -> DefaultEffect {
-    DefaultEffect::Deny
-}
-
-/// TOML-deserializable policy configuration.
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct PolicyConfig {
-    /// Whether to enforce policy rules. When false, all calls are allowed.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Fallback effect when no rule matches.
-    #[serde(default = "default_deny")]
-    pub default_effect: DefaultEffect,
-    /// Inline policy rules.
-    #[serde(default)]
-    pub rules: Vec<PolicyRuleConfig>,
-    /// Optional external policy file (TOML). When set, overrides inline rules.
-    pub policy_file: Option<String>,
-}
-
-/// A single policy rule as read from TOML.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PolicyRuleConfig {
-    pub effect: PolicyEffect,
-    /// Glob pattern matching the tool id. Required.
-    pub tool: String,
-    /// Path globs matched against path-like params. Rule fires if ANY path matches.
-    #[serde(default)]
-    pub paths: Vec<String>,
-    /// Env var names that must all be present in `PolicyContext.env`.
-    #[serde(default)]
-    pub env: Vec<String>,
-    /// Minimum required trust level (rule fires only when context trust <= threshold).
-    pub trust_level: Option<SkillTrustLevel>,
-    /// Regex matched against individual string param values.
-    pub args_match: Option<String>,
-    /// Named capabilities associated with this rule (e.g., "fs:write", "net:external").
-    /// Config-only field: capability matching is deferred until tools expose capability metadata.
-    #[serde(default)]
-    pub capabilities: Vec<String>,
-}
 
 /// Runtime context passed to `PolicyEnforcer::evaluate`.
 #[derive(Debug, Clone)]

@@ -4,36 +4,10 @@
 use std::collections::HashMap;
 
 use glob::Pattern;
-use serde::{Deserialize, Serialize};
 
-/// Tool access level controlling agent autonomy.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AutonomyLevel {
-    /// Read-only tools: `read`, `find_path`, `grep`, `list_directory`, `web_scrape`, `fetch`
-    ReadOnly,
-    /// Default: rule-based permissions with confirmations
-    #[default]
-    Supervised,
-    /// All tools allowed, no confirmations
-    Full,
-}
-
-/// Action a permission rule resolves to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PermissionAction {
-    Allow,
-    Ask,
-    Deny,
-}
-
-/// Single permission rule: glob `pattern` + action.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PermissionRule {
-    pub pattern: String,
-    pub action: PermissionAction,
-}
+// AutonomyLevel, PermissionAction, PermissionRule, and PermissionsConfig are defined in
+// zeph-config and re-exported here for source compatibility.
+pub use zeph_config::tools::{AutonomyLevel, PermissionAction, PermissionRule, PermissionsConfig};
 
 /// Read-only tool allowlist (available in `ReadOnly` autonomy mode).
 const READONLY_TOOLS: &[&str] = &[
@@ -151,13 +125,6 @@ impl PermissionPolicy {
     pub fn autonomy_level(&self) -> AutonomyLevel {
         self.autonomy_level
     }
-}
-
-/// TOML-deserializable permissions config section.
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct PermissionsConfig {
-    #[serde(flatten)]
-    pub tools: HashMap<String, Vec<PermissionRule>>,
 }
 
 impl From<PermissionsConfig> for PermissionPolicy {
@@ -314,6 +281,7 @@ mod tests {
 
     #[test]
     fn autonomy_level_deserialize() {
+        use serde::Deserialize;
         #[derive(Deserialize)]
         struct Wrapper {
             level: AutonomyLevel,

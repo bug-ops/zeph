@@ -37,17 +37,8 @@ fn default_elicitation_timeout() -> u64 {
 /// Trust level for an MCP server connection.
 ///
 /// Controls SSRF validation and tool filtering on connect and refresh.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum McpTrustLevel {
-    /// Full trust — all tools exposed, SSRF check skipped. Use for operator-controlled servers.
-    Trusted,
-    /// Default. SSRF enforced. Tools exposed with a warning when allowlist is empty.
-    #[default]
-    Untrusted,
-    /// Strict sandboxing — SSRF enforced. Only allowlisted tools exposed; empty allowlist = no tools.
-    Sandboxed,
-}
+// McpTrustLevel is defined in zeph-config and re-exported here for source compatibility.
+pub use zeph_config::McpTrustLevel;
 
 /// Maximum number of injection penalties applied per tool registration batch.
 ///
@@ -55,20 +46,6 @@ pub enum McpTrustLevel {
 /// a single registration with many flagged descriptions (e.g. from false positives)
 /// from permanently destroying server trust.
 const MAX_INJECTION_PENALTIES_PER_REGISTRATION: usize = 3;
-
-impl McpTrustLevel {
-    /// Returns a numeric restriction level where higher means more restricted.
-    ///
-    /// Used for "only demote, never promote automatically" comparisons.
-    #[must_use]
-    pub fn restriction_level(self) -> u8 {
-        match self {
-            Self::Trusted => 0,
-            Self::Untrusted => 1,
-            Self::Sandboxed => 2,
-        }
-    }
-}
 
 /// Transport type for MCP server connections.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

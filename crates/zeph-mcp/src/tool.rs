@@ -3,69 +3,11 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Sensitivity level of the data a tool accesses or produces.
-///
-/// Used by the data-flow policy ([`crate::policy::check_data_flow`]) to enforce
-/// that high-sensitivity tools can only be registered on [`McpTrustLevel::Trusted`]
-/// servers.  The ordering `None < Low < Medium < High` allows `max()` comparisons
-/// when computing the worst-case sensitivity of a tool set.
-///
-/// [`McpTrustLevel::Trusted`]: crate::manager::McpTrustLevel::Trusted
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DataSensitivity {
-    #[default]
-    None,
-    Low,
-    Medium,
-    High,
-}
-
-/// Coarse capability class for an MCP tool.
-///
-/// Assigned by operator config or inferred via [`infer_security_meta`].  Stored
-/// inside [`ToolSecurityMeta::capabilities`] and used by the data-flow policy to
-/// decide whether a tool may run on a given server trust level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CapabilityClass {
-    FilesystemRead,
-    FilesystemWrite,
-    Network,
-    Shell,
-    DatabaseRead,
-    DatabaseWrite,
-    MemoryWrite,
-    ExternalApi,
-}
-
-/// A parameter path and the injection pattern that matched it.
-///
-/// JSON pointer format: `/properties/key/description`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FlaggedParameter {
-    /// JSON pointer into `input_schema` identifying the flagged value.
-    pub path: String,
-    /// Name of the injection pattern that matched.
-    pub pattern_name: String,
-}
-
-/// Per-tool security metadata.
-///
-/// Assigned by operator config or inferred from tool name heuristics at registration time.
-/// Stored alongside `McpTool` in the tool registry.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolSecurityMeta {
-    /// Data sensitivity of this tool's outputs.
-    #[serde(default)]
-    pub data_sensitivity: DataSensitivity,
-    /// Capability classes this tool exercises.
-    #[serde(default)]
-    pub capabilities: Vec<CapabilityClass>,
-    /// Parameters whose `input_schema` values matched an injection pattern.
-    #[serde(default)]
-    pub flagged_parameters: Vec<FlaggedParameter>,
-}
+// DataSensitivity, CapabilityClass, FlaggedParameter, and ToolSecurityMeta are defined in
+// zeph-config and re-exported here for source compatibility.
+pub use zeph_config::mcp_security::{
+    CapabilityClass, DataSensitivity, FlaggedParameter, ToolSecurityMeta,
+};
 
 /// A single MCP tool exposed by a connected server.
 ///

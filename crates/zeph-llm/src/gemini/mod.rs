@@ -20,18 +20,8 @@ use crate::usage::UsageTracker;
 const MAX_RETRIES: u32 = 3;
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 
-/// Thinking level for Gemini models that support extended reasoning.
-///
-/// Maps to `generationConfig.thinkingConfig.thinkingLevel` in the Gemini API.
-/// Valid for Gemini 3+ models. For Gemini 2.5, use `thinking_budget` instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ThinkingLevel {
-    Minimal,
-    Low,
-    Medium,
-    High,
-}
+// ThinkingLevel (exported as GeminiThinkingLevel in zeph-config) is re-exported here.
+pub use zeph_config::GeminiThinkingLevel as ThinkingLevel;
 
 pub struct GeminiProvider {
     client: reqwest::Client,

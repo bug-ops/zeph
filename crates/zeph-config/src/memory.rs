@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::HashMap;
+
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::defaults::{default_sqlite_path_field, default_true};
@@ -694,7 +697,7 @@ impl VectorBackend {
 #[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct MemoryConfig {
     #[serde(default)]
-    pub compression_guidelines: zeph_memory::CompressionGuidelinesConfig,
+    pub compression_guidelines: CompressionGuidelinesConfig,
     #[serde(default = "default_sqlite_path_field")]
     pub sqlite_path: String,
     pub history_limit: u32,
@@ -742,7 +745,7 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub documents: DocumentConfig,
     #[serde(default)]
-    pub eviction: zeph_memory::EvictionConfig,
+    pub eviction: EvictionConfig,
     #[serde(default)]
     pub compression: CompressionConfig,
     #[serde(default)]
@@ -918,8 +921,9 @@ pub struct DigestConfig {
     /// Enable session digest generation at session end. Default: `false`.
     pub enabled: bool,
     /// Provider name from `[[llm.providers]]` for digest generation.
-    /// Falls back to the primary provider when empty. Default: `""`.
-    pub provider: String,
+    /// Falls back to the primary provider when `None`.
+    #[serde(default)]
+    pub provider: Option<ProviderName>,
     /// Maximum tokens for the digest text. Default: `500`.
     pub max_tokens: usize,
     /// Maximum messages to feed into the digest prompt. Default: `50`.
@@ -930,7 +934,7 @@ impl Default for DigestConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            provider: String::new(),
+            provider: None,
             max_tokens: 500,
             max_input_messages: 50,
         }
@@ -1048,9 +1052,9 @@ pub struct SemanticConfig {
     /// Name of a `[[llm.providers]]` entry to use exclusively for embedding calls during
     /// memory write and backfill operations. A dedicated provider prevents `embed_backfill`
     /// from contending with the guardrail at the API server level (rate limits, Ollama
-    /// single-model lock). When unset or empty, falls back to the main agent provider.
+    /// single-model lock). Falls back to the main agent provider when `None`.
     #[serde(default)]
-    pub embed_provider: Option<String>,
+    pub embed_provider: Option<ProviderName>,
 }
 
 impl Default for SemanticConfig {
@@ -1217,8 +1221,9 @@ pub struct HebbianConfig {
     pub consolidation_threshold: f64,
     /// Provider name (from `[[llm.providers]]`) used for cluster distillation (HL-F4, #3345).
     ///
-    /// Falls back to the main provider when empty or unresolvable. Default: `"fast"`.
-    pub consolidate_provider: String,
+    /// Falls back to the main provider when `None` or unresolvable.
+    #[serde(default)]
+    pub consolidate_provider: Option<ProviderName>,
     /// Maximum number of candidates processed per sweep (HL-F3, #3345). Default: `10`.
     pub max_candidates_per_sweep: usize,
     /// Minimum seconds between consecutive consolidations of the same entity (HL-F3, #3345).
@@ -1258,7 +1263,7 @@ impl Default for HebbianConfig {
             hebbian_lr: 0.1,
             consolidation_interval_secs: 3600,
             consolidation_threshold: 5.0,
-            consolidate_provider: String::new(),
+            consolidate_provider: None,
             max_candidates_per_sweep: 10,
             consolidation_cooldown_secs: 86_400,
             consolidation_prompt_timeout_secs: 30,
@@ -1435,7 +1440,7 @@ pub struct CompressionConfig {
     pub compress_provider: ProviderName,
     /// Compaction probe: validates summary quality before committing it (#1609).
     #[serde(default)]
-    pub probe: zeph_memory::CompactionProbeConfig,
+    pub probe: CompactionProbeConfig,
     /// Archive tool output bodies to `SQLite` before compaction (Memex #2432).
     ///
     /// When enabled, tool output bodies in the compaction range are saved to
@@ -1685,9 +1690,10 @@ pub struct GraphConfig {
     /// SYNAPSE spreading activation is used. Set to `bfs` to revert to hop-limited BFS.
     #[serde(default)]
     pub retrieval_strategy: GraphRetrievalStrategy,
-    /// Named LLM provider for hybrid strategy classification. Empty = use default provider.
+    /// Named LLM provider for hybrid strategy classification.
+    /// Falls back to the default provider when `None`.
     #[serde(default)]
-    pub strategy_classifier_provider: String,
+    pub strategy_classifier_provider: Option<ProviderName>,
     /// Beam search configuration.
     #[serde(default)]
     pub beam_search: BeamSearchConfig,
@@ -1757,7 +1763,7 @@ impl Default for GraphConfig {
             note_linking: NoteLinkingConfig::default(),
             spreading_activation: SpreadingActivationConfig::default(),
             retrieval_strategy: GraphRetrievalStrategy::default(),
-            strategy_classifier_provider: String::new(),
+            strategy_classifier_provider: None,
             beam_search: BeamSearchConfig::default(),
             watercircles: WaterCirclesConfig::default(),
             experience: ExperienceConfig::default(),
@@ -2706,6 +2712,136 @@ impl Default for ReasoningConfig {
             distill_timeout_secs: 30,
             self_judge_window: 2,
             min_assistant_chars: 50,
+        }
+    }
+}
+
+// ── Eviction config (moved from zeph-memory) ─────────────────────────────────
+
+/// Configuration for the memory eviction policy.
+///
+/// Controls which policy runs during the periodic sweep and how many entries
+/// are retained. `zeph-memory` re-exports this type from here.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EvictionConfig {
+    /// Policy name. Currently only `"ebbinghaus"` is supported.
+    pub policy: String,
+    /// Maximum number of entries to retain. `0` means unlimited (eviction disabled).
+    pub max_entries: usize,
+    /// How often to run the eviction sweep, in seconds.
+    pub sweep_interval_secs: u64,
+}
+
+impl Default for EvictionConfig {
+    fn default() -> Self {
+        Self {
+            policy: "ebbinghaus".to_owned(),
+            max_entries: 0,
+            sweep_interval_secs: 3600,
+        }
+    }
+}
+
+// ── Compression guidelines config (moved from zeph-memory) ───────────────────
+
+/// Configuration for ACON failure-driven compression guidelines.
+///
+/// `zeph-memory` re-exports this type from here.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CompressionGuidelinesConfig {
+    /// Enable the feature. Default: `false`.
+    pub enabled: bool,
+    /// Minimum unused failure pairs before triggering a guidelines update. Default: `5`.
+    pub update_threshold: u16,
+    /// Maximum token budget for the guidelines document. Default: `500`.
+    pub max_guidelines_tokens: usize,
+    /// Maximum failure pairs consumed per update cycle. Default: `10`.
+    pub max_pairs_per_update: usize,
+    /// Number of turns after hard compaction to watch for context loss. Default: `10`.
+    pub detection_window_turns: u64,
+    /// Interval in seconds between background updater checks. Default: `300`.
+    pub update_interval_secs: u64,
+    /// Maximum unused failure pairs to retain (cleanup policy). Default: `100`.
+    pub max_stored_pairs: usize,
+    /// Provider name from `[[llm.providers]]` for guidelines update LLM calls.
+    /// `None` (or `Some("")`) falls back to the primary provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guidelines_provider: Option<ProviderName>,
+    /// Maintain separate guideline documents per content category.
+    #[serde(default)]
+    pub categorized_guidelines: bool,
+}
+
+impl Default for CompressionGuidelinesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            update_threshold: 5,
+            max_guidelines_tokens: 500,
+            max_pairs_per_update: 10,
+            detection_window_turns: 10,
+            update_interval_secs: 300,
+            max_stored_pairs: 100,
+            guidelines_provider: None,
+            categorized_guidelines: false,
+        }
+    }
+}
+
+// ── Compaction probe config (moved from zeph-memory) ─────────────────────────
+
+/// Functional category of a compaction probe question.
+///
+/// `zeph-memory` re-exports this type from here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ProbeCategory {
+    /// Did specific facts survive? (file paths, function names, values, decisions)
+    Recall,
+    /// Does the agent know which files/tools/URLs it used?
+    Artifact,
+    /// Can it pick up mid-task? (current step, next steps, blockers, open questions)
+    Continuation,
+    /// Are past reasoning traces intact? (why X over Y, trade-offs, constraints)
+    Decision,
+}
+
+/// Configuration for the compaction probe.
+///
+/// `zeph-memory` re-exports this type from here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompactionProbeConfig {
+    /// Enable compaction probe validation. Default: `false`.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for probe LLM calls.
+    /// `None` (or `Some("")`) uses the summary provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_provider: Option<ProviderName>,
+    /// Minimum score to pass without warnings. Default: `0.6`.
+    pub threshold: f32,
+    /// Score below this triggers `HardFail` (block compaction). Default: `0.35`.
+    pub hard_fail_threshold: f32,
+    /// Maximum number of probe questions to generate. Default: `5`.
+    pub max_questions: usize,
+    /// Timeout for the entire probe (both LLM calls) in seconds. Default: `15`.
+    pub timeout_secs: u64,
+    /// Optional per-category weight multipliers for the overall score.
+    #[serde(default)]
+    pub category_weights: Option<HashMap<ProbeCategory, f32>>,
+}
+
+impl Default for CompactionProbeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            probe_provider: None,
+            threshold: 0.6,
+            hard_fail_threshold: 0.35,
+            max_questions: 5,
+            timeout_secs: 15,
+            category_weights: None,
         }
     }
 }

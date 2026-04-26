@@ -8,7 +8,59 @@ use serde::{Deserialize, Serialize};
 use crate::defaults::default_true;
 use crate::providers::ProviderName;
 
-pub use zeph_mcp::{McpTrustLevel, tool::ToolSecurityMeta};
+pub use crate::mcp_security::ToolSecurityMeta;
+
+// ── MCP trust and policy types (moved from zeph-mcp) ─────────────────────────
+
+/// Trust level for an MCP server connection.
+///
+/// Controls SSRF validation, tool filtering, and data-flow policy enforcement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTrustLevel {
+    /// Full trust — all tools exposed, SSRF check skipped. Use for operator-controlled servers.
+    Trusted,
+    /// Default. SSRF enforced. Tools exposed with a warning when allowlist is empty.
+    #[default]
+    Untrusted,
+    /// Strict sandboxing — SSRF enforced. Only allowlisted tools exposed; empty allowlist = no tools.
+    Sandboxed,
+}
+
+impl McpTrustLevel {
+    /// Returns a numeric restriction level where higher means more restricted.
+    ///
+    /// Used for "only demote, never promote automatically" comparisons.
+    #[must_use]
+    pub fn restriction_level(self) -> u8 {
+        match self {
+            Self::Trusted => 0,
+            Self::Untrusted => 1,
+            Self::Sandboxed => 2,
+        }
+    }
+}
+
+/// Rate limit configuration for a single MCP server.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RateLimit {
+    /// Maximum number of tool calls allowed per minute across all tools on this server.
+    pub max_calls_per_minute: u32,
+}
+
+/// Per-server MCP policy.
+///
+/// No policy present = allow all (backward compatible default).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct McpPolicy {
+    /// Allowlist of tool names. `None` means all tools are allowed (subject to `denied_tools`).
+    pub allowed_tools: Option<Vec<String>>,
+    /// Denylist of tool names. Takes precedence over `allowed_tools`.
+    pub denied_tools: Vec<String>,
+    /// Optional rate limit for this server.
+    pub rate_limit: Option<RateLimit>,
+}
 
 fn default_skill_allowlist() -> Vec<String> {
     vec!["*".into()]
@@ -675,7 +727,7 @@ pub struct McpServerConfig {
     pub timeout: u64,
     /// Optional declarative policy for this server (allowlist, denylist, rate limit).
     #[serde(default)]
-    pub policy: zeph_mcp::McpPolicy,
+    pub policy: McpPolicy,
     /// Static HTTP headers for the transport (e.g. `Authorization: Bearer <token>`).
     /// Values support vault references: `${VAULT_KEY}`.
     #[serde(default)]

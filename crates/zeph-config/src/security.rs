@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use serde::{Deserialize, Serialize};
-use zeph_tools::AutonomyLevel;
-use zeph_tools::PreExecutionVerifierConfig;
-use zeph_tools::SkillTrustLevel;
+use zeph_common::SkillTrustLevel;
+
+use crate::tools::{AutonomyLevel, PreExecutionVerifierConfig};
 
 use crate::defaults::default_true;
 use crate::vigil::VigilConfig;

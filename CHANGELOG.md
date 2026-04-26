@@ -31,6 +31,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the current turn's assistant `tool_calls` message so that the subsequent `User(tool_results)`
   message has a valid parent, preventing a 422 from the OpenAI API on the next LLM call.
 
+- fix(config): standardize provider reference fields to `Option<ProviderName>` (#3482).
+  Changed `DigestConfig.provider`, `SemanticConfig.embed_provider`,
+  `HebbianConfig.consolidate_provider`, `GraphConfig.strategy_classifier_provider`,
+  and `IndexConfig.embed_provider` from raw `String`/`Option<String>` to
+  `Option<ProviderName>`. All fields retain `#[serde(default)]` for TOML backward
+  compatibility. Callers updated to use `.as_ref()?` / `.as_deref()` patterns.
+
+### Changed
+
+- refactor(config): invert `zeph-config` dependency arrow (#3481).
+  Moved pure-data config types (`McpTrustLevel`, `ToolSecurityMeta`, `CacheTtl`,
+  `ThinkingConfig`, `GeminiThinkingLevel`, `ToolsConfig`, `AutonomyLevel`,
+  `PreExecutionVerifierConfig`, `EvictionConfig`, `CompressionGuidelinesConfig`,
+  `CompactionProbeConfig`, `ProbeCategory`) from feature crates into `zeph-config`.
+  Feature crates (`zeph-llm`, `zeph-mcp`, `zeph-tools`, `zeph-memory`) now depend on
+  `zeph-config` and re-export the moved types for backward compatibility.
+  `zeph-config` is now a pure-data leaf crate with no dependency on feature crates.
+
 ### Added
 
 - context: plumb compression-spectrum `active_levels` through `ContextAssemblyInput` (#3455).

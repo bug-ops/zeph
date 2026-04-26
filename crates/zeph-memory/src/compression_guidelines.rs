@@ -7,56 +7,9 @@
 //! compression failure pairs exceeds a threshold; if so, calls the LLM to update
 //! the compression guidelines document stored in `SQLite`.
 
-/// Configuration for ACON failure-driven compression guidelines.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-#[serde(default)]
-pub struct CompressionGuidelinesConfig {
-    /// Enable the feature. Default: `false`.
-    pub enabled: bool,
-    /// Minimum unused failure pairs before triggering a guidelines update. Default: `5`.
-    pub update_threshold: u16,
-    /// Maximum token budget for the guidelines document. Default: `500`.
-    pub max_guidelines_tokens: usize,
-    /// Maximum failure pairs consumed per update cycle. Default: `10`.
-    pub max_pairs_per_update: usize,
-    /// Number of turns after hard compaction to watch for context loss. Default: `10`.
-    pub detection_window_turns: u64,
-    /// Interval in seconds between background updater checks. Default: `300`.
-    pub update_interval_secs: u64,
-    /// Maximum unused failure pairs to retain (cleanup policy). Default: `100`.
-    pub max_stored_pairs: usize,
-    /// Provider name from `[[llm.providers]]` for guidelines update LLM calls.
-    /// Falls back to the primary provider when empty. Default: `""`.
-    #[serde(default)]
-    pub guidelines_provider: String,
-    /// Maintain separate guideline documents per content category (ACON #2433).
-    ///
-    /// When `true`, the updater runs an independent update cycle for each content
-    /// category that has accumulated enough failure pairs (`update_threshold`).
-    /// Categories with fewer than `update_threshold` failures are skipped to avoid
-    /// unnecessary LLM calls.
-    ///
-    /// Categories: `tool_output`, `assistant_reasoning`, `user_context`, `unknown`.
-    /// Default: `false` (single global guideline, existing behavior).
-    #[serde(default)]
-    pub categorized_guidelines: bool,
-}
-
-impl Default for CompressionGuidelinesConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            update_threshold: 5,
-            max_guidelines_tokens: 500,
-            max_pairs_per_update: 10,
-            detection_window_turns: 10,
-            update_interval_secs: 300,
-            max_stored_pairs: 100,
-            guidelines_provider: String::new(),
-            categorized_guidelines: false,
-        }
-    }
-}
+// `CompressionGuidelinesConfig` is a pure-data config type defined in zeph-config
+// and re-exported here. The `guidelines_provider` field is now `Option<ProviderName>`.
+pub use zeph_config::memory::CompressionGuidelinesConfig;
 
 // ── Feature-gated implementation ──────────────────────────────────────────────
 mod updater {

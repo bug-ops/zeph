@@ -551,10 +551,10 @@ pub struct IndexConfig {
     pub max_file_bytes: usize,
     /// Name of a `[[llm.providers]]` entry to use exclusively for embedding calls during
     /// indexing. A dedicated provider prevents the indexer from contending with the guardrail
-    /// at the API server level (rate limits, Ollama single-model lock). When unset or empty,
-    /// falls back to the main agent provider.
+    /// at the API server level (rate limits, Ollama single-model lock). Falls back to the main
+    /// agent provider when `None`.
     #[serde(default)]
-    pub embed_provider: Option<String>,
+    pub embed_provider: Option<ProviderName>,
     /// Maximum parallel `embed_batch` calls during indexing (default: 2 to stay within provider
     /// TPM limits).
     #[serde(default = "default_index_embed_concurrency")]

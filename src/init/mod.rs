@@ -711,7 +711,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.hard_compaction_threshold = state.hard_compaction_threshold;
     config.memory.compression.probe.enabled = state.probe_enabled;
     if let Some(ref p) = state.probe_provider {
-        config.memory.compression.probe.probe_provider.clone_from(p);
+        config.memory.compression.probe.probe_provider =
+            Some(zeph_config::ProviderName::new(p.clone()));
     }
     if state.probe_enabled {
         config.memory.compression.probe.threshold = state.probe_threshold;
@@ -2207,7 +2208,16 @@ mod tests {
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert_eq!(config.memory.compression.probe.probe_provider, "fast");
+        assert_eq!(
+            config
+                .memory
+                .compression
+                .probe
+                .probe_provider
+                .as_ref()
+                .map(|p| p.as_str()),
+            Some("fast")
+        );
     }
 
     #[test]
@@ -2219,7 +2229,7 @@ mod tests {
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert_eq!(config.memory.compression.probe.probe_provider, "");
+        assert!(config.memory.compression.probe.probe_provider.is_none());
     }
 
     #[test]

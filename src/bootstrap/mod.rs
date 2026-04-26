@@ -1108,10 +1108,14 @@ impl AppBuilder {
     /// Returns `None` when `probe_provider` is empty (falls back to summary provider at call site).
     /// Emits a `tracing::warn` on resolution failure (summary/primary provider used as fallback).
     pub fn build_probe_provider(&self) -> Option<AnyProvider> {
-        let name = &self.config.memory.compression.probe.probe_provider;
-        if name.is_empty() {
-            return None;
-        }
+        let name = self
+            .config
+            .memory
+            .compression
+            .probe
+            .probe_provider
+            .as_ref()
+            .and_then(|n| n.as_non_empty())?;
         match create_named_provider(name, &self.config) {
             Ok(p) => {
                 tracing::info!(provider = %name, "compaction probe provider configured");
@@ -1161,14 +1165,13 @@ impl AppBuilder {
     ///
     /// Emits a `tracing::warn` on resolution failure; primary provider is used as fallback.
     pub fn build_guidelines_provider(&self) -> Option<AnyProvider> {
-        let name = &self
+        let name = self
             .config
             .memory
             .compression_guidelines
-            .guidelines_provider;
-        if name.is_empty() {
-            return None;
-        }
+            .guidelines_provider
+            .as_ref()
+            .and_then(|n| n.as_non_empty())?;
         match create_named_provider(name, &self.config) {
             Ok(p) => {
                 tracing::info!(provider = %name, "compression guidelines provider configured");
@@ -1212,14 +1215,11 @@ impl AppBuilder {
 
     /// Build a dedicated provider for Hebbian cluster distillation LLM calls (HL-F4, #3345).
     ///
-    /// Returns `None` when `consolidate_provider` is empty or resolution fails; the
+    /// Returns `None` when `consolidate_provider` is unset or resolution fails; the
     /// caller falls back to the primary provider.
     pub fn build_hebbian_consolidation_provider(&self) -> Option<AnyProvider> {
-        let name = &self.config.memory.hebbian.consolidate_provider;
-        if name.is_empty() {
-            return None;
-        }
-        match create_named_provider(name, &self.config) {
+        let name = self.config.memory.hebbian.consolidate_provider.as_ref()?;
+        match create_named_provider(name.as_str(), &self.config) {
             Ok(p) => {
                 tracing::info!(provider = %name, "Hebbian consolidation provider configured");
                 Some(p)

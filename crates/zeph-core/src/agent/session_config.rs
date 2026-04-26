@@ -136,9 +136,10 @@ impl AgentSessionConfig {
             tool_call_cutoff: config.memory.tool_call_cutoff,
             max_tool_calls_per_session: config.tools.max_tool_calls_per_session,
             overflow_config: config.tools.overflow.clone(),
-            permission_policy: config
-                .tools
-                .permission_policy(config.security.autonomy_level),
+            permission_policy: zeph_tools::build_permission_policy(
+                &config.tools,
+                config.security.autonomy_level,
+            ),
             model_name: config.llm.effective_model().to_owned(),
             embed_model: crate::provider_factory::stable_skill_embedding_model(config),
             semantic_cache_enabled: config.llm.semantic_cache_enabled,

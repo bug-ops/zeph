@@ -97,11 +97,11 @@ pub use audit::{
 };
 pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
-pub use config::AdversarialPolicyConfig;
 pub use config::{
-    AnomalyConfig, AuditConfig, AuthorizationConfig, DependencyConfig, EgressConfig, FileConfig,
-    OverflowConfig, ResultCacheConfig, RetryConfig, SandboxConfig, ScrapeConfig, ShellConfig,
-    TafcConfig, ToolDependency, ToolsConfig, UtilityScoringConfig,
+    AdversarialPolicyConfig, AnomalyConfig, AuditConfig, AuthorizationConfig, DependencyConfig,
+    EgressConfig, FileConfig, OverflowConfig, ResultCacheConfig, RetryConfig, SandboxConfig,
+    ScrapeConfig, ShellConfig, TafcConfig, ToolDependency, ToolsConfig, UtilityScoringConfig,
+    build_permission_policy, validate_sandbox_denied_domains,
 };
 pub use cwd::SetCwdExecutor;
 pub use diagnostics::DiagnosticsExecutor;

@@ -38,6 +38,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "v5"] }
 zeph-common.workspace = true
+zeph-config.workspace = true
 zeph-llm.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 

@@ -48,7 +48,6 @@
 
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod noop;
@@ -156,28 +155,8 @@ impl Default for SandboxPolicy {
     }
 }
 
-/// Portable sandbox enforcement profile.
-///
-/// The profile sets the _baseline_ restrictions. `allow_read`, `allow_write`, and
-/// `allow_network` in [`SandboxPolicy`] further refine what is permitted.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SandboxProfile {
-    /// Read-only to `allow_read` paths, no writes, no network. Exec restricted to `allow_exec` + bash.
-    ReadOnly,
-    /// Read/write to configured paths; network egress blocked.
-    #[default]
-    Workspace,
-    /// Workspace-level filesystem access plus unrestricted network egress.
-    ///
-    /// Does **not** curate host/port allowlists. Use application-layer controls for that.
-    #[serde(rename = "network-allow-all", alias = "network")]
-    NetworkAllowAll,
-    /// Sandbox disabled. The subprocess inherits the parent's full capabilities.
-    ///
-    /// Config authors must set this explicitly to opt out.
-    Off,
-}
+// `SandboxProfile` is a pure-data config type defined in zeph-config and re-exported here.
+pub use zeph_config::tools::SandboxProfile;
 
 /// Error returned when sandbox setup or policy application fails.
 #[derive(Debug, Error)]

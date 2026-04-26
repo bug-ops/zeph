@@ -20,19 +20,9 @@ use crate::error::MemoryError;
 
 // --- Data structures ---
 
-/// Functional category of a probe question.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum ProbeCategory {
-    /// Did specific facts survive? (file paths, function names, values, decisions)
-    Recall,
-    /// Does the agent know which files/tools/URLs it used?
-    Artifact,
-    /// Can it pick up mid-task? (current step, next steps, blockers, open questions)
-    Continuation,
-    /// Are past reasoning traces intact? (why X over Y, trade-offs, constraints)
-    Decision,
-}
+// `ProbeCategory` and `CompactionProbeConfig` are pure-data config types defined in
+// zeph-config and re-exported here. The `probe_provider` field is now `Option<ProviderName>`.
+pub use zeph_config::memory::{CompactionProbeConfig, ProbeCategory};
 
 /// Per-category scoring breakdown from a compaction probe run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -447,45 +437,6 @@ pub async fn answer_probe_questions(
     Ok(output.answers)
 }
 
-/// Configuration for the compaction probe.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct CompactionProbeConfig {
-    /// Enable compaction probe validation. Default: `false`.
-    pub enabled: bool,
-    /// Provider name from `[[llm.providers]]` for probe LLM calls.
-    /// Empty string = use the summary provider.
-    pub probe_provider: String,
-    /// Minimum score to pass without warnings. Default: `0.6`.
-    /// Scores in [`hard_fail_threshold`, `threshold`) trigger `SoftFail` (warn + proceed).
-    pub threshold: f32,
-    /// Score below this triggers `HardFail` (block compaction). Default: `0.35`.
-    pub hard_fail_threshold: f32,
-    /// Maximum number of probe questions to generate. Default: `5`.
-    pub max_questions: usize,
-    /// Timeout for the entire probe (both LLM calls) in seconds. Default: `15`.
-    pub timeout_secs: u64,
-    /// Optional per-category weight multipliers for the overall score.
-    /// When `None` or empty, all categories are weighted equally.
-    /// Example: `{ recall = 1.5, artifact = 1.0, continuation = 1.0, decision = 0.8 }`
-    #[serde(default)]
-    pub category_weights: Option<HashMap<ProbeCategory, f32>>,
-}
-
-impl Default for CompactionProbeConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            probe_provider: String::new(),
-            threshold: 0.6,
-            hard_fail_threshold: 0.35,
-            max_questions: 5,
-            timeout_secs: 15,
-            category_weights: None,
-        }
-    }
-}
-
 /// Run the compaction probe: generate questions, answer them from the summary, score results.
 ///
 /// Returns `Ok(None)` when:
@@ -778,7 +729,7 @@ mod tests {
     fn config_defaults() {
         let c = CompactionProbeConfig::default();
         assert!(!c.enabled);
-        assert!(c.probe_provider.is_empty());
+        assert!(c.probe_provider.is_none());
         assert!((c.threshold - 0.6).abs() < 0.001);
         assert!((c.hard_fail_threshold - 0.35).abs() < 0.001);
         assert_eq!(c.max_questions, 5);
@@ -792,7 +743,7 @@ mod tests {
     fn config_serde_round_trip() {
         let original = CompactionProbeConfig {
             enabled: true,
-            probe_provider: "fast".into(),
+            probe_provider: Some(zeph_config::ProviderName::new("fast")),
             threshold: 0.65,
             hard_fail_threshold: 0.4,
             max_questions: 5,
@@ -802,7 +753,10 @@ mod tests {
         let json = serde_json::to_string(&original).expect("serialize");
         let restored: CompactionProbeConfig = serde_json::from_str(&json).expect("deserialize");
         assert!(restored.enabled);
-        assert_eq!(restored.probe_provider, "fast");
+        assert_eq!(
+            restored.probe_provider.as_ref().map(|p| p.as_str()),
+            Some("fast")
+        );
         assert!((restored.threshold - 0.65).abs() < 0.001);
     }
 
@@ -953,7 +907,7 @@ mod tests {
         let c: CompactionProbeConfig =
             serde_json::from_str(json).expect("deserialize partial json");
         assert!(c.enabled);
-        assert!(c.probe_provider.is_empty());
+        assert!(c.probe_provider.is_none());
         assert!((c.threshold - 0.6).abs() < 0.001);
         assert!((c.hard_fail_threshold - 0.35).abs() < 0.001);
         assert_eq!(c.max_questions, 5);
@@ -964,7 +918,7 @@ mod tests {
     fn config_empty_json_uses_all_defaults() {
         let c: CompactionProbeConfig = serde_json::from_str("{}").expect("deserialize empty json");
         assert!(!c.enabled);
-        assert!(c.probe_provider.is_empty());
+        assert!(c.probe_provider.is_none());
     }
 
     // --- ProbeCategory serde ---

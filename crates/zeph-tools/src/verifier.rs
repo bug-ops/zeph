@@ -28,20 +28,13 @@ use std::sync::{Arc, LazyLock};
 use parking_lot::RwLock;
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization as _;
 
-fn default_true() -> bool {
-    true
-}
-
-fn default_shell_tools() -> Vec<String> {
-    vec![
-        "bash".to_string(),
-        "shell".to_string(),
-        "terminal".to_string(),
-    ]
-}
+// Config structs are defined in zeph-config and re-exported here.
+pub use zeph_config::tools::{
+    DestructiveVerifierConfig, FirewallVerifierConfig, InjectionVerifierConfig,
+    PreExecutionVerifierConfig, UrlGroundingVerifierConfig,
+};
 
 /// Result of a pre-execution verification check.
 #[must_use]
@@ -67,127 +60,6 @@ pub trait PreExecutionVerifier: Send + Sync + std::fmt::Debug {
 
     /// Human-readable name for logging and TUI display.
     fn name(&self) -> &'static str;
-}
-
-// ---------------------------------------------------------------------------
-// Config types
-// ---------------------------------------------------------------------------
-
-/// Configuration for the destructive command verifier.
-///
-/// `allowed_paths`: when **empty** (the default), ALL destructive commands are denied.
-/// This is a conservative default: to allow e.g. `rm -rf /tmp/build` you must
-/// explicitly add `/tmp/build` to `allowed_paths`.
-///
-/// `shell_tools`: the set of tool names considered shell executors. Defaults to
-/// `["bash", "shell", "terminal"]`. Add custom names here if your setup registers
-/// shell tools under different names (e.g., via MCP or ACP integrations).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DestructiveVerifierConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Explicit path prefixes under which destructive commands are permitted.
-    /// **Empty = deny-all destructive commands** (safest default).
-    #[serde(default)]
-    pub allowed_paths: Vec<String>,
-    /// Additional command patterns to treat as destructive (substring match).
-    #[serde(default)]
-    pub extra_patterns: Vec<String>,
-    /// Tool names to treat as shell executors (case-insensitive).
-    /// Default: `["bash", "shell", "terminal"]`.
-    #[serde(default = "default_shell_tools")]
-    pub shell_tools: Vec<String>,
-}
-
-impl Default for DestructiveVerifierConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            allowed_paths: Vec::new(),
-            extra_patterns: Vec::new(),
-            shell_tools: default_shell_tools(),
-        }
-    }
-}
-
-/// Configuration for the injection pattern verifier.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct InjectionVerifierConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Additional injection patterns to block (regex strings).
-    /// Invalid regexes are logged at WARN level and skipped.
-    #[serde(default)]
-    pub extra_patterns: Vec<String>,
-    /// URLs explicitly permitted even if they match SSRF patterns.
-    #[serde(default)]
-    pub allowlisted_urls: Vec<String>,
-}
-
-impl Default for InjectionVerifierConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            extra_patterns: Vec::new(),
-            allowlisted_urls: Vec::new(),
-        }
-    }
-}
-
-/// Configuration for the URL grounding verifier.
-///
-/// When enabled, `fetch` and `web_scrape` calls are blocked unless the URL
-/// appears in the set of URLs extracted from user messages (`user_provided_urls`).
-/// This prevents the LLM from hallucinating API endpoints and calling fetch with
-/// fabricated URLs that were never supplied by the user.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct UrlGroundingVerifierConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Tool IDs subject to URL grounding checks. Any tool whose name ends with `_fetch`
-    /// is also guarded regardless of this list.
-    #[serde(default = "default_guarded_tools")]
-    pub guarded_tools: Vec<String>,
-}
-
-fn default_guarded_tools() -> Vec<String> {
-    vec!["fetch".to_string(), "web_scrape".to_string()]
-}
-
-impl Default for UrlGroundingVerifierConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            guarded_tools: default_guarded_tools(),
-        }
-    }
-}
-
-/// Top-level configuration for all pre-execution verifiers.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PreExecutionVerifierConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub destructive_commands: DestructiveVerifierConfig,
-    #[serde(default)]
-    pub injection_patterns: InjectionVerifierConfig,
-    #[serde(default)]
-    pub url_grounding: UrlGroundingVerifierConfig,
-    #[serde(default)]
-    pub firewall: FirewallVerifierConfig,
-}
-
-impl Default for PreExecutionVerifierConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            destructive_commands: DestructiveVerifierConfig::default(),
-            injection_patterns: InjectionVerifierConfig::default(),
-            url_grounding: UrlGroundingVerifierConfig::default(),
-            firewall: FirewallVerifierConfig::default(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -778,33 +650,6 @@ impl PreExecutionVerifier for UrlGroundingVerifier {
 // ---------------------------------------------------------------------------
 // FirewallVerifier
 // ---------------------------------------------------------------------------
-
-/// Configuration for the firewall verifier.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct FirewallVerifierConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Glob patterns for additional paths to block.
-    #[serde(default)]
-    pub blocked_paths: Vec<String>,
-    /// Additional environment variable names to block from tool arguments.
-    #[serde(default)]
-    pub blocked_env_vars: Vec<String>,
-    /// Tool IDs exempt from firewall scanning.
-    #[serde(default)]
-    pub exempt_tools: Vec<String>,
-}
-
-impl Default for FirewallVerifierConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            blocked_paths: Vec::new(),
-            blocked_env_vars: Vec::new(),
-            exempt_tools: Vec::new(),
-        }
-    }
-}
 
 /// Policy-enforcement verifier that inspects tool arguments for path traversal,
 /// environment-variable exfiltration, sensitive file access, and command chaining.
@@ -1661,7 +1506,7 @@ mod tests {
     fn reg_2191_disabled_verifier_allows_all() {
         let config = UrlGroundingVerifierConfig {
             enabled: false,
-            guarded_tools: default_guarded_tools(),
+            ..UrlGroundingVerifierConfig::default()
         };
         // Note: the enabled flag is checked by the pipeline, not inside verify().
         // The pipeline skips disabled verifiers. This test documents that the struct
