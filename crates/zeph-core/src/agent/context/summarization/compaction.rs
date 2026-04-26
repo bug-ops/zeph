@@ -1,35 +1,31 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::ops::ControlFlow;
+
 use zeph_llm::provider::{Message, MessageMetadata, Role};
 
 use crate::agent::Agent;
 use crate::agent::context::CompactionOutcome;
 use crate::channel::Channel;
 
+/// Partitioned message slices produced by [`Agent::partition_messages_for_compaction`].
+struct CompactionPartition {
+    /// Focus-pinned knowledge block messages that survive compaction.
+    pinned_messages: Vec<Message>,
+    /// Active-subgoal messages protected from summarization (only populated when a subgoal
+    /// strategy is active).
+    active_subgoal_messages: Vec<Message>,
+    /// Messages to be summarized by the LLM.
+    to_compact: Vec<Message>,
+}
+
 impl<C: Channel> Agent<C> {
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3456): decompose into smaller helpers
-    pub(in crate::agent) async fn compact_context(
-        &mut self,
-    ) -> Result<CompactionOutcome, crate::agent::error::AgentError> {
-        // Force-apply any pending deferred summaries before draining to avoid losing them (CRIT-01).
-        let _ = self.apply_deferred_summaries();
-
-        let preserve_tail = self.context_manager.compaction_preserve_tail;
-
-        if self.msg.messages.len() <= preserve_tail + 1 {
-            return Ok(CompactionOutcome::NoChange);
-        }
-
-        let compact_end = {
-            let raw = self.msg.messages.len() - preserve_tail;
-            Self::adjust_compact_end_for_tool_pairs(&self.msg.messages, raw)
-        };
-
-        if compact_end <= 1 {
-            return Ok(CompactionOutcome::NoChange);
-        }
-
+    /// Partition the compaction range into pinned, active-subgoal, and to-compact slices.
+    ///
+    /// Extracts `messages[1..compact_end]` into three disjoint sets so that focus-pinned
+    /// and active-subgoal messages survive compaction without being fed to the LLM.
+    fn partition_messages_for_compaction(&self, compact_end: usize) -> CompactionPartition {
         // S1 fix: extract focus-pinned messages before draining so they survive compaction.
         // These are Knowledge block messages created by the Focus Agent (#1850).
         let pinned_messages: Vec<Message> = self.msg.messages[1..compact_end]
@@ -97,6 +93,215 @@ impl<C: Channel> Agent<C> {
                     .collect()
             }
         };
+
+        CompactionPartition {
+            pinned_messages,
+            active_subgoal_messages,
+            to_compact,
+        }
+    }
+
+    /// Validate summary quality via the compaction probe before committing the summary.
+    ///
+    /// All four probe metric counters (`compaction_probe_failures`, `compaction_probe_soft_failures`,
+    /// `compaction_probe_passes`, `compaction_probe_errors`) and `last_probe_*` state are updated
+    /// exclusively inside this helper. The caller MUST NOT duplicate any metric increment
+    /// (cross-cutting constraint #6).
+    ///
+    /// Returns:
+    /// - `Ok(ControlFlow::Break(CompactionOutcome::ProbeRejected))` — hard fail; caller should
+    ///   return the rejected outcome immediately.
+    /// - `Ok(ControlFlow::Continue(()))` — probe passed (or was disabled); caller may proceed.
+    async fn apply_compaction_probe(
+        &mut self,
+        to_compact: &[Message],
+        summary: &str,
+    ) -> Result<ControlFlow<CompactionOutcome, ()>, crate::agent::error::AgentError> {
+        if !self.context_manager.compression.probe.enabled {
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        let probe_config = self.context_manager.compression.probe.clone();
+        let probe_provider = self.probe_or_summary_provider().clone();
+        let probe_result = match zeph_memory::validate_compaction(
+            probe_provider,
+            to_compact.to_vec(),
+            summary.to_owned(),
+            &probe_config,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::warn!("compaction probe error (non-blocking): {e:#}");
+                self.update_metrics(|m| {
+                    m.compaction_probe_errors += 1;
+                    m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::Error);
+                    m.last_probe_score = None;
+                    m.last_probe_category_scores = None;
+                });
+                return Ok(ControlFlow::Continue(()));
+            }
+        };
+
+        if let Some(ref result) = probe_result {
+            if let Some(ref d) = self.debug_state.debug_dumper {
+                d.dump_compaction_probe(result);
+            }
+
+            let cat_scores = result.category_scores.clone();
+            let probe_threshold = result.threshold;
+            let probe_hard_fail_threshold = result.hard_fail_threshold;
+            match result.verdict {
+                zeph_memory::ProbeVerdict::HardFail => {
+                    tracing::warn!(
+                        score = result.score,
+                        threshold = result.hard_fail_threshold,
+                        "compaction probe HARD FAIL — keeping original messages"
+                    );
+                    self.update_metrics(|m| {
+                        m.compaction_probe_failures += 1;
+                        m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::HardFail);
+                        m.last_probe_score = Some(result.score);
+                        m.last_probe_category_scores = Some(cat_scores.clone());
+                        m.compaction_probe_threshold = probe_threshold;
+                        m.compaction_probe_hard_fail_threshold = probe_hard_fail_threshold;
+                    });
+                    return Ok(ControlFlow::Break(CompactionOutcome::ProbeRejected));
+                }
+                zeph_memory::ProbeVerdict::SoftFail => {
+                    tracing::warn!(
+                        score = result.score,
+                        threshold = result.threshold,
+                        "compaction probe SOFT FAIL — proceeding with warning"
+                    );
+                    self.update_metrics(|m| {
+                        m.compaction_probe_soft_failures += 1;
+                        m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::SoftFail);
+                        m.last_probe_score = Some(result.score);
+                        m.last_probe_category_scores = Some(cat_scores.clone());
+                        m.compaction_probe_threshold = probe_threshold;
+                        m.compaction_probe_hard_fail_threshold = probe_hard_fail_threshold;
+                    });
+                }
+                zeph_memory::ProbeVerdict::Pass => {
+                    tracing::info!(score = result.score, "compaction probe passed");
+                    self.update_metrics(|m| {
+                        m.compaction_probe_passes += 1;
+                        m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::Pass);
+                        m.last_probe_score = Some(result.score);
+                        m.last_probe_category_scores = Some(cat_scores.clone());
+                        m.compaction_probe_threshold = probe_threshold;
+                        m.compaction_probe_hard_fail_threshold = probe_hard_fail_threshold;
+                    });
+                }
+                zeph_memory::ProbeVerdict::Error => {
+                    // Unreachable: validate_compaction returns Err on errors, not Ok(Error).
+                    // If this fires, the error-handling path in validate_compaction changed.
+                    debug_assert!(false, "ProbeVerdict::Error reached inside Ok path");
+                }
+            }
+        }
+
+        Ok(ControlFlow::Continue(()))
+    }
+
+    /// Drain the compaction range and re-insert the summary plus protected messages.
+    ///
+    /// Drains `messages[1..compact_end]`, inserts the summary at position 1, then
+    /// re-inserts pinned knowledge blocks and active-subgoal messages after the summary.
+    /// Rebuilds the subgoal index map when a subgoal strategy is active (S1 fix #2022).
+    ///
+    /// `summary` is the raw LLM output (without the header prefix) used for token-count
+    /// logging. `summary_content` is the fully formatted message text inserted into the
+    /// message list.
+    fn finalize_compacted_messages(
+        &mut self,
+        compact_end: usize,
+        pinned: Vec<Message>,
+        active_subgoal: Vec<Message>,
+        summary_content: String,
+        compacted_count: usize,
+        summary: &str,
+    ) {
+        // Drain the original range (includes pinned, active-subgoal, and non-pinned messages).
+        self.msg.messages.drain(1..compact_end);
+        // Insert the compaction summary at position 1.
+        self.msg.messages.insert(
+            1,
+            Message {
+                role: Role::System,
+                content: summary_content,
+                parts: vec![],
+                metadata: MessageMetadata::agent_only(),
+            },
+        );
+        // Re-insert pinned messages right after the summary (position 2+).
+        // They are placed before the preserved tail so the LLM always sees them.
+        let pinned_count = pinned.len();
+        for (i, pinned_msg) in pinned.into_iter().enumerate() {
+            self.msg.messages.insert(2 + i, pinned_msg);
+        }
+        // Re-insert active-subgoal messages after pinned messages (#2022 S2 fix).
+        // Active-subgoal messages are protected from summarization — they carry the current
+        // working context and must not be lost during compaction.
+        for (i, active_msg) in active_subgoal.into_iter().enumerate() {
+            self.msg.messages.insert(2 + pinned_count + i, active_msg);
+        }
+
+        // S1 fix (#2022): rebuild subgoal index map from scratch after drain + reinsert.
+        // Arithmetic offset is fragile because the final positions depend on pinned_count
+        // and active_subgoal_count. Rebuild is O(subgoals * avg_span) — negligible.
+        if self
+            .context_manager
+            .compression
+            .pruning_strategy
+            .is_subgoal()
+        {
+            self.compression
+                .subgoal_registry
+                .rebuild_after_compaction(&self.msg.messages, compact_end);
+        }
+
+        tracing::info!(
+            compacted_count,
+            summary_tokens = self.metrics.token_counter.count_tokens(summary),
+            "compacted context"
+        );
+
+        self.recompute_prompt_tokens();
+        self.update_metrics(|m| {
+            m.context_compactions += 1;
+        });
+    }
+
+    pub(in crate::agent) async fn compact_context(
+        &mut self,
+    ) -> Result<CompactionOutcome, crate::agent::error::AgentError> {
+        // Force-apply any pending deferred summaries before draining to avoid losing them (CRIT-01).
+        let _ = self.apply_deferred_summaries();
+
+        let preserve_tail = self.context_manager.compaction_preserve_tail;
+
+        if self.msg.messages.len() <= preserve_tail + 1 {
+            return Ok(CompactionOutcome::NoChange);
+        }
+
+        let compact_end = {
+            let raw = self.msg.messages.len() - preserve_tail;
+            Self::adjust_compact_end_for_tool_pairs(&self.msg.messages, raw)
+        };
+
+        if compact_end <= 1 {
+            return Ok(CompactionOutcome::NoChange);
+        }
+
+        let CompactionPartition {
+            pinned_messages,
+            active_subgoal_messages,
+            to_compact,
+        } = self.partition_messages_for_compaction(compact_end);
+
         if to_compact.is_empty() {
             return Ok(CompactionOutcome::NoChange);
         }
@@ -144,89 +349,11 @@ impl<C: Channel> Agent<C> {
         };
 
         // Compaction probe: validate summary quality before committing it.
-        // Extract all &self references before .await so no &self is held across the boundary.
-        if self.context_manager.compression.probe.enabled {
-            let probe_config = self.context_manager.compression.probe.clone();
-            let probe_provider = self.probe_or_summary_provider().clone();
-            let probe_result = match zeph_memory::validate_compaction(
-                probe_provider,
-                to_compact.clone(),
-                summary.clone(),
-                &probe_config,
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(e) => {
-                    tracing::warn!("compaction probe error (non-blocking): {e:#}");
-                    self.update_metrics(|m| {
-                        m.compaction_probe_errors += 1;
-                        m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::Error);
-                        m.last_probe_score = None;
-                        m.last_probe_category_scores = None;
-                    });
-                    None
-                }
-            };
-
-            if let Some(ref result) = probe_result {
-                if let Some(ref d) = self.debug_state.debug_dumper {
-                    d.dump_compaction_probe(result);
-                }
-
-                let cat_scores = result.category_scores.clone();
-                let probe_threshold = result.threshold;
-                let probe_hard_fail_threshold = result.hard_fail_threshold;
-                match result.verdict {
-                    zeph_memory::ProbeVerdict::HardFail => {
-                        tracing::warn!(
-                            score = result.score,
-                            threshold = result.hard_fail_threshold,
-                            "compaction probe HARD FAIL — keeping original messages"
-                        );
-                        self.update_metrics(|m| {
-                            m.compaction_probe_failures += 1;
-                            m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::HardFail);
-                            m.last_probe_score = Some(result.score);
-                            m.last_probe_category_scores = Some(cat_scores.clone());
-                            m.compaction_probe_threshold = probe_threshold;
-                            m.compaction_probe_hard_fail_threshold = probe_hard_fail_threshold;
-                        });
-                        return Ok(CompactionOutcome::ProbeRejected);
-                    }
-                    zeph_memory::ProbeVerdict::SoftFail => {
-                        tracing::warn!(
-                            score = result.score,
-                            threshold = result.threshold,
-                            "compaction probe SOFT FAIL — proceeding with warning"
-                        );
-                        self.update_metrics(|m| {
-                            m.compaction_probe_soft_failures += 1;
-                            m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::SoftFail);
-                            m.last_probe_score = Some(result.score);
-                            m.last_probe_category_scores = Some(cat_scores.clone());
-                            m.compaction_probe_threshold = probe_threshold;
-                            m.compaction_probe_hard_fail_threshold = probe_hard_fail_threshold;
-                        });
-                    }
-                    zeph_memory::ProbeVerdict::Pass => {
-                        tracing::info!(score = result.score, "compaction probe passed");
-                        self.update_metrics(|m| {
-                            m.compaction_probe_passes += 1;
-                            m.last_probe_verdict = Some(zeph_memory::ProbeVerdict::Pass);
-                            m.last_probe_score = Some(result.score);
-                            m.last_probe_category_scores = Some(cat_scores.clone());
-                            m.compaction_probe_threshold = probe_threshold;
-                            m.compaction_probe_hard_fail_threshold = probe_hard_fail_threshold;
-                        });
-                    }
-                    zeph_memory::ProbeVerdict::Error => {
-                        // Unreachable: validate_compaction returns Err on errors, not Ok(Error).
-                        // If this fires, the error-handling path in validate_compaction changed.
-                        debug_assert!(false, "ProbeVerdict::Error reached inside Ok path");
-                    }
-                }
-            }
+        // All metric updates live exclusively inside apply_compaction_probe.
+        if let ControlFlow::Break(outcome) =
+            self.apply_compaction_probe(&to_compact, &summary).await?
+        {
+            return Ok(outcome);
         }
 
         let compacted_count = to_compact.len();
@@ -241,55 +368,15 @@ impl<C: Channel> Agent<C> {
         let summary_content = format!(
             "[conversation summary — {compacted_count} messages compacted]\n{summary}{archive_postfix}"
         );
-        // Drain the original range (includes pinned, active-subgoal, and non-pinned messages).
-        self.msg.messages.drain(1..compact_end);
-        // Insert the compaction summary at position 1.
-        self.msg.messages.insert(
-            1,
-            Message {
-                role: Role::System,
-                content: summary_content.clone(),
-                parts: vec![],
-                metadata: MessageMetadata::agent_only(),
-            },
-        );
-        // Re-insert pinned messages right after the summary (position 2+).
-        // They are placed before the preserved tail so the LLM always sees them.
-        let pinned_count = pinned_messages.len();
-        for (i, pinned) in pinned_messages.into_iter().enumerate() {
-            self.msg.messages.insert(2 + i, pinned);
-        }
-        // Re-insert active-subgoal messages after pinned messages (#2022 S2 fix).
-        // Active-subgoal messages are protected from summarization — they carry the current
-        // working context and must not be lost during compaction.
-        for (i, active_msg) in active_subgoal_messages.into_iter().enumerate() {
-            self.msg.messages.insert(2 + pinned_count + i, active_msg);
-        }
 
-        // S1 fix (#2022): rebuild subgoal index map from scratch after drain + reinsert.
-        // Arithmetic offset is fragile because the final positions depend on pinned_count
-        // and active_subgoal_count. Rebuild is O(subgoals * avg_span) — negligible.
-        if self
-            .context_manager
-            .compression
-            .pruning_strategy
-            .is_subgoal()
-        {
-            self.compression
-                .subgoal_registry
-                .rebuild_after_compaction(&self.msg.messages, compact_end);
-        }
-
-        tracing::info!(
+        self.finalize_compacted_messages(
+            compact_end,
+            pinned_messages,
+            active_subgoal_messages,
+            summary_content.clone(),
             compacted_count,
-            summary_tokens = self.metrics.token_counter.count_tokens(&summary),
-            "compacted context"
+            &summary,
         );
-
-        self.recompute_prompt_tokens();
-        self.update_metrics(|m| {
-            m.context_compactions += 1;
-        });
 
         // Extract memory params before .await so no &self is held across the persist boundary.
         let (persist_failed, qdrant_fut) = {

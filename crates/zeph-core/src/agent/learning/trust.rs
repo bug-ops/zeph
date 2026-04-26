@@ -18,7 +18,6 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3457): decompose into smaller helpers
     async fn check_trust_transition_inner(&self, skill_name: &str) {
         let Some(memory) = &self.memory_state.persistence.memory else {
             return;
@@ -35,97 +34,139 @@ impl<C: Channel> Agent<C> {
         let posterior = zeph_skills::trust_score::posterior_mean(successes, failures);
 
         if total >= config.auto_promote_min_uses && posterior > config.auto_promote_threshold {
-            if config.cross_session_rollout {
-                match memory.sqlite().distinct_session_count(skill_name).await {
-                    Ok(sessions) if sessions < i64::from(config.min_sessions_before_promote) => {
-                        tracing::debug!(
-                            skill = skill_name,
-                            sessions,
-                            required = config.min_sessions_before_promote,
-                            "cross-session rollout: insufficient sessions for promotion"
-                        );
-                        return;
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("cross-session count query failed for {skill_name}: {e:#}");
-                    }
-                }
+            if !cross_session_rollout_ok_for_promote(memory, config, skill_name).await {
+                return;
             }
-
-            let trust_level = memory
-                .sqlite()
-                .load_skill_trust(skill_name)
-                .await
-                .ok()
-                .flatten()
-                .map(|r| r.trust_level);
-            // Skip promotion only if explicitly blocked; promote even if no record exists.
-            if trust_level.as_deref() != Some("trusted")
-                && trust_level.as_deref() != Some("blocked")
-            {
-                tracing::info!(
-                    skill = skill_name,
-                    posterior = format!("{posterior:.3}"),
-                    total,
-                    "auto-promoting skill to trusted"
-                );
-                if trust_level.is_none() {
-                    // No existing record — create one via upsert.
-                    let _ = memory
-                        .sqlite()
-                        .upsert_skill_trust(
-                            skill_name,
-                            "trusted",
-                            zeph_memory::store::SourceKind::Local,
-                            None,
-                            None,
-                            "",
-                        )
-                        .await;
-                } else {
-                    let _ = memory
-                        .sqlite()
-                        .set_skill_trust_level(skill_name, "trusted")
-                        .await;
-                }
-            }
+            try_auto_promote(memory, skill_name, posterior, total).await;
         }
 
         if total >= config.auto_demote_min_uses && posterior < config.auto_demote_threshold {
-            if config.cross_session_rollout {
-                match memory.sqlite().distinct_session_count(skill_name).await {
-                    Ok(sessions) if sessions < i64::from(config.min_sessions_before_demote) => {
-                        tracing::debug!(
-                            skill = skill_name,
-                            sessions,
-                            required = config.min_sessions_before_demote,
-                            "cross-session rollout: insufficient sessions for demotion"
-                        );
-                        return;
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("cross-session count query failed for {skill_name}: {e:#}");
-                    }
-                }
-            }
-
-            let Ok(Some(trust_row)) = memory.sqlite().load_skill_trust(skill_name).await else {
+            if !cross_session_rollout_ok_for_demote(memory, config, skill_name).await {
                 return;
-            };
-            if trust_row.trust_level == "trusted" || trust_row.trust_level == "verified" {
-                tracing::warn!(
-                    skill = skill_name,
-                    posterior = format!("{posterior:.3}"),
-                    total,
-                    "auto-demoting skill to quarantined"
-                );
-                let _ = memory
-                    .sqlite()
-                    .set_skill_trust_level(skill_name, "quarantined")
-                    .await;
             }
+            try_auto_demote(memory, skill_name, posterior, total).await;
         }
+    }
+}
+
+/// Returns `true` when cross-session rollout is disabled or enough sessions exist for promotion.
+async fn cross_session_rollout_ok_for_promote(
+    memory: &zeph_memory::semantic::SemanticMemory,
+    config: &crate::config::LearningConfig,
+    skill_name: &str,
+) -> bool {
+    if !config.cross_session_rollout {
+        return true;
+    }
+    match memory.sqlite().distinct_session_count(skill_name).await {
+        Ok(sessions) if sessions < i64::from(config.min_sessions_before_promote) => {
+            tracing::debug!(
+                skill = skill_name,
+                sessions,
+                required = config.min_sessions_before_promote,
+                "cross-session rollout: insufficient sessions for promotion"
+            );
+            false
+        }
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("cross-session count query failed for {skill_name}: {e:#}");
+            true
+        }
+    }
+}
+
+/// Returns `true` when cross-session rollout is disabled or enough sessions exist for demotion.
+async fn cross_session_rollout_ok_for_demote(
+    memory: &zeph_memory::semantic::SemanticMemory,
+    config: &crate::config::LearningConfig,
+    skill_name: &str,
+) -> bool {
+    if !config.cross_session_rollout {
+        return true;
+    }
+    match memory.sqlite().distinct_session_count(skill_name).await {
+        Ok(sessions) if sessions < i64::from(config.min_sessions_before_demote) => {
+            tracing::debug!(
+                skill = skill_name,
+                sessions,
+                required = config.min_sessions_before_demote,
+                "cross-session rollout: insufficient sessions for demotion"
+            );
+            false
+        }
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("cross-session count query failed for {skill_name}: {e:#}");
+            true
+        }
+    }
+}
+
+/// Promote a skill to trusted if it is not already trusted or blocked.
+async fn try_auto_promote(
+    memory: &zeph_memory::semantic::SemanticMemory,
+    skill_name: &str,
+    posterior: f64,
+    total: u32,
+) {
+    let trust_level = memory
+        .sqlite()
+        .load_skill_trust(skill_name)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.trust_level);
+    // Skip promotion only if explicitly blocked; promote even if no record exists.
+    if trust_level.as_deref() != Some("trusted") && trust_level.as_deref() != Some("blocked") {
+        tracing::info!(
+            skill = skill_name,
+            posterior = format!("{posterior:.3}"),
+            total,
+            "auto-promoting skill to trusted"
+        );
+        if trust_level.is_none() {
+            // No existing record — create one via upsert.
+            let _ = memory
+                .sqlite()
+                .upsert_skill_trust(
+                    skill_name,
+                    "trusted",
+                    zeph_memory::store::SourceKind::Local,
+                    None,
+                    None,
+                    "",
+                )
+                .await;
+        } else {
+            let _ = memory
+                .sqlite()
+                .set_skill_trust_level(skill_name, "trusted")
+                .await;
+        }
+    }
+}
+
+/// Demote a skill to quarantined if it is currently trusted or verified.
+async fn try_auto_demote(
+    memory: &zeph_memory::semantic::SemanticMemory,
+    skill_name: &str,
+    posterior: f64,
+    total: u32,
+) {
+    let Ok(Some(trust_row)) = memory.sqlite().load_skill_trust(skill_name).await else {
+        return;
+    };
+    if trust_row.trust_level == "trusted" || trust_row.trust_level == "verified" {
+        tracing::warn!(
+            skill = skill_name,
+            posterior = format!("{posterior:.3}"),
+            total,
+            "auto-demoting skill to quarantined"
+        );
+        let _ = memory
+            .sqlite()
+            .set_skill_trust_level(skill_name, "quarantined")
+            .await;
     }
 }
