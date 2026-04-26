@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) use zeph_config::mcp_security::{
+pub use zeph_config::mcp_security::{
     CapabilityClass, DataSensitivity, FlaggedParameter, ToolSecurityMeta,
 };
 
