@@ -370,6 +370,12 @@ require_tls = true
 ssrf_protection = true
 # Maximum request body size in bytes (1MB)
 max_body_size = 1048576
+# Advertise non-media file attachment capability on the AgentCard.
+# images and audio capabilities are auto-detected (from the active LLM provider vision support
+# and STT configuration respectively) — no manual override is needed for those.
+# Set advertise_files = true only when the agent has skills or MCP tools that ingest file parts;
+# leaving it false (default) prevents advertising a capability the agent would silently drop.
+advertise_files = false
 
 [tools]
 # Enable tool execution (bash commands)

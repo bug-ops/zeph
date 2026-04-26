@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A2A: `AgentCard` served at `/.well-known/agent.json` now accurately reflects the agent's
+  modality capabilities. `capabilities.images` is set from `provider.supports_vision()`;
+  `capabilities.audio` is set when an STT provider is configured (`[llm.stt]`);
+  `capabilities.files` is controlled by the new `[a2a] advertise_files = false` config field
+  (opt-in, default `false` — set `true` only when skills or MCP tools can ingest file parts).
+  Card construction is extracted into a private `build_default_card` helper in `daemon.rs`
+  for testability. (#3378)
+
 ### Fixed
 
 - `zeph-bench`: `BookReservationParams`, `UpdateReservationFlightsParams`, and

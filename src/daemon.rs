@@ -14,6 +14,31 @@ use crate::gateway_spawn::spawn_gateway_server;
 use tokio::sync::watch;
 use zeph_core::agent::Agent;
 use zeph_core::config::Config;
+use zeph_llm::LlmProvider as _;
+
+/// Build the [`zeph_a2a::types::AgentCard`] for the daemon's A2A server.
+///
+/// Derives capability flags from runtime-available signals so the served
+/// `/.well-known/agent.json` accurately reflects what the running agent can handle:
+///
+/// - `images`: `provider.supports_vision()` — only the active LLM can consume image parts.
+/// - `audio`: `config.llm.stt_provider_entry().is_some()` — STT presence is the
+///   precondition for the agent loop to transcribe audio attachments rather than drop them.
+/// - `files`: `config.a2a.advertise_files` — opt-in, because generic file attachments have
+///   no built-in ingestion path; set `true` only when skills or MCP tools consume file parts.
+fn build_default_card(
+    config: &Config,
+    public_url: &str,
+    provider: &zeph_llm::any::AnyProvider,
+) -> zeph_a2a::AgentCard {
+    zeph_a2a::AgentCardBuilder::new(&config.agent.name, public_url, env!("CARGO_PKG_VERSION"))
+        .description("Zeph AI agent")
+        .streaming(true)
+        .images(provider.supports_vision())
+        .audio(config.llm.stt_provider_entry().is_some())
+        .files(config.a2a.advertise_files)
+        .build()
+}
 
 fn spawn_a2a_server(
     config: &Config,
@@ -26,6 +51,7 @@ fn spawn_a2a_server(
     // are also excluded — they are either fire-and-forget one-shots or
     // lifecycle-managed by DaemonSupervisor.
     supervisor: Option<zeph_core::TaskSupervisor>,
+    provider: &zeph_llm::any::AnyProvider,
 ) {
     let public_url = if config.a2a.public_url.is_empty() {
         format!("http://{}:{}", config.a2a.host, config.a2a.port)
@@ -33,11 +59,7 @@ fn spawn_a2a_server(
         config.a2a.public_url.clone()
     };
 
-    let card =
-        zeph_a2a::AgentCardBuilder::new(&config.agent.name, &public_url, env!("CARGO_PKG_VERSION"))
-            .description("Zeph AI agent")
-            .streaming(true)
-            .build();
+    let card = build_default_card(config, &public_url, provider);
 
     let processor: std::sync::Arc<dyn zeph_a2a::TaskProcessor> =
         std::sync::Arc::new(AgentTaskProcessor {
@@ -638,6 +660,7 @@ pub(crate) async fn run_daemon(
         loopback_handle,
         a2a_sanitizer,
         Some(task_supervisor),
+        &provider,
     );
 
     #[cfg(feature = "gateway")]
@@ -705,4 +728,98 @@ pub(crate) async fn run_daemon(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zeph_config::channels::A2aServerConfig;
+    use zeph_config::providers::{ProviderEntry, ProviderKind, SttConfig};
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+
+    fn mock_provider() -> AnyProvider {
+        AnyProvider::Mock(MockProvider::default())
+    }
+
+    fn config_with_a2a(advertise_files: bool) -> Config {
+        let mut cfg = Config::default();
+        cfg.a2a = A2aServerConfig {
+            advertise_files,
+            ..A2aServerConfig::default()
+        };
+        cfg
+    }
+
+    /// Build a config that has an STT provider entry wired up, so `stt_provider_entry()` returns `Some`.
+    fn config_with_stt(advertise_files: bool) -> Config {
+        let mut cfg = config_with_a2a(advertise_files);
+        cfg.llm.providers = vec![ProviderEntry {
+            name: Some("stt-provider".into()),
+            provider_type: ProviderKind::Ollama,
+            stt_model: Some("whisper".into()),
+            ..ProviderEntry::default()
+        }];
+        cfg.llm.stt = Some(SttConfig {
+            provider: "stt-provider".into(),
+            language: "en".into(),
+        });
+        cfg
+    }
+
+    #[test]
+    fn build_default_card_no_capabilities_by_default() {
+        let cfg = config_with_a2a(false);
+        let provider = mock_provider();
+        // MockProvider::supports_vision() returns false; no STT; advertise_files=false
+        let card = build_default_card(&cfg, "http://localhost:8080", &provider);
+        assert!(
+            !card.capabilities.images,
+            "images must be false without vision support"
+        );
+        assert!(!card.capabilities.audio, "audio must be false without STT");
+        assert!(
+            !card.capabilities.files,
+            "files must be false when advertise_files=false"
+        );
+        assert!(card.capabilities.streaming, "streaming must always be true");
+    }
+
+    #[test]
+    fn build_default_card_audio_from_stt_config() {
+        let cfg = config_with_stt(false);
+        let provider = mock_provider();
+        let card = build_default_card(&cfg, "http://localhost:8080", &provider);
+        assert!(
+            card.capabilities.audio,
+            "audio must be true when STT provider is configured"
+        );
+        assert!(!card.capabilities.images);
+        assert!(!card.capabilities.files);
+    }
+
+    #[test]
+    fn build_default_card_files_from_advertise_files_flag() {
+        let cfg = config_with_a2a(true);
+        let provider = mock_provider();
+        let card = build_default_card(&cfg, "http://localhost:8080", &provider);
+        assert!(
+            card.capabilities.files,
+            "files must be true when advertise_files=true"
+        );
+        assert!(!card.capabilities.images);
+        assert!(!card.capabilities.audio);
+    }
+
+    #[test]
+    fn build_default_card_audio_and_files_without_images() {
+        let cfg = config_with_stt(true);
+        let provider = mock_provider();
+        let card = build_default_card(&cfg, "http://localhost:8080", &provider);
+        // images is still false because MockProvider::supports_vision() returns false
+        assert!(!card.capabilities.images);
+        assert!(card.capabilities.audio);
+        assert!(card.capabilities.files);
+        assert!(card.capabilities.streaming);
+    }
 }

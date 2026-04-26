@@ -290,6 +290,11 @@ fn default_ibct_ttl() -> u64 {
     300
 }
 
+/// A2A server configuration, nested under `[a2a]` in TOML.
+///
+/// Controls the Agent-to-Agent HTTP server that exposes the agent via the A2A protocol.
+/// The `AgentCard` served at `/.well-known/agent.json` is built from these settings combined
+/// with runtime-detected capabilities (`images`, `audio`) and the opt-in `advertise_files` flag.
 #[derive(Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic here
 pub struct A2aServerConfig {
@@ -334,6 +339,21 @@ pub struct A2aServerConfig {
     /// TTL (seconds) for issued IBCT tokens. Default: 300 (5 minutes).
     #[serde(default = "default_ibct_ttl")]
     pub ibct_ttl_secs: u64,
+    /// Advertise non-media file attachment capability on the `AgentCard`.
+    ///
+    /// When `true`, the served `/.well-known/agent.json` sets `capabilities.files = true`,
+    /// signalling to peer agents that this agent can receive `Part::File` entries that are
+    /// not image or audio (e.g., documents, archives).
+    ///
+    /// Default `false` because generic file attachments have no built-in ingestion path in
+    /// the current agent loop. Set to `true` only when the deployed agent has skills or MCP
+    /// tools that can consume file parts; otherwise the card would advertise a capability
+    /// the agent silently drops.
+    ///
+    /// Note: `images` and `audio` capability flags are auto-detected from the active LLM
+    /// provider and STT configuration — no manual override is needed for those.
+    #[serde(default)]
+    pub advertise_files: bool,
 }
 
 impl std::fmt::Debug for A2aServerConfig {
@@ -359,6 +379,7 @@ impl std::fmt::Debug for A2aServerConfig {
                 &self.ibct_signing_key_vault_ref,
             )
             .field("ibct_ttl_secs", &self.ibct_ttl_secs)
+            .field("advertise_files", &self.advertise_files)
             .finish()
     }
 }
@@ -380,6 +401,7 @@ impl Default for A2aServerConfig {
             ibct_keys: Vec::new(),
             ibct_signing_key_vault_ref: None,
             ibct_ttl_secs: default_ibct_ttl(),
+            advertise_files: false,
         }
     }
 }
