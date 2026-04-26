@@ -382,6 +382,8 @@ pub struct MetricsSnapshot {
     pub bg_enrichment_inflight: u64,
     /// Background supervisor: inflight telemetry tasks.
     pub bg_telemetry_inflight: u64,
+    /// In-flight background shell runs. Empty when none are running or no `ShellExecutor` is wired.
+    pub shell_background_runs: Vec<ShellBackgroundRunRow>,
     /// Whether self-learning (skill evolution) is enabled.
     pub self_learning_enabled: bool,
     /// Whether the semantic response cache is enabled.
@@ -420,6 +422,21 @@ pub struct MetricsSnapshot {
     pub compaction_last_after: u64,
     /// Unix epoch milliseconds when the most recent compaction occurred. `0` = never compacted.
     pub compaction_last_at_ms: u64,
+}
+
+/// Snapshot of a single in-flight background shell run for TUI display.
+///
+/// Populated from [`zeph_tools::BackgroundRunSnapshot`] during the per-turn metrics update in
+/// `reap_background_tasks_and_update_metrics`. The `run_id` is truncated to 8 hex chars for
+/// compact TUI rendering.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ShellBackgroundRunRow {
+    /// First 8 hex characters of the run's UUID, sufficient for unique identification in TUI.
+    pub run_id: String,
+    /// Original command, truncated to 80 characters.
+    pub command: String,
+    /// Wall-clock elapsed seconds since spawn.
+    pub elapsed_secs: u64,
 }
 
 /// Configuration-derived fields of [`MetricsSnapshot`] that are known at agent startup and do

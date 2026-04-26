@@ -9,15 +9,26 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3446): decompose into smaller helpers
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     let theme = Theme::default();
-
     let collapsed = area.height < 30;
-
     let mut lines: Vec<Line<'_>> = Vec::new();
+    append_llm_section(&mut lines, metrics);
+    append_session_section(&mut lines, metrics, collapsed);
+    append_infra_section(&mut lines, metrics, collapsed);
+    append_shell_background_section(&mut lines, metrics);
+    append_turn_latency_section(&mut lines, metrics);
+    append_classifier_section(&mut lines, metrics);
+    let resources = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme.panel_border)
+            .title(" Resources "),
+    );
+    frame.render_widget(resources, area);
+}
 
-    // LLM section
+fn append_llm_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsSnapshot) {
     lines.push(Line::from("  LLM"));
     lines.push(Line::from(format!(
         "    Provider: {}",
@@ -37,60 +48,65 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     if metrics.extended_context {
         lines.push(Line::from("    Max context: 1M"));
     }
+}
 
-    // Session section
+fn append_session_section<'a>(
+    lines: &mut Vec<Line<'a>>,
+    metrics: &MetricsSnapshot,
+    collapsed: bool,
+) {
     if collapsed {
         lines.push(Line::from(format!(
             "  Session: {} tok | {} calls",
             metrics.total_tokens, metrics.api_calls
         )));
-    } else {
-        lines.push(Line::from("  Session"));
-        lines.push(Line::from(format!(
-            "    Tokens: {} | API: {}",
-            metrics.total_tokens, metrics.api_calls
-        )));
-        if let Some(budget) = metrics.token_budget {
-            if let Some(threshold) = metrics.compaction_threshold {
-                lines.push(Line::from(format!(
-                    "    Budget: {budget} | Compact: {threshold}"
-                )));
-            } else {
-                lines.push(Line::from(format!("    Budget: {budget}")));
-            }
-        }
-        if metrics.cache_creation_tokens > 0 || metrics.cache_read_tokens > 0 {
+        return;
+    }
+    lines.push(Line::from("  Session"));
+    lines.push(Line::from(format!(
+        "    Tokens: {} | API: {}",
+        metrics.total_tokens, metrics.api_calls
+    )));
+    if let Some(budget) = metrics.token_budget {
+        if let Some(threshold) = metrics.compaction_threshold {
             lines.push(Line::from(format!(
-                "    Cache W:{} R:{}",
-                metrics.cache_creation_tokens, metrics.cache_read_tokens
+                "    Budget: {budget} | Compact: {threshold}"
             )));
-        }
-        if metrics.filter_applications > 0 {
-            #[allow(clippy::cast_precision_loss)]
-            let hit_pct = if metrics.filter_total_commands > 0 {
-                metrics.filter_filtered_commands as f64 / metrics.filter_total_commands as f64
-                    * 100.0
-            } else {
-                0.0
-            };
-            lines.push(Line::from(format!(
-                "    Filter: {}/{} ({hit_pct:.0}% hit)",
-                metrics.filter_filtered_commands, metrics.filter_total_commands,
-            )));
-            #[allow(clippy::cast_precision_loss)]
-            let pct = if metrics.filter_raw_tokens > 0 {
-                metrics.filter_saved_tokens as f64 / metrics.filter_raw_tokens as f64 * 100.0
-            } else {
-                0.0
-            };
-            lines.push(Line::from(format!(
-                "    Filter saved: {} tok ({pct:.0}%)",
-                metrics.filter_saved_tokens,
-            )));
+        } else {
+            lines.push(Line::from(format!("    Budget: {budget}")));
         }
     }
+    if metrics.cache_creation_tokens > 0 || metrics.cache_read_tokens > 0 {
+        lines.push(Line::from(format!(
+            "    Cache W:{} R:{}",
+            metrics.cache_creation_tokens, metrics.cache_read_tokens
+        )));
+    }
+    if metrics.filter_applications > 0 {
+        #[allow(clippy::cast_precision_loss)]
+        let hit_pct = if metrics.filter_total_commands > 0 {
+            metrics.filter_filtered_commands as f64 / metrics.filter_total_commands as f64 * 100.0
+        } else {
+            0.0
+        };
+        lines.push(Line::from(format!(
+            "    Filter: {}/{} ({hit_pct:.0}% hit)",
+            metrics.filter_filtered_commands, metrics.filter_total_commands,
+        )));
+        #[allow(clippy::cast_precision_loss)]
+        let pct = if metrics.filter_raw_tokens > 0 {
+            metrics.filter_saved_tokens as f64 / metrics.filter_raw_tokens as f64 * 100.0
+        } else {
+            0.0
+        };
+        lines.push(Line::from(format!(
+            "    Filter saved: {} tok ({pct:.0}%)",
+            metrics.filter_saved_tokens,
+        )));
+    }
+}
 
-    // Infra section
+fn append_infra_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsSnapshot, collapsed: bool) {
     if collapsed {
         let mut infra_parts: Vec<String> = Vec::new();
         if !metrics.vault_backend.is_empty() {
@@ -102,90 +118,110 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
         if !infra_parts.is_empty() {
             lines.push(Line::from(format!("  Infra: {}", infra_parts.join(" | "))));
         }
-    } else {
-        lines.push(Line::from("  Infra"));
-        match (
-            metrics.vault_backend.as_str(),
-            metrics.active_channel.as_str(),
-        ) {
-            ("", "") => {}
-            (v, "") => lines.push(Line::from(format!("    Vault: {v}"))),
-            ("", c) => lines.push(Line::from(format!("    Channel: {c}"))),
-            (v, c) => lines.push(Line::from(format!("    Vault: {v} | Channel: {c}"))),
-        }
-
-        let mut flags: Vec<&str> = Vec::new();
-        if metrics.self_learning_enabled {
-            flags.push("Learning: ON");
-        }
-        if metrics.cache_enabled {
-            flags.push("Cache: ON");
-        }
-        if metrics.autosave_enabled {
-            flags.push("Autosave: ON");
-        }
-        if !flags.is_empty() {
-            lines.push(Line::from(format!("    {}", flags.join(" | "))));
-        }
-        if metrics.mcp_server_count > 0 {
-            lines.push(Line::from(format!(
-                "    MCP: {}/{} connected, {} tools",
-                metrics.mcp_connected_count, metrics.mcp_server_count, metrics.mcp_tool_count
-            )));
-        }
+        return;
     }
-
-    // Turn latency section — only shown after at least one turn has completed (#2820).
-    if metrics.timing_sample_count > 0 {
-        let last = &metrics.last_turn_timings;
-        let avg = &metrics.avg_turn_timings;
-        let max = &metrics.max_turn_timings;
-        lines.push(Line::from("  Turn Latency"));
+    lines.push(Line::from("  Infra"));
+    match (
+        metrics.vault_backend.as_str(),
+        metrics.active_channel.as_str(),
+    ) {
+        ("", "") => {}
+        (v, "") => lines.push(Line::from(format!("    Vault: {v}"))),
+        ("", c) => lines.push(Line::from(format!("    Channel: {c}"))),
+        (v, c) => lines.push(Line::from(format!("    Vault: {v} | Channel: {c}"))),
+    }
+    let mut flags: Vec<&str> = Vec::new();
+    if metrics.self_learning_enabled {
+        flags.push("Learning: ON");
+    }
+    if metrics.cache_enabled {
+        flags.push("Cache: ON");
+    }
+    if metrics.autosave_enabled {
+        flags.push("Autosave: ON");
+    }
+    if !flags.is_empty() {
+        lines.push(Line::from(format!("    {}", flags.join(" | "))));
+    }
+    if metrics.mcp_server_count > 0 {
         lines.push(Line::from(format!(
-            "    ctx:{}ms llm:{}ms tool:{}ms persist:{}ms",
-            last.prepare_context_ms, last.llm_chat_ms, last.tool_exec_ms, last.persist_message_ms,
+            "    MCP: {}/{} connected, {} tools",
+            metrics.mcp_connected_count, metrics.mcp_server_count, metrics.mcp_tool_count
         )));
-        if metrics.timing_sample_count > 1 {
-            lines.push(Line::from(format!(
-                "    avg ctx:{}ms llm:{}ms (n={})",
-                avg.prepare_context_ms, avg.llm_chat_ms, metrics.timing_sample_count,
-            )));
-            lines.push(Line::from(format!(
-                "    max ctx:{}ms llm:{}ms tool:{}ms",
-                max.prepare_context_ms, max.llm_chat_ms, max.tool_exec_ms,
-            )));
-        }
     }
+}
 
-    // Classifier latency section — only shown when at least one task has been called.
+fn append_shell_background_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsSnapshot) {
+    if metrics.shell_background_runs.is_empty() {
+        return;
+    }
+    lines.push(Line::from(format!(
+        "  Background Shell ({})",
+        metrics.shell_background_runs.len()
+    )));
+    for run in &metrics.shell_background_runs {
+        let elapsed_secs = run.elapsed_secs;
+        let mm = elapsed_secs / 60;
+        let ss = elapsed_secs % 60;
+        let cmd = if run.command.chars().count() > 60 {
+            let end = run.command.floor_char_boundary(59);
+            format!("{}…", &run.command[..end])
+        } else {
+            run.command.clone()
+        };
+        lines.push(Line::from(format!(
+            "  [{}] {:02}:{:02}  {}",
+            run.run_id, mm, ss, cmd
+        )));
+    }
+}
+
+fn append_turn_latency_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsSnapshot) {
+    if metrics.timing_sample_count == 0 {
+        return;
+    }
+    let last = &metrics.last_turn_timings;
+    let avg = &metrics.avg_turn_timings;
+    let max = &metrics.max_turn_timings;
+    lines.push(Line::from("  Turn Latency"));
+    lines.push(Line::from(format!(
+        "    ctx:{}ms llm:{}ms tool:{}ms persist:{}ms",
+        last.prepare_context_ms, last.llm_chat_ms, last.tool_exec_ms, last.persist_message_ms,
+    )));
+    if metrics.timing_sample_count > 1 {
+        lines.push(Line::from(format!(
+            "    avg ctx:{}ms llm:{}ms (n={})",
+            avg.prepare_context_ms, avg.llm_chat_ms, metrics.timing_sample_count,
+        )));
+        lines.push(Line::from(format!(
+            "    max ctx:{}ms llm:{}ms tool:{}ms",
+            max.prepare_context_ms, max.llm_chat_ms, max.tool_exec_ms,
+        )));
+    }
+}
+
+fn append_classifier_section<'a>(lines: &mut Vec<Line<'a>>, metrics: &MetricsSnapshot) {
     let clf = &metrics.classifier;
-    let has_classifier_data =
+    let has_data =
         clf.injection.call_count > 0 || clf.pii.call_count > 0 || clf.feedback.call_count > 0;
-    if has_classifier_data {
-        lines.push(Line::from("  Classifiers"));
-        for (name, snap) in [
-            ("injection", &clf.injection),
-            ("pii", &clf.pii),
-            ("feedback", &clf.feedback),
-        ] {
-            if snap.call_count > 0 {
-                lines.push(Line::from(format!(
-                    "    [{name}] calls:{} p50:{}ms p95:{}ms",
-                    snap.call_count,
-                    snap.p50_ms.unwrap_or(0),
-                    snap.p95_ms.unwrap_or(0),
-                )));
-            }
+    if !has_data {
+        return;
+    }
+    lines.push(Line::from("  Classifiers"));
+    for (name, snap) in [
+        ("injection", &clf.injection),
+        ("pii", &clf.pii),
+        ("feedback", &clf.feedback),
+    ] {
+        if snap.call_count > 0 {
+            lines.push(Line::from(format!(
+                "    [{name}] calls:{} p50:{}ms p95:{}ms",
+                snap.call_count,
+                snap.p50_ms.unwrap_or(0),
+                snap.p95_ms.unwrap_or(0),
+            )));
         }
     }
-
-    let resources = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme.panel_border)
-            .title(" Resources "),
-    );
-    frame.render_widget(resources, area);
 }
 
 #[cfg(test)]
@@ -332,6 +368,35 @@ mod tests {
             "expected learning flag; got: {output:?}"
         );
         assert_snapshot!(output);
+    }
+
+    #[test]
+    fn resources_shows_background_run_when_present() {
+        use zeph_core::metrics::ShellBackgroundRunRow;
+
+        let metrics = MetricsSnapshot {
+            shell_background_runs: vec![ShellBackgroundRunRow {
+                run_id: "a1b2c3d4".into(),
+                command: "cargo build --workspace".into(),
+                elapsed_secs: 75,
+            }],
+            ..MetricsSnapshot::default()
+        };
+        let output = render_to_string(50, 30, |frame, area| {
+            super::render(&metrics, frame, area);
+        });
+        assert!(
+            output.contains("Background Shell"),
+            "resources panel must show Background Shell header; got: {output:?}"
+        );
+        assert!(
+            output.contains("a1b2c3d"),
+            "resources panel must show run_id prefix; got: {output:?}"
+        );
+        assert!(
+            output.contains("01:15"),
+            "resources panel must show elapsed mm:ss; got: {output:?}"
+        );
     }
 
     #[test]

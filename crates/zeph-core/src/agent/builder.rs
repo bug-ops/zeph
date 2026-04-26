@@ -1188,6 +1188,21 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach a shared reference to the `ShellExecutor` for background-run TUI metrics.
+    ///
+    /// The agent queries [`zeph_tools::ShellExecutor::background_runs_snapshot`] during
+    /// `reap_background_tasks_and_update_metrics` to populate
+    /// [`crate::metrics::MetricsSnapshot::shell_background_runs`].
+    /// `None` is valid (test harnesses, daemon-only modes without a shell executor).
+    #[must_use]
+    pub fn with_shell_executor_handle(
+        mut self,
+        h: Option<std::sync::Arc<zeph_tools::ShellExecutor>>,
+    ) -> Self {
+        self.lifecycle.shell_executor_handle = h;
+        self
+    }
+
     /// Attach the warmup-ready signal (fires after background init completes).
     #[must_use]
     pub fn with_warmup_ready(mut self, rx: watch::Receiver<bool>) -> Self {

@@ -2666,3 +2666,33 @@ async fn shutdown_terminates_long_running_background() {
     // We verify by trying to spawn background again — the slot should be free.
     let _ = run_id; // used to capture the ID for the assertion context above
 }
+
+#[tokio::test]
+async fn background_runs_snapshot_returns_active_run() {
+    use std::time::Duration;
+
+    let executor = ShellExecutor::new(&default_config());
+    let _run_id = executor
+        .spawn_background("sleep 60")
+        .await
+        .expect("spawn_background failed");
+
+    // Allow the process to start before snapshotting.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let snapshot = executor.background_runs_snapshot();
+    assert_eq!(
+        snapshot.len(),
+        1,
+        "expected exactly one active background run"
+    );
+
+    let row = &snapshot[0];
+    assert_eq!(
+        row.command, "sleep 60",
+        "snapshot command must match spawned command"
+    );
+    assert!(!row.run_id.is_empty(), "snapshot run_id must be non-empty");
+
+    executor.shutdown().await;
+}

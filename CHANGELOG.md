@@ -18,6 +18,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-tui`: removed all `#[allow(clippy::too_many_lines)]` suppressions in `command.rs`,
+  `app/keys.rs`, `widgets/security.rs`, `widgets/status.rs`, and `widgets/resources.rs` by
+  decomposing each long function into focused private helpers. `command_registry()` migrated to a
+  `OnceLock<Vec<CommandEntry>>` pattern. (#3446)
+- `zeph-tools`, `zeph-core`, `zeph-tui`: wire `BackgroundTask` elapsed time to the TUI resources
+  panel. `BackgroundHandle` gains `elapsed()`, `ShellExecutor` gains `background_runs_snapshot()`,
+  `MetricsSnapshot` gains `shell_background_runs: Vec<ShellBackgroundRunRow>`. The agent captures
+  an `Arc<ShellExecutor>` and refreshes the snapshot on each metrics update. Active runs are
+  rendered under a `Background Shell (n)` header in the resources panel and as `sh:N` in the
+  status bar. (#3448)
+
 - `zeph-tools`: replaced shell-out signal sending with safe `nix`-based SIGTERM/SIGKILL
   escalation in the shell executor. `kill_process_tree` now sends SIGTERM, waits 250 ms,
   reaps child processes via `pkill`, then sends SIGKILL. `ShellExecutor::shutdown` also

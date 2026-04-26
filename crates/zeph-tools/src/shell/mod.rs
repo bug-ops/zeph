@@ -47,6 +47,7 @@ use crate::permissions::{PermissionAction, PermissionPolicy};
 use crate::sandbox::{Sandbox, SandboxPolicy};
 
 pub mod background;
+pub use background::BackgroundRunSnapshot;
 use background::{BackgroundCompletion, BackgroundHandle, RunId};
 
 mod transaction;
@@ -386,6 +387,27 @@ impl ShellExecutor {
     pub fn with_output_filters(mut self, registry: OutputFilterRegistry) -> Self {
         self.output_filter_registry = Some(registry);
         self
+    }
+
+    /// Snapshot all in-flight background runs.
+    ///
+    /// Acquires the lock once, maps each [`BackgroundHandle`] to a
+    /// [`BackgroundRunSnapshot`], then drops the guard before returning.
+    /// Safe to call from any thread.
+    #[must_use]
+    pub fn background_runs_snapshot(&self) -> Vec<background::BackgroundRunSnapshot> {
+        let runs = self.background_runs.lock();
+        runs.iter()
+            .map(|(id, h)| {
+                #[allow(clippy::cast_possible_truncation)]
+                let elapsed_ms = h.elapsed().as_millis() as u64;
+                background::BackgroundRunSnapshot {
+                    run_id: id.to_string(),
+                    command: h.command.clone(),
+                    elapsed_ms,
+                }
+            })
+            .collect()
     }
 
     /// Return a clonable handle for live policy rebuilds on hot-reload.
@@ -960,6 +982,24 @@ impl ShellExecutor {
             };
             logger.log(&entry).await;
         }
+    }
+}
+
+impl ToolExecutor for std::sync::Arc<ShellExecutor> {
+    async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        self.as_ref().execute(response).await
+    }
+
+    fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
+        self.as_ref().tool_definitions()
+    }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        self.as_ref().execute_tool_call(call).await
+    }
+
+    fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
+        self.as_ref().set_skill_env(env);
     }
 }
 

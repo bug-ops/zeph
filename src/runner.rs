@@ -1630,6 +1630,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let egress_rx = tool_setup.egress_rx;
     let shell_policy_handle = tool_setup.shell_policy_handle;
     let background_completion_rx = tool_setup.background_completion_rx;
+    let shell_executor_handle = tool_setup.shell_executor_handle;
     let _skill_watcher = watchers.skill_watcher;
     // Receivers arrive as InstrumentedReceiver<T> from build_watchers().
     // Agent builder expects mpsc::Receiver<T>, so unwrap the instrumented wrapper.
@@ -1758,6 +1759,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_config_reload(config_path, config_reload_rx)
     .with_plugins_dir(crate::bootstrap::plugins_dir(), startup_shell_overlay)
     .with_shell_policy_handle(shell_policy_handle)
+    .with_shell_executor_handle(shell_executor_handle)
     .with_background_completion_rx_opt(background_completion_rx)
     .with_logging_config(logging_config.clone())
     .with_autosave_config(

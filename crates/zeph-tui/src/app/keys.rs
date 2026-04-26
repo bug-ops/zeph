@@ -237,8 +237,28 @@ impl App {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3446): decompose into smaller helpers
     fn execute_plan_graph_command(&mut self, cmd: TuiCommand) {
+        if self.handle_plan_command(&cmd) {
+            return;
+        }
+        if self.handle_graph_command(&cmd) {
+            return;
+        }
+        if self.handle_experiment_command(&cmd) {
+            return;
+        }
+        if self.handle_memory_command(&cmd) {
+            return;
+        }
+        if self.handle_plugin_command(&cmd) {
+            return;
+        }
+        if self.handle_acp_command(cmd) {
+            return;
+        }
+    }
+
+    fn handle_plan_command(&mut self, cmd: &TuiCommand) -> bool {
         match cmd {
             TuiCommand::PlanStatus => {
                 let _ = self.user_input_tx.try_send("/plan status".to_owned());
@@ -256,6 +276,13 @@ impl App {
                 self.sessions.current_mut().plan_view_active =
                     !self.sessions.current().plan_view_active;
             }
+            _ => return false,
+        }
+        true
+    }
+
+    fn handle_graph_command(&mut self, cmd: &TuiCommand) -> bool {
+        match cmd {
             TuiCommand::GraphStats => {
                 self.push_system_message("Loading graph stats...".to_owned());
                 let _ = self.user_input_tx.try_send("/graph".to_owned());
@@ -270,6 +297,13 @@ impl App {
             }
             TuiCommand::GraphFactsPrompt => self.prefill_input("/graph facts "),
             TuiCommand::GraphBackfillPrompt => self.prefill_input("/graph backfill"),
+            _ => return false,
+        }
+        true
+    }
+
+    fn handle_experiment_command(&mut self, cmd: &TuiCommand) -> bool {
+        match cmd {
             TuiCommand::ExperimentStart => self.prefill_input("/experiment start "),
             TuiCommand::ExperimentStop => {
                 let _ = self.user_input_tx.try_send("/experiment stop".to_owned());
@@ -283,20 +317,13 @@ impl App {
             TuiCommand::ExperimentBest => {
                 let _ = self.user_input_tx.try_send("/experiment best".to_owned());
             }
-            TuiCommand::LspStatus => {
-                self.push_system_message("Checking LSP context injection status...".to_owned());
-                let _ = self.user_input_tx.try_send("/lsp".to_owned());
-            }
-            TuiCommand::ViewLog => {
-                let _ = self.user_input_tx.try_send("/log".to_owned());
-            }
-            TuiCommand::MigrateConfig => {
-                self.push_system_message(
-                    "To preview missing config parameters, run:\n  zeph migrate-config --diff\n\
-                     To apply changes in-place:\n  zeph migrate-config --in-place"
-                        .to_owned(),
-                );
-            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn handle_memory_command(&mut self, cmd: &TuiCommand) -> bool {
+        match cmd {
             TuiCommand::ServerCompactionStatus => {
                 let _ = self.user_input_tx.try_send("/server-compaction".to_owned());
             }
@@ -312,17 +339,31 @@ impl App {
             TuiCommand::MemoryTreeStats => {
                 let _ = self.user_input_tx.try_send("/memory tree".to_owned());
             }
+            _ => return false,
+        }
+        true
+    }
+
+    fn handle_plugin_command(&mut self, cmd: &TuiCommand) -> bool {
+        match cmd {
             TuiCommand::PluginList => {
                 let _ = self.user_input_tx.try_send("/plugins list".to_owned());
             }
             TuiCommand::PluginAdd => self.prefill_input("/plugins add "),
             TuiCommand::PluginRemove => self.prefill_input("/plugins remove "),
-            TuiCommand::SessionSwitchNext
-            | TuiCommand::SessionSwitchPrev
-            | TuiCommand::SessionClose => self.try_switch(&cmd),
             TuiCommand::PluginListOverlay => {
                 let _ = self.user_input_tx.try_send("/plugins overlay".to_owned());
             }
+            TuiCommand::SessionSwitchNext
+            | TuiCommand::SessionSwitchPrev
+            | TuiCommand::SessionClose => self.try_switch(cmd),
+            _ => return false,
+        }
+        true
+    }
+
+    fn handle_acp_command(&mut self, cmd: TuiCommand) -> bool {
+        match cmd {
             TuiCommand::AcpDirsList => {
                 self.push_system_message("Querying ACP runtime...".to_owned());
                 let _ = self.user_input_tx.try_send("/acp dirs".to_owned());
@@ -344,8 +385,23 @@ impl App {
                         .try_send(format!("/subagent spawn {command}"));
                 }
             }
-            _ => {}
+            TuiCommand::LspStatus => {
+                self.push_system_message("Checking LSP context injection status...".to_owned());
+                let _ = self.user_input_tx.try_send("/lsp".to_owned());
+            }
+            TuiCommand::ViewLog => {
+                let _ = self.user_input_tx.try_send("/log".to_owned());
+            }
+            TuiCommand::MigrateConfig => {
+                self.push_system_message(
+                    "To preview missing config parameters, run:\n  zeph migrate-config --diff\n\
+                     To apply changes in-place:\n  zeph migrate-config --in-place"
+                        .to_owned(),
+                );
+            }
+            _ => return false,
         }
+        true
     }
 
     /// Handle a session switch or close command, blocking when a modal with a response channel
@@ -804,28 +860,59 @@ impl App {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3446): decompose into smaller helpers
     fn handle_insert_key(&mut self, key: KeyEvent) {
         if self.slash_autocomplete.is_some() {
             self.handle_slash_autocomplete_key(key);
             return;
         }
+        if self.handle_insert_text_keys(key) {
+            return;
+        }
+        if self.handle_insert_delete_keys(key) {
+            return;
+        }
+        if self.handle_insert_history_keys(key) {
+            return;
+        }
+        if self.handle_insert_cursor_keys(key) {
+            return;
+        }
+        self.handle_insert_control_keys(key);
+    }
+
+    /// Insert a newline character at the current cursor position.
+    ///
+    /// Shared body for `Shift+Enter` and `Ctrl+J`.
+    fn insert_newline_at_cursor(&mut self) {
+        self.sessions.current_mut().paste_state = None;
+        let byte_offset = self.byte_offset_of_char(self.sessions.current().cursor_position);
+        self.sessions.current_mut().input.insert(byte_offset, '\n');
+        self.sessions.current_mut().cursor_position += 1;
+    }
+
+    /// Handle text insertion keys: Enter (submit), Shift+Enter / Ctrl+J (newline), Esc.
+    ///
+    /// Returns `true` when the key was handled.
+    fn handle_insert_text_keys(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                // First edit keystroke after paste reveals raw text; clear indicator.
-                self.sessions.current_mut().paste_state = None;
-                let byte_offset = self.byte_offset_of_char(self.sessions.current().cursor_position);
-                self.sessions.current_mut().input.insert(byte_offset, '\n');
-                self.sessions.current_mut().cursor_position += 1;
+                self.insert_newline_at_cursor();
             }
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.sessions.current_mut().paste_state = None;
-                let byte_offset = self.byte_offset_of_char(self.sessions.current().cursor_position);
-                self.sessions.current_mut().input.insert(byte_offset, '\n');
-                self.sessions.current_mut().cursor_position += 1;
+                self.insert_newline_at_cursor();
             }
             KeyCode::Enter => self.submit_input(),
             KeyCode::Esc => self.sessions.current_mut().input_mode = InputMode::Normal,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Handle delete keys: Backspace (with or without Alt), Delete.
+    ///
+    /// Returns `true` when the key was handled.
+    fn handle_insert_delete_keys(&mut self, key: KeyEvent) -> bool {
+        match key.code {
             KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
                 // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
                 self.sessions.current_mut().paste_state = None;
@@ -856,13 +943,23 @@ impl App {
                     self.sessions.current_mut().input.remove(byte_offset);
                 }
             }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Handle history navigation keys: Up, Down.
+    ///
+    /// Returns `true` when the key was handled.
+    fn handle_insert_history_keys(&mut self, key: KeyEvent) -> bool {
+        match key.code {
             KeyCode::Up => {
                 self.handle_history_up();
             }
             KeyCode::Down => {
                 self.sessions.current_mut().paste_state = None;
                 let Some(i) = self.sessions.current().history_index else {
-                    return;
+                    return true;
                 };
                 let prefix = &self.sessions.current().draft_input;
                 let found = self.sessions.current().input_history[i + 1..]
@@ -880,6 +977,16 @@ impl App {
                 }
                 self.sessions.current_mut().cursor_position = self.char_count();
             }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Handle cursor movement keys: Left, Right (with optional Alt), Home, End.
+    ///
+    /// Returns `true` when the key was handled.
+    fn handle_insert_cursor_keys(&mut self, key: KeyEvent) -> bool {
+        match key.code {
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.sessions.current_mut().paste_state = None;
                 self.sessions.current_mut().cursor_position = self.prev_word_boundary();
@@ -907,6 +1014,16 @@ impl App {
                 self.sessions.current_mut().paste_state = None;
                 self.sessions.current_mut().cursor_position = self.char_count();
             }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Handle Ctrl-key shortcuts and character insertion (including slash autocomplete trigger).
+    ///
+    /// Returns `true` when the key was handled; `false` for unrecognised keys.
+    fn handle_insert_control_keys(&mut self, key: KeyEvent) -> bool {
+        match key.code {
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.sessions.current_mut().paste_state = None;
                 self.sessions.current_mut().cursor_position = 0;
@@ -937,8 +1054,9 @@ impl App {
                     self.slash_autocomplete = Some(SlashAutocompleteState::new());
                 }
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     fn handle_slash_autocomplete_key(&mut self, key: KeyEvent) {

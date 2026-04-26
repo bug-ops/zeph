@@ -57,116 +57,137 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     frame.render_widget(list, inner);
 }
 
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3446): decompose into smaller helpers
-fn build_metric_items<'a>(
+/// Build a `ListItem` with a plain styled label and value, using `base` style for both.
+fn plain_metric_item(
+    label: &'static str,
+    value: impl std::fmt::Display,
+    base: Style,
+) -> ListItem<'static> {
+    ListItem::new(Line::from(Span::styled(format!("{label}{value}"), base)))
+}
+
+/// Build a `ListItem` whose value span switches to `alert_style` when the value is non-zero.
+fn styled_counter_item<'a>(
+    label: &'static str,
+    value: u64,
+    base: Style,
+    alert_style: Style,
+) -> ListItem<'a> {
+    ListItem::new(Line::from(vec![
+        Span::styled(label, base),
+        Span::styled(
+            value.to_string(),
+            if value > 0 { alert_style } else { base },
+        ),
+    ]))
+}
+
+fn build_sanitizer_items<'a>(
+    metrics: &MetricsSnapshot,
+    base: Style,
+    flag_style: Style,
+) -> Vec<ListItem<'a>> {
+    vec![
+        plain_metric_item("Sanitizer runs:    ", metrics.sanitizer_runs, base),
+        styled_counter_item(
+            "Inj flags:         ",
+            metrics.sanitizer_injection_flags,
+            base,
+            flag_style,
+        ),
+        plain_metric_item("Truncations:       ", metrics.sanitizer_truncations, base),
+        plain_metric_item("Quarantine calls:  ", metrics.quarantine_invocations, base),
+        plain_metric_item("Quarantine fails:  ", metrics.quarantine_failures, base),
+    ]
+}
+
+fn build_exfiltration_items<'a>(
+    metrics: &MetricsSnapshot,
+    base: Style,
+    block_style: Style,
+) -> Vec<ListItem<'a>> {
+    vec![
+        styled_counter_item(
+            "Exfil images:      ",
+            metrics.exfiltration_images_blocked,
+            base,
+            block_style,
+        ),
+        styled_counter_item(
+            "Exfil URLs:        ",
+            metrics.exfiltration_tool_urls_flagged,
+            base,
+            block_style,
+        ),
+        plain_metric_item(
+            "Memory guards:     ",
+            metrics.exfiltration_memory_guards,
+            base,
+        ),
+    ]
+}
+
+fn build_pre_execution_items<'a>(
     metrics: &MetricsSnapshot,
     base: Style,
     flag_style: Style,
     block_style: Style,
 ) -> Vec<ListItem<'a>> {
     vec![
-        ListItem::new(Line::from(Span::styled(
-            format!("Sanitizer runs:    {}", metrics.sanitizer_runs),
+        styled_counter_item(
+            "Verify blocks:     ",
+            metrics.pre_execution_blocks,
             base,
-        ))),
-        ListItem::new(Line::from(vec![
-            Span::styled("Inj flags:         ", base),
-            Span::styled(
-                metrics.sanitizer_injection_flags.to_string(),
-                if metrics.sanitizer_injection_flags > 0 {
-                    flag_style
-                } else {
-                    base
-                },
-            ),
-        ])),
-        ListItem::new(Line::from(Span::styled(
-            format!("Truncations:       {}", metrics.sanitizer_truncations),
+            block_style,
+        ),
+        styled_counter_item(
+            "Verify warnings:   ",
+            metrics.pre_execution_warnings,
             base,
-        ))),
-        ListItem::new(Line::from(Span::styled(
-            format!("Quarantine calls:  {}", metrics.quarantine_invocations),
-            base,
-        ))),
-        ListItem::new(Line::from(Span::styled(
-            format!("Quarantine fails:  {}", metrics.quarantine_failures),
-            base,
-        ))),
-        ListItem::new(Line::from(vec![
-            Span::styled("Exfil images:      ", base),
-            Span::styled(
-                metrics.exfiltration_images_blocked.to_string(),
-                if metrics.exfiltration_images_blocked > 0 {
-                    block_style
-                } else {
-                    base
-                },
-            ),
-        ])),
-        ListItem::new(Line::from(vec![
-            Span::styled("Exfil URLs:        ", base),
-            Span::styled(
-                metrics.exfiltration_tool_urls_flagged.to_string(),
-                if metrics.exfiltration_tool_urls_flagged > 0 {
-                    block_style
-                } else {
-                    base
-                },
-            ),
-        ])),
-        ListItem::new(Line::from(Span::styled(
-            format!("Memory guards:     {}", metrics.exfiltration_memory_guards),
-            base,
-        ))),
-        ListItem::new(Line::from(vec![
-            Span::styled("Verify blocks:     ", base),
-            Span::styled(
-                metrics.pre_execution_blocks.to_string(),
-                if metrics.pre_execution_blocks > 0 {
-                    block_style
-                } else {
-                    base
-                },
-            ),
-        ])),
-        ListItem::new(Line::from(vec![
-            Span::styled("Verify warnings:   ", base),
-            Span::styled(
-                metrics.pre_execution_warnings.to_string(),
-                if metrics.pre_execution_warnings > 0 {
-                    flag_style
-                } else {
-                    base
-                },
-            ),
-        ])),
-        ListItem::new(Line::from(Span::styled(
-            format!("Egress requests:   {}", metrics.egress_requests_total),
-            base,
-        ))),
-        ListItem::new(Line::from(vec![
-            Span::styled("Egress blocked:    ", base),
-            Span::styled(
-                metrics.egress_blocked_total.to_string(),
-                if metrics.egress_blocked_total > 0 {
-                    block_style
-                } else {
-                    base
-                },
-            ),
-        ])),
-        ListItem::new(Line::from(vec![
-            Span::styled("Egress dropped:    ", base),
-            Span::styled(
-                metrics.egress_dropped_total.to_string(),
-                if metrics.egress_dropped_total > 0 {
-                    flag_style
-                } else {
-                    base
-                },
-            ),
-        ])),
+            flag_style,
+        ),
     ]
+}
+
+fn build_egress_items<'a>(
+    metrics: &MetricsSnapshot,
+    base: Style,
+    flag_style: Style,
+    block_style: Style,
+) -> Vec<ListItem<'a>> {
+    vec![
+        plain_metric_item("Egress requests:   ", metrics.egress_requests_total, base),
+        styled_counter_item(
+            "Egress blocked:    ",
+            metrics.egress_blocked_total,
+            base,
+            block_style,
+        ),
+        styled_counter_item(
+            "Egress dropped:    ",
+            metrics.egress_dropped_total,
+            base,
+            flag_style,
+        ),
+    ]
+}
+
+fn build_metric_items<'a>(
+    metrics: &MetricsSnapshot,
+    base: Style,
+    flag_style: Style,
+    block_style: Style,
+) -> Vec<ListItem<'a>> {
+    let mut items = build_sanitizer_items(metrics, base, flag_style);
+    items.extend(build_exfiltration_items(metrics, base, block_style));
+    items.extend(build_pre_execution_items(
+        metrics,
+        base,
+        flag_style,
+        block_style,
+    ));
+    items.extend(build_egress_items(metrics, base, flag_style, block_style));
+    items
 }
 
 fn append_event_items<'a>(

@@ -11,43 +11,46 @@ use crate::app::{App, InputMode};
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3446): decompose into smaller helpers
 pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     let theme = Theme::default();
-
     let mode = match app.input_mode() {
         InputMode::Normal => "Normal",
         InputMode::Insert => "Insert",
     };
-
-    let uptime = format_uptime(metrics.uptime_seconds);
-
-    let plan_mode_segment = plan_mode_segment(app, metrics);
-    let subagent_view_segment = subagent_view_segment(app);
     let cancel_hint = if app.is_agent_busy() && app.input_mode() == InputMode::Normal {
         " | [Esc to cancel]"
     } else {
         ""
     };
+    let uptime = format_uptime(metrics.uptime_seconds);
+    let main_text = build_main_text(app, metrics, mode);
+    let mut spans: Vec<Span<'_>> = vec![Span::styled(main_text, theme.status_bar)];
+    append_security_spans(&mut spans, metrics, &theme);
+    append_compaction_segment(&mut spans, metrics, &theme);
+    let suffix = build_suffix(metrics, cancel_hint, &uptime);
+    spans.push(Span::styled(suffix, theme.status_bar));
+    let line = Line::from(spans);
+    let paragraph = Paragraph::new(line).style(theme.status_bar);
+    frame.render_widget(paragraph, area);
+}
 
+fn build_main_text(app: &App, metrics: &MetricsSnapshot, mode: &str) -> String {
+    let plan_mode_seg = plan_mode_segment(app, metrics);
+    let subagent_view_seg = subagent_view_segment(app);
     let qdrant_segment = if metrics.qdrant_available {
         format!(" | {}: OK", metrics.vector_backend)
     } else {
         String::new()
     };
-
     let filter_segment = build_filter_segment(metrics);
-
     let channel_segment = if metrics.active_channel.is_empty() {
         String::new()
     } else {
         format!(" | ch:{}", metrics.active_channel)
     };
-
     let bg_segment = build_bg_segment(metrics);
-
-    let main_text = format!(
-        " [{mode}]{model}{channel_segment}{plan_mode_segment}{subagent_view_segment} | Skills: {active} active / {total} loaded | Tokens: {tok}{qdrant_segment}{filter_segment}{bg_segment}",
+    format!(
+        " [{mode}]{model}{channel_segment}{plan_mode_seg}{subagent_view_seg} | Skills: {active} active / {total} loaded | Tokens: {tok}{qdrant_segment}{filter_segment}{bg_segment}",
         model = if metrics.model_name.is_empty() {
             String::new()
         } else {
@@ -56,11 +59,10 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
         active = metrics.active_skills.len(),
         total = metrics.total_skills,
         tok = format_tokens(metrics.total_tokens),
-    );
+    )
+}
 
-    let mut spans: Vec<Span<'_>> = vec![Span::styled(main_text, theme.status_bar)];
-    append_security_spans(&mut spans, metrics, &theme);
-
+fn append_compaction_segment(spans: &mut Vec<Span<'_>>, metrics: &MetricsSnapshot, theme: &Theme) {
     if metrics.server_compaction_events > 0 {
         spans.push(Span::styled(" | ", theme.status_bar));
         spans.push(Span::styled(
@@ -68,16 +70,18 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
             Style::default().fg(Color::Cyan),
         ));
     }
+}
 
-    let suffix = format!(
-        " | API: {api} | {uptime}{cancel_hint}",
-        api = metrics.api_calls
-    );
-    spans.push(Span::styled(suffix, theme.status_bar));
-
-    let line = Line::from(spans);
-    let paragraph = Paragraph::new(line).style(theme.status_bar);
-    frame.render_widget(paragraph, area);
+fn build_suffix(metrics: &MetricsSnapshot, cancel_hint: &str, uptime: &str) -> String {
+    let sh_seg = if metrics.shell_background_runs.is_empty() {
+        String::new()
+    } else {
+        format!(", sh:{}", metrics.shell_background_runs.len())
+    };
+    format!(
+        " | API: {api} | {uptime}{sh_seg}{cancel_hint}",
+        api = metrics.api_calls,
+    )
 }
 
 fn subagent_view_segment(app: &App) -> String {

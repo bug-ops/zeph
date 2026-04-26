@@ -149,6 +149,8 @@ pub struct CommandEntry {
 /// actions. Extended commands (agent, plan, graph, experiment, infra) are in
 /// [`extra_command_registry`] and daemon commands in [`daemon_command_registry`].
 ///
+/// Lazily initialised on first call and then shared for the process lifetime.
+///
 /// # Examples
 ///
 /// ```rust
@@ -159,9 +161,13 @@ pub struct CommandEntry {
 /// assert!(registry.iter().any(|e| e.id == "app:quit"));
 /// ```
 #[must_use]
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3446): decompose into smaller helpers
 pub fn command_registry() -> &'static [CommandEntry] {
-    static COMMANDS: &[CommandEntry] = &[
+    static COMMANDS: std::sync::OnceLock<Vec<CommandEntry>> = std::sync::OnceLock::new();
+    COMMANDS.get_or_init(build_core_commands)
+}
+
+fn build_view_commands() -> Vec<CommandEntry> {
+    vec![
         CommandEntry {
             id: "skill:list",
             label: "List loaded skills",
@@ -212,6 +218,18 @@ pub fn command_registry() -> &'static [CommandEntry] {
             command: TuiCommand::ViewAutonomy,
         },
         CommandEntry {
+            id: "tasks",
+            label: "Toggle task registry panel",
+            category: "view",
+            shortcut: None,
+            command: TuiCommand::TaskPanel,
+        },
+    ]
+}
+
+fn build_session_commands() -> Vec<CommandEntry> {
+    vec![
+        CommandEntry {
             id: "session:new",
             label: "Start new conversation",
             category: "session",
@@ -224,55 +242,6 @@ pub fn command_registry() -> &'static [CommandEntry] {
             category: "session",
             shortcut: Some("H"),
             command: TuiCommand::SessionBrowser,
-        },
-        CommandEntry {
-            id: "app:quit",
-            label: "Quit application",
-            category: "app",
-            shortcut: Some("q"),
-            command: TuiCommand::Quit,
-        },
-        CommandEntry {
-            id: "app:help",
-            label: "Show keybindings help",
-            category: "app",
-            shortcut: Some("?"),
-            command: TuiCommand::Help,
-        },
-        CommandEntry {
-            id: "app:theme",
-            label: "Toggle theme (dark/light)",
-            category: "app",
-            shortcut: None,
-            command: TuiCommand::ToggleTheme,
-        },
-        CommandEntry {
-            id: "tasks",
-            label: "Toggle task registry panel",
-            category: "view",
-            shortcut: None,
-            command: TuiCommand::TaskPanel,
-        },
-        CommandEntry {
-            id: "plugin:list",
-            label: "List installed plugins (/plugins list)",
-            category: "plugin",
-            shortcut: None,
-            command: TuiCommand::PluginList,
-        },
-        CommandEntry {
-            id: "plugin:add",
-            label: "Install a plugin (/plugins add <source>)",
-            category: "plugin",
-            shortcut: None,
-            command: TuiCommand::PluginAdd,
-        },
-        CommandEntry {
-            id: "plugin:remove",
-            label: "Remove an installed plugin (/plugins remove <name>)",
-            category: "plugin",
-            shortcut: None,
-            command: TuiCommand::PluginRemove,
         },
         CommandEntry {
             id: "session:next",
@@ -295,6 +264,58 @@ pub fn command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::SessionClose,
         },
+    ]
+}
+
+fn build_app_commands() -> Vec<CommandEntry> {
+    vec![
+        CommandEntry {
+            id: "app:quit",
+            label: "Quit application",
+            category: "app",
+            shortcut: Some("q"),
+            command: TuiCommand::Quit,
+        },
+        CommandEntry {
+            id: "app:help",
+            label: "Show keybindings help",
+            category: "app",
+            shortcut: Some("?"),
+            command: TuiCommand::Help,
+        },
+        CommandEntry {
+            id: "app:theme",
+            label: "Toggle theme (dark/light)",
+            category: "app",
+            shortcut: None,
+            command: TuiCommand::ToggleTheme,
+        },
+    ]
+}
+
+fn build_plugin_commands() -> Vec<CommandEntry> {
+    vec![
+        CommandEntry {
+            id: "plugin:list",
+            label: "List installed plugins (/plugins list)",
+            category: "plugin",
+            shortcut: None,
+            command: TuiCommand::PluginList,
+        },
+        CommandEntry {
+            id: "plugin:add",
+            label: "Install a plugin (/plugins add <source>)",
+            category: "plugin",
+            shortcut: None,
+            command: TuiCommand::PluginAdd,
+        },
+        CommandEntry {
+            id: "plugin:remove",
+            label: "Remove an installed plugin (/plugins remove <name>)",
+            category: "plugin",
+            shortcut: None,
+            command: TuiCommand::PluginRemove,
+        },
         CommandEntry {
             id: "plugin:overlay",
             label: "Plugin overlay status — source and skipped plugins (/plugins overlay)",
@@ -302,8 +323,15 @@ pub fn command_registry() -> &'static [CommandEntry] {
             shortcut: None,
             command: TuiCommand::PluginListOverlay,
         },
-    ];
-    COMMANDS
+    ]
+}
+
+fn build_core_commands() -> Vec<CommandEntry> {
+    let mut cmds = build_view_commands();
+    cmds.extend(build_session_commands());
+    cmds.extend(build_app_commands());
+    cmds.extend(build_plugin_commands());
+    cmds
 }
 
 /// Returns the static registry of daemon / remote-connection commands.

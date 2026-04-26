@@ -143,7 +143,7 @@ pub use scrape::WebScrapeExecutor;
 pub use search_code::{
     LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,
 };
-pub use shell::background::{BackgroundCompletion, RunId};
+pub use shell::background::{BackgroundCompletion, BackgroundRunSnapshot, RunId};
 pub use shell::{
     DEFAULT_BLOCKED_COMMANDS, SHELL_INTERPRETERS, ShellExecutor, ShellOutputEnvelope,
     ShellPolicyHandle, check_blocklist, effective_shell_command,

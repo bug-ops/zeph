@@ -43,13 +43,32 @@ pub(crate) struct BackgroundHandle {
     /// Command string, stored for shutdown reporting and TUI display.
     pub command: String,
     /// Wall-clock start time for elapsed reporting.
-    // TODO(#3448): expose via TUI panel for per-run elapsed display.
-    #[allow(dead_code)]
     pub started_at: Instant,
     /// Cancellation token. Cancel to request graceful shutdown.
     pub abort: CancellationToken,
     /// OS process ID, if known. Used for SIGTERM/SIGKILL escalation on Unix during shutdown.
     pub child_pid: Option<u32>,
+}
+
+impl BackgroundHandle {
+    /// Returns the wall-clock elapsed time since this run was spawned.
+    pub(crate) fn elapsed(&self) -> std::time::Duration {
+        self.started_at.elapsed()
+    }
+}
+
+/// Lightweight snapshot of a single in-flight background shell run.
+///
+/// Produced by [`super::ShellExecutor::background_runs_snapshot`] and consumed
+/// by the TUI resources panel and the metrics snapshot update path.
+#[derive(Debug, Clone)]
+pub struct BackgroundRunSnapshot {
+    /// Opaque run identifier, encoded as a 32-character lowercase hex string.
+    pub run_id: String,
+    /// Original command string, already stored on the handle.
+    pub command: String,
+    /// Wall-clock milliseconds since spawn.
+    pub elapsed_ms: u64,
 }
 
 /// Final result delivered when a background run finishes.

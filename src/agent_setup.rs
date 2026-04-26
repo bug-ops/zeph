@@ -18,7 +18,7 @@ type ToolExecutor = zeph_tools::CompositeExecutor<
     zeph_tools::CompositeExecutor<
         zeph_tools::FileExecutor,
         zeph_tools::CompositeExecutor<
-            zeph_tools::ShellExecutor,
+            std::sync::Arc<zeph_tools::ShellExecutor>,
             zeph_tools::CompositeExecutor<
                 zeph_tools::WebScrapeExecutor,
                 zeph_tools::SetCwdExecutor,
@@ -49,6 +49,8 @@ pub(crate) struct ToolSetup {
     /// `Agent::with_background_completion_rx` so it can drain completions into the next turn.
     pub(crate) background_completion_rx:
         Option<tokio::sync::mpsc::Receiver<zeph_tools::BackgroundCompletion>>,
+    /// Shared reference to the `ShellExecutor` for background-run TUI metrics.
+    pub(crate) shell_executor_handle: Option<Arc<zeph_tools::ShellExecutor>>,
 }
 
 #[derive(Clone)]
@@ -538,6 +540,8 @@ pub(crate) async fn build_tool_setup(
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
     let shell_policy_handle = shell_executor.policy_handle();
+    let shell_executor = Arc::new(shell_executor);
+    let shell_executor_handle = Some(Arc::clone(&shell_executor));
     let cwd_executor = zeph_tools::SetCwdExecutor;
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
@@ -561,6 +565,7 @@ pub(crate) async fn build_tool_setup(
         egress_rx,
         shell_policy_handle,
         background_completion_rx: Some(bg_completion_rx),
+        shell_executor_handle,
     }
 }
 

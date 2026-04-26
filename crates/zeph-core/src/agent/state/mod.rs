@@ -442,6 +442,9 @@ pub(crate) struct LifecycleState {
     /// `pending_background_completions`. `None` when no `ShellExecutor` is configured.
     pub(crate) background_completion_rx:
         Option<tokio::sync::mpsc::Receiver<zeph_tools::BackgroundCompletion>>,
+    /// Shared reference to the `ShellExecutor` used to query in-flight background run snapshots
+    /// for TUI metrics display. `None` when no `ShellExecutor` is wired (test harnesses, etc.).
+    pub(crate) shell_executor_handle: Option<std::sync::Arc<zeph_tools::ShellExecutor>>,
 }
 
 /// Minimal config snapshot needed to reconstruct a provider at runtime via `/provider <name>`.
@@ -1036,6 +1039,7 @@ impl LifecycleState {
             last_no_providers_at: None,
             pending_background_completions: VecDeque::new(),
             background_completion_rx: None,
+            shell_executor_handle: None,
         }
     }
 }

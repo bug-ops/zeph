@@ -1572,6 +1572,27 @@ impl<C: Channel> Agent<C> {
             m.bg_enrichment_inflight = snap.class_inflight[0] as u64;
             m.bg_telemetry_inflight = snap.class_inflight[1] as u64;
         });
+
+        // Update shell background run rows for TUI panel.
+        if self.lifecycle.shell_executor_handle.is_some() {
+            let shell_rows: Vec<crate::metrics::ShellBackgroundRunRow> = self
+                .lifecycle
+                .shell_executor_handle
+                .as_ref()
+                .map(|e| e.background_runs_snapshot())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| crate::metrics::ShellBackgroundRunRow {
+                    run_id: truncate_shell_run_id(&s.run_id),
+                    command: truncate_shell_command(&s.command),
+                    elapsed_secs: s.elapsed_ms / 1000,
+                })
+                .collect();
+            self.update_metrics(|m| {
+                m.shell_background_runs = shell_rows;
+            });
+        }
+
         // Intentional ordering: reap() runs before abort_class() so completed tasks are
         // accounted in the snapshot above.
         if self.runtime.supervisor_config.abort_enrichment_on_turn {
@@ -3250,6 +3271,20 @@ pub(crate) async fn recv_optional<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Opti
 /// Mirrors `AppBuilder::auto_budget_tokens` so hot-reload and initial startup use the same
 /// logic: if `auto_budget = true` and `context_budget_tokens == 0`, query the provider's
 /// context window; if still 0, fall back to 128 000 tokens.
+/// Truncate a background run command to at most 80 characters for TUI display.
+fn truncate_shell_command(cmd: &str) -> String {
+    if cmd.len() <= 80 {
+        return cmd.to_owned();
+    }
+    let end = cmd.floor_char_boundary(79);
+    format!("{}…", &cmd[..end])
+}
+
+/// Take the first 8 characters of a run-id hex string for compact TUI display.
+fn truncate_shell_run_id(id: &str) -> String {
+    id.chars().take(8).collect()
+}
+
 pub(crate) fn resolve_context_budget(config: &Config, provider: &AnyProvider) -> usize {
     let tokens = if config.memory.auto_budget && config.memory.context_budget_tokens == 0 {
         if let Some(ctx_size) = provider.context_window() {
