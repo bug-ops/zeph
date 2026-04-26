@@ -6,7 +6,7 @@
 ///
 /// All output methods (`send`, `send_chunk`, etc.) are forwarded to the inner channel
 /// unchanged. Only the inbound path (`recv`, `try_recv`) also checks the webhook
-/// receiver so the agent sees webhook payloads as regular [`ChannelMessage`]s.
+/// receiver so the agent sees webhook payloads as regular `ChannelMessage`s.
 #[cfg(feature = "gateway")]
 pub(crate) struct GatewayChannel<C> {
     inner: C,

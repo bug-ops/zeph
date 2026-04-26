@@ -167,7 +167,7 @@ impl Scheduler {
     /// Then all periodic jobs stored in the DB that are not already present in `self.tasks`
     /// (by name) are reconstructed from their persisted `cron_expr` and appended — this ensures
     /// that jobs added via the CLI (which write directly to the store) are visible to
-    /// [`Scheduler::tick`] and [`Scheduler::catch_up_missed`] on the next startup.
+    /// `tick` and [`Scheduler::catch_up_missed`] on the next startup.
     ///
     /// # Errors
     ///
