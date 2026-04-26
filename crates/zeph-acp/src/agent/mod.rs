@@ -1040,9 +1040,95 @@ impl ZephAcpAgentState {
         Ok(acp::schema::LogoutResponse::default())
     }
 
-    #[allow(clippy::too_many_lines)]
-    // TODO(B2): extract sub-functions or move logic to reduce function length
-    // long function; decomposition would require extracting state into additional structs — TODO(#3459): decompose into smaller helpers
+    /// Evict the oldest idle session when the session limit is reached.
+    ///
+    /// Idle is defined as: `output_rx` is `Some` (no prompt in flight).
+    /// The lock-drop-and-reacquire pattern is intentional: the first lock
+    /// guard must be released before removing the entry to avoid a potential
+    /// deadlock if `cancel_signal.notify_one()` ever triggers reentrant
+    /// session-map access.
+    fn evict_oldest_idle_session_if_full(&self) -> acp::Result<()> {
+        if self.sessions.lock().len() < self.max_sessions {
+            return Ok(());
+        }
+        let evict_id = {
+            let sessions = self.sessions.lock();
+            sessions
+                .iter()
+                .filter(|(_, e)| e.output_rx.lock().is_some())
+                .min_by_key(|(_, e)| e.last_active_ms.load(Ordering::Relaxed))
+                .map(|(id, _)| id.clone())
+        };
+        match evict_id {
+            Some(id) => {
+                if let Some(entry) = self.sessions.lock().remove(&id) {
+                    entry.cancel_signal.notify_one();
+                    tracing::debug!(session_id = %id, "evicted idle ACP session (LRU)");
+                }
+                Ok(())
+            }
+            None => Err(acp::Error::internal_error().data("session limit reached")),
+        }
+    }
+
+    /// Spawn the per-session notification drainer bound to `cx`.
+    ///
+    /// # Invariant
+    ///
+    /// Must be called **exactly once** per session entry. `notify_rx` is
+    /// consumed here; a second call would panic on the `expect`.
+    fn spawn_notify_drainer(
+        entry: &SessionEntry,
+        cx: &acp::ConnectionTo<acp::Client>,
+    ) -> acp::Result<()> {
+        let mut notify_rx = entry
+            .notify_rx
+            .lock()
+            .take()
+            .expect("notify_rx consumed once");
+        let cx_drain = cx.clone();
+        cx.spawn(async move {
+            while let Some((notif, ack)) = notify_rx.recv().await {
+                let _enter = tracing::info_span!("acp.session.notify").entered();
+                if cx_drain.send_notification(notif).is_err() {
+                    tracing::warn!("session_notification send failed; drainer exiting");
+                    break;
+                }
+                ack.send(()).ok();
+            }
+            Ok(())
+        })
+    }
+
+    /// Assemble the `NewSessionResponse` with config options and project rule metadata.
+    fn build_new_session_response(
+        &self,
+        session_id: acp::schema::SessionId,
+        initial_model: &str,
+    ) -> acp::schema::NewSessionResponse {
+        let available_models = self.available_models_snapshot();
+        let config_options =
+            build_config_options(&available_models, initial_model, false, "suggest");
+        let default_mode_id = acp::schema::SessionModeId::new(DEFAULT_MODE_ID);
+        let mut resp = acp::schema::NewSessionResponse::new(session_id)
+            .modes(build_mode_state(&default_mode_id));
+        if !config_options.is_empty() {
+            resp = resp.config_options(config_options);
+        }
+        if !self.project_rules.is_empty() {
+            let rules: Vec<serde_json::Value> = self
+                .project_rules
+                .iter()
+                .filter_map(|p| p.file_name())
+                .map(|n| serde_json::json!({"name": n.to_string_lossy()}))
+                .collect();
+            let mut meta = serde_json::Map::new();
+            meta.insert("projectRules".to_owned(), serde_json::Value::Array(rules));
+            resp = resp.meta(meta);
+        }
+        resp
+    }
+
     #[tracing::instrument(skip_all, name = "acp.handler.new_session")]
     pub(crate) async fn do_new_session(
         &self,
@@ -1051,28 +1137,7 @@ impl ZephAcpAgentState {
     ) -> acp::Result<acp::schema::NewSessionResponse> {
         #[cfg(feature = "unstable-session-add-dirs")]
         self.validate_additional_directories(&args.additional_directories)?;
-        // LRU eviction: find and remove the oldest idle (non-busy) session when at limit.
-        if self.sessions.lock().len() >= self.max_sessions {
-            let evict_id = {
-                let sessions = self.sessions.lock();
-                sessions
-                    .iter()
-                    .filter(|(_, e)| e.output_rx.lock().is_some())
-                    .min_by_key(|(_, e)| e.last_active_ms.load(Ordering::Relaxed))
-                    .map(|(id, _)| id.clone())
-            };
-            match evict_id {
-                Some(id) => {
-                    if let Some(entry) = self.sessions.lock().remove(&id) {
-                        entry.cancel_signal.notify_one();
-                        tracing::debug!(session_id = %id, "evicted idle ACP session (LRU)");
-                    }
-                }
-                None => {
-                    return Err(acp::Error::internal_error().data("session limit reached"));
-                }
-            }
-        }
+        self.evict_oldest_idle_session_if_full()?;
 
         let session_id = acp::schema::SessionId::new(uuid::Uuid::new_v4().to_string());
         tracing::debug!(%session_id, "new ACP session");
@@ -1100,33 +1165,14 @@ impl ZephAcpAgentState {
             provider_override,
         );
 
-        // Spawn per-session notification drainer bound to this connection.
-        let mut notify_rx = entry
-            .notify_rx
-            .lock()
-            .take()
-            .expect("notify_rx consumed once");
-        let cx_drain = cx.clone();
-        cx.spawn(async move {
-            while let Some((notif, ack)) = notify_rx.recv().await {
-                let _enter = tracing::info_span!("acp.session.notify").entered();
-                if cx_drain.send_notification(notif).is_err() {
-                    tracing::warn!("session_notification send failed; drainer exiting");
-                    break;
-                }
-                ack.send(()).ok();
-            }
-            Ok(())
-        })?;
-
+        Self::spawn_notify_drainer(&entry, cx)?;
         self.sessions.lock().insert(session_id.clone(), entry);
 
         let conversation_id = self.create_session_conversation(&session_id).await;
-
         let session_ctx = SessionContext {
             session_id: session_id.clone(),
             conversation_id,
-            working_dir: session_cwd.clone(),
+            working_dir: session_cwd,
         };
 
         let spawner = Arc::clone(&self.spawner);
@@ -1138,34 +1184,55 @@ impl ZephAcpAgentState {
             .instrument(span),
         );
 
-        let available_models = self.available_models_snapshot();
-        let config_options =
-            build_config_options(&available_models, &initial_model, false, "suggest");
-        let default_mode_id = acp::schema::SessionModeId::new(DEFAULT_MODE_ID);
-        let mut resp = acp::schema::NewSessionResponse::new(session_id.clone())
-            .modes(build_mode_state(&default_mode_id));
-        if !config_options.is_empty() {
-            resp = resp.config_options(config_options);
-        }
-        if !self.project_rules.is_empty() {
-            let rules: Vec<serde_json::Value> = self
-                .project_rules
-                .iter()
-                .filter_map(|p| p.file_name())
-                .map(|n| serde_json::json!({"name": n.to_string_lossy()}))
-                .collect();
-            let mut meta = serde_json::Map::new();
-            meta.insert("projectRules".to_owned(), serde_json::Value::Array(rules));
-            resp = resp.meta(meta);
-        }
-
+        let resp = self.build_new_session_response(session_id.clone(), &initial_model);
         self.send_commands_update_nowait(&session_id);
-
         Ok(resp)
     }
 
+    /// Take the `input_tx` / `output_rx` pair for a session and mark it as active.
+    ///
+    /// Returns an error when the session does not exist or a prompt is already in flight.
+    /// Also writes `turn_message_id` into the per-session slot when the feature is enabled.
+    fn acquire_prompt_channels(
+        &self,
+        session_id: &acp::schema::SessionId,
+        #[cfg(feature = "unstable-message-id")] turn_message_id: Option<&str>,
+    ) -> acp::Result<(mpsc::Sender<ChannelMessage>, mpsc::Receiver<LoopbackEvent>)> {
+        let sessions = self.sessions.lock();
+        let entry = sessions
+            .get(session_id)
+            .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
+        let rx = entry
+            .output_rx
+            .lock()
+            .take()
+            .ok_or_else(|| acp::Error::internal_error().data("prompt already in progress"))?;
+        entry.touch();
+        // Write message_id here — output_rx take succeeded, prompt will proceed.
+        #[cfg(feature = "unstable-message-id")]
+        if let Some(mid) = turn_message_id {
+            *entry
+                .current_message_id
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(mid.to_owned());
+        }
+        Ok((entry.input_tx.clone(), rx))
+    }
+
+    /// Fire-and-forget: persist `text` as a `user_message` ACP event for `session_id`.
+    fn persist_user_message_async(&self, session_id: &acp::schema::SessionId, text: String) {
+        if let Some(ref store) = self.store {
+            let sid = session_id.to_string();
+            let store = store.clone();
+            tokio::spawn(async move {
+                if let Err(e) = store.save_acp_event(&sid, "user_message", &text).await {
+                    tracing::warn!(error = %e, "failed to persist user message");
+                }
+            });
+        }
+    }
+
     #[tracing::instrument(skip_all, name = "acp.handler.prompt", fields(session_id = %args.session_id))]
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3459): decompose into smaller helpers
     pub(crate) async fn do_prompt(
         &self,
         args: acp::schema::PromptRequest,
@@ -1194,54 +1261,19 @@ impl ZephAcpAgentState {
             .await?;
 
         let trimmed_text = text.trim_start();
-        if trimmed_text.starts_with('/') {
-            let is_acp_native = trimmed_text == "/help"
-                || trimmed_text.starts_with("/help ")
-                || trimmed_text == "/mode"
-                || trimmed_text.starts_with("/mode ")
-                || trimmed_text == "/clear"
-                || trimmed_text.starts_with("/review")
-                || trimmed_text == "/model"
-                || trimmed_text.starts_with("/model ");
-            if is_acp_native {
-                return self
-                    .handle_slash_command(&args.session_id, trimmed_text)
-                    .await;
-            }
+        if trimmed_text.starts_with('/') && is_acp_native_slash_command(trimmed_text) {
+            return self
+                .handle_slash_command(&args.session_id, trimmed_text)
+                .await;
         }
 
-        let (input_tx, output_rx) = {
-            let sessions = self.sessions.lock();
-            let entry = sessions
-                .get(&args.session_id)
-                .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
-            let rx =
-                entry.output_rx.lock().take().ok_or_else(|| {
-                    acp::Error::internal_error().data("prompt already in progress")
-                })?;
-            entry.touch();
-            // Write message_id here — output_rx take succeeded, prompt will proceed.
+        let (input_tx, output_rx) = self.acquire_prompt_channels(
+            &args.session_id,
             #[cfg(feature = "unstable-message-id")]
-            if let Some(ref mid) = turn_message_id {
-                *entry
-                    .current_message_id
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(mid.clone());
-            }
-            (entry.input_tx.clone(), rx)
-        };
+            turn_message_id.as_deref(),
+        )?;
 
-        // Persist user message before sending to agent.
-        if let Some(ref store) = self.store {
-            let sid = args.session_id.to_string();
-            let payload = text.clone();
-            let store = store.clone();
-            tokio::spawn(async move {
-                if let Err(e) = store.save_acp_event(&sid, "user_message", &payload).await {
-                    tracing::warn!(error = %e, "failed to persist user message");
-                }
-            });
-        }
+        self.persist_user_message_async(&args.session_id, text.clone());
 
         input_tx
             .send(ChannelMessage {
@@ -1268,15 +1300,7 @@ impl ZephAcpAgentState {
             *entry.output_rx.lock() = Some(rx);
         }
 
-        let stop_reason = if cancelled {
-            acp::schema::StopReason::Cancelled
-        } else {
-            match stop_hint {
-                Some(StopHint::MaxTokens) => acp::schema::StopReason::MaxTokens,
-                Some(StopHint::MaxTurnRequests) => acp::schema::StopReason::MaxTurnRequests,
-                None => acp::schema::StopReason::EndTurn,
-            }
-        };
+        let stop_reason = compute_stop_reason(cancelled, stop_hint);
 
         // Generate session title after first successful agent response (fire-and-forget).
         if !cancelled {
@@ -1292,18 +1316,11 @@ impl ZephAcpAgentState {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
 
-        #[cfg(feature = "unstable-message-id")]
-        let resp = {
-            let r = acp::schema::PromptResponse::new(stop_reason);
-            if let Some(mid) = turn_message_id.as_ref() {
-                r.user_message_id(mid.clone())
-            } else {
-                r
-            }
-        };
-        #[cfg(not(feature = "unstable-message-id"))]
-        let resp = acp::schema::PromptResponse::new(stop_reason);
-        Ok(resp)
+        Ok(build_prompt_response(
+            #[cfg(feature = "unstable-message-id")]
+            turn_message_id.as_deref(),
+            stop_reason,
+        ))
     }
 
     #[allow(clippy::unused_async)]
@@ -1390,24 +1407,7 @@ impl ZephAcpAgentState {
             provider_override,
         );
 
-        // Spawn per-session notification drainer.
-        let mut notify_rx = entry
-            .notify_rx
-            .lock()
-            .take()
-            .expect("notify_rx consumed once");
-        let cx_drain = cx.clone();
-        cx.spawn(async move {
-            while let Some((notif, ack)) = notify_rx.recv().await {
-                let _enter = tracing::info_span!("acp.session.notify").entered();
-                if cx_drain.send_notification(notif).is_err() {
-                    tracing::warn!("session_notification send failed; drainer exiting");
-                    break;
-                }
-                ack.send(()).ok();
-            }
-            Ok(())
-        })?;
+        Self::spawn_notify_drainer(&entry, cx)?;
 
         self.sessions.lock().insert(args.session_id.clone(), entry);
 
@@ -1569,21 +1569,7 @@ impl ZephAcpAgentState {
             provider_override,
         );
 
-        let mut notify_rx = entry
-            .notify_rx
-            .lock()
-            .take()
-            .expect("notify_rx consumed once");
-        let cx_drain = cx.clone();
-        cx.spawn(async move {
-            while let Some((notif, ack)) = notify_rx.recv().await {
-                if cx_drain.send_notification(notif).is_err() {
-                    break;
-                }
-                ack.send(()).ok();
-            }
-            Ok(())
-        })?;
+        Self::spawn_notify_drainer(&entry, cx)?;
 
         self.sessions.lock().insert(new_id.clone(), entry);
 
@@ -1689,21 +1675,7 @@ impl ZephAcpAgentState {
             provider_override,
         );
 
-        let mut notify_rx = entry
-            .notify_rx
-            .lock()
-            .take()
-            .expect("notify_rx consumed once");
-        let cx_drain = cx.clone();
-        cx.spawn(async move {
-            while let Some((notif, ack)) = notify_rx.recv().await {
-                if cx_drain.send_notification(notif).is_err() {
-                    break;
-                }
-                ack.send(()).ok();
-            }
-            Ok(())
-        })?;
+        Self::spawn_notify_drainer(&entry, cx)?;
 
         self.sessions.lock().insert(args.session_id.clone(), entry);
 
@@ -2667,6 +2639,47 @@ impl ZephAcpAgentState {
     }
 }
 
+/// Returns `true` when `trimmed_text` is an ACP-native slash command that should
+/// be handled by [`ZephAcpAgentState::handle_slash_command`] rather than forwarded
+/// to the agent loop.
+fn is_acp_native_slash_command(trimmed_text: &str) -> bool {
+    trimmed_text == "/help"
+        || trimmed_text.starts_with("/help ")
+        || trimmed_text == "/mode"
+        || trimmed_text.starts_with("/mode ")
+        || trimmed_text == "/clear"
+        || trimmed_text.starts_with("/review")
+        || trimmed_text == "/model"
+        || trimmed_text.starts_with("/model ")
+        || trimmed_text == "/compact"
+}
+
+/// Map `(cancelled, stop_hint)` to the ACP `StopReason` wire value.
+fn compute_stop_reason(cancelled: bool, stop_hint: Option<StopHint>) -> acp::schema::StopReason {
+    if cancelled {
+        acp::schema::StopReason::Cancelled
+    } else {
+        match stop_hint {
+            Some(StopHint::MaxTokens) => acp::schema::StopReason::MaxTokens,
+            Some(StopHint::MaxTurnRequests) => acp::schema::StopReason::MaxTurnRequests,
+            None => acp::schema::StopReason::EndTurn,
+        }
+    }
+}
+
+/// Construct the `PromptResponse`, optionally echoing `turn_message_id`.
+fn build_prompt_response(
+    #[cfg(feature = "unstable-message-id")] turn_message_id: Option<&str>,
+    stop_reason: acp::schema::StopReason,
+) -> acp::schema::PromptResponse {
+    let r = acp::schema::PromptResponse::new(stop_reason);
+    #[cfg(feature = "unstable-message-id")]
+    if let Some(mid) = turn_message_id {
+        return r.user_message_id(mid.to_owned());
+    }
+    r
+}
+
 pub(super) mod helpers;
 use helpers::{
     DEFAULT_MODE_ID, DIAGNOSTICS_MIME_TYPE, build_available_commands, build_config_options,
@@ -2675,6 +2688,31 @@ use helpers::{
 };
 
 pub(crate) mod handlers;
+
+/// Build a request handler closure that clones `state` for each incoming request.
+///
+/// The closure signature matches what `Builder::on_receive_request` expects:
+/// `(req, responder, cx) -> impl Future<Output = acp::Result<()>>`.
+macro_rules! req_handler {
+    ($state:expr, $handler:path) => {{
+        let s = Arc::clone(&$state);
+        move |req, responder, cx| {
+            let s = Arc::clone(&s);
+            async move { $handler(req, responder, cx, s).await }
+        }
+    }};
+}
+
+/// Build a notification handler closure that clones `state` for each incoming notification.
+macro_rules! notif_handler {
+    ($state:expr, $handler:path) => {{
+        let s = Arc::clone(&$state);
+        move |notif, cx| {
+            let s = Arc::clone(&s);
+            async move { $handler(notif, cx, s).await }
+        }
+    }};
+}
 
 /// Run the ACP agent loop over the provided transport until the connection closes.
 ///
@@ -2707,7 +2745,6 @@ pub(crate) mod handlers;
 /// ).await
 /// # }
 /// ```
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3459): decompose into smaller helpers
 pub async fn run_agent(
     state: Arc<ZephAcpAgentState>,
     transport: impl acp::ConnectTo<acp::Agent>,
@@ -2727,88 +2764,71 @@ pub async fn run_agent(
         prompt, set_session_config_option, set_session_mode,
     };
 
-    macro_rules! req_handler {
-        ($handler:path) => {{
-            let s = Arc::clone(&state);
-            move |req, responder, cx| {
-                let s = Arc::clone(&s);
-                async move { $handler(req, responder, cx, s).await }
-            }
-        }};
-    }
-
-    macro_rules! notif_handler {
-        ($handler:path) => {{
-            let s = Arc::clone(&state);
-            move |notif, cx| {
-                let s = Arc::clone(&s);
-                async move { $handler(notif, cx, s).await }
-            }
-        }};
-    }
-
     let builder = acp::Agent
         .builder()
         .on_receive_request(
-            req_handler!(initialize::handle_initialize),
+            req_handler!(state, initialize::handle_initialize),
             acp::on_receive_request!(),
         )
         .on_receive_request(
-            req_handler!(authenticate::handle_authenticate),
+            req_handler!(state, authenticate::handle_authenticate),
             acp::on_receive_request!(),
         )
         .on_receive_request(
-            req_handler!(new_session::handle_new_session),
+            req_handler!(state, new_session::handle_new_session),
             acp::on_receive_request!(),
         )
         .on_receive_request(
-            req_handler!(prompt::handle_prompt),
+            req_handler!(state, prompt::handle_prompt),
             acp::on_receive_request!(),
         )
         .on_receive_request(
-            req_handler!(list_sessions::handle_list_sessions),
+            req_handler!(state, list_sessions::handle_list_sessions),
             acp::on_receive_request!(),
         )
         .on_receive_request(
-            req_handler!(load_session::handle_load_session),
+            req_handler!(state, load_session::handle_load_session),
             acp::on_receive_request!(),
         )
         .on_receive_request(
-            req_handler!(set_session_config_option::handle_set_session_config_option),
+            req_handler!(
+                state,
+                set_session_config_option::handle_set_session_config_option
+            ),
             acp::on_receive_request!(),
         )
         .on_receive_request(
-            req_handler!(set_session_mode::handle_set_session_mode),
+            req_handler!(state, set_session_mode::handle_set_session_mode),
             acp::on_receive_request!(),
         )
         .on_receive_notification(
-            notif_handler!(cancel::handle_cancel),
+            notif_handler!(state, cancel::handle_cancel),
             acp::on_receive_notification!(),
         );
 
     #[cfg(feature = "unstable-session-close")]
     let builder = builder.on_receive_request(
-        req_handler!(close_session::handle_close_session),
+        req_handler!(state, close_session::handle_close_session),
         acp::on_receive_request!(),
     );
     #[cfg(feature = "unstable-session-fork")]
     let builder = builder.on_receive_request(
-        req_handler!(fork_session::handle_fork_session),
+        req_handler!(state, fork_session::handle_fork_session),
         acp::on_receive_request!(),
     );
     #[cfg(feature = "unstable-session-resume")]
     let builder = builder.on_receive_request(
-        req_handler!(resume_session::handle_resume_session),
+        req_handler!(state, resume_session::handle_resume_session),
         acp::on_receive_request!(),
     );
     #[cfg(feature = "unstable-session-model")]
     let builder = builder.on_receive_request(
-        req_handler!(set_session_model::handle_set_session_model),
+        req_handler!(state, set_session_model::handle_set_session_model),
         acp::on_receive_request!(),
     );
     #[cfg(feature = "unstable-logout")]
     let builder = builder.on_receive_request(
-        req_handler!(logout::handle_logout),
+        req_handler!(state, logout::handle_logout),
         acp::on_receive_request!(),
     );
 
