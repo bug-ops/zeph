@@ -214,7 +214,13 @@ impl<C: Channel> Agent<C> {
         let cancel = engine.cancel_token();
         self.experiments.cancel = Some(cancel);
         let notify_tx = self.experiments.notify_tx.clone();
-        tokio::spawn(async move {
+        // intentionally untracked: long-running multi-minute LLM session with its own
+        // CancellationToken and single-instance invariant enforced by `experiments.cancel`.
+        // BackgroundSupervisor::spawn() returns bool (no JoinHandle), uses Drop-on-overflow
+        // semantics, and has only small-fast task classes (Telemetry/Enrichment); routing an
+        // experiment session through it would silently drop it when the Telemetry pool is full,
+        // producing a misleading "starting" message with no experiment actually running.
+        drop(tokio::spawn(async move {
             let mut engine = engine;
             let msg = match engine.run().await {
                 Ok(report) => {
@@ -236,7 +242,7 @@ impl<C: Channel> Agent<C> {
                 Err(e) => format!("Experiment session failed: {e}"),
             };
             let _ = notify_tx.send(msg).await;
-        });
+        }));
         format!(
             "Experiment session starting (max {max_n} experiments). \
              Use /experiment stop to cancel. Results will be shown when complete."

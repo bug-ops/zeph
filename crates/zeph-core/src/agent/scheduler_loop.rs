@@ -116,6 +116,9 @@ impl<C: crate::channel::Channel> Agent<C> {
                     },
                 };
                 let tx = event_tx;
+                // intentionally untracked: this closure is passed as `on_done` to an external
+                // `spawn_for_task` call; the closure is moved and has no access to
+                // self.lifecycle.supervisor. The only work is a single channel send.
                 tokio::spawn(async move {
                     if let Err(e) = tx
                         .send(TaskEvent {

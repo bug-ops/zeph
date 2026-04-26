@@ -606,4 +606,65 @@ mod tests {
             tx.send(()).ok();
         }
     }
+
+    /// Verify that `abort_all` cancels in-flight tasks and the inflight counter reaches zero.
+    ///
+    /// Uses an `AtomicBool` side-channel to confirm the futures stopped polling (not merely
+    /// that `InflightGuard::drop` ran), guarding against regressions where the guard is
+    /// detached from the future before abort.
+    #[tokio::test]
+    async fn abort_all_cancels_tracked_tasks() {
+        use std::sync::atomic::{AtomicBool, Ordering as BoolOrdering};
+
+        let mut sv = default_supervisor();
+
+        // Flags flipped only on *natural* completion — must stay false if cancelled.
+        let completed_a = Arc::new(AtomicBool::new(false));
+        let completed_b = Arc::new(AtomicBool::new(false));
+        let flag_a = Arc::clone(&completed_a);
+        let flag_b = Arc::clone(&completed_b);
+
+        let (tx1, rx1) = oneshot::channel::<()>();
+        let (tx2, rx2) = oneshot::channel::<()>();
+        let accepted1 = sv.spawn(TaskClass::Enrichment, "long-a", async move {
+            let _ = rx1.await;
+            // Reached only if the future was not cancelled before this point.
+            flag_a.store(true, BoolOrdering::SeqCst);
+        });
+        let accepted2 = sv.spawn(TaskClass::Telemetry, "long-b", async move {
+            let _ = rx2.await;
+            flag_b.store(true, BoolOrdering::SeqCst);
+        });
+        assert!(accepted1, "task-a must be accepted");
+        assert!(accepted2, "task-b must be accepted");
+        assert_eq!(sv.inflight(), 2, "both tasks should be in-flight");
+
+        // Abort all tracked tasks — futures are dropped before reaching the flag stores.
+        sv.abort_all();
+
+        // Give the runtime a moment to process the abort signals.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        // Inflight counter must reach zero (RAII InflightGuard drops on cancel).
+        assert_eq!(
+            sv.inflight(),
+            0,
+            "abort_all must cancel all tasks and decrement inflight to zero"
+        );
+
+        // Futures stopped polling: completion flags must not have been set.
+        assert!(
+            !completed_a.load(BoolOrdering::SeqCst),
+            "task-a must not have completed naturally after abort"
+        );
+        assert!(
+            !completed_b.load(BoolOrdering::SeqCst),
+            "task-b must not have completed naturally after abort"
+        );
+
+        // Senders are intentionally dropped here; tasks were already cancelled.
+        drop(tx1);
+        drop(tx2);
+    }
 }

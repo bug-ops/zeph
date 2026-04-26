@@ -169,6 +169,9 @@ impl<C: Channel> Agent<C> {
         if let Some(ref tx) = self.session.status_tx {
             let _ = tx.send("Generating session digest...".to_string());
         }
+        // intentionally untracked: spec 039 §10 explicitly excludes session-digest spawns from
+        // supervisor scope. This runs at session-close boundary where supervisor fields would
+        // create borrow conflicts. The task is fire-and-forget by design.
         tokio::spawn(async move {
             if let (Some(mem), Some(cid)) = (memory, conversation_id) {
                 super::super::session_digest::generate_and_store_digest(

@@ -99,6 +99,9 @@ impl SpeculationEngine {
         // Share the inner Arc so the sweeper operates on the *same* handle set (fixes C2).
         let shared = cache.shared_inner();
 
+        // intentionally untracked: SpeculationEngine owns this JoinHandle in `sweeper` and
+        // aborts it in Drop. The engine has no access to BackgroundSupervisor; it is constructed
+        // standalone. The sweeper is an internal implementation detail, not agent-level work.
         let sweeper = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -163,6 +166,10 @@ impl SpeculationEngine {
         let cancel = CancellationToken::new();
         let cancel_child = cancel.child_token();
 
+        // intentionally untracked: returns a typed JoinHandle<Result<ToolOutput, ToolError>>
+        // stored inside SpeculativeHandle. The handle is cancelled via its own CancellationToken
+        // when the speculation is invalidated. SpeculationEngine has no access to
+        // BackgroundSupervisor; typed result retrieval requires the raw JoinHandle.
         let join = tokio::spawn(async move {
             tokio::select! {
                 result = exec.execute_tool_call_erased(&call_clone) => result,

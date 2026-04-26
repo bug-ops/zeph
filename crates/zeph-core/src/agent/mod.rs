@@ -725,6 +725,11 @@ impl<C: Channel> Agent<C> {
         // startup strips the orphaned ToolUse and emits warnings.
         self.flush_orphaned_tool_use_on_shutdown().await;
 
+        // NOTE: forcibly aborts in-flight Enrichment and Telemetry tasks tracked by the
+        // supervisor. Before the sprint-1 refactor, experiment sessions were detached
+        // tokio::spawn calls that survived shutdown; they are now intentionally untracked
+        // (see experiment_cmd.rs) and will continue running until their own CancellationToken
+        // is triggered or the process exits.
         self.lifecycle.supervisor.abort_all();
 
         // Abort background task handles not tracked by BackgroundSupervisor.
@@ -1405,6 +1410,9 @@ impl<C: Channel> Agent<C> {
         if let Some(prev) = self.lifecycle.cancel_bridge_handle.take() {
             prev.abort();
         }
+        // intentionally untracked: the bridge JoinHandle is stored in cancel_bridge_handle and
+        // aborted per-turn via prev.abort(); BackgroundSupervisor::spawn() does not return a
+        // JoinHandle, so per-turn abort control requires raw tokio::spawn here.
         self.lifecycle.cancel_bridge_handle = Some(tokio::spawn(async move {
             signal.notified().await;
             token.cancel();
@@ -2952,7 +2960,10 @@ impl<C: Channel> Agent<C> {
         // Clone the provider so the spawn closure owns it without borrowing self.
         let provider = self.summary_or_primary_provider().clone();
 
-        // Spawn background task: the LLM call runs without blocking the agent loop.
+        // intentionally untracked: returns a typed JoinHandle<Option<Vec<usize>>> stored in
+        // compression.pending_sidequest_result and polled (non-blocking) on the next turn.
+        // BackgroundSupervisor does not support typed result retrieval; spawn_oneshot would
+        // require TaskSupervisor (session-level) which is not wired into the agent yet.
         let handle = tokio::spawn(async move {
             let msgs = [Message {
                 role: Role::User,

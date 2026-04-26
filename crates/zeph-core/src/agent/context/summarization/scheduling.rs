@@ -872,6 +872,9 @@ impl<C: Channel> Agent<C> {
 
         let provider = self.summary_or_primary_provider().clone();
 
+        // intentionally untracked: returns a typed JoinHandle<Option<String>> stored in
+        // compression.pending_task_goal and polled non-blocking next turn.
+        // BackgroundSupervisor does not support typed result retrieval.
         let handle = tokio::spawn(async move {
             use zeph_llm::provider::{Message, MessageMetadata, Role};
 
@@ -1114,6 +1117,9 @@ impl<C: Channel> Agent<C> {
 
         let provider = self.summary_or_primary_provider().clone();
 
+        // intentionally untracked: returns a typed JoinHandle<Option<SubgoalExtractionResult>>
+        // stored in compression.pending_subgoal and polled non-blocking next turn.
+        // BackgroundSupervisor does not support typed result retrieval.
         let handle = tokio::spawn(async move {
             use zeph_llm::provider::{Message, MessageMetadata, Role};
 

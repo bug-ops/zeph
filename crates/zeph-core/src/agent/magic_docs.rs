@@ -222,6 +222,10 @@ impl<C: Channel> super::Agent<C> {
             .as_ref()
             .map(|tx| tx.send(format!("Updating {} magic doc(s)…", due_paths.len())));
 
+        // intentionally untracked: the JoinHandle is stored in magic_docs.pending and checked
+        // with is_finished() to deduplicate per-turn spawns. BackgroundSupervisor::spawn()
+        // does not return a JoinHandle, so deduplication via is_finished() requires raw
+        // tokio::spawn here.
         let handle = tokio::spawn(async move {
             for path in &due_paths {
                 if let Err(e) = update_magic_doc(path, &provider, usize::from(max_iterations)).await
