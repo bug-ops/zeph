@@ -30,6 +30,7 @@ candle-transformers = { workspace = true, optional = true }
 dirs.workspace = true
 eventsource-stream.workspace = true
 hex = { workspace = true, optional = true }
+futures.workspace = true
 futures-core.workspace = true
 hf-hub = { workspace = true, optional = true, features = ["tokio", "rustls-tls", "ureq"] }
 ollama-rs = { workspace = true, features = ["rustls", "stream"] }

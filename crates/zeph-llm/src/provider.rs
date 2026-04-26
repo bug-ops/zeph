@@ -801,13 +801,13 @@ pub trait LlmProvider: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the provider fails to communicate or the response is invalid.
-    #[allow(async_fn_in_trait)]
-    async fn chat_with_tools(
+    fn chat_with_tools(
         &self,
         messages: &[Message],
         _tools: &[ToolDefinition],
-    ) -> Result<ChatResponse, LlmError> {
-        Ok(ChatResponse::Text(self.chat(messages).await?))
+    ) -> impl std::future::Future<Output = Result<ChatResponse, LlmError>> + Send {
+        let msgs = messages.to_vec();
+        async move { Ok(ChatResponse::Text(self.chat(&msgs).await?)) }
     }
 
     /// Return the cache usage from the last API call, if available.
