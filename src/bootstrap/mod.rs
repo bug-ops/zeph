@@ -328,14 +328,14 @@ impl AppBuilder {
         };
 
         memory = memory.with_ranking_options(
-            self.config.memory.semantic.temporal_decay_enabled,
+            self.config.memory.semantic.temporal_decay_enabled.into(),
             self.config.memory.semantic.temporal_decay_half_life_days,
-            self.config.memory.semantic.mmr_enabled,
+            self.config.memory.semantic.mmr_enabled.into(),
             self.config.memory.semantic.mmr_lambda,
         );
 
         memory = memory.with_importance_options(
-            self.config.memory.semantic.importance_enabled,
+            self.config.memory.semantic.importance_enabled.into(),
             self.config.memory.semantic.importance_weight,
         );
 
@@ -345,13 +345,13 @@ impl AppBuilder {
         );
 
         memory = memory.with_query_bias(
-            self.config.memory.retrieval.query_bias_correction,
+            self.config.memory.retrieval.query_bias_correction.into(),
             self.config.memory.retrieval.query_bias_profile_weight,
             self.config.memory.retrieval.query_bias_centroid_ttl_secs,
         );
 
         memory = memory.with_hebbian(
-            self.config.memory.hebbian.enabled,
+            self.config.memory.hebbian.enabled.into(),
             self.config.memory.hebbian.hebbian_lr,
         );
 

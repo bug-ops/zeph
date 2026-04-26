@@ -884,7 +884,7 @@ impl SemanticMemory {
             "recall: weighted merge complete"
         );
 
-        if self.temporal_decay_enabled && self.temporal_decay_half_life_days > 0 {
+        if self.temporal_decay.is_enabled() && self.temporal_decay_half_life_days > 0 {
             let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
             match self.sqlite.message_timestamps(&ids).await {
                 Ok(timestamps) => {
@@ -907,7 +907,7 @@ impl SemanticMemory {
             }
         }
 
-        if self.mmr_enabled && !vector_results.is_empty() {
+        if self.mmr_reranking.is_enabled() && !vector_results.is_empty() {
             if let Some(qdrant) = &self.qdrant {
                 let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
                 match qdrant.get_vectors(&ids).await {
@@ -936,7 +936,7 @@ impl SemanticMemory {
             ranked.truncate(limit);
         }
 
-        if self.importance_enabled && !ranked.is_empty() {
+        if self.importance_scoring.is_enabled() && !ranked.is_empty() {
             let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
             match self.sqlite.fetch_importance_scores(&ids).await {
                 Ok(scores) => {
@@ -1279,7 +1279,7 @@ impl SemanticMemory {
             at_timestamp,
             temporal_decay_rate,
             edge_types,
-            self.hebbian_enabled,
+            self.hebbian_reinforcement.is_enabled(),
             self.hebbian_lr,
         )
         .await?;
@@ -1329,7 +1329,7 @@ impl SemanticMemory {
             limit,
             params,
             edge_types,
-            self.hebbian_enabled,
+            self.hebbian_reinforcement.is_enabled(),
             self.hebbian_lr,
         )
         .await?;
@@ -1369,7 +1369,7 @@ impl SemanticMemory {
             max_hops,
             edge_types,
             temporal_decay_rate,
-            self.hebbian_enabled,
+            self.hebbian_reinforcement.is_enabled(),
             self.hebbian_lr,
         )
         .await
@@ -1404,7 +1404,7 @@ impl SemanticMemory {
             ring_limit,
             edge_types,
             temporal_decay_rate,
-            self.hebbian_enabled,
+            self.hebbian_reinforcement.is_enabled(),
             self.hebbian_lr,
         )
         .await
@@ -1439,7 +1439,7 @@ impl SemanticMemory {
             max_hops,
             edge_types,
             temporal_decay_rate,
-            self.hebbian_enabled,
+            self.hebbian_reinforcement.is_enabled(),
             self.hebbian_lr,
         )
         .await
@@ -1486,7 +1486,7 @@ impl SemanticMemory {
         let store = Arc::clone(store);
         let embeddings = Arc::clone(embeddings);
         let provider = self.provider.clone();
-        let hebbian_enabled = self.hebbian_enabled;
+        let hebbian_enabled = self.hebbian_reinforcement.is_enabled();
         let hebbian_lr = self.hebbian_lr;
 
         let results = tokio::time::timeout(
@@ -1683,11 +1683,11 @@ mod tests {
             embedding_model: "test-model".into(),
             vector_weight: 0.7,
             keyword_weight: 0.3,
-            temporal_decay_enabled: false,
+            temporal_decay: crate::semantic::TemporalDecay::Disabled,
             temporal_decay_half_life_days: 30,
-            mmr_enabled: false,
+            mmr_reranking: crate::semantic::MmrReranking::Disabled,
             mmr_lambda: 0.7,
-            importance_enabled: false,
+            importance_scoring: crate::semantic::ImportanceScoring::Disabled,
             importance_weight: 0.15,
             token_counter: Arc::new(crate::token_counter::TokenCounter::new()),
             graph_store: None,
@@ -1706,11 +1706,11 @@ mod tests {
             depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             reasoning: None,
-            query_bias_correction: false,
+            query_bias_correction: crate::semantic::QueryBiasCorrection::Disabled,
             query_bias_profile_weight: 0.25,
             profile_centroid: tokio::sync::RwLock::new(None),
             profile_centroid_ttl_secs: 300,
-            hebbian_enabled: false,
+            hebbian_reinforcement: crate::semantic::HebbianReinforcement::Disabled,
             hebbian_lr: 0.1,
             hebbian_spread: crate::HelaSpreadRuntime::default(),
         }

@@ -71,11 +71,11 @@ async fn test_apply_query_bias_dimension_mismatch_returns_unchanged() {
         embedding_model: "test-model".into(),
         vector_weight: 0.7,
         keyword_weight: 0.3,
-        temporal_decay_enabled: false,
+        temporal_decay: super::super::TemporalDecay::Disabled,
         temporal_decay_half_life_days: 30,
-        mmr_enabled: false,
+        mmr_reranking: super::super::MmrReranking::Disabled,
         mmr_lambda: 0.7,
-        importance_enabled: false,
+        importance_scoring: super::super::ImportanceScoring::Disabled,
         importance_weight: 0.15,
         token_counter: Arc::new(crate::token_counter::TokenCounter::new()),
         graph_store: None,
@@ -94,7 +94,7 @@ async fn test_apply_query_bias_dimension_mismatch_returns_unchanged() {
         depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         reasoning: None,
-        query_bias_correction: true,
+        query_bias_correction: super::super::QueryBiasCorrection::Enabled,
         query_bias_profile_weight: 0.25,
         // Inject a centroid with a different dimension (2) than the query embedding (3).
         profile_centroid: tokio::sync::RwLock::new(Some(CachedCentroid {
@@ -102,7 +102,7 @@ async fn test_apply_query_bias_dimension_mismatch_returns_unchanged() {
             computed_at: Instant::now(),
         })),
         profile_centroid_ttl_secs: 300,
-        hebbian_enabled: false,
+        hebbian_reinforcement: super::super::HebbianReinforcement::Disabled,
         hebbian_lr: 0.1,
         hebbian_spread: crate::HelaSpreadRuntime::default(),
     };

@@ -93,6 +93,146 @@ pub(crate) struct CachedCentroid {
     pub computed_at: Instant,
 }
 
+/// Whether temporal decay is applied to recall scores.
+///
+/// When `Enabled`, older memories receive lower scores based on the configured
+/// half-life. When `Disabled`, all memories are scored equally regardless of age.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TemporalDecay {
+    /// Apply exponential decay: older memories score lower.
+    Enabled,
+    /// No age-based score reduction.
+    #[default]
+    Disabled,
+}
+
+impl TemporalDecay {
+    /// Returns `true` when the variant is `Enabled`.
+    #[must_use]
+    #[inline]
+    pub fn is_enabled(self) -> bool {
+        self == Self::Enabled
+    }
+}
+
+impl From<bool> for TemporalDecay {
+    fn from(b: bool) -> Self {
+        if b { Self::Enabled } else { Self::Disabled }
+    }
+}
+
+/// Whether Maximal Marginal Relevance (MMR) diversity re-ranking is applied.
+///
+/// When `Enabled`, recall results are re-ranked to balance relevance and
+/// diversity using the configured lambda parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MmrReranking {
+    /// Apply MMR diversity re-ranking after initial vector search.
+    Enabled,
+    /// Return results in raw cosine-similarity order.
+    #[default]
+    Disabled,
+}
+
+impl MmrReranking {
+    /// Returns `true` when the variant is `Enabled`.
+    #[must_use]
+    #[inline]
+    pub fn is_enabled(self) -> bool {
+        self == Self::Enabled
+    }
+}
+
+impl From<bool> for MmrReranking {
+    fn from(b: bool) -> Self {
+        if b { Self::Enabled } else { Self::Disabled }
+    }
+}
+
+/// Whether write-time importance scoring influences recall ranking.
+///
+/// When `Enabled`, each stored message receives an importance score that
+/// is blended into the recall ranking with the configured weight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImportanceScoring {
+    /// Blend importance scores into recall ranking.
+    Enabled,
+    /// Recall ranking uses only hybrid search scores.
+    #[default]
+    Disabled,
+}
+
+impl ImportanceScoring {
+    /// Returns `true` when the variant is `Enabled`.
+    #[must_use]
+    #[inline]
+    pub fn is_enabled(self) -> bool {
+        self == Self::Enabled
+    }
+}
+
+impl From<bool> for ImportanceScoring {
+    fn from(b: bool) -> Self {
+        if b { Self::Enabled } else { Self::Disabled }
+    }
+}
+
+/// Whether query-bias correction shifts first-person queries toward the user profile centroid.
+///
+/// When `Enabled`, queries containing first-person language are biased towards
+/// the stored user profile centroid to improve personalised recall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueryBiasCorrection {
+    /// Shift first-person query embeddings towards the user profile centroid.
+    #[default]
+    Enabled,
+    /// Pass query embeddings through unchanged.
+    Disabled,
+}
+
+impl QueryBiasCorrection {
+    /// Returns `true` when the variant is `Enabled`.
+    #[must_use]
+    #[inline]
+    pub fn is_enabled(self) -> bool {
+        self == Self::Enabled
+    }
+}
+
+impl From<bool> for QueryBiasCorrection {
+    fn from(b: bool) -> Self {
+        if b { Self::Enabled } else { Self::Disabled }
+    }
+}
+
+/// Whether Hebbian edge-weight reinforcement is active.
+///
+/// When `Enabled`, each graph edge traversed during recall receives a small
+/// weight increment (`hebbian_lr`), strengthening frequently-used associations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HebbianReinforcement {
+    /// Increment edge weights after each recall traversal.
+    Enabled,
+    /// Edge weights remain unchanged after recall.
+    #[default]
+    Disabled,
+}
+
+impl HebbianReinforcement {
+    /// Returns `true` when the variant is `Enabled`.
+    #[must_use]
+    #[inline]
+    pub fn is_enabled(self) -> bool {
+        self == Self::Enabled
+    }
+}
+
+impl From<bool> for HebbianReinforcement {
+    fn from(b: bool) -> Self {
+        if b { Self::Enabled } else { Self::Disabled }
+    }
+}
+
 /// Classification of a user query's self-referential intent (MM-F3, #3341).
 ///
 /// Used to decide whether query-bias correction should shift the embedding
@@ -126,9 +266,6 @@ pub struct HelaSpreadRuntime {
 ///
 /// Instantiate via [`SemanticMemory::new`] or the `AppBuilder` integration.
 /// All fields are `pub(crate)` — callers interact through the inherent method API.
-// TODO(review): Refactor the five bool flags into two-variant enums to satisfy
-// clippy::struct_excessive_bools. Left for a follow-up to avoid scope creep.
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct SemanticMemory {
     pub(crate) sqlite: SqliteStore,
     pub(crate) qdrant: Option<Arc<EmbeddingStore>>,
@@ -142,11 +279,11 @@ pub struct SemanticMemory {
     pub(crate) embedding_model: String,
     pub(crate) vector_weight: f64,
     pub(crate) keyword_weight: f64,
-    pub(crate) temporal_decay_enabled: bool,
+    pub(crate) temporal_decay: TemporalDecay,
     pub(crate) temporal_decay_half_life_days: u32,
-    pub(crate) mmr_enabled: bool,
+    pub(crate) mmr_reranking: MmrReranking,
     pub(crate) mmr_lambda: f32,
-    pub(crate) importance_enabled: bool,
+    pub(crate) importance_scoring: ImportanceScoring,
     pub(crate) importance_weight: f64,
     /// Multiplicative score boost for semantic-tier messages in recall ranking.
     /// Default: `1.3`. Disabled when set to `1.0`.
@@ -193,8 +330,8 @@ pub struct SemanticMemory {
     pub(crate) depth_below_limit_warned: Arc<std::sync::atomic::AtomicBool>,
     /// Fires `tracing::warn!` once per instance when `search_prompt_template` has no `{query}`.
     pub(crate) missing_placeholder_warned: Arc<std::sync::atomic::AtomicBool>,
-    /// Enable query-bias correction towards the user profile centroid (MM-F3, #3341).
-    pub(crate) query_bias_correction: bool,
+    /// Query-bias correction towards the user profile centroid (MM-F3, #3341).
+    pub(crate) query_bias_correction: QueryBiasCorrection,
     /// Blend weight for query-bias correction (MM-F3, #3341). Clamped to `[0.0, 1.0]`.
     pub(crate) query_bias_profile_weight: f32,
     /// Cached profile centroid computed from persona-fact embeddings (MM-F3, #3341).
@@ -205,8 +342,8 @@ pub struct SemanticMemory {
     /// Time-to-live for the profile centroid cache in seconds (MM-F3, #3341). Default: 300.
     pub(crate) profile_centroid_ttl_secs: u64,
     /// Opt-in master switch for Hebbian edge-weight reinforcement (HL-F2, #3344).
-    pub(crate) hebbian_enabled: bool,
-    /// Weight increment applied per recall traversal when `hebbian_enabled = true` (HL-F2, #3344).
+    pub(crate) hebbian_reinforcement: HebbianReinforcement,
+    /// Weight increment applied per recall traversal when `hebbian_reinforcement` is `Enabled` (HL-F2, #3344).
     pub(crate) hebbian_lr: f32,
     /// HL-F5 spreading activation runtime config (#3346).
     pub(crate) hebbian_spread: HelaSpreadRuntime,
@@ -296,11 +433,11 @@ impl SemanticMemory {
             embedding_model: embedding_model.into(),
             vector_weight,
             keyword_weight,
-            temporal_decay_enabled: false,
+            temporal_decay: TemporalDecay::Disabled,
             temporal_decay_half_life_days: 30,
-            mmr_enabled: false,
+            mmr_reranking: MmrReranking::Disabled,
             mmr_lambda: 0.7,
-            importance_enabled: false,
+            importance_scoring: ImportanceScoring::Disabled,
             importance_weight: 0.15,
             tier_boost_semantic: 1.3,
             token_counter: Arc::new(TokenCounter::new()),
@@ -319,11 +456,11 @@ impl SemanticMemory {
             search_prompt_template: String::new(),
             depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            query_bias_correction: true,
+            query_bias_correction: QueryBiasCorrection::Enabled,
             query_bias_profile_weight: 0.25,
             profile_centroid: RwLock::new(None),
             profile_centroid_ttl_secs: 300,
-            hebbian_enabled: false,
+            hebbian_reinforcement: HebbianReinforcement::Disabled,
             hebbian_lr: 0.1,
             hebbian_spread: HelaSpreadRuntime::default(),
         })
@@ -358,11 +495,11 @@ impl SemanticMemory {
             embedding_model: embedding_model.into(),
             vector_weight,
             keyword_weight,
-            temporal_decay_enabled: false,
+            temporal_decay: TemporalDecay::Disabled,
             temporal_decay_half_life_days: 30,
-            mmr_enabled: false,
+            mmr_reranking: MmrReranking::Disabled,
             mmr_lambda: 0.7,
-            importance_enabled: false,
+            importance_scoring: ImportanceScoring::Disabled,
             importance_weight: 0.15,
             tier_boost_semantic: 1.3,
             token_counter: Arc::new(TokenCounter::new()),
@@ -381,11 +518,11 @@ impl SemanticMemory {
             search_prompt_template: String::new(),
             depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            query_bias_correction: true,
+            query_bias_correction: QueryBiasCorrection::Enabled,
             query_bias_profile_weight: 0.25,
             profile_centroid: RwLock::new(None),
             profile_centroid_ttl_secs: 300,
-            hebbian_enabled: false,
+            hebbian_reinforcement: HebbianReinforcement::Disabled,
             hebbian_lr: 0.1,
             hebbian_spread: HelaSpreadRuntime::default(),
         })
@@ -451,22 +588,22 @@ impl SemanticMemory {
     #[must_use]
     pub fn with_ranking_options(
         mut self,
-        temporal_decay_enabled: bool,
+        temporal_decay: TemporalDecay,
         temporal_decay_half_life_days: u32,
-        mmr_enabled: bool,
+        mmr_reranking: MmrReranking,
         mmr_lambda: f32,
     ) -> Self {
-        self.temporal_decay_enabled = temporal_decay_enabled;
+        self.temporal_decay = temporal_decay;
         self.temporal_decay_half_life_days = temporal_decay_half_life_days;
-        self.mmr_enabled = mmr_enabled;
+        self.mmr_reranking = mmr_reranking;
         self.mmr_lambda = mmr_lambda;
         self
     }
 
     /// Configure write-time importance scoring for memory retrieval.
     #[must_use]
-    pub fn with_importance_options(mut self, enabled: bool, weight: f64) -> Self {
-        self.importance_enabled = enabled;
+    pub fn with_importance_options(mut self, scoring: ImportanceScoring, weight: f64) -> Self {
+        self.importance_scoring = scoring;
         self.importance_weight = weight;
         self
     }
@@ -513,17 +650,18 @@ impl SemanticMemory {
 
     /// Configure query-bias correction (MM-F3, #3341).
     ///
-    /// When `enabled` is `true`, first-person queries are biased towards the user profile centroid.
-    /// `profile_weight` controls the blend strength and is clamped to `[0.0, 1.0]`.
-    /// `centroid_ttl_secs` controls how long the centroid cache stays valid.
+    /// When `correction` is [`QueryBiasCorrection::Enabled`], first-person queries are biased
+    /// towards the user profile centroid. `profile_weight` controls the blend strength and is
+    /// clamped to `[0.0, 1.0]`. `centroid_ttl_secs` controls how long the centroid cache stays
+    /// valid.
     #[must_use]
     pub fn with_query_bias(
         mut self,
-        enabled: bool,
+        correction: QueryBiasCorrection,
         profile_weight: f32,
         centroid_ttl_secs: u64,
     ) -> Self {
-        self.query_bias_correction = enabled;
+        self.query_bias_correction = correction;
         self.query_bias_profile_weight = profile_weight.clamp(0.0, 1.0);
         self.profile_centroid_ttl_secs = centroid_ttl_secs;
         self
@@ -541,15 +679,15 @@ impl SemanticMemory {
 
     /// Configure Hebbian edge-weight reinforcement (HL-F2, #3344).
     ///
-    /// When `enabled` is `true`, `lr` is added to the `weight` column of each traversed
-    /// edge after every recall. `lr = 0.0` with `enabled = true` logs a WARN.
+    /// When `reinforcement` is [`HebbianReinforcement::Enabled`], `lr` is added to the `weight`
+    /// column of each traversed edge after every recall. `lr = 0.0` with `Enabled` logs a WARN.
     #[must_use]
-    pub fn with_hebbian(mut self, enabled: bool, lr: f32) -> Self {
+    pub fn with_hebbian(mut self, reinforcement: HebbianReinforcement, lr: f32) -> Self {
         let lr = lr.max(0.0);
-        if enabled && lr == 0.0 {
+        if reinforcement.is_enabled() && lr == 0.0 {
             tracing::warn!("hebbian enabled with lr=0.0 — no reinforcement will occur");
         }
-        self.hebbian_enabled = enabled;
+        self.hebbian_reinforcement = reinforcement;
         self.hebbian_lr = lr;
         self
     }
@@ -568,12 +706,12 @@ impl SemanticMemory {
 
     /// Apply query-bias correction to an embedding (MM-F3, #3341).
     ///
-    /// Returns the embedding unchanged if `query_bias_correction` is `false`,
+    /// Returns the embedding unchanged if `query_bias_correction` is [`QueryBiasCorrection::Disabled`],
     /// if the query is not first-person, or if the profile centroid is unavailable.
     /// Logs a single WARN on dimension mismatch and returns the original embedding.
     #[tracing::instrument(name = "memory.query_bias.apply", skip(self, embedding), fields(query_len = query.len()))]
     pub(crate) async fn apply_query_bias(&self, query: &str, embedding: Vec<f32>) -> Vec<f32> {
-        if !self.query_bias_correction {
+        if !self.query_bias_correction.is_enabled() {
             tracing::debug!(reason = "disabled", "query-bias: skipping");
             return embedding;
         }
@@ -826,11 +964,11 @@ impl SemanticMemory {
             embedding_model: embedding_model.into(),
             vector_weight,
             keyword_weight,
-            temporal_decay_enabled: false,
+            temporal_decay: TemporalDecay::Disabled,
             temporal_decay_half_life_days: 30,
-            mmr_enabled: false,
+            mmr_reranking: MmrReranking::Disabled,
             mmr_lambda: 0.7,
-            importance_enabled: false,
+            importance_scoring: ImportanceScoring::Disabled,
             importance_weight: 0.15,
             tier_boost_semantic: 1.3,
             token_counter,
@@ -849,11 +987,11 @@ impl SemanticMemory {
             search_prompt_template: String::new(),
             depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            query_bias_correction: true,
+            query_bias_correction: QueryBiasCorrection::Enabled,
             query_bias_profile_weight: 0.25,
             profile_centroid: RwLock::new(None),
             profile_centroid_ttl_secs: 300,
-            hebbian_enabled: false,
+            hebbian_reinforcement: HebbianReinforcement::Disabled,
             hebbian_lr: 0.1,
             hebbian_spread: HelaSpreadRuntime::default(),
         }
@@ -907,11 +1045,11 @@ impl SemanticMemory {
             embedding_model: embedding_model.into(),
             vector_weight,
             keyword_weight,
-            temporal_decay_enabled: false,
+            temporal_decay: TemporalDecay::Disabled,
             temporal_decay_half_life_days: 30,
-            mmr_enabled: false,
+            mmr_reranking: MmrReranking::Disabled,
             mmr_lambda: 0.7,
-            importance_enabled: false,
+            importance_scoring: ImportanceScoring::Disabled,
             importance_weight: 0.15,
             tier_boost_semantic: 1.3,
             token_counter: Arc::new(TokenCounter::new()),
@@ -930,11 +1068,11 @@ impl SemanticMemory {
             search_prompt_template: String::new(),
             depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            query_bias_correction: true,
+            query_bias_correction: QueryBiasCorrection::Enabled,
             query_bias_profile_weight: 0.25,
             profile_centroid: RwLock::new(None),
             profile_centroid_ttl_secs: 300,
-            hebbian_enabled: false,
+            hebbian_reinforcement: HebbianReinforcement::Disabled,
             hebbian_lr: 0.1,
             hebbian_spread: HelaSpreadRuntime::default(),
         })

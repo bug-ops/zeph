@@ -54,11 +54,11 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         embedding_model: "test-model".into(),
         vector_weight: 0.7,
         keyword_weight: 0.3,
-        temporal_decay_enabled: false,
+        temporal_decay: super::super::TemporalDecay::Disabled,
         temporal_decay_half_life_days: 30,
-        mmr_enabled: false,
+        mmr_reranking: super::super::MmrReranking::Disabled,
         mmr_lambda: 0.7,
-        importance_enabled: false,
+        importance_scoring: super::super::ImportanceScoring::Disabled,
         importance_weight: 0.15,
         token_counter: Arc::new(TokenCounter::new()),
         graph_store: None,
@@ -77,11 +77,11 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         reasoning: None,
-        query_bias_correction: false,
+        query_bias_correction: super::super::QueryBiasCorrection::Disabled,
         query_bias_profile_weight: 0.25,
         profile_centroid: tokio::sync::RwLock::new(None),
         profile_centroid_ttl_secs: 300,
-        hebbian_enabled: false,
+        hebbian_reinforcement: super::super::HebbianReinforcement::Disabled,
         hebbian_lr: 0.1,
         hebbian_spread: crate::HelaSpreadRuntime::default(),
     };
@@ -397,7 +397,7 @@ async fn recall_importance_enabled_blends_score() {
     // A marker message should be boosted relative to a plain message.
     let memory = {
         let mut m = test_semantic_memory(false).await;
-        m.importance_enabled = true;
+        m.importance_scoring = super::ImportanceScoring::Enabled;
         m.importance_weight = 0.20;
         m
     };
