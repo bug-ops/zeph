@@ -14,7 +14,7 @@ use qdrant_client::Qdrant;
 use qdrant_client::qdrant::vector_output::Vector as VectorVariant;
 use qdrant_client::qdrant::{
     CreateCollectionBuilder, DeletePointsBuilder, Distance, Filter, GetPointsBuilder, PointId,
-    PointStruct, PointsIdsList, ScoredPoint, ScrollPointsBuilder, SearchPointsBuilder,
+    PointStruct, PointsIdsList, QueryPointsBuilder, ScoredPoint, ScrollPointsBuilder,
     UpsertPointsBuilder, VectorParamsBuilder, value::Kind,
 };
 
@@ -164,10 +164,8 @@ impl QdrantOps {
 
     /// Search for similar vectors, returning scored points with payloads.
     ///
-    /// The query `vector` is L2-normalized before the search.  Qdrant stores all Cosine-distance
-    /// vectors as unit vectors internally.  The REST API normalizes the query server-side, but the
-    /// gRPC path does not, causing near-zero dot-product scores (~0.022) when an un-normalized
-    /// vector is sent.  Normalizing here makes gRPC behaviour consistent with REST.
+    /// Uses the Qdrant Query API (`client.query`) which handles query vector normalization
+    /// server-side for Cosine collections, producing correct similarity scores.
     ///
     /// # Errors
     ///
@@ -179,12 +177,14 @@ impl QdrantOps {
         limit: u64,
         filter: Option<Filter>,
     ) -> QdrantResult<Vec<ScoredPoint>> {
-        let vector = l2_normalize(vector);
-        let mut builder = SearchPointsBuilder::new(collection, vector, limit).with_payload(true);
+        let mut builder = QueryPointsBuilder::new(collection)
+            .query(vector)
+            .limit(limit)
+            .with_payload(true);
         if let Some(f) = filter {
             builder = builder.filter(f);
         }
-        let results = self.client.search_points(builder).await.map_err(Box::new)?;
+        let results = self.client.query(builder).await.map_err(Box::new)?;
         Ok(results.result)
     }
 
@@ -529,21 +529,6 @@ impl crate::vector_store::VectorStore for QdrantOps {
     }
 }
 
-/// Normalize `v` to unit L2 length in-place and return it.
-///
-/// If the vector has zero magnitude (all-zeros) it is returned unchanged to avoid division by
-/// zero — Qdrant will assign zero cosine similarity to such a vector, which is the correct
-/// behaviour for an embedding that carries no information.
-fn l2_normalize(mut v: Vec<f32>) -> Vec<f32> {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for x in &mut v {
-            *x /= norm;
-        }
-    }
-    v
-}
-
 fn vector_filter_to_qdrant(filter: crate::VectorFilter) -> Filter {
     let must: Vec<_> = filter
         .must
@@ -615,35 +600,6 @@ fn scored_point_to_vector(point: ScoredPoint) -> crate::ScoredVectorPoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn l2_normalize_unit_vector() {
-        let v = l2_normalize(vec![1.0_f32, 0.0, 0.0]);
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn l2_normalize_arbitrary_vector() {
-        let v = l2_normalize(vec![3.0_f32, 4.0]);
-        // Expected: [0.6, 0.8] (magnitude = 5)
-        assert!((v[0] - 0.6).abs() < 1e-6);
-        assert!((v[1] - 0.8).abs() < 1e-6);
-    }
-
-    #[test]
-    fn l2_normalize_zero_vector_unchanged() {
-        let v = l2_normalize(vec![0.0_f32, 0.0, 0.0]);
-        assert_eq!(v, [0.0, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn l2_normalize_already_unit_is_idempotent() {
-        let v0 = vec![0.6_f32, 0.8];
-        let v1 = l2_normalize(v0.clone());
-        assert!((v1[0] - v0[0]).abs() < 1e-6);
-        assert!((v1[1] - v0[1]).abs() < 1e-6);
-    }
 
     #[test]
     fn new_valid_url() {
