@@ -244,7 +244,6 @@ impl CodeIndexer {
     /// # Errors
     ///
     /// Returns an error if the embedding probe or collection setup fails.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3458): decompose into smaller helpers
     pub async fn index_project(
         &self,
         root: &Path,
@@ -263,14 +262,46 @@ impl CodeIndexer {
         let start = std::time::Instant::now();
         let mut report = IndexReport::default();
 
+        self.ensure_collection_for_provider().await?;
+        let (entries, current_files) = self.walk_project_files(root).await?;
+        let total = entries.len();
+        tracing::info!(total, "indexing started");
+
+        let memory_batch_size = self.config.memory_batch_size.max(1);
+        let mut files_done = 0usize;
+        for batch in entries.chunks(memory_batch_size) {
+            self.index_batch(
+                batch,
+                root,
+                total,
+                &mut files_done,
+                &mut report,
+                progress_tx,
+            )
+            .await;
+        }
+
+        self.cleanup_removed_files(&current_files, &mut report)
+            .await?;
+
+        report.duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+        Ok(report)
+    }
+
+    async fn ensure_collection_for_provider(&self) -> Result<()> {
         let probe = self.provider.embed("probe").await?;
         let vector_size = u64::try_from(probe.len())?;
-        self.store.ensure_collection(vector_size).await?;
+        self.store.ensure_collection(vector_size).await
+    }
 
+    async fn walk_project_files(
+        &self,
+        root: &Path,
+    ) -> Result<(Vec<ignore::DirEntry>, HashSet<String>)> {
         let root_buf = root.to_path_buf();
         // TODO(#2978-walk): directory walk is left as raw spawn_blocking; routing it
         // through BlockingSpawner is out of scope (single short-lived operation per run).
-        let (entries, current_files) = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let entries: Vec<_> = ignore::WalkBuilder::new(&root_buf)
                 .hidden(true)
                 .git_ignore(true)
@@ -292,91 +323,86 @@ impl CodeIndexer {
             (entries, current_files)
         })
         .await
-        .map_err(|e| IndexError::Other(format!("directory walk panicked: {e:#}")))?;
+        .map_err(|e| IndexError::Other(format!("directory walk panicked: {e:#}")))
+    }
 
-        let total = entries.len();
-        tracing::info!(total, "indexing started");
-
+    #[allow(clippy::too_many_arguments)]
+    async fn index_batch(
+        &self,
+        batch: &[ignore::DirEntry],
+        root: &Path,
+        total: usize,
+        files_done: &mut usize,
+        report: &mut IndexReport,
+        progress_tx: Option<&watch::Sender<IndexProgress>>,
+    ) {
+        let store = self.store.clone();
+        let provider = Arc::clone(&self.provider);
+        let config = self.config.clone();
+        let spawner = self.spawner.clone();
         let concurrency = self.config.embed_concurrency.max(1);
-        let memory_batch_size = self.config.memory_batch_size.max(1);
-        let mut files_done = 0usize;
 
-        for batch in entries.chunks(memory_batch_size) {
-            let store = self.store.clone();
-            let provider = Arc::clone(&self.provider);
-            let config = self.config.clone();
-            let spawner = self.spawner.clone();
+        let file_pairs = make_file_pairs(batch, root);
 
-            // Resolve paths eagerly so the async closures below have no lifetime dependency on
-            // `entries` or `root`.
-            let file_pairs: Vec<(String, std::path::PathBuf)> = batch
-                .iter()
-                .map(|entry| {
-                    let rel = entry
-                        .path()
-                        .strip_prefix(root)
-                        .unwrap_or(entry.path())
-                        .to_string_lossy()
-                        .to_string();
-                    let abs = entry.path().to_path_buf();
-                    (rel, abs)
-                })
-                .collect();
-
-            let mut stream =
-                futures::stream::iter(file_pairs.into_iter().map(|(rel_path, abs_path)| {
-                    let store = store.clone();
-                    let provider = Arc::clone(&provider);
-                    let config = config.clone();
-                    let spawner = spawner.clone();
-                    async move {
-                        let worker = FileIndexWorker {
-                            store,
-                            provider,
-                            config,
-                            spawner,
-                        };
-                        let result = worker.index_file(&abs_path, &rel_path).await;
-                        (rel_path, result)
-                    }
-                }))
-                .buffer_unordered(concurrency);
-
-            while let Some((rel_path, outcome)) = stream.next().await {
-                report.files_scanned += 1;
-                files_done += 1;
-                match outcome {
-                    Ok((created, skipped)) => {
-                        if created > 0 {
-                            report.files_indexed += 1;
-                        }
-                        report.chunks_created += created;
-                        report.chunks_skipped += skipped;
-                        tracing::info!(
-                            file = %rel_path,
-                            progress = format_args!("{files_done}/{total}"),
-                            created,
-                            skipped,
-                        );
-                    }
-                    Err(e) => {
-                        report.errors.push(format!("{rel_path}: {e:#}"));
-                    }
+        let mut stream =
+            futures::stream::iter(file_pairs.into_iter().map(|(rel_path, abs_path)| {
+                let store = store.clone();
+                let provider = Arc::clone(&provider);
+                let config = config.clone();
+                let spawner = spawner.clone();
+                async move {
+                    let worker = FileIndexWorker {
+                        store,
+                        provider,
+                        config,
+                        spawner,
+                    };
+                    let result = worker.index_file(&abs_path, &rel_path).await;
+                    (rel_path, result)
                 }
-                if let Some(tx) = progress_tx {
-                    let _ = tx.send(IndexProgress {
-                        files_done,
-                        files_total: total,
-                        chunks_created: report.chunks_created,
-                    });
+            }))
+            .buffer_unordered(concurrency);
+
+        while let Some((rel_path, outcome)) = stream.next().await {
+            report.files_scanned += 1;
+            *files_done += 1;
+            match outcome {
+                Ok((created, skipped)) => {
+                    if created > 0 {
+                        report.files_indexed += 1;
+                    }
+                    report.chunks_created += created;
+                    report.chunks_skipped += skipped;
+                    tracing::info!(
+                        file = %rel_path,
+                        progress = format_args!("{files_done}/{total}"),
+                        created,
+                        skipped,
+                    );
+                }
+                Err(e) => {
+                    report.errors.push(format!("{rel_path}: {e:#}"));
                 }
             }
-
-            // Drop stream to release all in-flight future state before the next batch.
-            drop(stream);
-            tokio::task::yield_now().await;
+            if let Some(tx) = progress_tx {
+                let _ = tx.send(IndexProgress {
+                    files_done: *files_done,
+                    files_total: total,
+                    chunks_created: report.chunks_created,
+                });
+            }
         }
 
+        // Drop stream to release all in-flight future state before the next batch.
+        drop(stream);
+        tokio::task::yield_now().await;
+    }
+
+    async fn cleanup_removed_files(
+        &self,
+        current_files: &HashSet<String>,
+        report: &mut IndexReport,
+    ) -> Result<()> {
         let indexed = self.store.indexed_files().await?;
         for old_file in &indexed {
             if !current_files.contains(old_file) {
@@ -386,9 +412,7 @@ impl CodeIndexer {
                 }
             }
         }
-
-        report.duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-        Ok(report)
+        Ok(())
     }
 
     /// Re-index a specific file (for file watcher).
@@ -530,6 +554,22 @@ impl FileIndexWorker {
 
         Ok((created, skipped))
     }
+}
+
+fn make_file_pairs(batch: &[ignore::DirEntry], root: &Path) -> Vec<(String, std::path::PathBuf)> {
+    batch
+        .iter()
+        .map(|entry| {
+            let rel = entry
+                .path()
+                .strip_prefix(root)
+                .unwrap_or(entry.path())
+                .to_string_lossy()
+                .to_string();
+            let abs = entry.path().to_path_buf();
+            (rel, abs)
+        })
+        .collect()
 }
 
 fn chunk_to_insert(chunk: &CodeChunk) -> ChunkInsert<'_> {

@@ -20,6 +20,12 @@ use super::transcript::TranscriptWriter;
 
 const SECRET_REQUEST_PREFIX: &str = "[REQUEST_SECRET:";
 
+enum SecretRequestOutcome {
+    NotASecretRequest,
+    Handled,
+    Cancelled,
+}
+
 fn make_hook_env(
     task_id: &str,
     agent_name: &str,
@@ -90,6 +96,338 @@ fn tool_def_to_definition(
         parameters: params,
         output_schema: def.output_schema.clone(),
     }
+}
+
+fn build_effective_system_prompt(
+    system_prompt: String,
+    skills: Option<Vec<String>>,
+    mcp_tool_names: &[String],
+) -> String {
+    let mut effective = if let Some(skill_bodies) = skills.filter(|s| !s.is_empty()) {
+        let skill_block = skill_bodies.join("\n\n");
+        format!("{system_prompt}\n\n```skills\n{skill_block}\n```")
+    } else {
+        system_prompt
+    };
+
+    if !mcp_tool_names.is_empty() {
+        let mcp_annotation = format!(
+            "\n\n## Available MCP Tools\n{}",
+            mcp_tool_names
+                .iter()
+                .map(|n| format!("- {n}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        effective.push_str(&mcp_annotation);
+    }
+
+    effective
+}
+
+async fn call_provider_with_status(
+    provider: &AnyProvider,
+    messages: &[Message],
+    tool_defs: &[ToolDefinition],
+    status_tx: &watch::Sender<SubAgentStatus>,
+    turns: u32,
+    started_at: Instant,
+) -> Result<ChatResponse, super::error::SubAgentError> {
+    let llm_result = provider.chat_with_tools(messages, tool_defs).await;
+    match llm_result {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            tracing::error!(error = %e, "sub-agent LLM call failed");
+            let _ = status_tx.send(SubAgentStatus {
+                state: SubAgentState::Failed,
+                last_message: Some(e.to_string()),
+                turns_used: turns,
+                started_at,
+            });
+            Err(super::error::SubAgentError::Llm(e.to_string()))
+        }
+    }
+}
+
+fn emit_working_status(
+    status_tx: &watch::Sender<SubAgentStatus>,
+    response_text: &str,
+    turns: u32,
+    started_at: Instant,
+) {
+    let _ = status_tx.send(SubAgentStatus {
+        state: SubAgentState::Working,
+        last_message: Some(response_text.chars().take(120).collect()),
+        turns_used: turns,
+        started_at,
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_secret_request(
+    transcript_writer: &mut Option<TranscriptWriter>,
+    seq: &mut u32,
+    messages: &mut Vec<Message>,
+    secret_request_tx: &mpsc::Sender<SecretRequest>,
+    secret_rx: &mut mpsc::Receiver<Option<String>>,
+    cancel: &CancellationToken,
+    background: bool,
+    is_text_response: bool,
+    response_text: &str,
+) -> SecretRequestOutcome {
+    if !is_text_response {
+        return SecretRequestOutcome::NotASecretRequest;
+    }
+    let Some(rest) = response_text.strip_prefix(SECRET_REQUEST_PREFIX) else {
+        return SecretRequestOutcome::NotASecretRequest;
+    };
+
+    let raw_key = rest.split(']').next().unwrap_or("").trim().to_owned();
+    let key_name = if raw_key
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && !raw_key.is_empty()
+        && raw_key.len() <= 100
+    {
+        raw_key
+    } else {
+        tracing::warn!("sub-agent emitted invalid secret key name — ignoring request");
+        String::new()
+    };
+
+    if key_name.is_empty() {
+        return SecretRequestOutcome::NotASecretRequest;
+    }
+
+    tracing::debug!("sub-agent requested secret [key redacted]");
+
+    if background {
+        tracing::warn!("background sub-agent secret request auto-denied (no interactive prompt)");
+        let reply = format!("[secret:{key_name}] request denied");
+        let assistant_msg = make_message(Role::Assistant, response_text.to_owned());
+        let user_msg = make_message(Role::User, reply);
+        append_transcript(transcript_writer, seq, &assistant_msg);
+        append_transcript(transcript_writer, seq, &user_msg);
+        messages.push(assistant_msg);
+        messages.push(user_msg);
+        return SecretRequestOutcome::Handled;
+    }
+
+    let req = SecretRequest {
+        secret_key: key_name.clone(),
+        reason: None,
+    };
+    if secret_request_tx.send(req).await.is_ok() {
+        let outcome = tokio::select! {
+            msg = secret_rx.recv() => msg,
+            () = cancel.cancelled() => {
+                tracing::debug!("sub-agent cancelled while waiting for secret approval");
+                return SecretRequestOutcome::Cancelled;
+            }
+        };
+        let reply = match outcome {
+            Some(Some(_)) => {
+                format!("[secret:{key_name} approved — value available via grants]")
+            }
+            Some(None) | None => {
+                format!("[secret:{key_name}] request denied")
+            }
+        };
+        let assistant_msg = make_message(Role::Assistant, response_text.to_owned());
+        let user_msg = make_message(Role::User, reply);
+        append_transcript(transcript_writer, seq, &assistant_msg);
+        append_transcript(transcript_writer, seq, &user_msg);
+        messages.push(assistant_msg);
+        messages.push(user_msg);
+        return SecretRequestOutcome::Handled;
+    }
+
+    SecretRequestOutcome::NotASecretRequest
+}
+
+/// What the agent loop should do after a no-tool (text-only) response.
+enum NoToolAction {
+    /// Send nudge and continue the loop.
+    Nudge,
+    /// No nudge needed — break the loop.
+    Break,
+}
+
+/// Handle the case where the LLM responded with plain text (no tool calls).
+///
+/// Appends new messages to the transcript, and optionally sends a one-time
+/// nudge on the first turn when no tools have been called yet.
+fn handle_no_tool_response(
+    transcript_writer: &mut Option<TranscriptWriter>,
+    seq: &mut u32,
+    messages: &[Message],
+    prev_len: usize,
+    turns: u32,
+    any_tool_called: bool,
+    nudge_messages: &mut Vec<Message>,
+) -> NoToolAction {
+    for msg in &messages[prev_len..] {
+        append_transcript(transcript_writer, seq, msg);
+    }
+    if turns == 1 && !any_tool_called {
+        tracing::debug!("sub-agent text-only first turn — sending nudge to use tools");
+        let nudge = make_message(
+            Role::User,
+            "Please use the available tools to complete the task. \
+             Do not announce intentions — execute them."
+                .into(),
+        );
+        append_transcript(transcript_writer, seq, &nudge);
+        nudge_messages.push(nudge);
+        NoToolAction::Nudge
+    } else {
+        NoToolAction::Break
+    }
+}
+
+/// Initialise per-loop state: send the initial Working status, build the
+/// message list from history + task prompt, write the task message to the
+/// transcript, and collect tool definitions.
+fn init_loop_state(
+    status_tx: &watch::Sender<SubAgentStatus>,
+    started_at: Instant,
+    effective_system_prompt: String,
+    initial_messages: Vec<Message>,
+    task_prompt: String,
+    executor: &FilteredToolExecutor,
+    transcript_writer: &mut Option<TranscriptWriter>,
+) -> (Vec<Message>, u32, Vec<ToolDefinition>) {
+    let _ = status_tx.send(SubAgentStatus {
+        state: SubAgentState::Working,
+        last_message: None,
+        turns_used: 0,
+        started_at,
+    });
+
+    let mut messages = vec![make_message(Role::System, effective_system_prompt)];
+    let history_len = initial_messages.len();
+    messages.extend(initial_messages);
+    messages.push(make_message(Role::User, task_prompt));
+
+    #[allow(clippy::cast_possible_truncation)]
+    let mut seq: u32 = history_len as u32;
+
+    if let Some(writer) = transcript_writer
+        && let Some(task_msg) = messages.last()
+    {
+        if let Err(e) = writer.append(seq, task_msg) {
+            tracing::warn!(error = %e, "failed to write transcript entry");
+        }
+        seq += 1;
+    }
+
+    let tool_defs: Vec<ToolDefinition> = executor
+        .tool_definitions_erased()
+        .iter()
+        .map(tool_def_to_definition)
+        .collect();
+
+    (messages, seq, tool_defs)
+}
+
+/// Outcome of a single agent turn.
+enum TurnOutcome {
+    /// Tool was called; the loop should continue.
+    ToolCalled,
+    /// No tool was called and a nudge was added; the loop should continue.
+    NudgeSent,
+    /// No tool was called and no nudge is needed; the loop should break.
+    Done,
+    /// A secret request was handled; the loop should continue.
+    SecretHandled,
+    /// The agent was cancelled; the loop should break.
+    Cancelled,
+}
+
+/// Execute a single LLM turn: call the provider, handle secret requests,
+/// dispatch tool calls, and write transcript entries.
+///
+/// Returns a [`TurnOutcome`] that drives the loop control flow in
+/// [`run_agent_loop`].
+#[allow(clippy::too_many_arguments)]
+async fn run_turn(
+    provider: &AnyProvider,
+    executor: &FilteredToolExecutor,
+    messages: &mut Vec<Message>,
+    tool_defs: &[ToolDefinition],
+    hooks: &SubagentHooks,
+    task_id: &str,
+    agent_name: &str,
+    status_tx: &watch::Sender<SubAgentStatus>,
+    transcript_writer: &mut Option<TranscriptWriter>,
+    seq: &mut u32,
+    turns: &mut u32,
+    last_result: &mut String,
+    any_tool_called: bool,
+    cancel: &CancellationToken,
+    background: bool,
+    started_at: Instant,
+    secret_request_tx: &mpsc::Sender<SecretRequest>,
+    secret_rx: &mut mpsc::Receiver<Option<String>>,
+) -> Result<TurnOutcome, super::error::SubAgentError> {
+    let response =
+        call_provider_with_status(provider, messages, tool_defs, status_tx, *turns, started_at)
+            .await?;
+
+    let response_text = match &response {
+        ChatResponse::Text(t) => t.clone(),
+        ChatResponse::ToolUse { text, .. } => text.as_deref().unwrap_or_default().to_owned(),
+    };
+
+    *turns += 1;
+    last_result.clone_from(&response_text);
+    emit_working_status(status_tx, &response_text, *turns, started_at);
+
+    let is_text_response = matches!(&response, ChatResponse::Text(_));
+    match handle_secret_request(
+        transcript_writer,
+        seq,
+        messages,
+        secret_request_tx,
+        secret_rx,
+        cancel,
+        background,
+        is_text_response,
+        &response_text,
+    )
+    .await
+    {
+        SecretRequestOutcome::Handled => return Ok(TurnOutcome::SecretHandled),
+        SecretRequestOutcome::Cancelled => return Ok(TurnOutcome::Cancelled),
+        SecretRequestOutcome::NotASecretRequest => {}
+    }
+
+    let prev_len = messages.len();
+    let no_tool = handle_tool_step(executor, response, messages, hooks, task_id, agent_name).await;
+
+    if no_tool {
+        let mut nudge_messages = Vec::new();
+        match handle_no_tool_response(
+            transcript_writer,
+            seq,
+            messages,
+            prev_len,
+            *turns,
+            any_tool_called,
+            &mut nudge_messages,
+        ) {
+            NoToolAction::Nudge => {
+                messages.extend(nudge_messages);
+                return Ok(TurnOutcome::NudgeSent);
+            }
+            NoToolAction::Break => return Ok(TurnOutcome::Done),
+        }
+    }
+
+    for msg in &messages[prev_len..] {
+        append_transcript(transcript_writer, seq, msg);
+    }
+    Ok(TurnOutcome::ToolCalled)
 }
 
 // Returns `true` if no tool was called (loop should break).
@@ -198,7 +536,6 @@ async fn handle_tool_step(
     }
 }
 
-#[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3447): decompose into smaller helpers
 pub(super) async fn run_agent_loop(
     args: AgentLoopArgs,
 ) -> Result<String, super::error::SubAgentError> {
@@ -223,54 +560,19 @@ pub(super) async fn run_agent_loop(
         spawn_depth: _spawn_depth,
         mcp_tool_names,
     } = args;
-    let _ = status_tx.send(SubAgentStatus {
-        state: SubAgentState::Working,
-        last_message: None,
-        turns_used: 0,
+
+    let effective_system_prompt =
+        build_effective_system_prompt(system_prompt, skills, &mcp_tool_names);
+
+    let (mut messages, mut seq, tool_defs) = init_loop_state(
+        &status_tx,
         started_at,
-    });
-
-    let mut effective_system_prompt = if let Some(skill_bodies) = skills.filter(|s| !s.is_empty()) {
-        let skill_block = skill_bodies.join("\n\n");
-        format!("{system_prompt}\n\n```skills\n{skill_block}\n```")
-    } else {
-        system_prompt
-    };
-
-    if !mcp_tool_names.is_empty() {
-        let mcp_annotation = format!(
-            "\n\n## Available MCP Tools\n{}",
-            mcp_tool_names
-                .iter()
-                .map(|n| format!("- {n}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-        effective_system_prompt.push_str(&mcp_annotation);
-    }
-
-    let mut messages = vec![make_message(Role::System, effective_system_prompt)];
-    let history_len = initial_messages.len();
-    messages.extend(initial_messages);
-    messages.push(make_message(Role::User, task_prompt));
-
-    #[allow(clippy::cast_possible_truncation)]
-    let mut seq: u32 = history_len as u32;
-
-    if let Some(writer) = &mut transcript_writer
-        && let Some(task_msg) = messages.last()
-    {
-        if let Err(e) = writer.append(seq, task_msg) {
-            tracing::warn!(error = %e, "failed to write transcript entry");
-        }
-        seq += 1;
-    }
-
-    let tool_defs: Vec<ToolDefinition> = executor
-        .tool_definitions_erased()
-        .iter()
-        .map(tool_def_to_definition)
-        .collect();
+        effective_system_prompt,
+        initial_messages,
+        task_prompt,
+        &executor,
+        &mut transcript_writer,
+    );
 
     let mut turns: u32 = 0;
     let mut last_result = String::new();
@@ -286,130 +588,31 @@ pub(super) async fn run_agent_loop(
             break;
         }
 
-        let llm_result = provider.chat_with_tools(&messages, &tool_defs).await;
-        let response = match llm_result {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!(error = %e, "sub-agent LLM call failed");
-                let _ = status_tx.send(SubAgentStatus {
-                    state: SubAgentState::Failed,
-                    last_message: Some(e.to_string()),
-                    turns_used: turns,
-                    started_at,
-                });
-                return Err(super::error::SubAgentError::Llm(e.to_string()));
-            }
-        };
-
-        let response_text = match &response {
-            ChatResponse::Text(t) => t.clone(),
-            ChatResponse::ToolUse { text, .. } => text.as_deref().unwrap_or_default().to_owned(),
-        };
-
-        turns += 1;
-        last_result.clone_from(&response_text);
-        let _ = status_tx.send(SubAgentStatus {
-            state: SubAgentState::Working,
-            last_message: Some(response_text.chars().take(120).collect()),
-            turns_used: turns,
-            started_at,
-        });
-
-        if let ChatResponse::Text(_) = &response
-            && let Some(rest) = response_text.strip_prefix(SECRET_REQUEST_PREFIX)
-        {
-            let raw_key = rest.split(']').next().unwrap_or("").trim().to_owned();
-            let key_name = if raw_key
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                && !raw_key.is_empty()
-                && raw_key.len() <= 100
-            {
-                raw_key
-            } else {
-                tracing::warn!("sub-agent emitted invalid secret key name — ignoring request");
-                String::new()
-            };
-            if !key_name.is_empty() {
-                tracing::debug!("sub-agent requested secret [key redacted]");
-
-                if background {
-                    tracing::warn!(
-                        "background sub-agent secret request auto-denied (no interactive prompt)"
-                    );
-                    let reply = format!("[secret:{key_name}] request denied");
-                    let assistant_msg = make_message(Role::Assistant, response_text);
-                    let user_msg = make_message(Role::User, reply);
-                    append_transcript(&mut transcript_writer, &mut seq, &assistant_msg);
-                    append_transcript(&mut transcript_writer, &mut seq, &user_msg);
-                    messages.push(assistant_msg);
-                    messages.push(user_msg);
-                    continue;
-                }
-
-                let req = SecretRequest {
-                    secret_key: key_name.clone(),
-                    reason: None,
-                };
-                if secret_request_tx.send(req).await.is_ok() {
-                    let outcome = tokio::select! {
-                        msg = secret_rx.recv() => msg,
-                        () = cancel.cancelled() => {
-                            tracing::debug!("sub-agent cancelled while waiting for secret approval");
-                            break;
-                        }
-                    };
-                    let reply = match outcome {
-                        Some(Some(_)) => {
-                            format!("[secret:{key_name} approved — value available via grants]")
-                        }
-                        Some(None) | None => {
-                            format!("[secret:{key_name}] request denied")
-                        }
-                    };
-                    let assistant_msg = make_message(Role::Assistant, response_text);
-                    let user_msg = make_message(Role::User, reply);
-                    append_transcript(&mut transcript_writer, &mut seq, &assistant_msg);
-                    append_transcript(&mut transcript_writer, &mut seq, &user_msg);
-                    messages.push(assistant_msg);
-                    messages.push(user_msg);
-                    continue;
-                }
-            }
-        }
-
-        let prev_len = messages.len();
-        let no_tool = handle_tool_step(
+        match run_turn(
+            &provider,
             &executor,
-            response,
             &mut messages,
+            &tool_defs,
             &hooks,
             &loop_task_id,
             &agent_name,
+            &status_tx,
+            &mut transcript_writer,
+            &mut seq,
+            &mut turns,
+            &mut last_result,
+            any_tool_called,
+            &cancel,
+            background,
+            started_at,
+            &secret_request_tx,
+            &mut secret_rx,
         )
-        .await;
-
-        if no_tool {
-            for msg in &messages[prev_len..] {
-                append_transcript(&mut transcript_writer, &mut seq, msg);
-            }
-            if turns == 1 && !any_tool_called {
-                tracing::debug!("sub-agent text-only first turn — sending nudge to use tools");
-                let nudge = make_message(
-                    Role::User,
-                    "Please use the available tools to complete the task. \
-                     Do not announce intentions — execute them."
-                        .into(),
-                );
-                append_transcript(&mut transcript_writer, &mut seq, &nudge);
-                messages.push(nudge);
-                continue;
-            }
-            break;
-        }
-        any_tool_called = true;
-        for msg in &messages[prev_len..] {
-            append_transcript(&mut transcript_writer, &mut seq, msg);
+        .await?
+        {
+            TurnOutcome::ToolCalled => any_tool_called = true,
+            TurnOutcome::NudgeSent | TurnOutcome::SecretHandled => {}
+            TurnOutcome::Done | TurnOutcome::Cancelled => break,
         }
     }
 
