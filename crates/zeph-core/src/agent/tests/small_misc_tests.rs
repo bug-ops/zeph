@@ -84,7 +84,7 @@ async fn subagent_spawn_without_callback_returns_not_available() {
 #[tokio::test]
 async fn subagent_spawn_with_callback_returns_output() {
     let mut h = QuickTestAgent::minimal("");
-    h.agent.runtime.acp_subagent_spawn_fn = Some(std::sync::Arc::new(|cmd: String| {
+    h.agent.runtime.config.acp_subagent_spawn_fn = Some(std::sync::Arc::new(|cmd: String| {
         Box::pin(async move { Ok(format!("spawned: {cmd}")) })
     }));
     let result = h

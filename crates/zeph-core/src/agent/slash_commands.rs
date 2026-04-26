@@ -108,7 +108,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                     if cmd.is_empty() {
                         "Usage: /subagent spawn <command>\n\nExample: /subagent spawn zeph --acp"
                             .to_owned()
-                    } else if let Some(spawn_fn) = self.runtime.acp_subagent_spawn_fn.clone() {
+                    } else if let Some(spawn_fn) = self.runtime.config.acp_subagent_spawn_fn.clone()
+                    {
                         let cmd = cmd.to_owned();
                         match spawn_fn(cmd).await {
                             Ok(output) => output,
@@ -134,6 +135,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         trimmed: &str,
     ) -> Option<Result<(), error::AgentError>> {
         let known: Vec<String> = self
+            .services
             .orchestration
             .subagent_manager
             .as_ref()
@@ -168,7 +170,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         use std::fmt::Write;
         use zeph_llm::provider::Role;
 
-        let uptime = self.lifecycle.start_time.elapsed().as_secs();
+        let uptime = self.runtime.lifecycle.start_time.elapsed().as_secs();
         let msg_count = self
             .msg
             .messages
@@ -176,12 +178,12 @@ impl<C: crate::channel::Channel> Agent<C> {
             .filter(|m| m.role == Role::User)
             .count();
 
-        let metrics = collect_status_metrics(self.metrics.metrics_tx.as_ref());
-        let skill_count = self.skill_state.registry.read().all_meta().len();
+        let metrics = collect_status_metrics(self.runtime.metrics.metrics_tx.as_ref());
+        let skill_count = self.services.skill.registry.read().all_meta().len();
 
         let mut out = String::from("Session status:\n\n");
         let _ = writeln!(out, "Provider:  {}", self.provider.name());
-        let _ = writeln!(out, "Model:     {}", self.runtime.model_name);
+        let _ = writeln!(out, "Model:     {}", self.runtime.config.model_name);
         let _ = writeln!(out, "Uptime:    {uptime}s");
         let _ = writeln!(out, "Turns:     {msg_count}");
         let _ = writeln!(out, "API calls: {}", metrics.api_calls);
@@ -192,7 +194,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         );
         let _ = writeln!(out, "Skills:    {skill_count}");
         let _ = writeln!(out, "MCP:       {} server(s)", metrics.mcp_servers);
-        if let Some(ref tf) = self.tool_state.tool_schema_filter {
+        if let Some(ref tf) = self.services.tool_state.tool_schema_filter {
             let _ = writeln!(
                 out,
                 "Filter:    enabled (top_k={}, always_on={}, {} embeddings)",
@@ -201,7 +203,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                 tf.embedding_count(),
             );
         }
-        if let Some(ref adv) = self.runtime.adversarial_policy_info {
+        if let Some(ref adv) = self.runtime.config.adversarial_policy_info {
             let provider_display = if adv.provider.is_empty() {
                 "default"
             } else {
@@ -225,10 +227,10 @@ impl<C: crate::channel::Channel> Agent<C> {
         append_pruning_section(
             &mut out,
             self.context_manager.compression.pruning_strategy,
-            self.compression.subgoal_registry.subgoals.len(),
-            self.compression.subgoal_registry.active_subgoal(),
+            self.services.compression.subgoal_registry.subgoals.len(),
+            self.services.compression.subgoal_registry.active_subgoal(),
         );
-        append_graph_recall_section(&mut out, &self.memory_state.extraction.graph_config);
+        append_graph_recall_section(&mut out, &self.services.memory.extraction.graph_config);
 
         out.trim_end().to_owned()
     }
@@ -238,7 +240,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         use std::fmt::Write;
 
         let mut out = String::new();
-        if let Some(ref guardrail) = self.security.guardrail {
+        if let Some(ref guardrail) = self.services.security.guardrail {
             let stats = guardrail.stats();
             let _ = writeln!(out, "Guardrail: enabled");
             let _ = writeln!(out, "Action:    {:?}", guardrail.action());
@@ -271,17 +273,25 @@ impl<C: crate::channel::Channel> Agent<C> {
     pub(super) fn format_focus_status(&self) -> String {
         use std::fmt::Write;
         let mut out = String::from("Focus Agent status\n\n");
-        let _ = writeln!(out, "Enabled:          {}", self.focus.config.enabled);
-        let _ = writeln!(out, "Active session:   {}", self.focus.is_active());
-        if let Some(ref scope) = self.focus.active_scope {
+        let _ = writeln!(
+            out,
+            "Enabled:          {}",
+            self.services.focus.config.enabled
+        );
+        let _ = writeln!(out, "Active session:   {}", self.services.focus.is_active());
+        if let Some(ref scope) = self.services.focus.active_scope {
             let _ = writeln!(out, "Active scope:     {scope}");
         }
         let _ = writeln!(
             out,
             "Knowledge blocks: {}",
-            self.focus.knowledge_blocks.len()
+            self.services.focus.knowledge_blocks.len()
         );
-        let _ = writeln!(out, "Turns since focus: {}", self.focus.turns_since_focus);
+        let _ = writeln!(
+            out,
+            "Turns since focus: {}",
+            self.services.focus.turns_since_focus
+        );
         out.trim_end().to_owned()
     }
 
@@ -290,18 +300,30 @@ impl<C: crate::channel::Channel> Agent<C> {
     pub(super) fn format_sidequest_status(&self) -> String {
         use std::fmt::Write;
         let mut out = String::from("SideQuest status\n\n");
-        let _ = writeln!(out, "Enabled:        {}", self.sidequest.config.enabled);
+        let _ = writeln!(
+            out,
+            "Enabled:        {}",
+            self.services.sidequest.config.enabled
+        );
         let _ = writeln!(
             out,
             "Interval turns: {}",
-            self.sidequest.config.interval_turns
+            self.services.sidequest.config.interval_turns
         );
-        let _ = writeln!(out, "Turn counter:   {}", self.sidequest.turn_counter);
-        let _ = writeln!(out, "Passes run:     {}", self.sidequest.passes_run);
+        let _ = writeln!(
+            out,
+            "Turn counter:   {}",
+            self.services.sidequest.turn_counter
+        );
+        let _ = writeln!(
+            out,
+            "Passes run:     {}",
+            self.services.sidequest.passes_run
+        );
         let _ = writeln!(
             out,
             "Total evicted:  {} tool outputs",
-            self.sidequest.total_evicted
+            self.services.sidequest.total_evicted
         );
         out.trim_end().to_owned()
     }
@@ -448,7 +470,8 @@ impl<C: crate::channel::Channel> Agent<C> {
         use std::fmt::Write;
 
         let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
-            .skill_state
+            .services
+            .skill
             .registry
             .read()
             .all_meta()
@@ -457,7 +480,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .collect();
 
         // Clone Arc before .await to avoid holding &self across suspension points.
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let mut trust_map: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         for meta in &all_meta {
@@ -530,7 +553,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let cancel_tx = tokio_util::sync::CancellationToken::new();
-        self.lifecycle.user_loop = Some(crate::agent::state::LoopState {
+        self.runtime.lifecycle.user_loop = Some(crate::agent::state::LoopState {
             prompt,
             iteration: 0,
             interval,
@@ -540,7 +563,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
     /// Stop the active user loop and return a user-visible message.
     pub(crate) fn stop_user_loop(&mut self) -> String {
-        if let Some(ls) = self.lifecycle.user_loop.take() {
+        if let Some(ls) = self.runtime.lifecycle.user_loop.take() {
             let iters = ls.iteration;
             ls.cancel_tx.cancel();
             format!("Loop stopped after {iters} iteration(s).")
@@ -550,21 +573,22 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     async fn handle_skills_confusability_as_string(&mut self) -> Result<String, error::AgentError> {
-        let threshold = self.skill_state.confusability_threshold;
+        let threshold = self.services.skill.confusability_threshold;
         if threshold <= 0.0 {
             return Ok("Confusability monitoring is disabled. \
                  Set [skills] confusability_threshold in config (e.g. 0.85) to enable."
                 .to_owned());
         }
 
-        let Some(matcher) = &self.skill_state.matcher else {
+        let Some(matcher) = &self.services.skill.matcher else {
             return Ok(
                 "Skill matcher not available (no embedding provider configured).".to_owned(),
             );
         };
 
         let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
-            .skill_state
+            .services
+            .skill
             .registry
             .read()
             .all_meta()

@@ -190,7 +190,7 @@ impl<C: Channel> Agent<C> {
             metadata: MessageMetadata::default(),
         }];
 
-        let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
+        let llm_timeout = std::time::Duration::from_secs(self.runtime.config.timeouts.llm_seconds);
         let result = tokio::time::timeout(
             llm_timeout,
             self.summary_or_primary_provider().chat(&messages),
@@ -206,7 +206,7 @@ impl<C: Channel> Agent<C> {
             }
             Err(_elapsed) => {
                 tracing::warn!(
-                    timeout_secs = self.runtime.timeouts.llm_seconds,
+                    timeout_secs = self.runtime.config.timeouts.llm_seconds,
                     "tool output summarization timed out, falling back to truncation"
                 );
                 truncated
@@ -228,8 +228,8 @@ impl<C: Channel> Agent<C> {
                 output.len()
             )
         } else if let (Some(memory), Some(conv_id)) = (
-            &self.memory_state.persistence.memory,
-            self.memory_state.persistence.conversation_id,
+            &self.services.memory.persistence.memory,
+            self.services.memory.persistence.conversation_id,
         ) {
             match memory
                 .sqlite()
@@ -269,7 +269,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         outcome: AnomalyOutcome,
     ) -> Result<(), super::error::AgentError> {
-        let Some(ref mut det) = self.debug_state.anomaly_detector else {
+        let Some(ref mut det) = self.runtime.debug.anomaly_detector else {
             return Ok(());
         };
         match outcome {
@@ -277,7 +277,7 @@ impl<C: Channel> Agent<C> {
             AnomalyOutcome::Error => det.record_error(),
             AnomalyOutcome::Blocked => det.record_blocked(),
             AnomalyOutcome::ReasoningQualityFailure { model, tool } => {
-                if self.debug_state.reasoning_model_warning {
+                if self.runtime.debug.reasoning_model_warning {
                     det.record_reasoning_quality_failure(&model, &tool);
                 } else {
                     det.record_error();
@@ -297,7 +297,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Thin wrapper: delegates to [`SecurityState::scrub_pii`] and applies metrics side-effects.
     async fn scrub_pii_union(&mut self, text: &str, tool_name: &str) -> String {
-        let result = self.security.scrub_pii(text, tool_name).await;
+        let result = self.services.security.scrub_pii(text, tool_name).await;
         if result.ner_timeouts > 0 {
             self.update_metrics(|m| m.pii_ner_timeouts += u64::from(result.ner_timeouts));
         }
@@ -313,11 +313,14 @@ impl<C: Channel> Agent<C> {
 
     /// Delegate guardrail check to [`SecurityState::check_guardrail`].
     async fn apply_guardrail_to_tool_output(&self, body: String, tool_name: &str) -> String {
-        self.security.check_guardrail(body, tool_name).await
+        self.services
+            .security
+            .check_guardrail(body, tool_name)
+            .await
     }
 
     fn scan_output_and_warn(&mut self, text: &str) -> String {
-        let (cleaned, events) = self.security.exfiltration_guard.scan_output(text);
+        let (cleaned, events) = self.services.security.exfiltration_guard.scan_output(text);
         if !events.is_empty() {
             tracing::warn!(
                 count = events.len(),
@@ -341,12 +344,12 @@ impl<C: Channel> Agent<C> {
     pub(super) fn run_response_verification(&mut self, response_text: &str) -> bool {
         use zeph_sanitizer::response_verifier::{ResponseVerificationResult, VerificationContext};
 
-        if !self.security.response_verifier.is_enabled() {
+        if !self.services.security.response_verifier.is_enabled() {
             return false;
         }
 
         let ctx = VerificationContext { response_text };
-        let result = self.security.response_verifier.verify(&ctx);
+        let result = self.services.security.response_verifier.verify(&ctx);
 
         match result {
             ResponseVerificationResult::Clean => false,
@@ -374,7 +377,7 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) fn maybe_redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
-        if self.runtime.security.redact_secrets {
+        if self.runtime.config.security.redact_secrets {
             let redacted = redact_secrets(text);
             let sanitized = crate::redact::sanitize_paths(&redacted);
             match sanitized {
@@ -396,7 +399,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn check_response_cache(&mut self) -> Result<CacheCheckResult, super::error::AgentError> {
-        let Some(ref cache) = self.session.response_cache else {
+        let Some(ref cache) = self.services.session.response_cache else {
             return Ok(CacheCheckResult::Miss {
                 query_embedding: None,
             });
@@ -408,7 +411,8 @@ impl<C: Channel> Agent<C> {
         };
         // Clone content to avoid borrow conflict when calling self methods below.
         let content = content.to_owned();
-        let key = zeph_memory::ResponseCache::compute_key(&content, &self.runtime.model_name);
+        let key =
+            zeph_memory::ResponseCache::compute_key(&content, &self.runtime.config.model_name);
 
         // Fast path: exact-match lookup (sub-ms).
         if let Ok(Some(cached)) = cache.get(&key).await {
@@ -422,10 +426,10 @@ impl<C: Channel> Agent<C> {
         }
 
         // Semantic fallback: embed once, search by similarity.
-        if self.runtime.semantic_cache_enabled && self.provider.supports_embeddings() {
+        if self.runtime.config.semantic_cache_enabled && self.provider.supports_embeddings() {
             use zeph_llm::provider::LlmProvider as _;
-            let threshold = self.runtime.semantic_cache_threshold;
-            let max_candidates = self.runtime.semantic_cache_max_candidates;
+            let threshold = self.runtime.config.semantic_cache_threshold;
+            let max_candidates = self.runtime.config.semantic_cache_max_candidates;
             tracing::debug!(
                 max_candidates,
                 threshold,
@@ -433,7 +437,7 @@ impl<C: Channel> Agent<C> {
             );
             match self.embedding_provider.embed(&content).await {
                 Ok(embedding) => {
-                    let embed_model = self.skill_state.embedding_model.clone();
+                    let embed_model = self.services.skill.embedding_model.clone();
                     match cache
                         .get_semantic(&embedding, &embed_model, threshold, max_candidates)
                         .await
@@ -475,13 +479,13 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn store_response_in_cache(&self, response: &str, query_embedding: Option<Vec<f32>>) {
-        let Some(ref cache) = self.session.response_cache else {
+        let Some(ref cache) = self.services.session.response_cache else {
             return;
         };
         let Some(content) = self.last_user_content() else {
             return;
         };
-        let key = zeph_memory::ResponseCache::compute_key(content, &self.runtime.model_name);
+        let key = zeph_memory::ResponseCache::compute_key(content, &self.runtime.config.model_name);
 
         // If we have a pre-computed embedding (semantic cache enabled + embed succeeded) and the
         // response is not tool-call output, use put_with_embedding — it uses INSERT OR REPLACE so
@@ -490,12 +494,12 @@ impl<C: Channel> Agent<C> {
         if let Some(embedding) = query_embedding
             && !response.contains("[tool_use:")
         {
-            let embed_model = &self.skill_state.embedding_model;
+            let embed_model = &self.services.skill.embedding_model;
             if let Err(e) = cache
                 .put_with_embedding(
                     &key,
                     response,
-                    &self.runtime.model_name,
+                    &self.runtime.config.model_name,
                     &embedding,
                     embed_model,
                 )
@@ -503,24 +507,31 @@ impl<C: Channel> Agent<C> {
             {
                 tracing::warn!("failed to store semantic cache entry: {e:#}");
                 // Fallback: at least persist exact-match entry.
-                if let Err(e2) = cache.put(&key, response, &self.runtime.model_name).await {
+                if let Err(e2) = cache
+                    .put(&key, response, &self.runtime.config.model_name)
+                    .await
+                {
                     tracing::warn!("failed to store response in cache: {e2:#}");
                 }
             }
-        } else if let Err(e) = cache.put(&key, response, &self.runtime.model_name).await {
+        } else if let Err(e) = cache
+            .put(&key, response, &self.runtime.config.model_name)
+            .await
+        {
             tracing::warn!("failed to store response in cache: {e:#}");
         }
     }
 
     fn inject_active_skill_env(&self) {
-        if self.skill_state.active_skill_names.is_empty()
-            || self.skill_state.available_custom_secrets.is_empty()
+        if self.services.skill.active_skill_names.is_empty()
+            || self.services.skill.available_custom_secrets.is_empty()
         {
             return;
         }
         let active_skills: Vec<Skill> = {
-            let reg = self.skill_state.registry.read();
-            self.skill_state
+            let reg = self.services.skill.registry.read();
+            self.services
+                .skill
                 .active_skill_names
                 .iter()
                 .filter_map(|name| reg.skill(name).ok())
@@ -534,7 +545,8 @@ impl<C: Channel> Agent<C> {
                     .requires_secrets
                     .into_iter()
                     .filter_map(|secret_name| {
-                        self.skill_state
+                        self.services
+                            .skill
                             .available_custom_secrets
                             .get(&secret_name)
                             .map(|secret| {
@@ -830,14 +842,15 @@ impl<C: Channel> Agent<C> {
         body: String,
     ) -> (String, Option<VigilOutcome>) {
         // Subagent exemption (FR-009): skip VIGIL entirely.
-        if self.session.parent_tool_use_id.is_some() {
+        if self.services.session.parent_tool_use_id.is_some() {
             return (body, None);
         }
-        let Some(ref gate) = self.security.vigil else {
+        let Some(ref gate) = self.services.security.vigil else {
             return (body, None);
         };
 
         let intent = self
+            .services
             .session
             .current_turn_intent
             .as_deref()

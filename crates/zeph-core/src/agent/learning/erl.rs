@@ -10,18 +10,18 @@ impl<C: Channel> Agent<C> {
     /// Queries `skill_heuristics` for each active skill and returns a formatted section.
     /// Returns an empty string when ERL is disabled, memory is unavailable, or no heuristics exist.
     pub(crate) async fn build_erl_heuristics_prompt(&self) -> String {
-        let Some(config) = self.learning_engine.config.as_ref() else {
+        let Some(config) = self.services.learning_engine.config.as_ref() else {
             return String::new();
         };
         if !config.erl_enabled {
             return String::new();
         }
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return String::new();
         };
 
         let mut sections = String::new();
-        for skill_name in &self.skill_state.active_skill_names {
+        for skill_name in &self.services.skill.active_skill_names {
             let heuristics = match memory
                 .sqlite()
                 .load_skill_heuristics(
@@ -56,7 +56,7 @@ impl<C: Channel> Agent<C> {
 
     /// Fire-and-forget ERL heuristic extraction after a successful skill+tool turn.
     pub(crate) fn spawn_erl_reflection(&mut self, skill_name: &str) {
-        let Some(config) = self.learning_engine.config.as_ref() else {
+        let Some(config) = self.services.learning_engine.config.as_ref() else {
             return;
         };
         if !config.erl_enabled {
@@ -66,7 +66,7 @@ impl<C: Channel> Agent<C> {
         if tool_names.is_empty() {
             return;
         }
-        let Some(memory) = self.memory_state.persistence.memory.clone() else {
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
             return;
         };
         let task_summary = self
@@ -77,8 +77,8 @@ impl<C: Channel> Agent<C> {
             .find(|m| m.role == super::super::Role::User)
             .map(|m| m.content.chars().take(512).collect::<String>())
             .unwrap_or_default();
-        let status_tx = self.session.status_tx.clone();
-        if let Some(ref tx) = self.session.status_tx {
+        let status_tx = self.services.session.status_tx.clone();
+        if let Some(ref tx) = self.services.session.status_tx {
             let _ = tx.send("Reflecting on experience…".to_string());
         }
         let args = ErlTaskArgs {

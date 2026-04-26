@@ -154,7 +154,7 @@ async fn cooldown_guard_fires_after_expiry_and_resets_counter() {
     // Seed cached_prompt_tokens above threshold so maybe_compact proceeds past Guard 1.
     // Messages were pushed directly (bypassing push_message), so we set this explicitly.
     // Use a large value so freed_tokens > 0 after compact_context() recomputes.
-    agent.providers.cached_prompt_tokens = 10_000;
+    agent.runtime.providers.cached_prompt_tokens = 10_000;
 
     agent.maybe_compact().await.unwrap();
 
@@ -355,7 +355,7 @@ async fn compaction_hard_count_increments_on_hard_tier() {
         .with_metrics(tx);
 
     // Drive cached_prompt_tokens above the hard threshold (75% of 1000 = 750).
-    agent.providers.cached_prompt_tokens = 900;
+    agent.runtime.providers.cached_prompt_tokens = 900;
 
     agent.maybe_compact().await.unwrap();
 
@@ -376,14 +376,14 @@ async fn compaction_turns_after_hard_tracks_segments() {
     agent.context_manager.compaction_cooldown_turns = 0;
 
     // Simulate first hard compaction by driving cached tokens above threshold.
-    agent.providers.cached_prompt_tokens = 900;
+    agent.runtime.providers.cached_prompt_tokens = 900;
     agent.maybe_compact().await.unwrap();
     assert_eq!(rx.borrow().compaction_hard_count, 1);
     // turns_since_last_hard_compaction is now Some(0).
 
     // Simulate 3 turns where context is below threshold.
     // Reset per-turn state (done by advance_turn at the start of each turn).
-    agent.providers.cached_prompt_tokens = 0;
+    agent.runtime.providers.cached_prompt_tokens = 0;
     for _ in 0..3 {
         agent.context_manager.compaction = agent.context_manager.compaction.advance_turn();
         agent.maybe_compact().await.unwrap();
@@ -445,7 +445,7 @@ fn mid_iteration_skips_when_compacted_this_turn() {
     make_tool_pair_with_output(&mut agent, "a");
     agent.msg.messages[2].metadata.deferred_summary = Some("sum_a".into());
     // Simulate token pressure above soft threshold
-    agent.providers.cached_prompt_tokens = 75_000;
+    agent.runtime.providers.cached_prompt_tokens = 75_000;
     // Mark hard compaction already ran this turn
     agent.context_manager.compaction = CompactionState::CompactedThisTurn { cooldown: 2 };
 
@@ -477,7 +477,7 @@ fn mid_iteration_skips_when_tier_is_none() {
     make_tool_pair_with_output(&mut agent, "a");
     agent.msg.messages[2].metadata.deferred_summary = Some("sum_a".into());
     // Token count well below soft threshold (50_000 < 60_000) → None tier
-    agent.providers.cached_prompt_tokens = 50_000;
+    agent.runtime.providers.cached_prompt_tokens = 50_000;
 
     agent.maybe_soft_compact_mid_iteration();
 
@@ -504,7 +504,7 @@ fn mid_iteration_applies_deferred_summaries_at_soft_tier() {
     make_tool_pair_with_output(&mut agent, "a");
     agent.msg.messages[2].metadata.deferred_summary = Some("sum_a".into());
     // Token pressure above soft (75_000 > 60_000) but below hard (90_000)
-    agent.providers.cached_prompt_tokens = 75_000;
+    agent.runtime.providers.cached_prompt_tokens = 75_000;
 
     agent.maybe_soft_compact_mid_iteration();
 
@@ -531,7 +531,7 @@ fn mid_iteration_does_not_set_compacted_this_turn() {
     agent.context_manager.soft_compaction_threshold = 0.60;
 
     make_tool_pair_with_output(&mut agent, "a");
-    agent.providers.cached_prompt_tokens = 75_000;
+    agent.runtime.providers.cached_prompt_tokens = 75_000;
 
     assert!(!agent.context_manager.compaction.is_compacted_this_turn());
     agent.maybe_soft_compact_mid_iteration();
@@ -555,7 +555,7 @@ fn mid_iteration_fires_at_hard_tier() {
     make_tool_pair_with_output(&mut agent, "a");
     agent.msg.messages[2].metadata.deferred_summary = Some("sum_a".into());
     // Token pressure above hard threshold (95_000 > 90_000) → Hard tier
-    agent.providers.cached_prompt_tokens = 95_000;
+    agent.runtime.providers.cached_prompt_tokens = 95_000;
 
     agent.maybe_soft_compact_mid_iteration();
 
@@ -787,6 +787,7 @@ async fn rebuild_system_prompt_injects_memory_save_hint_when_tool_was_used() {
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
     agent
+        .services
         .tool_state
         .completed_tool_ids
         .insert("memory_save".to_owned());
@@ -843,7 +844,7 @@ async fn maybe_proactive_compress_focus_strategy_routes_to_focus_pass() {
     agent.context_manager.compression.strategy = CompressionStrategy::Focus;
     agent.context_manager.budget = Some(ContextBudget::new(100_000, 0.10));
     // Soft threshold is 60% of 100_000 = 60_000; set tokens above that.
-    agent.providers.cached_prompt_tokens = 70_000;
+    agent.runtime.providers.cached_prompt_tokens = 70_000;
 
     // min_window defaults to 6; with only the system message, the pass returns None immediately.
     let result = agent.maybe_proactive_compress().await;

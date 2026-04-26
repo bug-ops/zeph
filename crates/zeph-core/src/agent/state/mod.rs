@@ -16,11 +16,15 @@
 pub(crate) mod compaction;
 pub(crate) mod extraction;
 pub(crate) mod persistence;
+pub(crate) mod runtime;
+pub(crate) mod services;
 pub(crate) mod subsystems;
 
 pub(crate) use self::compaction::MemoryCompactionState;
 pub(crate) use self::extraction::MemoryExtractionState;
 pub(crate) use self::persistence::MemoryPersistenceState;
+pub(crate) use self::runtime::AgentRuntime;
+pub(crate) use self::services::Services;
 pub(crate) use self::subsystems::MemorySubsystemState;
 
 use std::collections::{HashMap, HashSet, VecDeque};

@@ -15,6 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (cancel bridge, sidequest eviction, speculative dispatch, digest, sweeper, etc.) are observable
   and gracefully cancelled on shutdown. Added `Agent::with_task_supervisor` builder method.
   Fallback to raw spawn is retained only in test harnesses where no supervisor is wired.
+- refactor(core): group `Agent<C>`'s 25+ direct sub-state fields into two aggregator structs —
+  `Services` (background subsystems: memory, skill, learning, mcp, security, orchestration,
+  compression, focus, sidequest, tool_state, session, feedback, experiments, index, and optional
+  pipelines) and `AgentRuntime` (config snapshot, lifecycle, providers, metrics, debug, instructions).
+  `Agent<C>` now has nine direct fields; `Services` and `AgentRuntime` are separately borrowable
+  sibling fields. Pure mechanical re-grouping: no behavior change, no public API change (#3509).
 - refactor(core): split three large test files in `zeph-core` (15,798 LoC total) into smaller
   sub-files to comply with the 1,000 LoC per-file CI gate (#3497):
   - `agent/context/tests.rs` (4,429 LoC) → `agent/context/tests/` (4 sub-files)

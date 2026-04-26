@@ -58,19 +58,24 @@ pub(super) fn collect_and_truncate_task_outputs(
 
 impl<C: crate::channel::Channel> Agent<C> {
     pub(super) fn config_for_orchestration(&self) -> &crate::config::OrchestrationConfig {
-        &self.orchestration.orchestration_config
+        &self.services.orchestration.orchestration_config
     }
 
     pub(super) async fn init_plan_cache_if_needed(&mut self) {
-        let plan_cache_config = self.orchestration.orchestration_config.plan_cache.clone();
-        if !plan_cache_config.enabled || self.orchestration.plan_cache.is_some() {
+        let plan_cache_config = self
+            .services
+            .orchestration
+            .orchestration_config
+            .plan_cache
+            .clone();
+        if !plan_cache_config.enabled || self.services.orchestration.plan_cache.is_some() {
             return;
         }
-        if let Some(ref memory) = self.memory_state.persistence.memory {
+        if let Some(ref memory) = self.services.memory.persistence.memory {
             let pool = memory.sqlite().pool().clone();
-            let embed_model = self.skill_state.embedding_model.clone();
+            let embed_model = self.services.skill.embedding_model.clone();
             match zeph_orchestration::PlanCache::new(pool, plan_cache_config, &embed_model).await {
-                Ok(cache) => self.orchestration.plan_cache = Some(cache),
+                Ok(cache) => self.services.orchestration.plan_cache = Some(cache),
                 Err(e) => {
                     tracing::warn!(error = %e, "plan cache: init failed, proceeding without cache");
                 }
@@ -83,7 +88,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     pub(super) async fn goal_embedding_for_cache(&mut self, goal: &str) -> Option<Vec<f32>> {
         use zeph_orchestration::normalize_goal;
 
-        self.orchestration.plan_cache.as_ref()?;
+        self.services.orchestration.plan_cache.as_ref()?;
         let normalized = normalize_goal(goal);
         // Clone provider before .await so &self is not held across the await boundary.
         let provider = self.embedding_provider.clone();
@@ -108,7 +113,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     ) -> Result<zeph_orchestration::TaskGraph, ()> {
         use zeph_orchestration::GraphStatus;
 
-        if self.orchestration.subagent_manager.is_none() {
+        if self.services.orchestration.subagent_manager.is_none() {
             let _ = self
                 .channel
                 .send(
@@ -116,13 +121,13 @@ impl<C: crate::channel::Channel> Agent<C> {
                      to enable plan execution.",
                 )
                 .await;
-            self.orchestration.pending_graph = Some(graph);
+            self.services.orchestration.pending_graph = Some(graph);
             return Err(());
         }
 
         if graph.tasks.is_empty() {
             let _ = self.channel.send("Plan has no tasks.").await;
-            self.orchestration.pending_graph = Some(graph);
+            self.services.orchestration.pending_graph = Some(graph);
             return Err(());
         }
 
@@ -134,7 +139,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     graph.status
                 ))
                 .await;
-            self.orchestration.pending_graph = Some(graph);
+            self.services.orchestration.pending_graph = Some(graph);
             return Err(());
         }
 
@@ -148,14 +153,19 @@ impl<C: crate::channel::Channel> Agent<C> {
         use zeph_orchestration::{DagScheduler, GraphStatus, RuleBasedRouter};
 
         let available_agents = self
+            .services
             .orchestration
             .subagent_manager
             .as_ref()
             .map(|m| m.definitions().to_vec())
             .unwrap_or_default();
 
-        let max_concurrent = self.orchestration.subagent_config.max_concurrent;
-        let max_parallel = self.orchestration.orchestration_config.max_parallel as usize;
+        let max_concurrent = self.services.orchestration.subagent_config.max_concurrent;
+        let max_parallel = self
+            .services
+            .orchestration
+            .orchestration_config
+            .max_parallel as usize;
         if max_concurrent < max_parallel + 1 {
             tracing::warn!(
                 max_concurrent,
@@ -167,33 +177,34 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
 
         let reserved = max_parallel.min(max_concurrent.saturating_sub(1));
-        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+        if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
             mgr.reserve_slots(reserved);
         }
 
         let scheduler = if graph.status == GraphStatus::Created {
             DagScheduler::new(
                 graph,
-                &self.orchestration.orchestration_config,
+                &self.services.orchestration.orchestration_config,
                 Box::new(RuleBasedRouter),
                 available_agents,
             )
         } else {
             DagScheduler::resume_from(
                 graph,
-                &self.orchestration.orchestration_config,
+                &self.services.orchestration.orchestration_config,
                 Box::new(RuleBasedRouter),
                 available_agents,
             )
         }
         .map_err(|e| {
-            if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+            if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
                 mgr.release_reservation(reserved);
             }
             error::OrchestrationFailure::SchedulerInit(e.to_string())
         })?;
 
         let provider_names: Vec<&str> = self
+            .runtime
             .providers
             .provider_pool
             .iter()
@@ -202,7 +213,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         scheduler
             .validate_verify_config(&provider_names)
             .map_err(|e| {
-                if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
                     mgr.release_reservation(reserved);
                 }
                 error::OrchestrationFailure::VerifyConfig(e.to_string())
@@ -212,7 +223,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     pub(super) async fn handle_plan_confirm(&mut self) -> Result<(), error::AgentError> {
-        let Some(graph) = self.orchestration.pending_graph.take() else {
+        let Some(graph) = self.services.orchestration.pending_graph.take() else {
             self.channel
                 .send("No pending plan to confirm. Use `/plan <goal>` to create one.")
                 .await?;
@@ -233,19 +244,19 @@ impl<C: crate::channel::Channel> Agent<C> {
             .await?;
 
         let plan_token = CancellationToken::new();
-        self.orchestration.plan_cancel_token = Some(plan_token.clone());
+        self.services.orchestration.plan_cancel_token = Some(plan_token.clone());
 
         let scheduler_result = self
             .run_scheduler_loop(&mut scheduler, task_count, plan_token)
             .await;
-        self.orchestration.plan_cancel_token = None;
+        self.services.orchestration.plan_cancel_token = None;
 
-        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+        if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
             mgr.release_reservation(reserved);
         }
 
         // Defensive save before `?` so a scheduler error still commits the last in-flight state.
-        if let Some(ref persistence) = self.orchestration.graph_persistence {
+        if let Some(ref persistence) = self.services.orchestration.graph_persistence {
             super::scheduler_loop::save_graph_snapshot(persistence, scheduler.graph().clone())
                 .await;
         }
@@ -268,7 +279,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         });
 
         // Authoritative terminal save after extra_task_outputs are merged — log at ERROR on failure.
-        if let Some(ref persistence) = self.orchestration.graph_persistence {
+        if let Some(ref persistence) = self.services.orchestration.graph_persistence {
             let final_id = completed_graph.id.clone();
             let snapshot = completed_graph.clone();
             match tokio::time::timeout(
@@ -311,15 +322,23 @@ impl<C: crate::channel::Channel> Agent<C> {
         use zeph_orchestration::{GraphStatus, PlanVerifier};
 
         if final_status != GraphStatus::Completed
-            || !self.orchestration.orchestration_config.verify_completeness
+            || !self
+                .services
+                .orchestration
+                .orchestration_config
+                .verify_completeness
             || scheduler.max_replans_remaining() == 0
         {
             return None;
         }
 
         let threshold = scheduler.completeness_threshold();
-        let max_tokens = self.orchestration.orchestration_config.verify_max_tokens;
-        let max_tasks = self.orchestration.orchestration_config.max_tasks;
+        let max_tokens = self
+            .services
+            .orchestration
+            .orchestration_config
+            .verify_max_tokens;
+        let max_tasks = self.services.orchestration.orchestration_config.max_tasks;
         let goal = scheduler.graph().goal.clone();
         let truncated_output = collect_and_truncate_task_outputs(scheduler.graph(), max_tokens);
 
@@ -328,12 +347,14 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
 
         let verify_provider = self
+            .services
             .orchestration
             .verify_provider
             .as_ref()
             .unwrap_or(&self.provider)
             .clone();
-        let mut verifier = PlanVerifier::new(verify_provider, self.security.sanitizer.clone());
+        let mut verifier =
+            PlanVerifier::new(verify_provider, self.services.security.sanitizer.clone());
         let result = verifier.verify_plan(&goal, &truncated_output).await;
 
         tracing::debug!(
@@ -382,11 +403,12 @@ impl<C: crate::channel::Channel> Agent<C> {
         let mut partial_graph = zeph_orchestration::TaskGraph::new(goal);
         partial_graph.tasks = gap_tasks;
 
-        let mut partial_config = self.orchestration.orchestration_config.clone();
+        let mut partial_config = self.services.orchestration.orchestration_config.clone();
         partial_config.max_replans = 0;
         partial_config.verify_completeness = false;
 
         let available_agents = self
+            .services
             .orchestration
             .subagent_manager
             .as_ref()
@@ -443,8 +465,8 @@ impl<C: crate::channel::Channel> Agent<C> {
         use zeph_orchestration::GraphStatus;
 
         // AdaptOrch: record outcome synchronously before aggregation.
-        if let Some(verdict) = self.orchestration.last_advisor_verdict.take()
-            && let Some(ref advisor) = self.orchestration.topology_advisor
+        if let Some(verdict) = self.services.orchestration.last_advisor_verdict.take()
+            && let Some(ref advisor) = self.services.orchestration.topology_advisor
         {
             let reward = if final_status == GraphStatus::Completed {
                 1.0
@@ -464,7 +486,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                          Use `/plan resume` to continue or `/plan retry` to retry failed tasks.",
                     )
                     .await?;
-                self.orchestration.pending_graph = Some(completed_graph);
+                self.services.orchestration.pending_graph = Some(completed_graph);
                 "paused"
             }
             GraphStatus::Canceled => {
@@ -480,11 +502,11 @@ impl<C: crate::channel::Channel> Agent<C> {
                         "Plan canceled. {done_count}/{total} tasks completed before cancellation."
                     ))
                     .await?;
-                self.orchestration.pending_goal_embedding.take();
+                self.services.orchestration.pending_goal_embedding.take();
                 "canceled"
             }
             _ => {
-                self.orchestration.pending_goal_embedding.take();
+                self.services.orchestration.pending_goal_embedding.take();
                 "unknown"
             }
         };
@@ -514,7 +536,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         let aggregator = LlmAggregator::new(
             self.provider.clone(),
-            &self.orchestration.orchestration_config,
+            &self.services.orchestration.orchestration_config,
         );
         match aggregator.aggregate(&completed_graph).await {
             Ok((synthesis, aggregator_usage)) => {
@@ -540,10 +562,10 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
         }
 
-        if let Some(ref cache) = self.orchestration.plan_cache
-            && let Some(embedding) = self.orchestration.pending_goal_embedding.take()
+        if let Some(ref cache) = self.services.orchestration.plan_cache
+            && let Some(embedding) = self.services.orchestration.pending_goal_embedding.take()
         {
-            let embed_model = self.skill_state.embedding_model.clone();
+            let embed_model = self.services.skill.embedding_model.clone();
             if let Err(e) = cache
                 .cache_plan(&completed_graph, &embedding, &embed_model)
                 .await
@@ -629,7 +651,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             m
         };
         self.channel.send(&msg).await?;
-        self.orchestration.pending_graph = Some(completed_graph);
+        self.services.orchestration.pending_graph = Some(completed_graph);
         Ok("failed")
     }
 
@@ -639,7 +661,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         &mut self,
         goal: &str,
     ) -> Option<zeph_orchestration::TopologyHint> {
-        let advisor = self.orchestration.topology_advisor.clone()?;
+        let advisor = self.services.orchestration.topology_advisor.clone()?;
         let verdict = advisor.recommend(goal).await;
         tracing::debug!(
             class = ?verdict.class,
@@ -649,7 +671,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             "adaptorch verdict"
         );
         let hint = verdict.hint;
-        self.orchestration.last_advisor_verdict = Some(verdict);
+        self.services.orchestration.last_advisor_verdict = Some(verdict);
         Some(hint)
     }
 
@@ -680,19 +702,21 @@ impl<C: crate::channel::Channel> Agent<C> {
     ) -> Result<String, error::AgentError> {
         use zeph_orchestration::{LlmPlanner, plan_with_cache};
 
-        if self.orchestration.pending_graph.is_some() {
+        if self.services.orchestration.pending_graph.is_some() {
             return Ok("A plan is already pending confirmation. \
                  Use /plan confirm to execute it or /plan cancel to discard."
                 .to_owned());
         }
 
         let available_agents = self
+            .services
             .orchestration
             .subagent_manager
             .as_ref()
             .map(|m| m.definitions().to_vec())
             .unwrap_or_default();
         let confirm_before_execute = self
+            .services
             .orchestration
             .orchestration_config
             .confirm_before_execute;
@@ -700,7 +724,12 @@ impl<C: crate::channel::Channel> Agent<C> {
         self.init_plan_cache_if_needed().await;
         let goal_embedding = self.goal_embedding_for_cache(goal).await;
         tracing::debug!(
-            cache_enabled = self.orchestration.orchestration_config.plan_cache.enabled,
+            cache_enabled = self
+                .services
+                .orchestration
+                .orchestration_config
+                .plan_cache
+                .enabled,
             has_embedding = goal_embedding.is_some(),
             "plan cache state for goal"
         );
@@ -708,14 +737,18 @@ impl<C: crate::channel::Channel> Agent<C> {
         let topology_hint = self.compute_topology_hint(goal).await;
 
         let planner_provider = self
+            .services
             .orchestration
             .planner_provider
             .as_ref()
             .unwrap_or(&self.provider)
             .clone();
-        let planner = LlmPlanner::new(planner_provider, &self.orchestration.orchestration_config);
-        let embed_model = self.skill_state.embedding_model.clone();
-        let max_tasks = self.orchestration.orchestration_config.max_tasks;
+        let planner = LlmPlanner::new(
+            planner_provider,
+            &self.services.orchestration.orchestration_config,
+        );
+        let embed_model = self.services.skill.embedding_model.clone();
+        let max_tasks = self.services.orchestration.orchestration_config.max_tasks;
         let (graph, planner_usage) = {
             use zeph_orchestration::Planner as _;
             let use_cache = topology_hint
@@ -724,7 +757,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             let result = if use_cache {
                 plan_with_cache(
                     &planner,
-                    self.orchestration.plan_cache.as_ref(),
+                    self.services.orchestration.plan_cache.as_ref(),
                     &self.provider,
                     goal_embedding.as_deref(),
                     &embed_model,
@@ -741,12 +774,12 @@ impl<C: crate::channel::Channel> Agent<C> {
             result.map_err(|e| error::OrchestrationFailure::PlannerError(e.to_string()))?
         };
 
-        self.orchestration.pending_goal_embedding = goal_embedding;
+        self.services.orchestration.pending_goal_embedding = goal_embedding;
         self.record_plan_metrics(&graph, planner_usage);
 
         let summary = format_plan_summary(&graph);
         if confirm_before_execute {
-            self.orchestration.pending_graph = Some(graph);
+            self.services.orchestration.pending_graph = Some(graph);
             Ok(format!(
                 "{summary}\nType `/plan confirm` to execute, or `/plan cancel` to abort."
             ))
@@ -766,7 +799,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
     pub(super) fn handle_plan_status_as_string(&mut self, _graph_id: Option<&str>) -> String {
         use zeph_orchestration::GraphStatus;
-        let Some(ref graph) = self.orchestration.pending_graph else {
+        let Some(ref graph) = self.services.orchestration.pending_graph else {
             return "No active plan.".to_owned();
         };
         match graph.status {
@@ -787,7 +820,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     pub(super) fn handle_plan_list_as_string(&mut self) -> String {
-        if let Some(ref graph) = self.orchestration.pending_graph {
+        if let Some(ref graph) = self.services.orchestration.pending_graph {
             let summary = format_plan_summary(graph);
             let status_label = match graph.status {
                 zeph_orchestration::GraphStatus::Created => "awaiting confirmation",
@@ -803,10 +836,10 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     pub(super) fn handle_plan_cancel_as_string(&mut self, _graph_id: Option<&str>) -> String {
-        if let Some(token) = self.orchestration.plan_cancel_token.take() {
+        if let Some(token) = self.services.orchestration.plan_cancel_token.take() {
             token.cancel();
             "Canceling plan execution...".to_owned()
-        } else if self.orchestration.pending_graph.take().is_some() {
+        } else if self.services.orchestration.pending_graph.take().is_some() {
             let now = std::time::Instant::now();
             self.update_metrics(|m| {
                 if let Some(ref mut s) = m.orchestration_graph {
@@ -814,7 +847,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     s.completed_at = Some(now);
                 }
             });
-            self.orchestration.pending_goal_embedding = None;
+            self.services.orchestration.pending_goal_embedding = None;
             "Plan canceled.".to_owned()
         } else {
             "No active plan to cancel.".to_owned()
@@ -841,7 +874,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     loaded.goal
                 );
                 tracing::info!(graph_id = %loaded.id, "rehydrated paused graph from disk");
-                self.orchestration.pending_graph = Some(loaded);
+                self.services.orchestration.pending_graph = Some(loaded);
                 msg
             }
             GraphStatus::Running => {
@@ -868,7 +901,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     running_count,
                     "crash-recovery: rehydrated Running graph from disk, reset to Paused"
                 );
-                self.orchestration.pending_graph = Some(graph);
+                self.services.orchestration.pending_graph = Some(graph);
                 msg
             }
             GraphStatus::Failed => {
@@ -877,7 +910,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                      Use `/plan retry` to retry failed tasks or `/plan status` to inspect."
                 );
                 tracing::info!(graph_id = %loaded.id, "rehydrated failed graph from disk");
-                self.orchestration.pending_graph = Some(loaded);
+                self.services.orchestration.pending_graph = Some(loaded);
                 msg
             }
             GraphStatus::Created => {
@@ -885,7 +918,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     "Plan '{id_str}' has not started executing. Use `/plan confirm` to start."
                 );
                 tracing::info!(graph_id = %loaded.id, "rehydrated created graph from disk");
-                self.orchestration.pending_graph = Some(loaded);
+                self.services.orchestration.pending_graph = Some(loaded);
                 msg
             }
         }
@@ -895,7 +928,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         use zeph_orchestration::{GraphId, GraphStatus};
 
         // Path A: active pending_graph exists — use existing status-gate logic.
-        if let Some(ref graph) = self.orchestration.pending_graph {
+        if let Some(ref graph) = self.services.orchestration.pending_graph {
             if let Some(id) = graph_id
                 && graph.id.to_string() != id
             {
@@ -913,6 +946,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                 );
             }
             let graph = self
+                .services
                 .orchestration
                 .pending_graph
                 .take()
@@ -922,7 +956,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                 "Resuming plan: {}\nUse `/plan confirm` to continue execution.",
                 graph.goal
             );
-            self.orchestration.pending_graph = Some(graph);
+            self.services.orchestration.pending_graph = Some(graph);
             return msg;
         }
 
@@ -935,7 +969,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             Ok(id) => id,
             Err(e) => return format!("Invalid graph id '{id_str}': {e}"),
         };
-        let Some(ref persistence) = self.orchestration.graph_persistence else {
+        let Some(ref persistence) = self.services.orchestration.graph_persistence else {
             return "Graph persistence is disabled. \
                     Set `orchestration.persistence_enabled = true` in config."
                 .to_owned();
@@ -955,7 +989,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     ) -> Result<String, error::AgentError> {
         use zeph_orchestration::{GraphStatus, dag};
 
-        let Some(ref graph) = self.orchestration.pending_graph else {
+        let Some(ref graph) = self.services.orchestration.pending_graph else {
             return Ok(
                 "No active plan to retry. Use `/plan status` to check the current state."
                     .to_owned(),
@@ -982,6 +1016,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         // SAFETY: `pending_graph` was verified to be `Some` at line 943 above; no other
         // code path between that check and here can set it to `None`.
         let mut graph = self
+            .services
             .orchestration
             .pending_graph
             .take()
@@ -1014,7 +1049,7 @@ impl<C: crate::channel::Channel> Agent<C> {
              Use `/plan confirm` to execute.",
             graph.goal
         );
-        self.orchestration.pending_graph = Some(graph);
+        self.services.orchestration.pending_graph = Some(graph);
         Ok(msg)
     }
 

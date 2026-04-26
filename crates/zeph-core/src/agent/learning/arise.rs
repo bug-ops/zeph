@@ -16,6 +16,7 @@ impl<C: Channel> Agent<C> {
             return self.provider.clone();
         }
         let Some(entry) = self
+            .runtime
             .providers
             .provider_pool
             .iter()
@@ -28,7 +29,7 @@ impl<C: Channel> Agent<C> {
             );
             return self.provider.clone();
         };
-        let Some(ref snapshot) = self.providers.provider_config_snapshot else {
+        let Some(ref snapshot) = self.runtime.providers.provider_config_snapshot else {
             return self.provider.clone();
         };
         match crate::provider_factory::build_provider_for_switch(&entry, snapshot) {
@@ -72,7 +73,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// All three features (ARISE, STEM, ERL) MUST be background tasks — never awaited inline.
     pub(crate) fn spawn_arise_trace_improvement(&mut self, skill_name: &str) {
-        let Some(config) = self.learning_engine.config.as_ref() else {
+        let Some(config) = self.services.learning_engine.config.as_ref() else {
             return;
         };
         if !config.arise_enabled {
@@ -82,14 +83,14 @@ impl<C: Channel> Agent<C> {
         if tool_names.len() < config.arise_min_tool_calls as usize {
             return;
         }
-        let Some(memory) = self.memory_state.persistence.memory.clone() else {
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
             return;
         };
-        let Ok(skill) = self.skill_state.registry.read().skill(skill_name) else {
+        let Ok(skill) = self.services.skill.registry.read().skill(skill_name) else {
             return;
         };
-        let status_tx = self.session.status_tx.clone();
-        if let Some(ref tx) = self.session.status_tx {
+        let status_tx = self.services.session.status_tx.clone();
+        if let Some(ref tx) = self.services.session.status_tx {
             let _ = tx.send(format!("Evolving skill: {skill_name}…"));
         }
         let args = AriseTaskArgs {
@@ -100,7 +101,7 @@ impl<C: Channel> Agent<C> {
             skill_desc: skill.description().to_string(),
             trace: tool_names.join(" \u{2192} "),
             max_auto_sections: config.max_auto_sections,
-            skill_paths: self.skill_state.skill_paths.clone(),
+            skill_paths: self.services.skill.skill_paths.clone(),
             auto_activate: config.auto_activate,
             max_versions: config.max_versions,
             domain_success_gate: config.domain_success_gate,

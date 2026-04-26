@@ -40,7 +40,7 @@ pub(super) const REASONING_PREFIX: &str = "[Reasoning Strategy]\n";
 impl<C: Channel> Agent<C> {
     pub(super) fn compaction_tier(&self) -> super::context_manager::CompactionTier {
         self.context_manager
-            .compaction_tier(self.providers.cached_prompt_tokens)
+            .compaction_tier(self.runtime.providers.cached_prompt_tokens)
     }
 }
 

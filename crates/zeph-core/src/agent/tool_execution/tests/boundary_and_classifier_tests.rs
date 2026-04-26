@@ -23,7 +23,7 @@ macro_rules! assert_external_data {
             flag_injection_patterns: false,
             ..Default::default()
         };
-        agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
+        agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
         let (result, _) = agent.sanitize_tool_output($body, $tool).await;
         assert!(
             result.contains("<external-data"),
@@ -56,7 +56,7 @@ macro_rules! assert_tool_output {
             flag_injection_patterns: false,
             ..Default::default()
         };
-        agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
+        agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
         let (result, _) = agent.sanitize_tool_output($body, $tool).await;
         assert!(
             result.contains("<tool-output"),
@@ -96,7 +96,7 @@ async fn sanitize_tool_output_memory_search_suppresses_injection_false_positive(
         flag_injection_patterns: true,
         ..Default::default()
     };
-    agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
+    agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
     // "system prompt" in recalled history is a benign false positive — must be suppressed.
     let (_, has_injection_flags) = agent
         .sanitize_tool_output(
@@ -319,7 +319,7 @@ async fn sanitize_tool_output_cross_boundary_acp_mcp_quarantines() {
         .with_metrics(tx)
         .with_acp_session(true)
         .with_quarantine_summarizer(qs);
-    agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
         enabled: true,
         spotlight_untrusted: true,
         flag_injection_patterns: false,
@@ -385,8 +385,8 @@ async fn sanitize_tool_output_cross_boundary_disabled_skips_quarantine() {
         .with_metrics(tx)
         .with_acp_session(true)
         .with_quarantine_summarizer(qs);
-    agent.security.sanitizer = ContentSanitizer::new(&iso_cfg);
-    agent.runtime.security.content_isolation = iso_cfg;
+    agent.services.security.sanitizer = ContentSanitizer::new(&iso_cfg);
+    agent.runtime.config.security.content_isolation = iso_cfg;
 
     let (result, _) = agent
         .sanitize_tool_output("MCP content", "some_server:tool_y")
@@ -426,7 +426,7 @@ async fn sanitize_tool_output_non_acp_session_normal_path() {
     // is_acp_session defaults to false (no with_acp_session call)
     let mut agent =
         crate::agent::Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
-    agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
         enabled: true,
         spotlight_untrusted: true,
         flag_injection_patterns: false,
@@ -578,7 +578,7 @@ async fn sanitize_tool_output_skipped_prefix_no_injection_flags() {
         flag_injection_patterns: true,
         ..Default::default()
     };
-    agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
+    agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
     let body =
         "[skipped] Tool call to list_directory skipped — utility policy recommends Retrieve.";
     let (result, has_injection_flags) = agent.sanitize_tool_output(body, "list_directory").await;
@@ -607,7 +607,7 @@ async fn sanitize_tool_output_stopped_prefix_no_injection_flags() {
         flag_injection_patterns: true,
         ..Default::default()
     };
-    agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
+    agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
     let body = "[stopped] Tool call to shell halted by the utility gate — budget exhausted or score below threshold 0.10.";
     let (result, has_injection_flags) = agent.sanitize_tool_output(body, "shell").await;
     assert!(
@@ -803,16 +803,16 @@ mod pii_ner_circuit_breaker {
         let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
 
         // Enable PII filter (required for scrub_pii_union to do anything).
-        agent.security.pii_filter = PiiFilter::new(PiiFilterConfig {
+        agent.services.security.pii_filter = PiiFilter::new(PiiFilterConfig {
             enabled: true,
             ..Default::default()
         });
-        agent.security.pii_ner_backend = Some(backend);
-        agent.security.pii_ner_timeout_ms = timeout_ms;
-        agent.security.pii_ner_max_chars = 8192;
-        agent.security.pii_ner_circuit_breaker_threshold = circuit_breaker_threshold;
-        agent.security.pii_ner_consecutive_timeouts = 0;
-        agent.security.pii_ner_tripped = false;
+        agent.services.security.pii_ner_backend = Some(backend);
+        agent.services.security.pii_ner_timeout_ms = timeout_ms;
+        agent.services.security.pii_ner_max_chars = 8192;
+        agent.services.security.pii_ner_circuit_breaker_threshold = circuit_breaker_threshold;
+        agent.services.security.pii_ner_consecutive_timeouts = 0;
+        agent.services.security.pii_ner_tripped = false;
         agent
     }
 
@@ -823,14 +823,14 @@ mod pii_ner_circuit_breaker {
 
         agent.scrub_pii_union("hello world", "test_tool").await;
         assert!(
-            !agent.security.pii_ner_tripped,
+            !agent.services.security.pii_ner_tripped,
             "should not trip after 1 timeout"
         );
-        assert_eq!(agent.security.pii_ner_consecutive_timeouts, 1);
+        assert_eq!(agent.services.security.pii_ner_consecutive_timeouts, 1);
 
         agent.scrub_pii_union("hello world", "test_tool").await;
         assert!(
-            agent.security.pii_ner_tripped,
+            agent.services.security.pii_ner_tripped,
             "should trip after 2 timeouts"
         );
     }
@@ -839,11 +839,11 @@ mod pii_ner_circuit_breaker {
     async fn tripped_breaker_skips_ner() {
         // Pre-trip the breaker; subsequent calls must not increment consecutive_timeouts.
         let mut agent = make_agent_with_ner(Arc::new(TimeoutBackend), 5, 2);
-        agent.security.pii_ner_tripped = true;
-        let before = agent.security.pii_ner_consecutive_timeouts;
+        agent.services.security.pii_ner_tripped = true;
+        let before = agent.services.security.pii_ner_consecutive_timeouts;
         agent.scrub_pii_union("hello world", "test_tool").await;
         assert_eq!(
-            agent.security.pii_ner_consecutive_timeouts, before,
+            agent.services.security.pii_ner_consecutive_timeouts, before,
             "tripped breaker must not invoke NER (consecutive counter must not change)"
         );
     }
@@ -851,14 +851,14 @@ mod pii_ner_circuit_breaker {
     #[tokio::test]
     async fn success_resets_consecutive_counter() {
         let mut agent = make_agent_with_ner(Arc::new(SuccessBackend), 5000, 2);
-        agent.security.pii_ner_consecutive_timeouts = 1;
+        agent.services.security.pii_ner_consecutive_timeouts = 1;
 
         agent.scrub_pii_union("hello", "test_tool").await;
         assert_eq!(
-            agent.security.pii_ner_consecutive_timeouts, 0,
+            agent.services.security.pii_ner_consecutive_timeouts, 0,
             "successful NER call must reset consecutive timeout counter"
         );
-        assert!(!agent.security.pii_ner_tripped);
+        assert!(!agent.services.security.pii_ner_tripped);
     }
 
     #[tokio::test]
@@ -870,7 +870,7 @@ mod pii_ner_circuit_breaker {
             agent.scrub_pii_union("hello", "test_tool").await;
         }
         assert!(
-            !agent.security.pii_ner_tripped,
+            !agent.services.security.pii_ner_tripped,
             "circuit breaker must not trip when threshold = 0"
         );
     }
@@ -941,7 +941,7 @@ mod histogram_recorder_wiring {
             .with_histogram_recorder(Some(Arc::clone(&recorder)));
 
         assert!(
-            agent.metrics.histogram_recorder.is_some(),
+            agent.runtime.metrics.histogram_recorder.is_some(),
             "histogram_recorder must be Some after with_histogram_recorder(Some(...))"
         );
     }
@@ -958,7 +958,7 @@ mod histogram_recorder_wiring {
         let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
             .with_histogram_recorder(Some(Arc::clone(&recorder) as Arc<dyn HistogramRecorder>));
 
-        agent.metrics.pending_timings = crate::metrics::TurnTimings {
+        agent.runtime.metrics.pending_timings = crate::metrics::TurnTimings {
             prepare_context_ms: 10,
             llm_chat_ms: 200,
             tool_exec_ms: 50,
@@ -1073,7 +1073,7 @@ mod skip_ml_internal_tools {
             flag_injection_patterns: true,
             ..Default::default()
         };
-        agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg)
+        agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg)
             .with_classifier(Arc::new(BlockedBackend), 5_000, 0.5)
             .with_enforcement_mode(zeph_config::InjectionEnforcementMode::Block);
         let (body, _) = agent

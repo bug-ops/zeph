@@ -65,7 +65,7 @@ async fn wire_graph_persistence_is_none_without_memory() {
         zeph_subagent::SubAgentManager::new(4),
     );
     assert!(
-        agent.orchestration.graph_persistence.is_none(),
+        agent.services.orchestration.graph_persistence.is_none(),
         "graph_persistence must be None when no memory is attached"
     );
 }
@@ -77,7 +77,7 @@ async fn wire_graph_persistence_is_none_when_disabled() {
     let cid = memory.sqlite().create_conversation().await.unwrap();
     let agent = make_orch_agent(memory, cid, false);
     assert!(
-        agent.orchestration.graph_persistence.is_none(),
+        agent.services.orchestration.graph_persistence.is_none(),
         "graph_persistence must be None when persistence_enabled = false"
     );
 }
@@ -89,7 +89,7 @@ async fn wire_graph_persistence_is_some_with_memory_and_enabled() {
     let cid = memory.sqlite().create_conversation().await.unwrap();
     let agent = make_orch_agent(memory, cid, true);
     assert!(
-        agent.orchestration.graph_persistence.is_some(),
+        agent.services.orchestration.graph_persistence.is_some(),
         "graph_persistence must be Some when memory attached and persistence_enabled = true"
     );
 }
@@ -134,6 +134,7 @@ async fn handle_plan_resume_from_disk_hydrates_paused() {
     let graph = graph_with_status(GraphStatus::Paused);
     let graph_id = graph.id.to_string();
     agent
+        .services
         .orchestration
         .graph_persistence
         .as_ref()
@@ -145,9 +146,15 @@ async fn handle_plan_resume_from_disk_hydrates_paused() {
         .handle_plan_resume_as_string(Some(graph_id.as_str()))
         .await;
     assert!(result.contains("Resuming plan"), "got: {result}");
-    assert!(agent.orchestration.pending_graph.is_some());
+    assert!(agent.services.orchestration.pending_graph.is_some());
     assert_eq!(
-        agent.orchestration.pending_graph.as_ref().unwrap().status,
+        agent
+            .services
+            .orchestration
+            .pending_graph
+            .as_ref()
+            .unwrap()
+            .status,
         GraphStatus::Paused
     );
 }
@@ -166,6 +173,7 @@ async fn handle_plan_resume_from_disk_recovers_running_as_paused() {
     graph.tasks.push(task);
     let graph_id = graph.id.to_string();
     agent
+        .services
         .orchestration
         .graph_persistence
         .as_ref()
@@ -177,7 +185,7 @@ async fn handle_plan_resume_from_disk_recovers_running_as_paused() {
         .handle_plan_resume_as_string(Some(graph_id.as_str()))
         .await;
     assert!(result.contains("Recovered plan"), "got: {result}");
-    let recovered = agent.orchestration.pending_graph.as_ref().unwrap();
+    let recovered = agent.services.orchestration.pending_graph.as_ref().unwrap();
     assert_eq!(recovered.status, GraphStatus::Paused);
     assert_eq!(recovered.tasks[0].status, TaskStatus::Ready);
     assert!(recovered.tasks[0].assigned_agent.is_none());
@@ -193,6 +201,7 @@ async fn handle_plan_resume_refuses_completed() {
     let graph = graph_with_status(GraphStatus::Completed);
     let graph_id = graph.id.to_string();
     agent
+        .services
         .orchestration
         .graph_persistence
         .as_ref()
@@ -204,7 +213,7 @@ async fn handle_plan_resume_refuses_completed() {
         .handle_plan_resume_as_string(Some(graph_id.as_str()))
         .await;
     assert!(result.contains("already Completed"), "got: {result}");
-    assert!(agent.orchestration.pending_graph.is_none());
+    assert!(agent.services.orchestration.pending_graph.is_none());
 }
 
 #[cfg(feature = "scheduler")]
@@ -217,6 +226,7 @@ async fn handle_plan_resume_refuses_canceled() {
     let graph = graph_with_status(GraphStatus::Canceled);
     let graph_id = graph.id.to_string();
     agent
+        .services
         .orchestration
         .graph_persistence
         .as_ref()
@@ -228,7 +238,7 @@ async fn handle_plan_resume_refuses_canceled() {
         .handle_plan_resume_as_string(Some(graph_id.as_str()))
         .await;
     assert!(result.contains("Canceled"), "got: {result}");
-    assert!(agent.orchestration.pending_graph.is_none());
+    assert!(agent.services.orchestration.pending_graph.is_none());
 }
 
 #[cfg(feature = "scheduler")]

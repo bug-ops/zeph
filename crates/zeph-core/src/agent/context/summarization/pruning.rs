@@ -49,7 +49,7 @@ impl<C: Channel> Agent<C> {
         let mut protection_boundary = self.msg.messages.len();
         if protect > 0 {
             for (i, msg) in self.msg.messages.iter().enumerate().rev() {
-                tail_tokens += self.metrics.token_counter.count_message_tokens(msg);
+                tail_tokens += self.runtime.metrics.token_counter.count_message_tokens(msg);
                 if tail_tokens >= protect {
                     protection_boundary = i;
                     break;
@@ -86,11 +86,11 @@ impl<C: Channel> Agent<C> {
                     // Skip already-archived bodies — they are tiny and irretrievable if pruned.
                     && !body.starts_with("[archived:")
                 {
-                    freed += self.metrics.token_counter.count_tokens(body);
+                    freed += self.runtime.metrics.token_counter.count_tokens(body);
                     let ref_notice = extract_overflow_ref(body)
                         .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
                         .unwrap_or_default();
-                    freed -= self.metrics.token_counter.count_tokens(&ref_notice);
+                    freed -= self.runtime.metrics.token_counter.count_tokens(&ref_notice);
                     *compacted_at = Some(now);
                     *body = ref_notice;
                     modified = true;
@@ -120,7 +120,7 @@ impl<C: Channel> Agent<C> {
         let mut tail_tokens = 0usize;
         let mut boundary = self.msg.messages.len();
         for (i, msg) in self.msg.messages.iter().enumerate().rev() {
-            tail_tokens += self.metrics.token_counter.count_message_tokens(msg);
+            tail_tokens += self.runtime.metrics.token_counter.count_message_tokens(msg);
             if tail_tokens >= protect {
                 boundary = i;
                 break;
@@ -149,19 +149,23 @@ impl<C: Channel> Agent<C> {
         use crate::config::PruningStrategy;
 
         let goal = match &self.context_manager.compression.pruning_strategy {
-            PruningStrategy::TaskAware => self.compression.current_task_goal.clone(),
+            PruningStrategy::TaskAware => self.services.compression.current_task_goal.clone(),
             _ => None,
         };
 
         let scores = if let Some(ref goal) = goal {
-            score_blocks_task_aware(&self.msg.messages, goal, &self.metrics.token_counter)
+            score_blocks_task_aware(
+                &self.msg.messages,
+                goal,
+                &self.runtime.metrics.token_counter,
+            )
         } else {
             // No goal available: fall back to oldest-first directly (not through the
             // dispatcher, which would recurse back here — S4 fix).
             return self.prune_tool_outputs_oldest_first(min_to_free);
         };
 
-        if let Some(ref d) = self.debug_state.debug_dumper {
+        if let Some(ref d) = self.runtime.debug.debug_dumper {
             d.dump_pruning_scores(&scores);
         }
 
@@ -203,11 +207,11 @@ impl<C: Channel> Agent<C> {
                     && compacted_at.is_none()
                     && !body.is_empty()
                 {
-                    freed += self.metrics.token_counter.count_tokens(body);
+                    freed += self.runtime.metrics.token_counter.count_tokens(body);
                     let ref_notice = extract_overflow_ref(body)
                         .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
                         .unwrap_or_default();
-                    freed -= self.metrics.token_counter.count_tokens(&ref_notice);
+                    freed -= self.runtime.metrics.token_counter.count_tokens(&ref_notice);
                     *compacted_at = Some(now);
                     *body = ref_notice;
                     modified = true;
@@ -239,10 +243,14 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn prune_tool_outputs_mig(&mut self, min_to_free: usize) -> usize {
         use crate::agent::compaction_strategy::score_blocks_mig;
 
-        let goal = self.compression.current_task_goal.as_deref();
-        let mut scores = score_blocks_mig(&self.msg.messages, goal, &self.metrics.token_counter);
+        let goal = self.services.compression.current_task_goal.as_deref();
+        let mut scores = score_blocks_mig(
+            &self.msg.messages,
+            goal,
+            &self.runtime.metrics.token_counter,
+        );
 
-        if let Some(ref d) = self.debug_state.debug_dumper {
+        if let Some(ref d) = self.runtime.debug.debug_dumper {
             d.dump_pruning_scores(&scores);
         }
 
@@ -283,11 +291,11 @@ impl<C: Channel> Agent<C> {
                     && compacted_at.is_none()
                     && !body.is_empty()
                 {
-                    freed += self.metrics.token_counter.count_tokens(body);
+                    freed += self.runtime.metrics.token_counter.count_tokens(body);
                     let ref_notice = extract_overflow_ref(body)
                         .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
                         .unwrap_or_default();
-                    freed -= self.metrics.token_counter.count_tokens(&ref_notice);
+                    freed -= self.runtime.metrics.token_counter.count_tokens(&ref_notice);
                     *compacted_at = Some(now);
                     *body = ref_notice;
                     modified = true;
@@ -322,17 +330,17 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn prune_tool_outputs_subgoal(&mut self, min_to_free: usize) -> usize {
         use crate::agent::compaction_strategy::score_blocks_subgoal;
 
-        if let Some(ref d) = self.debug_state.debug_dumper {
-            d.dump_subgoal_registry(&self.compression.subgoal_registry);
+        if let Some(ref d) = self.runtime.debug.debug_dumper {
+            d.dump_subgoal_registry(&self.services.compression.subgoal_registry);
         }
 
         let scores = score_blocks_subgoal(
             &self.msg.messages,
-            &self.compression.subgoal_registry,
-            &self.metrics.token_counter,
+            &self.services.compression.subgoal_registry,
+            &self.runtime.metrics.token_counter,
         );
 
-        if let Some(ref d) = self.debug_state.debug_dumper {
+        if let Some(ref d) = self.runtime.debug.debug_dumper {
             d.dump_pruning_scores(&scores);
         }
 
@@ -352,17 +360,17 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn prune_tool_outputs_subgoal_mig(&mut self, min_to_free: usize) -> usize {
         use crate::agent::compaction_strategy::score_blocks_subgoal_mig;
 
-        if let Some(ref d) = self.debug_state.debug_dumper {
-            d.dump_subgoal_registry(&self.compression.subgoal_registry);
+        if let Some(ref d) = self.runtime.debug.debug_dumper {
+            d.dump_subgoal_registry(&self.services.compression.subgoal_registry);
         }
 
         let mut scores = score_blocks_subgoal_mig(
             &self.msg.messages,
-            &self.compression.subgoal_registry,
-            &self.metrics.token_counter,
+            &self.services.compression.subgoal_registry,
+            &self.runtime.metrics.token_counter,
         );
 
-        if let Some(ref d) = self.debug_state.debug_dumper {
+        if let Some(ref d) = self.runtime.debug.debug_dumper {
             d.dump_pruning_scores(&scores);
         }
 
@@ -412,11 +420,11 @@ impl<C: Channel> Agent<C> {
                     && compacted_at.is_none()
                     && !body.is_empty()
                 {
-                    freed += self.metrics.token_counter.count_tokens(body);
+                    freed += self.runtime.metrics.token_counter.count_tokens(body);
                     let ref_notice = extract_overflow_ref(body)
                         .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
                         .unwrap_or_default();
-                    freed -= self.metrics.token_counter.count_tokens(&ref_notice);
+                    freed -= self.runtime.metrics.token_counter.count_tokens(&ref_notice);
                     *compacted_at = Some(now);
                     *body = ref_notice;
                     modified = true;
@@ -478,19 +486,19 @@ impl<C: Channel> Agent<C> {
                     MessagePart::ToolOutput {
                         body, compacted_at, ..
                     } if compacted_at.is_none() && !body.is_empty() => {
-                        freed += self.metrics.token_counter.count_tokens(body);
+                        freed += self.runtime.metrics.token_counter.count_tokens(body);
                         let ref_notice = extract_overflow_ref(body)
                             .map(|p| {
                                 format!("[tool output pruned; use read_overflow {p} to retrieve]")
                             })
                             .unwrap_or_default();
-                        freed -= self.metrics.token_counter.count_tokens(&ref_notice);
+                        freed -= self.runtime.metrics.token_counter.count_tokens(&ref_notice);
                         *compacted_at = Some(now);
                         *body = ref_notice;
                         modified = true;
                     }
                     MessagePart::ToolResult { content, .. } => {
-                        let tokens = self.metrics.token_counter.count_tokens(content);
+                        let tokens = self.runtime.metrics.token_counter.count_tokens(content);
                         if tokens > 20 {
                             freed += tokens;
                             let ref_notice = extract_overflow_ref(content).map_or_else(
@@ -501,7 +509,7 @@ impl<C: Channel> Agent<C> {
                                     )
                                 },
                             );
-                            freed -= self.metrics.token_counter.count_tokens(&ref_notice);
+                            freed -= self.runtime.metrics.token_counter.count_tokens(&ref_notice);
                             *content = ref_notice;
                             modified = true;
                         }

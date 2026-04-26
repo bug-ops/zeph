@@ -17,12 +17,12 @@ impl<C: Channel> Agent<C> {
 
     /// Build the explicit LLM deps struct used by stateless summarization helpers.
     fn build_summarization_deps(&self) -> SummarizationDeps {
-        let debug_dumper = self.debug_state.debug_dumper.clone();
-        let token_counter = Arc::clone(&self.metrics.token_counter);
+        let debug_dumper = self.runtime.debug.debug_dumper.clone();
+        let token_counter = Arc::clone(&self.runtime.metrics.token_counter);
         #[allow(clippy::type_complexity)]
         let on_anchored_summary: Option<Arc<dyn Fn(&AnchoredSummary, bool) + Send + Sync>> =
             debug_dumper.map(|d| {
-                let tc = Arc::clone(&self.metrics.token_counter);
+                let tc = Arc::clone(&self.runtime.metrics.token_counter);
                 #[allow(clippy::type_complexity)]
                 let cb: Arc<dyn Fn(&AnchoredSummary, bool) + Send + Sync> =
                     Arc::new(move |summary: &AnchoredSummary, fallback: bool| {
@@ -32,9 +32,9 @@ impl<C: Channel> Agent<C> {
             });
         SummarizationDeps {
             provider: self.summary_or_primary_provider().clone(),
-            llm_timeout: std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds),
+            llm_timeout: std::time::Duration::from_secs(self.runtime.config.timeouts.llm_seconds),
             token_counter,
-            structured_summaries: self.memory_state.compaction.structured_summaries,
+            structured_summaries: self.services.memory.compaction.structured_summaries,
             on_anchored_summary,
         }
     }
@@ -121,17 +121,21 @@ impl<C: Channel> Agent<C> {
         }
 
         // Structured path: attempt AnchoredSummary when enabled, fall back to prose on failure.
-        if self.memory_state.compaction.structured_summaries {
+        if self.services.memory.compaction.structured_summaries {
             match self.try_summarize_structured(messages, guidelines).await {
                 Ok(anchored) => {
-                    if let Some(ref d) = self.debug_state.debug_dumper {
-                        d.dump_anchored_summary(&anchored, false, &self.metrics.token_counter);
+                    if let Some(ref d) = self.runtime.debug.debug_dumper {
+                        d.dump_anchored_summary(
+                            &anchored,
+                            false,
+                            &self.runtime.metrics.token_counter,
+                        );
                     }
                     return Ok(super::cap_summary(anchored.to_markdown(), 16_000));
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "structured summarization failed, falling back to prose");
-                    if let Some(ref d) = self.debug_state.debug_dumper {
+                    if let Some(ref d) = self.runtime.debug.debug_dumper {
                         let empty = AnchoredSummary {
                             session_intent: String::new(),
                             files_modified: vec![],
@@ -139,7 +143,7 @@ impl<C: Channel> Agent<C> {
                             open_questions: vec![],
                             next_steps: vec![],
                         };
-                        d.dump_anchored_summary(&empty, true, &self.metrics.token_counter);
+                        d.dump_anchored_summary(&empty, true, &self.runtime.metrics.token_counter);
                     }
                 }
             }
@@ -292,12 +296,13 @@ impl<C: Channel> Agent<C> {
     /// or the database query fails (non-fatal).
     async fn load_compression_guidelines_if_enabled(&self) -> String {
         let enabled = self
-            .memory_state
+            .services
+            .memory
             .compaction
             .compression_guidelines_config
             .enabled;
-        let memory = self.memory_state.persistence.memory.clone();
-        let conv_id = self.memory_state.persistence.conversation_id;
+        let memory = self.services.memory.persistence.memory.clone();
+        let conv_id = self.services.memory.persistence.conversation_id;
         Self::load_compression_guidelines(enabled, memory, conv_id).await
     }
 
@@ -372,8 +377,8 @@ impl<C: Channel> Agent<C> {
 
     async fn archive_tool_outputs_for_compaction(&self, to_compact: &[Message]) -> Vec<String> {
         let archive_enabled = self.context_manager.compression.archive_tool_outputs;
-        let memory = self.memory_state.persistence.memory.clone();
-        let cid = self.memory_state.persistence.conversation_id;
+        let memory = self.services.memory.persistence.memory.clone();
+        let cid = self.services.memory.persistence.conversation_id;
         Self::archive_tool_outputs(archive_enabled, memory, cid, to_compact.to_vec()).await
     }
 
@@ -691,7 +696,7 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent.memory_state.compaction.structured_summaries = true;
+        agent.services.memory.compaction.structured_summaries = true;
 
         let messages = vec![Message {
             role: Role::User,
@@ -735,7 +740,7 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent.memory_state.compaction.structured_summaries = true;
+        agent.services.memory.compaction.structured_summaries = true;
 
         let messages = vec![Message {
             role: Role::User,
@@ -769,7 +774,7 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent.memory_state.compaction.structured_summaries = true;
+        agent.services.memory.compaction.structured_summaries = true;
 
         let messages = vec![Message {
             role: Role::User,
@@ -843,7 +848,7 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent.memory_state.compaction.structured_summaries = true;
+        agent.services.memory.compaction.structured_summaries = true;
 
         let messages = vec![Message {
             role: Role::User,
@@ -982,7 +987,7 @@ mod tests {
             MockToolExecutor::no_tools(),
         );
         agent.context_manager.compression.pruning_strategy = PruningStrategy::TaskAware;
-        agent.compression.current_task_goal =
+        agent.services.compression.current_task_goal =
             Some("authentication middleware session token".to_string());
         // Disable tail protection so the pruner can evict all messages in the test.
         agent.context_manager.prune_protect_tokens = 0;
@@ -1051,7 +1056,7 @@ mod tests {
         );
         agent.context_manager.compression.pruning_strategy = PruningStrategy::Mig;
         // Set a goal so MIG scorer has context for relevance scoring.
-        agent.compression.current_task_goal = Some("authentication token".to_string());
+        agent.services.compression.current_task_goal = Some("authentication token".to_string());
         // Disable tail protection so the pruner can evict all messages in the test.
         agent.context_manager.prune_protect_tokens = 0;
 
@@ -1125,7 +1130,7 @@ mod tests {
             MockToolExecutor::no_tools(),
         );
         agent.context_manager.compression.pruning_strategy = PruningStrategy::TaskAware;
-        agent.compression.current_task_goal = Some("irrelevant goal".to_string());
+        agent.services.compression.current_task_goal = Some("irrelevant goal".to_string());
         // Protect the entire tail (999_999 tokens) — nothing should be evicted.
         agent.context_manager.prune_protect_tokens = 999_999;
 
@@ -1177,7 +1182,7 @@ mod tests {
             MockToolExecutor::no_tools(),
         );
         agent.context_manager.compression.pruning_strategy = PruningStrategy::Mig;
-        agent.compression.current_task_goal = Some("irrelevant goal".to_string());
+        agent.services.compression.current_task_goal = Some("irrelevant goal".to_string());
         // Protect the entire tail (999_999 tokens) — nothing should be evicted.
         agent.context_manager.prune_protect_tokens = 999_999;
 
@@ -1287,7 +1292,7 @@ mod orphan_tool_result_tests {
             MockToolExecutor::no_tools(),
         );
         agent.context_manager.compaction_preserve_tail = 1;
-        agent.memory_state.compaction.structured_summaries = false;
+        agent.services.memory.compaction.structured_summaries = false;
 
         // Append messages after the agent system prompt (idx 0).
         agent.msg.messages.push(Message {
@@ -1395,7 +1400,7 @@ mod orphan_tool_result_tests {
             MockToolExecutor::no_tools(),
         );
         agent.context_manager.compaction_preserve_tail = 1;
-        agent.memory_state.compaction.structured_summaries = false;
+        agent.services.memory.compaction.structured_summaries = false;
 
         let text = |role: Role, s: &str| Message {
             role,

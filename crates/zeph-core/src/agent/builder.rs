@@ -103,7 +103,9 @@ impl<C: Channel> Agent<C> {
         // *and* model_name is also empty, the agent was constructed without any valid provider
         // configuration — likely a programming error (e.g. Agent::new called but
         // apply_session_config was never called to set the model name).
-        if self.providers.provider_pool.is_empty() && self.runtime.model_name.is_empty() {
+        if self.runtime.providers.provider_pool.is_empty()
+            && self.runtime.config.model_name.is_empty()
+        {
             return Err(BuildError::MissingProviders);
         }
         Ok(self)
@@ -124,11 +126,11 @@ impl<C: Channel> Agent<C> {
         recall_limit: usize,
         summarization_threshold: usize,
     ) -> Self {
-        self.memory_state.persistence.memory = Some(memory);
-        self.memory_state.persistence.conversation_id = Some(conversation_id);
-        self.memory_state.persistence.history_limit = history_limit;
-        self.memory_state.persistence.recall_limit = recall_limit;
-        self.memory_state.compaction.summarization_threshold = summarization_threshold;
+        self.services.memory.persistence.memory = Some(memory);
+        self.services.memory.persistence.conversation_id = Some(conversation_id);
+        self.services.memory.persistence.history_limit = history_limit;
+        self.services.memory.persistence.recall_limit = recall_limit;
+        self.services.memory.compaction.summarization_threshold = summarization_threshold;
         self.update_metrics(|m| {
             m.qdrant_available = false;
             m.sqlite_conversation_id = Some(conversation_id);
@@ -139,8 +141,8 @@ impl<C: Channel> Agent<C> {
     /// Configure autosave behaviour for assistant messages.
     #[must_use]
     pub fn with_autosave_config(mut self, autosave_assistant: bool, min_length: usize) -> Self {
-        self.memory_state.persistence.autosave_assistant = autosave_assistant;
-        self.memory_state.persistence.autosave_min_length = min_length;
+        self.services.memory.persistence.autosave_assistant = autosave_assistant;
+        self.services.memory.persistence.autosave_min_length = min_length;
         self
     }
 
@@ -148,14 +150,14 @@ impl<C: Channel> Agent<C> {
     /// before older ones are truncated.
     #[must_use]
     pub fn with_tool_call_cutoff(mut self, cutoff: usize) -> Self {
-        self.memory_state.persistence.tool_call_cutoff = cutoff;
+        self.services.memory.persistence.tool_call_cutoff = cutoff;
         self
     }
 
     /// Enable or disable structured (JSON) summarization of conversation history.
     #[must_use]
     pub fn with_structured_summaries(mut self, enabled: bool) -> Self {
-        self.memory_state.compaction.structured_summaries = enabled;
+        self.services.memory.compaction.structured_summaries = enabled;
         self
     }
 
@@ -168,7 +170,7 @@ impl<C: Channel> Agent<C> {
     /// The format is applied render-only — it is never persisted.
     #[must_use]
     pub fn with_retrieval_config(mut self, context_format: zeph_config::ContextFormat) -> Self {
-        self.memory_state.persistence.context_format = context_format;
+        self.services.memory.persistence.context_format = context_format;
         self
     }
 
@@ -181,17 +183,20 @@ impl<C: Channel> Agent<C> {
         context_strategy: crate::config::ContextStrategy,
         crossover_turn_threshold: u32,
     ) -> Self {
-        self.memory_state.compaction.compression_guidelines_config = compression_guidelines;
-        self.memory_state.compaction.digest_config = digest;
-        self.memory_state.compaction.context_strategy = context_strategy;
-        self.memory_state.compaction.crossover_turn_threshold = crossover_turn_threshold;
+        self.services
+            .memory
+            .compaction
+            .compression_guidelines_config = compression_guidelines;
+        self.services.memory.compaction.digest_config = digest;
+        self.services.memory.compaction.context_strategy = context_strategy;
+        self.services.memory.compaction.crossover_turn_threshold = crossover_turn_threshold;
         self
     }
 
     /// Set the document indexing configuration for `MagicDocs` and RAG.
     #[must_use]
     pub fn with_document_config(mut self, config: crate::config::DocumentConfig) -> Self {
-        self.memory_state.extraction.document_config = config;
+        self.services.memory.extraction.document_config = config;
         self
     }
 
@@ -202,8 +207,8 @@ impl<C: Channel> Agent<C> {
         trajectory: crate::config::TrajectoryConfig,
         category: crate::config::CategoryConfig,
     ) -> Self {
-        self.memory_state.extraction.trajectory_config = trajectory;
-        self.memory_state.extraction.category_config = category;
+        self.services.memory.extraction.trajectory_config = trajectory;
+        self.services.memory.extraction.category_config = category;
         self
     }
 
@@ -218,7 +223,7 @@ impl<C: Channel> Agent<C> {
     pub fn with_graph_config(mut self, config: crate::config::GraphConfig) -> Self {
         // Delegates to MemoryExtractionState::apply_graph_config which handles the RPE router
         // initialization and emits the R-IMP-03 PII warning.
-        self.memory_state.extraction.apply_graph_config(config);
+        self.services.memory.extraction.apply_graph_config(config);
         self
     }
 
@@ -233,10 +238,19 @@ impl<C: Channel> Agent<C> {
         max_messages: usize,
         timeout_secs: u64,
     ) -> Self {
-        self.memory_state.compaction.shutdown_summary = enabled;
-        self.memory_state.compaction.shutdown_summary_min_messages = min_messages;
-        self.memory_state.compaction.shutdown_summary_max_messages = max_messages;
-        self.memory_state.compaction.shutdown_summary_timeout_secs = timeout_secs;
+        self.services.memory.compaction.shutdown_summary = enabled;
+        self.services
+            .memory
+            .compaction
+            .shutdown_summary_min_messages = min_messages;
+        self.services
+            .memory
+            .compaction
+            .shutdown_summary_max_messages = max_messages;
+        self.services
+            .memory
+            .compaction
+            .shutdown_summary_timeout_secs = timeout_secs;
         self
     }
 
@@ -249,8 +263,8 @@ impl<C: Channel> Agent<C> {
         paths: Vec<PathBuf>,
         rx: mpsc::Receiver<SkillEvent>,
     ) -> Self {
-        self.skill_state.skill_paths = paths;
-        self.skill_state.skill_reload_rx = Some(rx);
+        self.services.skill.skill_paths = paths;
+        self.services.skill.skill_reload_rx = Some(rx);
         self
     }
 
@@ -264,22 +278,22 @@ impl<C: Channel> Agent<C> {
         mut self,
         supplier: impl Fn() -> Vec<PathBuf> + Send + Sync + 'static,
     ) -> Self {
-        self.skill_state.plugin_dirs_supplier = Some(std::sync::Arc::new(supplier));
+        self.services.skill.plugin_dirs_supplier = Some(std::sync::Arc::new(supplier));
         self
     }
 
     /// Set the directory used by `/skill install` and `/skill remove`.
     #[must_use]
     pub fn with_managed_skills_dir(mut self, dir: PathBuf) -> Self {
-        self.skill_state.managed_dir = Some(dir.clone());
-        self.skill_state.registry.write().register_hub_dir(dir);
+        self.services.skill.managed_dir = Some(dir.clone());
+        self.services.skill.registry.write().register_hub_dir(dir);
         self
     }
 
     /// Set the skill trust configuration (allowlists, sandbox flags).
     #[must_use]
     pub fn with_trust_config(mut self, config: crate::config::TrustConfig) -> Self {
-        self.skill_state.trust_config = config;
+        self.services.skill.trust_config = config;
         self
     }
 
@@ -295,7 +309,7 @@ impl<C: Channel> Agent<C> {
             parking_lot::RwLock<std::collections::HashMap<String, zeph_common::SkillTrustLevel>>,
         >,
     ) -> Self {
-        self.skill_state.trust_snapshot = snapshot;
+        self.services.skill.trust_snapshot = snapshot;
         self
     }
 
@@ -307,16 +321,16 @@ impl<C: Channel> Agent<C> {
         two_stage_matching: bool,
         confusability_threshold: f32,
     ) -> Self {
-        self.skill_state.disambiguation_threshold = disambiguation_threshold;
-        self.skill_state.two_stage_matching = two_stage_matching;
-        self.skill_state.confusability_threshold = confusability_threshold.clamp(0.0, 1.0);
+        self.services.skill.disambiguation_threshold = disambiguation_threshold;
+        self.services.skill.two_stage_matching = two_stage_matching;
+        self.services.skill.confusability_threshold = confusability_threshold.clamp(0.0, 1.0);
         self
     }
 
     /// Override the embedding model name used for skill matching.
     #[must_use]
     pub fn with_embedding_model(mut self, model: String) -> Self {
-        self.skill_state.embedding_model = model;
+        self.services.skill.embedding_model = model;
         self
     }
 
@@ -335,12 +349,12 @@ impl<C: Channel> Agent<C> {
     ///
     #[must_use]
     pub fn with_hybrid_search(mut self, enabled: bool) -> Self {
-        self.skill_state.hybrid_search = enabled;
+        self.services.skill.hybrid_search = enabled;
         if enabled {
-            let reg = self.skill_state.registry.read();
+            let reg = self.services.skill.registry.read();
             let all_meta = reg.all_meta();
             let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
-            self.skill_state.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
+            self.services.skill.bm25_index = Some(zeph_skills::bm25::Bm25Index::build(&descs));
         }
         self
     }
@@ -357,20 +371,21 @@ impl<C: Channel> Agent<C> {
         persist_interval: u32,
         warmup_updates: u32,
     ) -> Self {
-        self.learning_engine.rl_routing = Some(crate::agent::learning_engine::RlRoutingConfig {
-            enabled,
-            learning_rate,
-            persist_interval,
-        });
-        self.skill_state.rl_weight = rl_weight;
-        self.skill_state.rl_warmup_updates = warmup_updates;
+        self.services.learning_engine.rl_routing =
+            Some(crate::agent::learning_engine::RlRoutingConfig {
+                enabled,
+                learning_rate,
+                persist_interval,
+            });
+        self.services.skill.rl_weight = rl_weight;
+        self.services.skill.rl_warmup_updates = warmup_updates;
         self
     }
 
     /// Attach a pre-loaded RL routing head (loaded from DB weights at startup).
     #[must_use]
     pub fn with_rl_head(mut self, head: zeph_skills::rl_head::RoutingHead) -> Self {
-        self.skill_state.rl_head = Some(head);
+        self.services.skill.rl_head = Some(head);
         self
     }
 
@@ -379,14 +394,14 @@ impl<C: Channel> Agent<C> {
     /// Set the dedicated summarization provider used for compaction LLM calls.
     #[must_use]
     pub fn with_summary_provider(mut self, provider: AnyProvider) -> Self {
-        self.providers.summary_provider = Some(provider);
+        self.runtime.providers.summary_provider = Some(provider);
         self
     }
 
     /// Set the judge provider for feedback-based correction detection.
     #[must_use]
     pub fn with_judge_provider(mut self, provider: AnyProvider) -> Self {
-        self.providers.judge_provider = Some(provider);
+        self.runtime.providers.judge_provider = Some(provider);
         self
     }
 
@@ -395,7 +410,7 @@ impl<C: Channel> Agent<C> {
     /// Falls back to `summary_provider` (or primary) when `None`.
     #[must_use]
     pub fn with_probe_provider(mut self, provider: AnyProvider) -> Self {
-        self.providers.probe_provider = Some(provider);
+        self.runtime.providers.probe_provider = Some(provider);
         self
     }
 
@@ -404,14 +419,14 @@ impl<C: Channel> Agent<C> {
     /// When not set, `handle_compress_context` falls back to the primary provider.
     #[must_use]
     pub fn with_compress_provider(mut self, provider: AnyProvider) -> Self {
-        self.providers.compress_provider = Some(provider);
+        self.runtime.providers.compress_provider = Some(provider);
         self
     }
 
     /// Set the planner provider for `LlmPlanner` orchestration calls.
     #[must_use]
     pub fn with_planner_provider(mut self, provider: AnyProvider) -> Self {
-        self.orchestration.planner_provider = Some(provider);
+        self.services.orchestration.planner_provider = Some(provider);
         self
     }
 
@@ -420,7 +435,7 @@ impl<C: Channel> Agent<C> {
     /// When not set, verification falls back to the primary provider.
     #[must_use]
     pub fn with_verify_provider(mut self, provider: AnyProvider) -> Self {
-        self.orchestration.verify_provider = Some(provider);
+        self.services.orchestration.verify_provider = Some(provider);
         self
     }
 
@@ -433,7 +448,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         advisor: std::sync::Arc<zeph_orchestration::TopologyAdvisor>,
     ) -> Self {
-        self.orchestration.topology_advisor = Some(advisor);
+        self.services.orchestration.topology_advisor = Some(advisor);
         self
     }
 
@@ -443,7 +458,7 @@ impl<C: Channel> Agent<C> {
     /// eliminating self-judge bias. Corresponds to `experiments.eval_model` in config.
     #[must_use]
     pub fn with_eval_provider(mut self, provider: AnyProvider) -> Self {
-        self.experiments.eval_provider = Some(provider);
+        self.services.experiments.eval_provider = Some(provider);
         self
     }
 
@@ -454,8 +469,8 @@ impl<C: Channel> Agent<C> {
         pool: Vec<ProviderEntry>,
         snapshot: ProviderConfigSnapshot,
     ) -> Self {
-        self.providers.provider_pool = pool;
-        self.providers.provider_config_snapshot = Some(snapshot);
+        self.runtime.providers.provider_pool = pool;
+        self.runtime.providers.provider_config_snapshot = Some(snapshot);
         self
     }
 
@@ -463,7 +478,7 @@ impl<C: Channel> Agent<C> {
     /// `set_session_config_option`). The agent checks and swaps the provider before each turn.
     #[must_use]
     pub fn with_provider_override(mut self, slot: Arc<RwLock<Option<AnyProvider>>>) -> Self {
-        self.providers.provider_override = Some(slot);
+        self.runtime.providers.provider_override = Some(slot);
         self
     }
 
@@ -473,7 +488,7 @@ impl<C: Channel> Agent<C> {
     /// instead of the provider type string returned by `LlmProvider::name()`.
     #[must_use]
     pub fn with_active_provider_name(mut self, name: impl Into<String>) -> Self {
-        self.runtime.active_provider_name = name.into();
+        self.runtime.config.active_provider_name = name.into();
         self
     }
 
@@ -499,15 +514,15 @@ impl<C: Channel> Agent<C> {
         channel_type: impl Into<String>,
         provider_persistence: bool,
     ) -> Self {
-        self.runtime.channel_type = channel_type.into();
-        self.runtime.provider_persistence_enabled = provider_persistence;
+        self.runtime.config.channel_type = channel_type.into();
+        self.runtime.config.provider_persistence_enabled = provider_persistence;
         self
     }
 
     /// Attach a speech-to-text backend for voice input.
     #[must_use]
     pub fn with_stt(mut self, stt: Box<dyn zeph_llm::stt::SpeechToText>) -> Self {
-        self.providers.stt = Some(stt);
+        self.runtime.providers.stt = Some(stt);
         self
     }
 
@@ -522,14 +537,16 @@ impl<C: Channel> Agent<C> {
         manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
         mcp_config: &crate::config::McpConfig,
     ) -> Self {
-        self.mcp.tools = tools;
-        self.mcp.registry = registry;
-        self.mcp.manager = manager;
-        self.mcp
+        self.services.mcp.tools = tools;
+        self.services.mcp.registry = registry;
+        self.services.mcp.manager = manager;
+        self.services
+            .mcp
             .allowed_commands
             .clone_from(&mcp_config.allowed_commands);
-        self.mcp.max_dynamic = mcp_config.max_dynamic_servers;
-        self.mcp.elicitation_warn_sensitive_fields = mcp_config.elicitation_warn_sensitive_fields;
+        self.services.mcp.max_dynamic = mcp_config.max_dynamic_servers;
+        self.services.mcp.elicitation_warn_sensitive_fields =
+            mcp_config.elicitation_warn_sensitive_fields;
         self
     }
 
@@ -539,14 +556,14 @@ impl<C: Channel> Agent<C> {
         mut self,
         outcomes: Vec<zeph_mcp::ServerConnectOutcome>,
     ) -> Self {
-        self.mcp.server_outcomes = outcomes;
+        self.services.mcp.server_outcomes = outcomes;
         self
     }
 
     /// Attach the shared MCP tool list (updated dynamically when servers reconnect).
     #[must_use]
     pub fn with_mcp_shared_tools(mut self, shared: Arc<RwLock<Vec<zeph_mcp::McpTool>>>) -> Self {
-        self.mcp.shared_tools = Some(shared);
+        self.services.mcp.shared_tools = Some(shared);
         self
     }
 
@@ -562,9 +579,9 @@ impl<C: Channel> Agent<C> {
         enabled: bool,
         pruning_provider: Option<zeph_llm::any::AnyProvider>,
     ) -> Self {
-        self.mcp.pruning_params = params;
-        self.mcp.pruning_enabled = enabled;
-        self.mcp.pruning_provider = pruning_provider;
+        self.services.mcp.pruning_params = params;
+        self.services.mcp.pruning_enabled = enabled;
+        self.services.mcp.pruning_provider = pruning_provider;
         self
     }
 
@@ -579,9 +596,9 @@ impl<C: Channel> Agent<C> {
         params: zeph_mcp::DiscoveryParams,
         discovery_provider: Option<zeph_llm::any::AnyProvider>,
     ) -> Self {
-        self.mcp.discovery_strategy = strategy;
-        self.mcp.discovery_params = params;
-        self.mcp.discovery_provider = discovery_provider;
+        self.services.mcp.discovery_strategy = strategy;
+        self.services.mcp.discovery_params = params;
+        self.services.mcp.discovery_provider = discovery_provider;
         self
     }
 
@@ -593,7 +610,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
     ) -> Self {
-        self.mcp.tool_rx = Some(rx);
+        self.services.mcp.tool_rx = Some(rx);
         self
     }
 
@@ -606,7 +623,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         rx: tokio::sync::mpsc::Receiver<zeph_mcp::ElicitationEvent>,
     ) -> Self {
-        self.mcp.elicitation_rx = Some(rx);
+        self.services.mcp.elicitation_rx = Some(rx);
         self
     }
 
@@ -616,17 +633,19 @@ impl<C: Channel> Agent<C> {
     /// rate limiter, and pre-execution verifiers.
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
-        self.security.sanitizer =
+        self.services.security.sanitizer =
             zeph_sanitizer::ContentSanitizer::new(&security.content_isolation);
-        self.security.exfiltration_guard = zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
-            security.exfiltration_guard.clone(),
-        );
-        self.security.pii_filter = zeph_sanitizer::pii::PiiFilter::new(security.pii_filter.clone());
-        self.security.memory_validator =
+        self.services.security.exfiltration_guard =
+            zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
+                security.exfiltration_guard.clone(),
+            );
+        self.services.security.pii_filter =
+            zeph_sanitizer::pii::PiiFilter::new(security.pii_filter.clone());
+        self.services.security.memory_validator =
             zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
                 security.memory_validation.clone(),
             );
-        self.runtime.rate_limiter =
+        self.runtime.config.rate_limiter =
             crate::agent::rate_limiter::ToolRateLimiter::new(security.rate_limit.clone());
 
         // Build pre-execution verifiers from config.
@@ -647,7 +666,7 @@ impl<C: Channel> Agent<C> {
             if ucfg.enabled {
                 verifiers.push(Box::new(zeph_tools::UrlGroundingVerifier::new(
                     ucfg,
-                    std::sync::Arc::clone(&self.security.user_provided_urls),
+                    std::sync::Arc::clone(&self.services.security.user_provided_urls),
                 )));
             }
             let fcfg = &security.pre_execution_verify.firewall;
@@ -657,12 +676,13 @@ impl<C: Channel> Agent<C> {
         }
         self.tool_orchestrator.pre_execution_verifiers = verifiers;
 
-        self.security.response_verifier = zeph_sanitizer::response_verifier::ResponseVerifier::new(
-            security.response_verification.clone(),
-        );
+        self.services.security.response_verifier =
+            zeph_sanitizer::response_verifier::ResponseVerifier::new(
+                security.response_verification.clone(),
+            );
 
-        self.runtime.security = security;
-        self.runtime.timeouts = timeouts;
+        self.runtime.config.security = security;
+        self.runtime.config.timeouts = timeouts;
         self
     }
 
@@ -672,7 +692,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         qs: zeph_sanitizer::quarantine::QuarantinedSummarizer,
     ) -> Self {
-        self.security.quarantine_summarizer = Some(qs);
+        self.services.security.quarantine_summarizer = Some(qs);
         self
     }
 
@@ -681,7 +701,7 @@ impl<C: Channel> Agent<C> {
     /// receive unconditional quarantine and cross-boundary audit logging.
     #[must_use]
     pub fn with_acp_session(mut self, is_acp: bool) -> Self {
-        self.security.is_acp_session = is_acp;
+        self.services.security.is_acp_session = is_acp;
         self
     }
 
@@ -693,7 +713,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         analyzer: zeph_sanitizer::causal_ipi::TurnCausalAnalyzer,
     ) -> Self {
-        self.security.causal_analyzer = Some(analyzer);
+        self.services.security.causal_analyzer = Some(analyzer);
         self
     }
 
@@ -712,12 +732,12 @@ impl<C: Channel> Agent<C> {
     ) -> Self {
         // Replace sanitizer in-place: move out, attach classifier, move back.
         let old = std::mem::replace(
-            &mut self.security.sanitizer,
+            &mut self.services.security.sanitizer,
             zeph_sanitizer::ContentSanitizer::new(
                 &zeph_sanitizer::ContentIsolationConfig::default(),
             ),
         );
-        self.security.sanitizer = old
+        self.services.security.sanitizer = old
             .with_classifier(backend, timeout_ms, threshold)
             .with_injection_threshold_soft(threshold_soft);
         self
@@ -731,12 +751,12 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_enforcement_mode(mut self, mode: zeph_config::InjectionEnforcementMode) -> Self {
         let old = std::mem::replace(
-            &mut self.security.sanitizer,
+            &mut self.services.security.sanitizer,
             zeph_sanitizer::ContentSanitizer::new(
                 &zeph_sanitizer::ContentIsolationConfig::default(),
             ),
         );
-        self.security.sanitizer = old.with_enforcement_mode(mode);
+        self.services.security.sanitizer = old.with_enforcement_mode(mode);
         self
     }
 
@@ -749,12 +769,12 @@ impl<C: Channel> Agent<C> {
         threshold: f32,
     ) -> Self {
         let old = std::mem::replace(
-            &mut self.security.sanitizer,
+            &mut self.services.security.sanitizer,
             zeph_sanitizer::ContentSanitizer::new(
                 &zeph_sanitizer::ContentIsolationConfig::default(),
             ),
         );
-        self.security.sanitizer = old.with_three_class_backend(backend, threshold);
+        self.services.security.sanitizer = old.with_three_class_backend(backend, threshold);
         self
     }
 
@@ -765,12 +785,12 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_scan_user_input(mut self, value: bool) -> Self {
         let old = std::mem::replace(
-            &mut self.security.sanitizer,
+            &mut self.services.security.sanitizer,
             zeph_sanitizer::ContentSanitizer::new(
                 &zeph_sanitizer::ContentIsolationConfig::default(),
             ),
         );
-        self.security.sanitizer = old.with_scan_user_input(value);
+        self.services.security.sanitizer = old.with_scan_user_input(value);
         self
     }
 
@@ -786,12 +806,12 @@ impl<C: Channel> Agent<C> {
         threshold: f32,
     ) -> Self {
         let old = std::mem::replace(
-            &mut self.security.sanitizer,
+            &mut self.services.security.sanitizer,
             zeph_sanitizer::ContentSanitizer::new(
                 &zeph_sanitizer::ContentIsolationConfig::default(),
             ),
         );
-        self.security.sanitizer = old.with_pii_detector(detector, threshold);
+        self.services.security.sanitizer = old.with_pii_detector(detector, threshold);
         self
     }
 
@@ -803,12 +823,12 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_pii_ner_allowlist(mut self, entries: Vec<String>) -> Self {
         let old = std::mem::replace(
-            &mut self.security.sanitizer,
+            &mut self.services.security.sanitizer,
             zeph_sanitizer::ContentSanitizer::new(
                 &zeph_sanitizer::ContentIsolationConfig::default(),
             ),
         );
-        self.security.sanitizer = old.with_pii_ner_allowlist(entries);
+        self.services.security.sanitizer = old.with_pii_ner_allowlist(entries);
         self
     }
 
@@ -825,10 +845,10 @@ impl<C: Channel> Agent<C> {
         max_chars: usize,
         circuit_breaker_threshold: u32,
     ) -> Self {
-        self.security.pii_ner_backend = Some(backend);
-        self.security.pii_ner_timeout_ms = timeout_ms;
-        self.security.pii_ner_max_chars = max_chars;
-        self.security.pii_ner_circuit_breaker_threshold = circuit_breaker_threshold;
+        self.services.security.pii_ner_backend = Some(backend);
+        self.services.security.pii_ner_timeout_ms = timeout_ms;
+        self.services.security.pii_ner_max_chars = max_chars;
+        self.services.security.pii_ner_circuit_breaker_threshold = circuit_breaker_threshold;
         self
     }
 
@@ -837,7 +857,7 @@ impl<C: Channel> Agent<C> {
     pub fn with_guardrail(mut self, filter: zeph_sanitizer::guardrail::GuardrailFilter) -> Self {
         use zeph_sanitizer::guardrail::GuardrailAction;
         let warn_mode = filter.action() == GuardrailAction::Warn;
-        self.security.guardrail = Some(filter);
+        self.services.security.guardrail = Some(filter);
         self.update_metrics(|m| {
             m.guardrail_enabled = true;
             m.guardrail_warn_mode = warn_mode;
@@ -874,7 +894,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         layer: std::sync::Arc<dyn crate::runtime_layer::RuntimeLayer>,
     ) -> Self {
-        self.runtime.layers.push(layer);
+        self.runtime.config.layers.push(layer);
         self
     }
 
@@ -926,8 +946,8 @@ impl<C: Channel> Agent<C> {
         focus: crate::config::FocusConfig,
         sidequest: crate::config::SidequestConfig,
     ) -> Self {
-        self.focus = super::focus::FocusState::new(focus);
-        self.sidequest = super::sidequest::SidequestState::new(sidequest);
+        self.services.focus = super::focus::FocusState::new(focus);
+        self.services.sidequest = super::sidequest::SidequestState::new(sidequest);
         self
     }
 
@@ -957,7 +977,7 @@ impl<C: Channel> Agent<C> {
     /// Set dependency config parameters (boost values) used per-turn.
     #[must_use]
     pub fn with_dependency_config(mut self, config: zeph_tools::DependencyConfig) -> Self {
-        self.runtime.dependency_config = config;
+        self.runtime.config.dependency_config = config;
         self
     }
 
@@ -971,8 +991,8 @@ impl<C: Channel> Agent<C> {
         graph: zeph_tools::ToolDependencyGraph,
         always_on: std::collections::HashSet<String>,
     ) -> Self {
-        self.tool_state.dependency_graph = Some(graph);
-        self.tool_state.dependency_always_on = always_on;
+        self.services.tool_state.dependency_graph = Some(graph);
+        self.services.tool_state.dependency_always_on = always_on;
         self
     }
 
@@ -1039,7 +1059,7 @@ impl<C: Channel> Agent<C> {
             config.min_description_words,
             embeddings,
         );
-        self.tool_state.tool_schema_filter = Some(filter);
+        self.services.tool_state.tool_schema_filter = Some(filter);
         self
     }
 
@@ -1058,8 +1078,8 @@ impl<C: Channel> Agent<C> {
     /// Configure the in-process repo-map injector.
     #[must_use]
     pub fn with_repo_map(mut self, token_budget: usize, ttl_secs: u64) -> Self {
-        self.index.repo_map_tokens = token_budget;
-        self.index.repo_map_ttl = std::time::Duration::from_secs(ttl_secs);
+        self.services.index.repo_map_tokens = token_budget;
+        self.services.index.repo_map_ttl = std::time::Duration::from_secs(ttl_secs);
         self
     }
 
@@ -1085,7 +1105,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         retriever: std::sync::Arc<zeph_index::retriever::CodeRetriever>,
     ) -> Self {
-        self.index.retriever = Some(retriever);
+        self.services.index.retriever = Some(retriever);
         self
     }
 
@@ -1096,7 +1116,7 @@ impl<C: Channel> Agent<C> {
     /// `pub(crate)` `IndexState` field directly.
     #[must_use]
     pub fn has_code_retriever(&self) -> bool {
-        self.index.retriever.is_some()
+        self.services.index.retriever.is_some()
     }
 
     // ---- Debug & Diagnostics ----
@@ -1104,7 +1124,7 @@ impl<C: Channel> Agent<C> {
     /// Enable debug dump mode, writing LLM requests/responses and raw tool output to `dumper`.
     #[must_use]
     pub fn with_debug_dumper(mut self, dumper: crate::debug_dump::DebugDumper) -> Self {
-        self.debug_state.debug_dumper = Some(dumper);
+        self.runtime.debug.debug_dumper = Some(dumper);
         self
     }
 
@@ -1114,7 +1134,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         collector: crate::debug_dump::trace::TracingCollector,
     ) -> Self {
-        self.debug_state.trace_collector = Some(collector);
+        self.runtime.debug.trace_collector = Some(collector);
         self
     }
 
@@ -1126,23 +1146,23 @@ impl<C: Channel> Agent<C> {
         service_name: impl Into<String>,
         redact: bool,
     ) -> Self {
-        self.debug_state.dump_dir = Some(dump_dir);
-        self.debug_state.trace_service_name = service_name.into();
-        self.debug_state.trace_redact = redact;
+        self.runtime.debug.dump_dir = Some(dump_dir);
+        self.runtime.debug.trace_service_name = service_name.into();
+        self.runtime.debug.trace_redact = redact;
         self
     }
 
     /// Attach an anomaly detector for turn-level error rate monitoring.
     #[must_use]
     pub fn with_anomaly_detector(mut self, detector: zeph_tools::AnomalyDetector) -> Self {
-        self.debug_state.anomaly_detector = Some(detector);
+        self.runtime.debug.anomaly_detector = Some(detector);
         self
     }
 
     /// Apply the logging configuration (log level, structured output).
     #[must_use]
     pub fn with_logging_config(mut self, logging: crate::config::LoggingConfig) -> Self {
-        self.debug_state.logging_config = logging;
+        self.runtime.debug.logging_config = logging;
         self
     }
 
@@ -1158,22 +1178,22 @@ impl<C: Channel> Agent<C> {
         mut self,
         supervisor: std::sync::Arc<zeph_common::TaskSupervisor>,
     ) -> Self {
-        self.lifecycle.task_supervisor = supervisor;
+        self.runtime.lifecycle.task_supervisor = supervisor;
         self
     }
 
     /// Attach the graceful-shutdown receiver.
     #[must_use]
     pub fn with_shutdown(mut self, rx: watch::Receiver<bool>) -> Self {
-        self.lifecycle.shutdown = rx;
+        self.runtime.lifecycle.shutdown = rx;
         self
     }
 
     /// Attach the config-reload event stream.
     #[must_use]
     pub fn with_config_reload(mut self, path: PathBuf, rx: mpsc::Receiver<ConfigEvent>) -> Self {
-        self.lifecycle.config_path = Some(path);
-        self.lifecycle.config_reload_rx = Some(rx);
+        self.runtime.lifecycle.config_path = Some(path);
+        self.runtime.lifecycle.config_reload_rx = Some(rx);
         self
     }
 
@@ -1186,8 +1206,8 @@ impl<C: Channel> Agent<C> {
         dir: PathBuf,
         startup_overlay: crate::ShellOverlaySnapshot,
     ) -> Self {
-        self.lifecycle.plugins_dir = dir;
-        self.lifecycle.startup_shell_overlay = startup_overlay;
+        self.runtime.lifecycle.plugins_dir = dir;
+        self.runtime.lifecycle.startup_shell_overlay = startup_overlay;
         self
     }
 
@@ -1198,7 +1218,7 @@ impl<C: Channel> Agent<C> {
     /// `ShellPolicyHandle::rebuild` takes effect on the live executor atomically.
     #[must_use]
     pub fn with_shell_policy_handle(mut self, h: zeph_tools::ShellPolicyHandle) -> Self {
-        self.lifecycle.shell_policy_handle = Some(h);
+        self.runtime.lifecycle.shell_policy_handle = Some(h);
         self
     }
 
@@ -1213,14 +1233,14 @@ impl<C: Channel> Agent<C> {
         mut self,
         h: Option<std::sync::Arc<zeph_tools::ShellExecutor>>,
     ) -> Self {
-        self.lifecycle.shell_executor_handle = h;
+        self.runtime.lifecycle.shell_executor_handle = h;
         self
     }
 
     /// Attach the warmup-ready signal (fires after background init completes).
     #[must_use]
     pub fn with_warmup_ready(mut self, rx: watch::Receiver<bool>) -> Self {
-        self.lifecycle.warmup_ready = Some(rx);
+        self.runtime.lifecycle.warmup_ready = Some(rx);
         self
     }
 
@@ -1235,7 +1255,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         rx: tokio::sync::mpsc::Receiver<zeph_tools::BackgroundCompletion>,
     ) -> Self {
-        self.lifecycle.background_completion_rx = Some(rx);
+        self.runtime.lifecycle.background_completion_rx = Some(rx);
         self
     }
 
@@ -1256,7 +1276,7 @@ impl<C: Channel> Agent<C> {
     /// Attach the update-notification receiver for in-process version alerts.
     #[must_use]
     pub fn with_update_notifications(mut self, rx: mpsc::Receiver<String>) -> Self {
-        self.lifecycle.update_notify_rx = Some(rx);
+        self.runtime.lifecycle.update_notify_rx = Some(rx);
         self
     }
 
@@ -1268,7 +1288,7 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_notifications(mut self, cfg: zeph_config::NotificationsConfig) -> Self {
         if cfg.enabled {
-            self.lifecycle.notifier = Some(crate::notifications::Notifier::new(cfg));
+            self.runtime.lifecycle.notifier = Some(crate::notifications::Notifier::new(cfg));
         }
         self
     }
@@ -1276,7 +1296,7 @@ impl<C: Channel> Agent<C> {
     /// Attach a custom task receiver for programmatic task injection.
     #[must_use]
     pub fn with_custom_task_rx(mut self, rx: mpsc::Receiver<String>) -> Self {
-        self.lifecycle.custom_task_rx = Some(rx);
+        self.runtime.lifecycle.custom_task_rx = Some(rx);
         self
     }
 
@@ -1284,7 +1304,7 @@ impl<C: Channel> Agent<C> {
     /// interrupt the agent loop by calling `notify_one()`.
     #[must_use]
     pub fn with_cancel_signal(mut self, signal: Arc<Notify>) -> Self {
-        self.lifecycle.cancel_signal = signal;
+        self.runtime.lifecycle.cancel_signal = signal;
         self
     }
 
@@ -1295,23 +1315,27 @@ impl<C: Channel> Agent<C> {
     /// from the current process cwd at call time (the project root).
     #[must_use]
     pub fn with_hooks_config(mut self, config: &zeph_config::HooksConfig) -> Self {
-        self.session
+        self.services
+            .session
             .hooks_config
             .cwd_changed
             .clone_from(&config.cwd_changed);
 
-        self.session
+        self.services
+            .session
             .hooks_config
             .permission_denied
             .clone_from(&config.permission_denied);
 
-        self.session
+        self.services
+            .session
             .hooks_config
             .turn_complete
             .clone_from(&config.turn_complete);
 
         if let Some(ref fc) = config.file_changed {
-            self.session
+            self.services
+                .session
                 .hooks_config
                 .file_changed_hooks
                 .clone_from(&fc.hooks);
@@ -1324,8 +1348,8 @@ impl<C: Channel> Agent<C> {
                     tx,
                 ) {
                     Ok(watcher) => {
-                        self.lifecycle.file_watcher = Some(watcher);
-                        self.lifecycle.file_changed_rx = Some(rx);
+                        self.runtime.lifecycle.file_watcher = Some(watcher);
+                        self.runtime.lifecycle.file_changed_rx = Some(rx);
                         tracing::info!(
                             paths = ?fc.watch_paths,
                             debounce_ms = fc.debounce_ms,
@@ -1340,9 +1364,9 @@ impl<C: Channel> Agent<C> {
         }
 
         // Sync last_known_cwd with env_context.working_dir if already set.
-        let cwd_str = &self.session.env_context.working_dir;
+        let cwd_str = &self.services.session.env_context.working_dir;
         if !cwd_str.is_empty() {
-            self.lifecycle.last_known_cwd = std::path::PathBuf::from(cwd_str);
+            self.runtime.lifecycle.last_known_cwd = std::path::PathBuf::from(cwd_str);
         }
 
         self
@@ -1352,15 +1376,17 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_working_dir(mut self, path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        self.session.env_context =
-            crate::context::EnvironmentContext::gather_for_dir(&self.runtime.model_name, &path);
+        self.services.session.env_context = crate::context::EnvironmentContext::gather_for_dir(
+            &self.runtime.config.model_name,
+            &path,
+        );
         self
     }
 
     /// Store a snapshot of the policy config for `/policy` command inspection.
     #[must_use]
     pub fn with_policy_config(mut self, config: zeph_tools::PolicyConfig) -> Self {
-        self.session.policy_config = Some(config);
+        self.services.session.policy_config = Some(config);
         self
     }
 
@@ -1377,7 +1403,7 @@ impl<C: Channel> Agent<C> {
     pub fn with_vigil_config(mut self, config: zeph_config::VigilConfig) -> Self {
         match crate::agent::vigil::VigilGate::try_new(config) {
             Ok(gate) => {
-                self.security.vigil = Some(gate);
+                self.services.security.vigil = Some(gate);
             }
             Err(e) => {
                 tracing::warn!(
@@ -1396,7 +1422,7 @@ impl<C: Channel> Agent<C> {
     /// hierarchy tree.
     #[must_use]
     pub fn with_parent_tool_use_id(mut self, id: impl Into<String>) -> Self {
-        self.session.parent_tool_use_id = Some(id.into());
+        self.services.session.parent_tool_use_id = Some(id.into());
         self
     }
 
@@ -1406,14 +1432,14 @@ impl<C: Channel> Agent<C> {
         mut self,
         cache: std::sync::Arc<zeph_memory::ResponseCache>,
     ) -> Self {
-        self.session.response_cache = Some(cache);
+        self.services.session.response_cache = Some(cache);
         self
     }
 
     /// Enable LSP context injection hooks (diagnostics-on-save, hover-on-read).
     #[must_use]
     pub fn with_lsp_hooks(mut self, runner: crate::lsp_hooks::LspHookRunner) -> Self {
-        self.session.lsp_hooks = Some(runner);
+        self.services.session.lsp_hooks = Some(runner);
         self
     }
 
@@ -1424,18 +1450,19 @@ impl<C: Channel> Agent<C> {
     /// available for passing to the supervisor.
     #[must_use]
     pub fn with_supervisor_config(mut self, config: &crate::config::TaskSupervisorConfig) -> Self {
-        self.lifecycle.supervisor = crate::agent::agent_supervisor::BackgroundSupervisor::new(
-            config,
-            self.metrics.histogram_recorder.clone(),
-        );
-        self.runtime.supervisor_config = config.clone();
+        self.runtime.lifecycle.supervisor =
+            crate::agent::agent_supervisor::BackgroundSupervisor::new(
+                config,
+                self.runtime.metrics.histogram_recorder.clone(),
+            );
+        self.runtime.config.supervisor_config = config.clone();
         self
     }
 
     /// Stores the ACP configuration snapshot for `/acp` slash-command display.
     #[must_use]
     pub fn with_acp_config(mut self, config: zeph_config::AcpConfig) -> Self {
-        self.runtime.acp_config = config;
+        self.runtime.config.acp_config = config;
         self
     }
 
@@ -1456,7 +1483,7 @@ impl<C: Channel> Agent<C> {
     /// ```
     #[must_use]
     pub fn with_acp_subagent_spawn_fn(mut self, f: zeph_subagent::AcpSubagentSpawnFn) -> Self {
-        self.runtime.acp_subagent_spawn_fn = Some(f);
+        self.runtime.config.acp_subagent_spawn_fn = Some(f);
         self
     }
 
@@ -1465,7 +1492,7 @@ impl<C: Channel> Agent<C> {
     /// `notify_waiters()` to cancel whatever operation is running.
     #[must_use]
     pub fn cancel_signal(&self) -> Arc<Notify> {
-        Arc::clone(&self.lifecycle.cancel_signal)
+        Arc::clone(&self.runtime.lifecycle.cancel_signal)
     }
 
     // ---- Metrics ----
@@ -1473,13 +1500,13 @@ impl<C: Channel> Agent<C> {
     /// Wire the metrics broadcast channel and emit the initial snapshot.
     #[must_use]
     pub fn with_metrics(mut self, tx: watch::Sender<MetricsSnapshot>) -> Self {
-        let provider_name = if self.runtime.active_provider_name.is_empty() {
+        let provider_name = if self.runtime.config.active_provider_name.is_empty() {
             self.provider.name().to_owned()
         } else {
-            self.runtime.active_provider_name.clone()
+            self.runtime.config.active_provider_name.clone()
         };
-        let model_name = self.runtime.model_name.clone();
-        let registry_guard = self.skill_state.registry.read();
+        let model_name = self.runtime.config.model_name.clone();
+        let registry_guard = self.services.skill.registry.read();
         let total_skills = registry_guard.all_meta().len();
         // Initialize active_skills with all loaded skills as a baseline.
         // This is a placeholder representing "loaded" skills — the list is refined
@@ -1491,34 +1518,37 @@ impl<C: Channel> Agent<C> {
             .collect();
         drop(registry_guard);
         let qdrant_available = false;
-        let conversation_id = self.memory_state.persistence.conversation_id;
+        let conversation_id = self.services.memory.persistence.conversation_id;
         let prompt_estimate = self
             .msg
             .messages
             .first()
             .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
-        let mcp_tool_count = self.mcp.tools.len();
-        let mcp_server_count = if self.mcp.server_outcomes.is_empty() {
+        let mcp_tool_count = self.services.mcp.tools.len();
+        let mcp_server_count = if self.services.mcp.server_outcomes.is_empty() {
             // Fallback: count unique server IDs from connected tools
-            self.mcp
+            self.services
+                .mcp
                 .tools
                 .iter()
                 .map(|t| &t.server_id)
                 .collect::<std::collections::HashSet<_>>()
                 .len()
         } else {
-            self.mcp.server_outcomes.len()
+            self.services.mcp.server_outcomes.len()
         };
-        let mcp_connected_count = if self.mcp.server_outcomes.is_empty() {
+        let mcp_connected_count = if self.services.mcp.server_outcomes.is_empty() {
             mcp_server_count
         } else {
-            self.mcp
+            self.services
+                .mcp
                 .server_outcomes
                 .iter()
                 .filter(|o| o.connected)
                 .count()
         };
         let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
+            .services
             .mcp
             .server_outcomes
             .iter()
@@ -1533,7 +1563,7 @@ impl<C: Channel> Agent<C> {
                 error: o.error.clone(),
             })
             .collect();
-        let extended_context = self.metrics.extended_context;
+        let extended_context = self.runtime.metrics.extended_context;
         tx.send_modify(|m| {
             m.provider_name = provider_name;
             m.model_name = model_name;
@@ -1550,9 +1580,10 @@ impl<C: Channel> Agent<C> {
             m.mcp_servers = mcp_servers;
             m.extended_context = extended_context;
         });
-        if self.skill_state.rl_head.is_some()
+        if self.services.skill.rl_head.is_some()
             && self
-                .skill_state
+                .services
+                .skill
                 .matcher
                 .as_ref()
                 .is_some_and(zeph_skills::matcher::SkillMatcherBackend::is_qdrant)
@@ -1562,7 +1593,7 @@ impl<C: Channel> Agent<C> {
                  vectors; RL will be inactive until vector retrieval from Qdrant is implemented"
             );
         }
-        self.metrics.metrics_tx = Some(tx);
+        self.runtime.metrics.metrics_tx = Some(tx);
         self
     }
 
@@ -1581,6 +1612,7 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_static_metrics(self, init: StaticMetricsInit) -> Self {
         let tx = self
+            .runtime
             .metrics
             .metrics_tx
             .as_ref()
@@ -1607,14 +1639,14 @@ impl<C: Channel> Agent<C> {
     /// Attach a cost tracker for per-session token budget accounting.
     #[must_use]
     pub fn with_cost_tracker(mut self, tracker: CostTracker) -> Self {
-        self.metrics.cost_tracker = Some(tracker);
+        self.runtime.metrics.cost_tracker = Some(tracker);
         self
     }
 
     /// Enable Claude extended-context mode tracking in metrics.
     #[must_use]
     pub fn with_extended_context(mut self, enabled: bool) -> Self {
-        self.metrics.extended_context = enabled;
+        self.runtime.metrics.extended_context = enabled;
         self
     }
 
@@ -1630,7 +1662,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         recorder: Option<std::sync::Arc<dyn crate::metrics::HistogramRecorder>>,
     ) -> Self {
-        self.metrics.histogram_recorder = recorder;
+        self.runtime.metrics.histogram_recorder = recorder;
         self
     }
 
@@ -1648,9 +1680,9 @@ impl<C: Channel> Agent<C> {
         subagent_config: crate::config::SubAgentConfig,
         manager: zeph_subagent::SubAgentManager,
     ) -> Self {
-        self.orchestration.orchestration_config = config;
-        self.orchestration.subagent_config = subagent_config;
-        self.orchestration.subagent_manager = Some(manager);
+        self.services.orchestration.orchestration_config = config;
+        self.services.orchestration.subagent_config = subagent_config;
+        self.services.orchestration.subagent_manager = Some(manager);
         self.wire_graph_persistence();
         self
     }
@@ -1660,16 +1692,21 @@ impl<C: Channel> Agent<C> {
     /// Idempotent: returns immediately if `graph_persistence` is already `Some`.
     /// No-ops when `persistence_enabled = false` or when no memory store is attached.
     pub(super) fn wire_graph_persistence(&mut self) {
-        if self.orchestration.graph_persistence.is_some() {
+        if self.services.orchestration.graph_persistence.is_some() {
             return;
         }
-        if !self.orchestration.orchestration_config.persistence_enabled {
+        if !self
+            .services
+            .orchestration
+            .orchestration_config
+            .persistence_enabled
+        {
             return;
         }
-        if let Some(memory) = self.memory_state.persistence.memory.as_ref() {
+        if let Some(memory) = self.services.memory.persistence.memory.as_ref() {
             let pool = memory.sqlite().pool().clone();
             let store = zeph_memory::store::graph_store::TaskGraphStore::new(pool);
-            self.orchestration.graph_persistence =
+            self.services.orchestration.graph_persistence =
                 Some(zeph_orchestration::GraphPersistence::new(store));
         }
     }
@@ -1680,7 +1717,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         info: crate::agent::state::AdversarialPolicyInfo,
     ) -> Self {
-        self.runtime.adversarial_policy_info = Some(info);
+        self.runtime.config.adversarial_policy_info = Some(info);
         self
     }
 
@@ -1701,8 +1738,8 @@ impl<C: Channel> Agent<C> {
         config: crate::config::ExperimentConfig,
         baseline: zeph_experiments::ConfigSnapshot,
     ) -> Self {
-        self.experiments.config = config;
-        self.experiments.baseline = baseline;
+        self.services.experiments.config = config;
+        self.services.experiments.baseline = baseline;
         self
     }
 
@@ -1712,16 +1749,16 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_learning(mut self, config: LearningConfig) -> Self {
         if config.correction_detection {
-            self.feedback.detector =
+            self.services.feedback.detector =
                 zeph_agent_feedback::FeedbackDetector::new(config.correction_confidence_threshold);
             if config.detector_mode == crate::config::DetectorMode::Judge {
-                self.feedback.judge = Some(zeph_agent_feedback::JudgeDetector::new(
+                self.services.feedback.judge = Some(zeph_agent_feedback::JudgeDetector::new(
                     config.judge_adaptive_low,
                     config.judge_adaptive_high,
                 ));
             }
         }
-        self.learning_engine.config = Some(config);
+        self.services.learning_engine.config = Some(config);
         self
     }
 
@@ -1737,36 +1774,38 @@ impl<C: Channel> Agent<C> {
     ) -> Self {
         // If classifier_metrics is already set, wire it into the LlmClassifier for Feedback recording.
         #[cfg(feature = "classifiers")]
-        let classifier = if let Some(ref m) = self.metrics.classifier_metrics {
+        let classifier = if let Some(ref m) = self.runtime.metrics.classifier_metrics {
             classifier.with_metrics(std::sync::Arc::clone(m))
         } else {
             classifier
         };
-        self.feedback.llm_classifier = Some(classifier);
+        self.services.feedback.llm_classifier = Some(classifier);
         self
     }
 
     /// Configure the per-channel skill overrides (channel-specific skill resolution).
     #[must_use]
     pub fn with_channel_skills(mut self, config: zeph_config::ChannelSkillsConfig) -> Self {
-        self.runtime.channel_skills = config;
+        self.runtime.config.channel_skills = config;
         self
     }
 
     // ---- Internal helpers (pub(super)) ----
 
     pub(super) fn summary_or_primary_provider(&self) -> &AnyProvider {
-        self.providers
+        self.runtime
+            .providers
             .summary_provider
             .as_ref()
             .unwrap_or(&self.provider)
     }
 
     pub(super) fn probe_or_summary_provider(&self) -> &AnyProvider {
-        self.providers
+        self.runtime
+            .providers
             .probe_provider
             .as_ref()
-            .or(self.providers.summary_provider.as_ref())
+            .or(self.runtime.providers.summary_provider.as_ref())
             .unwrap_or(&self.provider)
     }
 
@@ -1855,9 +1894,9 @@ impl<C: Channel> Agent<C> {
             tool_summarization,
             overflow_config,
         );
-        self.runtime.permission_policy = permission_policy;
-        self.runtime.model_name = model_name;
-        self.skill_state.embedding_model = embed_model;
+        self.runtime.config.permission_policy = permission_policy;
+        self.runtime.config.model_name = model_name;
+        self.services.skill.embedding_model = embed_model;
         self.context_manager.apply_budget_config(
             budget_tokens,
             CONTEXT_BUDGET_RESERVE_RATIO,
@@ -1870,32 +1909,33 @@ impl<C: Channel> Agent<C> {
         self = self
             .with_security(security, timeouts)
             .with_learning(learning);
-        self.runtime.redact_credentials = redact_credentials;
-        self.memory_state.persistence.tool_call_cutoff = tool_call_cutoff;
-        self.skill_state.available_custom_secrets = secrets
+        self.runtime.config.redact_credentials = redact_credentials;
+        self.services.memory.persistence.tool_call_cutoff = tool_call_cutoff;
+        self.services.skill.available_custom_secrets = secrets
             .iter()
             .map(|(k, v)| (k.clone(), crate::vault::Secret::new(v.expose().to_owned())))
             .collect();
-        self.providers.server_compaction_active = server_compaction;
-        self.memory_state.extraction.document_config = document_config;
-        self.memory_state
+        self.runtime.providers.server_compaction_active = server_compaction;
+        self.services.memory.extraction.document_config = document_config;
+        self.services
+            .memory
             .extraction
             .apply_graph_config(graph_config);
-        self.memory_state.extraction.persona_config = persona_config;
-        self.memory_state.extraction.trajectory_config = trajectory_config;
-        self.memory_state.extraction.category_config = category_config;
-        self.memory_state.extraction.reasoning_config = reasoning_config;
-        self.memory_state.subsystems.tree_config = tree_config;
-        self.memory_state.subsystems.microcompact_config = microcompact_config;
-        self.memory_state.subsystems.autodream_config = autodream_config;
-        self.memory_state.subsystems.magic_docs_config = magic_docs_config;
-        self.orchestration.orchestration_config = orchestration_config;
+        self.services.memory.extraction.persona_config = persona_config;
+        self.services.memory.extraction.trajectory_config = trajectory_config;
+        self.services.memory.extraction.category_config = category_config;
+        self.services.memory.extraction.reasoning_config = reasoning_config;
+        self.services.memory.subsystems.tree_config = tree_config;
+        self.services.memory.subsystems.microcompact_config = microcompact_config;
+        self.services.memory.subsystems.autodream_config = autodream_config;
+        self.services.memory.subsystems.magic_docs_config = magic_docs_config;
+        self.services.orchestration.orchestration_config = orchestration_config;
         self.wire_graph_persistence();
-        self.runtime.budget_hint_enabled = budget_hint_enabled;
-        self.runtime.recap_config = recap;
-        self.runtime.loop_min_interval_secs = loop_min_interval_secs;
+        self.runtime.config.budget_hint_enabled = budget_hint_enabled;
+        self.runtime.config.recap_config = recap;
+        self.runtime.config.loop_min_interval_secs = loop_min_interval_secs;
 
-        self.debug_state.reasoning_model_warning = anomaly_config.reasoning_model_warning;
+        self.runtime.debug.reasoning_model_warning = anomaly_config.reasoning_model_warning;
         if anomaly_config.enabled {
             self = self.with_anomaly_detector(zeph_tools::AnomalyDetector::new(
                 anomaly_config.window_size,
@@ -1904,15 +1944,15 @@ impl<C: Channel> Agent<C> {
             ));
         }
 
-        self.runtime.semantic_cache_enabled = semantic_cache_enabled;
-        self.runtime.semantic_cache_threshold = semantic_cache_threshold;
-        self.runtime.semantic_cache_max_candidates = semantic_cache_max_candidates;
+        self.runtime.config.semantic_cache_enabled = semantic_cache_enabled;
+        self.runtime.config.semantic_cache_threshold = semantic_cache_threshold;
+        self.runtime.config.semantic_cache_max_candidates = semantic_cache_max_candidates;
         self.tool_orchestrator
             .set_cache_config(&result_cache_config);
 
         // When MagicDocs is enabled, file-read tools must bypass the utility gate so that
         // MagicDocs detection can inspect real file content (not a [skipped] sentinel).
-        if self.memory_state.subsystems.magic_docs_config.enabled {
+        if self.services.memory.subsystems.magic_docs_config.enabled {
             utility_config.exempt_tools.extend(
                 crate::agent::magic_docs::FILE_READ_TOOLS
                     .iter()
@@ -1934,7 +1974,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         blocks: Vec<crate::instructions::InstructionBlock>,
     ) -> Self {
-        self.instructions.blocks = blocks;
+        self.runtime.instructions.blocks = blocks;
         self
     }
 
@@ -1945,8 +1985,8 @@ impl<C: Channel> Agent<C> {
         rx: mpsc::Receiver<InstructionEvent>,
         state: InstructionReloadState,
     ) -> Self {
-        self.instructions.reload_rx = Some(rx);
-        self.instructions.reload_state = Some(state);
+        self.runtime.instructions.reload_rx = Some(rx);
+        self.runtime.instructions.reload_state = Some(state);
         self
     }
 
@@ -1955,7 +1995,7 @@ impl<C: Channel> Agent<C> {
     /// `provider.set_status_tx()` consumes it.
     #[must_use]
     pub fn with_status_tx(mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
-        self.session.status_tx = Some(tx);
+        self.services.session.status_tx = Some(tx);
         self
     }
 
@@ -1983,7 +2023,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         pipeline: Option<std::sync::Arc<crate::quality::SelfCheckPipeline>>,
     ) -> Self {
-        self.quality = pipeline;
+        self.services.quality = pipeline;
         self
     }
 
@@ -2001,9 +2041,9 @@ impl<C: Channel> Agent<C> {
         weights: zeph_skills::evaluator::EvaluationWeights,
         threshold: f32,
     ) -> Self {
-        self.skill_state.skill_evaluator = evaluator;
-        self.skill_state.eval_weights = weights;
-        self.skill_state.eval_threshold = threshold;
+        self.services.skill.skill_evaluator = evaluator;
+        self.services.skill.eval_weights = weights;
+        self.services.skill.eval_threshold = threshold;
         self
     }
 
@@ -2018,7 +2058,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         explorer: Option<std::sync::Arc<zeph_skills::proactive::ProactiveExplorer>>,
     ) -> Self {
-        self.proactive_explorer = explorer;
+        self.services.proactive_explorer = explorer;
         self
     }
 
@@ -2033,7 +2073,7 @@ impl<C: Channel> Agent<C> {
         mut self,
         engine: Option<std::sync::Arc<zeph_memory::compression::promotion::PromotionEngine>>,
     ) -> Self {
-        self.promotion_engine = engine;
+        self.services.promotion_engine = engine;
         self
     }
 }
@@ -2197,7 +2237,7 @@ mod tests {
     fn default_graph_config_is_disabled() {
         let agent = make_agent();
         assert!(
-            !agent.memory_state.extraction.graph_config.enabled,
+            !agent.services.memory.extraction.graph_config.enabled,
             "graph_config must default to disabled"
         );
     }
@@ -2210,7 +2250,7 @@ mod tests {
         };
         let agent = make_agent().with_graph_config(cfg);
         assert!(
-            agent.memory_state.extraction.graph_config.enabled,
+            agent.services.memory.extraction.graph_config.enabled,
             "with_graph_config must set enabled flag"
         );
     }
@@ -2244,23 +2284,23 @@ mod tests {
 
         // Graph config must be set on memory_state.
         assert!(
-            agent.memory_state.extraction.graph_config.enabled,
+            agent.services.memory.extraction.graph_config.enabled,
             "apply_session_config must wire graph_config into agent"
         );
 
         // Orchestration config must be propagated.
         assert!(
-            agent.orchestration.orchestration_config.enabled,
+            agent.services.orchestration.orchestration_config.enabled,
             "apply_session_config must wire orchestration_config into agent"
         );
         assert_eq!(
-            agent.orchestration.orchestration_config.max_tasks, 42,
+            agent.services.orchestration.orchestration_config.max_tasks, 42,
             "orchestration max_tasks must match config"
         );
 
         // Anomaly detector must be created when anomaly_config.enabled = true.
         assert!(
-            agent.debug_state.anomaly_detector.is_some(),
+            agent.runtime.debug.anomaly_detector.is_some(),
             "apply_session_config must create anomaly_detector when enabled"
         );
     }
@@ -2278,14 +2318,20 @@ mod tests {
             ..Default::default()
         };
         let agent = make_agent().with_focus_and_sidequest_config(focus, sidequest);
-        assert!(agent.focus.config.enabled, "must set focus.enabled");
+        assert!(
+            agent.services.focus.config.enabled,
+            "must set focus.enabled"
+        );
         assert_eq!(
-            agent.focus.config.compression_interval, 7,
+            agent.services.focus.config.compression_interval, 7,
             "must propagate compression_interval"
         );
-        assert!(agent.sidequest.config.enabled, "must set sidequest.enabled");
+        assert!(
+            agent.services.sidequest.config.enabled,
+            "must set sidequest.enabled"
+        );
         assert_eq!(
-            agent.sidequest.config.interval_turns, 3,
+            agent.services.sidequest.config.interval_turns, 3,
             "must propagate interval_turns"
         );
     }
@@ -2302,7 +2348,7 @@ mod tests {
 
         let agent = make_agent().apply_session_config(session_cfg);
         assert!(
-            agent.debug_state.anomaly_detector.is_none(),
+            agent.runtime.debug.anomaly_detector.is_none(),
             "apply_session_config must not create anomaly_detector when disabled"
         );
     }
@@ -2311,15 +2357,15 @@ mod tests {
     fn with_skill_matching_config_sets_fields() {
         let agent = make_agent().with_skill_matching_config(0.7, true, 0.85);
         assert!(
-            agent.skill_state.two_stage_matching,
+            agent.services.skill.two_stage_matching,
             "with_skill_matching_config must set two_stage_matching"
         );
         assert!(
-            (agent.skill_state.disambiguation_threshold - 0.7).abs() < f32::EPSILON,
+            (agent.services.skill.disambiguation_threshold - 0.7).abs() < f32::EPSILON,
             "with_skill_matching_config must set disambiguation_threshold"
         );
         assert!(
-            (agent.skill_state.confusability_threshold - 0.85).abs() < f32::EPSILON,
+            (agent.services.skill.confusability_threshold - 0.85).abs() < f32::EPSILON,
             "with_skill_matching_config must set confusability_threshold"
         );
     }
@@ -2328,13 +2374,13 @@ mod tests {
     fn with_skill_matching_config_clamps_confusability() {
         let agent = make_agent().with_skill_matching_config(0.5, false, 1.5);
         assert!(
-            (agent.skill_state.confusability_threshold - 1.0).abs() < f32::EPSILON,
+            (agent.services.skill.confusability_threshold - 1.0).abs() < f32::EPSILON,
             "with_skill_matching_config must clamp confusability above 1.0"
         );
 
         let agent = make_agent().with_skill_matching_config(0.5, false, -0.1);
         assert!(
-            agent.skill_state.confusability_threshold.abs() < f32::EPSILON,
+            agent.services.skill.confusability_threshold.abs() < f32::EPSILON,
             "with_skill_matching_config must clamp confusability below 0.0"
         );
     }
@@ -2471,7 +2517,7 @@ mod tests {
         )
         .with_managed_skills_dir(managed.path().to_path_buf());
 
-        let findings = agent.skill_state.registry.read().scan_loaded();
+        let findings = agent.services.skill.registry.read().scan_loaded();
         assert_eq!(
             findings.len(),
             1,

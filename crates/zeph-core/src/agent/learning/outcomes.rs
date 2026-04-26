@@ -13,12 +13,12 @@ impl<C: Channel> Agent<C> {
         error_context: &str,
         tool_output: &str,
     ) -> Result<bool, super::super::error::AgentError> {
-        if self.learning_engine.was_reflection_used() || !self.is_learning_enabled() {
+        if self.services.learning_engine.was_reflection_used() || !self.is_learning_enabled() {
             return Ok(false);
         }
-        self.learning_engine.mark_reflection_used();
+        self.services.learning_engine.mark_reflection_used();
 
-        let skill_name = self.skill_state.active_skill_names.first().cloned();
+        let skill_name = self.services.skill.active_skill_names.first().cloned();
 
         let Some(name) = skill_name else {
             return Ok(false);
@@ -28,7 +28,7 @@ impl<C: Channel> Agent<C> {
             return Ok(false);
         }
 
-        let Ok(skill) = self.skill_state.registry.read().skill(&name) else {
+        let Ok(skill) = self.services.skill.registry.read().skill(&name) else {
             return Ok(false);
         };
 
@@ -120,16 +120,16 @@ impl<C: Channel> Agent<C> {
         }
 
         // Clone Arc before any .await so no &self fields are held across suspension points.
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok(());
         };
-        let config = self.learning_engine.config.clone();
+        let config = self.services.learning_engine.config.clone();
         let Some(config) = config else {
             return Ok(());
         };
 
-        let skill = self.skill_state.registry.read().skill(skill_name)?;
+        let skill = self.services.skill.registry.read().skill(skill_name)?;
 
         memory
             .sqlite()
@@ -383,7 +383,7 @@ impl<C: Channel> Agent<C> {
                 .activate_skill_version(skill_name, version_id)
                 .await?;
             write_skill_file(
-                &self.skill_state.skill_paths,
+                &self.services.skill.skill_paths,
                 skill_name,
                 description,
                 generated_body,
@@ -408,7 +408,7 @@ impl<C: Channel> Agent<C> {
         if !self.is_learning_enabled() {
             return;
         }
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return;
         };
         let Ok(versions) = memory.sqlite().list_active_auto_versions().await else {
@@ -435,10 +435,10 @@ impl<C: Channel> Agent<C> {
         if !self.is_learning_enabled() {
             return;
         }
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return;
         };
-        let Some(config) = &self.learning_engine.config else {
+        let Some(config) = &self.services.learning_engine.config else {
             return;
         };
         let Ok(Some(metrics)) = memory.sqlite().skill_metrics(skill_name).await else {
@@ -482,7 +482,7 @@ impl<C: Channel> Agent<C> {
             .is_ok()
         {
             write_skill_file(
-                &self.skill_state.skill_paths,
+                &self.services.skill.skill_paths,
                 skill_name,
                 &predecessor.description,
                 &predecessor.body,

@@ -76,7 +76,7 @@ impl<C: Channel> Agent<C> {
     /// Skips client-side compaction when server compaction is active, unless context has grown
     /// past 95% of the budget without a server compaction event (safety fallback).
     fn apply_server_compaction_skip_guard(&self) -> bool {
-        if !self.providers.server_compaction_active {
+        if !self.runtime.providers.server_compaction_active {
             return false;
         }
         let budget = self
@@ -89,7 +89,7 @@ impl<C: Channel> Agent<C> {
                 .msg
                 .messages
                 .iter()
-                .map(|m| self.metrics.token_counter.count_message_tokens(m))
+                .map(|m| self.runtime.metrics.token_counter.count_message_tokens(m))
                 .sum();
             let fallback_threshold = budget * 95 / 100;
             if total_tokens < fallback_threshold {
@@ -163,10 +163,13 @@ impl<C: Channel> Agent<C> {
                 .pruning_strategy
                 .is_subgoal()
         {
-            self.compression.subgoal_registry.rebuild_after_compaction(
-                &self.msg.messages,
-                0, // 0 = no drain, just repair shifted indices
-            );
+            self.services
+                .compression
+                .subgoal_registry
+                .rebuild_after_compaction(
+                    &self.msg.messages,
+                    0, // 0 = no drain, just repair shifted indices
+                );
         }
 
         // Step 2: prune tool outputs down to soft threshold.
@@ -177,7 +180,8 @@ impl<C: Channel> Agent<C> {
             .map_or(0, ContextBudget::max_tokens);
         let soft_threshold =
             (budget as f32 * self.context_manager.soft_compaction_threshold) as usize;
-        let cached = usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
+        let cached =
+            usize::try_from(self.runtime.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
         let min_to_free = cached.saturating_sub(soft_threshold);
         if min_to_free > 0 {
             self.prune_tool_outputs(min_to_free);
@@ -185,7 +189,7 @@ impl<C: Channel> Agent<C> {
 
         let _ = self.channel.send_status("").await;
         tracing::info!(
-            cached_tokens = self.providers.cached_prompt_tokens,
+            cached_tokens = self.runtime.providers.cached_prompt_tokens,
             soft_threshold,
             "soft compaction complete"
         );
@@ -237,7 +241,8 @@ impl<C: Channel> Agent<C> {
             .map_or(0, ContextBudget::max_tokens);
         let hard_threshold =
             (budget as f32 * self.context_manager.hard_compaction_threshold) as usize;
-        let cached = usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
+        let cached =
+            usize::try_from(self.runtime.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
         let min_to_free = cached.saturating_sub(hard_threshold);
 
         let _ = self.channel.send_status("compacting context...").await;
@@ -271,7 +276,7 @@ impl<C: Channel> Agent<C> {
             min_to_free,
             "hard compaction: pruning insufficient, falling back to LLM summarization"
         );
-        let tokens_before = self.providers.cached_prompt_tokens;
+        let tokens_before = self.runtime.providers.cached_prompt_tokens;
         let outcome = self.compact_context().await?;
 
         if self
@@ -338,7 +343,7 @@ impl<C: Channel> Agent<C> {
                 );
                 // Fall through to the same handling as Compacted.
                 let freed_tokens =
-                    tokens_before.saturating_sub(self.providers.cached_prompt_tokens);
+                    tokens_before.saturating_sub(self.runtime.providers.cached_prompt_tokens);
                 if freed_tokens == 0 {
                     self.context_manager.compaction =
                         crate::agent::context_manager::CompactionState::Exhausted { warned: false };
@@ -360,7 +365,7 @@ impl<C: Channel> Agent<C> {
                 // Guard 2 — Counterproductive: net freed tokens is zero (summary ate all
                 // freed space — no net reduction).
                 let freed_tokens =
-                    tokens_before.saturating_sub(self.providers.cached_prompt_tokens);
+                    tokens_before.saturating_sub(self.runtime.providers.cached_prompt_tokens);
                 if freed_tokens == 0 {
                     tracing::warn!(
                         "hard compaction: summary consumed all freed tokens — no net \
@@ -402,7 +407,7 @@ impl<C: Channel> Agent<C> {
 
     /// Emit a UX status signal when tokens were actually freed by compaction (#3314).
     pub(in crate::agent) async fn emit_compaction_status_signal(&mut self, tokens_before: u64) {
-        let tokens_after = self.providers.cached_prompt_tokens;
+        let tokens_after = self.runtime.providers.cached_prompt_tokens;
         if tokens_after < tokens_before {
             let now_ms = u64::try_from(
                 std::time::SystemTime::UNIX_EPOCH
@@ -460,7 +465,8 @@ impl<C: Channel> Agent<C> {
             .map_or(0, ContextBudget::max_tokens);
         let soft_threshold =
             (budget as f32 * self.context_manager.soft_compaction_threshold) as usize;
-        let cached = usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
+        let cached =
+            usize::try_from(self.runtime.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
         // Step 1: apply deferred summaries.
         self.apply_deferred_summaries();
         // Step 2: prune tool outputs down to soft threshold.
@@ -469,7 +475,7 @@ impl<C: Channel> Agent<C> {
             self.prune_tool_outputs(min_to_free);
         }
         tracing::debug!(
-            cached_tokens = self.providers.cached_prompt_tokens,
+            cached_tokens = self.runtime.providers.cached_prompt_tokens,
             soft_threshold,
             "mid-iteration soft compaction complete"
         );
@@ -487,14 +493,14 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), crate::agent::error::AgentError> {
         use crate::agent::compaction_strategy::run_focus_auto_consolidation;
 
-        if !self.focus.try_acquire_compression() {
+        if !self.services.focus.try_acquire_compression() {
             tracing::debug!("focus auto-consolidation skipped — compression already in progress");
             return Ok(());
         }
         // RAII guard: releases the compression lock on drop, even on cancellation or panic.
         // Clones the Arc so FocusState can still be mutably borrowed later in this scope.
         let _compression_guard =
-            crate::agent::focus::CompressionGuard(self.focus.compressing.clone());
+            crate::agent::focus::CompressionGuard(self.services.focus.compressing.clone());
 
         let _ = self.channel.send_status("consolidating knowledge...").await;
 
@@ -508,7 +514,7 @@ impl<C: Channel> Agent<C> {
         // S4: if a provider name is configured but not resolvable, skip rather than silently
         // burning premium tokens on the primary provider.
         if !focus_scorer_provider_name.is_empty()
-            && !self.providers.provider_pool.iter().any(|e| {
+            && !self.runtime.providers.provider_pool.iter().any(|e| {
                 e.effective_name()
                     .eq_ignore_ascii_case(&focus_scorer_provider_name)
             })
@@ -526,13 +532,18 @@ impl<C: Channel> Agent<C> {
         let preserve_tail = self.context_manager.compaction_preserve_tail;
         let slice_end = self.msg.messages.len().saturating_sub(preserve_tail);
         let messages: Vec<_> = self.msg.messages[..slice_end].to_vec();
-        let max_chars = self.focus.config.max_knowledge_tokens.saturating_mul(4);
-        let min_window = self.focus.config.auto_consolidate_min_window;
+        let max_chars = self
+            .services
+            .focus
+            .config
+            .max_knowledge_tokens
+            .saturating_mul(4);
+        let min_window = self.services.focus.config.auto_consolidate_min_window;
 
         tracing::debug!(
             min_window,
             max_chars,
-            cached_tokens = self.providers.cached_prompt_tokens,
+            cached_tokens = self.runtime.providers.cached_prompt_tokens,
             "focus auto-consolidation starting"
         );
 
@@ -545,7 +556,7 @@ impl<C: Channel> Agent<C> {
                     chars = summary.len(),
                     "focus auto-consolidation produced summary"
                 );
-                self.focus.append_auto_knowledge(summary);
+                self.services.focus.append_auto_knowledge(summary);
                 self.update_metrics(|m| m.compression_events += 1);
             }
             Ok(None) => tracing::debug!("focus auto-consolidation: no qualifying window found"),
@@ -564,7 +575,7 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), crate::agent::error::AgentError> {
         // S1: skip proactive compression when server compaction is active — unless context
         // has grown past 95% of the budget without a server compaction event (safety fallback).
-        if self.providers.server_compaction_active {
+        if self.runtime.providers.server_compaction_active {
             let budget = self
                 .context_manager
                 .budget
@@ -572,11 +583,11 @@ impl<C: Channel> Agent<C> {
                 .map_or(0, ContextBudget::max_tokens);
             if budget > 0 {
                 let fallback_threshold = (budget * 95 / 100) as u64;
-                if self.providers.cached_prompt_tokens <= fallback_threshold {
+                if self.runtime.providers.cached_prompt_tokens <= fallback_threshold {
                     return Ok(());
                 }
                 tracing::warn!(
-                    cached_prompt_tokens = self.providers.cached_prompt_tokens,
+                    cached_prompt_tokens = self.runtime.providers.cached_prompt_tokens,
                     fallback_threshold,
                     "server compaction active but context at 95%+ — falling back to client-side proactive"
                 );
@@ -586,7 +597,7 @@ impl<C: Channel> Agent<C> {
         }
         let Some((_threshold, max_summary_tokens)) = self
             .context_manager
-            .should_proactively_compress(self.providers.cached_prompt_tokens)
+            .should_proactively_compress(self.runtime.providers.cached_prompt_tokens)
         else {
             return Ok(());
         };
@@ -602,7 +613,7 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
-        let tokens_before = self.providers.cached_prompt_tokens;
+        let tokens_before = self.runtime.providers.cached_prompt_tokens;
         let _ = self.channel.send_status("compressing context...").await;
         tracing::info!(
             max_summary_tokens,
@@ -618,7 +629,8 @@ impl<C: Channel> Agent<C> {
             // Proactive compression does not impose a post-compaction cooldown.
             self.context_manager.compaction =
                 crate::agent::context_manager::CompactionState::CompactedThisTurn { cooldown: 0 };
-            let tokens_saved = tokens_before.saturating_sub(self.providers.cached_prompt_tokens);
+            let tokens_saved =
+                tokens_before.saturating_sub(self.runtime.providers.cached_prompt_tokens);
             self.update_metrics(|m| {
                 m.compression_events += 1;
                 m.compression_tokens_saved += tokens_saved;
@@ -690,7 +702,7 @@ impl<C: Channel> Agent<C> {
 
         tracing::info!(
             compacted_count,
-            summary_tokens = self.metrics.token_counter.count_tokens(&summary),
+            summary_tokens = self.runtime.metrics.token_counter.count_tokens(&summary),
             "compacted context (with budget)"
         );
 
@@ -700,8 +712,8 @@ impl<C: Channel> Agent<C> {
         });
 
         if let (Some(memory), Some(cid)) = (
-            &self.memory_state.persistence.memory,
-            self.memory_state.persistence.conversation_id,
+            &self.services.memory.persistence.memory,
+            self.services.memory.persistence.conversation_id,
         ) {
             let sqlite = memory.sqlite();
             let ids = sqlite
@@ -770,10 +782,10 @@ impl<C: Channel> Agent<C> {
             messages,
             chunk_token_budget,
             oversized_threshold,
-            &self.metrics.token_counter,
+            &self.runtime.metrics.token_counter,
         );
 
-        let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
+        let llm_timeout = std::time::Duration::from_secs(self.runtime.config.timeouts.llm_seconds);
 
         let try_llm = |msgs: &[Message]| {
             let prompt = Self::build_chunk_prompt(msgs, &guidelines);
@@ -796,11 +808,15 @@ impl<C: Channel> Agent<C> {
         // For single chunk, summarize directly
         if chunks.len() <= 1 {
             // Structured path for single-chunk (IMP-02): mirrors summarize_messages().
-            if self.memory_state.compaction.structured_summaries {
+            if self.services.memory.compaction.structured_summaries {
                 match self.try_summarize_structured(messages, &guidelines).await {
                     Ok(anchored) => {
-                        if let Some(ref d) = self.debug_state.debug_dumper {
-                            d.dump_anchored_summary(&anchored, false, &self.metrics.token_counter);
+                        if let Some(ref d) = self.runtime.debug.debug_dumper {
+                            d.dump_anchored_summary(
+                                &anchored,
+                                false,
+                                &self.runtime.metrics.token_counter,
+                            );
                         }
                         return Ok(cap_summary(anchored.to_markdown(), 16_000));
                     }
@@ -809,7 +825,7 @@ impl<C: Channel> Agent<C> {
                             error = %e,
                             "structured summarization (budget path) failed, falling back to prose"
                         );
-                        if let Some(ref d) = self.debug_state.debug_dumper {
+                        if let Some(ref d) = self.runtime.debug.debug_dumper {
                             let empty = AnchoredSummary {
                                 session_intent: String::new(),
                                 files_modified: vec![],
@@ -817,7 +833,11 @@ impl<C: Channel> Agent<C> {
                                 open_questions: vec![],
                                 next_steps: vec![],
                             };
-                            d.dump_anchored_summary(&empty, true, &self.metrics.token_counter);
+                            d.dump_anchored_summary(
+                                &empty,
+                                true,
+                                &self.runtime.metrics.token_counter,
+                            );
                         }
                     }
                 }
@@ -847,22 +867,22 @@ impl<C: Channel> Agent<C> {
 
     /// Apply a completed background task-goal extraction result to `current_task_goal`.
     fn apply_completed_task_goal(&mut self) {
-        if let Some(handle) = self.compression.pending_task_goal.take() {
+        if let Some(handle) = self.services.compression.pending_task_goal.take() {
             match handle.try_join() {
                 Ok(Ok(Some(goal))) => {
                     tracing::debug!("extract_task_goal: background result applied");
-                    self.compression.current_task_goal = Some(goal);
+                    self.services.compression.current_task_goal = Some(goal);
                 }
                 Ok(Ok(None)) => {}
                 Ok(Err(e)) => tracing::debug!("extract_task_goal: task error: {e}"),
                 Err(handle) => {
                     // Task not yet complete — re-store and wait another turn.
-                    self.compression.pending_task_goal = Some(handle);
+                    self.services.compression.pending_task_goal = Some(handle);
                     return;
                 }
             }
             // Clear spinner on ALL completion paths (success, None result, or task error).
-            if let Some(ref tx) = self.session.status_tx {
+            if let Some(ref tx) = self.services.session.status_tx {
                 let _ = tx.send(String::new());
             }
         }
@@ -893,12 +913,12 @@ impl<C: Channel> Agent<C> {
 
         // Phase 1: try to apply a completed background result (no-op if still running).
         // apply_completed_task_goal re-stores the handle when the task is not yet done.
-        if self.compression.pending_task_goal.is_some() {
+        if self.services.compression.pending_task_goal.is_some() {
             self.apply_completed_task_goal();
         }
 
         // Phase 2: do not spawn a second task while one is already in-flight.
-        if self.compression.pending_task_goal.is_some() {
+        if self.services.compression.pending_task_goal.is_some() {
             return;
         }
 
@@ -907,27 +927,28 @@ impl<C: Channel> Agent<C> {
         };
 
         // Cache hit: extraction already scheduled or completed for this user message.
-        if self.compression.task_goal_user_msg_hash == Some(hash) {
+        if self.services.compression.task_goal_user_msg_hash == Some(hash) {
             return;
         }
 
         // Cache miss: update hash and spawn background extraction.
-        self.compression.task_goal_user_msg_hash = Some(hash);
+        self.services.compression.task_goal_user_msg_hash = Some(hash);
 
         let recent = recent_user_assistant_excerpt(&self.msg.messages, 10, false);
         let provider = self.summary_or_primary_provider().clone();
 
-        let handle = spawn_task_goal_extraction(provider, recent, &self.lifecycle.task_supervisor);
-        self.compression.pending_task_goal = Some(handle);
+        let handle =
+            spawn_task_goal_extraction(provider, recent, &self.runtime.lifecycle.task_supervisor);
+        self.services.compression.pending_task_goal = Some(handle);
         tracing::debug!("extract_task_goal: background task spawned");
-        if let Some(ref tx) = self.session.status_tx {
+        if let Some(ref tx) = self.services.session.status_tx {
             let _ = tx.send("Extracting task goal...".into());
         }
     }
 
     /// Apply a completed background subgoal extraction result to the subgoal registry.
     fn apply_completed_subgoal(&mut self, msg_len: usize) {
-        if let Some(handle) = self.compression.pending_subgoal.take() {
+        if let Some(handle) = self.services.compression.pending_subgoal.take() {
             match handle.try_join() {
                 Ok(Ok(Some(result))) => {
                     let is_transition = result.completed.is_some();
@@ -941,12 +962,12 @@ impl<C: Channel> Agent<C> {
                 Ok(Err(e)) => tracing::debug!("subgoal_extraction: task error: {e}"),
                 Err(handle) => {
                     // Task not yet complete — re-store and wait another turn.
-                    self.compression.pending_subgoal = Some(handle);
+                    self.services.compression.pending_subgoal = Some(handle);
                     return;
                 }
             }
             // Clear spinner on ALL completion paths (success, None, or task error).
-            if let Some(ref tx) = self.session.status_tx {
+            if let Some(ref tx) = self.services.session.status_tx {
                 let _ = tx.send(String::new());
             }
         }
@@ -964,14 +985,17 @@ impl<C: Channel> Agent<C> {
                 "subgoal transition detected"
             );
         }
-        self.compression
+        self.services
+            .compression
             .subgoal_registry
             .complete_active(msg_len.saturating_sub(1));
         let new_id = self
+            .services
             .compression
             .subgoal_registry
             .push_active(result.current.clone(), msg_len.saturating_sub(1));
-        self.compression
+        self.services
+            .compression
             .subgoal_registry
             .extend_active(msg_len.saturating_sub(1));
         tracing::debug!(
@@ -987,20 +1011,28 @@ impl<C: Channel> Agent<C> {
         result: &crate::agent::state::SubgoalExtractionResult,
         msg_len: usize,
     ) {
-        let is_first = self.compression.subgoal_registry.subgoals.is_empty();
+        let is_first = self
+            .services
+            .compression
+            .subgoal_registry
+            .subgoals
+            .is_empty();
         if is_first {
             // First extraction result: create initial subgoal.
             let id = self
+                .services
                 .compression
                 .subgoal_registry
                 .push_active(result.current.clone(), msg_len.saturating_sub(1));
             // S4 fix: retroactively tag all pre-extraction messages [1..msg_len-1].
             if msg_len > 2 {
-                self.compression
+                self.services
+                    .compression
                     .subgoal_registry
                     .tag_range(1, msg_len - 2, id);
             }
-            self.compression
+            self.services
+                .compression
                 .subgoal_registry
                 .extend_active(msg_len.saturating_sub(1));
             tracing::debug!(
@@ -1011,7 +1043,8 @@ impl<C: Channel> Agent<C> {
             );
         } else {
             // Extend existing active subgoal.
-            self.compression
+            self.services
+                .compression
                 .subgoal_registry
                 .extend_active(msg_len.saturating_sub(1));
             tracing::debug!(current = result.current.as_str(), "active subgoal extended");
@@ -1043,12 +1076,12 @@ impl<C: Channel> Agent<C> {
 
         // Phase 1: try to apply a completed background result (no-op if still running).
         // apply_completed_subgoal re-stores the handle when the task is not yet done.
-        if self.compression.pending_subgoal.is_some() {
+        if self.services.compression.pending_subgoal.is_some() {
             self.apply_completed_subgoal(msg_len);
         }
 
         // Phase 2: do not spawn a second task while one is in-flight.
-        if self.compression.pending_subgoal.is_some() {
+        if self.services.compression.pending_subgoal.is_some() {
             return;
         }
 
@@ -1075,20 +1108,21 @@ impl<C: Channel> Agent<C> {
             std::hash::Hasher::finish(&hasher)
         };
 
-        if self.compression.subgoal_user_msg_hash == Some(hash) {
+        if self.services.compression.subgoal_user_msg_hash == Some(hash) {
             return;
         }
-        self.compression.subgoal_user_msg_hash = Some(hash);
+        self.services.compression.subgoal_user_msg_hash = Some(hash);
 
         // Clone the last 6 agent-visible messages (M2 fix: only agent_visible, not invisible
         // [tool summary] placeholders) for the extraction prompt.
         let recent = recent_user_assistant_excerpt(&self.msg.messages, 6, true);
         let provider = self.summary_or_primary_provider().clone();
 
-        let handle = spawn_subgoal_extraction(provider, recent, &self.lifecycle.task_supervisor);
-        self.compression.pending_subgoal = Some(handle);
+        let handle =
+            spawn_subgoal_extraction(provider, recent, &self.runtime.lifecycle.task_supervisor);
+        self.services.compression.pending_subgoal = Some(handle);
         tracing::debug!("subgoal_extraction: background task spawned");
-        if let Some(ref tx) = self.session.status_tx {
+        if let Some(ref tx) = self.services.session.status_tx {
             let _ = tx.send("Tracking subgoal...".into());
         }
     }

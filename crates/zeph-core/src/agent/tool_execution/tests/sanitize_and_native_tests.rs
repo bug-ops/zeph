@@ -23,7 +23,7 @@ macro_rules! assert_external_data {
             flag_injection_patterns: false,
             ..Default::default()
         };
-        agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
+        agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
         let (result, _) = agent.sanitize_tool_output($body, $tool).await;
         assert!(
             result.contains("<external-data"),
@@ -56,7 +56,7 @@ macro_rules! assert_tool_output {
             flag_injection_patterns: false,
             ..Default::default()
         };
-        agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
+        agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
         let (result, _) = agent.sanitize_tool_output($body, $tool).await;
         assert!(
             result.contains("<tool-output"),
@@ -123,7 +123,7 @@ async fn sanitize_tool_output_disabled_returns_raw_body() {
         enabled: false,
         ..Default::default()
     };
-    agent.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
+    agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
     let body = "raw mcp output";
     let (result, _) = agent.sanitize_tool_output(body, "gh:create_issue").await;
     assert_eq!(
@@ -190,7 +190,7 @@ async fn sanitize_tool_output_quarantine_web_scrape_invoked() {
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
         .with_metrics(tx)
         .with_quarantine_summarizer(qs);
-    agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
         enabled: true,
         spotlight_untrusted: true,
         flag_injection_patterns: false,
@@ -247,7 +247,7 @@ async fn sanitize_tool_output_quarantine_fallback_on_error() {
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
         .with_metrics(tx)
         .with_quarantine_summarizer(qs);
-    agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
         enabled: true,
         spotlight_untrusted: true,
         flag_injection_patterns: false,
@@ -304,7 +304,7 @@ async fn sanitize_tool_output_quarantine_skips_shell_tool() {
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
         .with_metrics(tx)
         .with_quarantine_summarizer(qs);
-    agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
         enabled: true,
         spotlight_untrusted: true,
         flag_injection_patterns: false,
@@ -350,7 +350,7 @@ async fn sanitize_tool_output_injection_flag_emits_security_event() {
 
     let mut agent =
         crate::agent::Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
-    agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
         enabled: true,
         flag_injection_patterns: true,
         spotlight_untrusted: false,
@@ -398,7 +398,7 @@ async fn sanitize_tool_output_truncation_emits_security_event() {
     let mut agent =
         crate::agent::Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
     // 1-byte limit forces truncation
-    agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
         enabled: true,
         max_content_size: 1,
         flag_injection_patterns: false,
@@ -447,13 +447,13 @@ async fn sanitize_tool_output_text_only_injection_guards_memory_write() {
             .with_metrics(tx);
 
     // Enable injection pattern detection (default) and memory write guarding (default).
-    agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
         enabled: true,
         flag_injection_patterns: true,
         spotlight_untrusted: false,
         ..Default::default()
     });
-    agent.security.exfiltration_guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+    agent.services.security.exfiltration_guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
         guard_memory_writes: true,
         ..Default::default()
     });
@@ -552,7 +552,7 @@ async fn native_tool_use_response_cache_hit_skips_llm_call() {
 
     let store = SqliteStore::new(":memory:").await.unwrap();
     let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
-    agent.session.response_cache = Some(cache);
+    agent.services.session.response_cache = Some(cache);
 
     agent.msg.messages.push(Message {
         role: Role::User,
@@ -627,7 +627,7 @@ async fn native_tool_use_cache_stores_only_text_responses() {
 
     // Disable sanitizer so ToolResult content passed to the cache key is raw (no spotlight
     // wrapping), keeping this test focused on cache-store logic rather than sanitization.
-    agent.security.sanitizer =
+    agent.services.security.sanitizer =
         zeph_sanitizer::ContentSanitizer::new(&zeph_sanitizer::ContentIsolationConfig {
             enabled: false,
             ..Default::default()
@@ -635,7 +635,7 @@ async fn native_tool_use_cache_stores_only_text_responses() {
 
     let store = SqliteStore::new(":memory:").await.unwrap();
     let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
-    agent.session.response_cache = Some(Arc::clone(&cache));
+    agent.services.session.response_cache = Some(Arc::clone(&cache));
 
     agent.msg.messages.push(Message {
         role: Role::User,
@@ -673,7 +673,8 @@ async fn native_tool_use_cache_stores_only_text_responses() {
         .rev()
         .find(|m| m.role == Role::User)
         .expect("tool result message must be present");
-    let key = ResponseCache::compute_key(&tool_result_msg.content, &agent.runtime.model_name);
+    let key =
+        ResponseCache::compute_key(&tool_result_msg.content, &agent.runtime.config.model_name);
     let cached = cache.get(&key).await.unwrap();
     assert_eq!(
         cached.as_deref(),
@@ -683,7 +684,7 @@ async fn native_tool_use_cache_stores_only_text_responses() {
 
     // Verify the cache does NOT contain a ToolUse response under the original user key.
     let original_key =
-        ResponseCache::compute_key("tool then text question", &agent.runtime.model_name);
+        ResponseCache::compute_key("tool then text question", &agent.runtime.config.model_name);
     let original_cached = cache.get(&original_key).await.unwrap();
     assert_eq!(
         original_cached, None,

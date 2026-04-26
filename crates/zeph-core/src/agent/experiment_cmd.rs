@@ -31,6 +31,7 @@ impl<C: Channel> Agent<C> {
         // Use a dedicated eval provider when `eval_model` is configured, so the judge is
         // independent from the agent under test. Fall back to the primary provider otherwise.
         let judge_arc = self
+            .services
             .experiments
             .eval_provider
             .as_ref()
@@ -42,8 +43,8 @@ impl<C: Channel> Agent<C> {
         // Use the pre-built baseline snapshot that reflects actual runtime config values.
         // Set via Agent::with_experiment(); defaults to ConfigSnapshot::default()
         // when not explicitly provided.
-        let baseline = self.experiments.baseline.clone();
-        let memory = self.memory_state.persistence.memory.clone();
+        let baseline = self.services.experiments.baseline.clone();
+        let memory = self.services.memory.persistence.memory.clone();
 
         Ok(
             ExperimentEngine::new(evaluator, generator, provider_arc, baseline, config, memory)
@@ -81,6 +82,7 @@ impl<C: Channel> Agent<C> {
 
     async fn experiment_status(&mut self) -> Result<String, AgentError> {
         let running = self
+            .services
             .experiments
             .cancel
             .as_ref()
@@ -90,7 +92,7 @@ impl<C: Channel> Agent<C> {
         } else {
             String::from("Experiment: **idle**. Use `/experiment start [N]` to begin.")
         };
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         if let Some(memory) = memory {
             let rows = memory.sqlite().list_experiment_results(None, 1).await?;
             if let Some(latest) = rows.first()
@@ -114,7 +116,7 @@ impl<C: Channel> Agent<C> {
     }
 
     fn experiment_stop(&mut self) -> String {
-        match &self.experiments.cancel {
+        match &self.services.experiments.cancel {
             Some(token) if !token.is_cancelled() => {
                 token.cancel();
                 "Experiment session cancelled. Results so far are saved.".to_owned()
@@ -124,7 +126,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn experiment_report(&mut self) -> Result<String, AgentError> {
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok("Memory is not enabled — cannot query experiment results.".to_owned());
         };
@@ -157,7 +159,7 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn experiment_best(&mut self) -> Result<String, AgentError> {
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok("Memory is not enabled — cannot query experiment results.".to_owned());
         };
@@ -188,6 +190,7 @@ impl<C: Channel> Agent<C> {
 
     fn experiment_start(&mut self, max_override: Option<u32>) -> String {
         if self
+            .services
             .experiments
             .cancel
             .as_ref()
@@ -195,7 +198,7 @@ impl<C: Channel> Agent<C> {
         {
             return "Experiment already running. Use /experiment stop to cancel.".to_owned();
         }
-        let mut config = self.experiments.config.clone();
+        let mut config = self.services.experiments.config.clone();
         if !config.enabled {
             return "Experiments are disabled. Set `experiments.enabled = true` in config and restart."
                 .to_owned();
@@ -212,9 +215,15 @@ impl<C: Channel> Agent<C> {
             Err(msg) => return msg,
         };
         let cancel = engine.cancel_token();
-        self.experiments.cancel = Some(cancel);
-        let notify_tx = self.experiments.notify_tx.clone();
-        let run_experiment = async move {
+        self.services.experiments.cancel = Some(cancel);
+        let notify_tx = self.services.experiments.notify_tx.clone();
+        // intentionally untracked: long-running multi-minute LLM session with its own
+        // CancellationToken and single-instance invariant enforced by `experiments.cancel`.
+        // BackgroundSupervisor::spawn() returns bool (no JoinHandle), uses Drop-on-overflow
+        // semantics, and has only small-fast task classes (Telemetry/Enrichment); routing an
+        // experiment session through it would silently drop it when the Telemetry pool is full,
+        // producing a misleading "starting" message with no experiment actually running.
+        drop(tokio::spawn(async move {
             let mut engine = engine;
             let msg = match engine.run().await {
                 Ok(report) => {
@@ -236,25 +245,7 @@ impl<C: Channel> Agent<C> {
                 Err(e) => format!("Experiment session failed: {e}"),
             };
             let _ = notify_tx.send(msg).await;
-        };
-        // Wrap the one-shot future in Arc<Mutex<Option<_>>> so the Fn factory can hand
-        // it off on the first call. RunOnce tasks are never restarted, so take() is Some
-        // exactly once.
-        let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(run_experiment)));
-        self.lifecycle
-            .task_supervisor
-            .spawn(zeph_common::task_supervisor::TaskDescriptor {
-                name: "agent.experiment.session",
-                restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
-                factory: move || {
-                    let f = cell.lock().ok().and_then(|mut g| g.take());
-                    async move {
-                        if let Some(f) = f {
-                            f.await;
-                        }
-                    }
-                },
-            });
+        }));
         format!(
             "Experiment session starting (max {max_n} experiments). \
              Use /experiment stop to cancel. Results will be shown when complete."
@@ -353,7 +344,7 @@ mod tests {
 
         let mut agent = make_agent();
         // Simulate a running experiment by inserting a live cancel token.
-        agent.experiments.cancel = Some(CancellationToken::new());
+        agent.services.experiments.cancel = Some(CancellationToken::new());
 
         let result = agent
             .handle_experiment_command_as_string("/experiment start")

@@ -7,9 +7,8 @@ use zeph_memory::TokenCounter;
 
 use crate::agent::context::truncate_chars;
 use crate::agent::error::AgentError;
-use crate::agent::{
-    CROSS_SESSION_PREFIX, GRAPH_FACTS_PREFIX, MemoryState, RECALL_PREFIX, SUMMARY_PREFIX,
-};
+use crate::agent::state::MemoryState;
+use crate::agent::{CROSS_SESSION_PREFIX, GRAPH_FACTS_PREFIX, RECALL_PREFIX, SUMMARY_PREFIX};
 use crate::redact::scrub_content;
 
 pub(super) fn format_correction_note(_original_output: &str, correction_text: &str) -> String {

@@ -34,7 +34,7 @@ fn make_agent_with_manager() -> Agent<MockChannel> {
         source: None,
         file_path: None,
     });
-    agent.orchestration.subagent_manager = Some(mgr);
+    agent.services.orchestration.subagent_manager = Some(mgr);
     agent
 }
 

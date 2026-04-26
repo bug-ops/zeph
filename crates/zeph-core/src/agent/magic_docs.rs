@@ -43,7 +43,7 @@ impl<C: Channel> super::Agent<C> {
     /// Call this after pushing an assistant message that may contain `ToolOutput` parts.
     /// No-op when `MagicDocs` is disabled.
     pub(super) fn detect_magic_docs_in_messages(&mut self) {
-        if !self.memory_state.subsystems.magic_docs_config.enabled {
+        if !self.services.memory.subsystems.magic_docs_config.enabled {
             return;
         }
 
@@ -69,7 +69,7 @@ impl<C: Channel> super::Agent<C> {
         // Phase 1: build a map of tool_use_id → (tool_name, file_path) from all ToolUse parts
         //          in Assistant messages. Also maintain an ordered queue for ToolOutput pairing.
         // Phase 2: scan User messages for both ToolOutput and ToolResult, register magic docs.
-        let turn = u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX);
+        let turn = u32::try_from(self.services.sidequest.turn_counter).unwrap_or(u32::MAX);
 
         // Phase 1: collect ToolUse metadata indexed by id (for ToolResult) and by name (for
         // ToolOutput). The queue preserves declaration order for name-based pairing.
@@ -135,7 +135,8 @@ impl<C: Channel> super::Agent<C> {
         }
 
         for path in detected_paths {
-            self.memory_state
+            self.services
+                .memory
                 .subsystems
                 .magic_docs
                 .registered
@@ -150,13 +151,13 @@ impl<C: Channel> super::Agent<C> {
     /// When still running, the pending handle is put back into `magic_docs.pending`.
     /// When finished, the completed handle is dropped and the method returns `false`.
     fn magic_docs_previous_update_running(&mut self) -> bool {
-        let Some(handle) = self.memory_state.subsystems.magic_docs.pending.take() else {
+        let Some(handle) = self.services.memory.subsystems.magic_docs.pending.take() else {
             return false;
         };
         match handle.try_join() {
             Ok(_) => false,
             Err(still_running) => {
-                self.memory_state.subsystems.magic_docs.pending = Some(still_running);
+                self.services.memory.subsystems.magic_docs.pending = Some(still_running);
                 tracing::debug!("magic_docs: previous update still running, skipping this turn");
                 true
             }
@@ -168,10 +169,11 @@ impl<C: Channel> super::Agent<C> {
     /// Spawns a `tokio::task` that runs concurrently with the next user turn.
     /// No-op when `MagicDocs` is disabled, no docs are registered, or update is not due.
     pub(super) fn maybe_update_magic_docs(&mut self) {
-        let cfg = self.memory_state.subsystems.magic_docs_config.clone();
+        let cfg = self.services.memory.subsystems.magic_docs_config.clone();
         if !cfg.enabled
             || self
-                .memory_state
+                .services
+                .memory
                 .subsystems
                 .magic_docs
                 .registered
@@ -184,9 +186,10 @@ impl<C: Channel> super::Agent<C> {
             return;
         }
 
-        let current_turn = u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX);
+        let current_turn = u32::try_from(self.services.sidequest.turn_counter).unwrap_or(u32::MAX);
         let due_paths: Vec<PathBuf> = self
-            .memory_state
+            .services
+            .memory
             .subsystems
             .magic_docs
             .registered
@@ -205,11 +208,12 @@ impl<C: Channel> super::Agent<C> {
         let provider = if cfg.update_provider.is_empty() {
             self.provider.clone()
         } else if let (Some(entry), Some(snapshot)) = (
-            self.providers
+            self.runtime
+                .providers
                 .provider_pool
                 .iter()
                 .find(|e| e.name.as_deref() == Some(cfg.update_provider.as_str())),
-            self.providers.provider_config_snapshot.as_ref(),
+            self.runtime.providers.provider_config_snapshot.as_ref(),
         ) {
             crate::provider_factory::build_provider_for_switch(entry, snapshot).unwrap_or_else(
                 |e| {
@@ -231,6 +235,7 @@ impl<C: Channel> super::Agent<C> {
             "magic_docs: spawning background update"
         );
         let _ = self
+            .services
             .session
             .status_tx
             .as_ref()
@@ -249,6 +254,7 @@ impl<C: Channel> super::Agent<C> {
             }
         };
         let handle = self
+            .runtime
             .lifecycle
             .task_supervisor
             .spawn_oneshot(std::sync::Arc::from("agent.magic_docs.fetch"), move || {
@@ -257,7 +263,8 @@ impl<C: Channel> super::Agent<C> {
 
         // Mark all due paths as updated (due_paths moved into spawn — use registered keys).
         for path in self
-            .memory_state
+            .services
+            .memory
             .subsystems
             .magic_docs
             .registered
@@ -268,7 +275,7 @@ impl<C: Channel> super::Agent<C> {
             }
         }
 
-        self.memory_state.subsystems.magic_docs.pending = Some(handle);
+        self.services.memory.subsystems.magic_docs.pending = Some(handle);
     }
 }
 

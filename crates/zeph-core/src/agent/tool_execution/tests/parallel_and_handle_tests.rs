@@ -178,7 +178,7 @@ fn maybe_redact_disabled_returns_original() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
-    agent.runtime.security.redact_secrets = false;
+    agent.runtime.config.security.redact_secrets = false;
 
     let text = "AWS_SECRET_ACCESS_KEY=abc123";
     let result = agent.maybe_redact(text);
@@ -197,7 +197,7 @@ fn maybe_redact_enabled_redacts_secrets() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
-    agent.runtime.security.redact_secrets = true;
+    agent.runtime.config.security.redact_secrets = true;
 
     // A token-like secret should be redacted
     let text = "token: ghp_1234567890abcdefghijklmnopqrstuvwxyz";
@@ -477,7 +477,7 @@ async fn handle_tool_result_error_prefix_triggers_anomaly_error() {
         claim_source: None,
     };
     // reflection_used = true so reflection path is skipped
-    agent.learning_engine.mark_reflection_used();
+    agent.services.learning_engine.mark_reflection_used();
     let result = agent
         .handle_tool_result("response", Ok(Some(output)))
         .await
@@ -512,7 +512,7 @@ async fn handle_tool_result_stderr_prefix_triggers_anomaly_error() {
         raw_response: None,
         claim_source: None,
     };
-    agent.learning_engine.mark_reflection_used();
+    agent.services.learning_engine.mark_reflection_used();
     let result = agent
         .handle_tool_result("response", Ok(Some(output)))
         .await
@@ -572,19 +572,21 @@ async fn inject_active_skill_env_injects_only_active_skill_secrets() {
 
     // Add available custom secrets
     agent
-        .skill_state
+        .services
+        .skill
         .available_custom_secrets
         .insert("github_token".into(), Secret::new("gh-secret-val"));
     agent
-        .skill_state
+        .services
+        .skill
         .available_custom_secrets
         .insert("other_key".into(), Secret::new("other-val"));
 
     // No active skills — inject_active_skill_env should be a no-op
-    assert!(agent.skill_state.active_skill_names.is_empty());
+    assert!(agent.services.skill.active_skill_names.is_empty());
     agent.inject_active_skill_env();
     // tool_executor.set_skill_env was not called (no-op path)
-    assert!(agent.skill_state.active_skill_names.is_empty());
+    assert!(agent.services.skill.active_skill_names.is_empty());
 }
 
 #[test]
@@ -615,10 +617,15 @@ fn inject_active_skill_env_calls_set_skill_env_with_correct_map() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
     agent
-        .skill_state
+        .services
+        .skill
         .available_custom_secrets
         .insert("github_token".into(), Secret::new("gh-val"));
-    agent.skill_state.active_skill_names.push("gh-skill".into());
+    agent
+        .services
+        .skill
+        .active_skill_names
+        .push("gh-skill".into());
 
     agent.inject_active_skill_env();
 
@@ -655,11 +662,13 @@ fn inject_active_skill_env_clears_after_call() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
     agent
-        .skill_state
+        .services
+        .skill
         .available_custom_secrets
         .insert("api_token".into(), Secret::new("tok-val"));
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("tok-skill".into());
 
@@ -696,13 +705,13 @@ async fn call_llm_returns_cached_response_without_provider_call() {
 
     // Pre-populate cache for the user message we're about to add.
     let user_content = "what is 2+2?";
-    let key = ResponseCache::compute_key(user_content, &agent.runtime.model_name);
+    let key = ResponseCache::compute_key(user_content, &agent.runtime.config.model_name);
     cache
         .put(&key, "cached response", "test-model")
         .await
         .unwrap();
 
-    agent.session.response_cache = Some(cache);
+    agent.services.session.response_cache = Some(cache);
 
     agent.msg.messages.push(Message {
         role: Role::User,
@@ -741,7 +750,7 @@ async fn store_response_in_cache_enables_second_call_to_return_cached() {
 
     let store = SqliteStore::new(":memory:").await.unwrap();
     let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
-    agent.session.response_cache = Some(cache);
+    agent.services.session.response_cache = Some(cache);
 
     agent.msg.messages.push(Message {
         role: Role::User,
@@ -790,12 +799,12 @@ async fn cache_key_stable_across_growing_history() {
 
     // Simulate turn 1: store a cached response for user message "hello".
     let user_msg = "hello";
-    let key = ResponseCache::compute_key(user_msg, &agent.runtime.model_name);
+    let key = ResponseCache::compute_key(user_msg, &agent.runtime.config.model_name);
     cache
         .put(&key, "cached hello response", "test-model")
         .await
         .unwrap();
-    agent.session.response_cache = Some(cache);
+    agent.services.session.response_cache = Some(cache);
 
     // Add history from turn 1: system context + prior exchange.
     agent.msg.messages.push(Message {
@@ -839,7 +848,7 @@ async fn cache_skipped_when_no_user_message() {
 
     let store = SqliteStore::new(":memory:").await.unwrap();
     let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
-    agent.session.response_cache = Some(cache);
+    agent.services.session.response_cache = Some(cache);
 
     // Only system/assistant messages, no user message.
     agent.msg.messages.push(Message {

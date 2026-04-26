@@ -47,7 +47,8 @@ async fn flush_orphaned_noop_when_no_assistant_message() {
     agent.flush_orphaned_tool_use_on_shutdown().await;
 
     let history = agent
-        .memory_state
+        .services
+        .memory
         .persistence
         .memory
         .as_ref()
@@ -94,7 +95,8 @@ async fn flush_orphaned_noop_when_no_tool_use_parts() {
     agent.flush_orphaned_tool_use_on_shutdown().await;
 
     let history = agent
-        .memory_state
+        .services
+        .memory
         .persistence
         .memory
         .as_ref()
@@ -150,7 +152,8 @@ async fn flush_orphaned_persists_tombstone_for_unpaired_tool_use() {
     agent.flush_orphaned_tool_use_on_shutdown().await;
 
     let history = agent
-        .memory_state
+        .services
+        .memory
         .persistence
         .memory
         .as_ref()
@@ -222,7 +225,8 @@ async fn flush_orphaned_noop_when_tool_use_already_paired() {
     agent.flush_orphaned_tool_use_on_shutdown().await;
 
     let history = agent
-        .memory_state
+        .services
+        .memory
         .persistence
         .memory
         .as_ref()

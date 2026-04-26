@@ -217,7 +217,7 @@ async fn check_improvement_allowed_below_min_failures_returns_false() {
         .with_learning(config.clone())
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
+    let mem = agent.services.memory.persistence.memory.as_ref().unwrap();
     let allowed = agent
         .check_improvement_allowed(mem, &config, "test-skill", None)
         .await
@@ -271,7 +271,7 @@ async fn check_improvement_allowed_high_success_rate_returns_false() {
         .with_learning(config.clone())
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
+    let mem = agent.services.memory.persistence.memory.as_ref().unwrap();
     let allowed = agent
         .check_improvement_allowed(mem, &config, "test-skill", None)
         .await
@@ -328,7 +328,7 @@ async fn check_improvement_allowed_all_conditions_met_returns_true() {
         .with_learning(config.clone())
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
+    let mem = agent.services.memory.persistence.memory.as_ref().unwrap();
     let allowed = agent
         .check_improvement_allowed(mem, &config, "test-skill", None)
         .await
@@ -354,7 +354,7 @@ async fn check_improvement_allowed_with_user_feedback_skips_metrics() {
         .with_learning(config.clone())
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
+    let mem = agent.services.memory.persistence.memory.as_ref().unwrap();
     let allowed = agent
         .check_improvement_allowed(mem, &config, "test-skill", Some("please improve this"))
         .await
@@ -513,7 +513,7 @@ async fn attempt_self_reflection_reflection_used_returns_false() {
         .with_learning(learning_config_enabled());
 
     // Mark reflection as already used
-    agent.learning_engine.mark_reflection_used();
+    agent.services.learning_engine.mark_reflection_used();
 
     let result = agent.attempt_self_reflection("error", "output").await;
     assert!(result.is_ok());
@@ -807,7 +807,7 @@ async fn handle_skill_reject_records_outcome_and_replies() {
         .unwrap();
     assert!(out.contains("Rejection recorded"));
 
-    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
+    let mem = agent.services.memory.persistence.memory.as_ref().unwrap();
     let row: Option<(String,)> = zeph_db::query_as(
         "SELECT outcome FROM skill_outcomes WHERE skill_name = 'test-skill' LIMIT 1",
     )
@@ -925,7 +925,7 @@ async fn check_trust_transition_auto_promotes_to_trusted() {
         .with_learning(config)
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
+    let mem = agent.services.memory.persistence.memory.as_ref().unwrap();
     agent.check_trust_transition("test-skill").await;
 
     let row = mem
@@ -962,7 +962,7 @@ async fn check_trust_transition_auto_demotes_to_quarantined() {
         .with_learning(config)
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
+    let mem = agent.services.memory.persistence.memory.as_ref().unwrap();
     agent.check_trust_transition("test-skill").await;
 
     let row = mem
@@ -999,7 +999,7 @@ async fn check_trust_transition_does_not_promote_blocked() {
         .with_learning(config)
         .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
 
-    let mem = agent.memory_state.persistence.memory.as_ref().unwrap();
+    let mem = agent.services.memory.persistence.memory.as_ref().unwrap();
     agent.check_trust_transition("test-skill").await;
 
     let row = mem
@@ -1212,26 +1212,26 @@ async fn analyze_and_learn_advances_watermark() {
     }
 
     let mut agent = agent_with_memory(memory.clone());
-    agent.learning_engine.config = Some(LearningConfig {
+    agent.services.learning_engine.config = Some(LearningConfig {
         correction_detection: true,
         ..Default::default()
     });
     // Advance turn counter past the analysis interval (default 5).
     for _ in 0..5 {
-        agent.learning_engine.tick();
+        agent.services.learning_engine.tick();
     }
-    assert!(agent.learning_engine.should_analyze());
+    assert!(agent.services.learning_engine.should_analyze());
 
-    let watermark_before = agent.learning_engine.last_analyzed_correction_id;
+    let watermark_before = agent.services.learning_engine.last_analyzed_correction_id;
     agent.analyze_and_learn().await;
-    let watermark_after = agent.learning_engine.last_analyzed_correction_id;
+    let watermark_after = agent.services.learning_engine.last_analyzed_correction_id;
 
     assert!(
         watermark_after > watermark_before,
         "watermark must advance after analysis"
     );
     assert!(
-        !agent.learning_engine.should_analyze(),
+        !agent.services.learning_engine.should_analyze(),
         "should_analyze must return false immediately after mark_analyzed"
     );
 }
@@ -1249,12 +1249,12 @@ async fn analyze_and_learn_persists_high_confidence_preference() {
     }
 
     let mut agent = agent_with_memory(memory.clone());
-    agent.learning_engine.config = Some(LearningConfig {
+    agent.services.learning_engine.config = Some(LearningConfig {
         correction_detection: true,
         ..Default::default()
     });
     for _ in 0..5 {
-        agent.learning_engine.tick();
+        agent.services.learning_engine.tick();
     }
 
     agent.analyze_and_learn().await;
@@ -1341,12 +1341,13 @@ async fn learning_tasks_bounded_skips_at_capacity() {
     // Fill the JoinSet to capacity with tasks that never complete.
     for _ in 0..MAX_LEARNING_TASKS {
         agent
+            .services
             .learning_engine
             .learning_tasks
             .spawn(std::future::pending::<()>());
     }
     assert_eq!(
-        agent.learning_engine.learning_tasks.len(),
+        agent.services.learning_engine.learning_tasks.len(),
         MAX_LEARNING_TASKS
     );
 
@@ -1355,21 +1356,22 @@ async fn learning_tasks_bounded_skips_at_capacity() {
     assert!(!spawned, "spawn should be skipped at capacity");
     // JoinSet size must remain at MAX, not MAX+1.
     assert_eq!(
-        agent.learning_engine.learning_tasks.len(),
+        agent.services.learning_engine.learning_tasks.len(),
         MAX_LEARNING_TASKS
     );
 
     // After abort_all + draining, the set must be empty and new tasks accepted.
-    agent.learning_engine.learning_tasks.abort_all();
+    agent.services.learning_engine.learning_tasks.abort_all();
     // Drain aborted tasks so len() returns to 0.
     while agent
+        .services
         .learning_engine
         .learning_tasks
         .join_next()
         .await
         .is_some()
     {}
-    assert_eq!(agent.learning_engine.learning_tasks.len(), 0);
+    assert_eq!(agent.services.learning_engine.learning_tasks.len(), 0);
     let spawned = agent.try_spawn_learning_task(async {});
     assert!(spawned, "spawn should succeed after drain");
 }

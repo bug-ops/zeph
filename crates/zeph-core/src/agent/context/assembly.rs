@@ -30,7 +30,7 @@ impl<C: Channel> Agent<C> {
         }
         // Clear completed tool IDs along with message history: dependency state is
         // session-scoped and should reset when the conversation resets.
-        self.tool_state.completed_tool_ids.clear();
+        self.services.tool_state.completed_tool_ids.clear();
         self.recompute_prompt_tokens();
     }
 
@@ -103,10 +103,10 @@ impl<C: Channel> Agent<C> {
         self.remove_recall_messages();
 
         let (msg, _score) = super::assembler_helpers::fetch_semantic_recall(
-            &self.memory_state,
+            &self.services.memory,
             query,
             token_budget,
-            &self.metrics.token_counter,
+            &self.runtime.metrics.token_counter,
             None,
         )
         .await?;
@@ -146,7 +146,7 @@ impl<C: Channel> Agent<C> {
     /// Spawn a fire-and-forget background task to generate and persist a session digest for
     /// `conversation_id`. No-op when digest is disabled or the conversation has no messages.
     fn spawn_outgoing_digest(&self, conversation_id: Option<zeph_memory::ConversationId>) {
-        if !self.memory_state.compaction.digest_config.enabled {
+        if !self.services.memory.compaction.digest_config.enabled {
             return;
         }
         let non_system: Vec<_> = self
@@ -160,14 +160,14 @@ impl<C: Channel> Agent<C> {
         if non_system.is_empty() {
             return;
         }
-        let digest_config = self.memory_state.compaction.digest_config.clone();
-        let memory = self.memory_state.persistence.memory.clone();
+        let digest_config = self.services.memory.compaction.digest_config.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let provider = self.provider.clone();
-        let tc = self.metrics.token_counter.clone();
-        let sanitizer = self.security.sanitizer.clone();
-        let status_tx = self.session.status_tx.clone();
-        let task_supervisor = Arc::clone(&self.lifecycle.task_supervisor);
-        if let Some(ref tx) = self.session.status_tx {
+        let tc = self.runtime.metrics.token_counter.clone();
+        let sanitizer = self.services.security.sanitizer.clone();
+        let status_tx = self.services.session.status_tx.clone();
+        let task_supervisor = Arc::clone(&self.runtime.lifecycle.task_supervisor);
+        if let Some(ref tx) = self.services.session.status_tx {
             let _ = tx.send("Generating session digest...".to_string());
         }
         let digest_future = async move {
@@ -231,7 +231,7 @@ impl<C: Channel> Agent<C> {
     > {
         // --- Step 1: create new ConversationId FIRST (fail-fast) ---
         // Clone the Arc before .await so &mut self is not held across the await boundary.
-        let memory_arc = self.memory_state.persistence.memory.clone();
+        let memory_arc = self.services.memory.persistence.memory.clone();
         let new_conversation_id = if let Some(memory) = memory_arc {
             match memory.sqlite().create_conversation().await {
                 Ok(id) => Some(id),
@@ -241,7 +241,7 @@ impl<C: Channel> Agent<C> {
             None
         };
 
-        let old_conversation_id = self.memory_state.persistence.conversation_id;
+        let old_conversation_id = self.services.memory.persistence.conversation_id;
 
         // --- Step 2: fire-and-forget digest for outgoing conversation ---
         if !no_digest {
@@ -249,38 +249,38 @@ impl<C: Channel> Agent<C> {
         }
 
         // --- Step 3: TUI status ---
-        if let Some(ref tx) = self.session.status_tx {
+        if let Some(ref tx) = self.services.session.status_tx {
             let _ = tx.send("Resetting conversation...".to_string());
         }
 
         // --- Step 4: abort background compression tasks (context-compression) ---
         {
-            if let Some(h) = self.compression.pending_task_goal.take() {
+            if let Some(h) = self.services.compression.pending_task_goal.take() {
                 h.abort();
             }
-            if let Some(h) = self.compression.pending_sidequest_result.take() {
+            if let Some(h) = self.services.compression.pending_sidequest_result.take() {
                 h.abort();
             }
-            if let Some(h) = self.compression.pending_subgoal.take() {
+            if let Some(h) = self.services.compression.pending_subgoal.take() {
                 h.abort();
             }
-            self.compression.current_task_goal = None;
-            self.compression.task_goal_user_msg_hash = None;
-            self.compression.subgoal_registry =
+            self.services.compression.current_task_goal = None;
+            self.services.compression.task_goal_user_msg_hash = None;
+            self.services.compression.subgoal_registry =
                 crate::agent::compaction_strategy::SubgoalRegistry::default();
-            self.compression.subgoal_user_msg_hash = None;
+            self.services.compression.subgoal_user_msg_hash = None;
         }
 
         // --- Step 5: cancel running plan and clear orchestration ---
         if !keep_plan {
-            if let Some(token) = self.orchestration.plan_cancel_token.take() {
+            if let Some(token) = self.services.orchestration.plan_cancel_token.take() {
                 token.cancel();
             }
-            self.orchestration.pending_graph = None;
-            self.orchestration.pending_goal_embedding = None;
+            self.services.orchestration.pending_graph = None;
+            self.services.orchestration.pending_goal_embedding = None;
         }
         // Cancel running sub-agents regardless of keep_plan.
-        if let Some(ref mut mgr) = self.orchestration.subagent_manager {
+        if let Some(ref mut mgr) = self.services.orchestration.subagent_manager {
             mgr.shutdown_all();
         }
 
@@ -299,30 +299,30 @@ impl<C: Channel> Agent<C> {
         self.msg.pending_image_parts.clear();
 
         // --- Step 7: reset security URL sets ---
-        self.security.user_provided_urls.write().clear();
-        self.security.flagged_urls.clear();
+        self.services.security.user_provided_urls.write().clear();
+        self.services.security.flagged_urls.clear();
 
         // --- Step 8: reset compaction and compression states ---
         self.context_manager.reset_compaction();
-        self.focus.reset();
-        self.sidequest.reset();
+        self.services.focus.reset();
+        self.services.sidequest.reset();
 
         // --- Step 9: reset misc session-scoped fields ---
-        self.debug_state.iteration_counter = 0;
+        self.runtime.debug.iteration_counter = 0;
         self.msg.last_persisted_message_id = None;
         self.msg.deferred_db_hide_ids.clear();
         self.msg.deferred_db_summaries.clear();
-        self.tool_state.cached_filtered_tool_ids = None;
-        self.providers.cached_prompt_tokens = 0;
+        self.services.tool_state.cached_filtered_tool_ids = None;
+        self.runtime.providers.cached_prompt_tokens = 0;
 
         // --- Step 10: update conversation ID and memory state ---
-        self.memory_state.persistence.conversation_id = new_conversation_id;
-        self.memory_state.persistence.unsummarized_count = 0;
+        self.services.memory.persistence.conversation_id = new_conversation_id;
+        self.services.memory.persistence.unsummarized_count = 0;
         // Clear cached digest — the new conversation has no prior digest yet.
-        self.memory_state.compaction.cached_session_digest = None;
+        self.services.memory.compaction.cached_session_digest = None;
 
         // --- Step 11: clear TUI status ---
-        if let Some(ref tx) = self.session.status_tx {
+        if let Some(ref tx) = self.services.session.status_tx {
             let _ = tx.send(String::new());
         }
 
@@ -338,10 +338,10 @@ impl<C: Channel> Agent<C> {
         self.remove_cross_session_messages();
 
         if let Some(msg) = super::assembler_helpers::fetch_cross_session(
-            &self.memory_state,
+            &self.services.memory,
             query,
             token_budget,
-            &self.metrics.token_counter,
+            &self.runtime.metrics.token_counter,
         )
         .await?
             && self.msg.messages.len() > 1
@@ -361,9 +361,9 @@ impl<C: Channel> Agent<C> {
         self.remove_summary_messages();
 
         if let Some(msg) = super::assembler_helpers::fetch_summaries(
-            &self.memory_state,
+            &self.services.memory,
             token_budget,
-            &self.metrics.token_counter,
+            &self.runtime.metrics.token_counter,
         )
         .await?
             && self.msg.messages.len() > 1
@@ -396,6 +396,7 @@ impl<C: Channel> Agent<C> {
 
         for i in (history_start..self.msg.messages.len()).rev() {
             let msg_tokens = self
+                .runtime
                 .metrics
                 .token_counter
                 .count_message_tokens(&self.msg.messages[i]);
@@ -446,7 +447,7 @@ impl<C: Channel> Agent<C> {
         self.remove_tree_memory_messages();
         // S3: only scan for the reasoning prefix when the feature is enabled; with
         // enabled=false the prefix is never injected so the scan is always a no-op.
-        if self.memory_state.extraction.reasoning_config.enabled {
+        if self.services.memory.extraction.reasoning_config.enabled {
             self.remove_reasoning_strategies_messages();
         }
 
@@ -454,11 +455,11 @@ impl<C: Channel> Agent<C> {
         // NOTE: newly generated skills are available *next* turn; this turn we
         // only trigger generation so it is ready when the user's next query arrives.
         // See arch spec §1.2 (C2 fix) for the rationale.
-        if let Some(explorer) = self.proactive_explorer.clone()
+        if let Some(explorer) = self.services.proactive_explorer.clone()
             && let Some(domain) = explorer.classify(query)
         {
             let already_known = {
-                let registry_guard = self.skill_state.registry.read();
+                let registry_guard = self.services.skill.registry.read();
                 explorer.has_knowledge(&registry_guard, &domain)
             };
             let excluded = explorer.is_excluded(&domain);
@@ -476,8 +477,8 @@ impl<C: Channel> Agent<C> {
                         // Re-scan configured skill paths so the new SKILL.md is
                         // registered. Matcher rebuild happens at the next turn via
                         // reload_skills(); see documented next-turn visibility invariant.
-                        let reload_paths = self.skill_state.skill_paths.clone();
-                        self.skill_state.registry.write().reload(&reload_paths);
+                        let reload_paths = self.services.skill.skill_paths.clone();
+                        self.services.skill.registry.write().reload(&reload_paths);
                         tracing::debug!(domain = %domain.0, "proactive.explore complete, registry reloaded");
                     }
                     Ok(Err(e)) => {
@@ -494,7 +495,7 @@ impl<C: Channel> Agent<C> {
         // for context retrieval (#3455 plumbing).
         let active_levels: &'static [zeph_memory::compression::CompressionLevel] =
             if let Some(ref budget) = self.context_manager.budget {
-                let used = self.providers.cached_prompt_tokens;
+                let used = self.runtime.providers.cached_prompt_tokens;
                 let max = budget.max_tokens();
                 #[allow(clippy::cast_precision_loss)]
                 let remaining_ratio = if max == 0 {
@@ -516,42 +517,46 @@ impl<C: Channel> Agent<C> {
             };
 
         let memory_view = zeph_context::input::ContextMemoryView {
-            memory: self.memory_state.persistence.memory.clone(),
-            conversation_id: self.memory_state.persistence.conversation_id,
-            recall_limit: self.memory_state.persistence.recall_limit,
+            memory: self.services.memory.persistence.memory.clone(),
+            conversation_id: self.services.memory.persistence.conversation_id,
+            recall_limit: self.services.memory.persistence.recall_limit,
             cross_session_score_threshold: self
-                .memory_state
+                .services
+                .memory
                 .persistence
                 .cross_session_score_threshold,
-            context_strategy: self.memory_state.compaction.context_strategy,
-            crossover_turn_threshold: self.memory_state.compaction.crossover_turn_threshold,
-            cached_session_digest: self.memory_state.compaction.cached_session_digest.clone(),
-            graph_config: self.memory_state.extraction.graph_config.clone(),
-            document_config: self.memory_state.extraction.document_config.clone(),
-            persona_config: self.memory_state.extraction.persona_config.clone(),
-            trajectory_config: self.memory_state.extraction.trajectory_config.clone(),
-            reasoning_config: self.memory_state.extraction.reasoning_config.clone(),
-            tree_config: self.memory_state.subsystems.tree_config.clone(),
+            context_strategy: self.services.memory.compaction.context_strategy,
+            crossover_turn_threshold: self.services.memory.compaction.crossover_turn_threshold,
+            cached_session_digest: self
+                .services
+                .memory
+                .compaction
+                .cached_session_digest
+                .clone(),
+            graph_config: self.services.memory.extraction.graph_config.clone(),
+            document_config: self.services.memory.extraction.document_config.clone(),
+            persona_config: self.services.memory.extraction.persona_config.clone(),
+            trajectory_config: self.services.memory.extraction.trajectory_config.clone(),
+            reasoning_config: self.services.memory.extraction.reasoning_config.clone(),
+            tree_config: self.services.memory.subsystems.tree_config.clone(),
         };
-        let correction_config =
-            self.learning_engine
-                .config
-                .as_ref()
-                .map(|c| zeph_context::input::CorrectionConfig {
-                    correction_detection: c.correction_detection,
-                    correction_recall_limit: c.correction_recall_limit,
-                    correction_min_similarity: c.correction_min_similarity,
-                });
+        let correction_config = self.services.learning_engine.config.as_ref().map(|c| {
+            zeph_context::input::CorrectionConfig {
+                correction_detection: c.correction_detection,
+                correction_recall_limit: c.correction_recall_limit,
+                correction_min_similarity: c.correction_min_similarity,
+            }
+        });
         let index_access: Option<&dyn zeph_context::input::IndexAccess> =
-            self.index.as_index_access();
+            self.services.index.as_index_access();
         let input = zeph_context::input::ContextAssemblyInput {
             memory: &memory_view,
             context_manager: &self.context_manager,
-            token_counter: &self.metrics.token_counter,
-            skills_prompt: &self.skill_state.last_skills_prompt,
+            token_counter: &self.runtime.metrics.token_counter,
+            skills_prompt: &self.services.skill.last_skills_prompt,
             index: index_access,
             correction_config,
-            sidequest_turn_counter: self.sidequest.turn_counter,
+            sidequest_turn_counter: self.services.sidequest.turn_counter,
             messages: &self.msg.messages,
             query,
             scrub: crate::redact::scrub_content,
@@ -581,7 +586,7 @@ impl<C: Channel> Agent<C> {
         use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
 
         // Store top-1 recall score on agent state for MAR routing signal.
-        self.memory_state.persistence.last_recall_confidence = prepared.recall_confidence;
+        self.services.memory.persistence.last_recall_confidence = prepared.recall_confidence;
 
         // MemoryFirst: drain conversation history BEFORE inserting memory messages so that the
         // memory inserts land into the shorter array and are not accidentally removed.
@@ -705,6 +710,7 @@ impl<C: Channel> Agent<C> {
             // Sanitize before injection: indexed repo files can contain injection patterns
             // embedded in comments, docstrings, or string literals.
             let sanitized = self
+                .services
                 .security
                 .sanitizer
                 .sanitize(&text, ContentSource::new(ContentSourceKind::ToolResult));
@@ -748,9 +754,10 @@ impl<C: Channel> Agent<C> {
         // (closest to the system prompt). #2289
         // Gate on digest_config.enabled: disabling digest generation also disables injection
         // even when a cached digest was loaded for recap purposes (#3064 C3-bis fix).
-        if self.memory_state.compaction.digest_config.enabled
+        if self.services.memory.compaction.digest_config.enabled
             && let Some((digest_text, _)) = self
-                .memory_state
+                .services
+                .memory
                 .compaction
                 .cached_session_digest
                 .clone()
@@ -769,7 +776,7 @@ impl<C: Channel> Agent<C> {
             tracing::debug!("injected session digest into context");
         }
 
-        if self.runtime.redact_credentials {
+        if self.runtime.config.redact_credentials {
             for msg in &mut self.msg.messages {
                 if msg.role == Role::System {
                     continue;
@@ -799,7 +806,11 @@ impl<C: Channel> Agent<C> {
     /// for all hints (defense-in-depth invariant).
     async fn sanitize_memory_message(&self, mut msg: Message, hint: MemorySourceHint) -> Message {
         let source = ContentSource::new(ContentSourceKind::MemoryRetrieval).with_memory_hint(hint);
-        let sanitized = self.security.sanitizer.sanitize(&msg.content, source);
+        let sanitized = self
+            .services
+            .security
+            .sanitizer
+            .sanitize(&msg.content, source);
         self.update_metrics(|m| m.sanitizer_runs += 1);
         if !sanitized.injection_flags.is_empty() {
             tracing::warn!(
@@ -831,11 +842,14 @@ impl<C: Channel> Agent<C> {
         }
 
         // Quarantine step: route high-risk sources through an isolated LLM (defense-in-depth).
-        if self.security.sanitizer.is_enabled()
-            && let Some(ref qs) = self.security.quarantine_summarizer
+        if self.services.security.sanitizer.is_enabled()
+            && let Some(ref qs) = self.services.security.quarantine_summarizer
             && qs.should_quarantine(ContentSourceKind::MemoryRetrieval)
         {
-            match qs.extract_facts(&sanitized, &self.security.sanitizer).await {
+            match qs
+                .extract_facts(&sanitized, &self.services.security.sanitizer)
+                .await
+            {
                 Ok((facts, flags)) => {
                     self.update_metrics(|m| m.quarantine_invocations += 1);
                     self.push_security_event(
@@ -926,7 +940,8 @@ impl<C: Channel> Agent<C> {
     #[allow(clippy::too_many_lines)] // system prompt assembly: skills + tools + knowledge sections, tightly coupled formatting
     pub(in crate::agent) async fn rebuild_system_prompt(&mut self, query: &str) {
         let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
-            .skill_state
+            .services
+            .skill
             .registry
             .read()
             .all_meta()
@@ -939,15 +954,15 @@ impl<C: Channel> Agent<C> {
         // Stays empty when falling back to the full skill set (no matcher, embed failure).
         let mut skills_to_record: Vec<String> = Vec::new();
 
-        let matched_indices: Vec<usize> = if let Some(matcher) = &self.skill_state.matcher {
+        let matched_indices: Vec<usize> = if let Some(matcher) = &self.services.skill.matcher {
             let provider = self.embedding_provider.clone();
             let _ = self.channel.send_status("matching skills...").await;
             let match_result = matcher
                 .match_skills(
                     &all_meta,
                     query,
-                    self.skill_state.max_active_skills,
-                    self.skill_state.two_stage_matching,
+                    self.services.skill.max_active_skills,
+                    self.services.skill.two_stage_matching,
                     |text| {
                         let owned = text.to_owned();
                         let p = provider.clone();
@@ -961,19 +976,19 @@ impl<C: Channel> Agent<C> {
             };
 
             if !scored.is_empty() {
-                if self.skill_state.hybrid_search
-                    && let Some(ref bm25) = self.skill_state.bm25_index
+                if self.services.skill.hybrid_search
+                    && let Some(ref bm25) = self.services.skill.bm25_index
                 {
-                    let bm25_results = bm25.search(query, self.skill_state.max_active_skills);
+                    let bm25_results = bm25.search(query, self.services.skill.max_active_skills);
                     scored = zeph_skills::bm25::rrf_fuse(
                         &scored,
                         &bm25_results,
-                        self.skill_state.max_active_skills,
+                        self.services.skill.max_active_skills,
                     );
                 }
 
                 let metrics_map: std::collections::HashMap<String, (u32, u32)> =
-                    if let Some(memory) = &self.memory_state.persistence.memory {
+                    if let Some(memory) = &self.services.memory.persistence.memory {
                         memory
                             .sqlite()
                             .load_skill_outcome_stats()
@@ -993,7 +1008,7 @@ impl<C: Channel> Agent<C> {
                     };
                 zeph_skills::trust_score::rerank(
                     &mut scored,
-                    self.skill_state.cosine_weight,
+                    self.services.skill.cosine_weight,
                     |idx| {
                         all_meta
                             .get(idx)
@@ -1004,7 +1019,7 @@ impl<C: Channel> Agent<C> {
                 );
 
                 // SkillOrchestra: RL routing head re-rank (past warmup only).
-                if let Some(rl_head) = &self.skill_state.rl_head
+                if let Some(rl_head) = &self.services.skill.rl_head
                     && let Ok(query_embed) = self.embedding_provider.embed(query).await
                     && {
                         let ok = query_embed.len() == rl_head.embed_dim();
@@ -1018,8 +1033,8 @@ impl<C: Channel> Agent<C> {
                         ok
                     }
                 {
-                    let rl_weight = self.skill_state.rl_weight;
-                    let warmup = self.skill_state.rl_warmup_updates;
+                    let rl_weight = self.services.skill.rl_weight;
+                    let warmup = self.services.skill.rl_warmup_updates;
                     // Build candidates: (skill_index, skill_embed, cosine_score).
                     // Skills without a stored embedding are skipped (Qdrant backend).
                     let candidates: Vec<(usize, &[f32], f32)> = scored
@@ -1076,7 +1091,7 @@ impl<C: Channel> Agent<C> {
                 (0..all_meta.len()).collect()
             } else {
                 // Drop skills whose score falls below the minimum injection floor.
-                let min_score = self.skill_state.min_injection_score;
+                let min_score = self.services.skill.min_injection_score;
                 let pre_retain_count = scored.len();
                 let max_score_before_retain = scored
                     .iter()
@@ -1101,7 +1116,7 @@ impl<C: Channel> Agent<C> {
 
                 if scored.len() >= 2
                     && (scored[0].score - scored[1].score)
-                        < self.skill_state.disambiguation_threshold
+                        < self.services.skill.disambiguation_threshold
                 {
                     match self.disambiguate_skills(query, &all_meta, &scored).await {
                         Some(reordered) => reordered,
@@ -1128,7 +1143,8 @@ impl<C: Channel> Agent<C> {
                     .iter()
                     .filter(|s| {
                         !self
-                            .skill_state
+                            .services
+                            .skill
                             .available_custom_secrets
                             .contains_key(s.as_str())
                     })
@@ -1146,12 +1162,12 @@ impl<C: Channel> Agent<C> {
             })
             .collect();
 
-        self.skill_state.active_skill_names = matched_indices
+        self.services.skill.active_skill_names = matched_indices
             .iter()
             .filter_map(|&i| all_meta.get(i).map(|m| m.name.clone()))
             .collect();
 
-        let skill_names = self.skill_state.active_skill_names.clone();
+        let skill_names = self.services.skill.active_skill_names.clone();
         let total = all_meta.len();
         self.update_metrics(|m| {
             m.active_skills = skill_names;
@@ -1159,7 +1175,7 @@ impl<C: Channel> Agent<C> {
         });
 
         if !skills_to_record.is_empty()
-            && let Some(memory) = &self.memory_state.persistence.memory
+            && let Some(memory) = &self.services.memory.persistence.memory
         {
             let names: Vec<&str> = skills_to_record.iter().map(String::as_str).collect();
             if let Err(e) = memory.sqlite().record_skill_usage(&names).await {
@@ -1169,14 +1185,16 @@ impl<C: Channel> Agent<C> {
         self.update_skill_confidence_metrics().await;
 
         let (all_skills, active_skills): (Vec<Skill>, Vec<Skill>) = {
-            let reg = self.skill_state.registry.read();
+            let reg = self.services.skill.registry.read();
             let all: Vec<Skill> = reg
                 .all_meta()
                 .iter()
                 .filter_map(|m| reg.skill(&m.name).ok())
                 .filter(|s| {
-                    let allowed =
-                        zeph_config::is_skill_allowed(s.name(), &self.runtime.channel_skills);
+                    let allowed = zeph_config::is_skill_allowed(
+                        s.name(),
+                        &self.runtime.config.channel_skills,
+                    );
                     if !allowed {
                         tracing::debug!(skill = s.name(), "skill excluded by channel allowlist");
                     }
@@ -1184,13 +1202,16 @@ impl<C: Channel> Agent<C> {
                 })
                 .collect();
             let active: Vec<Skill> = self
-                .skill_state
+                .services
+                .skill
                 .active_skill_names
                 .iter()
                 .filter_map(|name| reg.skill(name).ok())
                 .filter(|s| {
-                    let allowed =
-                        zeph_config::is_skill_allowed(s.name(), &self.runtime.channel_skills);
+                    let allowed = zeph_config::is_skill_allowed(
+                        s.name(),
+                        &self.runtime.config.channel_skills,
+                    );
                     if !allowed {
                         tracing::debug!(
                             skill = s.name(),
@@ -1206,7 +1227,8 @@ impl<C: Channel> Agent<C> {
 
         // Write the per-turn trust snapshot so SkillInvokeExecutor can resolve trust
         // without re-querying the store on every tool call.
-        self.skill_state
+        self.services
+            .skill
             .trust_snapshot
             .write()
             .clone_from(&trust_map);
@@ -1215,7 +1237,8 @@ impl<C: Channel> Agent<C> {
             .iter()
             .filter(|s| {
                 !self
-                    .skill_state
+                    .services
+                    .skill
                     .active_skill_names
                     .contains(&s.name().to_string())
             })
@@ -1230,10 +1253,11 @@ impl<C: Channel> Agent<C> {
             .collect();
 
         // Apply the most restrictive trust level among active skills to the executor gate.
-        let effective_trust = if self.skill_state.active_skill_names.is_empty() {
+        let effective_trust = if self.services.skill.active_skill_names.is_empty() {
             zeph_common::SkillTrustLevel::Trusted
         } else {
-            self.skill_state
+            self.services
+                .skill
                 .active_skill_names
                 .iter()
                 .filter_map(|name| trust_map.get(name).copied())
@@ -1245,7 +1269,7 @@ impl<C: Channel> Agent<C> {
 
         // Build health_map: skill_name -> (posterior_mean, total_uses) for XML attributes.
         let health_map: std::collections::HashMap<String, (f64, u32)> = if let Some(memory) =
-            &self.memory_state.persistence.memory
+            &self.services.memory.persistence.memory
         {
             memory
                 .sqlite()
@@ -1265,7 +1289,7 @@ impl<C: Channel> Agent<C> {
             std::collections::HashMap::new()
         };
 
-        let effective_mode = match self.skill_state.prompt_mode {
+        let effective_mode = match self.services.skill.prompt_mode {
             crate::config::SkillPromptMode::Auto => {
                 if let Some(ref budget) = self.context_manager.budget
                     && budget.max_tokens() < 8192
@@ -1289,29 +1313,32 @@ impl<C: Channel> Agent<C> {
             skills_prompt.push_str(&erl_suffix);
         }
         let catalog_prompt = format_skills_catalog(&remaining_skills);
-        self.skill_state
+        self.services
+            .skill
             .last_skills_prompt
             .clone_from(&skills_prompt);
-        self.session.env_context.refresh_git_branch();
-        self.session
+        self.services.session.env_context.refresh_git_branch();
+        self.services
+            .session
             .env_context
             .model_name
-            .clone_from(&self.runtime.model_name);
+            .clone_from(&self.runtime.config.model_name);
 
         // MCP tool discovery (#2321 / #2298): select tools relevant to this turn's query.
         // Strategy dispatch: Embedding (new), Llm (existing prune_tools_cached), None (all).
         // Runs before the schema filter so the selected subset feeds into the combined
         // (native + MCP) tool set that the schema filter operates on.
-        if !self.mcp.tools.is_empty() {
-            match self.mcp.discovery_strategy {
+        if !self.services.mcp.tools.is_empty() {
+            match self.services.mcp.discovery_strategy {
                 zeph_mcp::ToolDiscoveryStrategy::Embedding => {
-                    let params = self.mcp.discovery_params.clone();
-                    if self.mcp.tools.len() < params.min_tools_to_filter {
+                    let params = self.services.mcp.discovery_params.clone();
+                    if self.services.mcp.tools.len() < params.min_tools_to_filter {
                         // Below threshold — skip filtering.
-                        self.mcp.sync_executor_tools();
-                    } else if let Some(ref index) = self.mcp.semantic_index {
+                        self.services.mcp.sync_executor_tools();
+                    } else if let Some(ref index) = self.services.mcp.semantic_index {
                         // Resolve embedding provider for query.
                         let embed_provider = self
+                            .services
                             .mcp
                             .discovery_provider
                             .clone()
@@ -1326,11 +1353,11 @@ impl<C: Channel> Agent<C> {
                                     &params.always_include,
                                 );
                                 tracing::info!(
-                                    total = self.mcp.tools.len(),
+                                    total = self.services.mcp.tools.len(),
                                     selected = selected.len(),
                                     "semantic tool discovery applied"
                                 );
-                                self.mcp.apply_pruned_tools(selected);
+                                self.services.mcp.apply_pruned_tools(selected);
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -1338,7 +1365,7 @@ impl<C: Channel> Agent<C> {
                                     "semantic tool discovery: query embed failed, falling back to all tools: {e:#}"
                                 );
                                 if !params.strict {
-                                    self.mcp.sync_executor_tools();
+                                    self.services.mcp.sync_executor_tools();
                                 }
                                 // strict=true: do not sync — executor retains whatever tools it had
                                 // (either previously synced or empty). The turn will proceed without
@@ -1353,21 +1380,22 @@ impl<C: Channel> Agent<C> {
                             "semantic tool discovery: index not available, falling back to all tools"
                         );
                         if !params.strict {
-                            self.mcp.sync_executor_tools();
+                            self.services.mcp.sync_executor_tools();
                         }
                     }
                 }
                 zeph_mcp::ToolDiscoveryStrategy::Llm => {
-                    if self.mcp.pruning_enabled {
+                    if self.services.mcp.pruning_enabled {
                         let pruning_provider = self
+                            .services
                             .mcp
                             .pruning_provider
                             .clone()
                             .unwrap_or_else(|| self.provider.clone());
-                        let tools_snapshot = self.mcp.tools.clone();
-                        let params_snapshot = self.mcp.pruning_params.clone();
+                        let tools_snapshot = self.services.mcp.tools.clone();
+                        let params_snapshot = self.services.mcp.pruning_params.clone();
                         match zeph_mcp::prune_tools_cached(
-                            &mut self.mcp.pruning_cache,
+                            &mut self.services.mcp.pruning_cache,
                             &tools_snapshot,
                             query,
                             &params_snapshot,
@@ -1376,21 +1404,21 @@ impl<C: Channel> Agent<C> {
                         .await
                         {
                             Ok(pruned) => {
-                                self.mcp.apply_pruned_tools(pruned);
+                                self.services.mcp.apply_pruned_tools(pruned);
                             }
                             Err(e) => {
                                 tracing::warn!("MCP pruning failed, using all tools: {e:#}");
-                                self.mcp.sync_executor_tools();
+                                self.services.mcp.sync_executor_tools();
                             }
                         }
                     } else {
                         // pruning_enabled=false: pass all tools through.
-                        self.mcp.sync_executor_tools();
+                        self.services.mcp.sync_executor_tools();
                     }
                 }
                 zeph_mcp::ToolDiscoveryStrategy::None => {
                     // Pass all tools through without filtering.
-                    self.mcp.sync_executor_tools();
+                    self.services.mcp.sync_executor_tools();
                 }
             }
         }
@@ -1398,8 +1426,8 @@ impl<C: Channel> Agent<C> {
         // Dynamic tool schema filtering (#2020): compute once per turn, cache for native path.
         // Query embedding is computed here; when strategy=Embedding already computed it above,
         // but providers are stateless so a second embed() call is acceptable for MVP.
-        self.tool_state.cached_filtered_tool_ids = None;
-        if let Some(ref filter) = self.tool_state.tool_schema_filter {
+        self.services.tool_state.cached_filtered_tool_ids = None;
+        if let Some(ref filter) = self.services.tool_state.tool_schema_filter {
             let defs = self.tool_executor.tool_definitions_erased();
             let all_ids: Vec<&str> = defs.iter().map(|d| d.id.as_ref()).collect();
             let descriptions: Vec<(&str, &str)> = defs
@@ -1415,14 +1443,14 @@ impl<C: Channel> Agent<C> {
                     // Apply dependency graph AFTER schema filter (and after any TAFC
                     // augmentation that may have added tools). This ensures hard gates
                     // are the final word on tool availability (MED-04 fix).
-                    if let Some(ref dep_graph) = self.tool_state.dependency_graph {
-                        let dep_config = &self.runtime.dependency_config;
+                    if let Some(ref dep_graph) = self.services.tool_state.dependency_graph {
+                        let dep_config = &self.runtime.config.dependency_config;
                         dep_graph.apply(
                             &mut result,
-                            &self.tool_state.completed_tool_ids,
+                            &self.services.tool_state.completed_tool_ids,
                             dep_config.boost_per_dep,
                             dep_config.max_total_boost,
-                            &self.tool_state.dependency_always_on,
+                            &self.services.tool_state.dependency_always_on,
                         );
                         if !result.dependency_exclusions.is_empty() {
                             tracing::info!(
@@ -1452,7 +1480,7 @@ impl<C: Channel> Agent<C> {
                     for (tool_id, reason) in &result.inclusion_reasons {
                         tracing::debug!(tool_id, ?reason, "tool inclusion reason");
                     }
-                    self.tool_state.cached_filtered_tool_ids = Some(result.included);
+                    self.services.tool_state.cached_filtered_tool_ids = Some(result.included);
                 }
                 Err(e) => {
                     tracing::warn!("tool filter: query embed failed, using all tools: {e:#}");
@@ -1466,8 +1494,8 @@ impl<C: Channel> Agent<C> {
         #[allow(unused_mut)]
         let mut system_prompt = build_system_prompt_with_instructions(
             &skills_prompt,
-            Some(&self.session.env_context),
-            &self.instructions.blocks,
+            Some(&self.services.session.env_context),
+            &self.runtime.instructions.blocks,
         );
 
         // BLOCK 2: semi-stable within a session — skills catalog, MCP, project context, repo map
@@ -1480,7 +1508,7 @@ impl<C: Channel> Agent<C> {
 
         self.append_mcp_prompt(query, &mut system_prompt).await;
 
-        let cwd = match self.session.env_context.working_dir.as_str() {
+        let cwd = match self.services.session.env_context.working_dir.as_str() {
             "" | "unknown" => std::env::current_dir().unwrap_or_default(),
             dir => PathBuf::from(dir),
         };
@@ -1491,23 +1519,23 @@ impl<C: Channel> Agent<C> {
             system_prompt.push_str(&project_context);
         }
 
-        if self.index.repo_map_tokens > 0 {
+        if self.services.index.repo_map_tokens > 0 {
             let now = std::time::Instant::now();
-            let map = if let Some((ref cached, generated_at)) = self.index.cached_repo_map
-                && now.duration_since(generated_at) < self.index.repo_map_ttl
+            let map = if let Some((ref cached, generated_at)) = self.services.index.cached_repo_map
+                && now.duration_since(generated_at) < self.services.index.repo_map_ttl
             {
                 cached.clone()
             } else {
                 let cwd2 = cwd.clone();
-                let token_budget = self.index.repo_map_tokens;
-                let tc = Arc::clone(&self.metrics.token_counter);
+                let token_budget = self.services.index.repo_map_tokens;
+                let tc = Arc::clone(&self.runtime.metrics.token_counter);
                 let fresh = tokio::task::spawn_blocking(move || {
                     zeph_index::repo_map::generate_repo_map(&cwd2, token_budget, &tc)
                 })
                 .await
                 .unwrap_or_else(|_| Ok(String::new()))
                 .unwrap_or_default();
-                self.index.cached_repo_map = Some((fresh.clone(), now));
+                self.services.index.cached_repo_map = Some((fresh.clone(), now));
                 fresh
             };
             if !map.is_empty() {
@@ -1525,7 +1553,12 @@ impl<C: Channel> Agent<C> {
 
         // If memory_save was used this session, remind the model to use memory_search
         // (not search_code) to recall user-provided facts (#2475).
-        if self.tool_state.completed_tool_ids.contains("memory_save") {
+        if self
+            .services
+            .tool_state
+            .completed_tool_ids
+            .contains("memory_save")
+        {
             system_prompt.push_str(
                 "\n\nFacts provided by the user in this session have been saved with memory_save — use memory_search to recall them, not search_code.",
             );
@@ -1534,8 +1567,8 @@ impl<C: Channel> Agent<C> {
         // Budget hint injection (#2267): inject remaining cost and tool call budget so the
         // LLM can self-regulate. Only injected when budget_hint_enabled = true (default).
         // Self-suppresses when no budget data sources are available.
-        if self.runtime.budget_hint_enabled {
-            let remaining_cost_cents = self.metrics.cost_tracker.as_ref().and_then(|ct| {
+        if self.runtime.config.budget_hint_enabled {
+            let remaining_cost_cents = self.runtime.metrics.cost_tracker.as_ref().and_then(|ct| {
                 let max = ct.max_daily_cents();
                 if max > 0.0 {
                     Some((max - ct.current_spend()).max(0.0))
@@ -1543,13 +1576,13 @@ impl<C: Channel> Agent<C> {
                     None
                 }
             });
-            let total_budget_cents = self.metrics.cost_tracker.as_ref().and_then(|ct| {
+            let total_budget_cents = self.runtime.metrics.cost_tracker.as_ref().and_then(|ct| {
                 let max = ct.max_daily_cents();
                 if max > 0.0 { Some(max) } else { None }
             });
             let max_tool_calls = self.tool_orchestrator.max_iterations;
             let remaining_tool_calls =
-                max_tool_calls.saturating_sub(self.tool_state.current_tool_iteration);
+                max_tool_calls.saturating_sub(self.services.tool_state.current_tool_iteration);
             let hint = BudgetHint {
                 remaining_cost_cents,
                 total_budget_cents,
@@ -1564,7 +1597,7 @@ impl<C: Channel> Agent<C> {
 
         tracing::debug!(
             len = system_prompt.len(),
-            skills = ?self.skill_state.active_skill_names,
+            skills = ?self.services.skill.active_skill_names,
             "system prompt rebuilt"
         );
         tracing::trace!(prompt = %system_prompt, "full system prompt");

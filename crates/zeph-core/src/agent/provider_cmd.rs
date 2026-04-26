@@ -23,14 +23,14 @@ impl<C: Channel> Agent<C> {
     /// a warning is logged and the default provider is kept.
     #[tracing::instrument(name = "core.agent.restore_provider", skip_all)]
     pub(super) async fn restore_channel_provider(&mut self) {
-        if !self.runtime.provider_persistence_enabled {
+        if !self.runtime.config.provider_persistence_enabled {
             return;
         }
-        let channel_type = self.runtime.channel_type.clone();
+        let channel_type = self.runtime.config.channel_type.clone();
         if channel_type.is_empty() {
             return;
         }
-        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
+        let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
             return;
         };
         let sqlite = memory.sqlite().clone();
@@ -56,6 +56,7 @@ impl<C: Channel> Agent<C> {
             Ok(Ok(Some(stored_name))) => {
                 // Validate against the provider pool before switching (invariant #2).
                 let found = self
+                    .runtime
                     .providers
                     .provider_pool
                     .iter()
@@ -94,18 +95,18 @@ impl<C: Channel> Agent<C> {
     /// never called on the hot path. Fails silently on concurrency-limit overflow — the
     /// preference will be persisted on the next successful switch.
     fn persist_channel_provider(&mut self, provider_name: String) {
-        if !self.runtime.provider_persistence_enabled {
+        if !self.runtime.config.provider_persistence_enabled {
             return;
         }
-        let channel_type = self.runtime.channel_type.clone();
+        let channel_type = self.runtime.config.channel_type.clone();
         if channel_type.is_empty() {
             return;
         }
-        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
+        let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
             return;
         };
         let sqlite = memory.sqlite().clone();
-        self.lifecycle.supervisor.spawn(
+        self.runtime.lifecycle.supervisor.spawn(
             TaskClass::Telemetry,
             "persist_channel_provider",
             async move {
@@ -126,7 +127,7 @@ impl<C: Channel> Agent<C> {
 
     /// Update instruction files when the active provider changes (C5).
     fn update_provider_instructions(&mut self, entry: &zeph_config::ProviderEntry) {
-        let Some(ref mut reload_state) = self.instructions.reload_state else {
+        let Some(ref mut reload_state) = self.runtime.instructions.reload_state else {
             return;
         };
 
@@ -156,7 +157,7 @@ impl<C: Channel> Agent<C> {
             provider = ?entry.provider_type,
             "reloaded instruction files after provider switch"
         );
-        self.instructions.blocks = new_blocks;
+        self.runtime.instructions.blocks = new_blocks;
     }
 
     /// Update metrics snapshot after a provider switch (C6).
@@ -176,7 +177,7 @@ impl<C: Channel> Agent<C> {
             .candle
             .as_ref()
             .and_then(|c| c.generation.top_p.map(|v| v as f32));
-        let switched_model = self.runtime.model_name.clone();
+        let switched_model = self.runtime.config.model_name.clone();
         let name = configured_name.to_owned();
         self.update_metrics(|m| {
             m.provider_name.clone_from(&name);
@@ -197,14 +198,14 @@ impl<C: Channel> Agent<C> {
     }
 
     fn provider_list_as_string(&self) -> String {
-        let pool = &self.providers.provider_pool;
+        let pool = &self.runtime.providers.provider_pool;
         if pool.is_empty() {
             return "No providers configured in [[llm.providers]].".to_owned();
         }
-        let current = if self.runtime.active_provider_name.is_empty() {
+        let current = if self.runtime.config.active_provider_name.is_empty() {
             self.provider.name().to_owned()
         } else {
-            self.runtime.active_provider_name.clone()
+            self.runtime.config.active_provider_name.clone()
         };
         let mut lines = vec!["Configured providers:".to_string()];
         for (i, entry) in pool.iter().enumerate() {
@@ -229,14 +230,14 @@ impl<C: Channel> Agent<C> {
 
     fn provider_status_as_string(&self) -> String {
         let mut out = String::from("Current provider:\n\n");
-        let display_name = if self.runtime.active_provider_name.is_empty() {
+        let display_name = if self.runtime.config.active_provider_name.is_empty() {
             self.provider.name().to_owned()
         } else {
-            self.runtime.active_provider_name.clone()
+            self.runtime.config.active_provider_name.clone()
         };
         let _ = writeln!(out, "Name:  {display_name}");
-        let _ = writeln!(out, "Model: {}", self.runtime.model_name);
-        if let Some(ref tx) = self.metrics.metrics_tx {
+        let _ = writeln!(out, "Model: {}", self.runtime.config.model_name);
+        if let Some(ref tx) = self.runtime.metrics.metrics_tx {
             let m = tx.borrow();
             let _ = writeln!(out, "API calls: {}", m.api_calls);
             let _ = writeln!(
@@ -253,6 +254,7 @@ impl<C: Channel> Agent<C> {
 
     fn provider_switch_as_string(&mut self, name: &str) -> String {
         let entry_clone = self
+            .runtime
             .providers
             .provider_pool
             .iter()
@@ -261,6 +263,7 @@ impl<C: Channel> Agent<C> {
 
         let Some(entry) = entry_clone else {
             let names: Vec<_> = self
+                .runtime
                 .providers
                 .provider_pool
                 .iter()
@@ -273,16 +276,16 @@ impl<C: Channel> Agent<C> {
             );
         };
 
-        let current_name = if self.runtime.active_provider_name.is_empty() {
+        let current_name = if self.runtime.config.active_provider_name.is_empty() {
             self.provider.name().to_owned()
         } else {
-            self.runtime.active_provider_name.clone()
+            self.runtime.config.active_provider_name.clone()
         };
         if current_name.eq_ignore_ascii_case(name) {
             return format!("Provider '{current_name}' is already active.");
         }
 
-        let Some(ref snapshot) = self.providers.provider_config_snapshot else {
+        let Some(ref snapshot) = self.runtime.providers.provider_config_snapshot else {
             return "Provider switching unavailable (config snapshot missing).".to_owned();
         };
 
@@ -292,13 +295,14 @@ impl<C: Channel> Agent<C> {
                 let configured_name = entry.effective_name();
 
                 self.provider = new_provider;
-                self.runtime.model_name.clone_from(&model_name);
+                self.runtime.config.model_name.clone_from(&model_name);
                 self.runtime
+                    .config
                     .active_provider_name
                     .clone_from(&configured_name);
-                self.providers.cached_prompt_tokens = 0;
-                self.providers.server_compaction_active = entry.server_compaction;
-                self.metrics.extended_context = entry.enable_extended_context;
+                self.runtime.providers.cached_prompt_tokens = 0;
+                self.runtime.providers.server_compaction_active = entry.server_compaction;
+                self.runtime.metrics.extended_context = entry.enable_extended_context;
 
                 tracing::info!(
                     provider = configured_name,
@@ -306,7 +310,7 @@ impl<C: Channel> Agent<C> {
                     "provider switched via /provider command"
                 );
 
-                if let Some(ref override_slot) = self.providers.provider_override {
+                if let Some(ref override_slot) = self.runtime.providers.provider_override {
                     *override_slot.write() = None;
                 }
 
@@ -327,7 +331,7 @@ impl<C: Channel> Agent<C> {
         if embed_name.eq_ignore_ascii_case(configured_name) {
             format!(
                 "Switched to provider: {} (model: {})",
-                configured_name, self.runtime.model_name
+                configured_name, self.runtime.config.model_name
             )
         } else {
             tracing::info!(
@@ -337,7 +341,7 @@ impl<C: Channel> Agent<C> {
             format!(
                 "Switched to provider: {} (model: {}). Embedding operations continue using \
                  provider '{}'.",
-                configured_name, self.runtime.model_name, embed_name
+                configured_name, self.runtime.config.model_name, embed_name
             )
         }
     }
@@ -396,7 +400,7 @@ mod tests {
             ProviderKind::Claude,
             Some("claude-haiku-4-5-20251001"),
         );
-        agent.providers.provider_pool = vec![entry_a, entry_b];
+        agent.runtime.providers.provider_pool = vec![entry_a, entry_b];
 
         let out = agent.handle_provider_command_as_string("");
         assert!(out.contains("ollama"), "should list ollama");
@@ -417,8 +421,8 @@ mod tests {
             crate::provider_factory::build_provider_for_switch(&entry, &snapshot).unwrap();
 
         let mut agent = Agent::new(new_provider, channel, registry, None, 5, executor);
-        agent.providers.provider_pool = vec![entry];
-        agent.providers.provider_config_snapshot = Some(snapshot);
+        agent.runtime.providers.provider_pool = vec![entry];
+        agent.runtime.providers.provider_config_snapshot = Some(snapshot);
 
         let out = agent.handle_provider_command_as_string("");
         assert!(out.contains("(active)"), "active entry must be marked");
@@ -428,7 +432,7 @@ mod tests {
     fn provider_switch_unknown_name_returns_error() {
         let mut qa = QuickTestAgent::minimal("ok");
         let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
-        qa.agent.providers.provider_pool = vec![entry];
+        qa.agent.runtime.providers.provider_pool = vec![entry];
         let out = qa.agent.handle_provider_command_as_string("nonexistent");
         assert!(out.contains("Unknown provider 'nonexistent'"));
         assert!(out.contains("ollama"));
@@ -445,8 +449,8 @@ mod tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.providers.provider_pool = vec![entry];
-        agent.providers.provider_config_snapshot = Some(snapshot);
+        agent.runtime.providers.provider_pool = vec![entry];
+        agent.runtime.providers.provider_config_snapshot = Some(snapshot);
 
         let out = agent.handle_provider_command_as_string("ollama");
         assert!(out.contains("already active"));
@@ -456,7 +460,7 @@ mod tests {
     fn provider_switch_missing_snapshot_returns_error() {
         let mut qa = QuickTestAgent::minimal("ok");
         let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
-        qa.agent.providers.provider_pool = vec![entry];
+        qa.agent.runtime.providers.provider_pool = vec![entry];
         // provider_config_snapshot is None by default
         let out = qa.agent.handle_provider_command_as_string("ollama");
         assert!(out.contains("config snapshot missing"));
@@ -474,24 +478,24 @@ mod tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider_a, channel, registry, None, 5, executor);
-        agent.providers.provider_pool = vec![entry_a, entry_b];
-        agent.providers.provider_config_snapshot = Some(snapshot);
-        agent.providers.cached_prompt_tokens = 999;
+        agent.runtime.providers.provider_pool = vec![entry_a, entry_b];
+        agent.runtime.providers.provider_config_snapshot = Some(snapshot);
+        agent.runtime.providers.cached_prompt_tokens = 999;
 
         let out = agent.handle_provider_command_as_string("ollama2");
         assert!(out.contains("Switched to provider:"), "unexpected: {out}");
         assert!(out.contains("llama3.2"));
         assert_eq!(
-            agent.providers.cached_prompt_tokens, 0,
+            agent.runtime.providers.cached_prompt_tokens, 0,
             "must be reset on switch"
         );
-        assert_eq!(agent.runtime.model_name, "llama3.2");
+        assert_eq!(agent.runtime.config.model_name, "llama3.2");
     }
 
     #[test]
     fn provider_status_no_metrics() {
         let mut qa = QuickTestAgent::minimal("ok");
-        qa.agent.runtime.model_name = "test-model".to_owned();
+        qa.agent.runtime.config.model_name = "test-model".to_owned();
         let out = qa.agent.handle_provider_command_as_string("status");
         assert!(out.contains("Current provider:"));
         assert!(out.contains("test-model"));
@@ -537,9 +541,9 @@ mod tests {
         // Embedding stays as mock (name "mock") != "ollama" → notice expected.
         // Instead, let's directly set embedding_provider to the same provider we switch to.
         agent = agent.with_embedding_provider(provider_b.clone());
-        agent.runtime.active_provider_name = "mock2".to_owned();
-        agent.providers.provider_pool = vec![entry_a, entry_b];
-        agent.providers.provider_config_snapshot = Some(snapshot);
+        agent.runtime.config.active_provider_name = "mock2".to_owned();
+        agent.runtime.providers.provider_pool = vec![entry_a, entry_b];
+        agent.runtime.providers.provider_config_snapshot = Some(snapshot);
 
         // Manually invoke build_switch_message — the provider names match since we assigned
         // embed = provider_b and we will switch to "mock2". provider_b.name() == "ollama"
@@ -574,8 +578,8 @@ mod tests {
         let mut agent = Agent::new(provider_a, channel, registry, None, 5, executor);
         // Set a dedicated embedding provider with a different name.
         agent = agent.with_embedding_provider(embed_provider);
-        agent.providers.provider_pool = vec![entry_a, entry_b];
-        agent.providers.provider_config_snapshot = Some(snapshot);
+        agent.runtime.providers.provider_pool = vec![entry_a, entry_b];
+        agent.runtime.providers.provider_config_snapshot = Some(snapshot);
 
         let out = agent.handle_provider_command_as_string("ollama2");
         // embedding_provider.name() == "mock" ≠ "ollama" (the new chat provider) → notice shown.
@@ -607,15 +611,15 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider_a, channel, registry, None, 5, executor);
         agent = agent.with_embedding_provider(embed_provider);
-        agent.providers.provider_pool = vec![entry_a, entry_b];
-        agent.providers.provider_config_snapshot = Some(snapshot);
+        agent.runtime.providers.provider_pool = vec![entry_a, entry_b];
+        agent.runtime.providers.provider_config_snapshot = Some(snapshot);
 
         let embed_name_before = agent.embedding_provider.name().to_owned();
 
         agent.handle_provider_command_as_string("ollama2");
 
         // Chat provider must have changed.
-        assert_eq!(agent.runtime.model_name, "llama3.2");
+        assert_eq!(agent.runtime.config.model_name, "llama3.2");
         // Embedding provider must remain untouched.
         assert_eq!(
             agent.embedding_provider.name(),

@@ -30,22 +30,22 @@ impl<C: Channel> Agent<C> {
             return Ok("Usage: /mcp add <id> <command> [args...] | /mcp add <id> <url>".to_owned());
         }
 
-        // Clone the Arc so no borrow of self.mcp.manager is held across .await.
-        let Some(manager) = self.mcp.manager.clone() else {
+        // Clone the Arc so no borrow of self.services.mcp.manager is held across .await.
+        let Some(manager) = self.services.mcp.manager.clone() else {
             return Ok("MCP is not enabled.".to_owned());
         };
 
         let target = args[1];
-        if let Some(err) = validate_mcp_command(target, &self.mcp.allowed_commands) {
+        if let Some(err) = validate_mcp_command(target, &self.services.mcp.allowed_commands) {
             return Ok(err);
         }
 
         // SEC-MCP-03: enforce server limit
         let current_count = manager.list_servers().await.len();
-        if current_count >= self.mcp.max_dynamic {
+        if current_count >= self.services.mcp.max_dynamic {
             return Ok(format!(
                 "Server limit reached ({}/{}).",
-                current_count, self.mcp.max_dynamic
+                current_count, self.services.mcp.max_dynamic
             ));
         }
 
@@ -54,7 +54,8 @@ impl<C: Channel> Agent<C> {
         match manager.add_server(&entry).await {
             Ok(tools) => {
                 let count = tools.len();
-                self.mcp
+                self.services
+                    .mcp
                     .server_outcomes
                     .push(zeph_mcp::ServerConnectOutcome {
                         id: entry.id.clone(),
@@ -62,12 +63,12 @@ impl<C: Channel> Agent<C> {
                         tool_count: count,
                         error: String::new(),
                     });
-                self.mcp.tools.extend(tools);
-                self.mcp.sync_executor_tools();
-                self.mcp.pruning_cache.reset();
+                self.services.mcp.tools.extend(tools);
+                self.services.mcp.sync_executor_tools();
+                self.services.mcp.pruning_cache.reset();
                 // Defer rebuild to check_tool_refresh (next turn) so this method
                 // stays Send-compatible for use in AgentAccess::handle_mcp.
-                self.mcp.pending_semantic_rebuild = true;
+                self.services.mcp.pending_semantic_rebuild = true;
                 self.update_mcp_metrics();
                 Ok(format!(
                     "Connected MCP server '{}' ({count} tool(s))",
@@ -84,7 +85,7 @@ impl<C: Channel> Agent<C> {
     async fn handle_mcp_list(&mut self) -> Result<String, super::error::AgentError> {
         use std::fmt::Write;
 
-        let Some(manager) = self.mcp.manager.clone() else {
+        let Some(manager) = self.services.mcp.manager.clone() else {
             return Ok("MCP is not enabled.".to_owned());
         };
 
@@ -96,7 +97,13 @@ impl<C: Channel> Agent<C> {
         let mut output = String::from("Connected MCP servers:\n");
         let mut total = 0usize;
         for id in &server_ids {
-            let count = self.mcp.tools.iter().filter(|t| t.server_id == *id).count();
+            let count = self
+                .services
+                .mcp
+                .tools
+                .iter()
+                .filter(|t| t.server_id == *id)
+                .count();
             total += count;
             let _ = writeln!(output, "- {id} ({count} tools)");
         }
@@ -113,6 +120,7 @@ impl<C: Channel> Agent<C> {
         };
 
         let tools: Vec<_> = self
+            .services
             .mcp
             .tools
             .iter()
@@ -142,22 +150,25 @@ impl<C: Channel> Agent<C> {
             return Ok("Usage: /mcp remove <id>".to_owned());
         };
 
-        // Clone the Arc so no borrow of self.mcp.manager is held across .await.
-        let Some(manager) = self.mcp.manager.clone() else {
+        // Clone the Arc so no borrow of self.services.mcp.manager is held across .await.
+        let Some(manager) = self.services.mcp.manager.clone() else {
             return Ok("MCP is not enabled.".to_owned());
         };
 
         match manager.remove_server(server_id).await {
             Ok(()) => {
-                let before = self.mcp.tools.len();
-                self.mcp.tools.retain(|t| t.server_id != server_id);
-                let removed = before - self.mcp.tools.len();
-                self.mcp.server_outcomes.retain(|o| o.id != server_id);
-                self.mcp.sync_executor_tools();
-                self.mcp.pruning_cache.reset();
+                let before = self.services.mcp.tools.len();
+                self.services.mcp.tools.retain(|t| t.server_id != server_id);
+                let removed = before - self.services.mcp.tools.len();
+                self.services
+                    .mcp
+                    .server_outcomes
+                    .retain(|o| o.id != server_id);
+                self.services.mcp.sync_executor_tools();
+                self.services.mcp.pruning_cache.reset();
                 // Defer rebuild to check_tool_refresh (next turn) so this method
                 // stays Send-compatible for use in AgentAccess::handle_mcp.
-                self.mcp.pending_semantic_rebuild = true;
+                self.services.mcp.pending_semantic_rebuild = true;
                 self.update_mcp_metrics();
                 let sid = server_id.to_owned();
                 self.update_metrics(|m| {
@@ -181,33 +192,36 @@ impl<C: Channel> Agent<C> {
             .iter()
             .map(zeph_mcp::McpTool::qualified_name)
             .collect();
-        let mcp_total = self.mcp.tools.len();
-        let (mcp_server_count, mcp_connected_count) = if self.mcp.server_outcomes.is_empty() {
-            let connected = self
-                .mcp
-                .tools
-                .iter()
-                .map(|t| &t.server_id)
-                .collect::<std::collections::HashSet<_>>()
-                .len();
-            (connected, connected)
-        } else {
-            let total = self.mcp.server_outcomes.len();
-            let connected = self
-                .mcp
-                .server_outcomes
-                .iter()
-                .filter(|o| o.connected)
-                .count();
-            (total, connected)
-        };
+        let mcp_total = self.services.mcp.tools.len();
+        let (mcp_server_count, mcp_connected_count) =
+            if self.services.mcp.server_outcomes.is_empty() {
+                let connected = self
+                    .services
+                    .mcp
+                    .tools
+                    .iter()
+                    .map(|t| &t.server_id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len();
+                (connected, connected)
+            } else {
+                let total = self.services.mcp.server_outcomes.len();
+                let connected = self
+                    .services
+                    .mcp
+                    .server_outcomes
+                    .iter()
+                    .filter(|o| o.connected)
+                    .count();
+                (total, connected)
+            };
         self.update_metrics(|m| {
             m.active_mcp_tools = active_mcp;
             m.mcp_tool_count = mcp_total;
             m.mcp_server_count = mcp_server_count;
             m.mcp_connected_count = mcp_connected_count;
         });
-        if let Some(ref manager) = self.mcp.manager {
+        if let Some(ref manager) = self.services.mcp.manager {
             let instructions = manager.all_server_instructions().await;
             if !instructions.is_empty() {
                 system_prompt.push_str("\n\n");
@@ -217,7 +231,7 @@ impl<C: Channel> Agent<C> {
         if !matched_tools.is_empty() {
             let tool_names: Vec<&str> = matched_tools.iter().map(|t| t.name.as_str()).collect();
             tracing::debug!(
-                skills = ?self.skill_state.active_skill_names,
+                skills = ?self.services.skill.active_skill_names,
                 mcp_tools = ?tool_names,
                 "matched items"
             );
@@ -230,12 +244,12 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn match_mcp_tools(&self, query: &str) -> Vec<zeph_mcp::McpTool> {
-        let Some(ref registry) = self.mcp.registry else {
-            return self.mcp.tools.clone();
+        let Some(ref registry) = self.services.mcp.registry else {
+            return self.services.mcp.tools.clone();
         };
         let provider = self.embedding_provider.clone();
         registry
-            .search(query, self.skill_state.max_active_skills, |text| {
+            .search(query, self.services.skill.max_active_skills, |text| {
                 let owned = text.to_owned();
                 let p = provider.clone();
                 Box::pin(async move { p.embed(&owned).await })
@@ -255,12 +269,13 @@ impl<C: Channel> Agent<C> {
     /// If neither trigger fires, this is a no-op.
     pub(super) async fn check_tool_refresh(&mut self) {
         // Handle deferred rebuild from /mcp add|remove via AgentAccess.
-        if self.mcp.pending_semantic_rebuild {
-            self.mcp.pending_semantic_rebuild = false;
+        if self.services.mcp.pending_semantic_rebuild {
+            self.services.mcp.pending_semantic_rebuild = false;
             self.rebuild_semantic_index().await;
             self.sync_mcp_registry().await;
-            let mcp_total = self.mcp.tools.len();
+            let mcp_total = self.services.mcp.tools.len();
             let mcp_servers = self
+                .services
                 .mcp
                 .tools
                 .iter()
@@ -273,7 +288,7 @@ impl<C: Channel> Agent<C> {
             });
         }
 
-        let Some(ref mut rx) = self.mcp.tool_rx else {
+        let Some(ref mut rx) = self.services.mcp.tool_rx else {
             return;
         };
         if !rx.has_changed().unwrap_or(false) {
@@ -289,13 +304,14 @@ impl<C: Channel> Agent<C> {
             tools = new_tools.len(),
             "tools/list_changed: agent tool list refreshed"
         );
-        self.mcp.tools = new_tools;
-        self.mcp.sync_executor_tools();
-        self.mcp.pruning_cache.reset();
+        self.services.mcp.tools = new_tools;
+        self.services.mcp.sync_executor_tools();
+        self.services.mcp.pruning_cache.reset();
         self.rebuild_semantic_index().await;
         self.sync_mcp_registry().await;
-        let mcp_total = self.mcp.tools.len();
+        let mcp_total = self.services.mcp.tools.len();
         let mcp_servers = self
+            .services
             .mcp
             .tools
             .iter()
@@ -309,17 +325,18 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) async fn sync_mcp_registry(&mut self) {
-        if self.mcp.registry.is_none() {
+        if self.services.mcp.registry.is_none() {
             return;
         }
         if !self.embedding_provider.supports_embeddings() {
             return;
         }
-        // Clone tools before .await to avoid holding &self.mcp.tools across an await point.
-        let tools = self.mcp.tools.clone();
+        // Clone tools before .await to avoid holding &self.services.mcp.tools across an await point.
+        let tools = self.services.mcp.tools.clone();
         let provider = self.embedding_provider.clone();
-        let embedding_model = self.skill_state.embedding_model.clone();
-        let embed_timeout = std::time::Duration::from_secs(self.runtime.timeouts.embedding_seconds);
+        let embedding_model = self.services.skill.embedding_model.clone();
+        let embed_timeout =
+            std::time::Duration::from_secs(self.runtime.config.timeouts.embedding_seconds);
         let embed_fn = move |text: &str| -> zeph_mcp::registry::EmbedFuture {
             let owned = text.to_owned();
             let p = provider.clone();
@@ -335,15 +352,15 @@ impl<C: Channel> Agent<C> {
                 }
             })
         };
-        // Take registry out of self to avoid holding &mut self.mcp.registry across .await.
+        // Take registry out of self to avoid holding &mut self.services.mcp.registry across .await.
         // No early returns between take() and put-back — the await is the only yield point here.
-        let Some(mut registry) = self.mcp.registry.take() else {
+        let Some(mut registry) = self.services.mcp.registry.take() else {
             return;
         };
         if let Err(e) = registry.sync(&tools, &embedding_model, embed_fn).await {
             tracing::warn!("failed to sync MCP tool registry: {e:#}");
         }
-        self.mcp.registry = Some(registry);
+        self.services.mcp.registry = Some(registry);
     }
 
     /// Build (or rebuild) the in-memory semantic tool index for embedding-based discovery.
@@ -362,7 +379,7 @@ impl<C: Channel> Agent<C> {
     /// elicitation events from accumulating while the agent loop is busy.
     pub(super) async fn process_pending_elicitations(&mut self) {
         loop {
-            let Some(ref mut rx) = self.mcp.elicitation_rx else {
+            let Some(ref mut rx) = self.services.mcp.elicitation_rx else {
                 return;
             };
             match rx.try_recv() {
@@ -371,7 +388,7 @@ impl<C: Channel> Agent<C> {
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return,
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                    self.mcp.elicitation_rx = None;
+                    self.services.mcp.elicitation_rx = None;
                     return;
                 }
             }
@@ -412,7 +429,7 @@ impl<C: Channel> Agent<C> {
             }
         };
 
-        if self.mcp.elicitation_warn_sensitive_fields {
+        if self.services.mcp.elicitation_warn_sensitive_fields {
             let sensitive: Vec<&str> = channel_request
                 .fields
                 .iter()
@@ -480,15 +497,17 @@ impl<C: Channel> Agent<C> {
     }
 
     fn update_mcp_metrics(&mut self) {
-        let mcp_total = self.mcp.tools.len();
-        let mcp_server_count = self.mcp.server_outcomes.len();
+        let mcp_total = self.services.mcp.tools.len();
+        let mcp_server_count = self.services.mcp.server_outcomes.len();
         let mcp_connected_count = self
+            .services
             .mcp
             .server_outcomes
             .iter()
             .filter(|o| o.connected)
             .count();
         let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
+            .services
             .mcp
             .server_outcomes
             .iter()
@@ -521,24 +540,26 @@ impl<C: Channel> Agent<C> {
     /// - `tools/list_changed` notification
     /// - `/mcp add` and `/mcp remove`
     pub(in crate::agent) async fn rebuild_semantic_index(&mut self) {
-        if self.mcp.discovery_strategy != zeph_mcp::ToolDiscoveryStrategy::Embedding {
+        if self.services.mcp.discovery_strategy != zeph_mcp::ToolDiscoveryStrategy::Embedding {
             return;
         }
 
-        if self.mcp.tools.is_empty() {
-            self.mcp.semantic_index = None;
+        if self.services.mcp.tools.is_empty() {
+            self.services.mcp.semantic_index = None;
             return;
         }
 
         // Resolve embedding provider: dedicated discovery provider → primary embedding provider.
         let provider = self
+            .services
             .mcp
             .discovery_provider
             .clone()
             .unwrap_or_else(|| self.embedding_provider.clone());
 
         let inner_embed = provider.embed_fn();
-        let embed_timeout = std::time::Duration::from_secs(self.runtime.timeouts.embedding_seconds);
+        let embed_timeout =
+            std::time::Duration::from_secs(self.runtime.config.timeouts.embedding_seconds);
         let embed_fn = move |text: &str| -> zeph_llm::provider::EmbedFuture {
             let fut = inner_embed(text);
             Box::pin(async move {
@@ -554,22 +575,22 @@ impl<C: Channel> Agent<C> {
             })
         };
 
-        // Clone tools before .await to avoid holding &self.mcp.tools across an await point.
-        let tools = self.mcp.tools.clone();
+        // Clone tools before .await to avoid holding &self.services.mcp.tools across an await point.
+        let tools = self.services.mcp.tools.clone();
         match zeph_mcp::SemanticToolIndex::build(&tools, &embed_fn).await {
             Ok(idx) => {
                 tracing::info!(
                     indexed = idx.len(),
-                    total = self.mcp.tools.len(),
+                    total = self.services.mcp.tools.len(),
                     "semantic tool index built"
                 );
-                self.mcp.semantic_index = Some(idx);
+                self.services.mcp.semantic_index = Some(idx);
             }
             Err(e) => {
                 tracing::warn!(
                     "semantic tool index build failed, falling back to all tools: {e:#}"
                 );
-                self.mcp.semantic_index = None;
+                self.services.mcp.semantic_index = None;
             }
         }
     }
@@ -835,7 +856,7 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        assert_eq!(agent.mcp.tool_count(), 0);
+        assert_eq!(agent.services.mcp.tool_count(), 0);
     }
 
     #[tokio::test]
@@ -847,7 +868,7 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
         // No tool_rx set; check_tool_refresh should be a no-op.
         agent.check_tool_refresh().await;
-        assert_eq!(agent.mcp.tool_count(), 0);
+        assert_eq!(agent.services.mcp.tool_count(), 0);
     }
 
     #[tokio::test]
@@ -859,10 +880,10 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         let (tx, rx) = tokio::sync::watch::channel(Vec::new());
-        agent.mcp.tool_rx = Some(rx);
+        agent.services.mcp.tool_rx = Some(rx);
         // No changes sent; has_changed() returns false.
         agent.check_tool_refresh().await;
-        assert_eq!(agent.mcp.tool_count(), 0);
+        assert_eq!(agent.services.mcp.tool_count(), 0);
         drop(tx);
     }
 
@@ -873,7 +894,7 @@ mod tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.mcp.tools = vec![zeph_mcp::McpTool {
+        agent.services.mcp.tools = vec![zeph_mcp::McpTool {
             server_id: "srv".into(),
             name: "existing_tool".into(),
             description: String::new(),
@@ -883,10 +904,10 @@ mod tests {
         }];
 
         let (_tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
-        agent.mcp.tool_rx = Some(rx);
+        agent.services.mcp.tool_rx = Some(rx);
         // has_changed() is false for a fresh receiver; tools unchanged.
         agent.check_tool_refresh().await;
-        assert_eq!(agent.mcp.tool_count(), 1);
+        assert_eq!(agent.services.mcp.tool_count(), 1);
     }
 
     #[tokio::test]
@@ -898,7 +919,7 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         let (tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
-        agent.mcp.tool_rx = Some(rx);
+        agent.services.mcp.tool_rx = Some(rx);
 
         let new_tools = vec![zeph_mcp::McpTool {
             server_id: "srv".into(),
@@ -911,8 +932,8 @@ mod tests {
         tx.send(new_tools).unwrap();
 
         agent.check_tool_refresh().await;
-        assert_eq!(agent.mcp.tool_count(), 1);
-        assert_eq!(agent.mcp.tools[0].name, "refreshed_tool");
+        assert_eq!(agent.services.mcp.tool_count(), 1);
+        assert_eq!(agent.services.mcp.tools[0].name, "refreshed_tool");
     }
 
     #[test]

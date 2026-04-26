@@ -85,7 +85,7 @@ async fn subagent_spawn_text_collect_e2e() {
         source: None,
         file_path: None,
     });
-    agent.orchestration.subagent_manager = Some(mgr);
+    agent.services.orchestration.subagent_manager = Some(mgr);
 
     // Spawn the sub-agent in background — returns immediately with the task id.
     let spawn_resp = agent
@@ -117,7 +117,12 @@ async fn subagent_spawn_text_collect_e2e() {
     // Poll until the sub-agent reaches a terminal state (max 5s).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let full_id = loop {
-        let mgr = agent.orchestration.subagent_manager.as_ref().unwrap();
+        let mgr = agent
+            .services
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .unwrap();
         let statuses = mgr.statuses();
         let found = statuses.iter().find(|(id, _)| id.starts_with(&short_id));
         if let Some((id, status)) = found {
@@ -141,6 +146,7 @@ async fn subagent_spawn_text_collect_e2e() {
 
     // Collect result and verify output.
     let result = agent
+        .services
         .orchestration
         .subagent_manager
         .as_mut()
@@ -200,7 +206,7 @@ async fn foreground_spawn_secret_bridge_approves() {
         source: None,
         file_path: None,
     });
-    agent.orchestration.subagent_manager = Some(mgr);
+    agent.services.orchestration.subagent_manager = Some(mgr);
 
     // Foreground spawn — blocks until sub-agent completes.
     let resp: String = agent
@@ -238,7 +244,7 @@ fn agent_with_orchestration() -> Agent<MockChannel> {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.orchestration_config.enabled = true;
     agent
 }
 
@@ -276,7 +282,7 @@ async fn plan_confirm_no_manager_restores_graph() {
     let mut agent = agent_with_orchestration();
 
     let graph = make_simple_graph(GraphStatus::Created);
-    agent.orchestration.pending_graph = Some(graph);
+    agent.services.orchestration.pending_graph = Some(graph);
 
     // No subagent_manager set.
     agent
@@ -286,7 +292,7 @@ async fn plan_confirm_no_manager_restores_graph() {
 
     // Graph must be restored.
     assert!(
-        agent.orchestration.pending_graph.is_some(),
+        agent.services.orchestration.pending_graph.is_some(),
         "graph must be restored when no manager configured"
     );
     let msgs = agent.channel.sent_messages();
@@ -330,7 +336,7 @@ async fn plan_confirm_completed_graph_aggregates() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.orchestration_config.enabled = true;
 
     let mut mgr = SubAgentManager::new(4);
     mgr.definitions_mut().push(SubAgentDef {
@@ -347,7 +353,7 @@ async fn plan_confirm_completed_graph_aggregates() {
         source: None,
         file_path: None,
     });
-    agent.orchestration.subagent_manager = Some(mgr);
+    agent.services.orchestration.subagent_manager = Some(mgr);
 
     // Graph with one already-Completed task in Running status: resume_from() accepts it,
     // and the first tick() will find no running/ready tasks → Done{Completed}.
@@ -363,7 +369,7 @@ async fn plan_confirm_completed_graph_aggregates() {
     });
     graph.tasks.push(node);
     graph.status = GraphStatus::Running;
-    agent.orchestration.pending_graph = Some(graph);
+    agent.services.orchestration.pending_graph = Some(graph);
 
     agent
         .handle_plan_command_as_string(PlanCommand::Confirm)
@@ -378,7 +384,7 @@ async fn plan_confirm_completed_graph_aggregates() {
     );
     // Graph must be cleared after successful completion.
     assert!(
-        agent.orchestration.pending_graph.is_none(),
+        agent.services.orchestration.pending_graph.is_none(),
         "pending_graph must be cleared after Completed"
     );
 }
@@ -400,10 +406,10 @@ async fn plan_confirm_inline_provider_failure_sends_message() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.orchestration_config.enabled = true;
 
     // Manager with no defined agents → route() returns None → RunInline.
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     // Graph in Created status with one task; scheduler emits RunInline,
     // provider fails → TaskOutcome::Failed → graph Failed.
@@ -411,7 +417,7 @@ async fn plan_confirm_inline_provider_failure_sends_message() {
     let node = TaskNode::new(0, "task-0", "will fail inline");
     graph.tasks.push(node);
     graph.status = GraphStatus::Created;
-    agent.orchestration.pending_graph = Some(graph);
+    agent.services.orchestration.pending_graph = Some(graph);
 
     agent
         .handle_plan_command_as_string(PlanCommand::Confirm)
@@ -432,7 +438,7 @@ async fn plan_confirm_inline_provider_failure_sends_message() {
 async fn plan_list_with_pending_graph_shows_summary() {
     let mut agent = agent_with_orchestration();
 
-    agent.orchestration.pending_graph = Some(make_simple_graph(GraphStatus::Created));
+    agent.services.orchestration.pending_graph = Some(make_simple_graph(GraphStatus::Created));
 
     let out = agent
         .handle_plan_command_as_string(PlanCommand::List)
@@ -477,7 +483,7 @@ async fn plan_retry_resets_running_tasks_to_ready() {
     graph.tasks.push(failed);
     graph.tasks.push(stale_running);
     graph.status = GraphStatus::Failed;
-    agent.orchestration.pending_graph = Some(graph);
+    agent.services.orchestration.pending_graph = Some(graph);
 
     agent
         .handle_plan_command_as_string(PlanCommand::Retry(None))
@@ -485,6 +491,7 @@ async fn plan_retry_resets_running_tasks_to_ready() {
         .unwrap();
 
     let g = agent
+        .services
         .orchestration
         .pending_graph
         .as_ref()
@@ -581,7 +588,7 @@ async fn test_secret_drain_after_instant_completion() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.orchestration_config.enabled = true;
 
     // Build a manager with one agent definition (needed by finalize_plan_execution).
     let mut mgr = SubAgentManager::new(4);
@@ -641,7 +648,7 @@ async fn test_secret_drain_after_instant_completion() {
             transcript_dir: None,
         },
     );
-    agent.orchestration.subagent_manager = Some(mgr);
+    agent.services.orchestration.subagent_manager = Some(mgr);
 
     // Graph with one already-Completed task in Running status: the first tick() finds no
     // Running/Ready tasks and emits Done{Completed} immediately (instant completion).
@@ -657,7 +664,7 @@ async fn test_secret_drain_after_instant_completion() {
     });
     graph.tasks.push(node);
     graph.status = GraphStatus::Running;
-    agent.orchestration.pending_graph = Some(graph);
+    agent.services.orchestration.pending_graph = Some(graph);
 
     // Run the plan loop — the fix adds a post-loop drain call.
     agent
@@ -668,6 +675,7 @@ async fn test_secret_drain_after_instant_completion() {
     // After plan completion, the secret request must have been drained.
     // If the drain was NOT called, try_recv_secret_request() would return Some(_).
     let leftover = agent
+        .services
         .orchestration
         .subagent_manager
         .as_mut()
@@ -693,17 +701,17 @@ async fn plan_confirm_no_subagents_executes_inline() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.orchestration_config.enabled = true;
 
     // SubAgentManager with no definitions → route() returns None → RunInline.
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     // Simple single-task graph.
     let mut graph = TaskGraph::new("inline goal");
     let node = TaskNode::new(0, "task-0", "do something inline");
     graph.tasks.push(node);
     graph.status = GraphStatus::Created;
-    agent.orchestration.pending_graph = Some(graph);
+    agent.services.orchestration.pending_graph = Some(graph);
 
     agent
         .handle_plan_command_as_string(PlanCommand::Confirm)
@@ -712,7 +720,7 @@ async fn plan_confirm_no_subagents_executes_inline() {
 
     // Graph must be cleared after successful execution.
     assert!(
-        agent.orchestration.pending_graph.is_none(),
+        agent.services.orchestration.pending_graph.is_none(),
         "pending_graph must be cleared after inline plan completion"
     );
     let msgs = agent.channel.sent_messages();
@@ -740,8 +748,8 @@ async fn plan_cancel_during_scheduler_loop_cancels_plan() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     // Graph in Running status with one task in Running state: tick() will not emit
     // any actions (no Ready tasks, no timed-out running tasks), so the loop reaches
@@ -797,8 +805,8 @@ async fn finalize_plan_execution_canceled_does_not_store_graph() {
     let (metrics_tx, metrics_rx) = watch::channel(MetricsSnapshot::default());
     let mut agent =
         Agent::new(provider, channel, registry, None, 5, executor).with_metrics(metrics_tx);
-    agent.orchestration.orchestration_config.enabled = true;
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     // Graph with one completed task and one canceled task — typical mid-cancel state.
     let mut graph = TaskGraph::new("cancel finalize test");
@@ -833,7 +841,7 @@ async fn finalize_plan_execution_canceled_does_not_store_graph() {
         "must report completed task count (1/2); got: {msgs:?}"
     );
     assert!(
-        agent.orchestration.pending_graph.is_none(),
+        agent.services.orchestration.pending_graph.is_none(),
         "canceled plan must NOT be stored in pending_graph"
     );
     let snapshot = metrics_rx.borrow().clone();
@@ -865,8 +873,8 @@ async fn scheduler_loop_queues_non_cancel_message() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     // Graph in Running status with one task in Running state: tick() emits no actions
     // (no Ready tasks, running_in_graph_now > 0 suppresses Done), so the loop reaches
@@ -922,8 +930,8 @@ async fn scheduler_loop_channel_close_supports_exit_returns_canceled() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     let mut graph = TaskGraph::new("channel close test goal");
     let mut node = TaskNode::new(0, "task-0", "will be canceled on channel close");
@@ -967,8 +975,8 @@ async fn scheduler_loop_channel_close_no_exit_support_returns_failed() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     let mut graph = TaskGraph::new("server channel close goal");
     let mut node = TaskNode::new(0, "task-0", "interrupted by infra failure");
@@ -1017,8 +1025,8 @@ async fn scheduler_loop_channel_close_drain_captures_completion() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     // Single-task graph in Running state.  The task is assigned an agent handle so
     // resume_from() reconstructs it in the running map — this is required for
@@ -1095,8 +1103,8 @@ async fn stdin_closed_parks_when_tasks_running() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     // A single task that is already running when the channel closes.
     let mut graph = TaskGraph::new("piped stdin EOF with running task");
@@ -1166,8 +1174,8 @@ async fn stdin_closed_exits_when_no_tasks() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     // Graph has a task in Running state, but no entry in scheduler.running map
     // (simulates the case where the task was already drained before channel close).
@@ -1215,7 +1223,7 @@ async fn plan_status_reflects_graph_status() {
 
     // GraphStatus::Created → awaiting confirmation.
     let mut agent = agent_with_orchestration();
-    agent.orchestration.pending_graph = Some(make_simple_graph(GraphStatus::Created));
+    agent.services.orchestration.pending_graph = Some(make_simple_graph(GraphStatus::Created));
     let out = agent
         .handle_plan_command_as_string(PlanCommand::Status(None))
         .await
@@ -1229,7 +1237,7 @@ async fn plan_status_reflects_graph_status() {
     let mut agent = agent_with_orchestration();
     let mut failed_graph = make_simple_graph(GraphStatus::Created);
     failed_graph.status = GraphStatus::Failed;
-    agent.orchestration.pending_graph = Some(failed_graph);
+    agent.services.orchestration.pending_graph = Some(failed_graph);
     let out = agent
         .handle_plan_command_as_string(PlanCommand::Status(None))
         .await
@@ -1243,7 +1251,7 @@ async fn plan_status_reflects_graph_status() {
     let mut agent = agent_with_orchestration();
     let mut paused_graph = make_simple_graph(GraphStatus::Created);
     paused_graph.status = GraphStatus::Paused;
-    agent.orchestration.pending_graph = Some(paused_graph);
+    agent.services.orchestration.pending_graph = Some(paused_graph);
     let out = agent
         .handle_plan_command_as_string(PlanCommand::Status(None))
         .await
@@ -1257,7 +1265,7 @@ async fn plan_status_reflects_graph_status() {
     let mut agent = agent_with_orchestration();
     let mut completed_graph = make_simple_graph(GraphStatus::Created);
     completed_graph.status = GraphStatus::Completed;
-    agent.orchestration.pending_graph = Some(completed_graph);
+    agent.services.orchestration.pending_graph = Some(completed_graph);
     let out = agent
         .handle_plan_command_as_string(PlanCommand::Status(None))
         .await
@@ -1281,8 +1289,8 @@ async fn finalize_plan_execution_deadlock_emits_cancelled_message() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     // Simulate deadlock: graph Failed, one task Blocked → Canceled, one task Pending → Canceled.
     let mut graph = TaskGraph::new("deadlock goal");
@@ -1335,8 +1343,9 @@ async fn plan_goal_increments_api_calls_and_plans_total() {
     let executor = MockToolExecutor::no_tools();
     let (tx, rx) = watch::channel(MetricsSnapshot::default());
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
-    agent.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.orchestration_config.enabled = true;
     agent
+        .services
         .orchestration
         .orchestration_config
         .confirm_before_execute = true;
@@ -1379,8 +1388,8 @@ async fn finalize_plan_execution_completed_increments_aggregator_metrics() {
     let executor = MockToolExecutor::no_tools();
     let (tx, rx) = watch::channel(MetricsSnapshot::default());
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
-    agent.orchestration.orchestration_config.enabled = true;
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     // Graph with one completed and one skipped task.
     let mut graph = TaskGraph::new("metrics finalize test");
@@ -1434,8 +1443,8 @@ async fn finalize_plan_execution_mixed_failed_and_cancelled() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.orchestration.orchestration_config.enabled = true;
-    agent.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
 
     let mut graph = TaskGraph::new("mixed goal");
     let mut failed = TaskNode::new(0, "failed-task", "really failed");

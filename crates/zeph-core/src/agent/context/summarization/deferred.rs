@@ -114,8 +114,8 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) async fn maybe_summarize_tool_pair(&mut self) {
         // Drain the entire backlog above cutoff in one turn so that a resumed session
         // with many accumulated pairs catches up before Tier 1 pruning fires.
-        let cutoff = self.memory_state.persistence.tool_call_cutoff;
-        let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
+        let cutoff = self.services.memory.persistence.tool_call_cutoff;
+        let llm_timeout = std::time::Duration::from_secs(self.runtime.config.timeouts.llm_seconds);
         let mut summarized = 0usize;
         loop {
             let pair_count = self.count_unsummarized_pairs();
@@ -146,7 +146,7 @@ impl<C: Channel> Agent<C> {
                 }
                 Err(_elapsed) => {
                     tracing::warn!(
-                        timeout_secs = self.runtime.timeouts.llm_seconds,
+                        timeout_secs = self.runtime.config.timeouts.llm_seconds,
                         "tool pair summarization timed out, stopping batch"
                     );
                     let _ = self.channel.send_status("").await;
@@ -260,8 +260,8 @@ impl<C: Channel> Agent<C> {
             return;
         }
         let (Some(memory), Some(cid)) = (
-            &self.memory_state.persistence.memory,
-            self.memory_state.persistence.conversation_id,
+            &self.services.memory.persistence.memory,
+            self.services.memory.persistence.conversation_id,
         ) else {
             self.msg.deferred_db_hide_ids.clear();
             self.msg.deferred_db_summaries.clear();
@@ -299,7 +299,7 @@ impl<C: Channel> Agent<C> {
             self.compaction_tier(),
             CompactionTier::Soft | CompactionTier::Hard
         );
-        let count_pressure = pending >= self.memory_state.persistence.tool_call_cutoff;
+        let count_pressure = pending >= self.services.memory.persistence.tool_call_cutoff;
         if !token_pressure && !count_pressure {
             return;
         }

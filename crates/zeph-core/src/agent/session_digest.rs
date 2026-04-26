@@ -204,22 +204,23 @@ impl<C: Channel> Agent<C> {
     ///
     /// All errors are logged as warnings and swallowed — shutdown must never fail.
     pub(super) async fn maybe_store_session_digest(&mut self) {
-        if !self.memory_state.compaction.digest_config.enabled {
+        if !self.services.memory.compaction.digest_config.enabled {
             return;
         }
-        let Some(memory) = self.memory_state.persistence.memory.clone() else {
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
             return;
         };
-        let Some(conversation_id) = self.memory_state.persistence.conversation_id else {
+        let Some(conversation_id) = self.services.memory.persistence.conversation_id else {
             return;
         };
 
         let max_input = self
-            .memory_state
+            .services
+            .memory
             .compaction
             .digest_config
             .max_input_messages;
-        let max_tokens = self.memory_state.compaction.digest_config.max_tokens;
+        let max_tokens = self.services.memory.compaction.digest_config.max_tokens;
 
         // Collect last N non-system messages.
         let non_system: Vec<_> = self
@@ -238,7 +239,7 @@ impl<C: Channel> Agent<C> {
             &non_system[..]
         };
 
-        let conv_text = format_and_sanitize_conversation(slice, &self.security.sanitizer);
+        let conv_text = format_and_sanitize_conversation(slice, &self.services.security.sanitizer);
 
         let prompt = format!(
             "You are a session summarizer. Read the following conversation excerpt and produce \
@@ -284,7 +285,7 @@ impl<C: Channel> Agent<C> {
         let sanitized = sanitize_digest(&digest_text);
 
         // Truncate to max_tokens budget.
-        let tc = &self.metrics.token_counter;
+        let tc = &self.runtime.metrics.token_counter;
         let final_text = truncate_digest(&sanitized, max_tokens, tc);
 
         let token_count = i64::try_from(tc.count_tokens(&final_text)).unwrap_or(i64::MAX);
@@ -302,7 +303,7 @@ impl<C: Channel> Agent<C> {
                 "session digest stored"
             );
             // Update the cached digest so it is available in the same session if re-used.
-            self.memory_state.compaction.cached_session_digest = Some((
+            self.services.memory.compaction.cached_session_digest = Some((
                 final_text,
                 usize::try_from(token_count).unwrap_or(max_tokens),
             ));
@@ -318,10 +319,10 @@ impl<C: Channel> Agent<C> {
     /// *generation* at shutdown but must not suppress *reading* of previously stored digests.
     /// All errors are logged and swallowed.
     pub(super) async fn load_and_cache_session_digest(&mut self) {
-        let Some(memory) = self.memory_state.persistence.memory.clone() else {
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
             return;
         };
-        let Some(conversation_id) = self.memory_state.persistence.conversation_id else {
+        let Some(conversation_id) = self.services.memory.persistence.conversation_id else {
             return;
         };
 
@@ -334,7 +335,7 @@ impl<C: Channel> Agent<C> {
                     tokens = token_count,
                     "session digest loaded"
                 );
-                self.memory_state.compaction.cached_session_digest =
+                self.services.memory.compaction.cached_session_digest =
                     Some((digest.digest, token_count));
             }
             Ok(None) => {}
@@ -350,18 +351,27 @@ impl<C: Channel> Agent<C> {
     /// Does not depend on `msg.messages.len()` — the history has just the system
     /// message at this point, making a length check unreliable.
     pub(super) fn should_auto_recap(&self) -> bool {
-        self.memory_state.persistence.conversation_id.is_some()
-            && self.memory_state.compaction.cached_session_digest.is_some()
+        self.services.memory.persistence.conversation_id.is_some()
+            && self
+                .services
+                .memory
+                .compaction
+                .cached_session_digest
+                .is_some()
     }
 
     /// Return `true` when `/recap` should skip LLM inference because auto-recap was already
     /// shown and no new messages have been added since the session was resumed (#3144).
     pub(super) fn recap_is_duplicate(&self, current_non_system: usize) -> bool {
         recap_is_duplicate_impl(
-            self.runtime.auto_recap_shown,
-            self.runtime.msg_count_at_resume,
+            self.runtime.config.auto_recap_shown,
+            self.runtime.config.msg_count_at_resume,
             current_non_system,
-            self.memory_state.compaction.cached_session_digest.is_some(),
+            self.services
+                .memory
+                .compaction
+                .cached_session_digest
+                .is_some(),
         )
     }
 
@@ -377,8 +387,8 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns `Err` only on unrecoverable internal errors.
     pub(super) async fn build_recap(&mut self) -> Result<String, zeph_commands::CommandError> {
-        let max_input = self.runtime.recap_config.max_input_messages.max(1);
-        let max_tokens = self.runtime.recap_config.max_tokens.max(10);
+        let max_input = self.runtime.config.recap_config.max_input_messages.max(1);
+        let max_tokens = self.runtime.config.recap_config.max_tokens.max(10);
 
         // Fast path: auto-recap was already shown and no new messages since then (#3144).
         // Return the cached digest without a new LLM call and without saving to DB.
@@ -389,16 +399,21 @@ impl<C: Channel> Agent<C> {
             .filter(|m| m.role != Role::System)
             .count();
         if self.recap_is_duplicate(current_non_system)
-            && let Some((digest, _)) = self.memory_state.compaction.cached_session_digest.clone()
+            && let Some((digest, _)) = self
+                .services
+                .memory
+                .compaction
+                .cached_session_digest
+                .clone()
         {
-            let tc = &self.metrics.token_counter;
+            let tc = &self.runtime.metrics.token_counter;
             let text = truncate_digest(&digest, max_tokens, tc);
             return Ok(format!("(shown at session start)\n{text}"));
         }
 
         // Fast path: use already-loaded digest, truncated to the recap token budget.
-        if let Some((digest, _)) = &self.memory_state.compaction.cached_session_digest {
-            let tc = &self.metrics.token_counter;
+        if let Some((digest, _)) = &self.services.memory.compaction.cached_session_digest {
+            let tc = &self.runtime.metrics.token_counter;
             return Ok(truncate_digest(digest, max_tokens, tc));
         }
 
@@ -422,7 +437,7 @@ impl<C: Channel> Agent<C> {
             &non_system[..]
         };
 
-        let conv_text = format_and_sanitize_conversation(slice, &self.security.sanitizer);
+        let conv_text = format_and_sanitize_conversation(slice, &self.services.security.sanitizer);
 
         let prompt = format!(
             "You are a session summarizer. Read the following conversation excerpt and produce \
@@ -440,7 +455,7 @@ impl<C: Channel> Agent<C> {
         }];
 
         let provider =
-            self.resolve_background_provider(&self.runtime.recap_config.provider.clone());
+            self.resolve_background_provider(&self.runtime.config.recap_config.provider.clone());
 
         let _ = self.channel.send_status("Generating recap...").await;
 
@@ -468,7 +483,7 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("").await;
 
         let sanitized = sanitize_digest(&recap_text);
-        let tc = &self.metrics.token_counter;
+        let tc = &self.runtime.metrics.token_counter;
         Ok(truncate_digest(&sanitized, max_tokens, tc))
     }
 
@@ -476,7 +491,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Non-fatal: errors and timeouts are logged as warnings and swallowed.
     pub(super) async fn maybe_send_resume_recap(&mut self) {
-        if !self.runtime.recap_config.on_resume || !self.should_auto_recap() {
+        if !self.runtime.config.recap_config.on_resume || !self.should_auto_recap() {
             return;
         }
 
@@ -492,8 +507,8 @@ impl<C: Channel> Agent<C> {
                             .iter()
                             .filter(|m| m.role != Role::System)
                             .count();
-                        self.runtime.auto_recap_shown = true;
-                        self.runtime.msg_count_at_resume = non_system_count;
+                        self.runtime.config.auto_recap_shown = true;
+                        self.runtime.config.msg_count_at_resume = non_system_count;
                     }
                     Err(e) => {
                         tracing::warn!("session recap: channel send failed: {e:#}");

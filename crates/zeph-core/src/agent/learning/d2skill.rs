@@ -18,13 +18,13 @@ impl<C: Channel> Agent<C> {
         failure_tool: &str,
         successful_response: &str,
     ) {
-        let Some(config) = self.learning_engine.config.as_ref() else {
+        let Some(config) = self.services.learning_engine.config.as_ref() else {
             return;
         };
         if !config.d2skill_enabled {
             return;
         }
-        let Some(memory) = self.memory_state.persistence.memory.clone() else {
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
             return;
         };
         let provider = self.resolve_background_provider(config.d2skill_provider.as_str());
@@ -79,7 +79,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Called after every tool execution turn regardless of outcome.
     pub(crate) fn spawn_stem_detection(&mut self, outcome: &str) {
-        let Some(config) = self.learning_engine.config.as_ref() else {
+        let Some(config) = self.services.learning_engine.config.as_ref() else {
             return;
         };
         if !config.stem_enabled {
@@ -89,7 +89,7 @@ impl<C: Channel> Agent<C> {
         if tool_names.is_empty() {
             return;
         }
-        let Some(memory) = self.memory_state.persistence.memory.clone() else {
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
             return;
         };
         let tool_sequence = zeph_skills::stem::normalize_tool_sequence(
@@ -112,8 +112,8 @@ impl<C: Channel> Agent<C> {
             "failure"
         }
         .to_string();
-        let status_tx = self.session.status_tx.clone();
-        if let Some(ref tx) = self.session.status_tx {
+        let status_tx = self.services.session.status_tx.clone();
+        if let Some(ref tx) = self.services.session.status_tx {
             let _ = tx.send("Learning from patterns…".to_string());
         }
         let args = StemTaskArgs {
@@ -123,13 +123,13 @@ impl<C: Channel> Agent<C> {
             sequence_hash,
             context_hash,
             outcome: outcome_owned,
-            conv_id: self.memory_state.persistence.conversation_id,
+            conv_id: self.services.memory.persistence.conversation_id,
             min_occurrences: config.stem_min_occurrences,
             min_success_rate: config.stem_min_success_rate,
             window_days: config.stem_pattern_window_days,
             retention_days: config.stem_retention_days,
             max_auto_sections: config.max_auto_sections,
-            skill_paths: self.skill_state.skill_paths.clone(),
+            skill_paths: self.services.skill.skill_paths.clone(),
             status_tx,
         };
         self.try_spawn_learning_task(super::background::stem_detection_task(args));
@@ -145,13 +145,13 @@ impl<C: Channel> Agent<C> {
         error_context: &str,
         tool_name: &str,
     ) -> Vec<(i64, String)> {
-        let Some(config) = self.learning_engine.config.as_ref() else {
+        let Some(config) = self.services.learning_engine.config.as_ref() else {
             return vec![];
         };
         if !config.d2skill_enabled {
             return vec![];
         }
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return vec![];
         };
         let failure_kind = zeph_skills::evolution::FailureKind::from_error(error_context).as_str();
@@ -183,7 +183,7 @@ impl<C: Channel> Agent<C> {
         correction_ids: &[i64],
         was_successful: bool,
     ) {
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return;
         };
         for &id in correction_ids {

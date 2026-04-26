@@ -86,13 +86,13 @@ impl<C: Channel> Agent<C> {
         };
 
         let generation_provider =
-            self.resolve_background_provider(&self.skill_state.generation_provider_name.clone());
+            self.resolve_background_provider(&self.services.skill.generation_provider_name.clone());
         let generator = zeph_skills::SkillGenerator::new(generation_provider, output_dir.clone());
-        let generator = if let Some(ref eval) = self.skill_state.skill_evaluator {
+        let generator = if let Some(ref eval) = self.services.skill.skill_evaluator {
             generator.with_evaluator(
                 std::sync::Arc::clone(eval),
-                self.skill_state.eval_weights,
-                self.skill_state.eval_threshold,
+                self.services.skill.eval_weights,
+                self.services.skill.eval_threshold,
             )
         } else {
             generator
@@ -128,11 +128,11 @@ impl<C: Channel> Agent<C> {
     /// Returns `(dir, output_prefix)` where `output_prefix` may be empty or contain a hot-reload
     /// warning. Returns `Err(message)` when no directory is configured at all.
     fn resolve_generation_output_dir(&self) -> Result<(std::path::PathBuf, String), String> {
-        let output_dir = if let Some(ref dir) = self.skill_state.generation_output_dir {
+        let output_dir = if let Some(ref dir) = self.services.skill.generation_output_dir {
             dir.clone()
-        } else if let Some(ref dir) = self.skill_state.managed_dir {
+        } else if let Some(ref dir) = self.services.skill.managed_dir {
             dir.clone()
-        } else if let Some(first) = self.skill_state.skill_paths.first() {
+        } else if let Some(first) = self.services.skill.skill_paths.first() {
             first.clone()
         } else {
             return Err(
@@ -144,7 +144,8 @@ impl<C: Channel> Agent<C> {
 
         // Warn if output_dir is not in watched skill_paths (hot-reload may miss the new skill).
         let is_watched = self
-            .skill_state
+            .services
+            .skill
             .skill_paths
             .iter()
             .any(|p| output_dir.starts_with(p) || p == &output_dir);
@@ -169,13 +170,13 @@ impl<C: Channel> Agent<C> {
     /// The registry read guard is released before `match_skills(...).await` to avoid holding a
     /// lock across an await point.
     async fn dedup_check_against_registry(&mut self, generated: &mut zeph_skills::GeneratedSkill) {
-        let Some(ref matcher) = self.skill_state.matcher else {
+        let Some(ref matcher) = self.services.skill.matcher else {
             return;
         };
         let skill_text = format!("{} {}", generated.meta.description, generated.content);
         // Clone registry meta before .await — read guard must be dropped before the embed call.
         let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = {
-            let registry = self.skill_state.registry.read();
+            let registry = self.services.skill.registry.read();
             registry.all_meta().into_iter().cloned().collect()
         };
         let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
@@ -212,7 +213,7 @@ impl<C: Channel> Agent<C> {
         output: &mut String,
     ) {
         // Clone Arc before .await to avoid holding &self across suspension points.
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         match generator.approve_and_save(generated).await {
             Ok(path) => {
                 // Register quarantined trust so hot-reload does not grant implicit trust.
@@ -257,7 +258,7 @@ impl<C: Channel> Agent<C> {
             return Ok("Usage: /skill reject <name> <reason>".to_owned());
         };
         // SEC-PH1-001: validate skill exists in registry before writing to DB
-        if self.skill_state.registry.read().skill(name).is_err() {
+        if self.services.skill.registry.read().skill(name).is_err() {
             return Ok(format!("Unknown skill: \"{name}\"."));
         }
         let reason = reason_parts.join(" ");
@@ -271,11 +272,11 @@ impl<C: Channel> Agent<C> {
             reason
         };
         // Clone Arc before .await to avoid holding &self across suspension points.
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok("Memory not available.".to_owned());
         };
-        let conversation_id = self.memory_state.persistence.conversation_id;
+        let conversation_id = self.services.memory.persistence.conversation_id;
         // REV-001: resolve active version_id for consistency with batch path
         let version_id = memory
             .sqlite()
@@ -306,7 +307,7 @@ impl<C: Channel> Agent<C> {
     ) -> Result<String, super::super::error::AgentError> {
         use std::fmt::Write;
 
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok("Memory not available.".to_owned());
         };
@@ -343,7 +344,7 @@ impl<C: Channel> Agent<C> {
         let Some(name) = name else {
             return Ok("Usage: /skill versions <name>".to_owned());
         };
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok("Memory not available.".to_owned());
         };
@@ -378,7 +379,7 @@ impl<C: Channel> Agent<C> {
             return Ok("Invalid version number.".to_owned());
         };
         // Clone Arc before .await to avoid holding &self across suspension points.
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok("Memory not available.".to_owned());
         };
@@ -399,7 +400,7 @@ impl<C: Channel> Agent<C> {
             .await?;
 
         write_skill_file(
-            &self.skill_state.skill_paths,
+            &self.services.skill.skill_paths,
             name,
             &target_desc,
             &target_body,
@@ -417,7 +418,7 @@ impl<C: Channel> Agent<C> {
             return Ok("Usage: /skill approve <name>".to_owned());
         };
         // Clone Arc before .await to avoid holding &self across suspension points.
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok("Memory not available.".to_owned());
         };
@@ -439,7 +440,7 @@ impl<C: Channel> Agent<C> {
             .await?;
 
         write_skill_file(
-            &self.skill_state.skill_paths,
+            &self.services.skill.skill_paths,
             name,
             &target_desc,
             &target_body,
@@ -459,7 +460,7 @@ impl<C: Channel> Agent<C> {
             return Ok("Usage: /skill reset <name>".to_owned());
         };
         // Clone Arc before .await to avoid holding &self across suspension points.
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok("Memory not available.".to_owned());
         };
@@ -476,7 +477,7 @@ impl<C: Channel> Agent<C> {
 
         memory.sqlite().activate_skill_version(name, v1_id).await?;
 
-        write_skill_file(&self.skill_state.skill_paths, name, &v1_desc, &v1_body).await?;
+        write_skill_file(&self.services.skill.skill_paths, name, &v1_desc, &v1_body).await?;
 
         Ok(format!("Reset \"{name}\" to original v1."))
     }

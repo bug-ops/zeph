@@ -54,7 +54,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         for action in cancel_actions {
             match action {
                 SchedulerAction::Cancel { agent_handle_id } => {
-                    if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                    if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
                         let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
                             tracing::trace!(error = %e, "cancel: agent already gone");
                         });
@@ -92,13 +92,14 @@ impl<C: crate::channel::Channel> Agent<C> {
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
         let skills = self.filtered_skills_for(&agent_def_name);
-        let cfg = self.orchestration.subagent_config.clone();
+        let cfg = self.services.orchestration.subagent_config.clone();
         let event_tx = scheduler.event_sender();
-        let task_supervisor = Arc::clone(&self.lifecycle.task_supervisor);
+        let task_supervisor = Arc::clone(&self.runtime.lifecycle.task_supervisor);
 
         let spawn_ctx = self.build_spawn_context(&cfg);
 
         let mgr = self
+            .services
             .orchestration
             .subagent_manager
             .as_mut()
@@ -314,7 +315,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                         }
                     }
                     SchedulerAction::Cancel { agent_handle_id } => {
-                        if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                        if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
                             let _ = mgr.cancel(&agent_handle_id).inspect_err(|e| {
                                 tracing::trace!(error = %e, "cancel: agent already gone");
                             });
@@ -350,6 +351,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                         // Full named-provider resolution requires provider_pool lookup which is
                         // not yet exposed here; use verify_provider as the preferred alternate.
                         let predicate_provider = self
+                            .services
                             .orchestration
                             .verify_provider
                             .as_ref()
@@ -359,9 +361,11 @@ impl<C: crate::channel::Channel> Agent<C> {
                         let prior_reason = scheduler
                             .predicate_failure_reason(task_id)
                             .map(str::to_string);
-                        let max_tasks = self.orchestration.orchestration_config.max_tasks as usize;
+                        let max_tasks =
+                            self.services.orchestration.orchestration_config.max_tasks as usize;
 
                         let timeout_secs = self
+                            .services
                             .orchestration
                             .orchestration_config
                             .predicate_timeout_secs;
@@ -398,16 +402,18 @@ impl<C: crate::channel::Channel> Agent<C> {
                     }
                     SchedulerAction::Verify { task_id, output } => {
                         let verify_provider = self
+                            .services
                             .orchestration
                             .verify_provider
                             .as_ref()
                             .unwrap_or(&self.provider)
                             .clone();
                         let threshold = self
+                            .services
                             .orchestration
                             .orchestration_config
                             .completeness_threshold;
-                        let sanitizer = self.security.sanitizer.clone();
+                        let sanitizer = self.services.security.sanitizer.clone();
 
                         let verifier = plan_verifier
                             .get_or_insert_with(|| PlanVerifier::new(verify_provider, sanitizer));
@@ -436,7 +442,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
                             if should_replan {
                                 let max_tasks_u32 =
-                                    self.orchestration.orchestration_config.max_tasks;
+                                    self.services.orchestration.orchestration_config.max_tasks;
                                 let max_tasks = max_tasks_u32 as usize;
                                 match verifier
                                     .replan(&task, &result.gaps, scheduler.graph(), max_tasks_u32)
@@ -478,7 +484,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                 m.orchestration_graph = Some(snapshot);
             });
 
-            if let Some(ref persistence) = self.orchestration.graph_persistence {
+            if let Some(ref persistence) = self.services.orchestration.graph_persistence {
                 let graph_clone = scheduler.graph().clone();
                 save_graph_snapshot(persistence, graph_clone).await;
             }
@@ -546,7 +552,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                         break 'tick shutdown_status;
                     }
                 }
-                () = shutdown_signal(&mut self.lifecycle.shutdown) => {
+                () = shutdown_signal(&mut self.runtime.lifecycle.shutdown) => {
                     let cancel_actions = scheduler.cancel_all();
                     let n = cancel_actions
                         .iter()
@@ -654,7 +660,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                                     };
                                 }
                                 Some(event) = async {
-                                    match self.mcp.elicitation_rx.as_mut() {
+                                    match self.services.mcp.elicitation_rx.as_mut() {
                                         Some(rx) => rx.recv().await,
                                         None => std::future::pending().await,
                                     }
@@ -696,6 +702,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     ) {
         loop {
             let pending = self
+                .services
                 .orchestration
                 .subagent_manager
                 .as_mut()
@@ -710,7 +717,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     secret_key = %req.secret_key,
                     "skipping duplicate secret prompt for already-denied key"
                 );
-                if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
                     let _ = mgr.deny_secret(&req_handle_id);
                 }
                 continue;
@@ -730,7 +737,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     false
                 }
             };
-            if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+            if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
                 if approved {
                     let ttl = std::time::Duration::from_mins(5);
                     let key = req.secret_key.clone();

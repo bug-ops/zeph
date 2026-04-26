@@ -99,7 +99,7 @@ impl<C: Channel> Agent<C> {
                         "server compaction beta header rejected; \
                         falling back to client-side compaction and retrying"
                     );
-                    self.providers.server_compaction_active = false;
+                    self.runtime.providers.server_compaction_active = false;
                     let _ = self
                         .channel
                         .send_status(
@@ -119,7 +119,7 @@ impl<C: Channel> Agent<C> {
         tracing::instrument(name = "agent.process_response", skip_all)
     )]
     pub(crate) async fn process_response(&mut self) -> Result<(), super::super::error::AgentError> {
-        self.security.flagged_urls.clear();
+        self.services.security.flagged_urls.clear();
         self.process_response_native_tools().await
     }
 
@@ -140,7 +140,7 @@ impl<C: Channel> Agent<C> {
             .collect();
 
         // Inject focus tool definitions when the feature is enabled and configured (#1850).
-        if self.focus.config.enabled {
+        if self.services.focus.config.enabled {
             tool_defs.extend(super::super::focus::focus_tool_definitions());
         }
 
@@ -151,7 +151,7 @@ impl<C: Channel> Agent<C> {
         let all_tool_defs = tool_defs.clone();
 
         // Iteration 0: apply dynamic tool schema filter (#2020) if cached IDs are available.
-        if let Some(ref filtered_ids) = self.tool_state.cached_filtered_tool_ids {
+        if let Some(ref filtered_ids) = self.services.tool_state.cached_filtered_tool_ids {
             tool_defs.retain(|d| filtered_ids.contains(d.name.as_str()));
             tracing::debug!(
                 filtered = tool_defs.len(),
@@ -183,11 +183,11 @@ impl<C: Channel> Agent<C> {
         };
 
         for iteration in 0..self.tool_orchestrator.max_iterations {
-            if *self.lifecycle.shutdown.borrow() {
+            if *self.runtime.lifecycle.shutdown.borrow() {
                 tracing::info!("native tool loop interrupted by shutdown");
                 break;
             }
-            if self.lifecycle.cancel_token.is_cancelled() {
+            if self.runtime.lifecycle.cancel_token.is_cancelled() {
                 tracing::info!("native tool loop cancelled by user");
                 break;
             }
@@ -198,8 +198,11 @@ impl<C: Channel> Agent<C> {
             let defs_for_turn: &[ToolDefinition] = if iteration == 0 {
                 &tool_defs
             } else {
-                defs_for_iter =
-                    build_gated_defs_for_iteration(iteration, &all_tool_defs, &self.tool_state);
+                defs_for_iter = build_gated_defs_for_iteration(
+                    iteration,
+                    &all_tool_defs,
+                    &self.services.tool_state,
+                );
                 &defs_for_iter
             };
             // None = continue loop, Some(()) = return Ok, Err = propagate
@@ -257,11 +260,11 @@ impl<C: Channel> Agent<C> {
     pub(super) async fn call_llm_with_timeout(
         &mut self,
     ) -> Result<Option<String>, super::super::error::AgentError> {
-        if self.lifecycle.cancel_token.is_cancelled() {
+        if self.runtime.lifecycle.cancel_token.is_cancelled() {
             return Ok(None);
         }
 
-        if let Some(ref tracker) = self.metrics.cost_tracker
+        if let Some(ref tracker) = self.runtime.metrics.cost_tracker
             && let Err(e) = tracker.check_budget()
         {
             self.channel
@@ -275,12 +278,13 @@ impl<C: Channel> Agent<C> {
             super::CacheCheckResult::Miss { query_embedding } => query_embedding,
         };
 
-        let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
+        let llm_timeout = std::time::Duration::from_secs(self.runtime.config.timeouts.llm_seconds);
         let start = std::time::Instant::now();
-        let prompt_estimate = self.providers.cached_prompt_tokens;
+        let prompt_estimate = self.runtime.providers.cached_prompt_tokens;
 
         let dump_id =
-            self.debug_state
+            self.runtime
+                .debug
                 .debug_dumper
                 .as_ref()
                 .map(|d: &crate::debug_dump::DebugDumper| {
@@ -294,20 +298,21 @@ impl<C: Channel> Agent<C> {
                         )
                     };
                     d.dump_request(&crate::debug_dump::RequestDebugDump {
-                        model_name: &self.runtime.model_name,
+                        model_name: &self.runtime.config.model_name,
                         messages: &self.msg.messages,
                         tools: &[],
                         provider_request,
                     })
                 });
 
-        let trace_guard = self.debug_state.trace_collector.as_ref().and_then(|tc| {
-            self.debug_state
+        let trace_guard = self.runtime.debug.trace_collector.as_ref().and_then(|tc| {
+            self.runtime
+                .debug
                 .current_iteration_span_id
                 .map(|id| tc.begin_llm_request(id))
         });
 
-        let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
+        let llm_span = tracing::info_span!("llm_call", model = %self.runtime.config.model_name);
         let result = self
             .call_llm_non_streaming(
                 llm_timeout,
@@ -320,7 +325,7 @@ impl<C: Channel> Agent<C> {
             .await;
 
         if let Some(guard) = trace_guard
-            && let Some(ref mut tc) = self.debug_state.trace_collector
+            && let Some(ref mut tc) = self.runtime.debug.trace_collector
         {
             let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             let (prompt_tokens, completion_tokens) =
@@ -328,7 +333,7 @@ impl<C: Channel> Agent<C> {
             tc.end_llm_request(
                 guard,
                 &crate::debug_dump::trace::LlmAttributes {
-                    model: self.runtime.model_name.clone(),
+                    model: self.runtime.config.model_name.clone(),
                     prompt_tokens,
                     completion_tokens,
                     latency_ms: latency,
@@ -351,7 +356,7 @@ impl<C: Channel> Agent<C> {
         llm_span: tracing::Span,
         query_embedding: Option<Vec<f32>>,
     ) -> Result<Option<String>, super::super::error::AgentError> {
-        let cancel = self.lifecycle.cancel_token.clone();
+        let cancel = self.runtime.lifecycle.cancel_token.clone();
         let chat_fut = self.provider.chat(&self.msg.messages).instrument(llm_span);
         let result = tokio::select! {
             r = tokio::time::timeout(llm_timeout, chat_fut) => r,
@@ -381,7 +386,7 @@ impl<C: Channel> Agent<C> {
                 });
                 self.record_cost_and_cache(final_prompt, final_completion);
                 self.record_successful_task();
-                if let Some(ref recorder) = self.metrics.histogram_recorder {
+                if let Some(ref recorder) = self.runtime.metrics.histogram_recorder {
                     recorder.observe_llm_latency(elapsed);
                 }
                 if self.run_response_verification(&resp) {
@@ -392,7 +397,7 @@ impl<C: Channel> Agent<C> {
                     return Ok(None);
                 }
                 let cleaned = self.scan_output_and_warn(&resp);
-                if let (Some(d), Some(id)) = (self.debug_state.debug_dumper.as_ref(), dump_id) {
+                if let (Some(d), Some(id)) = (self.runtime.debug.debug_dumper.as_ref(), dump_id) {
                     d.dump_response(id, &cleaned);
                 }
                 let display = self.maybe_redact(&cleaned);
@@ -485,11 +490,12 @@ impl<C: Channel> Agent<C> {
                 let category = e.category();
                 let err_str = format!("{e:#}");
                 tracing::error!("tool execution error: {err_str}");
-                if let Some(ref d) = self.debug_state.debug_dumper {
+                if let Some(ref d) = self.runtime.debug.debug_dumper {
                     d.dump_tool_error("legacy", &e);
                 }
                 let kind = FailureKind::from(category);
                 let sanitized_err = self
+                    .services
                     .security
                     .sanitizer
                     .sanitize(&err_str, ContentSource::new(ContentSourceKind::McpResponse))
@@ -499,7 +505,7 @@ impl<C: Channel> Agent<C> {
                 self.record_anomaly_outcome(super::AnomalyOutcome::Error)
                     .await?;
 
-                if !self.learning_engine.was_reflection_used()
+                if !self.services.learning_engine.was_reflection_used()
                     && self.attempt_self_reflection(&sanitized_err, "").await?
                 {
                     return Ok(false);
@@ -536,7 +542,7 @@ impl<C: Channel> Agent<C> {
             let kind = FailureKind::from_error(&output.summary);
             self.record_skill_outcomes("tool_failure", Some(&output.summary), Some(kind.as_str()))
                 .await;
-            if !self.learning_engine.was_reflection_used()
+            if !self.services.learning_engine.was_reflection_used()
                 && self
                     .attempt_self_reflection(&output.summary, &output.summary)
                     .await?
@@ -569,15 +575,19 @@ impl<C: Channel> Agent<C> {
                 tool_name: output.tool_name.clone(),
                 tool_call_id: tool_call_id.clone(),
                 params: None,
-                parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+                parent_tool_use_id: self.services.session.parent_tool_use_id.clone(),
                 started_at: std::time::Instant::now(),
                 speculative: false,
                 sandbox_profile: None,
             })
             .await?;
-        if let Some(ref d) = self.debug_state.debug_dumper {
-            let dump_content = if self.security.pii_filter.is_enabled() {
-                self.security.pii_filter.scrub(&output.summary).into_owned()
+        if let Some(ref d) = self.runtime.debug.debug_dumper {
+            let dump_content = if self.services.security.pii_filter.is_enabled() {
+                self.services
+                    .security
+                    .pii_filter
+                    .scrub(&output.summary)
+                    .into_owned()
             } else {
                 output.summary.clone()
             };
@@ -609,7 +619,7 @@ impl<C: Channel> Agent<C> {
                 tool_call_id: tool_call_id.clone(),
                 terminal_id: None,
                 is_error: false,
-                parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+                parent_tool_use_id: self.services.session.parent_tool_use_id.clone(),
                 raw_response: None,
                 started_at: Some(tool_started_at),
             })
@@ -630,7 +640,7 @@ impl<C: Channel> Agent<C> {
             Role::User,
             &formatted_output,
             &user_msg.parts,
-            has_injection_flags || !self.security.flagged_urls.is_empty(),
+            has_injection_flags || !self.services.security.flagged_urls.is_empty(),
         )
         .await;
         self.push_message(user_msg);
@@ -662,15 +672,19 @@ impl<C: Channel> Agent<C> {
                         tool_name: out.tool_name.clone(),
                         tool_call_id: confirmed_tool_call_id.clone(),
                         params: None,
-                        parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+                        parent_tool_use_id: self.services.session.parent_tool_use_id.clone(),
                         started_at: std::time::Instant::now(),
                         speculative: false,
                         sandbox_profile: None,
                     })
                     .await?;
-                if let Some(ref d) = self.debug_state.debug_dumper {
-                    let dump_content = if self.security.pii_filter.is_enabled() {
-                        self.security.pii_filter.scrub(&out.summary).into_owned()
+                if let Some(ref d) = self.runtime.debug.debug_dumper {
+                    let dump_content = if self.services.security.pii_filter.is_enabled() {
+                        self.services
+                            .security
+                            .pii_filter
+                            .scrub(&out.summary)
+                            .into_owned()
                     } else {
                         out.summary.clone()
                     };
@@ -689,7 +703,7 @@ impl<C: Channel> Agent<C> {
                         tool_call_id: confirmed_tool_call_id.clone(),
                         terminal_id: None,
                         is_error: false,
-                        parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+                        parent_tool_use_id: self.services.session.parent_tool_use_id.clone(),
                         raw_response: None,
                         started_at: Some(confirmed_started_at),
                     })
@@ -709,7 +723,7 @@ impl<C: Channel> Agent<C> {
                     Role::User,
                     &formatted,
                     &confirmed_msg.parts,
-                    has_injection_flags || !self.security.flagged_urls.is_empty(),
+                    has_injection_flags || !self.services.security.flagged_urls.is_empty(),
                 )
                 .await;
                 self.push_message(confirmed_msg);
@@ -730,7 +744,7 @@ impl<C: Channel> Agent<C> {
         query_embedding: Option<Vec<f32>>,
     ) -> Result<Option<()>, super::super::error::AgentError> {
         // Track iteration for BudgetHint injection (#2267).
-        self.tool_state.current_tool_iteration = iteration;
+        self.services.tool_state.current_tool_iteration = iteration;
         self.channel.send_typing().await?;
 
         // Inject any pending LSP notes as a Role::System message before calling
@@ -741,11 +755,11 @@ impl<C: Channel> Agent<C> {
         // Skip injection when the last non-System message contains ToolResult parts:
         // OpenAI rejects a System message placed between Assistant(tool_calls) and
         // User(tool_results) with HTTP 400.
-        if self.session.lsp_hooks.is_some() {
+        if self.services.session.lsp_hooks.is_some() {
             self.remove_lsp_messages();
             if !last_msg_has_tool_results(&self.msg.messages) {
-                let tc = std::sync::Arc::clone(&self.metrics.token_counter);
-                if let Some(ref mut lsp) = self.session.lsp_hooks
+                let tc = std::sync::Arc::clone(&self.runtime.metrics.token_counter);
+                if let Some(ref mut lsp) = self.services.session.lsp_hooks
                     && let Some(note_text) = lsp.drain_notes(&tc)
                 {
                     self.push_message(zeph_llm::provider::Message::from_legacy(
@@ -758,7 +772,8 @@ impl<C: Channel> Agent<C> {
         }
 
         if let Some(ref budget) = self.context_manager.budget {
-            let used = usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
+            let used =
+                usize::try_from(self.runtime.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
             let threshold = budget.max_tokens() * 4 / 5;
             if used >= threshold {
                 tracing::warn!(
@@ -834,7 +849,7 @@ impl<C: Channel> Agent<C> {
 
         // Summarize before pruning; apply deferred summaries after pruning.
         self.maybe_summarize_tool_pair().await;
-        let keep_recent = 2 * self.memory_state.persistence.tool_call_cutoff + 2;
+        let keep_recent = 2 * self.services.memory.persistence.tool_call_cutoff + 2;
         self.prune_stale_tool_outputs(keep_recent);
         self.maybe_apply_deferred_summaries();
         self.flush_deferred_summaries().await;
@@ -851,7 +866,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         tool_defs: &[ToolDefinition],
     ) -> Result<Option<ChatResponse>, super::super::error::AgentError> {
-        if let Some(ref tracker) = self.metrics.cost_tracker
+        if let Some(ref tracker) = self.runtime.metrics.cost_tracker
             && let Err(e) = tracker.check_budget()
         {
             self.channel
@@ -865,7 +880,7 @@ impl<C: Channel> Agent<C> {
             provider_name = self.provider.name(),
             "call_chat_with_tools"
         );
-        let llm_timeout = std::time::Duration::from_secs(self.runtime.timeouts.llm_seconds);
+        let llm_timeout = std::time::Duration::from_secs(self.runtime.config.timeouts.llm_seconds);
         let start = std::time::Instant::now();
 
         let dump_id = self.prepare_chat_debug_dump(tool_defs);
@@ -876,13 +891,14 @@ impl<C: Channel> Agent<C> {
         }
 
         // CR-01: open LLM span before the call.
-        let trace_guard = self.debug_state.trace_collector.as_ref().and_then(|tc| {
-            self.debug_state
+        let trace_guard = self.runtime.debug.trace_collector.as_ref().and_then(|tc| {
+            self.runtime
+                .debug
                 .current_iteration_span_id
                 .map(|id| tc.begin_llm_request(id))
         });
 
-        let llm_span = tracing::info_span!("llm_call", model = %self.runtime.model_name);
+        let llm_span = tracing::info_span!("llm_call", model = %self.runtime.config.model_name);
         let chat_fut = tokio::time::timeout(
             llm_timeout,
             self.provider
@@ -891,7 +907,7 @@ impl<C: Channel> Agent<C> {
         );
         let timeout_result = tokio::select! {
             r = chat_fut => r,
-            () = self.lifecycle.cancel_token.cancelled() => {
+            () = self.runtime.lifecycle.cancel_token.cancelled() => {
                 tracing::info!("chat_with_tools cancelled by user");
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
@@ -911,7 +927,8 @@ impl<C: Channel> Agent<C> {
 
         // Accumulate LLM chat latency into the per-turn timing accumulator (#2820).
         let llm_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        self.metrics.pending_timings.llm_chat_ms = self
+        self.runtime.metrics.pending_timings.llm_chat_ms = self
+            .runtime
             .metrics
             .pending_timings
             .llm_chat_ms
@@ -920,8 +937,11 @@ impl<C: Channel> Agent<C> {
         // CR-01: close LLM span after the call completes.
         self.record_llm_trace_span_close(trace_guard, start);
 
-        self.debug_state
-            .write_chat_debug_dump(dump_id, &result, &self.security.pii_filter);
+        self.runtime.debug.write_chat_debug_dump(
+            dump_id,
+            &result,
+            &self.services.security.pii_filter,
+        );
 
         // RuntimeLayer after_chat hooks (MVP: empty vec = zero iterations).
         self.run_after_chat_layers(&result).await;
@@ -931,7 +951,8 @@ impl<C: Channel> Agent<C> {
 
     /// Prepare and dump the request debug payload, returning the dump ID for the response dump.
     fn prepare_chat_debug_dump(&self, tool_defs: &[ToolDefinition]) -> Option<u32> {
-        self.debug_state
+        self.runtime
+            .debug
             .debug_dumper
             .as_ref()
             .map(|d: &crate::debug_dump::DebugDumper| {
@@ -943,7 +964,7 @@ impl<C: Channel> Agent<C> {
                         .debug_request_json(&self.msg.messages, tool_defs, false) // lgtm[rust/cleartext-logging]
                 };
                 d.dump_request(&crate::debug_dump::RequestDebugDump {
-                    model_name: &self.runtime.model_name,
+                    model_name: &self.runtime.config.model_name,
                     messages: &self.msg.messages,
                     tools: tool_defs,
                     provider_request,
@@ -957,19 +978,20 @@ impl<C: Channel> Agent<C> {
         &self,
         tool_defs: &[ToolDefinition],
     ) -> Result<Option<ChatResponse>, super::super::error::AgentError> {
-        if self.runtime.layers.is_empty() {
+        if self.runtime.config.layers.is_empty() {
             return Ok(None);
         }
         let conv_id_str = self
-            .memory_state
+            .services
+            .memory
             .persistence
             .conversation_id
             .map(|id| id.0.to_string());
         let ctx = crate::runtime_layer::LayerContext {
             conversation_id: conv_id_str.as_deref(),
-            turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
+            turn_number: u32::try_from(self.services.sidequest.turn_counter).unwrap_or(u32::MAX),
         };
-        for layer in &self.runtime.layers {
+        for layer in &self.runtime.config.layers {
             let hook_result = std::panic::AssertUnwindSafe(layer.before_chat(
                 &ctx,
                 &self.msg.messages,
@@ -991,19 +1013,20 @@ impl<C: Channel> Agent<C> {
 
     /// Run `RuntimeLayer::after_chat` hooks. Panics in hooks are logged and swallowed.
     async fn run_after_chat_layers(&self, result: &ChatResponse) {
-        if self.runtime.layers.is_empty() {
+        if self.runtime.config.layers.is_empty() {
             return;
         }
         let conv_id_str = self
-            .memory_state
+            .services
+            .memory
             .persistence
             .conversation_id
             .map(|id| id.0.to_string());
         let ctx = crate::runtime_layer::LayerContext {
             conversation_id: conv_id_str.as_deref(),
-            turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
+            turn_number: u32::try_from(self.services.sidequest.turn_counter).unwrap_or(u32::MAX),
         };
-        for layer in &self.runtime.layers {
+        for layer in &self.runtime.config.layers {
             let hook_result = std::panic::AssertUnwindSafe(layer.after_chat(&ctx, result))
                 .catch_unwind()
                 .await;
@@ -1020,14 +1043,14 @@ impl<C: Channel> Agent<C> {
         start: std::time::Instant,
     ) {
         if let Some(guard) = guard
-            && let Some(ref mut tc) = self.debug_state.trace_collector
+            && let Some(ref mut tc) = self.runtime.debug.trace_collector
         {
             let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             let (prompt_tokens, completion_tokens) = self.provider.last_usage().unwrap_or((0, 0));
             tc.end_llm_request(
                 guard,
                 &crate::debug_dump::trace::LlmAttributes {
-                    model: self.runtime.model_name.clone(),
+                    model: self.runtime.config.model_name.clone(),
                     prompt_tokens,
                     completion_tokens,
                     latency_ms: latency,
@@ -1045,7 +1068,7 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::super::error::AgentError> {
         let elapsed = start.elapsed();
         let latency = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
-        let prompt_estimate = self.providers.cached_prompt_tokens;
+        let prompt_estimate = self.runtime.providers.cached_prompt_tokens;
         let completion_heuristic = match result {
             ChatResponse::Text(t) => estimate_tokens(t) as u64,
             ChatResponse::ToolUse {
@@ -1078,11 +1101,12 @@ impl<C: Channel> Agent<C> {
             }
         });
         // Track per-turn LLM call count for the notification gate.
-        self.lifecycle.turn_llm_requests = self.lifecycle.turn_llm_requests.saturating_add(1);
+        self.runtime.lifecycle.turn_llm_requests =
+            self.runtime.lifecycle.turn_llm_requests.saturating_add(1);
         self.record_cost_and_cache(final_prompt, final_completion);
         self.record_successful_task();
 
-        if let Some(ref recorder) = self.metrics.histogram_recorder {
+        if let Some(ref recorder) = self.runtime.metrics.histogram_recorder {
             recorder.observe_llm_latency(elapsed);
         }
 
@@ -1108,7 +1132,11 @@ impl<C: Channel> Agent<C> {
             );
             // SEC-COMPACT-01: sanitize (McpResponse = ExternalUntrusted).
             let source = ContentSource::new(ContentSourceKind::McpResponse);
-            let sanitized = self.security.sanitizer.sanitize(&raw_summary, source);
+            let sanitized = self
+                .services
+                .security
+                .sanitizer
+                .sanitize(&raw_summary, source);
             let summary = sanitized.body;
             let last_user = self
                 .msg
@@ -1244,7 +1272,7 @@ impl<C: Channel> Agent<C> {
                 };
             if let Some(result) = new_result {
                 if let Err(ref e) = result
-                    && let Some(ref d) = self.debug_state.debug_dumper
+                    && let Some(ref d) = self.runtime.debug.debug_dumper
                 {
                     d.dump_tool_error(tool_calls[idx].name.as_str(), e);
                 }
@@ -1471,7 +1499,7 @@ impl<C: Channel> Agent<C> {
                                 vigil_risk: None,
                             };
                             let logger = std::sync::Arc::clone(logger);
-                            self.lifecycle.supervisor.spawn(
+                            self.runtime.lifecycle.supervisor.spawn(
                                 super::super::agent_supervisor::TaskClass::Telemetry,
                                 "audit-log",
                                 async move { logger.log(&entry).await },
@@ -1512,7 +1540,7 @@ impl<C: Channel> Agent<C> {
     ) -> Vec<zeph_tools::UtilityAction> {
         #[allow(clippy::cast_possible_truncation)]
         let tokens_consumed =
-            usize::try_from(self.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
+            usize::try_from(self.runtime.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
         // token_budget = 0 signals "unknown" to UtilityContext — cost component is zeroed.
         let token_budget: usize = 0;
         let tool_calls_this_turn = self.tool_orchestrator.recent_tool_calls.len();
@@ -1620,8 +1648,8 @@ impl<C: Channel> Agent<C> {
 
         let max_retries = self.tool_orchestrator.max_tool_retries;
         // Clamp to 1 to prevent Semaphore(0) deadlock when config is set to 0.
-        let max_parallel = self.runtime.timeouts.max_parallel_tools.max(1);
-        let cancel = self.lifecycle.cancel_token.clone();
+        let max_parallel = self.runtime.config.timeouts.max_parallel_tools.max(1);
+        let cancel = self.runtime.lifecycle.cancel_token.clone();
 
         // Causal IPI pre-probe: record behavioral baseline before tool batch dispatch.
         let causal_pre_response = self.run_causal_pre_probe().await;
@@ -1677,7 +1705,8 @@ impl<C: Channel> Agent<C> {
 
         let tool_exec_ms = u64::try_from(t_tool_exec.elapsed().as_millis()).unwrap_or(u64::MAX);
         tracing::debug!(ms = tool_exec_ms, "turn timing: tool_exec done");
-        self.metrics.pending_timings.tool_exec_ms = self
+        self.runtime.metrics.pending_timings.tool_exec_ms = self
+            .runtime
             .metrics
             .pending_timings
             .tool_exec_ms
@@ -1879,11 +1908,15 @@ impl<C: Channel> Agent<C> {
     fn check_exfiltration_urls(&mut self, tool_calls: &[zeph_llm::provider::ToolUseRequest]) {
         for tc in tool_calls {
             let args_json = tc.input.to_string();
-            let url_events = self.security.exfiltration_guard.validate_tool_call(
-                tc.name.as_str(),
-                &args_json,
-                &self.security.flagged_urls,
-            );
+            let url_events = self
+                .services
+                .security
+                .exfiltration_guard
+                .validate_tool_call(
+                    tc.name.as_str(),
+                    &args_json,
+                    &self.services.security.flagged_urls,
+                );
             if !url_events.is_empty() {
                 tracing::warn!(
                     tool = %tc.name,
@@ -1910,7 +1943,7 @@ impl<C: Channel> Agent<C> {
     /// Returns the probe response paired with the context summary so the post-probe can
     /// compare the two. Returns `None` when the analyzer is not configured or the probe fails.
     async fn run_causal_pre_probe(&mut self) -> Option<(String, String)> {
-        let analyzer = self.security.causal_analyzer.as_ref()?;
+        let analyzer = self.services.security.causal_analyzer.as_ref()?;
         let context_summary = self.build_causal_context_summary();
         match analyzer.probe(&context_summary).await {
             Ok(resp) => Some((resp, context_summary)),
@@ -2081,7 +2114,7 @@ impl<C: Channel> Agent<C> {
     ) -> Option<zeph_llm::provider::Message> {
         let mut pending_focus_checkpoint: Option<zeph_llm::provider::Message> = None;
         for (idx, tc) in tool_calls.iter().enumerate() {
-            let is_focus_tool = self.focus.config.enabled
+            let is_focus_tool = self.services.focus.config.enabled
                 && (tc.name == "start_focus" || tc.name == "complete_focus");
             let is_compress = tc.name == "compress_context";
             if is_focus_tool || is_compress {
@@ -2122,7 +2155,7 @@ impl<C: Channel> Agent<C> {
                     tool_name: tc.name.clone(),
                     tool_call_id: tool_call_ids[idx].clone(),
                     params: Some(tc.input.clone()),
-                    parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+                    parent_tool_use_id: self.services.session.parent_tool_use_id.clone(),
                     started_at: std::time::Instant::now(),
                     speculative: false,
                     sandbox_profile: None,
@@ -2243,20 +2276,21 @@ impl<C: Channel> Agent<C> {
         tc: &zeph_llm::provider::ToolUseRequest,
         call: &ToolCall,
     ) -> Option<(usize, ToolExecFut)> {
-        if self.runtime.layers.is_empty() {
+        if self.runtime.config.layers.is_empty() {
             return None;
         }
         let conv_id_str = self
-            .memory_state
+            .services
+            .memory
             .persistence
             .conversation_id
             .map(|id| id.0.to_string());
         let ctx = crate::runtime_layer::LayerContext {
             conversation_id: conv_id_str.as_deref(),
-            turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
+            turn_number: u32::try_from(self.services.sidequest.turn_counter).unwrap_or(u32::MAX),
         };
         let mut sc_result: crate::runtime_layer::BeforeToolResult = None;
-        for layer in &self.runtime.layers {
+        for layer in &self.runtime.config.layers {
             let hook_result = std::panic::AssertUnwindSafe(layer.before_tool(&ctx, call))
                 .catch_unwind()
                 .await;
@@ -2273,7 +2307,7 @@ impl<C: Channel> Agent<C> {
         }
         let r = sc_result?;
         // Fire PermissionDenied hooks (fail_open: hook errors are logged, not fatal).
-        let pd_hooks = self.session.hooks_config.permission_denied.clone();
+        let pd_hooks = self.services.session.hooks_config.permission_denied.clone();
         if !pd_hooks.is_empty() {
             let _span =
                 tracing::info_span!("core.hooks.permission_denied", tool = %tc.name).entered();
@@ -2396,7 +2430,11 @@ impl<C: Channel> Agent<C> {
             .iter()
             .map(|&i| tool_calls[i].name.as_str())
             .collect();
-        let rate_results = self.runtime.rate_limiter.check_batch(&tier_tool_names);
+        let rate_results = self
+            .runtime
+            .config
+            .rate_limiter
+            .check_batch(&tier_tool_names);
 
         let mut tier_futs: Vec<(usize, ToolExecFut)> = Vec::with_capacity(tier_indices.len());
         for (tier_local_idx, &idx) in tier_indices.iter().enumerate() {
@@ -2405,7 +2443,7 @@ impl<C: Channel> Agent<C> {
 
             // Skip focus tools and compress_context — pre-handled before the tier loop.
             if tc.name == "compress_context"
-                || (self.focus.config.enabled
+                || (self.services.focus.config.enabled
                     && (tc.name == "start_focus" || tc.name == "complete_focus"))
             {
                 continue;
@@ -2513,12 +2551,12 @@ impl<C: Channel> Agent<C> {
     > {
         let mut join_fut = std::pin::pin!(futures::future::join_all(futs));
         // Take elicitation_rx out of self so we can hold &mut self for handling.
-        let mut elicitation_rx = self.mcp.elicitation_rx.take();
+        let mut elicitation_rx = self.services.mcp.elicitation_rx.take();
         let result = loop {
             tokio::select! {
                 results = &mut join_fut => break results,
                 () = cancel.cancelled() => {
-                    self.mcp.elicitation_rx = elicitation_rx;
+                    self.services.mcp.elicitation_rx = elicitation_rx;
                     self.tool_executor.set_skill_env(None);
                     tracing::info!("tool execution cancelled by user");
                     self.update_metrics(|m| m.cancellations += 1);
@@ -2536,7 +2574,7 @@ impl<C: Channel> Agent<C> {
                 }
             }
         };
-        self.mcp.elicitation_rx = elicitation_rx;
+        self.services.mcp.elicitation_rx = elicitation_rx;
         Ok(Some(result))
     }
 
@@ -2578,24 +2616,27 @@ impl<C: Channel> Agent<C> {
             }
 
             // Record successful tool completions for the dependency graph (#2024).
-            if !is_failed && self.tool_state.dependency_graph.is_some() {
-                self.tool_state
+            if !is_failed && self.services.tool_state.dependency_graph.is_some() {
+                self.services
+                    .tool_state
                     .completed_tool_ids
                     .insert(tool_calls[idx].name.to_string());
             }
 
             // RuntimeLayer after_tool hooks.
-            if !self.runtime.layers.is_empty() {
+            if !self.runtime.config.layers.is_empty() {
                 let conv_id_str = self
-                    .memory_state
+                    .services
+                    .memory
                     .persistence
                     .conversation_id
                     .map(|id| id.0.to_string());
                 let ctx = crate::runtime_layer::LayerContext {
                     conversation_id: conv_id_str.as_deref(),
-                    turn_number: u32::try_from(self.sidequest.turn_counter).unwrap_or(u32::MAX),
+                    turn_number: u32::try_from(self.services.sidequest.turn_counter)
+                        .unwrap_or(u32::MAX),
                 };
-                for layer in &self.runtime.layers {
+                for layer in &self.runtime.config.layers {
                     let hook_result =
                         std::panic::AssertUnwindSafe(layer.after_tool(&ctx, &calls[idx], &result))
                             .catch_unwind()
@@ -2645,7 +2686,7 @@ impl<C: Channel> Agent<C> {
         } else {
             snippets.join("---")
         };
-        let Some(ref analyzer) = self.security.causal_analyzer else {
+        let Some(ref analyzer) = self.services.security.causal_analyzer else {
             return;
         };
         match analyzer.post_probe(&context_summary, &tool_snippets).await {
@@ -2760,7 +2801,7 @@ impl<C: Channel> Agent<C> {
         // Individual per-tool granularity would require separate persist_message calls per
         // result, which would change message history structure.
         let tool_results_have_flags =
-            has_any_injection_flags || !self.security.flagged_urls.is_empty();
+            has_any_injection_flags || !self.services.security.flagged_urls.is_empty();
         tracing::debug!("tool_batch: calling persist_message for tool results");
         self.persist_message(
             Role::User,
@@ -2814,21 +2855,21 @@ impl<C: Channel> Agent<C> {
         // is spawned in background; hover calls are awaited but short-lived).
         // `lsp_tool_calls` collects (name, params, output) tuples built during the
         // results loop above. They are captured into a separate Vec so we can call
-        // `&mut self.session.lsp_hooks` without conflicting borrows.
+        // `&mut self.services.session.lsp_hooks` without conflicting borrows.
         //
         // The entire batch is capped at 30s to prevent stalls when many files are
         // modified in one tool batch (#2750). Per the critic review, a single outer
         // timeout is more effective than per-call timeouts because it bounds total
         // blocking time regardless of N.
-        if self.session.lsp_hooks.is_some() {
-            let tc_arc = std::sync::Arc::clone(&self.metrics.token_counter);
-            let sanitizer = self.security.sanitizer.clone();
+        if self.services.session.lsp_hooks.is_some() {
+            let tc_arc = std::sync::Arc::clone(&self.runtime.metrics.token_counter);
+            let sanitizer = self.services.security.sanitizer.clone();
             let _ = self.channel.send_status("Analyzing changes...").await;
             // TODO: cooperative MCP cancellation — dropped futures here may leave
             // in-flight MCP JSON-RPC requests pending until the server-side timeout.
             let lsp_result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 for (name, input, output) in lsp_tool_calls {
-                    if let Some(ref mut lsp) = self.session.lsp_hooks {
+                    if let Some(ref mut lsp) = self.services.session.lsp_hooks {
                         lsp.after_tool(&name, &input, &output, &tc_arc, &sanitizer)
                             .await;
                     }
@@ -2902,7 +2943,7 @@ impl<C: Channel> Agent<C> {
             vigil_risk,
         };
         let logger = std::sync::Arc::clone(logger);
-        self.lifecycle.supervisor.spawn(
+        self.runtime.lifecycle.supervisor.spawn(
             super::super::agent_supervisor::TaskClass::Telemetry,
             "vigil-audit-log",
             async move { logger.log(&entry).await },
@@ -2921,13 +2962,13 @@ impl<C: Channel> Agent<C> {
         tool_err_category: Option<&zeph_tools::error_taxonomy::ToolErrorCategory>,
         llm_content: &str,
     ) {
-        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
+        let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
             return;
         };
         let Some(experience) = memory.experience.as_ref() else {
             return;
         };
-        let Some(conversation_id) = self.memory_state.persistence.conversation_id else {
+        let Some(conversation_id) = self.services.memory.persistence.conversation_id else {
             return;
         };
         let (outcome, detail, error_ctx): (&'static str, Option<String>, Option<String>) =
@@ -2950,9 +2991,9 @@ impl<C: Channel> Agent<C> {
             };
         let exp = std::sync::Arc::clone(experience);
         let session_id = conversation_id.0.to_string();
-        let turn = i64::try_from(self.sidequest.turn_counter).unwrap_or(i64::MAX);
+        let turn = i64::try_from(self.services.sidequest.turn_counter).unwrap_or(i64::MAX);
         let tool_name_owned = tool_name.to_owned();
-        let accepted = self.lifecycle.supervisor.spawn(
+        let accepted = self.runtime.lifecycle.supervisor.spawn(
             super::super::agent_supervisor::TaskClass::Telemetry,
             "experience-record",
             async move {
@@ -2992,11 +3033,11 @@ impl<C: Channel> Agent<C> {
         is_error: bool,
         output: &str,
     ) {
-        if let Some(ref recorder) = self.metrics.histogram_recorder {
+        if let Some(ref recorder) = self.runtime.metrics.histogram_recorder {
             recorder.observe_tool_execution(started_at.elapsed());
         }
-        if let Some(ref mut trace_coll) = self.debug_state.trace_collector
-            && let Some(iter_span_id) = self.debug_state.current_iteration_span_id
+        if let Some(ref mut trace_coll) = self.runtime.debug.trace_collector
+            && let Some(iter_span_id) = self.runtime.debug.current_iteration_span_id
         {
             let latency = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
             let guard = trace_coll.begin_tool_call_at(tool_name, iter_span_id, started_at);
@@ -3040,10 +3081,11 @@ impl<C: Channel> Agent<C> {
                     .record_quality_outcome(self.provider.name(), false);
             }
             if pending_reflection.is_none()
-                && !self.learning_engine.was_reflection_used()
+                && !self.services.learning_engine.was_reflection_used()
                 && is_quality_failure
             {
                 let sanitized_out = self
+                    .services
                     .security
                     .sanitizer
                     .sanitize(output, ContentSource::new(ContentSourceKind::ToolResult))
@@ -3122,7 +3164,7 @@ impl<C: Channel> Agent<C> {
                 } else {
                     AnomalyOutcome::Error
                 };
-                if let Some(ref d) = self.debug_state.debug_dumper {
+                if let Some(ref d) = self.runtime.debug.debug_dumper {
                     d.dump_tool_error(tc.name.as_str(), e);
                 }
                 if tc.name == "memory_save"
@@ -3219,7 +3261,7 @@ impl<C: Channel> Agent<C> {
                 tool_call_id: tool_call_id.to_owned(),
                 is_error,
                 terminal_id: None,
-                parent_tool_use_id: self.session.parent_tool_use_id.clone(),
+                parent_tool_use_id: self.services.session.parent_tool_use_id.clone(),
                 raw_response: None,
                 started_at: Some(*started_at),
             })
@@ -3312,14 +3354,14 @@ impl<C: Channel> Agent<C> {
             .unwrap_or("(unspecified)")
             .to_string();
 
-        if self.focus.is_active() {
+        if self.services.focus.is_active() {
             return (
                 "[error] A focus session is already active. Call complete_focus first.".to_string(),
                 None,
             );
         }
 
-        let marker = self.focus.start(scope.clone());
+        let marker = self.services.focus.start(scope.clone());
 
         // Build a checkpoint message carrying the marker UUID so complete_focus can
         // locate the boundary even after intervening compaction.
@@ -3355,14 +3397,14 @@ impl<C: Channel> Agent<C> {
             .to_string();
 
         // S4: verify focus session is active.
-        if !self.focus.is_active() {
+        if !self.services.focus.is_active() {
             return (
                 "[error] No active focus session. Call start_focus first.".to_string(),
                 None,
             );
         }
 
-        let Some(marker) = self.focus.active_marker else {
+        let Some(marker) = self.services.focus.active_marker else {
             return (
                 "[error] Internal error: active_marker is None.".to_string(),
                 None,
@@ -3395,6 +3437,7 @@ impl<C: Channel> Agent<C> {
         // MCP responses), so use WebScrape (ExternalUntrusted trust level) for stricter
         // spotlighting than ToolResult (SEC-CC-03).
         let sanitized_summary = self
+            .services
             .security
             .sanitizer
             .sanitize(
@@ -3403,9 +3446,12 @@ impl<C: Channel> Agent<C> {
             )
             .body;
 
-        self.focus.append_llm_knowledge(sanitized_summary.clone());
-        if let Some(ref d) = self.debug_state.debug_dumper {
+        self.services
+            .focus
+            .append_llm_knowledge(sanitized_summary.clone());
+        if let Some(ref d) = self.runtime.debug.debug_dumper {
             let kb = self
+                .services
                 .focus
                 .knowledge_blocks
                 .iter()
@@ -3414,7 +3460,7 @@ impl<C: Channel> Agent<C> {
                 .join("\n---\n");
             d.dump_focus_knowledge(&kb);
         }
-        self.focus.complete();
+        self.services.focus.complete();
 
         // Remove the checkpoint and all messages after it (bracketed phase cleanup).
         // Guard: when complete_focus is called in the same batch as other tools, the
@@ -3465,7 +3511,7 @@ impl<C: Channel> Agent<C> {
         self.msg
             .messages
             .retain(|m| !(m.metadata.focus_pinned && m.metadata.focus_marker_id.is_none()));
-        if let Some(kb_msg) = self.focus.build_knowledge_message() {
+        if let Some(kb_msg) = self.services.focus.build_knowledge_message() {
             // Insert the Knowledge block right after the system prompt (index 1).
             if self.msg.messages.is_empty() {
                 self.msg.messages.push(kb_msg);
@@ -3487,12 +3533,12 @@ impl<C: Channel> Agent<C> {
     pub(crate) async fn handle_compress_context(&mut self) -> String {
         use zeph_llm::provider::LlmProvider as _;
 
-        if self.focus.is_active() {
+        if self.services.focus.is_active() {
             return "[error] Cannot compress context while a focus session is active. \
                     Call complete_focus first."
                 .to_string();
         }
-        if !self.focus.try_acquire_compression() {
+        if !self.services.focus.try_acquire_compression() {
             return "[error] A context compression is already in progress.".to_string();
         }
 
@@ -3501,7 +3547,7 @@ impl<C: Channel> Agent<C> {
             match self.select_messages_for_compression(preserve_tail) {
                 Ok(pair) => pair,
                 Err(total) => {
-                    self.focus.release_compression();
+                    self.services.focus.release_compression();
                     return format!(
                         "Not enough messages to compress (found {total}, need at least {}).",
                         preserve_tail + 4
@@ -3512,6 +3558,7 @@ impl<C: Channel> Agent<C> {
         let compress_total = to_compress.len();
         let summary_messages = build_compression_prompt(&to_compress);
         let compress_provider = self
+            .runtime
             .providers
             .compress_provider
             .as_ref()
@@ -3524,17 +3571,17 @@ impl<C: Channel> Agent<C> {
         {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
-                self.focus.release_compression();
+                self.services.focus.release_compression();
                 return format!("[error] Compression LLM call failed: {e}");
             }
             Err(_) => {
-                self.focus.release_compression();
+                self.services.focus.release_compression();
                 return "[error] Compression LLM call timed out.".to_string();
             }
         };
 
         if summary.trim().is_empty() {
-            self.focus.release_compression();
+            self.services.focus.release_compression();
             return "[error] Compression produced an empty summary.".to_string();
         }
 
@@ -3543,12 +3590,14 @@ impl<C: Channel> Agent<C> {
             .map(|m| estimate_tokens(&m.content))
             .sum::<usize>();
 
-        self.focus.append_llm_knowledge(summary.trim().to_owned());
+        self.services
+            .focus
+            .append_llm_knowledge(summary.trim().to_owned());
         self.apply_compression_removals(to_remove_indices);
 
         self.context_manager.compaction =
             crate::agent::context_manager::CompactionState::CompactedThisTurn { cooldown: 0 };
-        self.focus.release_compression();
+        self.services.focus.release_compression();
 
         format!(
             "Compressed {compress_total} messages into a summary (~{tokens_freed} tokens freed). \
@@ -3832,7 +3881,7 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent.focus.config.enabled = true;
+        agent.services.focus.config.enabled = true;
         // System prompt at index 0 (required by complete_focus insert logic)
         agent
             .msg
@@ -3866,7 +3915,7 @@ mod tests {
             "start_focus must not return error: {result}"
         );
         assert!(
-            agent.focus.is_active(),
+            agent.services.focus.is_active(),
             "focus session must be active after start_focus"
         );
 
@@ -4005,11 +4054,11 @@ mod tests {
             "complete_focus must not error: {result}"
         );
         assert!(
-            !agent.focus.is_active(),
+            !agent.services.focus.is_active(),
             "focus session must be cleared after complete_focus"
         );
         assert!(
-            !agent.focus.knowledge_blocks.is_empty(),
+            !agent.services.focus.knowledge_blocks.is_empty(),
             "knowledge must be appended"
         );
     }
@@ -4139,7 +4188,7 @@ mod tests {
         // The guard for min_messages_per_focus is advisory (reminder injection path).
         // handle_focus_tool itself does not enforce it — the LLM decides when to call.
         let mut agent = make_agent();
-        agent.focus.config.min_messages_per_focus = 100; // very high, but tool doesn't check
+        agent.services.focus.config.min_messages_per_focus = 100; // very high, but tool doesn't check
         let result = call_focus_tool(
             &mut agent,
             "start_focus",

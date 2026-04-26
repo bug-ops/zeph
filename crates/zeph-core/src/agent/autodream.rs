@@ -66,22 +66,24 @@ impl<C: Channel> super::Agent<C> {
     /// `consolidation_provider` (falls back to the primary provider).
     /// Respects `max_iterations` as a safety bound via timeout.
     pub(super) async fn maybe_autodream(&mut self) {
-        let cfg = self.memory_state.subsystems.autodream_config.clone();
+        let cfg = self.services.memory.subsystems.autodream_config.clone();
         if !cfg.enabled {
             return;
         }
 
-        self.memory_state.subsystems.autodream.record_session();
+        self.services.memory.subsystems.autodream.record_session();
 
         if !self
-            .memory_state
+            .services
+            .memory
             .subsystems
             .autodream
             .should_consolidate(cfg.min_sessions, cfg.min_hours)
         {
             tracing::debug!(
                 sessions = self
-                    .memory_state
+                    .services
+                    .memory
                     .subsystems
                     .autodream
                     .sessions_since_consolidation,
@@ -91,13 +93,14 @@ impl<C: Channel> super::Agent<C> {
             return;
         }
 
-        let Some(ref memory) = self.memory_state.persistence.memory else {
+        let Some(ref memory) = self.services.memory.persistence.memory else {
             tracing::debug!("autoDream: no memory backend, skipping");
             return;
         };
 
         tracing::info!("autoDream: starting memory consolidation");
         let _ = self
+            .services
             .session
             .status_tx
             .as_ref()
@@ -107,11 +110,12 @@ impl<C: Channel> super::Agent<C> {
         let provider = if cfg.consolidation_provider.is_empty() {
             self.provider.clone()
         } else if let (Some(entry), Some(snapshot)) = (
-            self.providers
+            self.runtime
+                .providers
                 .provider_pool
                 .iter()
                 .find(|e| e.name.as_deref() == Some(cfg.consolidation_provider.as_str())),
-            self.providers.provider_config_snapshot.as_ref(),
+            self.runtime.providers.provider_config_snapshot.as_ref(),
         ) {
             crate::provider_factory::build_provider_for_switch(entry, snapshot).unwrap_or_else(
                 |e| {
@@ -155,7 +159,11 @@ impl<C: Channel> super::Agent<C> {
                     elapsed_ms = start.elapsed().as_millis(),
                     "autoDream: consolidation complete"
                 );
-                self.memory_state.subsystems.autodream.mark_consolidated();
+                self.services
+                    .memory
+                    .subsystems
+                    .autodream
+                    .mark_consolidated();
             }
             Ok(Err(e)) => {
                 tracing::warn!(error = %e, "autoDream: consolidation failed");

@@ -24,7 +24,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         {
             return Err("model id must contain only printable ASCII characters".to_string());
         }
-        self.runtime.model_name = model_id.to_string();
+        self.runtime.config.model_name = model_id.to_string();
         tracing::info!(model = model_id, "set_model called");
         Ok(())
     }

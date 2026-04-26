@@ -11,7 +11,7 @@ impl<C: Channel> Agent<C> {
     pub(super) async fn handle_lsp_status_as_string(&mut self) -> Result<String, AgentError> {
         let mut out = String::new();
 
-        match self.session.lsp_hooks.as_ref() {
+        match self.services.session.lsp_hooks.as_ref() {
             None => {
                 let _ = writeln!(out, "LSP context injection: disabled");
                 let _ = writeln!(out);

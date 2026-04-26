@@ -19,10 +19,10 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn check_trust_transition_inner(&self, skill_name: &str) {
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return;
         };
-        let Some(config) = &self.learning_engine.config else {
+        let Some(config) = &self.services.learning_engine.config else {
             return;
         };
         let Ok(Some(metrics)) = memory.sqlite().skill_metrics(skill_name).await else {

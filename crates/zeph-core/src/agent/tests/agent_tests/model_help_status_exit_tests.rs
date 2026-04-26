@@ -13,7 +13,7 @@ fn set_model_updates_model_name() {
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
     assert!(agent.set_model("claude-opus-4-6").is_ok());
-    assert_eq!(agent.runtime.model_name, "claude-opus-4-6");
+    assert_eq!(agent.runtime.config.model_name, "claude-opus-4-6");
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn set_model_overwrites_previous_value() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
     agent.set_model("model-a").unwrap();
     agent.set_model("model-b").unwrap();
-    assert_eq!(agent.runtime.model_name, "model-b");
+    assert_eq!(agent.runtime.config.model_name, "model-b");
 }
 
 #[tokio::test]

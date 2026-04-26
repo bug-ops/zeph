@@ -27,7 +27,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async move {
-            let Some(memory) = self.memory_state.persistence.memory.clone() else {
+            let Some(memory) = self.services.memory.persistence.memory.clone() else {
                 return Ok("Memory not configured.".to_owned());
             };
             match memory.sqlite().count_messages_by_tier().await {
@@ -49,7 +49,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         ids_str: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async move {
-            let Some(memory) = self.memory_state.persistence.memory.clone() else {
+            let Some(memory) = self.services.memory.persistence.memory.clone() else {
                 return Ok("Memory not configured.".to_owned());
             };
             let ids: Vec<MessageId> = ids_str
@@ -75,7 +75,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async move {
-            let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
+            let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
                 return Ok("Graph memory is not enabled.".to_owned());
             };
             let Some(store) = memory.graph_store.as_ref() else {
@@ -108,7 +108,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async move {
-            let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
+            let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
                 return Ok("Graph memory is not enabled.".to_owned());
             };
             let Some(store) = memory.graph_store.as_ref() else {
@@ -155,7 +155,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         name: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async move {
-            let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
+            let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
                 return Ok("Graph memory is not enabled.".to_owned());
             };
             let Some(store) = memory.graph_store.as_ref() else {
@@ -230,7 +230,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         name: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async move {
-            let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
+            let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
                 return Ok("Graph memory is not enabled.".to_owned());
             };
             let Some(store) = memory.graph_store.as_ref() else {
@@ -312,7 +312,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async move {
-            let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
+            let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
                 return Ok("Graph memory is not enabled.".to_owned());
             };
             let Some(store) = memory.graph_store.as_ref() else {
@@ -345,7 +345,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         progress_cb: &'a mut (dyn FnMut(String) + Send),
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async move {
-            let Some(memory) = self.memory_state.persistence.memory.clone() else {
+            let Some(memory) = self.services.memory.persistence.memory.clone() else {
                 return Ok("Graph memory is not enabled.".to_owned());
             };
             let Some(store) = memory.graph_store.clone() else {
@@ -364,7 +364,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             let mut total_entities = 0usize;
             let mut total_edges = 0usize;
 
-            let graph_cfg = self.memory_state.extraction.graph_config.clone();
+            let graph_cfg = self.services.memory.extraction.graph_config.clone();
             let provider = self.provider.clone();
 
             loop {
@@ -457,11 +457,11 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         Box::pin(async move {
             const MAX_DISPLAY_CHARS: usize = 4096;
 
-            let Some(memory) = &self.memory_state.persistence.memory else {
+            let Some(memory) = &self.services.memory.persistence.memory else {
                 return Ok("No memory backend initialised.".to_owned());
             };
 
-            let cid = self.memory_state.persistence.conversation_id;
+            let cid = self.services.memory.persistence.conversation_id;
             let sqlite = memory.sqlite();
 
             let (version, text) = sqlite
@@ -665,8 +665,9 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         match sub.as_str() {
             "list" => {
                 // Read-only: clone all data before async.
-                let manager = self.mcp.manager.clone();
+                let manager = self.services.mcp.manager.clone();
                 let tools_snapshot: Vec<(String, String)> = self
+                    .services
                     .mcp
                     .tools
                     .iter()
@@ -696,7 +697,8 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                 // Read-only: collect tool info before async.
                 let server_id = parts.get(1).cloned();
                 let owned_tools: Vec<(String, String)> = if let Some(ref sid) = server_id {
-                    self.mcp
+                    self.services
+                        .mcp
                         .tools
                         .iter()
                         .filter(|t| &t.server_id == sid)
@@ -839,9 +841,9 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         let args_owned = args.to_owned();
         // Clone the fields needed by PluginManager before entering the async block.
         // spawn_blocking requires 'static, so we cannot borrow &self inside the closure.
-        let managed_dir = self.skill_state.managed_dir.clone();
-        let mcp_allowed = self.mcp.allowed_commands.clone();
-        let base_shell_allowed = self.lifecycle.startup_shell_overlay.allowed.clone();
+        let managed_dir = self.services.skill.managed_dir.clone();
+        let mcp_allowed = self.services.mcp.allowed_commands.clone();
+        let base_shell_allowed = self.runtime.lifecycle.startup_shell_overlay.allowed.clone();
         Box::pin(async move {
             // PluginManager performs synchronous filesystem I/O (copy, remove_dir_all,
             // read_dir). Run on a blocking thread to avoid stalling the tokio worker.
@@ -879,7 +881,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                 return Ok(self.stop_user_loop());
             }
             if args_owned == "status" {
-                return Ok(match &self.lifecycle.user_loop {
+                return Ok(match &self.runtime.lifecycle.user_loop {
                     Some(ls) => format!(
                         "Loop active: \"{}\" (iteration {}, interval every {}s).",
                         ls.prompt,
@@ -897,13 +899,13 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                 ));
             }
 
-            let min_secs = self.runtime.loop_min_interval_secs;
+            let min_secs = self.runtime.config.loop_min_interval_secs;
             if interval_secs < min_secs {
                 return Err(CommandError::new(format!(
                     "Minimum loop interval is {min_secs}s. Got {interval_secs}s."
                 )));
             }
-            if self.lifecycle.user_loop.is_some() {
+            if self.runtime.lifecycle.user_loop.is_some() {
                 return Err(CommandError::new(
                     "A loop is already active. Use /loop stop first.",
                 ));
@@ -919,7 +921,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     fn notify_test<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        let notifier = self.lifecycle.notifier.clone();
+        let notifier = self.runtime.lifecycle.notifier.clone();
         Box::pin(async move {
             let Some(notifier) = notifier else {
                 return Ok(

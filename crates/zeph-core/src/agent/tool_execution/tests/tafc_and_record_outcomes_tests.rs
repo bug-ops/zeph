@@ -299,7 +299,8 @@ async fn native_tool_success_outcome_does_not_panic() {
     let registry = create_test_registry();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("test-skill".into());
 
@@ -331,7 +332,8 @@ async fn native_tool_error_output_does_not_panic() {
     let registry = create_test_registry();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("test-skill".into());
 
@@ -363,7 +365,8 @@ async fn native_tool_exit_code_output_does_not_panic() {
     let registry = create_test_registry();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("test-skill".into());
 
@@ -395,7 +398,8 @@ async fn native_tool_executor_error_does_not_panic() {
     let registry = create_test_registry();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("test-skill".into());
 
@@ -434,14 +438,15 @@ async fn native_tool_injection_pattern_populates_flagged_urls() {
 
     let mut agent =
         crate::agent::Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
-    agent.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
         enabled: true,
         flag_injection_patterns: true,
         spotlight_untrusted: false,
         ..Default::default()
     });
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("test-skill".into());
 
@@ -541,7 +546,8 @@ async fn self_reflection_early_return_pushes_tool_results_for_all_tool_calls() {
         });
     // Activate the test-skill so attempt_self_reflection can look it up in the registry.
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("test-skill".into());
 
@@ -656,7 +662,8 @@ async fn self_reflection_single_tool_failure_produces_one_tool_result() {
             ..LearningConfig::default()
         });
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("test-skill".into());
 
@@ -757,7 +764,8 @@ async fn self_reflection_middle_tool_failure_no_orphans() {
             ..LearningConfig::default()
         });
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("test-skill".into());
 
@@ -837,7 +845,8 @@ async fn self_reflection_err_pushes_tool_results_for_all_calls() {
             ..LearningConfig::default()
         });
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("test-skill".into());
 
@@ -917,7 +926,8 @@ async fn self_reflection_err_single_tool_pushes_tool_result() {
             ..LearningConfig::default()
         });
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("test-skill".into());
 
@@ -967,7 +977,8 @@ async fn self_reflection_err_mid_batch_pushes_all_tool_results() {
             ..LearningConfig::default()
         });
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("test-skill".into());
 
@@ -1151,7 +1162,7 @@ async fn max_parallel_tools_one_runs_all_tools_sequentially() {
     let registry = create_test_registry();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
     // Force sequential execution path (Semaphore(1)).
-    agent.runtime.timeouts.max_parallel_tools = 1;
+    agent.runtime.config.timeouts.max_parallel_tools = 1;
 
     let tool_calls = vec![
         make_tool_use_request("seq-1", "bash"),
@@ -1206,7 +1217,7 @@ async fn max_parallel_tools_zero_clamped_to_one_no_deadlock() {
     let registry = create_test_registry();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
     // 0 is invalid; the implementation clamps it to 1 via .max(1).
-    agent.runtime.timeouts.max_parallel_tools = 0;
+    agent.runtime.config.timeouts.max_parallel_tools = 0;
 
     let tool_calls = vec![
         make_tool_use_request("clamp-1", "bash"),
@@ -1457,14 +1468,14 @@ async fn native_anomaly_success_output_records_success() {
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
-    agent.debug_state.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(20, 0.5, 0.7));
+    agent.runtime.debug.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(20, 0.5, 0.7));
 
     agent
         .handle_native_tool_calls(None, &[make_tool_use_request("id-1", "bash")])
         .await
         .unwrap();
 
-    let det = agent.debug_state.anomaly_detector.as_ref().unwrap();
+    let det = agent.runtime.debug.anomaly_detector.as_ref().unwrap();
     // One success recorded — no anomaly.
     assert!(
         det.check().is_none(),
@@ -1485,7 +1496,7 @@ async fn native_anomaly_error_output_records_error() {
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
-    agent.debug_state.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(20, 0.5, 0.7));
+    agent.runtime.debug.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(20, 0.5, 0.7));
 
     agent
         .handle_native_tool_calls(None, &[make_tool_use_request("id-2", "bash")])
@@ -1495,7 +1506,7 @@ async fn native_anomaly_error_output_records_error() {
     // 1 error in a window of 20 is below threshold — check() returns None here,
     // but the important assertion is that the call did not panic or skip recording.
     // Drive 14 more errors to confirm the detector fires at threshold.
-    let det = agent.debug_state.anomaly_detector.as_mut().unwrap();
+    let det = agent.runtime.debug.anomaly_detector.as_mut().unwrap();
     for _ in 0..14 {
         det.record_error();
     }
@@ -1518,11 +1529,11 @@ async fn native_anomaly_stderr_output_records_error() {
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
-    agent.debug_state.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(20, 0.5, 0.7));
+    agent.runtime.debug.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(20, 0.5, 0.7));
 
     // Fill window with enough successes so a single additional error is distinguishable.
     {
-        let det = agent.debug_state.anomaly_detector.as_mut().unwrap();
+        let det = agent.runtime.debug.anomaly_detector.as_mut().unwrap();
         for _ in 0..19 {
             det.record_success();
         }
@@ -1535,7 +1546,7 @@ async fn native_anomaly_stderr_output_records_error() {
 
     // 1 error out of 20 is below both thresholds — no anomaly. The important check is
     // that record_anomaly_outcome was called (no panic) and classified [stderr] as Error.
-    let det = agent.debug_state.anomaly_detector.as_ref().unwrap();
+    let det = agent.runtime.debug.anomaly_detector.as_ref().unwrap();
     assert!(
         det.check().is_none(),
         "single [stderr] below threshold must not fire anomaly"
@@ -1555,7 +1566,7 @@ async fn native_anomaly_executor_error_records_error() {
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
-    agent.debug_state.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(20, 0.5, 0.7));
+    agent.runtime.debug.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(20, 0.5, 0.7));
 
     agent
         .handle_native_tool_calls(None, &[make_tool_use_request("id-4", "bash")])
@@ -1563,7 +1574,7 @@ async fn native_anomaly_executor_error_records_error() {
         .unwrap();
 
     // Confirm detector has at least one error recorded by driving to threshold.
-    let det = agent.debug_state.anomaly_detector.as_mut().unwrap();
+    let det = agent.runtime.debug.anomaly_detector.as_mut().unwrap();
     for _ in 0..14 {
         det.record_error();
     }

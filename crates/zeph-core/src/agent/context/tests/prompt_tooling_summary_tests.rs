@@ -847,7 +847,7 @@ async fn maybe_proactive_compress_does_not_fire_with_reactive_strategy() {
     let executor = MockToolExecutor::no_tools();
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.providers.cached_prompt_tokens = 200_000; // very high token count
+    agent.runtime.providers.cached_prompt_tokens = 200_000; // very high token count
 
     // should_proactively_compress returns None for Reactive → no compression
     let result = agent.maybe_proactive_compress().await;
@@ -911,7 +911,7 @@ async fn summarize_then_prune_preserves_intact_content_for_summarizer() {
     // Correct order: summarize (deferred), then apply, then prune.
     agent.maybe_summarize_tool_pair().await;
     agent.apply_deferred_summaries();
-    let keep_recent = 2 * agent.memory_state.persistence.tool_call_cutoff + 2;
+    let keep_recent = 2 * agent.services.memory.persistence.tool_call_cutoff + 2;
     agent.prune_stale_tool_outputs(keep_recent);
 
     // The summary was inserted — summarizer must have seen content.
@@ -954,7 +954,7 @@ async fn prune_after_summarize_does_not_destroy_visible_pairs() {
 
     agent.maybe_summarize_tool_pair().await;
     agent.apply_deferred_summaries();
-    let keep_recent = 2 * agent.memory_state.persistence.tool_call_cutoff + 2;
+    let keep_recent = 2 * agent.services.memory.persistence.tool_call_cutoff + 2;
     agent.prune_stale_tool_outputs(keep_recent);
 
     // Verify all visible ToolOutput parts have non-empty bodies.
@@ -1046,7 +1046,7 @@ async fn cutoff_one_edge_case_summarize_then_prune() {
     // Apply deferred summaries so the Summary message is actually inserted.
     agent.apply_deferred_summaries();
 
-    let keep_recent = 2 * agent.memory_state.persistence.tool_call_cutoff + 2;
+    let keep_recent = 2 * agent.services.memory.persistence.tool_call_cutoff + 2;
     agent.prune_stale_tool_outputs(keep_recent);
 
     // Summary inserted: 1 pair hidden, summary present.
@@ -1094,7 +1094,7 @@ async fn summarizer_failure_prune_still_runs() {
 
     // Summarize fails (no panic), then prune runs.
     agent.maybe_summarize_tool_pair().await;
-    let keep_recent = 2 * agent.memory_state.persistence.tool_call_cutoff + 2;
+    let keep_recent = 2 * agent.services.memory.persistence.tool_call_cutoff + 2;
     let freed = agent.prune_stale_tool_outputs(keep_recent);
 
     // Messages count unchanged (no summary inserted due to failure).
@@ -1370,7 +1370,7 @@ fn tier0_does_not_set_compacted_this_turn() {
 
     agent.msg.messages[2].metadata.deferred_summary = Some("s".into());
     // Simulate token usage above 70% soft threshold
-    agent.providers.cached_prompt_tokens = 75_000;
+    agent.runtime.providers.cached_prompt_tokens = 75_000;
 
     assert!(!agent.context_manager.compaction.is_compacted_this_turn());
     agent.maybe_apply_deferred_summaries();
@@ -1407,7 +1407,7 @@ fn tier0_count_trigger_fires_without_budget_pressure() {
     agent.msg.messages[12].metadata.deferred_summary = Some("s_f".into());
 
     // Token count well below budget threshold (simulates post-pruning state)
-    agent.providers.cached_prompt_tokens = 5_000;
+    agent.runtime.providers.cached_prompt_tokens = 5_000;
 
     agent.maybe_apply_deferred_summaries();
 

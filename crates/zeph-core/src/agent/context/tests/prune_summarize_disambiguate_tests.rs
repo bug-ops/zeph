@@ -449,7 +449,7 @@ async fn test_compact_context_calls_replace_conversation() {
 
     // After compaction, replace_conversation() must have been called:
     // original messages become agent_visible=0, summary row is inserted with agent_visible=1.
-    let memory_ref = agent.memory_state.persistence.memory.as_ref().unwrap();
+    let memory_ref = agent.services.memory.persistence.memory.as_ref().unwrap();
     let agent_visible = memory_ref
         .sqlite()
         .load_history_filtered(cid, 50, Some(true), None)
@@ -697,7 +697,7 @@ async fn test_prepare_context_scrubs_secrets_when_redact_enabled() {
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_context_budget(4096, 0.20, 0.80, 4, 0);
-    agent.runtime.redact_credentials = true;
+    agent.runtime.config.redact_credentials = true;
 
     // Push a user message containing a secret and a path
     agent.msg.messages.push(Message {
@@ -743,7 +743,7 @@ async fn test_prepare_context_preserves_system_prompt_paths() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_context_budget(4096, 0.20, 0.80, 4, 0)
         .with_working_dir("/Users/dev/project");
-    agent.runtime.redact_credentials = true;
+    agent.runtime.config.redact_credentials = true;
 
     agent.msg.messages.push(Message {
         role: Role::User,
@@ -802,7 +802,7 @@ async fn test_prepare_context_no_scrub_when_redact_disabled() {
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_context_budget(4096, 0.20, 0.80, 4, 0);
-    agent.runtime.redact_credentials = false;
+    agent.runtime.config.redact_credentials = false;
 
     let original = "key sk-abc123xyz at /Users/dev/file.rs".to_string();
     agent.msg.messages.push(Message {
@@ -858,7 +858,7 @@ fn compaction_tier_hard_triggers_when_cached_tokens_exceed_hard_threshold() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_context_budget(1000, 0.20, 0.75, 4, 0);
     agent.context_manager.soft_compaction_threshold = 0.50;
-    agent.providers.cached_prompt_tokens = 900;
+    agent.runtime.providers.cached_prompt_tokens = 900;
 
     assert_eq!(
         agent.compaction_tier(),
@@ -878,7 +878,7 @@ fn compaction_tier_none_does_not_trigger_below_soft_threshold() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_context_budget(1000, 0.20, 0.75, 4, 0);
     agent.context_manager.soft_compaction_threshold = 0.50;
-    agent.providers.cached_prompt_tokens = 100;
+    agent.runtime.providers.cached_prompt_tokens = 100;
 
     assert_eq!(
         agent.compaction_tier(),
@@ -1121,7 +1121,7 @@ async fn rebuild_system_prompt_excludes_skill_when_secret_missing() {
     };
 
     // available_custom_secrets is empty — skill must be excluded
-    agent.skill_state.available_custom_secrets = HashMap::new();
+    agent.services.skill.available_custom_secrets = HashMap::new();
 
     let all_meta = [meta_with_secret];
     let matched_indices: Vec<usize> = vec![0];
@@ -1134,7 +1134,8 @@ async fn rebuild_system_prompt_excludes_skill_when_secret_missing() {
             };
             meta.requires_secrets.iter().all(|s| {
                 agent
-                    .skill_state
+                    .services
+                    .skill
                     .available_custom_secrets
                     .contains_key(s.as_str())
             })
@@ -1175,7 +1176,8 @@ async fn rebuild_system_prompt_includes_skill_when_secret_present() {
 
     // Secret IS available
     agent
-        .skill_state
+        .services
+        .skill
         .available_custom_secrets
         .insert("my_api_key".into(), crate::vault::Secret::new("token-val"));
 
@@ -1190,7 +1192,8 @@ async fn rebuild_system_prompt_includes_skill_when_secret_present() {
             };
             meta.requires_secrets.iter().all(|s| {
                 agent
-                    .skill_state
+                    .services
+                    .skill
                     .available_custom_secrets
                     .contains_key(s.as_str())
             })
@@ -1232,7 +1235,8 @@ async fn rebuild_system_prompt_excludes_skill_when_only_partial_secrets_present(
 
     // Only "secret_a" present, "secret_b" missing — skill must be excluded.
     agent
-        .skill_state
+        .services
+        .skill
         .available_custom_secrets
         .insert("secret_a".into(), crate::vault::Secret::new("val-a"));
 
@@ -1247,7 +1251,8 @@ async fn rebuild_system_prompt_excludes_skill_when_only_partial_secrets_present(
             };
             meta.requires_secrets.iter().all(|s| {
                 agent
-                    .skill_state
+                    .services
+                    .skill
                     .available_custom_secrets
                     .contains_key(s.as_str())
             })

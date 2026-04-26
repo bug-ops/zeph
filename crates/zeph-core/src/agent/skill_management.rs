@@ -19,7 +19,7 @@ impl<C: Channel> Agent<C> {
             return Ok("Usage: /skill install <url|path>".to_owned());
         };
 
-        let Some(managed_dir) = self.skill_state.managed_dir.clone() else {
+        let Some(managed_dir) = self.services.skill.managed_dir.clone() else {
             return Ok("Skill management directory not configured.".to_owned());
         };
 
@@ -42,7 +42,7 @@ impl<C: Channel> Agent<C> {
 
         match result {
             Ok(installed) => {
-                if let Some(memory) = self.memory_state.persistence.memory.clone() {
+                if let Some(memory) = self.services.memory.persistence.memory.clone() {
                     let (source_kind, source_url, source_path) = match &installed.source {
                         SkillSource::Hub { url } => (SourceKind::Hub, Some(url.as_str()), None),
                         SkillSource::File { path } => (
@@ -81,7 +81,8 @@ impl<C: Channel> Agent<C> {
                             .iter()
                             .filter(|s| {
                                 !self
-                                    .skill_state
+                                    .services
+                                    .skill
                                     .available_custom_secrets
                                     .contains_key(s.as_str())
                             })
@@ -118,7 +119,7 @@ impl<C: Channel> Agent<C> {
             return Ok("Usage: /skill remove <name>".to_owned());
         };
 
-        let Some(managed_dir) = &self.skill_state.managed_dir else {
+        let Some(managed_dir) = &self.services.skill.managed_dir else {
             return Ok("Skill management directory not configured.".to_owned());
         };
 
@@ -131,7 +132,7 @@ impl<C: Channel> Agent<C> {
 
         match remove_result {
             Ok(()) => {
-                if let Some(memory) = self.memory_state.persistence.memory.clone()
+                if let Some(memory) = self.services.memory.persistence.memory.clone()
                     && let Err(e) = memory.sqlite().delete_skill_trust(name).await
                 {
                     tracing::warn!("failed to remove trust record for '{name}': {e:#}");

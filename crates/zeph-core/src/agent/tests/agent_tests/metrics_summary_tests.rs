@@ -353,7 +353,7 @@ mod resolve_message_tests {
         let channel = MockChannel::new(vec![]);
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.providers.stt = stt;
+        agent.runtime.providers.stt = stt;
         agent
     }
 

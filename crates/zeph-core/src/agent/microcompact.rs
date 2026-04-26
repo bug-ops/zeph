@@ -20,17 +20,17 @@ impl<C: Channel> super::Agent<C> {
     /// Returns `None` when microcompact is disabled, `last_assistant_at` is `None`,
     /// or the elapsed gap is below the threshold.
     pub(super) fn cache_expiry_warning(&self) -> Option<String> {
-        let cfg = &self.memory_state.subsystems.microcompact_config;
+        let cfg = &self.services.memory.subsystems.microcompact_config;
         if !cfg.enabled {
             return None;
         }
-        let last_at = self.session.last_assistant_at?;
+        let last_at = self.services.session.last_assistant_at?;
         let elapsed_mins = last_at.elapsed().as_secs_f64() / 60.0;
         if elapsed_mins < f64::from(cfg.gap_threshold_minutes) {
             return None;
         }
-        let tokens = if self.providers.cached_prompt_tokens > 0 {
-            self.providers.cached_prompt_tokens
+        let tokens = if self.runtime.providers.cached_prompt_tokens > 0 {
+            self.runtime.providers.cached_prompt_tokens
         } else {
             0
         };
@@ -50,12 +50,12 @@ impl<C: Channel> super::Agent<C> {
     /// - `last_assistant_at` is `None` (first turn)
     /// - idle gap is below the threshold
     pub(super) fn maybe_time_based_microcompact(&mut self) {
-        let cfg = &self.memory_state.subsystems.microcompact_config;
+        let cfg = &self.services.memory.subsystems.microcompact_config;
         if !cfg.enabled {
             return;
         }
 
-        let Some(last_at) = self.session.last_assistant_at else {
+        let Some(last_at) = self.services.session.last_assistant_at else {
             return;
         };
 
@@ -109,7 +109,7 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent.memory_state.subsystems.microcompact_config = cfg;
+        agent.services.memory.subsystems.microcompact_config = cfg;
         agent
     }
 
@@ -140,7 +140,7 @@ mod tests {
             gap_threshold_minutes: 60,
             keep_recent: 1,
         });
-        agent.session.last_assistant_at = Some(std::time::Instant::now());
+        agent.services.session.last_assistant_at = Some(std::time::Instant::now());
         assert!(agent.cache_expiry_warning().is_none());
     }
 
@@ -151,7 +151,7 @@ mod tests {
             gap_threshold_minutes: 0,
             keep_recent: 1,
         });
-        agent.session.last_assistant_at = Some(std::time::Instant::now());
+        agent.services.session.last_assistant_at = Some(std::time::Instant::now());
         let warning = agent.cache_expiry_warning();
         assert!(warning.is_some());
         let msg = warning.unwrap();

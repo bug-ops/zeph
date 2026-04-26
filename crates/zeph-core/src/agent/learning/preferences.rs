@@ -207,14 +207,14 @@ impl<C: Channel> Agent<C> {
     /// The watermark (`last_analyzed_correction_id`) is advanced so the same
     /// corrections are never processed twice.
     pub(crate) async fn analyze_and_learn(&mut self) {
-        if !self.learning_engine.should_analyze() {
+        if !self.services.learning_engine.should_analyze() {
             return;
         }
-        let Some(memory) = &self.memory_state.persistence.memory else {
-            self.learning_engine.mark_analyzed();
+        let Some(memory) = &self.services.memory.persistence.memory else {
+            self.services.learning_engine.mark_analyzed();
             return;
         };
-        let after_id = self.learning_engine.last_analyzed_correction_id;
+        let after_id = self.services.learning_engine.last_analyzed_correction_id;
         let corrections = match memory
             .sqlite()
             .load_corrections_after(after_id, CORRECTIONS_BATCH)
@@ -223,19 +223,19 @@ impl<C: Channel> Agent<C> {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("learning engine: failed to load corrections: {e:#}");
-                self.learning_engine.mark_analyzed();
+                self.services.learning_engine.mark_analyzed();
                 return;
             }
         };
 
         if corrections.is_empty() {
-            self.learning_engine.mark_analyzed();
+            self.services.learning_engine.mark_analyzed();
             return;
         }
 
         // Advance watermark to the highest id in this batch.
         if let Some(max_id) = corrections.iter().map(|r| r.id).max() {
-            self.learning_engine.last_analyzed_correction_id = max_id;
+            self.services.learning_engine.last_analyzed_correction_id = max_id;
         }
 
         let preferences = infer_preferences(&corrections);
@@ -261,18 +261,18 @@ impl<C: Channel> Agent<C> {
         if !preferences.is_empty() {
             tracing::info!(
                 count = preferences.len(),
-                watermark = self.learning_engine.last_analyzed_correction_id,
+                watermark = self.services.learning_engine.last_analyzed_correction_id,
                 "learning engine: analyzed corrections, persisted preferences"
             );
         }
 
-        self.learning_engine.mark_analyzed();
+        self.services.learning_engine.mark_analyzed();
     }
 
     /// Load high-confidence learned preferences and inject them into the
     /// system prompt after the `<!-- cache:volatile -->` marker.
     pub(crate) async fn inject_learned_preferences(&self, prompt: &mut String) {
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return;
         };
         let prefs = match memory.sqlite().load_learned_preferences().await {

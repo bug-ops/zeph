@@ -9,16 +9,16 @@ impl<C: Channel> Agent<C> {
     /// No-op when `rl_routing_enabled = false` or no RL head is loaded.
     /// Only updates for the first active skill name (the one that was selected).
     pub(crate) fn spawn_rl_head_update(&mut self, outcome: &str) {
-        let Some(cfg) = self.learning_engine.rl_routing else {
+        let Some(cfg) = self.services.learning_engine.rl_routing else {
             return;
         };
         if !cfg.enabled {
             return;
         }
-        let Some(selected_skill) = self.skill_state.active_skill_names.first().cloned() else {
+        let Some(selected_skill) = self.services.skill.active_skill_names.first().cloned() else {
             return;
         };
-        let Some(rl_head) = self.skill_state.rl_head.clone() else {
+        let Some(rl_head) = self.services.skill.rl_head.clone() else {
             return;
         };
         let reward = if outcome == "success" {
@@ -28,7 +28,7 @@ impl<C: Channel> Agent<C> {
         };
         let lr = cfg.learning_rate;
         let persist_interval = cfg.persist_interval;
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
 
         self.try_spawn_learning_task(async move {
             if !rl_head.update(reward, lr) {

@@ -31,8 +31,8 @@ fn hot_reload_rebuilds_shell_blocklist() {
     // Wire the handle into a minimal agent's lifecycle.
     let harness = QuickTestAgent::minimal("ok");
     let mut agent = harness.agent;
-    agent.lifecycle.shell_policy_handle = Some(handle.clone());
-    agent.lifecycle.startup_shell_overlay = crate::ShellOverlaySnapshot {
+    agent.runtime.lifecycle.shell_policy_handle = Some(handle.clone());
+    agent.runtime.lifecycle.startup_shell_overlay = crate::ShellOverlaySnapshot {
         blocked: Vec::new(),
         allowed: Vec::new(),
     };

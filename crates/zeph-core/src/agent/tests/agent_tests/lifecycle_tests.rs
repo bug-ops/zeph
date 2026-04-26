@@ -27,14 +27,14 @@ async fn agent_with_working_dir_updates_environment_context() {
     let tmp = tempfile::tempdir().unwrap();
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.runtime.model_name = "test-model".to_string();
+    agent.runtime.config.model_name = "test-model".to_string();
     let agent = agent.with_working_dir(tmp.path().to_path_buf());
 
     assert_eq!(
-        agent.session.env_context.working_dir,
+        agent.services.session.env_context.working_dir,
         tmp.path().display().to_string()
     );
-    assert_eq!(agent.session.env_context.model_name, "test-model");
+    assert_eq!(agent.services.session.env_context.model_name, "test-model");
 }
 
 #[tokio::test]
@@ -45,9 +45,9 @@ async fn agent_with_embedding_model_sets_model() {
     let executor = MockToolExecutor::no_tools();
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.skill_state.embedding_model = "test-embed-model".to_string();
+    agent.services.skill.embedding_model = "test-embed-model".to_string();
 
-    assert_eq!(agent.skill_state.embedding_model, "test-embed-model");
+    assert_eq!(agent.services.skill.embedding_model, "test-embed-model");
 }
 
 #[tokio::test]
@@ -80,8 +80,8 @@ async fn agent_with_security_sets_config() {
     let agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_security(security, timeouts);
 
-    assert!(agent.runtime.security.redact_secrets);
-    assert_eq!(agent.runtime.timeouts.llm_seconds, 60);
+    assert!(agent.runtime.config.security.redact_secrets);
+    assert_eq!(agent.runtime.config.timeouts.llm_seconds, 60);
 }
 
 #[tokio::test]
@@ -575,7 +575,7 @@ async fn agent_with_skill_reload_sets_paths() {
     let agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_skill_reload(paths.clone(), rx);
 
-    assert_eq!(agent.skill_state.skill_paths, paths);
+    assert_eq!(agent.services.skill.skill_paths, paths);
 }
 
 #[tokio::test]
@@ -718,7 +718,7 @@ async fn agent_with_metrics_sets_initial_values() {
     let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    agent.runtime.model_name = "test-model".to_string();
+    agent.runtime.config.model_name = "test-model".to_string();
     let _agent = agent.with_metrics(tx);
 
     let snapshot = rx.borrow().clone();
@@ -758,16 +758,16 @@ async fn skill_all_candidates_dropped_below_threshold_active_skills_empty() {
     // Build an in-memory matcher so the retain gate is exercised rather than
     // falling through the empty-matcher fallback path.
     let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> = {
-        let registry_guard = agent.skill_state.registry.read();
+        let registry_guard = agent.services.skill.registry.read();
         registry_guard.all_meta().into_iter().cloned().collect()
     };
     let embed_fn = |_text: &str| -> zeph_skills::matcher::EmbedFuture {
         Box::pin(async { Ok(vec![1.0_f32, 0.0]) })
     };
     let matcher = SkillMatcher::new(&all_meta_owned.iter().collect::<Vec<_>>(), embed_fn).await;
-    agent.skill_state.matcher = matcher.map(SkillMatcherBackend::InMemory);
+    agent.services.skill.matcher = matcher.map(SkillMatcherBackend::InMemory);
     // Set an impossibly high threshold so every candidate is dropped.
-    agent.skill_state.min_injection_score = f32::MAX;
+    agent.services.skill.min_injection_score = f32::MAX;
 
     agent.run().await.unwrap();
 

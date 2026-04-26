@@ -25,7 +25,11 @@ impl<C: Channel> Agent<C> {
     ///
     /// If all conditions are met, logs a failure pair to `SQLite` (non-fatal on error).
     pub(crate) async fn maybe_log_compression_failure(&self, response: &str) {
-        let config = &self.memory_state.compaction.compression_guidelines_config;
+        let config = &self
+            .services
+            .memory
+            .compaction
+            .compression_guidelines_config;
 
         if !config.enabled {
             return;
@@ -46,10 +50,10 @@ impl<C: Channel> Agent<C> {
 
         let compressed_context = self.extract_last_compaction_summary();
 
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return;
         };
-        let Some(cid) = self.memory_state.persistence.conversation_id else {
+        let Some(cid) = self.services.memory.persistence.conversation_id else {
             return;
         };
 

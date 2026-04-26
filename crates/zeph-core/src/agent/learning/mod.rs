@@ -27,11 +27,11 @@ pub(crate) struct PendingSkillOutcome {
 
 impl<C: Channel> Agent<C> {
     pub(crate) fn is_learning_enabled(&self) -> bool {
-        self.learning_engine.is_enabled()
+        self.services.learning_engine.is_enabled()
     }
 
     async fn is_skill_trusted_for_learning(&self, skill_name: &str) -> bool {
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return true;
         };
         let Ok(Some(row)) = memory.sqlite().load_skill_trust(skill_name).await else {
@@ -46,17 +46,17 @@ impl<C: Channel> Agent<C> {
         error_context: Option<&str>,
         outcome_detail: Option<&str>,
     ) {
-        if self.skill_state.active_skill_names.is_empty() {
+        if self.services.skill.active_skill_names.is_empty() {
             return;
         }
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return;
         };
         let batch_result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             memory.sqlite().record_skill_outcomes_batch(
-                &self.skill_state.active_skill_names,
-                self.memory_state.persistence.conversation_id,
+                &self.services.skill.active_skill_names,
+                self.services.memory.persistence.conversation_id,
                 outcome,
                 error_context,
                 outcome_detail,
@@ -75,12 +75,12 @@ impl<C: Channel> Agent<C> {
         }
 
         if outcome != "success" {
-            for name in &self.skill_state.active_skill_names {
+            for name in &self.services.skill.active_skill_names {
                 self.check_rollback(name).await;
             }
         }
 
-        let names: Vec<String> = self.skill_state.active_skill_names.clone();
+        let names: Vec<String> = self.services.skill.active_skill_names.clone();
         for name in &names {
             self.check_trust_transition(name).await;
         }
@@ -112,10 +112,10 @@ impl<C: Channel> Agent<C> {
     /// per-tool RL signal granularity for loop latency — acceptable because the RL head
     /// operates at turn granularity anyway.
     pub(crate) async fn flush_skill_outcomes(&mut self, outcomes: Vec<PendingSkillOutcome>) {
-        if outcomes.is_empty() || self.skill_state.active_skill_names.is_empty() {
+        if outcomes.is_empty() || self.services.skill.active_skill_names.is_empty() {
             return;
         }
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return;
         };
 
@@ -125,8 +125,8 @@ impl<C: Channel> Agent<C> {
             let batch_result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 memory.sqlite().record_skill_outcomes_batch(
-                    &self.skill_state.active_skill_names,
-                    self.memory_state.persistence.conversation_id,
+                    &self.services.skill.active_skill_names,
+                    self.services.memory.persistence.conversation_id,
                     &o.outcome,
                     o.error_context.as_deref(),
                     o.outcome_detail.as_deref(),
@@ -147,11 +147,11 @@ impl<C: Channel> Agent<C> {
 
         // Run rollback + trust checks ONCE per skill (not once per tool result).
         if had_failure {
-            for name in &self.skill_state.active_skill_names.clone() {
+            for name in &self.services.skill.active_skill_names.clone() {
                 self.check_rollback(name).await;
             }
         }
-        let names: Vec<String> = self.skill_state.active_skill_names.clone();
+        let names: Vec<String> = self.services.skill.active_skill_names.clone();
         for name in &names {
             self.check_trust_transition(name).await;
         }
@@ -191,7 +191,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         fut: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> bool {
-        if self.learning_engine.learning_tasks.len()
+        if self.services.learning_engine.learning_tasks.len()
             >= crate::agent::learning_engine::MAX_LEARNING_TASKS
         {
             tracing::debug!(
@@ -200,12 +200,12 @@ impl<C: Channel> Agent<C> {
             );
             return false;
         }
-        self.learning_engine.learning_tasks.spawn(fut);
+        self.services.learning_engine.learning_tasks.spawn(fut);
         true
     }
 
     pub(crate) async fn update_skill_confidence_metrics(&self) {
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return;
         };
         let Ok(stats) = memory.sqlite().load_skill_outcome_stats().await else {

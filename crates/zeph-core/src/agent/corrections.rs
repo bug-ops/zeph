@@ -97,24 +97,26 @@ impl<C: crate::channel::Channel> Agent<C> {
     ) {
         let assistant_snippet = self.last_assistant_response();
         let user_msg_owned = trimmed.to_owned();
-        let memory_arc = self.memory_state.persistence.memory.clone();
+        let memory_arc = self.services.memory.persistence.memory.clone();
         let skill_name = self
-            .skill_state
+            .services
+            .skill
             .active_skill_names
             .first()
             .cloned()
             .unwrap_or_default();
         let conv_id_bg = conv_id;
         let confidence_threshold = self
+            .services
             .learning_engine
             .config
             .as_ref()
             .map_or(0.6_f32, |c| c.correction_confidence_threshold);
 
-        if let Some(llm_classifier) = self.feedback.llm_classifier.clone() {
-            let classifier_metrics_bg = self.metrics.classifier_metrics.clone();
-            let metrics_tx_bg = self.metrics.metrics_tx.clone();
-            self.lifecycle.supervisor.spawn(
+        if let Some(llm_classifier) = self.services.feedback.llm_classifier.clone() {
+            let classifier_metrics_bg = self.runtime.metrics.classifier_metrics.clone();
+            let metrics_tx_bg = self.runtime.metrics.metrics_tx.clone();
+            self.runtime.lifecycle.supervisor.spawn(
                 super::agent_supervisor::TaskClass::Enrichment,
                 "llm_classifier_correction",
                 evaluate_with_llm_classifier(
@@ -131,11 +133,12 @@ impl<C: crate::channel::Channel> Agent<C> {
             );
         } else {
             let judge_provider = self
+                .runtime
                 .providers
                 .judge_provider
                 .clone()
                 .unwrap_or_else(|| self.provider.clone());
-            self.lifecycle.supervisor.spawn(
+            self.runtime.lifecycle.supervisor.spawn(
                 super::agent_supervisor::TaskClass::Enrichment,
                 "judge_correction",
                 evaluate_with_judge(
@@ -163,6 +166,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         conv_id: Option<zeph_memory::ConversationId>,
     ) {
         let correction_detection_enabled = self
+            .services
             .learning_engine
             .config
             .as_ref()
@@ -173,6 +177,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         let previous_user_messages = self.collect_previous_user_messages();
         let regex_signal = self
+            .services
             .feedback
             .detector
             .detect(trimmed, &previous_user_messages);
@@ -221,18 +226,21 @@ impl<C: crate::channel::Channel> Agent<C> {
         &mut self,
         regex_signal: Option<&feedback_detector::CorrectionSignal>,
     ) -> bool {
-        if self.feedback.llm_classifier.is_some() {
+        if self.services.feedback.llm_classifier.is_some() {
             let adaptive_low = self
+                .services
                 .learning_engine
                 .config
                 .as_ref()
                 .map_or(0.5, |c| c.judge_adaptive_low);
             let adaptive_high = self
+                .services
                 .learning_engine
                 .config
                 .as_ref()
                 .map_or(0.8, |c| c.judge_adaptive_high);
             let should_invoke = self
+                .services
                 .feedback
                 .judge
                 .get_or_insert_with(|| {
@@ -241,16 +249,19 @@ impl<C: crate::channel::Channel> Agent<C> {
                 .should_invoke(regex_signal);
             should_invoke
                 && self
+                    .services
                     .feedback
                     .judge
                     .as_mut()
                     .is_some_and(feedback_detector::JudgeDetector::check_rate_limit)
         } else {
-            self.feedback
+            self.services
+                .feedback
                 .judge
                 .as_ref()
                 .is_some_and(|jd| jd.should_invoke(regex_signal))
                 && self
+                    .services
                     .feedback
                     .judge
                     .as_mut()
@@ -264,7 +275,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         conv_id: Option<zeph_memory::ConversationId>,
         kind_str: &str,
     ) {
-        let Some(memory) = &self.memory_state.persistence.memory else {
+        let Some(memory) = &self.services.memory.persistence.memory else {
             return;
         };
         let correction_text = context::truncate_chars(trimmed, 500);
@@ -274,7 +285,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                 conv_id.map(|c| c.0),
                 "",
                 &correction_text,
-                self.skill_state
+                self.services
+                    .skill
                     .active_skill_names
                     .first()
                     .map(String::as_str),
@@ -307,7 +319,13 @@ impl<C: crate::channel::Channel> Agent<C> {
             let r = r.trim();
             if let Some((name, feedback_rest)) = r.split_once(' ') {
                 let feedback = feedback_rest.trim().trim_matches('"');
-                if self.feedback.detector.detect(feedback, &[]).is_some() {
+                if self
+                    .services
+                    .feedback
+                    .detector
+                    .detect(feedback, &[])
+                    .is_some()
+                {
                     self.generate_improved_skill(name.trim(), feedback, "", Some(feedback))
                         .await
                         .ok();
@@ -348,13 +366,19 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
 
         // Clone Arc before .await to avoid holding &self across suspension points.
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok("Memory not available.".to_owned());
         };
-        let conversation_id = self.memory_state.persistence.conversation_id;
+        let conversation_id = self.services.memory.persistence.conversation_id;
 
-        let outcome_type = if self.feedback.detector.detect(feedback, &[]).is_some() {
+        let outcome_type = if self
+            .services
+            .feedback
+            .detector
+            .detect(feedback, &[])
+            .is_some()
+        {
             "user_rejection"
         } else {
             "user_approval"

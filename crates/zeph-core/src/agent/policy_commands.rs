@@ -17,7 +17,7 @@ impl<C: Channel> Agent<C> {
     /// Channel-free version of [`Self::handle_policy_command`] for use via
     /// [`zeph_commands::traits::agent::AgentAccess`].
     pub(super) fn handle_policy_command_as_string(&mut self, args: &str) -> String {
-        let Some(ref policy_config) = self.session.policy_config else {
+        let Some(ref policy_config) = self.services.session.policy_config else {
             return "Policy enforcer: not configured (use --policy-file or set [tools.policy] in config)"
                 .to_owned();
         };
@@ -54,7 +54,7 @@ impl<C: Channel> Agent<C> {
     }
 
     fn handle_policy_check_as_string(&mut self, raw: &[&str]) -> String {
-        let Some(ref policy_config) = self.session.policy_config else {
+        let Some(ref policy_config) = self.services.session.policy_config else {
             return String::new();
         };
 

@@ -81,7 +81,11 @@ pub(super) fn dispatch_acp(
 impl<C: Channel> Agent<C> {
     /// Dispatch `/acp [dirs|auth-methods|status]` and return a display string.
     pub(super) fn handle_acp_as_string(&mut self, args: &str) -> Result<String, AgentError> {
-        dispatch_acp(&self.runtime.acp_config, self.security.is_acp_session, args)
+        dispatch_acp(
+            &self.runtime.config.acp_config,
+            self.services.security.is_acp_session,
+            args,
+        )
     }
 }
 

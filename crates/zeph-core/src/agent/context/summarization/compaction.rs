@@ -52,7 +52,10 @@ impl<C: Channel> Agent<C> {
                     let actual_i = slice_i + 1;
                     !m.metadata.focus_pinned
                         && matches!(
-                            self.compression.subgoal_registry.subgoal_state(actual_i),
+                            self.services
+                                .compression
+                                .subgoal_registry
+                                .subgoal_state(actual_i),
                             Some(SubgoalState::Active)
                         )
                 })
@@ -79,7 +82,10 @@ impl<C: Channel> Agent<C> {
                         let actual_i = slice_i + 1;
                         !m.metadata.focus_pinned
                             && !matches!(
-                                self.compression.subgoal_registry.subgoal_state(actual_i),
+                                self.services
+                                    .compression
+                                    .subgoal_registry
+                                    .subgoal_state(actual_i),
                                 Some(SubgoalState::Active)
                             )
                     })
@@ -145,7 +151,7 @@ impl<C: Channel> Agent<C> {
         };
 
         if let Some(ref result) = probe_result {
-            if let Some(ref d) = self.debug_state.debug_dumper {
+            if let Some(ref d) = self.runtime.debug.debug_dumper {
                 d.dump_compaction_probe(result);
             }
 
@@ -258,14 +264,15 @@ impl<C: Channel> Agent<C> {
             .pruning_strategy
             .is_subgoal()
         {
-            self.compression
+            self.services
+                .compression
                 .subgoal_registry
                 .rebuild_after_compaction(&self.msg.messages, compact_end);
         }
 
         tracing::info!(
             compacted_count,
-            summary_tokens = self.metrics.token_counter.count_tokens(summary),
+            summary_tokens = self.runtime.metrics.token_counter.count_tokens(summary),
             "compacted context"
         );
 
@@ -310,12 +317,13 @@ impl<C: Channel> Agent<C> {
         // Extract all params from &self before .await so no &self is held across await.
         let guidelines = {
             let enabled = self
-                .memory_state
+                .services
+                .memory
                 .compaction
                 .compression_guidelines_config
                 .enabled;
-            let memory = self.memory_state.persistence.memory.clone();
-            let conv_id = self.memory_state.persistence.conversation_id;
+            let memory = self.services.memory.persistence.memory.clone();
+            let conv_id = self.services.memory.persistence.conversation_id;
             Self::load_compression_guidelines(enabled, memory, conv_id).await
         };
 
@@ -330,15 +338,15 @@ impl<C: Channel> Agent<C> {
         // Extract all params from &self before .await so no &self is held across await.
         let archived_refs: Vec<String> = {
             let archive_enabled = self.context_manager.compression.archive_tool_outputs;
-            let memory = self.memory_state.persistence.memory.clone();
-            let cid = self.memory_state.persistence.conversation_id;
+            let memory = self.services.memory.persistence.memory.clone();
+            let cid = self.services.memory.persistence.conversation_id;
             Self::archive_tool_outputs(archive_enabled, memory, cid, to_compact.clone()).await
         };
 
         // Extract deps before .await so &self is not held across the await boundary.
         let summary = {
             let deps = self.build_summarization_deps();
-            let structured = self.memory_state.compaction.structured_summaries;
+            let structured = self.services.memory.compaction.structured_summaries;
             Self::summarize_messages_with_deps(
                 deps,
                 structured,
@@ -357,7 +365,7 @@ impl<C: Channel> Agent<C> {
         }
 
         let compacted_count = to_compact.len();
-        let tokens_before = self.providers.cached_prompt_tokens;
+        let tokens_before = self.runtime.providers.cached_prompt_tokens;
         // Inject archived references as a postfix AFTER the LLM summary (fix C1).
         // The LLM summary is unaware of archives; the postfix ensures references survive.
         let archive_postfix = if archived_refs.is_empty() {
@@ -383,8 +391,8 @@ impl<C: Channel> Agent<C> {
 
         // Extract memory params before .await so no &self is held across the persist boundary.
         let (persist_failed, qdrant_fut) = {
-            let memory = self.memory_state.persistence.memory.clone();
-            let cid = self.memory_state.persistence.conversation_id;
+            let memory = self.services.memory.persistence.memory.clone();
+            let cid = self.services.memory.persistence.conversation_id;
             Self::persist_compaction_result(
                 memory,
                 cid,
@@ -397,7 +405,8 @@ impl<C: Channel> Agent<C> {
         // Dispatch Qdrant session-summary write through the supervisor so the JoinHandle
         // is tracked, bounded, and abortable at turn boundaries (Await Discipline rule 2).
         if let Some(fut) = qdrant_fut {
-            self.lifecycle
+            self.runtime
+                .lifecycle
                 .supervisor
                 .spawn_summarization("persist-session-summary", fut);
         }

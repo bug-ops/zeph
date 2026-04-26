@@ -84,7 +84,7 @@ impl<C: Channel> Agent<C> {
         let memory_hint = source.memory_hint;
         #[cfg(not(feature = "classifiers"))]
         let _ = source.memory_hint;
-        let sanitized = self.security.sanitizer.sanitize(body, source);
+        let sanitized = self.services.security.sanitizer.sanitize(body, source);
         let has_injection_flags = !sanitized.injection_flags.is_empty();
         self.record_injection_flags(&sanitized, tool_name);
         if sanitized.was_truncated {
@@ -105,8 +105,13 @@ impl<C: Channel> Agent<C> {
             return result;
         }
 
-        let is_cross_boundary = self.security.is_acp_session
-            && self.runtime.security.content_isolation.mcp_to_acp_boundary
+        let is_cross_boundary = self.services.security.is_acp_session
+            && self
+                .runtime
+                .config
+                .security
+                .content_isolation
+                .mcp_to_acp_boundary
             && kind == ContentSourceKind::McpResponse;
 
         if is_cross_boundary
@@ -164,7 +169,7 @@ impl<C: Channel> Agent<C> {
             detail,
         );
         let urls = zeph_sanitizer::exfiltration::extract_flagged_urls(&sanitized.body);
-        self.security.flagged_urls.extend(urls);
+        self.services.security.flagged_urls.extend(urls);
     }
 
     /// Run the ML classifier on `body` and return an early result if the output is blocked
@@ -192,8 +197,13 @@ impl<C: Channel> Agent<C> {
         ) || is_policy_blocked_output(body)
             || is_utility_gate_synthetic
             || is_internal_tool(tool_name);
-        if !skip_ml && self.security.sanitizer.has_classifier_backend() {
-            let ml_verdict = self.security.sanitizer.classify_injection(body).await;
+        if !skip_ml && self.services.security.sanitizer.has_classifier_backend() {
+            let ml_verdict = self
+                .services
+                .security
+                .sanitizer
+                .classify_injection(body)
+                .await;
             match ml_verdict {
                 zeph_sanitizer::InjectionVerdict::Blocked => {
                     tracing::warn!(tool = %tool_name, "ML classifier blocked tool output");
@@ -266,14 +276,17 @@ impl<C: Channel> Agent<C> {
                 vigil_risk: None,
             };
             let logger = std::sync::Arc::clone(logger);
-            self.lifecycle.supervisor.spawn(
+            self.runtime.lifecycle.supervisor.spawn(
                 super::super::agent_supervisor::TaskClass::Telemetry,
                 "audit-log-sanitize",
                 async move { logger.log(&entry).await },
             );
         }
-        if let Some(ref qs) = self.security.quarantine_summarizer {
-            match qs.extract_facts(sanitized, &self.security.sanitizer).await {
+        if let Some(ref qs) = self.services.security.quarantine_summarizer {
+            match qs
+                .extract_facts(sanitized, &self.services.security.sanitizer)
+                .await
+            {
                 Ok((facts, flags)) => {
                     self.update_metrics(|m| m.quarantine_invocations += 1);
                     let escaped = zeph_sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
@@ -310,8 +323,9 @@ impl<C: Channel> Agent<C> {
         kind: ContentSourceKind,
         has_injection_flags: bool,
     ) -> Option<(String, bool)> {
-        if !(self.security.sanitizer.is_enabled()
+        if !(self.services.security.sanitizer.is_enabled()
             && self
+                .services
                 .security
                 .quarantine_summarizer
                 .as_ref()
@@ -319,8 +333,11 @@ impl<C: Channel> Agent<C> {
         {
             return None;
         }
-        let qs = self.security.quarantine_summarizer.as_ref()?;
-        match qs.extract_facts(sanitized, &self.security.sanitizer).await {
+        let qs = self.services.security.quarantine_summarizer.as_ref()?;
+        match qs
+            .extract_facts(sanitized, &self.services.security.sanitizer)
+            .await
+        {
             Ok((facts, flags)) => {
                 self.update_metrics(|m| m.quarantine_invocations += 1);
                 self.push_security_event(

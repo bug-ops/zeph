@@ -14,7 +14,7 @@ impl<C: Channel> Agent<C> {
         args: &[&str],
     ) -> Result<String, super::error::AgentError> {
         // Clone Arc before .await to avoid holding &self across suspension points.
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok("Memory not available.".to_owned());
         };
@@ -82,7 +82,7 @@ impl<C: Channel> Agent<C> {
         let Some(name) = name else {
             return Ok("Usage: /skill block <name>".to_owned());
         };
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok("Memory not available.".to_owned());
         };
@@ -104,7 +104,7 @@ impl<C: Channel> Agent<C> {
         let Some(name) = name else {
             return Ok("Usage: /skill unblock <name>".to_owned());
         };
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return Ok("Memory not available.".to_owned());
         };
@@ -122,7 +122,7 @@ impl<C: Channel> Agent<C> {
     pub(super) fn handle_skill_scan_as_string(&mut self) -> String {
         // Scope the lock guard so it is dropped before the first await point.
         let findings = {
-            let registry = self.skill_state.registry.read();
+            let registry = self.services.skill.registry.read();
             registry.scan_loaded()
         };
 
@@ -152,7 +152,7 @@ impl<C: Channel> Agent<C> {
 
     pub(super) async fn build_skill_trust_map(&mut self) -> HashMap<String, SkillTrustLevel> {
         // Clone Arc before .await so no &self fields are held across suspension points.
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return HashMap::new();
         };

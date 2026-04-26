@@ -185,17 +185,29 @@ async fn with_shutdown_summary_config_builder_sets_fields() {
     let agent = Agent::new(provider, channel, registry, None, 5, executor)
         .with_shutdown_summary_config(false, 7, 15, 10);
 
-    assert!(!agent.memory_state.compaction.shutdown_summary);
+    assert!(!agent.services.memory.compaction.shutdown_summary);
     assert_eq!(
-        agent.memory_state.compaction.shutdown_summary_min_messages,
+        agent
+            .services
+            .memory
+            .compaction
+            .shutdown_summary_min_messages,
         7
     );
     assert_eq!(
-        agent.memory_state.compaction.shutdown_summary_max_messages,
+        agent
+            .services
+            .memory
+            .compaction
+            .shutdown_summary_max_messages,
         15
     );
     assert_eq!(
-        agent.memory_state.compaction.shutdown_summary_timeout_secs,
+        agent
+            .services
+            .memory
+            .compaction
+            .shutdown_summary_timeout_secs,
         10
     );
 }
@@ -210,19 +222,34 @@ async fn shutdown_summary_default_config_values() {
     let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
     assert!(
-        agent.memory_state.compaction.shutdown_summary,
+        agent.services.memory.compaction.shutdown_summary,
         "shutdown_summary must be enabled by default"
     );
     assert_eq!(
-        agent.memory_state.compaction.shutdown_summary_min_messages, 4,
+        agent
+            .services
+            .memory
+            .compaction
+            .shutdown_summary_min_messages,
+        4,
         "default min_messages must be 4"
     );
     assert_eq!(
-        agent.memory_state.compaction.shutdown_summary_max_messages, 20,
+        agent
+            .services
+            .memory
+            .compaction
+            .shutdown_summary_max_messages,
+        20,
         "default max_messages must be 20"
     );
     assert_eq!(
-        agent.memory_state.compaction.shutdown_summary_timeout_secs, 30,
+        agent
+            .services
+            .memory
+            .compaction
+            .shutdown_summary_timeout_secs,
+        30,
         "default timeout_secs must be 30"
     );
 }
@@ -476,7 +503,8 @@ async fn filter_stats_metrics_recorded_in_self_reflection_remaining_tools_loop()
         });
     // Activate the "test-skill" created by create_test_registry() so self-reflection fires.
     agent
-        .skill_state
+        .services
+        .skill
         .active_skill_names
         .push("test-skill".to_owned());
     agent.run().await.expect("agent run must succeed");

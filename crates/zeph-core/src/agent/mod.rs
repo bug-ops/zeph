@@ -84,12 +84,7 @@ use zeph_common::text::estimate_tokens;
 
 use loop_event::LoopEvent;
 use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
-use state::CompressionState;
-use state::{
-    DebugState, ExperimentState, FeedbackState, IndexState, InstructionState, LifecycleState,
-    McpState, MemoryState, MessageState, MetricsState, OrchestrationState, ProviderState,
-    RuntimeConfig, SecurityState, SessionState, SkillState, ToolState,
-};
+use state::MessageState;
 
 pub(crate) const DOOM_LOOP_WINDOW: usize = 3;
 pub(crate) const DOCUMENT_RAG_PREFIX: &str = "## Relevant documents\n";
@@ -155,24 +150,8 @@ pub(crate) fn format_tool_output(tool_name: &str, body: &str) -> String {
 /// 2. Run main loop with [`Self::run`]
 /// 3. Clean up with [`Self::shutdown`] to persist state and close resources
 ///
-/// # TODO (A1 — deferred: decompose god object)
-///
-/// `Agent<C>` currently aggregates 25+ sub-state structs as direct fields, which prevents
-/// partial borrows and forces every method to take `&mut self` even when only one sub-state is
-/// needed. The planned decomposition:
-///
-/// 1. **Conversation core** (`msg`, `context_manager`, persistence) — stays on `Agent`.
-/// 2. **Background services** (`memory`, `learning`, `focus`, `sidequest`, `compression`, `mcp`,
-///    `index`, `security`, `orchestration`, `experiments`) — behind a `Services` aggregator that
-///    `Agent` borrows immutably; each service exposes its own `&mut self` API.
-/// 3. **Runtime config** (`runtime`, `lifecycle`, `providers`, `metrics`, `debug_state`,
-///    `instructions`) — wrapped in an `AgentRuntime` newtype.
-///
-/// **Blocked by:** this is a multi-sprint architectural rewrite with blast radius across all
-/// crates, integration tests, and channels. Requires its own SDD spec + critic review before
-/// starting. Do NOT bundle with other PRs. See architect plan `.local/handoff/architect-plan.md`
-/// §A1 and critic review §C1.
 pub struct Agent<C: Channel> {
+    // --- I/O & primary providers (kept inline) ---
     provider: AnyProvider,
     /// Dedicated embedding provider. Resolved once at bootstrap from `[[llm.providers]]`
     /// (the entry with `embed = true`, or first entry with `embedding_model` set).
@@ -181,45 +160,17 @@ pub struct Agent<C: Channel> {
     embedding_provider: AnyProvider,
     channel: C,
     pub(crate) tool_executor: Arc<dyn ErasedToolExecutor>,
+
+    // --- Conversation core (kept inline) ---
     pub(super) msg: MessageState,
-    pub(super) memory_state: MemoryState,
-    pub(super) skill_state: SkillState,
     pub(super) context_manager: context_manager::ContextManager,
     pub(super) tool_orchestrator: tool_orchestrator::ToolOrchestrator,
-    pub(super) learning_engine: learning_engine::LearningEngine,
-    pub(super) feedback: FeedbackState,
-    pub(super) runtime: RuntimeConfig,
-    pub(super) mcp: McpState,
-    pub(super) index: IndexState,
-    pub(super) session: SessionState,
-    pub(super) debug_state: DebugState,
-    pub(super) instructions: InstructionState,
-    pub(super) security: SecurityState,
-    pub(super) experiments: ExperimentState,
-    pub(super) compression: CompressionState,
-    pub(super) lifecycle: LifecycleState,
-    pub(super) providers: ProviderState,
-    pub(super) metrics: MetricsState,
-    pub(super) orchestration: OrchestrationState,
-    /// Focus agent state: active session tracking, knowledge block, reminder counters (#1850).
-    pub(super) focus: focus::FocusState,
-    /// `SideQuest` state: cursor tracking, turn counter, eviction stats (#1885).
-    pub(super) sidequest: sidequest::SidequestState,
-    /// Tool filtering, dependency tracking, and iteration bookkeeping.
-    pub(super) tool_state: ToolState,
-    /// MARCH self-check pipeline, built at startup and rebuilt on provider swap.
-    #[cfg(feature = "self-check")]
-    pub(super) quality: Option<std::sync::Arc<crate::quality::SelfCheckPipeline>>,
-    /// Proactive world-knowledge explorer (#3320).
-    ///
-    /// `Some` when `config.skills.proactive_exploration.enabled = true`.
-    pub(super) proactive_explorer:
-        Option<std::sync::Arc<zeph_skills::proactive::ProactiveExplorer>>,
-    /// Experience compression spectrum promotion engine (#3305).
-    ///
-    /// `Some` when `config.memory.compression_spectrum.enabled = true`.
-    pub(super) promotion_engine:
-        Option<std::sync::Arc<zeph_memory::compression::promotion::PromotionEngine>>,
+
+    // --- Aggregated background services ---
+    pub(super) services: state::Services,
+
+    // --- Aggregated runtime / lifecycle / telemetry ---
+    pub(super) runtime: state::AgentRuntime,
 }
 
 /// Control flow signal returned by [`Agent::apply_dispatch_result`].
@@ -285,7 +236,6 @@ impl<C: Channel> Agent<C> {
     ///
     /// Panics if the registry `RwLock` is poisoned.
     #[must_use]
-    #[allow(clippy::too_many_lines)] // flat struct literal initializing all Agent sub-structs — one field per sub-struct, cannot be split further
     pub fn new_with_registry_arc(
         provider: AnyProvider,
         embedding_provider: AnyProvider,
@@ -295,6 +245,13 @@ impl<C: Channel> Agent<C> {
         max_active_skills: usize,
         tool_executor: impl ToolExecutor + 'static,
     ) -> Self {
+        use state::{
+            AgentRuntime, CompressionState, DebugState, ExperimentState, FeedbackState, IndexState,
+            InstructionState, LifecycleState, McpState, MemoryState, MetricsState,
+            OrchestrationState, ProviderState, RuntimeConfig, SecurityState, Services,
+            SessionState, SkillState, ToolState,
+        };
+
         debug_assert!(max_active_skills > 0, "max_active_skills must be > 0");
         let all_skills: Vec<Skill> = {
             let reg = registry.read();
@@ -312,6 +269,37 @@ impl<C: Channel> Agent<C> {
 
         let initial_prompt_tokens = estimate_tokens(&system_prompt) as u64;
         let token_counter = Arc::new(TokenCounter::new());
+
+        let services = Services {
+            memory: MemoryState::default(),
+            skill: SkillState::new(registry, matcher, max_active_skills, skills_prompt),
+            learning_engine: learning_engine::LearningEngine::new(),
+            feedback: FeedbackState::default(),
+            mcp: McpState::default(),
+            index: IndexState::default(),
+            session: SessionState::new(),
+            security: SecurityState::default(),
+            experiments: ExperimentState::new(),
+            compression: CompressionState::default(),
+            orchestration: OrchestrationState::default(),
+            focus: focus::FocusState::default(),
+            sidequest: sidequest::SidequestState::default(),
+            tool_state: ToolState::default(),
+            #[cfg(feature = "self-check")]
+            quality: None,
+            proactive_explorer: None,
+            promotion_engine: None,
+        };
+
+        let runtime = AgentRuntime {
+            config: RuntimeConfig::default(),
+            lifecycle: LifecycleState::new(),
+            providers: ProviderState::new(initial_prompt_tokens),
+            metrics: MetricsState::new(token_counter),
+            debug: DebugState::default(),
+            instructions: InstructionState::default(),
+        };
+
         Self {
             provider,
             embedding_provider,
@@ -330,32 +318,10 @@ impl<C: Channel> Agent<C> {
                 deferred_db_hide_ids: Vec::new(),
                 deferred_db_summaries: Vec::new(),
             },
-            memory_state: MemoryState::default(),
-            skill_state: SkillState::new(registry, matcher, max_active_skills, skills_prompt),
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
-            learning_engine: learning_engine::LearningEngine::new(),
-            feedback: FeedbackState::default(),
-            debug_state: DebugState::default(),
-            runtime: RuntimeConfig::default(),
-            mcp: McpState::default(),
-            index: IndexState::default(),
-            session: SessionState::new(),
-            instructions: InstructionState::default(),
-            security: SecurityState::default(),
-            experiments: ExperimentState::new(),
-            compression: CompressionState::default(),
-            lifecycle: LifecycleState::new(),
-            providers: ProviderState::new(initial_prompt_tokens),
-            metrics: MetricsState::new(token_counter),
-            orchestration: OrchestrationState::default(),
-            focus: focus::FocusState::default(),
-            sidequest: sidequest::SidequestState::default(),
-            tool_state: ToolState::default(),
-            #[cfg(feature = "self-check")]
-            quality: None,
-            proactive_explorer: None,
-            promotion_engine: None,
+            services,
+            runtime,
         }
     }
 
@@ -381,7 +347,7 @@ impl<C: Channel> Agent<C> {
     /// Non-blocking: returns immediately with a list of `(task_id, result)` pairs
     /// for agents that have finished. Each completed agent is removed from the manager.
     pub async fn poll_subagents(&mut self) -> Vec<(String, String)> {
-        let Some(mgr) = &mut self.orchestration.subagent_manager else {
+        let Some(mgr) = &mut self.services.orchestration.subagent_manager else {
             return vec![];
         };
 
@@ -427,7 +393,10 @@ impl<C: Channel> Agent<C> {
         chat_messages: &[Message],
     ) -> Option<zeph_memory::StructuredSummary> {
         let timeout_dur = std::time::Duration::from_secs(
-            self.memory_state.compaction.shutdown_summary_timeout_secs,
+            self.services
+                .memory
+                .compaction
+                .shutdown_summary_timeout_secs,
         );
         match tokio::time::timeout(
             timeout_dur,
@@ -447,7 +416,10 @@ impl<C: Channel> Agent<C> {
             Err(_) => {
                 tracing::warn!(
                     "shutdown summary: structured LLM call timed out after {}s, falling back to plain",
-                    self.memory_state.compaction.shutdown_summary_timeout_secs
+                    self.services
+                        .memory
+                        .compaction
+                        .shutdown_summary_timeout_secs
                 );
                 self.plain_text_summary_fallback(chat_messages, timeout_dur)
                     .await
@@ -555,13 +527,13 @@ impl<C: Channel> Agent<C> {
     ///
     /// All errors are logged as warnings and swallowed — shutdown must never fail.
     async fn maybe_store_shutdown_summary(&mut self) {
-        if !self.memory_state.compaction.shutdown_summary {
+        if !self.services.memory.compaction.shutdown_summary {
             return;
         }
-        let Some(memory) = self.memory_state.persistence.memory.clone() else {
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
             return;
         };
-        let Some(conversation_id) = self.memory_state.persistence.conversation_id else {
+        let Some(conversation_id) = self.services.memory.persistence.conversation_id else {
             return;
         };
 
@@ -586,10 +558,20 @@ impl<C: Channel> Agent<C> {
             .skip(1)
             .filter(|m| m.role == Role::User)
             .count();
-        if user_count < self.memory_state.compaction.shutdown_summary_min_messages {
+        if user_count
+            < self
+                .services
+                .memory
+                .compaction
+                .shutdown_summary_min_messages
+        {
             tracing::debug!(
                 user_count,
-                min = self.memory_state.compaction.shutdown_summary_min_messages,
+                min = self
+                    .services
+                    .memory
+                    .compaction
+                    .shutdown_summary_min_messages,
                 "shutdown summary: too few user messages, skipping"
             );
             return;
@@ -599,7 +581,11 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("Saving session summary...").await;
 
         // Collect last N messages (skip system prompt at index 0).
-        let max = self.memory_state.compaction.shutdown_summary_max_messages;
+        let max = self
+            .services
+            .memory
+            .compaction
+            .shutdown_summary_max_messages;
         if max == 0 {
             tracing::debug!("shutdown summary: max_messages=0, skipping");
             return;
@@ -674,17 +660,17 @@ impl<C: Channel> Agent<C> {
         self.provider.save_router_state().await;
 
         // Persist AdaptOrch Beta-arm table alongside Thompson state.
-        if let Some(ref advisor) = self.orchestration.topology_advisor
+        if let Some(ref advisor) = self.services.orchestration.topology_advisor
             && let Err(e) = advisor.save()
         {
             tracing::warn!(error = %e, "adaptorch: failed to persist state");
         }
 
-        if let Some(ref mut mgr) = self.orchestration.subagent_manager {
+        if let Some(ref mut mgr) = self.services.orchestration.subagent_manager {
             mgr.shutdown_all();
         }
 
-        if let Some(ref manager) = self.mcp.manager {
+        if let Some(ref manager) = self.services.mcp.manager {
             manager.shutdown_all_shared().await;
         }
 
@@ -698,7 +684,7 @@ impl<C: Channel> Agent<C> {
             self.context_manager.turns_since_last_hard_compaction = None;
         }
 
-        if let Some(ref tx) = self.metrics.metrics_tx {
+        if let Some(ref tx) = self.runtime.metrics.metrics_tx {
             let m = tx.borrow();
             if m.filter_applications > 0 {
                 #[allow(clippy::cast_precision_loss)]
@@ -734,22 +720,22 @@ impl<C: Channel> Agent<C> {
         // tokio::spawn calls that survived shutdown; they are now intentionally untracked
         // (see experiment_cmd.rs) and will continue running until their own CancellationToken
         // is triggered or the process exits.
-        self.lifecycle.supervisor.abort_all();
+        self.runtime.lifecycle.supervisor.abort_all();
 
         // Abort background task handles not tracked by BackgroundSupervisor.
         // Per the Await Discipline rule, fire-and-forget handles must be aborted on shutdown.
-        if let Some(h) = self.compression.pending_task_goal.take() {
+        if let Some(h) = self.services.compression.pending_task_goal.take() {
             h.abort();
         }
-        if let Some(h) = self.compression.pending_sidequest_result.take() {
+        if let Some(h) = self.services.compression.pending_sidequest_result.take() {
             h.abort();
         }
-        if let Some(h) = self.compression.pending_subgoal.take() {
+        if let Some(h) = self.services.compression.pending_subgoal.take() {
             h.abort();
         }
 
         // Abort learning tasks (JoinSet detached at turn boundaries but not on shutdown).
-        self.learning_engine.learning_tasks.abort_all();
+        self.services.learning_engine.learning_tasks.abort_all();
 
         // Allow cancelled tasks to release their HTTP connections before the summary LLM call.
         // abort_all() posts cancellation signals but does not drain tasks; aborted futures only
@@ -772,7 +758,7 @@ impl<C: Channel> Agent<C> {
     /// Returns an error if channel I/O or LLM communication fails.
     /// Refresh sub-agent metrics snapshot for the TUI metrics panel.
     fn refresh_subagent_metrics(&mut self) {
-        let Some(ref mgr) = self.orchestration.subagent_manager else {
+        let Some(ref mgr) = self.services.orchestration.subagent_manager else {
             return;
         };
         let sub_agent_metrics: Vec<crate::metrics::SubAgentMetrics> = mgr
@@ -833,7 +819,7 @@ impl<C: Channel> Agent<C> {
     where
         C: 'static,
     {
-        if let Some(mut rx) = self.lifecycle.warmup_ready.take()
+        if let Some(mut rx) = self.runtime.lifecycle.warmup_ready.take()
             && !*rx.borrow()
         {
             let _ = rx.changed().await;
@@ -890,7 +876,7 @@ impl<C: Channel> Agent<C> {
                         continue;
                     }
                     Some(LoopEvent::ExperimentCompleted(msg)) => {
-                        self.experiments.cancel = None;
+                        self.services.experiments.cancel = None;
                         if let Err(e) = self.channel.send(&msg).await {
                             tracing::warn!("failed to send experiment completion: {e}");
                         }
@@ -906,7 +892,7 @@ impl<C: Channel> Agent<C> {
                         self.resolve_message(msg).await
                     }
                     Some(LoopEvent::TaskInjected(injection)) => {
-                        if let Some(ref mut ls) = self.lifecycle.user_loop {
+                        if let Some(ref mut ls) = self.runtime.lifecycle.user_loop {
                             ls.iteration += 1;
                             tracing::info!(iteration = ls.iteration, "loop: tick");
                         }
@@ -935,7 +921,11 @@ impl<C: Channel> Agent<C> {
             if trimmed.starts_with('/') {
                 let slash_urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
                 if !slash_urls.is_empty() {
-                    self.security.user_provided_urls.write().extend(slash_urls);
+                    self.services
+                        .security
+                        .user_provided_urls
+                        .write()
+                        .extend(slash_urls);
                 }
             }
 
@@ -966,10 +956,10 @@ impl<C: Channel> Agent<C> {
             };
             let mut messages_impl = command_context_impls::MessageAccessImpl {
                 msg: &mut self.msg,
-                tool_state: &mut self.tool_state,
-                providers: &mut self.providers,
-                metrics: &self.metrics,
-                security: &mut self.security,
+                tool_state: &mut self.services.tool_state,
+                providers: &mut self.runtime.providers,
+                metrics: &self.runtime.metrics,
+                security: &mut self.services.security,
                 tool_orchestrator: &mut self.tool_orchestrator,
             };
             // sink_adapter declared before reg so it is dropped after reg (LIFO).
@@ -1001,7 +991,7 @@ impl<C: Channel> Agent<C> {
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut sink_adapter,
-                    debug: &mut self.debug_state,
+                    debug: &mut self.runtime.debug,
                     messages: &mut messages_impl,
                     session: &session_impl,
                     agent: &mut null_agent,
@@ -1125,7 +1115,7 @@ impl<C: Channel> Agent<C> {
         self.maybe_autodream().await;
 
         // Flush trace collector on normal exit (C-04: Drop handles error/panic paths).
-        if let Some(ref mut tc) = self.debug_state.trace_collector {
+        if let Some(ref mut tc) = self.runtime.debug.trace_collector {
             tc.finish();
         }
 
@@ -1174,7 +1164,7 @@ impl<C: Channel> Agent<C> {
 
     /// Apply any pending LLM provider override from ACP `set_session_config_option`.
     fn apply_provider_override(&mut self) {
-        if let Some(ref slot) = self.providers.provider_override
+        if let Some(ref slot) = self.runtime.providers.provider_override
             && let Some(new_provider) = slot.write().take()
         {
             tracing::debug!(provider = new_provider.name(), "ACP model override applied");
@@ -1194,31 +1184,31 @@ impl<C: Channel> Agent<C> {
             result = self.channel.recv() => {
                 return Ok(result?.map(LoopEvent::Message));
             }
-            () = shutdown_signal(&mut self.lifecycle.shutdown) => {
+            () = shutdown_signal(&mut self.runtime.lifecycle.shutdown) => {
                 tracing::info!("shutting down");
                 LoopEvent::Shutdown
             }
-            Some(_) = recv_optional(&mut self.skill_state.skill_reload_rx) => {
+            Some(_) = recv_optional(&mut self.services.skill.skill_reload_rx) => {
                 LoopEvent::SkillReload
             }
-            Some(_) = recv_optional(&mut self.instructions.reload_rx) => {
+            Some(_) = recv_optional(&mut self.runtime.instructions.reload_rx) => {
                 LoopEvent::InstructionReload
             }
-            Some(_) = recv_optional(&mut self.lifecycle.config_reload_rx) => {
+            Some(_) = recv_optional(&mut self.runtime.lifecycle.config_reload_rx) => {
                 LoopEvent::ConfigReload
             }
-            Some(msg) = recv_optional(&mut self.lifecycle.update_notify_rx) => {
+            Some(msg) = recv_optional(&mut self.runtime.lifecycle.update_notify_rx) => {
                 LoopEvent::UpdateNotification(msg)
             }
-            Some(msg) = recv_optional(&mut self.experiments.notify_rx) => {
+            Some(msg) = recv_optional(&mut self.services.experiments.notify_rx) => {
                 LoopEvent::ExperimentCompleted(msg)
             }
-            Some(prompt) = recv_optional(&mut self.lifecycle.custom_task_rx) => {
+            Some(prompt) = recv_optional(&mut self.runtime.lifecycle.custom_task_rx) => {
                 tracing::info!("scheduler: injecting custom task as agent turn");
                 LoopEvent::ScheduledTask(prompt)
             }
             () = async {
-                if let Some(ref mut ls) = self.lifecycle.user_loop {
+                if let Some(ref mut ls) = self.runtime.lifecycle.user_loop {
                     if ls.cancel_tx.is_cancelled() {
                         std::future::pending::<()>().await;
                     } else {
@@ -1231,17 +1221,17 @@ impl<C: Channel> Agent<C> {
                 // Re-check user_loop after the tick — /loop stop may have fired between the
                 // interval firing and this arm executing. Returning Ok(None) causes the caller
                 // to `continue` without injecting a stale or empty prompt.
-                let Some(ls) = self.lifecycle.user_loop.as_ref() else {
+                let Some(ls) = self.runtime.lifecycle.user_loop.as_ref() else {
                     return Ok(None);
                 };
                 if ls.cancel_tx.is_cancelled() {
-                    self.lifecycle.user_loop = None;
+                    self.runtime.lifecycle.user_loop = None;
                     return Ok(None);
                 }
                 let prompt = ls.prompt.clone();
                 LoopEvent::TaskInjected(task_injection::TaskInjection { prompt })
             }
-            Some(event) = recv_optional(&mut self.lifecycle.file_changed_rx) => {
+            Some(event) = recv_optional(&mut self.runtime.lifecycle.file_changed_rx) => {
                 LoopEvent::FileChanged(event)
             }
         };
@@ -1264,12 +1254,12 @@ impl<C: Channel> Agent<C> {
 
         tracing::debug!(
             audio = audio_attachments.len(),
-            has_stt = self.providers.stt.is_some(),
+            has_stt = self.runtime.providers.stt.is_some(),
             "resolve_message attachments"
         );
 
         let text = if !audio_attachments.is_empty()
-            && let Some(stt) = self.providers.stt.as_ref()
+            && let Some(stt) = self.runtime.providers.stt.as_ref()
         {
             let mut transcribed_parts = Vec::new();
             for attachment in &audio_attachments {
@@ -1345,12 +1335,12 @@ impl<C: Channel> Agent<C> {
     /// - per-turn URL set in `SecurityState` (cleared here; re-populated in
     ///   `process_user_message_inner` after security checks)
     fn begin_turn(&mut self, input: turn::TurnInput) -> turn::Turn {
-        let id = turn::TurnId(self.debug_state.iteration_counter as u64);
-        self.debug_state.iteration_counter += 1;
-        self.lifecycle.cancel_token = CancellationToken::new();
-        self.security.user_provided_urls.write().clear();
+        let id = turn::TurnId(self.runtime.debug.iteration_counter as u64);
+        self.runtime.debug.iteration_counter += 1;
+        self.runtime.lifecycle.cancel_token = CancellationToken::new();
+        self.services.security.user_provided_urls.write().clear();
         // Reset per-turn LLM request counter for the notification gate.
-        self.lifecycle.turn_llm_requests = 0;
+        self.runtime.lifecycle.turn_llm_requests = 0;
         turn::Turn::new(id, input)
     }
 
@@ -1361,10 +1351,10 @@ impl<C: Channel> Agent<C> {
     /// `TurnMetrics.timings` is the single source of truth; `MetricsState.pending_timings`
     /// is populated from it here so the rest of the pipeline is unchanged.
     fn end_turn(&mut self, turn: turn::Turn) {
-        self.metrics.pending_timings = turn.metrics.timings;
+        self.runtime.metrics.pending_timings = turn.metrics.timings;
         self.flush_turn_timings();
         // Clear per-turn intent (FR-008): must not persist across turns.
-        self.session.current_turn_intent = None;
+        self.services.session.current_turn_intent = None;
     }
 
     #[cfg_attr(
@@ -1382,7 +1372,8 @@ impl<C: Channel> Agent<C> {
         let turn_idx = usize::try_from(t.id().0).unwrap_or(usize::MAX);
         tracing::Span::current().record("turn_id", t.id().0);
         // Record iteration start in trace collector (C-02: owned guard, no borrow held).
-        self.debug_state
+        self.runtime
+            .debug
             .start_iteration_span(turn_idx, t.input.text.trim());
 
         let result = self.process_user_message_inner(&mut t).await;
@@ -1395,7 +1386,7 @@ impl<C: Channel> Agent<C> {
                 message: "iteration failed".to_owned(),
             }
         };
-        self.debug_state.end_iteration_span(turn_idx, span_status);
+        self.runtime.debug.end_iteration_span(turn_idx, span_status);
 
         self.end_turn(t);
         result
@@ -1421,9 +1412,9 @@ impl<C: Channel> Agent<C> {
 
         // Capture current-turn intent for VIGIL gate (FR-007). Truncated to 1024 chars.
         // Must be set BEFORE any tool call; cleared at end_turn (FR-008).
-        if self.security.vigil.is_some() {
+        if self.services.security.vigil.is_some() {
             let intent_len = trimmed.floor_char_boundary(1024.min(trimmed.len()));
-            self.session.current_turn_intent = Some(trimmed[..intent_len].to_owned());
+            self.services.session.current_turn_intent = Some(trimmed[..intent_len].to_owned());
         }
 
         if let Some(result) = self.dispatch_slash_command(trimmed).await {
@@ -1457,12 +1448,16 @@ impl<C: Channel> Agent<C> {
         // URL set was cleared in begin_turn; re-populate for this turn.
         let urls = zeph_sanitizer::exfiltration::extract_flagged_urls(trimmed);
         if !urls.is_empty() {
-            self.security.user_provided_urls.write().extend(urls);
+            self.services
+                .security
+                .user_provided_urls
+                .write()
+                .extend(urls);
         }
 
         // Capture raw user input as goal text for A-MAC goal-conditioned write gating (#2483).
         // Derived from the raw input text before context assembly to avoid timing dependencies.
-        self.memory_state.extraction.goal_text = Some(text.clone());
+        self.services.memory.extraction.goal_text = Some(text.clone());
 
         let t_persist = std::time::Instant::now();
         tracing::debug!("turn timing: persist_message(user) start");
@@ -1481,14 +1476,14 @@ impl<C: Channel> Agent<C> {
         tracing::debug!("turn timing: process_response start");
         let turn_had_error = if let Err(e) = self.process_response().await {
             // Detach any in-flight learning tasks before mutating message state.
-            self.learning_engine.learning_tasks.detach_all();
+            self.services.learning_engine.learning_tasks.detach_all();
             tracing::error!("Response processing failed: {e:#}");
 
             // Record provider failure timestamp so the next turn can skip
             // expensive context preparation while providers are known-down.
             if e.is_no_providers() {
-                self.lifecycle.last_no_providers_at = Some(std::time::Instant::now());
-                let backoff_secs = self.runtime.timeouts.no_providers_backoff_secs;
+                self.runtime.lifecycle.last_no_providers_at = Some(std::time::Instant::now());
+                let backoff_secs = self.runtime.config.timeouts.no_providers_backoff_secs;
                 tracing::warn!(
                     backoff_secs,
                     "no providers available; backing off before next turn"
@@ -1505,7 +1500,7 @@ impl<C: Channel> Agent<C> {
         } else {
             // Detach learning tasks spawned this turn — they are fire-and-forget and must not
             // leak into the next turn's context.
-            self.learning_engine.learning_tasks.detach_all();
+            self.services.learning_engine.learning_tasks.detach_all();
             self.truncate_old_tool_results();
             // MagicDocs: spawn background doc updates if any are due (#2702).
             self.maybe_update_magic_docs();
@@ -1517,7 +1512,7 @@ impl<C: Channel> Agent<C> {
 
         // MARCH self-check hook: runs after every successful response, including cache-hit path.
         #[cfg(feature = "self-check")]
-        if let Some(pipeline) = self.quality.clone() {
+        if let Some(pipeline) = self.services.quality.clone() {
             self.run_self_check_for_turn(pipeline, turn.id().0).await;
         }
         // Flush pending response chunks and emit ResponseEnd exactly once per turn.
@@ -1532,8 +1527,8 @@ impl<C: Channel> Agent<C> {
         // by the tool execution chain) into turn.metrics so end_turn can flush them.
         // This is the Phase 1 bridging: existing code writes to pending_timings directly;
         // we harvest those values into Turn before end_turn overwrites pending_timings.
-        turn.metrics_mut().timings.llm_chat_ms = self.metrics.pending_timings.llm_chat_ms;
-        turn.metrics_mut().timings.tool_exec_ms = self.metrics.pending_timings.tool_exec_ms;
+        turn.metrics_mut().timings.llm_chat_ms = self.runtime.metrics.pending_timings.llm_chat_ms;
+        turn.metrics_mut().timings.tool_exec_ms = self.runtime.metrics.pending_timings.tool_exec_ms;
 
         Ok(())
     }
@@ -1544,32 +1539,33 @@ impl<C: Channel> Agent<C> {
     /// channel-level abort requests propagate to the in-flight LLM call. The previous bridge task
     /// is aborted before a new one is spawned to prevent unbounded accumulation (#2737).
     fn wire_cancel_bridge(&mut self, turn_token: &tokio_util::sync::CancellationToken) {
-        let signal = Arc::clone(&self.lifecycle.cancel_signal);
+        let signal = Arc::clone(&self.runtime.lifecycle.cancel_signal);
         let token = turn_token.clone();
         // Keep lifecycle.cancel_token in sync so existing code that reads it still works.
-        self.lifecycle.cancel_token = turn_token.clone();
-        if let Some(prev) = self.lifecycle.cancel_bridge_handle.take() {
+        self.runtime.lifecycle.cancel_token = turn_token.clone();
+        if let Some(prev) = self.runtime.lifecycle.cancel_bridge_handle.take() {
             prev.abort();
         }
-        self.lifecycle.cancel_bridge_handle = Some(self.lifecycle.task_supervisor.spawn_oneshot(
-            std::sync::Arc::from("agent.lifecycle.cancel_bridge"),
-            move || async move {
-                signal.notified().await;
-                token.cancel();
-            },
-        ));
+        self.runtime.lifecycle.cancel_bridge_handle =
+            Some(self.runtime.lifecycle.task_supervisor.spawn_oneshot(
+                std::sync::Arc::from("agent.lifecycle.cancel_bridge"),
+                move || async move {
+                    signal.notified().await;
+                    token.cancel();
+                },
+            ));
     }
 
     /// Reap completed background tasks, apply summarization signal, and update supervisor metrics.
     ///
     /// Called at the top of each turn, before any user message processing.
     fn reap_background_tasks_and_update_metrics(&mut self) {
-        let bg_signal = self.lifecycle.supervisor.reap();
+        let bg_signal = self.runtime.lifecycle.supervisor.reap();
         if bg_signal.did_summarize {
-            self.memory_state.persistence.unsummarized_count = 0;
+            self.services.memory.persistence.unsummarized_count = 0;
             tracing::debug!("background summarization completed; unsummarized_count reset");
         }
-        let snap = self.lifecycle.supervisor.metrics_snapshot();
+        let snap = self.runtime.lifecycle.supervisor.metrics_snapshot();
         self.update_metrics(|m| {
             m.bg_inflight = snap.inflight as u64;
             m.bg_dropped = snap.total_dropped();
@@ -1579,8 +1575,9 @@ impl<C: Channel> Agent<C> {
         });
 
         // Update shell background run rows for TUI panel.
-        if self.lifecycle.shell_executor_handle.is_some() {
+        if self.runtime.lifecycle.shell_executor_handle.is_some() {
             let shell_rows: Vec<crate::metrics::ShellBackgroundRunRow> = self
+                .runtime
                 .lifecycle
                 .shell_executor_handle
                 .as_ref()
@@ -1600,8 +1597,14 @@ impl<C: Channel> Agent<C> {
 
         // Intentional ordering: reap() runs before abort_class() so completed tasks are
         // accounted in the snapshot above.
-        if self.runtime.supervisor_config.abort_enrichment_on_turn {
-            self.lifecycle
+        if self
+            .runtime
+            .config
+            .supervisor_config
+            .abort_enrichment_on_turn
+        {
+            self.runtime
+                .lifecycle
                 .supervisor
                 .abort_class(agent_supervisor::TaskClass::Enrichment);
         }
@@ -1630,7 +1633,7 @@ impl<C: Channel> Agent<C> {
             preview: self.last_assistant_preview(160),
             // TODO: wire turn_tool_calls counter once LifecycleState tracks it (Phase 2).
             tool_calls: 0,
-            llm_requests: self.lifecycle.turn_llm_requests,
+            llm_requests: self.runtime.lifecycle.turn_llm_requests,
             exit_status: if is_error {
                 crate::notifications::TurnExitStatus::Error
             } else {
@@ -1640,13 +1643,14 @@ impl<C: Channel> Agent<C> {
 
         // Gate evaluation: notifier's should_fire result (or unconditional when absent).
         let gate_ok = self
+            .runtime
             .lifecycle
             .notifier
             .as_ref()
             .is_none_or(|n| n.should_fire(&summary));
 
         // 1) Existing notifier path — unchanged semantics.
-        if let Some(ref notifier) = self.lifecycle.notifier
+        if let Some(ref notifier) = self.runtime.lifecycle.notifier
             && gate_ok
         {
             notifier.fire(&summary);
@@ -1657,7 +1661,7 @@ impl<C: Channel> Agent<C> {
         // (shell scripts for desktop notifications, status-bar updates, etc.). McpTool
         // hooks in this context would require a Send + 'static MCP handle; defer that
         // extension if needed via a follow-up.
-        let hooks = self.session.hooks_config.turn_complete.clone();
+        let hooks = self.services.session.hooks_config.turn_complete.clone();
         if !hooks.is_empty() && gate_ok {
             let mut env = std::collections::HashMap::new();
             env.insert(
@@ -1674,7 +1678,7 @@ impl<C: Channel> Agent<C> {
                 summary.llm_requests.to_string(),
             );
             let _span = tracing::info_span!("core.agent.turn_hooks").entered();
-            let _accepted = self.lifecycle.supervisor.spawn(
+            let _accepted = self.runtime.lifecycle.supervisor.spawn(
                 agent_supervisor::TaskClass::Telemetry,
                 "turn-complete-hooks",
                 async move {
@@ -1696,7 +1700,7 @@ impl<C: Channel> Agent<C> {
     )]
     async fn pre_process_security(&mut self, trimmed: &str) -> Result<bool, error::AgentError> {
         // Guardrail: LLM-based prompt injection pre-screening at the user input boundary.
-        if let Some(ref guardrail) = self.security.guardrail {
+        if let Some(ref guardrail) = self.services.security.guardrail {
             use zeph_sanitizer::guardrail::GuardrailVerdict;
             let verdict = guardrail.check(trimmed).await;
             match &verdict {
@@ -1738,8 +1742,14 @@ impl<C: Channel> Agent<C> {
         // Gated by `scan_user_input`: DeBERTa is tuned for external/untrusted content, not
         // direct user chat. Disabled by default to prevent false positives on benign messages.
         #[cfg(feature = "classifiers")]
-        if self.security.sanitizer.scan_user_input() {
-            match self.security.sanitizer.classify_injection(trimmed).await {
+        if self.services.security.sanitizer.scan_user_input() {
+            match self
+                .services
+                .security
+                .sanitizer
+                .classify_injection(trimmed)
+                .await
+            {
                 zeph_sanitizer::InjectionVerdict::Blocked => {
                     self.push_classifier_metrics();
                     let _ = self
@@ -1768,11 +1778,12 @@ impl<C: Channel> Agent<C> {
     /// wraps the call with `context_prep_timeout_secs` to prevent a stall when embed backends
     /// are rate-limited or unavailable (#3357).
     async fn advance_context_lifecycle_guarded(&mut self, text: &str, trimmed: &str) {
-        let backoff_secs = self.runtime.timeouts.no_providers_backoff_secs;
-        let prep_timeout_secs = self.runtime.timeouts.context_prep_timeout_secs;
+        let backoff_secs = self.runtime.config.timeouts.no_providers_backoff_secs;
+        let prep_timeout_secs = self.runtime.config.timeouts.context_prep_timeout_secs;
 
         // Skip expensive memory recall / embedding when providers are known-down.
         let providers_recently_failed = self
+            .runtime
             .lifecycle
             .last_no_providers_at
             .is_some_and(|t| t.elapsed().as_secs() < backoff_secs);
@@ -1804,15 +1815,15 @@ impl<C: Channel> Agent<C> {
     )]
     async fn advance_context_lifecycle(&mut self, text: &str, trimmed: &str) {
         // Reset per-message pruning cache at the start of each turn (#2298).
-        self.mcp.pruning_cache.reset();
+        self.services.mcp.pruning_cache.reset();
 
         // Extract before rebuild_system_prompt so the value is not tainted
         // by the secrets-bearing system prompt (ConversationId is just an i64).
-        let conv_id = self.memory_state.persistence.conversation_id;
+        let conv_id = self.services.memory.persistence.conversation_id;
         self.rebuild_system_prompt(text).await;
 
         self.detect_and_record_corrections(trimmed, conv_id).await;
-        self.learning_engine.tick();
+        self.services.learning_engine.tick();
         self.analyze_and_learn().await;
         self.sync_graph_counts().await;
 
@@ -1824,11 +1835,11 @@ impl<C: Channel> Agent<C> {
 
         // Tick Focus Agent and SideQuest turn counters (#1850, #1885).
         {
-            self.focus.tick();
+            self.services.focus.tick();
 
             // SideQuest eviction: runs every N user turns when enabled.
             // Skipped when is_compacted_this_turn (focus truncation or prior eviction ran).
-            let sidequest_should_fire = self.sidequest.tick();
+            let sidequest_should_fire = self.services.sidequest.tick();
             if sidequest_should_fire && !self.context_manager.compaction.is_compacted_this_turn() {
                 self.maybe_sidequest_eviction();
             }
@@ -1837,24 +1848,25 @@ impl<C: Channel> Agent<C> {
         // Experience memory: evolution sweep (fire-and-forget). Runs every N user turns,
         // gated on graph + experience config, and only when both stores are attached.
         {
-            let cfg = &self.memory_state.extraction.graph_config.experience;
+            let cfg = &self.services.memory.extraction.graph_config.experience;
             if cfg.enabled
                 && cfg.evolution_sweep_enabled
                 && cfg.evolution_sweep_interval > 0
                 && self
+                    .services
                     .sidequest
                     .turn_counter
                     .checked_rem(cfg.evolution_sweep_interval as u64)
                     == Some(0)
-                && let Some(memory) = self.memory_state.persistence.memory.as_ref()
+                && let Some(memory) = self.services.memory.persistence.memory.as_ref()
                 && let (Some(exp), Some(graph)) =
                     (memory.experience.as_ref(), memory.graph_store.as_ref())
             {
                 let exp = std::sync::Arc::clone(exp);
                 let graph = std::sync::Arc::clone(graph);
                 let threshold = cfg.confidence_prune_threshold;
-                let turn = self.sidequest.turn_counter;
-                let accepted = self.lifecycle.supervisor.spawn(
+                let turn = self.services.sidequest.turn_counter;
+                let accepted = self.runtime.lifecycle.supervisor.spawn(
                     agent_supervisor::TaskClass::Telemetry,
                     "experience-sweep",
                     async move {
@@ -1875,7 +1887,7 @@ impl<C: Channel> Agent<C> {
                 );
                 if !accepted {
                     tracing::warn!(
-                        turn = self.sidequest.turn_counter,
+                        turn = self.services.sidequest.turn_counter,
                         "experience-sweep dropped (telemetry class at capacity)",
                     );
                 }
@@ -1914,9 +1926,9 @@ impl<C: Channel> Agent<C> {
 
         // MAR: propagate top-1 recall confidence to the router for cost-aware routing.
         self.provider
-            .set_memory_confidence(self.memory_state.persistence.last_recall_confidence);
+            .set_memory_confidence(self.services.memory.persistence.last_recall_confidence);
 
-        self.learning_engine.reset_reflection();
+        self.services.learning_engine.reset_reflection();
     }
 
     fn build_user_message(
@@ -1955,12 +1967,12 @@ impl<C: Channel> Agent<C> {
     fn drain_background_completions(&mut self) {
         const BACKGROUND_COMPLETION_BUFFER_CAP: usize = 16;
 
-        let Some(ref mut rx) = self.lifecycle.background_completion_rx else {
+        let Some(ref mut rx) = self.runtime.lifecycle.background_completion_rx else {
             return;
         };
         // Non-blocking drain: collect all completions that are already ready.
         while let Ok(completion) = rx.try_recv() {
-            if self.lifecycle.pending_background_completions.len()
+            if self.runtime.lifecycle.pending_background_completions.len()
                 >= BACKGROUND_COMPLETION_BUFFER_CAP
             {
                 tracing::warn!(
@@ -1969,9 +1981,14 @@ impl<C: Channel> Agent<C> {
                 );
                 // Buffer is full: drop the oldest queued completion and push a sentinel
                 // for the new (incoming) run so the LLM is informed its result was lost.
-                self.lifecycle.pending_background_completions.pop_front();
-                self.lifecycle.pending_background_completions.push_back(
-                    zeph_tools::BackgroundCompletion {
+                self.runtime
+                    .lifecycle
+                    .pending_background_completions
+                    .pop_front();
+                self.runtime
+                    .lifecycle
+                    .pending_background_completions
+                    .push_back(zeph_tools::BackgroundCompletion {
                         run_id: completion.run_id,
                         exit_code: -1,
                         success: false,
@@ -1981,10 +1998,10 @@ impl<C: Channel> Agent<C> {
                             "[background result for run {} dropped: buffer overflow]",
                             completion.run_id
                         ),
-                    },
-                );
+                    });
             } else {
-                self.lifecycle
+                self.runtime
+                    .lifecycle
                     .pending_background_completions
                     .push_back(completion);
             }
@@ -1995,11 +2012,21 @@ impl<C: Channel> Agent<C> {
     /// return the final merged text (prefix + user message). When there are no pending
     /// completions the original text is returned unchanged.
     fn build_user_message_text_with_bg_completions(&mut self, user_text: &str) -> String {
-        if self.lifecycle.pending_background_completions.is_empty() {
+        if self
+            .runtime
+            .lifecycle
+            .pending_background_completions
+            .is_empty()
+        {
             return user_text.to_owned();
         }
         let mut parts = String::new();
-        for completion in self.lifecycle.pending_background_completions.drain(..) {
+        for completion in self
+            .runtime
+            .lifecycle
+            .pending_background_completions
+            .drain(..)
+        {
             let _ = write!(
                 parts,
                 "[Background task {} completed]\nexit_code: {}\nsuccess: {}\nelapsed_ms: {}\ncommand: {}\n\n{}\n\n",
@@ -2027,6 +2054,7 @@ impl<C: Channel> Agent<C> {
             // calling channel.confirm() (which requires &mut self).
             #[allow(clippy::redundant_closure_for_method_calls)]
             let pending = self
+                .services
                 .orchestration
                 .subagent_manager
                 .as_mut()
@@ -2039,7 +2067,7 @@ impl<C: Channel> Agent<C> {
                     crate::text::truncate_to_chars(&req.secret_key, 100)
                 );
                 let approved = self.channel.confirm(&confirm_prompt).await.unwrap_or(false);
-                if let Some(mgr) = self.orchestration.subagent_manager.as_mut() {
+                if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
                     if approved {
                         let ttl = std::time::Duration::from_mins(5);
                         let key = req.secret_key.clone();
@@ -2052,7 +2080,7 @@ impl<C: Channel> Agent<C> {
                 }
             }
 
-            let mgr = self.orchestration.subagent_manager.as_ref()?;
+            let mgr = self.services.orchestration.subagent_manager.as_ref()?;
             let statuses = mgr.statuses();
             let Some((_, status)) = statuses.iter().find(|(id, _)| id == task_id) else {
                 break format!("{label} completed (no status available).");
@@ -2078,7 +2106,8 @@ impl<C: Channel> Agent<C> {
                         .send_status(&format!(
                             "{label}: turn {}/{}",
                             status.turns_used,
-                            self.orchestration
+                            self.services
+                                .orchestration
                                 .subagent_manager
                                 .as_ref()
                                 .and_then(|m| m.agents_def(task_id))
@@ -2094,7 +2123,7 @@ impl<C: Channel> Agent<C> {
     /// Resolve a unique full `task_id` from a prefix. Returns `None` if the manager is absent,
     /// `Some(Err(msg))` on ambiguity/not-found, `Some(Ok(full_id))` on success.
     fn resolve_agent_id_prefix(&mut self, prefix: &str) -> Option<Result<String, String>> {
-        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         let full_ids: Vec<String> = mgr
             .statuses()
             .into_iter()
@@ -2113,7 +2142,7 @@ impl<C: Channel> Agent<C> {
 
     fn handle_agent_list(&self) -> Option<String> {
         use std::fmt::Write as _;
-        let mgr = self.orchestration.subagent_manager.as_ref()?;
+        let mgr = self.services.orchestration.subagent_manager.as_ref()?;
         let defs = mgr.definitions();
         if defs.is_empty() {
             return Some("No sub-agent definitions found.".into());
@@ -2141,7 +2170,7 @@ impl<C: Channel> Agent<C> {
 
     fn handle_agent_status(&self) -> Option<String> {
         use std::fmt::Write as _;
-        let mgr = self.orchestration.subagent_manager.as_ref()?;
+        let mgr = self.services.orchestration.subagent_manager.as_ref()?;
         let statuses = mgr.statuses();
         if statuses.is_empty() {
             return Some("No active sub-agents.".into());
@@ -2173,7 +2202,7 @@ impl<C: Channel> Agent<C> {
             Ok(fid) => fid,
             Err(msg) => return Some(msg),
         };
-        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         if let Some((tid, req)) = mgr.try_recv_secret_request()
             && tid == full_id
         {
@@ -2197,7 +2226,7 @@ impl<C: Channel> Agent<C> {
             Ok(fid) => fid,
             Err(msg) => return Some(msg),
         };
-        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         match mgr.deny_secret(&full_id) {
             Ok(()) => Some(format!("Secret request denied for sub-agent '{full_id}'.")),
             Err(e) => Some(format!("Deny failed: {e}")),
@@ -2229,9 +2258,9 @@ impl<C: Channel> Agent<C> {
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
         let skills = self.filtered_skills_for(name);
-        let cfg = self.orchestration.subagent_config.clone();
+        let cfg = self.services.orchestration.subagent_config.clone();
         let spawn_ctx = self.build_spawn_context(&cfg);
-        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         match mgr.spawn(
             name,
             prompt,
@@ -2253,9 +2282,9 @@ impl<C: Channel> Agent<C> {
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
         let skills = self.filtered_skills_for(name);
-        let cfg = self.orchestration.subagent_config.clone();
+        let cfg = self.services.orchestration.subagent_config.clone();
         let spawn_ctx = self.build_spawn_context(&cfg);
-        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         let task_id = match mgr.spawn(
             name,
             prompt,
@@ -2278,7 +2307,7 @@ impl<C: Channel> Agent<C> {
     }
 
     fn handle_agent_cancel(&mut self, id: &str) -> Option<String> {
-        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         // Accept prefix match on task_id.
         let ids: Vec<String> = mgr
             .statuses()
@@ -2303,11 +2332,11 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_agent_resume(&mut self, id: &str, prompt: &str) -> Option<String> {
-        let cfg = self.orchestration.subagent_config.clone();
+        let cfg = self.services.orchestration.subagent_config.clone();
         // Resolve definition name from transcript meta before spawning so we can
         // look up skills by definition name rather than the UUID prefix (S1 fix).
         let def_name = {
-            let mgr = self.orchestration.subagent_manager.as_ref()?;
+            let mgr = self.services.orchestration.subagent_manager.as_ref()?;
             match mgr.def_name_for_resume(id, &cfg) {
                 Ok(name) => name,
                 Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
@@ -2316,7 +2345,7 @@ impl<C: Channel> Agent<C> {
         let skills = self.filtered_skills_for(&def_name);
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
-        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         let (task_id, _) = match mgr.resume(id, prompt, provider, tool_executor, skills, &cfg) {
             Ok(pair) => pair,
             Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
@@ -2331,9 +2360,9 @@ impl<C: Channel> Agent<C> {
     }
 
     fn filtered_skills_for(&self, agent_name: &str) -> Option<Vec<String>> {
-        let mgr = self.orchestration.subagent_manager.as_ref()?;
+        let mgr = self.services.orchestration.subagent_manager.as_ref()?;
         let def = mgr.definitions().iter().find(|d| d.name == agent_name)?;
-        let reg = self.skill_state.registry.read();
+        let reg = self.services.skill.registry.read();
         match zeph_subagent::filter_skills(&reg, &def.skills) {
             Ok(skills) => {
                 let bodies: Vec<String> = skills.into_iter().map(|s| s.body.clone()).collect();
@@ -2357,16 +2386,16 @@ impl<C: Channel> Agent<C> {
     ) -> zeph_subagent::SpawnContext {
         zeph_subagent::SpawnContext {
             parent_messages: self.extract_parent_messages(cfg),
-            parent_cancel: Some(self.lifecycle.cancel_token.clone()),
+            parent_cancel: Some(self.runtime.lifecycle.cancel_token.clone()),
             parent_provider_name: {
-                let name = &self.runtime.active_provider_name;
+                let name = &self.runtime.config.active_provider_name;
                 if name.is_empty() {
                     None
                 } else {
                     Some(name.clone())
                 }
             },
-            spawn_depth: self.runtime.spawn_depth,
+            spawn_depth: self.runtime.config.spawn_depth,
             mcp_tool_names: self.extract_mcp_tool_names(),
         }
     }
@@ -2462,12 +2491,12 @@ impl<C: Channel> Agent<C> {
         all_meta: &[zeph_skills::loader::SkillMeta],
     ) {
         // Clone Arc before any .await so no &self fields are held across suspension points.
-        let memory = self.memory_state.persistence.memory.clone();
+        let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
             return;
         };
-        let trust_cfg = self.skill_state.trust_config.clone();
-        let managed_dir = self.skill_state.managed_dir.clone();
+        let trust_cfg = self.services.skill.trust_config.clone();
+        let managed_dir = self.services.skill.managed_dir.clone();
         let bundled_names: std::collections::HashSet<String> =
             zeph_skills::bundled_skill_names().into_iter().collect();
         for meta in all_meta {
@@ -2556,7 +2585,8 @@ impl<C: Channel> Agent<C> {
     /// Rebuild or sync the in-memory skill matcher and BM25 index after a registry update.
     async fn rebuild_skill_matcher(&mut self, all_meta: &[&zeph_skills::loader::SkillMeta]) {
         let provider = self.embedding_provider.clone();
-        let embed_timeout = std::time::Duration::from_secs(self.runtime.timeouts.embedding_seconds);
+        let embed_timeout =
+            std::time::Duration::from_secs(self.runtime.config.timeouts.embedding_seconds);
         let embed_fn = move |text: &str| -> zeph_skills::matcher::EmbedFuture {
             let owned = text.to_owned();
             let p = provider.clone();
@@ -2574,31 +2604,31 @@ impl<C: Channel> Agent<C> {
         };
 
         let needs_inmemory_rebuild = !self
-            .skill_state
+            .services
+            .skill
             .matcher
             .as_ref()
             .is_some_and(SkillMatcherBackend::is_qdrant);
 
         if needs_inmemory_rebuild {
-            self.skill_state.matcher = SkillMatcher::new(all_meta, embed_fn)
+            self.services.skill.matcher = SkillMatcher::new(all_meta, embed_fn)
                 .await
                 .map(SkillMatcherBackend::InMemory);
-        } else if let Some(ref mut backend) = self.skill_state.matcher {
+        } else if let Some(ref mut backend) = self.services.skill.matcher {
             let _ = self.channel.send_status("syncing skill index...").await;
-            let on_progress: Option<Box<dyn Fn(usize, usize) + Send>> = self
-                .session
-                .status_tx
-                .clone()
-                .map(|tx| -> Box<dyn Fn(usize, usize) + Send> {
-                    Box::new(move |completed, total| {
-                        let msg = format!("Syncing skills: {completed}/{total}");
-                        let _ = tx.send(msg);
-                    })
-                });
+            let on_progress: Option<Box<dyn Fn(usize, usize) + Send>> =
+                self.services.session.status_tx.clone().map(
+                    |tx| -> Box<dyn Fn(usize, usize) + Send> {
+                        Box::new(move |completed, total| {
+                            let msg = format!("Syncing skills: {completed}/{total}");
+                            let _ = tx.send(msg);
+                        })
+                    },
+                );
             if let Err(e) = backend
                 .sync(
                     all_meta,
-                    &self.skill_state.embedding_model,
+                    &self.services.skill.embedding_model,
                     embed_fn,
                     on_progress,
                 )
@@ -2608,10 +2638,10 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        if self.skill_state.hybrid_search {
+        if self.services.skill.hybrid_search {
             let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
             let _ = self.channel.send_status("rebuilding search index...").await;
-            self.skill_state.rebuild_bm25(&descs);
+            self.services.skill.rebuild_bm25(&descs);
         }
     }
 
@@ -2620,10 +2650,10 @@ impl<C: Channel> Agent<C> {
         tracing::instrument(name = "skill.hot_reload", skip_all)
     )]
     async fn reload_skills(&mut self) {
-        let old_fp = self.skill_state.fingerprint();
-        let reload_paths = if let Some(ref supplier) = self.skill_state.plugin_dirs_supplier {
+        let old_fp = self.services.skill.fingerprint();
+        let reload_paths = if let Some(ref supplier) = self.services.skill.plugin_dirs_supplier {
             let plugin_dirs = supplier();
-            let mut paths = self.skill_state.skill_paths.clone();
+            let mut paths = self.services.skill.skill_paths.clone();
             for dir in plugin_dirs {
                 if !paths.contains(&dir) {
                     paths.push(dir);
@@ -2631,16 +2661,17 @@ impl<C: Channel> Agent<C> {
             }
             paths
         } else {
-            self.skill_state.skill_paths.clone()
+            self.services.skill.skill_paths.clone()
         };
-        self.skill_state.registry.write().reload(&reload_paths);
-        if self.skill_state.fingerprint() == old_fp {
+        self.services.skill.registry.write().reload(&reload_paths);
+        if self.services.skill.fingerprint() == old_fp {
             return;
         }
         let _ = self.channel.send_status("reloading skills...").await;
 
         let all_meta = self
-            .skill_state
+            .services
+            .skill
             .registry
             .read()
             .all_meta()
@@ -2654,7 +2685,7 @@ impl<C: Channel> Agent<C> {
         self.rebuild_skill_matcher(&all_meta_refs).await;
 
         let all_skills: Vec<Skill> = {
-            let reg = self.skill_state.registry.read();
+            let reg = self.services.skill.registry.read();
             reg.all_meta()
                 .iter()
                 .filter_map(|m| reg.skill(&m.name).ok())
@@ -2662,8 +2693,10 @@ impl<C: Channel> Agent<C> {
         };
         let trust_map = self.build_skill_trust_map().await;
         let empty_health: HashMap<String, (f64, u32)> = HashMap::new();
-        let skills_prompt = SkillState::rebuild_prompt(&all_skills, &trust_map, &empty_health);
-        self.skill_state
+        let skills_prompt =
+            state::SkillState::rebuild_prompt(&all_skills, &trust_map, &empty_health);
+        self.services
+            .skill
             .last_skills_prompt
             .clone_from(&skills_prompt);
         let system_prompt = build_system_prompt(&skills_prompt, None);
@@ -2674,16 +2707,16 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("").await;
         tracing::info!(
             "reloaded {} skill(s)",
-            self.skill_state.registry.read().all_meta().len()
+            self.services.skill.registry.read().all_meta().len()
         );
     }
 
     fn reload_instructions(&mut self) {
         // Drain any additional queued events before reloading to avoid redundant reloads.
-        if let Some(ref mut rx) = self.instructions.reload_rx {
+        if let Some(ref mut rx) = self.runtime.instructions.reload_rx {
             while rx.try_recv().is_ok() {}
         }
-        let Some(ref state) = self.instructions.reload_state else {
+        let Some(ref state) = self.runtime.instructions.reload_state else {
             return;
         };
         let new_blocks = crate::instructions::load_instructions(
@@ -2692,8 +2725,13 @@ impl<C: Channel> Agent<C> {
             &state.explicit_files,
             state.auto_detect,
         );
-        let old_sources: std::collections::HashSet<_> =
-            self.instructions.blocks.iter().map(|b| &b.source).collect();
+        let old_sources: std::collections::HashSet<_> = self
+            .runtime
+            .instructions
+            .blocks
+            .iter()
+            .map(|b| &b.source)
+            .collect();
         let new_sources: std::collections::HashSet<_> =
             new_blocks.iter().map(|b| &b.source).collect();
         for added in new_sources.difference(&old_sources) {
@@ -2703,42 +2741,42 @@ impl<C: Channel> Agent<C> {
             tracing::info!(path = %removed.display(), "instruction file removed");
         }
         tracing::info!(
-            old_count = self.instructions.blocks.len(),
+            old_count = self.runtime.instructions.blocks.len(),
             new_count = new_blocks.len(),
             "reloaded instruction files"
         );
-        self.instructions.blocks = new_blocks;
+        self.runtime.instructions.blocks = new_blocks;
     }
 
     fn reload_config(&mut self) {
-        let Some(path) = self.lifecycle.config_path.clone() else {
+        let Some(path) = self.runtime.lifecycle.config_path.clone() else {
             return;
         };
         let Some(config) = self.load_config_with_overlay(&path) else {
             return;
         };
         let budget_tokens = resolve_context_budget(&config, &self.provider);
-        self.runtime.security = config.security;
-        self.runtime.timeouts = config.timeouts;
-        self.runtime.redact_credentials = config.memory.redact_credentials;
-        self.memory_state.persistence.history_limit = config.memory.history_limit;
-        self.memory_state.persistence.recall_limit = config.memory.semantic.recall_limit;
-        self.memory_state.compaction.summarization_threshold =
+        self.runtime.config.security = config.security;
+        self.runtime.config.timeouts = config.timeouts;
+        self.runtime.config.redact_credentials = config.memory.redact_credentials;
+        self.services.memory.persistence.history_limit = config.memory.history_limit;
+        self.services.memory.persistence.recall_limit = config.memory.semantic.recall_limit;
+        self.services.memory.compaction.summarization_threshold =
             config.memory.summarization_threshold;
-        self.skill_state.max_active_skills = config.skills.max_active_skills.get();
-        self.skill_state.disambiguation_threshold = config.skills.disambiguation_threshold;
-        self.skill_state.min_injection_score = config.skills.min_injection_score;
-        self.skill_state.cosine_weight = config.skills.cosine_weight.clamp(0.0, 1.0);
-        self.skill_state.hybrid_search = config.skills.hybrid_search;
-        self.skill_state.two_stage_matching = config.skills.two_stage_matching;
-        self.skill_state.confusability_threshold =
+        self.services.skill.max_active_skills = config.skills.max_active_skills.get();
+        self.services.skill.disambiguation_threshold = config.skills.disambiguation_threshold;
+        self.services.skill.min_injection_score = config.skills.min_injection_score;
+        self.services.skill.cosine_weight = config.skills.cosine_weight.clamp(0.0, 1.0);
+        self.services.skill.hybrid_search = config.skills.hybrid_search;
+        self.services.skill.two_stage_matching = config.skills.two_stage_matching;
+        self.services.skill.confusability_threshold =
             config.skills.confusability_threshold.clamp(0.0, 1.0);
         config
             .skills
             .generation_provider
             .as_str()
-            .clone_into(&mut self.skill_state.generation_provider_name);
-        self.skill_state.generation_output_dir =
+            .clone_into(&mut self.services.skill.generation_provider_name);
+        self.services.skill.generation_output_dir =
             config.skills.generation_output_dir.as_deref().map(|p| {
                 if let Some(stripped) = p.strip_prefix("~/") {
                     dirs::home_dir()
@@ -2756,17 +2794,17 @@ impl<C: Channel> Agent<C> {
             let graph_cfg = &config.memory.graph;
             if graph_cfg.rpe.enabled {
                 // Re-create router only if it doesn't exist yet; preserve state on hot-reload.
-                if self.memory_state.extraction.rpe_router.is_none() {
-                    self.memory_state.extraction.rpe_router =
+                if self.services.memory.extraction.rpe_router.is_none() {
+                    self.services.memory.extraction.rpe_router =
                         Some(std::sync::Mutex::new(zeph_memory::RpeRouter::new(
                             graph_cfg.rpe.threshold,
                             graph_cfg.rpe.max_skip_turns,
                         )));
                 }
             } else {
-                self.memory_state.extraction.rpe_router = None;
+                self.services.memory.extraction.rpe_router = None;
             }
-            self.memory_state.extraction.graph_config = graph_cfg.clone();
+            self.services.memory.extraction.graph_config = graph_cfg.clone();
         }
         self.context_manager.soft_compaction_threshold = config.memory.soft_compaction_threshold;
         self.context_manager.hard_compaction_threshold = config.memory.hard_compaction_threshold;
@@ -2789,11 +2827,14 @@ impl<C: Channel> Agent<C> {
             );
             Some(std::sync::Arc::new(resolved))
         };
-        self.memory_state.persistence.cross_session_score_threshold =
-            config.memory.cross_session_score_threshold;
+        self.services
+            .memory
+            .persistence
+            .cross_session_score_threshold = config.memory.cross_session_score_threshold;
 
-        self.index.repo_map_tokens = config.index.repo_map_tokens;
-        self.index.repo_map_ttl = std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
+        self.services.index.repo_map_tokens = config.index.repo_map_tokens;
+        self.services.index.repo_map_ttl =
+            std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
 
         tracing::info!("config reloaded");
     }
@@ -2811,12 +2852,12 @@ impl<C: Channel> Agent<C> {
         };
 
         // Re-apply plugin overlays. On error, keep previous runtime state intact.
-        let new_overlay = if self.lifecycle.plugins_dir.as_os_str().is_empty() {
+        let new_overlay = if self.runtime.lifecycle.plugins_dir.as_os_str().is_empty() {
             None
         } else {
             match zeph_plugins::apply_plugin_config_overlays(
                 &mut config,
-                &self.lifecycle.plugins_dir,
+                &self.runtime.lifecycle.plugins_dir,
             ) {
                 Ok(o) => Some(o),
                 Err(e) => {
@@ -2859,12 +2900,12 @@ impl<C: Channel> Agent<C> {
             v
         };
 
-        let startup = &self.lifecycle.startup_shell_overlay;
+        let startup = &self.runtime.lifecycle.startup_shell_overlay;
         let blocked_changed = new_blocked != startup.blocked;
         let allowed_changed = new_allowed != startup.allowed;
 
         // blocked_commands IS rebuilt live — emit info-level confirmation only.
-        if blocked_changed && let Some(ref h) = self.lifecycle.shell_policy_handle {
+        if blocked_changed && let Some(ref h) = self.runtime.lifecycle.shell_policy_handle {
             h.rebuild(&config.tools.shell);
             tracing::info!(
                 blocked_count = h.snapshot_blocked().len(),
@@ -2882,7 +2923,7 @@ impl<C: Channel> Agent<C> {
             let msg = "plugin config overlay changed shell allowed_commands; RESTART REQUIRED \
                  for sandbox path recomputation (blocked_commands was rebuilt live)";
             tracing::warn!("{msg}");
-            if let Some(ref tx) = self.session.status_tx {
+            if let Some(ref tx) = self.services.session.status_tx {
                 let _ = tx.send(msg.to_owned());
             }
         }
@@ -2904,7 +2945,7 @@ impl<C: Channel> Agent<C> {
         // S1 runtime guard: warn when SideQuest is enabled alongside a non-Reactive pruning
         // strategy — the two systems share the same pool of evictable tool outputs and can
         // interfere. Disable sidequest.enabled when pruning_strategy != Reactive.
-        if self.sidequest.config.enabled {
+        if self.services.sidequest.config.enabled {
             use crate::config::PruningStrategy;
             if !matches!(
                 self.context_manager.compression.pruning_strategy,
@@ -2919,10 +2960,10 @@ impl<C: Channel> Agent<C> {
         }
 
         // Guard: do not evict while a focus session is active.
-        if self.focus.is_active() {
+        if self.services.focus.is_active() {
             tracing::debug!("sidequest: skipping — focus session active");
             // Drop any pending result — cursors may be stale relative to focus truncation.
-            self.compression.pending_sidequest_result = None;
+            self.services.compression.pending_sidequest_result = None;
             return;
         }
 
@@ -2934,7 +2975,7 @@ impl<C: Channel> Agent<C> {
     }
 
     fn sidequest_apply_pending(&mut self) {
-        let Some(handle) = self.compression.pending_sidequest_result.take() else {
+        let Some(handle) = self.services.compression.pending_sidequest_result.take() else {
             return;
         };
         // `try_join` is non-blocking: if the task isn't done yet, `Err(handle)` is returned
@@ -2949,11 +2990,11 @@ impl<C: Channel> Agent<C> {
         };
         match result {
             Ok(Some(evicted_indices)) if !evicted_indices.is_empty() => {
-                let cursors_snapshot = self.sidequest.tool_output_cursors.clone();
-                let freed = self.sidequest.apply_eviction(
+                let cursors_snapshot = self.services.sidequest.tool_output_cursors.clone();
+                let freed = self.services.sidequest.apply_eviction(
                     &mut self.msg.messages,
                     &evicted_indices,
-                    &self.metrics.token_counter,
+                    &self.runtime.metrics.token_counter,
                 );
                 if freed > 0 {
                     self.recompute_prompt_tokens();
@@ -2966,31 +3007,31 @@ impl<C: Channel> Agent<C> {
                     tracing::info!(
                         freed_tokens = freed,
                         evicted_cursors = evicted_indices.len(),
-                        pass = self.sidequest.passes_run,
+                        pass = self.services.sidequest.passes_run,
                         "sidequest eviction complete"
                     );
-                    if let Some(ref d) = self.debug_state.debug_dumper {
+                    if let Some(ref d) = self.runtime.debug.debug_dumper {
                         d.dump_sidequest_eviction(&cursors_snapshot, &evicted_indices, freed);
                     }
-                    if let Some(ref tx) = self.session.status_tx {
+                    if let Some(ref tx) = self.services.session.status_tx {
                         let _ = tx.send(format!("SideQuest evicted {freed} tokens"));
                     }
                 } else {
                     // apply_eviction returned 0 — clear spinner so it doesn't dangle.
-                    if let Some(ref tx) = self.session.status_tx {
+                    if let Some(ref tx) = self.services.session.status_tx {
                         let _ = tx.send(String::new());
                     }
                 }
             }
             Ok(None | Some(_)) => {
                 tracing::debug!("sidequest: pending result: no cursors to evict");
-                if let Some(ref tx) = self.session.status_tx {
+                if let Some(ref tx) = self.services.session.status_tx {
                     let _ = tx.send(String::new());
                 }
             }
             Err(e) => {
                 tracing::debug!("sidequest: background task error: {e}");
-                if let Some(ref tx) = self.session.status_tx {
+                if let Some(ref tx) = self.services.session.status_tx {
                     let _ = tx.send(String::new());
                 }
             }
@@ -3000,17 +3041,18 @@ impl<C: Channel> Agent<C> {
     fn sidequest_schedule_next(&mut self) {
         use zeph_llm::provider::{Message, MessageMetadata, Role};
 
-        self.sidequest
-            .rebuild_cursors(&self.msg.messages, &self.metrics.token_counter);
+        self.services
+            .sidequest
+            .rebuild_cursors(&self.msg.messages, &self.runtime.metrics.token_counter);
 
-        if self.sidequest.tool_output_cursors.is_empty() {
+        if self.services.sidequest.tool_output_cursors.is_empty() {
             tracing::debug!("sidequest: no eligible cursors");
             return;
         }
 
-        let prompt = self.sidequest.build_eviction_prompt();
-        let max_eviction_ratio = self.sidequest.config.max_eviction_ratio;
-        let n_cursors = self.sidequest.tool_output_cursors.len();
+        let prompt = self.services.sidequest.build_eviction_prompt();
+        let max_eviction_ratio = self.services.sidequest.config.max_eviction_ratio;
+        let n_cursors = self.services.sidequest.tool_output_cursors.len();
         // Clone the provider so the spawn closure owns it without borrowing self.
         let provider = self.summary_or_primary_provider().clone();
 
@@ -3059,20 +3101,21 @@ impl<C: Channel> Agent<C> {
             valid.truncate(max_evict);
             Some(valid)
         };
-        let handle = self.lifecycle.task_supervisor.spawn_oneshot(
+        let handle = self.runtime.lifecycle.task_supervisor.spawn_oneshot(
             std::sync::Arc::from("agent.sidequest.eviction"),
             move || eviction_future,
         );
-        self.compression.pending_sidequest_result = Some(handle);
+        self.services.compression.pending_sidequest_result = Some(handle);
         tracing::debug!("sidequest: background LLM eviction task spawned");
-        if let Some(ref tx) = self.session.status_tx {
+        if let Some(ref tx) = self.services.session.status_tx {
             let _ = tx.send("SideQuest: scoring tool outputs...".into());
         }
     }
 
     /// Return an `McpDispatch` adapter backed by the agent's MCP manager, if present.
     fn mcp_dispatch(&self) -> Option<McpManagerDispatch> {
-        self.mcp
+        self.services
+            .mcp
             .manager
             .as_ref()
             .map(|m| McpManagerDispatch(Arc::clone(m)))
@@ -3091,11 +3134,12 @@ impl<C: Channel> Agent<C> {
                 return;
             }
         };
-        if current == self.lifecycle.last_known_cwd {
+        if current == self.runtime.lifecycle.last_known_cwd {
             return;
         }
-        let old_cwd = std::mem::replace(&mut self.lifecycle.last_known_cwd, current.clone());
-        self.session.env_context.working_dir = current.display().to_string();
+        let old_cwd =
+            std::mem::replace(&mut self.runtime.lifecycle.last_known_cwd, current.clone());
+        self.services.session.env_context.working_dir = current.display().to_string();
 
         tracing::info!(
             old = %old_cwd.display(),
@@ -3108,7 +3152,7 @@ impl<C: Channel> Agent<C> {
             .send_status("Working directory changed\u{2026}")
             .await;
 
-        let hooks = self.session.hooks_config.cwd_changed.clone();
+        let hooks = self.services.session.hooks_config.cwd_changed.clone();
         if !hooks.is_empty() {
             let mut env = std::collections::HashMap::new();
             env.insert("ZEPH_OLD_CWD".to_owned(), old_cwd.display().to_string());
@@ -3137,7 +3181,12 @@ impl<C: Channel> Agent<C> {
             .send_status("Running file-change hook\u{2026}")
             .await;
 
-        let hooks = self.session.hooks_config.file_changed_hooks.clone();
+        let hooks = self
+            .services
+            .session
+            .hooks_config
+            .file_changed_hooks
+            .clone();
         if !hooks.is_empty() {
             let mut env = std::collections::HashMap::new();
             env.insert(
@@ -3166,11 +3215,11 @@ impl<C: Channel> Agent<C> {
     /// [`agent_supervisor::TaskClass::Enrichment`] — dropped under high load rather than
     /// blocking the turn.
     pub(super) fn maybe_spawn_promotion_scan(&mut self) {
-        let Some(engine) = self.promotion_engine.clone() else {
+        let Some(engine) = self.services.promotion_engine.clone() else {
             return;
         };
 
-        let Some(memory) = self.memory_state.persistence.memory.clone() else {
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
             return;
         };
 
@@ -3178,7 +3227,7 @@ impl<C: Channel> Agent<C> {
         // determine whether a cluster actually qualifies; this is just the DB scan limit.
         let promotion_window = 200usize;
 
-        let accepted = self.lifecycle.supervisor.spawn(
+        let accepted = self.runtime.lifecycle.supervisor.spawn(
             agent_supervisor::TaskClass::Enrichment,
             "compression_spectrum.promotion_scan",
             async move {

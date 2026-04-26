@@ -11,7 +11,7 @@ use zeph_tools::FilterStats;
 impl<C: Channel> Agent<C> {
     /// Read the community-detection failure counter from `SemanticMemory` and update metrics.
     pub fn sync_community_detection_failures(&self) {
-        if let Some(memory) = self.memory_state.persistence.memory.as_ref() {
+        if let Some(memory) = self.services.memory.persistence.memory.as_ref() {
             let failures = memory.community_detection_failures();
             self.update_metrics(|m| {
                 m.graph_community_detection_failures = failures;
@@ -21,7 +21,7 @@ impl<C: Channel> Agent<C> {
 
     /// Sync all graph counters (extraction count/failures) from `SemanticMemory` to metrics.
     pub fn sync_graph_extraction_metrics(&self) {
-        if let Some(memory) = self.memory_state.persistence.memory.as_ref() {
+        if let Some(memory) = self.services.memory.persistence.memory.as_ref() {
             let count = memory.graph_extraction_count();
             let failures = memory.graph_extraction_failures();
             self.update_metrics(|m| {
@@ -33,7 +33,7 @@ impl<C: Channel> Agent<C> {
 
     /// Fetch entity/edge/community counts from the graph store and write to metrics.
     pub async fn sync_graph_counts(&self) {
-        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
+        let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
             return;
         };
         let Some(store) = memory.graph_store.as_ref() else {
@@ -53,7 +53,7 @@ impl<C: Channel> Agent<C> {
 
     /// Perform a real health check on the vector store and update metrics.
     pub async fn check_vector_store_health(&self, backend_name: &str) {
-        let connected = match self.memory_state.persistence.memory.as_ref() {
+        let connected = match self.services.memory.persistence.memory.as_ref() {
             Some(m) => m.is_vector_store_connected().await,
             None => false,
         };
@@ -69,10 +69,10 @@ impl<C: Channel> Agent<C> {
     /// Only fetches version and `created_at`; does not load the full guidelines text.
     /// Feature-gated: compiled only when `compression-guidelines` is enabled.
     pub async fn sync_guidelines_status(&self) {
-        let Some(memory) = self.memory_state.persistence.memory.as_ref() else {
+        let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
             return;
         };
-        let cid = self.memory_state.persistence.conversation_id;
+        let cid = self.services.memory.persistence.conversation_id;
         match memory.sqlite().load_compression_guidelines_meta(cid).await {
             Ok((version, created_at)) => {
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -118,8 +118,8 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) fn update_metrics(&self, f: impl FnOnce(&mut MetricsSnapshot)) {
-        if let Some(ref tx) = self.metrics.metrics_tx {
-            let elapsed = self.lifecycle.start_time.elapsed().as_secs();
+        if let Some(ref tx) = self.runtime.metrics.metrics_tx {
+            let elapsed = self.runtime.lifecycle.start_time.elapsed().as_secs();
             tx.send_modify(|m| {
                 m.uptime_seconds = elapsed;
                 f(m);
@@ -147,7 +147,7 @@ impl<C: Channel> Agent<C> {
     /// Call once per turn after all four phases have written to `pending_timings`.
     /// Resets `pending_timings` to default after flushing.
     pub(super) fn flush_turn_timings(&mut self) {
-        let timings = std::mem::take(&mut self.metrics.pending_timings);
+        let timings = std::mem::take(&mut self.runtime.metrics.pending_timings);
         tracing::debug!(
             prepare_context_ms = timings.prepare_context_ms,
             llm_chat_ms = timings.llm_chat_ms,
@@ -156,15 +156,18 @@ impl<C: Channel> Agent<C> {
             "turn timings"
         );
 
-        if self.metrics.timing_window.len() >= 10 {
-            self.metrics.timing_window.pop_front();
+        if self.runtime.metrics.timing_window.len() >= 10 {
+            self.runtime.metrics.timing_window.pop_front();
         }
-        self.metrics.timing_window.push_back(timings.clone());
+        self.runtime
+            .metrics
+            .timing_window
+            .push_back(timings.clone());
 
-        let count = self.metrics.timing_window.len();
+        let count = self.runtime.metrics.timing_window.len();
         let mut avg = crate::metrics::TurnTimings::default();
         let mut max = crate::metrics::TurnTimings::default();
-        for t in &self.metrics.timing_window {
+        for t in &self.runtime.metrics.timing_window {
             avg.prepare_context_ms = avg.prepare_context_ms.saturating_add(t.prepare_context_ms);
             avg.llm_chat_ms = avg.llm_chat_ms.saturating_add(t.llm_chat_ms);
             avg.tool_exec_ms = avg.tool_exec_ms.saturating_add(t.tool_exec_ms);
@@ -194,7 +197,7 @@ impl<C: Channel> Agent<C> {
             m.timing_sample_count = n;
         });
 
-        if let Some(ref recorder) = self.metrics.histogram_recorder {
+        if let Some(ref recorder) = self.runtime.metrics.histogram_recorder {
             recorder.observe_turn_duration(std::time::Duration::from_millis(total_ms));
         }
     }
@@ -204,7 +207,7 @@ impl<C: Channel> Agent<C> {
     /// Call this after any classifier invocation (injection, PII, feedback) so the TUI panel
     /// reflects the latest p50/p95 values. No-op when classifier metrics are not configured.
     pub(super) fn push_classifier_metrics(&self) {
-        if let Some(ref m) = self.metrics.classifier_metrics {
+        if let Some(ref m) = self.runtime.metrics.classifier_metrics {
             let snapshot = m.snapshot();
             self.update_metrics(|ms| ms.classifier = snapshot);
         }
@@ -216,9 +219,9 @@ impl<C: Channel> Agent<C> {
         source: &str,
         detail: impl Into<String>,
     ) {
-        if let Some(ref tx) = self.metrics.metrics_tx {
+        if let Some(ref tx) = self.runtime.metrics.metrics_tx {
             let event = SecurityEvent::new(category, source, detail);
-            let elapsed = self.lifecycle.start_time.elapsed().as_secs();
+            let elapsed = self.runtime.lifecycle.start_time.elapsed().as_secs();
             tx.send_modify(|m| {
                 m.uptime_seconds = elapsed;
                 if m.security_events.len() >= SECURITY_EVENT_CAP {
@@ -230,19 +233,22 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) fn recompute_prompt_tokens(&mut self) {
-        self.providers.cached_prompt_tokens = self
+        self.runtime.providers.cached_prompt_tokens = self
             .msg
             .messages
             .iter()
-            .map(|m| self.metrics.token_counter.count_message_tokens(m) as u64)
+            .map(|m| self.runtime.metrics.token_counter.count_message_tokens(m) as u64)
             .sum();
     }
 
     pub(super) fn push_message(&mut self, msg: Message) {
-        self.providers.cached_prompt_tokens +=
-            self.metrics.token_counter.count_message_tokens(&msg) as u64;
+        self.runtime.providers.cached_prompt_tokens +=
+            self.runtime
+                .metrics
+                .token_counter
+                .count_message_tokens(&msg) as u64;
         if msg.role == zeph_llm::provider::Role::Assistant {
-            self.session.last_assistant_at = Some(std::time::Instant::now());
+            self.services.session.last_assistant_at = Some(std::time::Instant::now());
         }
         self.msg.messages.push(msg);
         // Detect MagicDoc headers in tool output after pushing the message.
@@ -252,16 +258,16 @@ impl<C: Channel> Agent<C> {
     pub(crate) fn record_cost_and_cache(&self, input_tokens: u64, output_tokens: u64) {
         let (cache_write, cache_read) = self.provider.last_cache_usage().unwrap_or((0, 0));
 
-        if let Some(ref tracker) = self.metrics.cost_tracker {
-            let provider_name = if self.runtime.active_provider_name.is_empty() {
+        if let Some(ref tracker) = self.runtime.metrics.cost_tracker {
+            let provider_name = if self.runtime.config.active_provider_name.is_empty() {
                 self.provider.name()
             } else {
-                self.runtime.active_provider_name.as_str()
+                self.runtime.config.active_provider_name.as_str()
             };
             tracker.record_usage(
                 provider_name,
                 self.provider.provider_kind_str(),
-                &self.runtime.model_name,
+                &self.runtime.config.model_name,
                 input_tokens,
                 cache_read,
                 cache_write,
@@ -283,7 +289,7 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(crate) fn record_successful_task(&self) {
-        if let Some(ref tracker) = self.metrics.cost_tracker {
+        if let Some(ref tracker) = self.runtime.metrics.cost_tracker {
             tracker.record_successful_task();
             self.update_metrics(|m| {
                 m.cost_cps_cents = tracker.cps();
@@ -399,17 +405,21 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        let before = agent.providers.cached_prompt_tokens;
+        let before = agent.runtime.providers.cached_prompt_tokens;
         let msg = Message {
             role: Role::User,
             content: "hello world!!".to_string(),
             parts: vec![],
             metadata: MessageMetadata::default(),
         };
-        let expected_delta = agent.metrics.token_counter.count_message_tokens(&msg) as u64;
+        let expected_delta = agent
+            .runtime
+            .metrics
+            .token_counter
+            .count_message_tokens(&msg) as u64;
         agent.push_message(msg);
         assert_eq!(
-            agent.providers.cached_prompt_tokens,
+            agent.runtime.providers.cached_prompt_tokens,
             before + expected_delta
         );
     }
@@ -441,9 +451,9 @@ mod tests {
             .msg
             .messages
             .iter()
-            .map(|m| agent.metrics.token_counter.count_message_tokens(m) as u64)
+            .map(|m| agent.runtime.metrics.token_counter.count_message_tokens(m) as u64)
             .sum();
-        assert_eq!(agent.providers.cached_prompt_tokens, expected);
+        assert_eq!(agent.runtime.providers.cached_prompt_tokens, expected);
     }
 
     #[test]
@@ -697,7 +707,7 @@ mod tests {
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         let (tx, rx) = tokio::sync::watch::channel(crate::metrics::MetricsSnapshot::default());
-        agent.metrics.metrics_tx = Some(tx);
+        agent.runtime.metrics.metrics_tx = Some(tx);
         (agent, rx)
     }
 
@@ -706,7 +716,7 @@ mod tests {
     fn flush_turn_timings_single_flush() {
         let (mut agent, rx) = agent_with_metrics_watch();
 
-        agent.metrics.pending_timings = make_timings(10, 200, 50, 5);
+        agent.runtime.metrics.pending_timings = make_timings(10, 200, 50, 5);
         agent.flush_turn_timings();
 
         let snap = rx.borrow();
@@ -728,10 +738,10 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.metrics.pending_timings = make_timings(10, 200, 50, 5);
+        agent.runtime.metrics.pending_timings = make_timings(10, 200, 50, 5);
         agent.flush_turn_timings();
 
-        let p = &agent.metrics.pending_timings;
+        let p = &agent.runtime.metrics.pending_timings;
         assert_eq!(p.prepare_context_ms, 0);
         assert_eq!(p.llm_chat_ms, 0);
         assert_eq!(p.tool_exec_ms, 0);
@@ -745,7 +755,7 @@ mod tests {
 
         // Push 12 turns: llm_chat_ms = i * 10 for i in 1..=12.
         for i in 1_u64..=12 {
-            agent.metrics.pending_timings = make_timings(0, i * 10, 0, 0);
+            agent.runtime.metrics.pending_timings = make_timings(0, i * 10, 0, 0);
             agent.flush_turn_timings();
         }
 
