@@ -149,7 +149,7 @@ jobs:
         with:
           shared-key: "ci"
       - name: Clippy
-        run: cargo clippy --profile ci --workspace --features ${{ matrix.features }} -- -D warnings
+        run: cargo clippy --profile ci --workspace --all-targets --features ${{ matrix.features }} -- -D warnings
 
   msrv:
     name: MSRV check (1.95, ${{ matrix.label }})

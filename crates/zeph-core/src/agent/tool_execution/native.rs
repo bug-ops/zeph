@@ -4067,8 +4067,8 @@ mod tests {
         );
     }
 
-    /// Regression test for #3476: when complete_focus is called in a batch with other
-    /// tools, the current turn's assistant tool_calls message must be preserved after
+    /// Regression test for #3476: when `complete_focus` is called in a batch with other
+    /// tools, the current turn's assistant `tool_calls` message must be preserved after
     /// truncation so the subsequent tool results have a valid parent.
     #[test]
     fn complete_focus_in_batch_preserves_current_turn_assistant_message() {

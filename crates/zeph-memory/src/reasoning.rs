@@ -1072,7 +1072,7 @@ mod tests {
             mem.insert(&make_strategy(&id), vec![]).await.unwrap();
             // Make hot.
             for _ in 0..=HOT_STRATEGY_USE_COUNT {
-                mem.mark_used(&[id.clone()]).await.unwrap();
+                mem.mark_used(std::slice::from_ref(&id)).await.unwrap();
             }
         }
 

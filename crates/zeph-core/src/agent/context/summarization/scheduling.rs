@@ -401,7 +401,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Emit a UX status signal when tokens were actually freed by compaction (#3314).
-    async fn emit_compaction_status_signal(&mut self, tokens_before: u64) {
+    pub(in crate::agent) async fn emit_compaction_status_signal(&mut self, tokens_before: u64) {
         let tokens_after = self.providers.cached_prompt_tokens;
         if tokens_after < tokens_before {
             let now_ms = u64::try_from(

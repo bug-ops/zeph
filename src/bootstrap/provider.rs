@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn active_provider_name_skips_embed_only_first_entry() {
-        let providers = vec![
+        let providers = [
             ProviderEntry {
                 provider_type: ProviderKind::Ollama,
                 name: Some("embedder".into()),

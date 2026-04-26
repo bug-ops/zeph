@@ -357,6 +357,7 @@ impl<C: Channel> Agent<C> {
         }
 
         let compacted_count = to_compact.len();
+        let tokens_before = self.providers.cached_prompt_tokens;
         // Inject archived references as a postfix AFTER the LLM summary (fix C1).
         // The LLM summary is unaware of archives; the postfix ensures references survive.
         let archive_postfix = if archived_refs.is_empty() {
@@ -377,6 +378,8 @@ impl<C: Channel> Agent<C> {
             compacted_count,
             &summary,
         );
+
+        self.emit_compaction_status_signal(tokens_before).await;
 
         // Extract memory params before .await so no &self is held across the persist boundary.
         let (persist_failed, qdrant_fut) = {

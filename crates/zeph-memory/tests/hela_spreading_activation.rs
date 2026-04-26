@@ -49,7 +49,7 @@ async fn setup() -> (
     (graph, embeddings, sqlite, container)
 }
 
-/// Seed a named entity into both SQLite graph and Qdrant entity collection.
+/// Seed a named entity into both `SQLite` graph and Qdrant entity collection.
 ///
 /// Returns `(entity_id, point_id)`. The `point_id` is set in `qdrant_point_id` so that
 /// `qdrant_point_ids_for_entities` can find it.
@@ -204,9 +204,8 @@ async fn hela_depth_one_excludes_two_hop() {
     for fact in &results {
         let src = fact.edge.source_entity_id;
         let tgt = fact.edge.target_entity_id;
-        assert_ne!(
-            (src == hop2_id) || (tgt == hop2_id),
-            true,
+        assert!(
+            !((src == hop2_id) || (tgt == hop2_id)),
             "C must not appear in depth-1 results"
         );
     }

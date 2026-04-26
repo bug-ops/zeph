@@ -743,12 +743,13 @@ mod tests {
     }
 
     fn config_with_a2a(advertise_files: bool) -> Config {
-        let mut cfg = Config::default();
-        cfg.a2a = A2aServerConfig {
-            advertise_files,
-            ..A2aServerConfig::default()
-        };
-        cfg
+        Config {
+            a2a: A2aServerConfig {
+                advertise_files,
+                ..A2aServerConfig::default()
+            },
+            ..Config::default()
+        }
     }
 
     /// Build a config that has an STT provider entry wired up, so `stt_provider_entry()` returns `Some`.

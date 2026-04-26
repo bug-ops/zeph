@@ -366,7 +366,9 @@ mod tests {
         v[0] = val;
         // Normalise to unit length.
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        v.iter_mut().for_each(|x| *x /= norm);
+        for x in &mut v {
+            *x /= norm;
+        }
         v
     }
 

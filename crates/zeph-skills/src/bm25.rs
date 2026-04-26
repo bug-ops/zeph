@@ -389,6 +389,7 @@ mod tests {
     }
 
     /// All normalized scores must stay in [0, 1].
+    #[allow(clippy::cast_precision_loss)]
     #[test]
     fn rrf_fuse_scores_bounded_zero_to_one() {
         let emb: Vec<ScoredMatch> = (0..10)

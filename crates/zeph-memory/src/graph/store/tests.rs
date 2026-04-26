@@ -994,6 +994,7 @@ async fn seed_pre_023_fixtures(pool: &sqlx::SqlitePool) -> (i64, i64) {
 ///
 /// Must use a single connection so `PRAGMA foreign_keys = OFF` takes effect on the same
 /// connection that executes DROP TABLE (PRAGMA is per-connection, not per-transaction).
+#[allow(clippy::too_many_lines)]
 async fn apply_migration_024(conn: &mut sqlx::SqliteConnection) {
     sqlx::query(sql!("PRAGMA foreign_keys = OFF"))
         .execute(&mut *conn)

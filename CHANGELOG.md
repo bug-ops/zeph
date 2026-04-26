@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - fix(llm): `AnyProvider::provider_kind_str()` for `Router` now delegates to the last-selected
   child provider via `RouterProvider::last_selected_provider_kind()`, enabling cost tracking to
   correctly attribute API costs when Thompson or other routing strategies are active (#3489).
+- fix(ci): add `--all-targets` to the clippy step so test-target violations are caught in CI (#3490).
+- fix(tui): `/compact` slash command now updates `compaction_last_*` metrics, making the TUI
+  compaction badge visible after manual compaction (#3493). `emit_compaction_status_signal` is
+  called from `compact_context()` after `finalize_compacted_messages` completes.
 
 - fix(core): remove `test` arm from `EnvVaultProvider` re-export cfg gate in `zeph-core/src/lib.rs`
   so that `cargo nextest run -p zeph-core` (no explicit `--features env-vault`) compiles cleanly
