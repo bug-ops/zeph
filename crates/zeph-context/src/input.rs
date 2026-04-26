@@ -14,6 +14,7 @@ use std::sync::Arc;
 use zeph_config::{
     DocumentConfig, GraphConfig, PersonaConfig, ReasoningConfig, TrajectoryConfig, TreeConfig,
 };
+use zeph_memory::compression::CompressionLevel;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::{ConversationId, TokenCounter};
 
@@ -46,6 +47,17 @@ pub struct ContextAssemblyInput<'a> {
     /// Content scrubber for PII removal. Passed as a function pointer to avoid a dependency
     /// on `zeph-core`'s redact module.
     pub scrub: fn(&str) -> Cow<'_, str>,
+    /// Compression tiers active for this turn, derived from [`zeph_memory::compression::RetrievalPolicy`].
+    ///
+    /// The assembler skips fetchers whose tier is not present in this slice.
+    /// An empty slice means "no tier filtering" — all fetchers run subject to their own budget
+    /// gates. This is the defensive default: a caller that accidentally passes an empty slice
+    /// will get the same behaviour as before this field existed, rather than silently dropping
+    /// all memory recall.
+    ///
+    /// A caller computing this from a config-driven policy must guarantee non-empty intent or
+    /// accept that an empty slice disables tier-based filtering entirely.
+    pub active_levels: &'a [CompressionLevel],
 }
 
 /// Configuration extracted from `LearningEngine` needed by correction recall.

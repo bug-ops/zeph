@@ -479,29 +479,30 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        // #3305 — Compression spectrum: compute remaining token ratio and advise recall tiers.
-        //
-        // TODO(#3455): plumb `active_levels` into `ContextAssemblyInput` so the context
-        // assembler can skip expensive episodic recall when the budget is tight.
-        // Requires a `retrieval_levels: &[CompressionLevel]` field in
-        // `zeph_context::input::ContextAssemblyInput`.  Tracked as non-blocking out-of-scope item.
-        if let Some(ref budget) = self.context_manager.budget {
-            let used = self.providers.cached_prompt_tokens;
-            let max = budget.max_tokens();
-            #[allow(clippy::cast_precision_loss)]
-            let remaining_ratio = if max == 0 {
-                1.0_f32
+        // #3305 — Compression spectrum: compute remaining token ratio and select active tiers
+        // for context retrieval (#3455 plumbing).
+        let active_levels: &'static [zeph_memory::compression::CompressionLevel] =
+            if let Some(ref budget) = self.context_manager.budget {
+                let used = self.providers.cached_prompt_tokens;
+                let max = budget.max_tokens();
+                #[allow(clippy::cast_precision_loss)]
+                let remaining_ratio = if max == 0 {
+                    1.0_f32
+                } else {
+                    1.0 - (used as f32 / max as f32).clamp(0.0, 1.0)
+                };
+                let levels =
+                    zeph_memory::compression::RetrievalPolicy::default().select(remaining_ratio);
+                tracing::debug!(
+                    remaining_ratio,
+                    active_levels = ?levels,
+                    "compression_spectrum: retrieval policy selected"
+                );
+                levels
             } else {
-                1.0 - (used as f32 / max as f32).clamp(0.0, 1.0)
+                // No budget configured — assembler exits early in this branch anyway.
+                &[]
             };
-            let policy = zeph_memory::compression::RetrievalPolicy::default();
-            let active_levels = policy.select(remaining_ratio);
-            tracing::debug!(
-                remaining_ratio,
-                active_levels = ?active_levels,
-                "compression_spectrum: retrieval policy selected"
-            );
-        }
 
         let memory_view = zeph_context::input::ContextMemoryView {
             memory: self.memory_state.persistence.memory.clone(),
@@ -543,6 +544,7 @@ impl<C: Channel> Agent<C> {
             messages: &self.msg.messages,
             query,
             scrub: crate::redact::scrub_content,
+            active_levels,
         };
 
         let prepared = zeph_context::assembler::ContextAssembler::gather(&input)

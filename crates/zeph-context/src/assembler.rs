@@ -21,10 +21,28 @@ use futures::stream::FuturesUnordered;
 
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 use zeph_memory::TokenCounter;
+use zeph_memory::compression::CompressionLevel;
 
 use crate::error::ContextError;
 use crate::input::ContextAssemblyInput;
 use crate::slot::ContextSlot;
+
+/// Map a slice of active compression levels to per-tier boolean flags.
+///
+/// Returns `(episodic_active, procedural_active, declarative_active)`.
+///
+/// An empty slice means "no tier filtering": all three flags are `true`. This is the defensive
+/// default — passing an empty slice preserves legacy behaviour instead of silently suppressing
+/// all memory recall.
+pub(crate) fn levels_to_flags(levels: &[CompressionLevel]) -> (bool, bool, bool) {
+    if levels.is_empty() {
+        return (true, true, true);
+    }
+    let episodic = levels.contains(&CompressionLevel::Episodic);
+    let procedural = levels.contains(&CompressionLevel::Procedural);
+    let declarative = levels.contains(&CompressionLevel::Declarative);
+    (episodic, procedural, declarative)
+}
 
 /// Prefix for past-session summary injections.
 pub const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
@@ -150,24 +168,30 @@ fn schedule_context_fetchers<'r>(
     graph_facts_budget: usize,
     recall_limit: usize,
     min_sim: f32,
+    active_levels: &[CompressionLevel],
 ) -> FuturesUnordered<CtxFuture<'r>> {
+    // TODO(critic): episodic_active currently gates summaries + cross-session + recall + doc_rag
+    // together. If future RetrievalPolicy variants ever drop Episodic, the cheap summary fetchers
+    // will be silently disabled — split into raw vs compressed sub-tiers. (#3455 follow-up)
+    let (episodic_active, procedural_active, declarative_active) = levels_to_flags(active_levels);
+
     let fetchers: FuturesUnordered<CtxFuture<'r>> = FuturesUnordered::new();
 
-    if summaries_budget > 0 {
+    if episodic_active && summaries_budget > 0 {
         fetchers.push(Box::pin(async move {
             fetch_summaries(memory, summaries_budget, tc)
                 .await
                 .map(ContextSlot::Summaries)
         }));
     }
-    if cross_session_budget > 0 {
+    if episodic_active && cross_session_budget > 0 {
         fetchers.push(Box::pin(async move {
             fetch_cross_session(memory, query, cross_session_budget, tc)
                 .await
                 .map(ContextSlot::CrossSession)
         }));
     }
-    if semantic_recall_budget > 0 {
+    if episodic_active && semantic_recall_budget > 0 {
         fetchers.push(Box::pin(async move {
             fetch_semantic_recall(memory, query, semantic_recall_budget, tc, Some(router_ref))
                 .await
@@ -179,12 +203,13 @@ fn schedule_context_fetchers<'r>(
                 .map(ContextSlot::DocumentRag)
         }));
     }
-    // Corrections are safety-critical and never budget-gated.
+    // Corrections are safety-critical and never budget-gated or tier-gated.
     fetchers.push(Box::pin(async move {
         fetch_corrections(memory, query, recall_limit, min_sim, scrub)
             .await
             .map(ContextSlot::Corrections)
     }));
+    // Code RAG is request-driven, not memory-tier; exempt from tier filtering.
     if code_context_budget > 0
         && let Some(idx) = index
     {
@@ -194,14 +219,14 @@ fn schedule_context_fetchers<'r>(
             result.map(ContextSlot::CodeContext)
         }));
     }
-    if graph_facts_budget > 0 {
+    if declarative_active && graph_facts_budget > 0 {
         fetchers.push(Box::pin(async move {
             fetch_graph_facts(memory, query, graph_facts_budget, tc)
                 .await
                 .map(ContextSlot::GraphFacts)
         }));
     }
-    if memory.persona_config.context_budget_tokens > 0 {
+    if declarative_active && memory.persona_config.context_budget_tokens > 0 {
         fetchers.push(Box::pin(async move {
             let persona_budget = memory.persona_config.context_budget_tokens;
             fetch_persona_facts(memory, persona_budget, tc)
@@ -209,7 +234,7 @@ fn schedule_context_fetchers<'r>(
                 .map(ContextSlot::PersonaFacts)
         }));
     }
-    if memory.trajectory_config.context_budget_tokens > 0 {
+    if procedural_active && memory.trajectory_config.context_budget_tokens > 0 {
         fetchers.push(Box::pin(async move {
             let tbudget = memory.trajectory_config.context_budget_tokens;
             fetch_trajectory_hints(memory, tbudget, tc)
@@ -217,7 +242,7 @@ fn schedule_context_fetchers<'r>(
                 .map(ContextSlot::TrajectoryHints)
         }));
     }
-    if memory.tree_config.context_budget_tokens > 0 {
+    if declarative_active && memory.tree_config.context_budget_tokens > 0 {
         fetchers.push(Box::pin(async move {
             let tbudget = memory.tree_config.context_budget_tokens;
             fetch_tree_memory(memory, tbudget, tc)
@@ -225,7 +250,10 @@ fn schedule_context_fetchers<'r>(
                 .map(ContextSlot::TreeMemory)
         }));
     }
-    if memory.reasoning_config.enabled && memory.reasoning_config.context_budget_tokens > 0 {
+    if procedural_active
+        && memory.reasoning_config.enabled
+        && memory.reasoning_config.context_budget_tokens > 0
+    {
         fetchers.push(Box::pin(async move {
             let rbudget = memory.reasoning_config.context_budget_tokens;
             let top_k = memory.reasoning_config.top_k;
@@ -312,6 +340,7 @@ impl ContextAssembler {
 
         tracing::debug!(
             active_sources = alloc.active_sources(),
+            active_levels = ?input.active_levels,
             "context budget allocated"
         );
 
@@ -329,6 +358,7 @@ impl ContextAssembler {
             alloc.graph_facts,
             recall_limit,
             min_sim,
+            input.active_levels,
         );
 
         let mut prepared = empty_prepared_context();
@@ -944,6 +974,7 @@ mod tests {
         TrajectoryConfig, TreeConfig,
     };
     use zeph_memory::TokenCounter;
+    use zeph_memory::compression::CompressionLevel;
 
     fn empty_view() -> ContextMemoryView {
         ContextMemoryView {
@@ -1118,6 +1149,54 @@ mod tests {
         let tc = TokenCounter::new();
         let result = fetch_cross_session(&view, "test", 1000, &tc).await.unwrap();
         assert!(result.is_none());
+    }
+
+    // ── levels_to_flags ───────────────────────────────────────────────────────
+
+    #[test]
+    fn levels_to_flags_empty_slice_enables_all_tiers() {
+        let (e, p, d) = levels_to_flags(&[]);
+        assert!(e, "episodic should be active for empty slice");
+        assert!(p, "procedural should be active for empty slice");
+        assert!(d, "declarative should be active for empty slice");
+    }
+
+    #[test]
+    fn levels_to_flags_full_set_enables_all_tiers() {
+        let all = &[
+            CompressionLevel::Episodic,
+            CompressionLevel::Procedural,
+            CompressionLevel::Declarative,
+        ];
+        let (e, p, d) = levels_to_flags(all);
+        assert!(e);
+        assert!(p);
+        assert!(d);
+    }
+
+    #[test]
+    fn levels_to_flags_episodic_only() {
+        let (e, p, d) = levels_to_flags(&[CompressionLevel::Episodic]);
+        assert!(e);
+        assert!(!p, "procedural should be inactive");
+        assert!(!d, "declarative should be inactive");
+    }
+
+    #[test]
+    fn levels_to_flags_episodic_and_procedural() {
+        let (e, p, d) =
+            levels_to_flags(&[CompressionLevel::Episodic, CompressionLevel::Procedural]);
+        assert!(e);
+        assert!(p);
+        assert!(!d, "declarative should be inactive");
+    }
+
+    #[test]
+    fn levels_to_flags_declarative_only() {
+        let (e, p, d) = levels_to_flags(&[CompressionLevel::Declarative]);
+        assert!(!e, "episodic should be inactive");
+        assert!(!p, "procedural should be inactive");
+        assert!(d);
     }
 
     // ── fetch_reasoning_strategies ────────────────────────────────────────────

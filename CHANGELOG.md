@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- context: plumb compression-spectrum `active_levels` through `ContextAssemblyInput` (#3455).
+  The `RetrievalPolicy`-selected tier set is now forwarded into the context assembler, which
+  skips tier-excluded fetchers (Episodic / Procedural / Declarative) before scheduling them.
+  Corrections and code RAG remain always-on. Resolves the `TODO(#3455)` in `assembly.rs`.
+
 ### Changed
 
 - refactor(zeph-core): decompose long functions in `agent/tool_execution/` (#3457).
