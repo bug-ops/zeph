@@ -50,11 +50,7 @@ fn append_llm_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot) {
     }
 }
 
-fn append_session_section(
-    lines: &mut Vec<Line<'_>>,
-    metrics: &MetricsSnapshot,
-    collapsed: bool,
-) {
+fn append_session_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, collapsed: bool) {
     if collapsed {
         lines.push(Line::from(format!(
             "  Session: {} tok | {} calls",
