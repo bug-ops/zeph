@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- refactor(core): split three large test files in `zeph-core` (15,798 LoC total) into smaller
+  sub-files to comply with the 1,000 LoC per-file CI gate (#3497):
+  - `agent/context/tests.rs` (4,429 LoC) → `agent/context/tests/` (4 sub-files)
+  - `agent/tool_execution/tests.rs` (5,203 LoC) → `agent/tool_execution/tests/` (6 sub-files)
+  - `agent/tests.rs` (6,166 LoC) → `agent/tests/` (1 mod.rs + 9 sub-files inside
+    `agent_tests/` + 8 sibling modules). Move-only: no logic changes, test count preserved.
+
 ### Fixed
 
 - fix(scheduler): `Scheduler::init()` now hydrates CLI-added periodic jobs from the DB into

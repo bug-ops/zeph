@@ -63,7 +63,8 @@ pub(super) enum CacheCheckResult {
 /// by feeding only stable segments into the hasher without materializing the normalized string.
 // DefaultHasher output is not stable across Rust versions — do not persist or serialize
 // these hashes. They are used only for within-session equality comparison.
-fn doom_loop_hash(content: &str) -> u64 {
+// pub(super) for tool_execution::tests — see issue #3497
+pub(super) fn doom_loop_hash(content: &str) -> u64 {
     use std::hash::{DefaultHasher, Hasher};
     let mut hasher = DefaultHasher::new();
     let mut rest = content;
@@ -107,8 +108,9 @@ fn hash_tool_use_in_place(hasher: &mut impl std::hash::Hasher, rest: &mut &str, 
     }
 }
 
+// pub(super) for tool_execution::tests — see issue #3497
 #[cfg(test)]
-fn normalize_for_doom_loop(content: &str) -> String {
+pub(super) fn normalize_for_doom_loop(content: &str) -> String {
     let mut out = String::with_capacity(content.len());
     let mut rest = content;
     while !rest.is_empty() {
@@ -609,7 +611,8 @@ static TOOL_ARGS_HASHER: std::sync::OnceLock<std::collections::hash_map::RandomS
 /// LLM tool calls that have the same logical parameters. Uses a process-scoped
 /// randomized `RandomState` (seeded once at startup) to prevent adversarial hash
 /// collision bypasses of the repeat-detection window.
-fn tool_args_hash(params: &serde_json::Map<String, serde_json::Value>) -> u64 {
+// pub(super) for tool_execution::tests — see issue #3497
+pub(super) fn tool_args_hash(params: &serde_json::Map<String, serde_json::Value>) -> u64 {
     use std::hash::{BuildHasher, Hash, Hasher};
     let state = TOOL_ARGS_HASHER.get_or_init(std::collections::hash_map::RandomState::new);
     let mut hasher = state.build_hasher();
@@ -628,7 +631,8 @@ fn tool_args_hash(params: &serde_json::Map<String, serde_json::Value>) -> u64 {
 /// Full jitter in `[0, cap]` is applied using `rand` for cryptographically
 /// seeded randomness — avoids predictable timing that an adversary could exploit
 /// to align retry windows.
-fn retry_backoff_ms(attempt: usize, base_ms: u64, max_ms: u64) -> u64 {
+// pub(super) for tool_execution::tests — see issue #3497
+pub(super) fn retry_backoff_ms(attempt: usize, base_ms: u64, max_ms: u64) -> u64 {
     use rand::RngExt as _;
     let base = base_ms.saturating_mul(1_u64 << attempt.min(10));
     let capped = base.min(max_ms);

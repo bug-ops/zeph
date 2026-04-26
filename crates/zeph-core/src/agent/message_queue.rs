@@ -9,8 +9,10 @@ use super::Agent;
 
 pub(super) const MAX_QUEUE_SIZE: usize = 10;
 pub(super) const MESSAGE_MERGE_WINDOW: Duration = Duration::from_millis(500);
-pub(super) const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
-pub(super) const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+// pub(crate) for agent/tests sub-modules — see issue #3497
+pub(crate) const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
+// pub(crate) for agent/tests sub-modules — see issue #3497
+pub(crate) const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
 pub(super) struct QueuedMessage {
     pub(super) text: String,
@@ -19,7 +21,8 @@ pub(super) struct QueuedMessage {
     pub(super) raw_attachments: Vec<crate::channel::Attachment>,
 }
 
-pub(super) fn detect_image_mime(filename: Option<&str>) -> &'static str {
+// pub(crate) for agent/tests sub-modules — see issue #3497
+pub(crate) fn detect_image_mime(filename: Option<&str>) -> &'static str {
     let ext = filename
         .and_then(|f| std::path::Path::new(f).extension())
         .and_then(|e| e.to_str())

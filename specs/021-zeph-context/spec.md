@@ -39,7 +39,20 @@ creating long rebuild times and making the subsystem difficult to test in isolat
 
 Provide a self-contained crate (`zeph-context`) that owns the **stateless and data-only**
 parts of context management: budget arithmetic, compaction state machine, parallel context
-assembly, and associated helpers. `zeph-core` depends on this crate but not vice versa.
+assembly, summarization prompt builders, and density-based partitioning helpers.
+`zeph-core` depends on this crate but not vice versa.
+
+### In Scope (expanded in Phase 1 decomposition)
+
+The following helpers are migrated from `zeph-core` to `zeph-context` as part of the
+Phase 1 god-object decomposition (issue #3497 / #3480). They are stateless pure functions
+with no dependency on agent state:
+
+- **`parse_subgoal_extraction_response`** — parses raw LLM output into structured subgoal items.
+- **`partition_by_density`** — partitions a message list into high/low information-density groups.
+- **Density math helpers** — supporting arithmetic for information-density scoring.
+- **Summarization prompt builders** — functions that construct prompts for compaction LLM calls
+  (`zeph-core` passes the constructed prompt string to the LLM; the builder itself lives here).
 
 ### Out of Scope
 
@@ -139,6 +152,9 @@ AND it returns false for results with meaningful content
 | FR-007 | WHEN summarization prompt helpers are called THEN the system SHALL produce deterministic prompt strings given the same inputs | should |
 | FR-008 | WHEN `compression_feedback` detects context loss THEN it SHALL classify the failure into a `CompressionFailureClass` for downstream handling | should |
 | FR-009 | WHEN slot helpers compute a trimmed slice THEN the system SHALL return only the tokens that fit within the allocated budget and not mutate the source | must |
+| FR-010 | WHEN `parse_subgoal_extraction_response` is called THEN it SHALL parse the raw LLM text into a `Vec<SubgoalItem>` without accessing agent state or I/O | must |
+| FR-011 | WHEN `partition_by_density` is called THEN it SHALL split a message slice into high/low density groups using only the message content — no external calls | must |
+| FR-012 | WHEN a density math helper is invoked THEN it SHALL return a deterministic score for the same input without side effects | must |
 
 ---
 
@@ -168,6 +184,9 @@ AND it returns false for results with meaningful content
 | `PreparedContext` | Result of one assembly pass | `graph_facts`, `doc_rag`, `semantic_recall`, `cross_session`, `summaries`, `corrections` — all `Option<Message>` |
 | `ContextSlot` | Single fetched context source result | Content string, token count, source label |
 | `CompressionFailureClass` | Classification of a compaction failure | Enum: `ContextLoss`, `OversizedInput`, `SummarizationFailure`, `NothingToCompact` |
+| `SubgoalItem` | Parsed subgoal extracted from LLM response | `label: String`, `description: String` |
+| `DensityPartition` | Result of `partition_by_density` | `high_density: Vec<MessageRef>`, `low_density: Vec<MessageRef>` |
+| Summarization prompt builders | Pure functions constructing LLM prompts | Input: history slice + config; output: `String` |
 
 ---
 
