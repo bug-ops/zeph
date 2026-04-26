@@ -15,7 +15,7 @@ pub(crate) struct MemoryCompactionState {
     /// Number of unsummarized messages that triggers a compaction pass.
     pub(crate) summarization_threshold: usize,
     /// Configuration for compression guidelines injected into the summarization prompt.
-    pub(crate) compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig,
+    pub(crate) compression_guidelines_config: zeph_config::memory::CompressionGuidelinesConfig,
     /// When `true`, a shutdown summary is generated when the agent exits cleanly.
     pub(crate) shutdown_summary: bool,
     /// Minimum number of messages required to generate a shutdown summary.
@@ -41,7 +41,8 @@ impl Default for MemoryCompactionState {
     fn default() -> Self {
         Self {
             summarization_threshold: 50,
-            compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig::default(),
+            compression_guidelines_config:
+                zeph_config::memory::CompressionGuidelinesConfig::default(),
             shutdown_summary: true,
             shutdown_summary_min_messages: 4,
             shutdown_summary_max_messages: 20,

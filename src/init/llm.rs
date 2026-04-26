@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use dialoguer::{Confirm, Input, Password, Select};
+use zeph_config::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
 use zeph_core::config::ProviderKind;
-use zeph_llm::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
 
 use super::WizardState;
 

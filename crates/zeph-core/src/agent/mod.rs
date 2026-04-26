@@ -2509,14 +2509,14 @@ impl<C: Channel> Agent<C> {
                     // adopt the source-kind initial level when it grants more trust.
                     let stored = row
                         .trust_level
-                        .parse::<zeph_tools::SkillTrustLevel>()
+                        .parse::<zeph_common::SkillTrustLevel>()
                         .unwrap_or_else(|_| {
                             tracing::warn!(
                                 skill = %meta.name,
                                 raw = %row.trust_level,
                                 "unrecognised trust_level in DB, treating as quarantined"
                             );
-                            zeph_tools::SkillTrustLevel::Quarantined
+                            zeph_common::SkillTrustLevel::Quarantined
                         });
                     if !stored.is_active() || stored.severity() <= initial_level.severity() {
                         row.trust_level.clone()

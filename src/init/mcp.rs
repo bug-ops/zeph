@@ -206,7 +206,7 @@ pub(super) fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
             env: std::collections::HashMap::new(),
             url: Some(url),
             timeout: 30,
-            policy: zeph_mcp::McpPolicy::default(),
+            policy: zeph_config::McpPolicy::default(),
             headers,
             oauth,
             trust_level,

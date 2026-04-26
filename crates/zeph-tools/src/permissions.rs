@@ -5,9 +5,9 @@ use std::collections::HashMap;
 
 use glob::Pattern;
 
-// AutonomyLevel, PermissionAction, PermissionRule, and PermissionsConfig are defined in
-// zeph-config and re-exported here for source compatibility.
-pub use zeph_config::tools::{AutonomyLevel, PermissionAction, PermissionRule, PermissionsConfig};
+pub(crate) use zeph_config::tools::{
+    AutonomyLevel, PermissionAction, PermissionRule, PermissionsConfig,
+};
 
 /// Read-only tool allowlist (available in `ReadOnly` autonomy mode).
 const READONLY_TOOLS: &[&str] = &[

@@ -37,8 +37,7 @@ fn default_elicitation_timeout() -> u64 {
 /// Trust level for an MCP server connection.
 ///
 /// Controls SSRF validation and tool filtering on connect and refresh.
-// McpTrustLevel is defined in zeph-config and re-exported here for source compatibility.
-pub use zeph_config::McpTrustLevel;
+pub(crate) use zeph_config::McpTrustLevel;
 
 /// Maximum number of injection penalties applied per tool registration batch.
 ///

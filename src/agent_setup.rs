@@ -1463,14 +1463,15 @@ pub(crate) fn apply_promotion_engine<C: zeph_core::channel::Channel>(
 
 /// Build a `SandboxPolicy` from the TOML `[tools.sandbox]` config section.
 pub(crate) fn sandbox_policy_from_config(
-    cfg: &zeph_tools::config::SandboxConfig,
+    cfg: &zeph_config::tools::SandboxConfig,
 ) -> zeph_tools::sandbox::SandboxPolicy {
+    use zeph_config::tools::SandboxProfile;
     use zeph_tools::sandbox::SandboxPolicy;
     SandboxPolicy {
         profile: cfg.profile,
         allow_read: cfg.allow_read.clone(),
         allow_write: cfg.allow_write.clone(),
-        allow_network: cfg.profile == zeph_tools::sandbox::SandboxProfile::NetworkAllowAll,
+        allow_network: cfg.profile == SandboxProfile::NetworkAllowAll,
         allow_exec: vec![],
         env_inherit: vec![],
         denied_domains: cfg.denied_domains.clone(),

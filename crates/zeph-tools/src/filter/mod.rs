@@ -254,9 +254,7 @@ pub(crate) fn default_true() -> bool {
     true
 }
 
-// `FilterConfig` and `SecurityFilterConfig` are pure-data config types defined in
-// zeph-config and re-exported here.
-pub use zeph_config::tools::{FilterConfig, SecurityFilterConfig};
+pub(crate) use zeph_config::tools::FilterConfig;
 
 // ---------------------------------------------------------------------------
 // OutputFilterRegistry

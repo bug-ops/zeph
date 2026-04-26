@@ -7,9 +7,7 @@
 //! compression failure pairs exceeds a threshold; if so, calls the LLM to update
 //! the compression guidelines document stored in `SQLite`.
 
-// `CompressionGuidelinesConfig` is a pure-data config type defined in zeph-config
-// and re-exported here. The `guidelines_provider` field is now `Option<ProviderName>`.
-pub use zeph_config::memory::CompressionGuidelinesConfig;
+use zeph_config::memory::CompressionGuidelinesConfig;
 
 // ── Feature-gated implementation ──────────────────────────────────────────────
 mod updater {

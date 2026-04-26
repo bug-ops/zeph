@@ -16,7 +16,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use agent_client_protocol as acp;
-use zeph_mcp::{McpTransport, McpTrustLevel, ServerEntry};
+use zeph_config::McpTrustLevel;
+use zeph_mcp::{McpTransport, ServerEntry};
 
 const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 

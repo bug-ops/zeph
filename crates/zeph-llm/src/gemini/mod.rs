@@ -20,8 +20,7 @@ use crate::usage::UsageTracker;
 const MAX_RETRIES: u32 = 3;
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 
-// ThinkingLevel (exported as GeminiThinkingLevel in zeph-config) is re-exported here.
-pub use zeph_config::GeminiThinkingLevel as ThinkingLevel;
+use zeph_config::GeminiThinkingLevel as ThinkingLevel;
 
 pub struct GeminiProvider {
     client: reqwest::Client,

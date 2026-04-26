@@ -63,7 +63,7 @@ pub fn create_mcp_manager_with_vault(
         })
         .collect();
 
-    let policy_entries: Vec<(String, zeph_mcp::McpPolicy)> = config
+    let policy_entries: Vec<(String, zeph_config::McpPolicy)> = config
         .mcp
         .servers
         .iter()

@@ -101,12 +101,11 @@ pub(crate) mod usage;
 pub mod whisper;
 
 pub use classifier::metrics::{ClassifierMetrics, ClassifierMetricsSnapshot, TaskMetricsSnapshot};
-pub use claude::{CacheTtl, ThinkingConfig, ThinkingEffort};
 pub use error::LlmError;
 pub use extractor::Extractor;
-pub use gemini::ThinkingLevel as GeminiThinkingLevel;
 pub use provider::{ChatExtras, ChatStream, LlmProvider, StreamChunk, ThinkingBlock};
 pub use provider_dyn::LlmProviderDyn;
 pub use router::aware::RouterAware;
 pub use router::coe::{CoeConfig, CoeMetrics, CoeRouter};
 pub use stt::{SpeechToText, Transcription};
+pub use zeph_config::{CacheTtl, GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};

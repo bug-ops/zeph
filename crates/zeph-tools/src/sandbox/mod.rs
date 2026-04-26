@@ -155,8 +155,7 @@ impl Default for SandboxPolicy {
     }
 }
 
-// `SandboxProfile` is a pure-data config type defined in zeph-config and re-exported here.
-pub use zeph_config::tools::SandboxProfile;
+pub(crate) use zeph_config::tools::SandboxProfile;
 
 /// Error returned when sandbox setup or policy application fails.
 #[derive(Debug, Error)]

@@ -609,7 +609,7 @@ fn build_server_entry(id: &str, target: &str, extra_args: &[&str]) -> zeph_mcp::
         id: id.to_owned(),
         transport,
         timeout: std::time::Duration::from_secs(30),
-        trust_level: zeph_mcp::McpTrustLevel::Untrusted,
+        trust_level: zeph_config::McpTrustLevel::Untrusted,
         tool_allowlist: None,
         expected_tools: Vec::new(),
         roots: Vec::new(),
@@ -879,7 +879,7 @@ mod tests {
             description: String::new(),
             input_schema: serde_json::json!({}),
             output_schema: None,
-            security_meta: zeph_mcp::tool::ToolSecurityMeta::default(),
+            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
         }];
 
         let (_tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
@@ -906,7 +906,7 @@ mod tests {
             description: String::new(),
             input_schema: serde_json::json!({}),
             output_schema: None,
-            security_meta: zeph_mcp::tool::ToolSecurityMeta::default(),
+            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
         }];
         tx.send(new_tools).unwrap();
 

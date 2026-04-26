@@ -3176,7 +3176,8 @@ fn make_mem_state(
         },
         compaction: MemoryCompactionState {
             summarization_threshold: 100,
-            compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig::default(),
+            compression_guidelines_config:
+                zeph_config::memory::CompressionGuidelinesConfig::default(),
             shutdown_summary: true,
             shutdown_summary_min_messages: 4,
             shutdown_summary_max_messages: 20,

@@ -3,9 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-// DataSensitivity, CapabilityClass, FlaggedParameter, and ToolSecurityMeta are defined in
-// zeph-config and re-exported here for source compatibility.
-pub use zeph_config::mcp_security::{
+pub(crate) use zeph_config::mcp_security::{
     CapabilityClass, DataSensitivity, FlaggedParameter, ToolSecurityMeta,
 };
 

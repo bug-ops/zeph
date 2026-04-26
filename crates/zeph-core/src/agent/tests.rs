@@ -2868,7 +2868,7 @@ pub mod agent_tests {
     #[test]
     fn hot_reload_rebuilds_shell_blocklist() {
         use crate::config::Config;
-        use zeph_tools::config::ShellConfig;
+        use zeph_config::tools::ShellConfig;
 
         // ShellExecutor with network allowed (no NETWORK_COMMANDS auto-added to blocklist).
         let base_cfg = ShellConfig {
@@ -5692,7 +5692,7 @@ mod pre_execution_audit_tests {
     #[tokio::test]
     async fn pre_execution_block_writes_audit_entry() {
         use crate::config::{SecurityConfig, TimeoutConfig};
-        use zeph_tools::verifier::{
+        use zeph_config::tools::{
             FirewallVerifierConfig, PreExecutionVerifierConfig, UrlGroundingVerifierConfig,
         };
 

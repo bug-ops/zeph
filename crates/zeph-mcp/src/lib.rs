@@ -137,12 +137,10 @@ pub use elicitation::ElicitationEvent;
 pub use embedding_guard::{EmbeddingAnomalyGuard, EmbeddingGuardEvent, EmbeddingGuardResult};
 pub use error::{McpError, McpErrorCode};
 pub use executor::McpToolExecutor;
-pub use manager::{McpManager, McpTransport, McpTrustLevel, ServerConnectOutcome, ServerEntry};
+pub use manager::{McpManager, McpTransport, ServerConnectOutcome, ServerEntry};
 #[cfg(feature = "mock")]
 pub use mock::{McpCall, MockMcpCaller};
-pub use policy::{
-    DataFlowViolation, McpPolicy, PolicyEnforcer, PolicyViolation, RateLimit, check_data_flow,
-};
+pub use policy::{DataFlowViolation, PolicyEnforcer, PolicyViolation, check_data_flow};
 pub use prober::{DefaultMcpProber, ProbeResult};
 pub use prompt::format_mcp_tools_prompt;
 pub use pruning::{
@@ -154,5 +152,9 @@ pub use sanitize::SanitizeResult;
 pub use semantic_index::{
     DiscoveryParams, SemanticIndexError, SemanticToolIndex, ToolDiscoveryStrategy,
 };
-pub use tool::{CapabilityClass, DataSensitivity, McpTool, ToolSecurityMeta, infer_security_meta};
+pub use tool::{McpTool, infer_security_meta};
 pub use trust_score::{ServerTrustScore, TrustScoreStore};
+pub use zeph_config::mcp_security::{
+    CapabilityClass, DataSensitivity, FlaggedParameter, ToolSecurityMeta,
+};
+pub use zeph_config::{McpPolicy, McpTrustLevel, RateLimit};

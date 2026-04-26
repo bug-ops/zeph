@@ -97,12 +97,7 @@ pub use audit::{
 };
 pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
-pub use config::{
-    AdversarialPolicyConfig, AnomalyConfig, AuditConfig, AuthorizationConfig, DependencyConfig,
-    EgressConfig, FileConfig, OverflowConfig, ResultCacheConfig, RetryConfig, SandboxConfig,
-    ScrapeConfig, ShellConfig, TafcConfig, ToolDependency, ToolsConfig, UtilityScoringConfig,
-    build_permission_policy, validate_sandbox_denied_domains,
-};
+pub use config::{build_permission_policy, validate_sandbox_denied_domains};
 pub use cwd::SetCwdExecutor;
 pub use diagnostics::DiagnosticsExecutor;
 pub use error_taxonomy::{
@@ -116,24 +111,18 @@ pub use executor::{
 };
 pub use file::FileExecutor;
 pub use filter::{
-    CommandMatcher, FilterConfidence, FilterConfig, FilterMetrics, FilterResult, OutputFilter,
+    CommandMatcher, FilterConfidence, FilterMetrics, FilterResult, OutputFilter,
     OutputFilterRegistry, sanitize_output, strip_ansi,
 };
 pub use net::is_private_ip;
-pub use permissions::{
-    AutonomyLevel, PermissionAction, PermissionPolicy, PermissionRule, PermissionsConfig,
-};
-pub use policy::{
-    DefaultEffect, PolicyCompileError, PolicyConfig, PolicyContext, PolicyDecision, PolicyEffect,
-    PolicyEnforcer, PolicyRuleConfig,
-};
+pub use permissions::PermissionPolicy;
+pub use policy::{PolicyCompileError, PolicyContext, PolicyDecision, PolicyEnforcer};
 pub use policy_gate::PolicyGateExecutor;
 pub use registry::ToolRegistry;
 #[cfg(target_os = "macos")]
 pub use sandbox::MacosSandbox;
 pub use sandbox::{
-    NoopSandbox, Sandbox, SandboxError, SandboxPolicy, SandboxProfile, build_sandbox,
-    build_sandbox_with_policy,
+    NoopSandbox, Sandbox, SandboxError, SandboxPolicy, build_sandbox, build_sandbox_with_policy,
 };
 pub use schema_filter::{
     DependencyExclusion, InclusionReason, ToolDependencyGraph, ToolEmbedding, ToolFilterResult,
@@ -155,9 +144,22 @@ pub use utility::{
     UtilityAction, UtilityContext, UtilityScore, UtilityScorer, has_explicit_tool_request,
 };
 pub use verifier::{
-    DestructiveCommandVerifier, DestructiveVerifierConfig, FirewallVerifier,
-    FirewallVerifierConfig, InjectionPatternVerifier, InjectionVerifierConfig,
-    PreExecutionVerifier, PreExecutionVerifierConfig, UrlGroundingVerifier,
-    UrlGroundingVerifierConfig, VerificationResult,
+    DestructiveCommandVerifier, FirewallVerifier, InjectionPatternVerifier, PreExecutionVerifier,
+    UrlGroundingVerifier, VerificationResult,
 };
 pub use zeph_common::ToolName;
+pub use zeph_config::tools::{
+    AdversarialPolicyConfig, AnomalyConfig, AuditConfig, AuthorizationConfig, DefaultEffect,
+    DependencyConfig, EgressConfig, FileConfig, FilterConfig, OverflowConfig, PolicyConfig,
+    PolicyEffect, PolicyRuleConfig, ResultCacheConfig, RetryConfig, SandboxConfig, SandboxProfile,
+    ScrapeConfig, SecurityFilterConfig, ShellConfig, TafcConfig, ToolDependency, ToolsConfig,
+    UtilityScoringConfig,
+};
+pub use zeph_config::tools::{
+    AutonomyLevel, PermissionAction, PermissionRule, PermissionsConfig, SpeculationMode,
+    SpeculativeAllowlistConfig, SpeculativeConfig, SpeculativePatternConfig,
+};
+pub use zeph_config::tools::{
+    DestructiveVerifierConfig, FirewallVerifierConfig, InjectionVerifierConfig,
+    PreExecutionVerifierConfig, UrlGroundingVerifierConfig,
+};

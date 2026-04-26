@@ -47,8 +47,7 @@ pub trait EvictionPolicy: Send + Sync {
     fn score(&self, entry: &EvictionEntry) -> f64;
 }
 
-// `EvictionConfig` is a pure-data config type defined in zeph-config and re-exported here.
-pub use zeph_config::memory::EvictionConfig;
+use zeph_config::memory::EvictionConfig;
 
 // ── Ebbinghaus policy ─────────────────────────────────────────────────────────
 

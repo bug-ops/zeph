@@ -6,14 +6,9 @@
 //! Pure-data configuration types are defined in `zeph-config` and re-exported here
 //! so that existing import paths (e.g. `zeph_tools::ShellConfig`) continue to resolve.
 
-// Config structs are defined in zeph-config and re-exported here for source compat.
-pub use zeph_config::tools::{
-    AdversarialPolicyConfig, AnomalyConfig, AuditConfig, AuthorizationConfig, DependencyConfig,
-    EgressConfig, FileConfig, FilterConfig, OverflowConfig, PolicyConfig, PolicyRuleConfig,
-    ResultCacheConfig, RetryConfig, SandboxConfig, SandboxProfile, ScrapeConfig,
-    SecurityFilterConfig, ShellConfig, SpeculationMode, SpeculativeAllowlistConfig,
-    SpeculativeConfig, SpeculativePatternConfig, TafcConfig, ToolDependency, ToolsConfig,
-    UtilityScoringConfig,
+pub(crate) use zeph_config::tools::{
+    AuditConfig, EgressConfig, FileConfig, SandboxConfig, ScrapeConfig, ShellConfig,
+    ToolDependency, ToolsConfig, UtilityScoringConfig,
 };
 
 use crate::domain_match;
@@ -65,6 +60,7 @@ pub fn build_permission_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_config::tools::{AdversarialPolicyConfig, ResultCacheConfig};
 
     #[test]
     fn deserialize_default_config() {

@@ -547,8 +547,8 @@ impl AppBuilder {
             .memory
             .semantic
             .embed_provider
-            .as_deref()
-            .filter(|s| !s.is_empty())?;
+            .as_ref()
+            .and_then(|p| p.as_non_empty())?;
 
         match create_named_provider(name, &self.config) {
             Ok(ep) => {
@@ -759,7 +759,7 @@ impl AppBuilder {
             // Build a trust-level mapping from all loaded skill metas.
             // Skills without a trust record default to the configured default_level.
             let default_level = self.config.skills.trust.default_level;
-            let trust_levels: Vec<(String, zeph_tools::SkillTrustLevel)> = registry
+            let trust_levels: Vec<(String, zeph_common::SkillTrustLevel)> = registry
                 .all_meta()
                 .iter()
                 .map(|meta| (meta.name.clone(), default_level))

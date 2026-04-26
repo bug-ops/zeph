@@ -611,7 +611,8 @@ async fn check_mcp_server(
     mcp_config: &zeph_config::McpConfig,
     mcp_timeout_secs: u64,
 ) -> CheckResult {
-    use zeph_mcp::{McpManager, McpPolicy, PolicyEnforcer, ServerEntry};
+    use zeph_config::McpPolicy;
+    use zeph_mcp::{McpManager, PolicyEnforcer, ServerEntry};
 
     let check_name = format!("mcp.{}", server.id);
     let start = Instant::now();

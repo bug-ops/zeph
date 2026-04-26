@@ -30,10 +30,9 @@ use parking_lot::RwLock;
 use regex::Regex;
 use unicode_normalization::UnicodeNormalization as _;
 
-// Config structs are defined in zeph-config and re-exported here.
-pub use zeph_config::tools::{
+use zeph_config::tools::{
     DestructiveVerifierConfig, FirewallVerifierConfig, InjectionVerifierConfig,
-    PreExecutionVerifierConfig, UrlGroundingVerifierConfig,
+    UrlGroundingVerifierConfig,
 };
 
 /// Result of a pre-execution verification check.

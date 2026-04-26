@@ -75,8 +75,7 @@ pub fn check_data_flow(
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-// McpPolicy and RateLimit are defined in zeph-config and re-exported here.
-pub use zeph_config::{McpPolicy, RateLimit};
+pub(crate) use zeph_config::McpPolicy;
 
 /// Reason a policy check blocked a tool call.
 ///
@@ -211,6 +210,7 @@ impl PolicyEnforcer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_config::RateLimit;
 
     fn enforcer_with_policy(server_id: &str, policy: McpPolicy) -> PolicyEnforcer {
         PolicyEnforcer::new(vec![(server_id.into(), policy)])

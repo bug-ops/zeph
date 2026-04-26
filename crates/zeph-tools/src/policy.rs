@@ -13,8 +13,7 @@ use serde::Deserialize;
 
 use crate::SkillTrustLevel;
 
-// Config types are defined in zeph-config and re-exported here.
-pub use zeph_config::tools::{DefaultEffect, PolicyConfig, PolicyEffect, PolicyRuleConfig};
+pub(crate) use zeph_config::tools::{DefaultEffect, PolicyConfig, PolicyEffect, PolicyRuleConfig};
 
 // Max rules to prevent startup OOM from misconfigured policy files.
 const MAX_RULES: usize = 256;

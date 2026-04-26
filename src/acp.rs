@@ -366,8 +366,8 @@ async fn build_acp_deps(
     let index_provider = config
         .index
         .embed_provider
-        .as_deref()
-        .filter(|s| !s.is_empty())
+        .as_ref()
+        .and_then(|p| p.as_non_empty())
         .and_then(|name| match crate::bootstrap::create_named_provider(name, config) {
             Ok(p) => {
                 tracing::info!(provider = %name, "Using dedicated embed provider for indexer (acp)");

@@ -68,8 +68,8 @@ use self::types::{
     ToolChoice, ToolRequestBody, TypedToolRequestBody, VisionRequestBody,
 };
 
-pub use self::types::{CacheTtl, ThinkingConfig, ThinkingEffort};
 use self::types::{budget_to_effort, thinking_capability};
+use zeph_config::{CacheTtl, ThinkingConfig, ThinkingEffort};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";

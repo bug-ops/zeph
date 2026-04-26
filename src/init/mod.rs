@@ -4,13 +4,13 @@
 use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select};
+use zeph_config::{GeminiThinkingLevel, ThinkingConfig};
 use zeph_core::config::{
     AcpConfig, ChannelSkillsConfig, Config, DiscordConfig, LlmConfig, LlmRoutingStrategy,
     McpServerConfig, McpTrustLevel, MemoryConfig, OrchestrationConfig, ProviderEntry, ProviderKind,
     ProviderName, PruningStrategy, SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig,
     TriggerPolicy, VaultConfig,
 };
-use zeph_llm::{GeminiThinkingLevel, ThinkingConfig};
 use zeph_subagent::def::{MemoryScope, PermissionMode};
 
 pub(super) mod agents;
@@ -877,15 +877,15 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     // OS subprocess sandbox (#3070).
     config.tools.sandbox.enabled = state.sandbox_enabled;
     config.tools.sandbox.profile = match state.sandbox_profile.as_str() {
-        "read-only" => zeph_tools::sandbox::SandboxProfile::ReadOnly,
-        "network-allow-all" => zeph_tools::sandbox::SandboxProfile::NetworkAllowAll,
-        "off" => zeph_tools::sandbox::SandboxProfile::Off,
+        "read-only" => zeph_config::tools::SandboxProfile::ReadOnly,
+        "network-allow-all" => zeph_config::tools::SandboxProfile::NetworkAllowAll,
+        "off" => zeph_config::tools::SandboxProfile::Off,
         other => {
             tracing::warn!(
                 "unknown sandbox_profile value {:?}; defaulting to Workspace",
                 other
             );
-            zeph_tools::sandbox::SandboxProfile::Workspace
+            zeph_config::tools::SandboxProfile::Workspace
         }
     };
     config
@@ -978,7 +978,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             headers: std::collections::HashMap::new(),
             oauth: None,
             timeout: 60,
-            policy: zeph_mcp::McpPolicy::default(),
+            policy: zeph_config::McpPolicy::default(),
             trust_level: McpTrustLevel::Trusted,
             tool_allowlist: None,
             expected_tools: Vec::new(),
@@ -2248,8 +2248,9 @@ mod tests {
 
     #[test]
     fn build_config_probe_thresholds_stay_at_defaults_when_disabled() {
-        let default_threshold = zeph_memory::CompactionProbeConfig::default().threshold;
-        let default_hard_fail = zeph_memory::CompactionProbeConfig::default().hard_fail_threshold;
+        let default_threshold = zeph_config::memory::CompactionProbeConfig::default().threshold;
+        let default_hard_fail =
+            zeph_config::memory::CompactionProbeConfig::default().hard_fail_threshold;
         let state = WizardState {
             vault_backend: "env".into(),
             probe_enabled: false,
@@ -2351,7 +2352,7 @@ mod tests {
         assert!(config.tools.sandbox.enabled);
         assert_eq!(
             config.tools.sandbox.profile,
-            zeph_tools::sandbox::SandboxProfile::Workspace
+            zeph_config::tools::SandboxProfile::Workspace
         );
         assert_eq!(config.tools.sandbox.backend, "auto");
         assert_eq!(config.tools.sandbox.allow_read.len(), 1);
@@ -2361,13 +2362,13 @@ mod tests {
     #[test]
     fn build_config_sandbox_profile_variants() {
         for (input, expected) in [
-            ("read-only", zeph_tools::sandbox::SandboxProfile::ReadOnly),
+            ("read-only", zeph_config::tools::SandboxProfile::ReadOnly),
             (
                 "network-allow-all",
-                zeph_tools::sandbox::SandboxProfile::NetworkAllowAll,
+                zeph_config::tools::SandboxProfile::NetworkAllowAll,
             ),
-            ("off", zeph_tools::sandbox::SandboxProfile::Off),
-            ("workspace", zeph_tools::sandbox::SandboxProfile::Workspace),
+            ("off", zeph_config::tools::SandboxProfile::Off),
+            ("workspace", zeph_config::tools::SandboxProfile::Workspace),
         ] {
             let state = WizardState {
                 sandbox_enabled: true,

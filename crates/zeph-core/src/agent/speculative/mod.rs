@@ -47,7 +47,7 @@ use zeph_tools::{ErasedToolExecutor, ToolCall, ToolError, ToolOutput};
 use cache::{HandleKey, SpeculativeCache, SpeculativeHandle, hash_args};
 use prediction::Prediction;
 
-pub use zeph_tools::config::{SpeculationMode, SpeculativeConfig};
+pub use zeph_config::tools::{SpeculationMode, SpeculativeConfig};
 
 /// Metrics collected across a single agent turn.
 #[derive(Debug, Default, Clone)]

@@ -104,9 +104,8 @@ pub use admission::{
 };
 pub use anchored_summary::AnchoredSummary;
 pub use compaction_probe::{
-    CategoryScore, CompactionProbeConfig, CompactionProbeResult, ProbeCategory, ProbeQuestion,
-    ProbeVerdict, answer_probe_questions, generate_probe_questions, score_answers,
-    validate_compaction,
+    CategoryScore, CompactionProbeResult, ProbeQuestion, ProbeVerdict, answer_probe_questions,
+    generate_probe_questions, score_answers, validate_compaction,
 };
 pub use compression::{
     CompressionLevel, RetrievalPolicy,
@@ -114,7 +113,6 @@ pub use compression::{
         PromotionCandidate, PromotionConfig, PromotionEngine, PromotionInput, SkillWriter,
     },
 };
-pub use compression_guidelines::CompressionGuidelinesConfig;
 pub use compression_guidelines::{
     build_guidelines_update_prompt, sanitize_guidelines, start_guidelines_updater,
     truncate_to_token_budget, update_guidelines_once,
@@ -134,7 +132,7 @@ pub use embedding_registry::{
 };
 pub use embedding_store::ensure_qdrant_collection;
 pub use error::MemoryError;
-pub use eviction::{EbbinghausPolicy, EvictionConfig, EvictionPolicy, start_eviction_loop};
+pub use eviction::{EbbinghausPolicy, EvictionPolicy, start_eviction_loop};
 pub use facade::{
     CompactionContext, CompactionResult, InMemoryFacade, MemoryEntry, MemoryFacade, MemoryMatch,
     MemorySource,
@@ -192,3 +190,6 @@ pub use vector_store::{
     VectorStoreError,
 };
 pub use zeph_common::config::memory::HebbianConsolidationConfig;
+pub use zeph_config::memory::CompressionGuidelinesConfig;
+pub use zeph_config::memory::EvictionConfig;
+pub use zeph_config::memory::{CompactionProbeConfig, ProbeCategory};

@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-// ThinkingConfig and ThinkingEffort are defined in zeph-config and re-exported here.
-pub use zeph_config::{ThinkingConfig, ThinkingEffort};
+use zeph_config::ThinkingEffort;
 
 pub(super) struct ThinkingCapability {
     /// Requires `interleaved-thinking-2025-05-14` beta header when `tool_use` is present.
@@ -360,8 +359,7 @@ pub(super) enum CacheType {
     Ephemeral,
 }
 
-// CacheTtl is defined in zeph-config and re-exported here.
-pub use zeph_config::CacheTtl;
+use zeph_config::CacheTtl;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub(super) struct CacheControl {

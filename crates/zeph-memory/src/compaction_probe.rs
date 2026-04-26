@@ -20,9 +20,7 @@ use crate::error::MemoryError;
 
 // --- Data structures ---
 
-// `ProbeCategory` and `CompactionProbeConfig` are pure-data config types defined in
-// zeph-config and re-exported here. The `probe_provider` field is now `Option<ProviderName>`.
-pub use zeph_config::memory::{CompactionProbeConfig, ProbeCategory};
+use zeph_config::memory::{CompactionProbeConfig, ProbeCategory};
 
 /// Per-category scoring breakdown from a compaction probe run.
 #[derive(Debug, Clone, Serialize, Deserialize)]

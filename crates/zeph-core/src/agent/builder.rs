@@ -176,7 +176,7 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_memory_formatting_config(
         mut self,
-        compression_guidelines: zeph_memory::CompressionGuidelinesConfig,
+        compression_guidelines: zeph_config::memory::CompressionGuidelinesConfig,
         digest: crate::config::DigestConfig,
         context_strategy: crate::config::ContextStrategy,
         crossover_turn_threshold: u32,
@@ -2053,7 +2053,7 @@ mod tests {
             },
             model: String::new(),
             pruning_strategy: crate::config::PruningStrategy::default(),
-            probe: zeph_memory::CompactionProbeConfig::default(),
+            probe: zeph_config::memory::CompactionProbeConfig::default(),
             compress_provider: zeph_config::ProviderName::default(),
             archive_tool_outputs: false,
             focus_scorer_provider: zeph_config::ProviderName::default(),
