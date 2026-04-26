@@ -31,7 +31,6 @@ use parking_lot::RwLock;
 use std::time::Instant;
 
 use tokio::sync::{Notify, mpsc, watch};
-use tokio::task::JoinHandle;
 use tokio::time::Interval;
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
@@ -394,7 +393,7 @@ pub(crate) struct LifecycleState {
     pub(crate) cancel_token: CancellationToken,
     /// Handle to the cancel bridge task spawned each turn. Aborted before a new one is created
     /// to prevent unbounded task accumulation across turns.
-    pub(crate) cancel_bridge_handle: Option<JoinHandle<()>>,
+    pub(crate) cancel_bridge_handle: Option<zeph_common::task_supervisor::BlockingHandle<()>>,
     pub(crate) config_path: Option<PathBuf>,
     pub(crate) config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
     /// Path to the plugins directory; used to re-apply overlays on hot-reload.
@@ -445,6 +444,13 @@ pub(crate) struct LifecycleState {
     /// Shared reference to the `ShellExecutor` used to query in-flight background run snapshots
     /// for TUI metrics display. `None` when no `ShellExecutor` is wired (test harnesses, etc.).
     pub(crate) shell_executor_handle: Option<std::sync::Arc<zeph_tools::ShellExecutor>>,
+    /// Session-level task supervisor, shared with bootstrap and TUI. Used to register
+    /// background agent tasks (cancel bridge, compaction, sidequest eviction) for
+    /// observability and graceful shutdown.
+    ///
+    /// Created with a fresh [`CancellationToken`] in `LifecycleState::new()` for test
+    /// harnesses; production code overwrites it via `Agent::with_task_supervisor`.
+    pub(crate) task_supervisor: Arc<zeph_common::TaskSupervisor>,
 }
 
 /// Minimal config snapshot needed to reconstruct a provider at runtime via `/provider <name>`.
@@ -591,16 +597,19 @@ pub(crate) struct CompressionState {
     pub(crate) current_task_goal: Option<String>,
     /// Hash of the last user message when `current_task_goal` was populated.
     pub(crate) task_goal_user_msg_hash: Option<u64>,
-    /// Pending background task for goal extraction. Spawned fire-and-forget when the user message
-    /// hash changes; result applied at the start of the next Soft compaction (#1909).
-    pub(crate) pending_task_goal: Option<tokio::task::JoinHandle<Option<String>>>,
+    /// Pending background task for goal extraction. Spawned when the user message hash changes;
+    /// result applied at the start of the next Soft compaction (#1909).
+    pub(crate) pending_task_goal:
+        Option<zeph_common::task_supervisor::BlockingHandle<Option<String>>>,
     /// Pending `SideQuest` eviction result from the background LLM call spawned last turn.
     /// Applied at the START of the next turn before compaction (PERF-1 fix).
-    pub(crate) pending_sidequest_result: Option<tokio::task::JoinHandle<Option<Vec<usize>>>>,
+    pub(crate) pending_sidequest_result:
+        Option<zeph_common::task_supervisor::BlockingHandle<Option<Vec<usize>>>>,
     /// In-memory subgoal registry for `Subgoal`/`SubgoalMig` pruning strategies (#2022).
     pub(crate) subgoal_registry: crate::agent::compaction_strategy::SubgoalRegistry,
     /// Pending background subgoal extraction task.
-    pub(crate) pending_subgoal: Option<tokio::task::JoinHandle<Option<SubgoalExtractionResult>>>,
+    pub(crate) pending_subgoal:
+        Option<zeph_common::task_supervisor::BlockingHandle<Option<SubgoalExtractionResult>>>,
     /// Hash of the last user message when subgoal extraction was scheduled.
     pub(crate) subgoal_user_msg_hash: Option<u64>,
 }
@@ -1040,6 +1049,9 @@ impl LifecycleState {
             pending_background_completions: VecDeque::new(),
             background_completion_rx: None,
             shell_executor_handle: None,
+            task_supervisor: Arc::new(zeph_common::TaskSupervisor::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
         }
     }
 }

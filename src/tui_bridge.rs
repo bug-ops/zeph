@@ -33,7 +33,7 @@ pub(crate) struct TuiRunParams<'a> {
     pub(crate) backfill_rx:
         tokio::sync::watch::Receiver<Option<zeph_memory::semantic::BackfillProgress>>,
     /// Optional supervisor passed to the TUI task registry panel (#2962).
-    pub(crate) task_supervisor: Option<zeph_core::task_supervisor::TaskSupervisor>,
+    pub(crate) task_supervisor: Option<zeph_common::task_supervisor::TaskSupervisor>,
 }
 
 /// Phase-1 TUI handle: TUI is rendering but the agent hasn't started yet.
@@ -163,7 +163,7 @@ fn spawn_tui_thread(
     cancel_signal: std::sync::Arc<tokio::sync::Notify>,
     show_source_labels: bool,
     metrics_rx: Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
-    task_supervisor: Option<zeph_core::task_supervisor::TaskSupervisor>,
+    task_supervisor: Option<zeph_common::task_supervisor::TaskSupervisor>,
     index_progress_rx: Option<tokio::sync::watch::Receiver<zeph_index::IndexProgress>>,
     agent_tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 ) -> tokio::sync::oneshot::Receiver<anyhow::Result<()>> {

@@ -5,7 +5,7 @@
 //!
 //! [`TaskSupervisor`] manages named, long-lived background tasks (config watcher,
 //! scheduler loop, gateway, MCP connections, etc.) with restart policies, health
-//! snapshots, and graceful shutdown. Unlike [`crate::agent::agent_supervisor::BackgroundSupervisor`]
+//! snapshots, and graceful shutdown. Unlike `BackgroundSupervisor`
 //! (which is `&mut self`-only, lossy, and turn-scoped), `TaskSupervisor` is
 //! `Clone + Send + Sync` and designed for the full agent session lifetime.
 //!
@@ -25,7 +25,7 @@
 //! ```rust,no_run
 //! use std::time::Duration;
 //! use tokio_util::sync::CancellationToken;
-//! use zeph_core::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
+//! use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 //!
 //! # #[tokio::main]
 //! # async fn main() {
@@ -53,7 +53,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
-use zeph_common::BlockingSpawner;
+
+use crate::BlockingSpawner;
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -80,7 +81,7 @@ pub enum RestartPolicy {
     ///
     /// ```
     /// use std::time::Duration;
-    /// use zeph_core::task_supervisor::RestartPolicy;
+    /// use zeph_common::task_supervisor::RestartPolicy;
     ///
     /// // Restart up to 3 times with exponential backoff starting at 1 s.
     /// let policy = RestartPolicy::Restart { max: 3, base_delay: Duration::from_secs(1) };
@@ -181,6 +182,47 @@ impl<R> BlockingHandle<R> {
         self.rx
             .await
             .unwrap_or(Err(BlockingError::SupervisorDropped))
+    }
+
+    /// Non-blocking poll: return the result if the task has already finished, or `None`
+    /// if it is still running.
+    ///
+    /// This is the `BlockingHandle` equivalent of `FutureExt::now_or_never` on a
+    /// [`tokio::task::JoinHandle`]. Call this inside a synchronous context (e.g., between
+    /// agent turns) to apply a completed background result without blocking.
+    ///
+    /// The handle is consumed on success. If the task is not yet done, the handle
+    /// is returned as `Err(self)` so the caller can re-store it.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use zeph_common::task_supervisor::{BlockingHandle, BlockingError};
+    /// async fn example(mut handle: BlockingHandle<u32>) {
+    ///     // Try to get the result without blocking.
+    ///     match handle.try_join() {
+    ///         Ok(result) => println!("done: {result:?}"),
+    ///         Err(handle) => {
+    ///             // Task still running — `handle` is returned for re-storage.
+    ///             drop(handle);
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(self)` when the task has not yet produced a result (still running).
+    /// The inner `Ok(Err(BlockingError::...))` variants are returned when the task
+    /// panicked or the supervisor was dropped before the task completed.
+    pub fn try_join(mut self) -> Result<Result<R, BlockingError>, Self> {
+        match self.rx.try_recv() {
+            Ok(result) => Ok(result),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => Err(self),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                Ok(Err(BlockingError::SupervisorDropped))
+            }
+        }
     }
 
     /// Abort the underlying task immediately.
@@ -296,7 +338,7 @@ struct Inner {
 /// ```rust,no_run
 /// use std::time::Duration;
 /// use tokio_util::sync::CancellationToken;
-/// use zeph_core::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
+/// use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 ///
 /// # #[tokio::main]
 /// # async fn main() {
@@ -324,6 +366,11 @@ impl TaskSupervisor {
     /// When the token is cancelled, all tasks exit cooperatively on their next
     /// cancellation check. Call [`shutdown_all`][Self::shutdown_all] to wait for
     /// them to finish.
+    ///
+    /// When called outside a Tokio runtime context (e.g. in synchronous unit tests),
+    /// the reap driver is skipped. The supervisor still accepts task registrations but
+    /// completion callbacks are not processed — safe because no tasks can actually be
+    /// spawned without a runtime.
     #[must_use]
     pub fn new(cancel: CancellationToken) -> Self {
         // NOTE: unbounded channel is acceptable here because supervised tasks are
@@ -339,7 +386,13 @@ impl TaskSupervisor {
             blocking_semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
         });
 
-        Self::start_reap_driver(Arc::clone(&inner), completion_rx, cancel);
+        // Only start the reap driver when a Tokio runtime is available. In synchronous
+        // unit tests that construct Agent/LifecycleState directly there is no reactor,
+        // so we skip the spawn. Without a runtime no tasks can be spawned either, so
+        // the driver is not needed.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            Self::start_reap_driver(Arc::clone(&inner), completion_rx, cancel);
+        }
 
         Self { inner }
     }
@@ -354,7 +407,7 @@ impl TaskSupervisor {
     /// ```rust,no_run
     /// use std::time::Duration;
     /// use tokio_util::sync::CancellationToken;
-    /// use zeph_core::task_supervisor::{RestartPolicy, TaskDescriptor, TaskHandle, TaskSupervisor};
+    /// use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskHandle, TaskSupervisor};
     ///
     /// # #[tokio::main]
     /// # async fn main() {
@@ -426,7 +479,7 @@ impl TaskSupervisor {
     /// ```rust,no_run
     /// use std::sync::Arc;
     /// use tokio_util::sync::CancellationToken;
-    /// use zeph_core::task_supervisor::{BlockingHandle, TaskSupervisor};
+    /// use zeph_common::task_supervisor::{BlockingHandle, TaskSupervisor};
     ///
     /// # #[tokio::main]
     /// # async fn main() {
@@ -556,7 +609,7 @@ impl TaskSupervisor {
     /// ```rust,no_run
     /// use std::sync::Arc;
     /// use tokio_util::sync::CancellationToken;
-    /// use zeph_core::task_supervisor::{BlockingHandle, TaskSupervisor};
+    /// use zeph_common::task_supervisor::{BlockingHandle, TaskSupervisor};
     ///
     /// # #[tokio::main]
     /// # async fn main() {
@@ -1606,7 +1659,7 @@ mod tests {
     #[tokio::test]
     async fn test_blocking_spawner_task_appears_in_snapshot() {
         // Verify that tasks spawned via BlockingSpawner appear in supervisor.snapshot().
-        use zeph_common::BlockingSpawner;
+        use crate::BlockingSpawner;
 
         let cancel = CancellationToken::new();
         let sup = TaskSupervisor::new(cancel);

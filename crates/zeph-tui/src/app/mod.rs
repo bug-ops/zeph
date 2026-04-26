@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::debug;
-use zeph_core::task_supervisor::TaskSupervisor;
+use zeph_common::task_supervisor::TaskSupervisor;
 
 use crate::command::TuiCommand;
 use crate::event::AgentEvent;
@@ -401,7 +401,7 @@ pub struct App {
     ///
     /// Avoids acquiring `TaskSupervisor`'s inner mutex inside the draw closure, which
     /// can block the render loop when the reap driver holds the lock concurrently.
-    cached_task_snapshots: Vec<zeph_core::task_supervisor::TaskSnapshot>,
+    cached_task_snapshots: Vec<zeph_common::task_supervisor::TaskSnapshot>,
 }
 
 impl App {
@@ -635,7 +635,7 @@ impl App {
     /// ```rust,ignore
     /// use tokio::sync::mpsc;
     /// use tokio_util::sync::CancellationToken;
-    /// use zeph_core::task_supervisor::TaskSupervisor;
+    /// use zeph_common::task_supervisor::TaskSupervisor;
     /// use zeph_tui::App;
     ///
     /// let (user_tx, _) = mpsc::channel(64);
@@ -676,8 +676,8 @@ impl App {
             .filter(|t| {
                 matches!(
                     t.status,
-                    zeph_core::task_supervisor::TaskStatus::Running
-                        | zeph_core::task_supervisor::TaskStatus::Restarting { .. }
+                    zeph_common::task_supervisor::TaskStatus::Running
+                        | zeph_common::task_supervisor::TaskStatus::Restarting { .. }
                 )
             })
             .filter(|t| !t.name.starts_with("mem-"))
@@ -3870,7 +3870,7 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_activity_label_single_active_task() {
-        use zeph_core::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
+        use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 
         // CancellationToken is a re-export from tokio-util inside zeph-core.
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -3900,7 +3900,7 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_activity_label_multiple_tasks_shows_more() {
-        use zeph_core::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
+        use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let sup = TaskSupervisor::new(cancel.clone());

@@ -99,7 +99,6 @@ pub mod runtime_context;
 pub mod runtime_layer;
 pub mod skill_invoker;
 pub mod skill_loader;
-pub mod task_supervisor;
 pub use zeph_common::text;
 
 #[cfg(test)]
@@ -120,10 +119,6 @@ pub use config::{Config, ConfigError};
 pub use runtime_context::RuntimeContext;
 pub use skill_invoker::{InvokeSkillParams, SkillInvokeExecutor};
 pub use skill_loader::SkillLoaderExecutor;
-pub use task_supervisor::{
-    BlockingError, BlockingHandle, MAX_RESTART_DELAY, RestartPolicy, TaskDescriptor, TaskHandle,
-    TaskSnapshot, TaskStatus, TaskSupervisor,
-};
 pub use zeph_common::hash::blake3_hex as content_hash;
 pub use zeph_sanitizer::exfiltration::{
     ExfiltrationEvent, ExfiltrationGuard, ExfiltrationGuardConfig, extract_flagged_urls,

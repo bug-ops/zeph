@@ -23,11 +23,11 @@ use crate::bootstrap::warmup_provider;
 use crate::bootstrap::{AppBuilder, create_mcp_registry};
 use parking_lot::RwLock;
 use zeph_channels::AnyChannel;
+use zeph_common::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 use zeph_config::{ThinkingConfig, ThinkingEffort};
 use zeph_core::agent::Agent;
 #[cfg(feature = "acp")]
 use zeph_core::config::AcpTransport;
-use zeph_core::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 
 #[cfg(feature = "acp-http")]
 use crate::acp::run_acp_http_server;
@@ -2467,6 +2467,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     // Wire supervisor config so concurrency limits and turn-boundary abort are applied (#2883).
     let agent = agent.with_supervisor_config(&config.agent.supervisor);
+    // Wire session-level TaskSupervisor so agent background tasks are observable (#3508).
+    let agent = agent.with_task_supervisor(std::sync::Arc::clone(&supervisor));
     let agent = agent.with_acp_config(config.acp.clone());
 
     // Wire ACP sub-agent spawn callback so `/subagent spawn <cmd>` works in CLI/piped mode (#3302).

@@ -10142,6 +10142,7 @@ dependencies = [
  "tracing",
  "unicode-width",
  "wiremock",
+ "zeph-common",
  "zeph-core",
 ]
 
@@ -10159,11 +10160,16 @@ name = "zeph-common"
 version = "0.20.0"
 dependencies = [
  "blake3",
+ "cpu-time",
+ "metrics",
+ "metrics-util",
+ "parking_lot",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "tree-sitter",
  "tree-sitter-go",

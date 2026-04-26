@@ -1148,6 +1148,20 @@ impl<C: Channel> Agent<C> {
 
     // ---- Lifecycle & Session ----
 
+    /// Attach the session-level task supervisor.
+    ///
+    /// Replaces the default supervisor created in [`LifecycleState::new`] with the
+    /// session-level instance shared with bootstrap and TUI, enabling observability
+    /// and graceful shutdown of all background agent tasks.
+    #[must_use]
+    pub fn with_task_supervisor(
+        mut self,
+        supervisor: std::sync::Arc<zeph_common::TaskSupervisor>,
+    ) -> Self {
+        self.lifecycle.task_supervisor = supervisor;
+        self
+    }
+
     /// Attach the graceful-shutdown receiver.
     #[must_use]
     pub fn with_shutdown(mut self, rx: watch::Receiver<bool>) -> Self {

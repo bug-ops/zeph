@@ -50,7 +50,7 @@ fn spawn_a2a_server(
     // The overflow cleanup, signal handler, and sentinel tasks in run_daemon
     // are also excluded — they are either fire-and-forget one-shots or
     // lifecycle-managed by DaemonSupervisor.
-    supervisor: Option<zeph_core::TaskSupervisor>,
+    supervisor: Option<zeph_common::TaskSupervisor>,
     provider: &zeph_llm::any::AnyProvider,
 ) {
     let public_url = if config.a2a.public_url.is_empty() {
@@ -90,9 +90,9 @@ fn spawn_a2a_server(
         // can hand it off on the first (and only) call. RunOnce tasks are never restarted,
         // so take() will be Some exactly once.
         let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(a2a_server)));
-        sup.spawn(zeph_core::TaskDescriptor {
+        sup.spawn(zeph_common::TaskDescriptor {
             name: "a2a_server",
-            restart: zeph_core::RestartPolicy::RunOnce,
+            restart: zeph_common::RestartPolicy::RunOnce,
             factory: move || {
                 let server = cell.lock().take();
                 async move {
@@ -317,7 +317,7 @@ pub(crate) async fn run_daemon(
     let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
 
     let daemon_cancel = tokio_util::sync::CancellationToken::new();
-    let task_supervisor = zeph_core::TaskSupervisor::new(daemon_cancel.clone());
+    let task_supervisor = zeph_common::TaskSupervisor::new(daemon_cancel.clone());
     {
         let mut rx = shutdown_rx.clone();
         let cancel = daemon_cancel;

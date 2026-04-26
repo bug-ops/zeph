@@ -21,6 +21,7 @@ pub mod quarantine;
 pub mod sanitize;
 pub mod secret;
 pub mod spawner;
+pub mod task_supervisor;
 pub mod text;
 pub mod trust_level;
 pub mod types;
@@ -33,6 +34,10 @@ pub const OVERFLOW_NOTICE_PREFIX: &str = "[full output stored \u{2014} ID: ";
 pub use math::{EmbeddingVector, Normalized, Unnormalized};
 pub use policy::{PolicyLlmClient, PolicyMessage, PolicyRole};
 pub use spawner::BlockingSpawner;
+pub use task_supervisor::{
+    BlockingError, BlockingHandle, MAX_RESTART_DELAY, RestartPolicy, TaskDescriptor, TaskHandle,
+    TaskSnapshot, TaskStatus, TaskSupervisor,
+};
 pub use trust_level::SkillTrustLevel;
 pub use types::{ProviderName, SessionId, SkillName, ToolDefinition, ToolName};
 

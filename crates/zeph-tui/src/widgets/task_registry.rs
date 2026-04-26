@@ -14,7 +14,7 @@
 //! the operator see whether a task has been stable or has restarted recently.
 //! Total lifetime cannot be derived exactly from the snapshot alone.
 //!
-//! [`TaskSupervisor`]: zeph_core::task_supervisor::TaskSupervisor
+//! [`TaskSupervisor`]: zeph_common::task_supervisor::TaskSupervisor
 
 use std::time::Instant;
 
@@ -23,7 +23,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
-use zeph_core::task_supervisor::{TaskSnapshot, TaskStatus};
+use zeph_common::task_supervisor::{TaskSnapshot, TaskStatus};
 
 use crate::theme::Theme;
 
@@ -127,7 +127,7 @@ mod tests {
     use std::time::Instant;
 
     use insta::assert_snapshot;
-    use zeph_core::task_supervisor::{TaskSnapshot, TaskStatus};
+    use zeph_common::task_supervisor::{TaskSnapshot, TaskStatus};
 
     use crate::test_utils::render_to_string;
 

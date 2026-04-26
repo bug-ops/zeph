@@ -14,9 +14,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use parking_lot::Mutex;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zeph_common::ToolName;
+use zeph_common::task_supervisor::{BlockingError, BlockingHandle};
 use zeph_tools::{ToolError, ToolOutput};
 
 /// Unique key for a speculative handle: tool name + BLAKE3 hash of normalized args.
@@ -32,7 +32,7 @@ pub struct HandleKey {
 /// confirms the same call on `ToolUseStop`; cancelled on mismatch or TTL expiry.
 pub struct SpeculativeHandle {
     pub key: HandleKey,
-    pub join: JoinHandle<Result<Option<ToolOutput>, ToolError>>,
+    pub join: BlockingHandle<Result<Option<ToolOutput>, ToolError>>,
     pub cancel: CancellationToken,
     /// Absolute wall-clock deadline; handle is cancelled by the sweeper when exceeded.
     pub ttl_deadline: tokio::time::Instant,
@@ -62,12 +62,14 @@ impl SpeculativeHandle {
     ///
     /// Returns [`ToolError::Execution`] if the task was cancelled or panicked.
     pub async fn commit(self) -> Result<Option<ToolOutput>, ToolError> {
-        match self.join.await {
+        match self.join.join().await {
             Ok(r) => r,
-            Err(e) if e.is_cancelled() => Err(ToolError::Execution(std::io::Error::other(
-                "speculative task cancelled",
+            Err(BlockingError::Panicked) => Err(ToolError::Execution(std::io::Error::other(
+                "speculative task panicked",
             ))),
-            Err(e) => Err(ToolError::Execution(std::io::Error::other(e.to_string()))),
+            Err(BlockingError::SupervisorDropped) => Err(ToolError::Execution(
+                std::io::Error::other("speculative task cancelled"),
+            )),
         }
     }
 }

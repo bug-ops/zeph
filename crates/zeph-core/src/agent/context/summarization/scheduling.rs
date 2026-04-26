@@ -847,13 +847,21 @@ impl<C: Channel> Agent<C> {
 
     /// Apply a completed background task-goal extraction result to `current_task_goal`.
     fn apply_completed_task_goal(&mut self) {
-        use futures::FutureExt as _;
         if let Some(handle) = self.compression.pending_task_goal.take() {
-            if let Some(Ok(Some(goal))) = handle.now_or_never() {
-                tracing::debug!("extract_task_goal: background result applied");
-                self.compression.current_task_goal = Some(goal);
+            match handle.try_join() {
+                Ok(Ok(Some(goal))) => {
+                    tracing::debug!("extract_task_goal: background result applied");
+                    self.compression.current_task_goal = Some(goal);
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => tracing::debug!("extract_task_goal: task error: {e}"),
+                Err(handle) => {
+                    // Task not yet complete — re-store and wait another turn.
+                    self.compression.pending_task_goal = Some(handle);
+                    return;
+                }
             }
-            // Clear spinner on ALL completion paths (success, None result, or task panic).
+            // Clear spinner on ALL completion paths (success, None result, or task error).
             if let Some(ref tx) = self.session.status_tx {
                 let _ = tx.send(String::new());
             }
@@ -883,13 +891,9 @@ impl<C: Channel> Agent<C> {
             PruningStrategy::TaskAware | PruningStrategy::Mig => {}
         }
 
-        // Phase 1: apply background result if the task has completed.
-        if self
-            .compression
-            .pending_task_goal
-            .as_ref()
-            .is_some_and(tokio::task::JoinHandle::is_finished)
-        {
+        // Phase 1: try to apply a completed background result (no-op if still running).
+        // apply_completed_task_goal re-stores the handle when the task is not yet done.
+        if self.compression.pending_task_goal.is_some() {
             self.apply_completed_task_goal();
         }
 
@@ -913,12 +917,7 @@ impl<C: Channel> Agent<C> {
         let recent = recent_user_assistant_excerpt(&self.msg.messages, 10, false);
         let provider = self.summary_or_primary_provider().clone();
 
-        let handle = spawn_task_goal_extraction(provider, recent);
-
-        // TODO(I3): this JoinHandle is never `.abort()`ed on agent shutdown. The background task
-        // will run to completion (or until the 30-second timeout) even after the agent is dropped.
-        // Proper cancellation requires surfacing the handle to the shutdown path — tracked as a
-        // separate issue (background tasks not cancelled on agent shutdown).
+        let handle = spawn_task_goal_extraction(provider, recent, &self.lifecycle.task_supervisor);
         self.compression.pending_task_goal = Some(handle);
         tracing::debug!("extract_task_goal: background task spawned");
         if let Some(ref tx) = self.session.status_tx {
@@ -928,17 +927,25 @@ impl<C: Channel> Agent<C> {
 
     /// Apply a completed background subgoal extraction result to the subgoal registry.
     fn apply_completed_subgoal(&mut self, msg_len: usize) {
-        use futures::FutureExt as _;
         if let Some(handle) = self.compression.pending_subgoal.take() {
-            if let Some(Ok(Some(result))) = handle.now_or_never() {
-                let is_transition = result.completed.is_some();
-                if is_transition {
-                    self.register_subgoal_transition(&result, msg_len);
-                } else {
-                    self.register_subgoal_continuation(&result, msg_len);
+            match handle.try_join() {
+                Ok(Ok(Some(result))) => {
+                    let is_transition = result.completed.is_some();
+                    if is_transition {
+                        self.register_subgoal_transition(&result, msg_len);
+                    } else {
+                        self.register_subgoal_continuation(&result, msg_len);
+                    }
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => tracing::debug!("subgoal_extraction: task error: {e}"),
+                Err(handle) => {
+                    // Task not yet complete — re-store and wait another turn.
+                    self.compression.pending_subgoal = Some(handle);
+                    return;
                 }
             }
-            // Clear spinner on ALL completion paths (success, None, or panic).
+            // Clear spinner on ALL completion paths (success, None, or task error).
             if let Some(ref tx) = self.session.status_tx {
                 let _ = tx.send(String::new());
             }
@@ -1034,13 +1041,9 @@ impl<C: Channel> Agent<C> {
 
         let msg_len = self.msg.messages.len();
 
-        // Phase 1: apply background result if the task has completed.
-        if self
-            .compression
-            .pending_subgoal
-            .as_ref()
-            .is_some_and(tokio::task::JoinHandle::is_finished)
-        {
+        // Phase 1: try to apply a completed background result (no-op if still running).
+        // apply_completed_subgoal re-stores the handle when the task is not yet done.
+        if self.compression.pending_subgoal.is_some() {
             self.apply_completed_subgoal(msg_len);
         }
 
@@ -1082,11 +1085,7 @@ impl<C: Channel> Agent<C> {
         let recent = recent_user_assistant_excerpt(&self.msg.messages, 6, true);
         let provider = self.summary_or_primary_provider().clone();
 
-        let handle = spawn_subgoal_extraction(provider, recent);
-
-        // intentionally untracked: returns a typed JoinHandle<Option<SubgoalExtractionResult>>
-        // stored in compression.pending_subgoal and polled non-blocking next turn.
-        // BackgroundSupervisor does not support typed result retrieval.
+        let handle = spawn_subgoal_extraction(provider, recent, &self.lifecycle.task_supervisor);
         self.compression.pending_subgoal = Some(handle);
         tracing::debug!("subgoal_extraction: background task spawned");
         if let Some(ref tx) = self.session.status_tx {
@@ -1152,17 +1151,18 @@ fn recent_user_assistant_excerpt(
 ///
 /// Returns the `JoinHandle`; the caller stores it in `compression.pending_task_goal` and
 /// polls it non-blocking on the next turn.
+/// Spawn a background task-goal extraction task.
 ///
-/// # Note
+/// Returns a [`BlockingHandle`] that can be polled non-blocking with
+/// [`BlockingHandle::try_join`] on the next agent turn.
 ///
-/// This handle is intentionally untracked — `BackgroundSupervisor` does not support typed
-/// result retrieval. The handle is stored and polled via `JoinHandle::is_finished` +
-/// `FutureExt::now_or_never`.
+/// [`BlockingHandle`]: zeph_common::task_supervisor::BlockingHandle
 fn spawn_task_goal_extraction(
     provider: AnyProvider,
     recent: Vec<(Role, String)>,
-) -> tokio::task::JoinHandle<Option<String>> {
-    tokio::spawn(async move {
+    supervisor: &std::sync::Arc<zeph_common::TaskSupervisor>,
+) -> zeph_common::task_supervisor::BlockingHandle<Option<String>> {
+    let task = async move {
         use zeph_llm::provider::{Message, MessageMetadata, Role};
 
         if recent.is_empty() {
@@ -1228,24 +1228,28 @@ fn spawn_task_goal_extraction(
                 None
             }
         }
-    })
+    };
+    spawn_oneshot_with_supervisor(
+        supervisor,
+        std::sync::Arc::from("agent.compaction.task_goal"),
+        move || task,
+    )
 }
 
 /// Spawn a background subgoal extraction task.
 ///
-/// Returns the `JoinHandle`; the caller stores it in `compression.pending_subgoal` and
-/// polls it non-blocking on the next turn.
+/// Returns a [`BlockingHandle`] that can be polled non-blocking with
+/// [`BlockingHandle::try_join`] on the next agent turn.
 ///
-/// # Note
-///
-/// This handle is intentionally untracked — `BackgroundSupervisor` does not support typed
-/// result retrieval. The handle is stored and polled via `JoinHandle::is_finished` +
-/// `FutureExt::now_or_never`.
+/// [`BlockingHandle`]: zeph_common::task_supervisor::BlockingHandle
 fn spawn_subgoal_extraction(
     provider: AnyProvider,
     recent: Vec<(Role, String)>,
-) -> tokio::task::JoinHandle<Option<crate::agent::state::SubgoalExtractionResult>> {
-    tokio::spawn(async move {
+    supervisor: &std::sync::Arc<zeph_common::TaskSupervisor>,
+) -> zeph_common::task_supervisor::BlockingHandle<
+    Option<crate::agent::state::SubgoalExtractionResult>,
+> {
+    let task = async move {
         use zeph_llm::provider::{Message, MessageMetadata, Role};
 
         if recent.is_empty() {
@@ -1303,7 +1307,32 @@ fn spawn_subgoal_extraction(
             };
 
         Some(parse_subgoal_extraction_response(&response))
-    })
+    };
+    spawn_oneshot_with_supervisor(
+        supervisor,
+        std::sync::Arc::from("agent.compaction.subgoal"),
+        move || task,
+    )
+}
+
+/// Spawn a one-shot async task via the supervisor.
+///
+/// Thin wrapper that keeps call sites uniform and avoids repeating the `Arc::from` name
+/// conversion. The returned [`BlockingHandle`] can be polled non-blocking with
+/// [`BlockingHandle::try_join`] on the next agent turn.
+///
+/// [`BlockingHandle`]: zeph_common::task_supervisor::BlockingHandle
+fn spawn_oneshot_with_supervisor<F, Fut, R>(
+    supervisor: &std::sync::Arc<zeph_common::TaskSupervisor>,
+    name: std::sync::Arc<str>,
+    factory: F,
+) -> zeph_common::task_supervisor::BlockingHandle<R>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = R> + Send + 'static,
+    R: Send + 'static,
+{
+    supervisor.spawn_oneshot(name, factory)
 }
 
 /// Parse the structured LLM response for subgoal extraction.

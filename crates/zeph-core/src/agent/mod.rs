@@ -1412,23 +1412,7 @@ impl<C: Channel> Agent<C> {
         // real user message into a single user-role block below (N1 invariant).
         self.drain_background_completions();
 
-        // Wire the per-turn cancellation token into the cancel bridge.
-        // The bridge translates the `cancel_signal` (Notify) into a CancellationToken cancel.
-        // Abort the previous bridge before spawning to prevent unbounded accumulation (#2737).
-        let signal = Arc::clone(&self.lifecycle.cancel_signal);
-        let token = turn.cancel_token.clone();
-        // Keep lifecycle.cancel_token in sync so existing code that reads it still works.
-        self.lifecycle.cancel_token = turn.cancel_token.clone();
-        if let Some(prev) = self.lifecycle.cancel_bridge_handle.take() {
-            prev.abort();
-        }
-        // intentionally untracked: the bridge JoinHandle is stored in cancel_bridge_handle and
-        // aborted per-turn via prev.abort(); BackgroundSupervisor::spawn() does not return a
-        // JoinHandle, so per-turn abort control requires raw tokio::spawn here.
-        self.lifecycle.cancel_bridge_handle = Some(tokio::spawn(async move {
-            signal.notified().await;
-            token.cancel();
-        }));
+        self.wire_cancel_bridge(&turn.cancel_token);
 
         // Clone text out of Turn so we can hold both `&str` borrows and mutate turn.metrics.
         let text = turn.input.text.clone();
@@ -1552,6 +1536,28 @@ impl<C: Channel> Agent<C> {
         turn.metrics_mut().timings.tool_exec_ms = self.metrics.pending_timings.tool_exec_ms;
 
         Ok(())
+    }
+
+    /// Wire the per-turn cancellation token into the cancel bridge.
+    ///
+    /// The bridge translates `cancel_signal` (Notify) into a `CancellationToken` cancel so that
+    /// channel-level abort requests propagate to the in-flight LLM call. The previous bridge task
+    /// is aborted before a new one is spawned to prevent unbounded accumulation (#2737).
+    fn wire_cancel_bridge(&mut self, turn_token: &tokio_util::sync::CancellationToken) {
+        let signal = Arc::clone(&self.lifecycle.cancel_signal);
+        let token = turn_token.clone();
+        // Keep lifecycle.cancel_token in sync so existing code that reads it still works.
+        self.lifecycle.cancel_token = turn_token.clone();
+        if let Some(prev) = self.lifecycle.cancel_bridge_handle.take() {
+            prev.abort();
+        }
+        self.lifecycle.cancel_bridge_handle = Some(self.lifecycle.task_supervisor.spawn_oneshot(
+            std::sync::Arc::from("agent.lifecycle.cancel_bridge"),
+            move || async move {
+                signal.notified().await;
+                token.cancel();
+            },
+        ));
     }
 
     /// Reap completed background tasks, apply summarization signal, and update supervisor metrics.
@@ -2928,14 +2934,21 @@ impl<C: Channel> Agent<C> {
     }
 
     fn sidequest_apply_pending(&mut self) {
-        use futures::FutureExt as _;
-
         let Some(handle) = self.compression.pending_sidequest_result.take() else {
             return;
         };
-        // `now_or_never` avoids blocking — if the task isn't done yet, skip this turn.
-        match handle.now_or_never() {
-            Some(Ok(Some(evicted_indices))) if !evicted_indices.is_empty() => {
+        // `try_join` is non-blocking: if the task isn't done yet, `Err(handle)` is returned
+        // and we reschedule below.
+        let result = match handle.try_join() {
+            Ok(result) => result,
+            Err(_handle) => {
+                // Task still running — drop it; a fresh one is scheduled below.
+                tracing::debug!("sidequest: background LLM task not yet complete, rescheduling");
+                return;
+            }
+        };
+        match result {
+            Ok(Some(evicted_indices)) if !evicted_indices.is_empty() => {
                 let cursors_snapshot = self.sidequest.tool_output_cursors.clone();
                 let freed = self.sidequest.apply_eviction(
                     &mut self.msg.messages,
@@ -2969,23 +2982,17 @@ impl<C: Channel> Agent<C> {
                     }
                 }
             }
-            Some(Ok(None | Some(_))) => {
+            Ok(None | Some(_)) => {
                 tracing::debug!("sidequest: pending result: no cursors to evict");
                 if let Some(ref tx) = self.session.status_tx {
                     let _ = tx.send(String::new());
                 }
             }
-            Some(Err(e)) => {
-                tracing::debug!("sidequest: background task panicked: {e}");
+            Err(e) => {
+                tracing::debug!("sidequest: background task error: {e}");
                 if let Some(ref tx) = self.session.status_tx {
                     let _ = tx.send(String::new());
                 }
-            }
-            None => {
-                // Task still running — re-store and wait another turn.
-                // We already took it; we'd need to re-spawn, but instead just drop and
-                // schedule fresh below to keep the cursor list current.
-                tracing::debug!("sidequest: background LLM task not yet complete, rescheduling");
             }
         }
     }
@@ -3007,11 +3014,7 @@ impl<C: Channel> Agent<C> {
         // Clone the provider so the spawn closure owns it without borrowing self.
         let provider = self.summary_or_primary_provider().clone();
 
-        // intentionally untracked: returns a typed JoinHandle<Option<Vec<usize>>> stored in
-        // compression.pending_sidequest_result and polled (non-blocking) on the next turn.
-        // BackgroundSupervisor does not support typed result retrieval; spawn_oneshot would
-        // require TaskSupervisor (session-level) which is not wired into the agent yet.
-        let handle = tokio::spawn(async move {
+        let eviction_future = async move {
             let msgs = [Message {
                 role: Role::User,
                 content: prompt,
@@ -3055,8 +3058,11 @@ impl<C: Channel> Agent<C> {
             let max_evict = ((n_cursors as f32) * max_eviction_ratio).ceil() as usize;
             valid.truncate(max_evict);
             Some(valid)
-        });
-
+        };
+        let handle = self.lifecycle.task_supervisor.spawn_oneshot(
+            std::sync::Arc::from("agent.sidequest.eviction"),
+            move || eviction_future,
+        );
         self.compression.pending_sidequest_result = Some(handle);
         tracing::debug!("sidequest: background LLM eviction task spawned");
         if let Some(ref tx) = self.session.status_tx {

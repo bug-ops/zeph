@@ -94,6 +94,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         let skills = self.filtered_skills_for(&agent_def_name);
         let cfg = self.orchestration.subagent_config.clone();
         let event_tx = scheduler.event_sender();
+        let task_supervisor = Arc::clone(&self.lifecycle.task_supervisor);
 
         let spawn_ctx = self.build_spawn_context(&cfg);
 
@@ -116,10 +117,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                     },
                 };
                 let tx = event_tx;
-                // intentionally untracked: this closure is passed as `on_done` to an external
-                // `spawn_for_task` call; the closure is moved and has no access to
-                // self.lifecycle.supervisor. The only work is a single channel send.
-                tokio::spawn(async move {
+                let sup = task_supervisor.clone();
+                let send_event = async move {
                     if let Err(e) = tx
                         .send(TaskEvent {
                             task_id,
@@ -133,6 +132,19 @@ impl<C: crate::channel::Channel> Agent<C> {
                             "failed to send TaskEvent: scheduler may have been dropped"
                         );
                     }
+                };
+                let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(send_event)));
+                sup.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                    name: "agent.scheduler.task_event_send",
+                    restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                    factory: move || {
+                        let f = cell.lock().ok().and_then(|mut g| g.take());
+                        async move {
+                            if let Some(f) = f {
+                                f.await;
+                            }
+                        }
+                    },
                 });
             }
         };

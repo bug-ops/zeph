@@ -920,7 +920,7 @@ pub(crate) async fn apply_code_indexer(
     pool: zeph_db::DbPool,
     cli_mode: bool,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
-    supervisor: Option<zeph_core::TaskSupervisor>,
+    supervisor: Option<zeph_common::TaskSupervisor>,
 ) -> CodeIndexerSetup {
     if !config.enabled {
         return (None, None);
@@ -1017,7 +1017,7 @@ fn spawn_background_indexer(
     root: std::path::PathBuf,
     progress_tx: tokio::sync::watch::Sender<zeph_index::IndexProgress>,
     cli_mode: bool,
-    supervisor: Option<zeph_core::TaskSupervisor>,
+    supervisor: Option<zeph_common::TaskSupervisor>,
 ) {
     let fut = async move {
         match indexer.index_project(&root, Some(&progress_tx)).await {
@@ -1045,9 +1045,9 @@ fn spawn_background_indexer(
         // can hand it off on the first (and only) call. RunOnce tasks are never restarted,
         // so take() will be Some exactly once.
         let fut_cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
-        sup.spawn(zeph_core::TaskDescriptor {
+        sup.spawn(zeph_common::TaskDescriptor {
             name: "index_project",
-            restart: zeph_core::RestartPolicy::RunOnce,
+            restart: zeph_common::RestartPolicy::RunOnce,
             factory: move || {
                 let f = fut_cell.lock().take();
                 async move {
@@ -1522,15 +1522,15 @@ mod tests {
         )
     }
 
-    #[test]
-    fn apply_cost_tracker_disabled_returns_agent_unchanged() {
+    #[tokio::test]
+    async fn apply_cost_tracker_disabled_returns_agent_unchanged() {
         let agent = make_agent();
         let result = apply_cost_tracker(agent, false, 100);
         drop(result);
     }
 
-    #[test]
-    fn apply_cost_tracker_enabled_attaches_tracker() {
+    #[tokio::test]
+    async fn apply_cost_tracker_enabled_attaches_tracker() {
         let agent = make_agent();
         let result = apply_cost_tracker(agent, true, 500);
         drop(result);
@@ -1543,8 +1543,8 @@ mod tests {
         drop(result);
     }
 
-    #[test]
-    fn apply_summary_provider_some_attaches_provider() {
+    #[tokio::test]
+    async fn apply_summary_provider_some_attaches_provider() {
         let agent = make_agent();
         let sp = offline_provider();
         let result = apply_summary_provider(agent, Some(sp));
@@ -1655,8 +1655,8 @@ mod tests {
         assert!(watcher.is_none()); // watch = false
     }
 
-    #[test]
-    fn apply_code_retrieval_with_disabled_index_returns_agent() {
+    #[tokio::test]
+    async fn apply_code_retrieval_with_disabled_index_returns_agent() {
         let agent = make_agent();
         let config = IndexConfig {
             enabled: false,

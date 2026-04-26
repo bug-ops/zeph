@@ -27,7 +27,7 @@ use crate::markdown::markdown_to_telegram;
 use teloxide::prelude::*;
 use teloxide::types::{BotCommand, ChatAction, MessageId, ParseMode};
 use tokio::sync::mpsc;
-use zeph_core::TaskSupervisor;
+use zeph_common::TaskSupervisor;
 use zeph_core::channel::{
     Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationField,
     ElicitationFieldType, ElicitationRequest, ElicitationResponse,
@@ -212,9 +212,9 @@ impl TelegramChannel {
         };
 
         if let Some(sup) = &self.supervisor {
-            sup.spawn(zeph_core::TaskDescriptor {
+            sup.spawn(zeph_common::TaskDescriptor {
                 name: "telegram_listener",
-                restart: zeph_core::RestartPolicy::Restart {
+                restart: zeph_common::RestartPolicy::Restart {
                     max: 5,
                     base_delay: Duration::from_secs(2),
                 },
@@ -1405,7 +1405,7 @@ mod tests {
         use tokio_util::sync::CancellationToken;
 
         let cancel = CancellationToken::new();
-        let sup = zeph_core::TaskSupervisor::new(cancel.clone());
+        let sup = zeph_common::TaskSupervisor::new(cancel.clone());
 
         // new_test creates a channel with a real Bot pointed at a dummy URL.
         // The bot won't be called because we immediately check the registry

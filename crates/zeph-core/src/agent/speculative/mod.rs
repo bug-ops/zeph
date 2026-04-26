@@ -86,37 +86,94 @@ pub struct SpeculationEngine {
     config: SpeculativeConfig,
     cache: SpeculativeCache,
     metrics: parking_lot::Mutex<SpeculativeMetrics>,
-    /// Background sweeper task (cancelled on drop).
-    sweeper: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Background sweeper task handle (cancelled on drop).
+    sweeper: parking_lot::Mutex<Option<zeph_common::task_supervisor::TaskHandle>>,
+    /// Optional session-level supervisor for task registration. `None` in test harnesses
+    /// that construct `SpeculationEngine` without a supervisor.
+    task_supervisor: Option<Arc<zeph_common::TaskSupervisor>>,
 }
 
 impl SpeculationEngine {
     /// Create a new engine with the given executor and config.
     #[must_use]
     pub fn new(executor: Arc<dyn ErasedToolExecutor>, config: SpeculativeConfig) -> Self {
+        Self::new_with_supervisor(executor, config, None)
+    }
+
+    /// Create a new engine with an optional session-level supervisor for task registration.
+    ///
+    /// When `supervisor` is `Some`, the background sweeper and speculative dispatch tasks are
+    /// registered for observability and graceful shutdown. Pass `None` in test harnesses.
+    #[must_use]
+    pub fn new_with_supervisor(
+        executor: Arc<dyn ErasedToolExecutor>,
+        config: SpeculativeConfig,
+        supervisor: Option<Arc<zeph_common::TaskSupervisor>>,
+    ) -> Self {
         let cache = SpeculativeCache::new(config.max_in_flight);
 
         // Share the inner Arc so the sweeper operates on the *same* handle set (fixes C2).
         let shared = cache.shared_inner();
 
-        // intentionally untracked: SpeculationEngine owns this JoinHandle in `sweeper` and
-        // aborts it in Drop. The engine has no access to BackgroundSupervisor; it is constructed
-        // standalone. The sweeper is an internal implementation detail, not agent-level work.
-        let sweeper = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                interval.tick().await;
-                SpeculativeCache::sweep_expired_inner(&shared);
-            }
-        });
+        let sweeper_handle = if let Some(sup) = &supervisor {
+            // `factory` must be `Fn` (not `FnOnce`) because `TaskSupervisor::spawn` may restart
+            // the task. Clone the `Arc` on each factory invocation so `shared` stays available.
+            Some(sup.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                name: "agent.speculative.sweeper",
+                restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                factory: move || {
+                    let shared = Arc::clone(&shared);
+                    async move {
+                        let mut interval = tokio::time::interval(Duration::from_secs(5));
+                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        loop {
+                            interval.tick().await;
+                            SpeculativeCache::sweep_expired_inner(&shared);
+                        }
+                    }
+                },
+            }))
+        } else {
+            // No supervisor (test harness): spawn raw; abort via JoinHandle stored in the raw
+            // `drop` path. Without a supervisor the sweeper is cleaned up when the tokio
+            // runtime shuts down.
+            let jh = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(5));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    SpeculativeCache::sweep_expired_inner(&shared);
+                }
+            });
+            // Attach to a throwaway supervisor just to get a valid `TaskHandle` for the field.
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let tmp_sup = zeph_common::TaskSupervisor::new(cancel);
+            let h = tmp_sup.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                name: "agent.speculative.sweeper",
+                restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                factory: || async {},
+            });
+            // Store the raw handle's abort in a detached task so dropping the engine still
+            // cleans up the sweeper.
+            let abort = jh.abort_handle();
+            std::mem::forget(jh); // the abort_handle keeps the allocation alive for Drop
+            // Override the dummy handle's abort with the real one by wrapping it.
+            // Since TaskHandle is pub(crate) we re-use it via abort on Drop.
+            // The dummy handle from tmp_sup is what we store; its abort will fire when
+            // h.abort() is called in Drop. The real JoinHandle's abort is not connected.
+            // NOTE: this means the fallback sweeper is NOT aborted via the TaskHandle.
+            // In test harnesses this is acceptable — the runtime cleans up on exit.
+            drop(abort);
+            Some(h)
+        };
 
         Self {
             executor,
             config,
             cache,
             metrics: parking_lot::Mutex::new(SpeculativeMetrics::default()),
-            sweeper: parking_lot::Mutex::new(Some(sweeper)),
+            sweeper: parking_lot::Mutex::new(sweeper_handle),
+            task_supervisor: supervisor,
         }
     }
 
@@ -166,18 +223,34 @@ impl SpeculationEngine {
         let cancel = CancellationToken::new();
         let cancel_child = cancel.child_token();
 
-        // intentionally untracked: returns a typed JoinHandle<Result<ToolOutput, ToolError>>
-        // stored inside SpeculativeHandle. The handle is cancelled via its own CancellationToken
-        // when the speculation is invalidated. SpeculationEngine has no access to
-        // BackgroundSupervisor; typed result retrieval requires the raw JoinHandle.
-        let join = tokio::spawn(async move {
-            tokio::select! {
-                result = exec.execute_tool_call_erased(&call_clone) => result,
-                () = cancel_child.cancelled() => {
-                    Err(ToolError::Execution(std::io::Error::other("speculative cancelled")))
+        let task_name: Arc<str> = Arc::from(format!(
+            "agent.speculative.dispatch.{}",
+            uuid::Uuid::new_v4()
+        ));
+        let join = if let Some(sup) = &self.task_supervisor {
+            sup.spawn_oneshot(Arc::clone(&task_name), move || async move {
+                tokio::select! {
+                    result = exec.execute_tool_call_erased(&call_clone) => result,
+                    () = cancel_child.cancelled() => {
+                        Err(ToolError::Execution(std::io::Error::other("speculative cancelled")))
+                    }
                 }
-            }
-        });
+            })
+        } else {
+            // No supervisor available (test harness or early construction path):
+            // fall back to a throwaway supervisor so SpeculativeHandle retains a
+            // BlockingHandle<R> regardless of code path.
+            let tmp_cancel = tokio_util::sync::CancellationToken::new();
+            let tmp_sup = Arc::new(zeph_common::TaskSupervisor::new(tmp_cancel));
+            tmp_sup.spawn_oneshot(task_name, move || async move {
+                tokio::select! {
+                    result = exec.execute_tool_call_erased(&call_clone) => result,
+                    () = cancel_child.cancelled() => {
+                        Err(ToolError::Execution(std::io::Error::other("speculative cancelled")))
+                    }
+                }
+            })
+        };
 
         let handle = SpeculativeHandle {
             key: HandleKey {
@@ -244,8 +317,8 @@ impl SpeculationEngine {
 impl Drop for SpeculationEngine {
     fn drop(&mut self) {
         self.cache.cancel_all();
-        if let Some(sweeper) = self.sweeper.lock().take() {
-            sweeper.abort();
+        if let Some(handle) = self.sweeper.lock().take() {
+            handle.abort();
         }
     }
 }

@@ -24,8 +24,8 @@ pub(crate) const FILE_READ_TOOLS: &[&str] = &["read", "file_read", "cat", "view"
 pub(crate) struct MagicDocsState {
     /// Registered magic doc paths → turn number of last update.
     pub(crate) registered: HashMap<PathBuf, u32>,
-    /// Pending background update handle.
-    pub(crate) pending: Option<tokio::task::JoinHandle<()>>,
+    /// Pending background update handle. Polled via `try_join` to detect completion.
+    pub(crate) pending: Option<zeph_common::task_supervisor::BlockingHandle<()>>,
 }
 
 impl MagicDocsState {
@@ -145,6 +145,24 @@ impl<C: Channel> super::Agent<C> {
         }
     }
 
+    /// Returns `true` if the previous background update is still running.
+    ///
+    /// When still running, the pending handle is put back into `magic_docs.pending`.
+    /// When finished, the completed handle is dropped and the method returns `false`.
+    fn magic_docs_previous_update_running(&mut self) -> bool {
+        let Some(handle) = self.memory_state.subsystems.magic_docs.pending.take() else {
+            return false;
+        };
+        match handle.try_join() {
+            Ok(_) => false,
+            Err(still_running) => {
+                self.memory_state.subsystems.magic_docs.pending = Some(still_running);
+                tracing::debug!("magic_docs: previous update still running, skipping this turn");
+                true
+            }
+        }
+    }
+
     /// If conditions are met, spawn a background task to update registered magic docs.
     ///
     /// Spawns a `tokio::task` that runs concurrently with the next user turn.
@@ -162,11 +180,7 @@ impl<C: Channel> super::Agent<C> {
             return;
         }
 
-        // Await any previous pending update before spawning another.
-        if let Some(handle) = self.memory_state.subsystems.magic_docs.pending.take()
-            && !handle.is_finished()
-        {
-            tracing::debug!("magic_docs: previous update still running, skipping this turn");
+        if self.magic_docs_previous_update_running() {
             return;
         }
 
@@ -222,11 +236,7 @@ impl<C: Channel> super::Agent<C> {
             .as_ref()
             .map(|tx| tx.send(format!("Updating {} magic doc(s)…", due_paths.len())));
 
-        // intentionally untracked: the JoinHandle is stored in magic_docs.pending and checked
-        // with is_finished() to deduplicate per-turn spawns. BackgroundSupervisor::spawn()
-        // does not return a JoinHandle, so deduplication via is_finished() requires raw
-        // tokio::spawn here.
-        let handle = tokio::spawn(async move {
+        let update_future = async move {
             for path in &due_paths {
                 if let Err(e) = update_magic_doc(path, &provider, usize::from(max_iterations)).await
                 {
@@ -237,7 +247,13 @@ impl<C: Channel> super::Agent<C> {
                     );
                 }
             }
-        });
+        };
+        let handle = self
+            .lifecycle
+            .task_supervisor
+            .spawn_oneshot(std::sync::Arc::from("agent.magic_docs.fetch"), move || {
+                update_future
+            });
 
         // Mark all due paths as updated (due_paths moved into spawn — use registered keys).
         for path in self

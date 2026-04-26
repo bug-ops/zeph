@@ -166,13 +166,11 @@ impl<C: Channel> Agent<C> {
         let tc = self.metrics.token_counter.clone();
         let sanitizer = self.security.sanitizer.clone();
         let status_tx = self.session.status_tx.clone();
+        let task_supervisor = Arc::clone(&self.lifecycle.task_supervisor);
         if let Some(ref tx) = self.session.status_tx {
             let _ = tx.send("Generating session digest...".to_string());
         }
-        // intentionally untracked: spec 039 §10 explicitly excludes session-digest spawns from
-        // supervisor scope. This runs at session-close boundary where supervisor fields would
-        // create borrow conflicts. The task is fire-and-forget by design.
-        tokio::spawn(async move {
+        let digest_future = async move {
             if let (Some(mem), Some(cid)) = (memory, conversation_id) {
                 super::super::session_digest::generate_and_store_digest(
                     &provider,
@@ -188,6 +186,19 @@ impl<C: Channel> Agent<C> {
             if let Some(tx) = status_tx {
                 let _ = tx.send(String::new());
             }
+        };
+        let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(digest_future)));
+        task_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "agent.session.digest",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().ok().and_then(|mut g| g.take());
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
         });
     }
 

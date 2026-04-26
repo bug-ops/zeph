@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Removed backward-compatibility re-exports of `task_supervisor` items from `zeph-core`; all
+  callers now import directly from `zeph_common::task_supervisor` or `zeph_common::TaskSupervisor`
+- Migrated all raw `tokio::spawn` calls in `zeph-core/src/agent/` to `TaskSupervisor`; the agent
+  now propagates a session-level `TaskSupervisor` via `LifecycleState` so background tasks
+  (cancel bridge, sidequest eviction, speculative dispatch, digest, sweeper, etc.) are observable
+  and gracefully cancelled on shutdown. Added `Agent::with_task_supervisor` builder method.
+  Fallback to raw spawn is retained only in test harnesses where no supervisor is wired.
 - refactor(core): split three large test files in `zeph-core` (15,798 LoC total) into smaller
   sub-files to comply with the 1,000 LoC per-file CI gate (#3497):
   - `agent/context/tests.rs` (4,429 LoC) → `agent/context/tests/` (4 sub-files)
