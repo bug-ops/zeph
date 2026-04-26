@@ -203,8 +203,11 @@ impl AnyProvider {
     /// Returns a static string identifying the provider kind for cost/logging purposes.
     ///
     /// Returns `"ollama"` or `"candle"` for local inference providers (no API cost),
-    /// `"local"` for providers that are always unpriced (Compatible, Router, Triage),
+    /// `"local"` for providers that are always unpriced (Compatible, Triage),
     /// and `"cloud"` for metered API providers (`Claude`, `OpenAI`, `Gemini`).
+    ///
+    /// For `Router`, delegates to the last-selected child provider so that cost tracking
+    /// correctly attributes API costs even when Thompson/Cascade routing is active.
     #[must_use]
     pub fn provider_kind_str(&self) -> &'static str {
         match self {
@@ -213,8 +216,10 @@ impl AnyProvider {
             Self::Candle(_) => "candle",
             // Compatible targets LM Studio / vLLM / llama.cpp — always local, never metered.
             Self::Compatible(_) => "local",
-            // Routers are never directly invoiced; cost attribution flows to child providers.
-            Self::Router(_) | Self::Triage(_) => "local",
+            // Router: delegate to the last-selected child so cost flows to the real provider.
+            Self::Router(r) => r.last_selected_provider_kind(),
+            // Triage has no post-call provider tracking; treat as unpriced.
+            Self::Triage(_) => "local",
             _ => "cloud",
         }
     }

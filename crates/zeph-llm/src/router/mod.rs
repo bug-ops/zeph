@@ -652,6 +652,24 @@ impl RouterProvider {
         tracker.record_quality(&provider_name, success);
     }
 
+    /// Returns the `provider_kind_str` of the last provider selected by the router.
+    ///
+    /// Used by [`crate::any::AnyProvider::provider_kind_str`] to attribute cost to the
+    /// actual child provider rather than returning the generic `"local"` sentinel for all
+    /// router-dispatched calls. Falls back to `"local"` when no call has been made yet.
+    #[must_use]
+    pub fn last_selected_provider_kind(&self) -> &'static str {
+        let name = self.state.last_active_provider.lock().clone();
+        let Some(name) = name else {
+            return "local";
+        };
+        self.state
+            .providers
+            .iter()
+            .find(|p| p.name() == name)
+            .map_or("local", |p| p.provider_kind_str())
+    }
+
     /// Persist current reputation state to disk. No-op if reputation is disabled.
     /// Uses [`tokio::task::spawn_blocking`] so it is safe to call from any async context.
     pub async fn save_reputation_state(&self) {

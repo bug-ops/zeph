@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(config): `LlmConfig::effective_model()` now skips embed-only providers (`embed = true`)
+  when resolving the display model, so `/status` shows the first chat-capable provider's model
+  instead of the embed model name (#3488).
+- fix(llm): `AnyProvider::provider_kind_str()` for `Router` now delegates to the last-selected
+  child provider via `RouterProvider::last_selected_provider_kind()`, enabling cost tracking to
+  correctly attribute API costs when Thompson or other routing strategies are active (#3489).
+
 - fix(core): remove `test` arm from `EnvVaultProvider` re-export cfg gate in `zeph-core/src/lib.rs`
   so that `cargo nextest run -p zeph-core` (no explicit `--features env-vault`) compiles cleanly
   (#3485, regressed by #3479).

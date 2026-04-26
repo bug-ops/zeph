@@ -404,11 +404,16 @@ impl LlmConfig {
             .unwrap_or("http://localhost:11434")
     }
 
-    /// Effective model for the primary provider.
+    /// Effective model for the primary chat-capable provider.
+    ///
+    /// Skips embed-only entries (those with `embed = true`) and returns the model of the
+    /// first provider that can handle chat requests. Falls back to `"qwen3:8b"` when no
+    /// chat-capable provider is configured.
     #[must_use]
     pub fn effective_model(&self) -> &str {
         self.providers
-            .first()
+            .iter()
+            .find(|e| !e.embed)
             .and_then(|e| e.model.as_deref())
             .unwrap_or("qwen3:8b")
     }
@@ -1678,6 +1683,25 @@ model = "qwen3:8b"
 "#,
         );
         assert_eq!(cfg.effective_model(), "qwen3:8b");
+    }
+
+    #[test]
+    fn effective_model_skips_embed_only_provider() {
+        let cfg = parse_llm(
+            r#"
+[llm]
+
+[[llm.providers]]
+type = "ollama"
+model = "gemma4:26b"
+embed = true
+
+[[llm.providers]]
+type = "openai"
+model = "gpt-4o-mini"
+"#,
+        );
+        assert_eq!(cfg.effective_model(), "gpt-4o-mini");
     }
 
     #[test]
