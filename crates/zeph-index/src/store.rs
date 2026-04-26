@@ -23,6 +23,8 @@
 use zeph_db::sql;
 use zeph_memory::{FieldCondition, FieldValue, QdrantOps, VectorFilter, VectorPoint, VectorStore};
 
+use zeph_common::{EmbeddingVector, Normalized};
+
 use crate::error::Result;
 
 const CODE_COLLECTION: &str = "zeph_code_chunks";
@@ -367,12 +369,20 @@ impl CodeStore {
 
     /// Search for similar code chunks.
     ///
+    /// The `query_vector` must be L2-normalized (use
+    /// [`EmbeddingVector::<Unnormalized>::normalize`](zeph_common::EmbeddingVector::normalize)
+    /// or
+    /// [`EmbeddingVector::<Normalized>::new_normalized`](zeph_common::EmbeddingVector::new_normalized)
+    /// before calling). Requiring [`Normalized`] at the type level prevents silent
+    /// near-zero cosine scores that Qdrant gRPC returns for mismatched or
+    /// unnormalized vectors.
+    ///
     /// # Errors
     ///
     /// Returns an error if `Qdrant` search fails.
     pub async fn search(
         &self,
-        query_vector: Vec<f32>,
+        query_vector: EmbeddingVector<Normalized>,
         limit: usize,
         language_filter: Option<String>,
     ) -> Result<Vec<SearchHit>> {
@@ -385,9 +395,14 @@ impl CodeStore {
             must_not: vec![],
         });
 
-        let results =
-            VectorStore::search(&self.ops, &self.collection, query_vector, limit_u64, filter)
-                .await?;
+        let results = VectorStore::search(
+            &self.ops,
+            &self.collection,
+            query_vector.into_inner(),
+            limit_u64,
+            filter,
+        )
+        .await?;
 
         Ok(results
             .into_iter()

@@ -80,9 +80,15 @@ impl SemanticSearchBackend for SemanticCodeSearch {
                 .map_err(|e| zeph_tools::ToolError::InvalidParams {
                     message: format!("invalid file_pattern: {e}"),
                 })?;
-            let vector = self.provider.embed(query).await.map_err(|e| {
+            let raw = self.provider.embed(query).await.map_err(|e| {
                 zeph_tools::ToolError::Execution(std::io::Error::other(e.to_string()))
             })?;
+            // Normalize the raw embedding before passing to store.search, which requires
+            // EmbeddingVector<Normalized>. Embedding providers do not guarantee unit-length
+            // output; skipping normalization caused silent near-zero Qdrant cosine scores
+            // (#3421).
+            let vector =
+                zeph_common::EmbeddingVector::<zeph_common::Unnormalized>::new(raw).normalize();
             let mut hits = self
                 .store
                 .search(vector, max_results.saturating_mul(2), None)

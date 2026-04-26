@@ -29,6 +29,7 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::store::{CodeStore, SearchHit};
+use zeph_common::{EmbeddingVector, Unnormalized};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::TokenCounter;
@@ -248,7 +249,7 @@ impl CodeRetriever {
         language_filter: Option<String>,
     ) -> Result<Vec<SearchHit>> {
         let timeout = std::time::Duration::from_secs(self.config.embed_timeout_secs);
-        let query_vector = tokio::time::timeout(timeout, self.provider.embed(query))
+        let raw_vector = tokio::time::timeout(timeout, self.provider.embed(query))
             .await
             .map_err(|_| {
                 tracing::warn!(
@@ -257,6 +258,10 @@ impl CodeRetriever {
                 );
                 crate::error::IndexError::EmbedTimeout(self.config.embed_timeout_secs)
             })??;
+
+        // Normalize to unit length so Qdrant gRPC cosine search returns correct scores.
+        // Qdrant gRPC silently returns near-zero scores for unnormalized vectors (#3421).
+        let query_vector = EmbeddingVector::<Unnormalized>::new(raw_vector).normalize();
 
         let mut hits = self
             .store
