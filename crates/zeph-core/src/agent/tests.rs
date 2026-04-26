@@ -5457,6 +5457,69 @@ mod shutdown_summary_tests {
         assert_eq!(snap.filter_filtered_commands, 1);
     }
 
+    // Helper: executor used by filter_stats_metrics_recorded_in_self_reflection_remaining_tools_loop.
+    // tool_a returns [error] (triggers self-reflection), tool_b returns FilterStats (success).
+    struct TwoToolExecutor {
+        call_count: std::sync::Mutex<u32>,
+    }
+
+    impl zeph_tools::executor::ToolExecutor for TwoToolExecutor {
+        async fn execute(
+            &self,
+            _response: &str,
+        ) -> Result<Option<zeph_tools::executor::ToolOutput>, zeph_tools::executor::ToolError>
+        {
+            Ok(None)
+        }
+
+        async fn execute_tool_call(
+            &self,
+            call: &zeph_tools::executor::ToolCall,
+        ) -> Result<Option<zeph_tools::executor::ToolOutput>, zeph_tools::executor::ToolError>
+        {
+            let n = {
+                let mut g = self.call_count.lock().unwrap();
+                *g += 1;
+                *g
+            };
+            if n == 1 || call.tool_id == "tool_a_id" {
+                Ok(Some(zeph_tools::executor::ToolOutput {
+                    tool_name: "tool_a".into(),
+                    summary: "[error] command failed [exit code 1]".to_owned(),
+                    blocks_executed: 1,
+                    filter_stats: None,
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                    claim_source: None,
+                }))
+            } else {
+                Ok(Some(zeph_tools::executor::ToolOutput {
+                    tool_name: "tool_b".into(),
+                    summary: "filtered output".to_owned(),
+                    blocks_executed: 1,
+                    filter_stats: Some(zeph_tools::executor::FilterStats {
+                        raw_chars: 400,
+                        filtered_chars: 200,
+                        raw_lines: 20,
+                        filtered_lines: 10,
+                        confidence: None,
+                        command: None,
+                        kept_lines: vec![],
+                    }),
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                    claim_source: None,
+                }))
+            }
+        }
+    }
+
     // Self-reflection remaining-tools path: when the first of two parallel tool calls returns
     // [error] and self-reflection fires (Ok(true)), the second call's FilterStats must still
     // be recorded in filter_* metrics (regression for #1939).
@@ -5465,72 +5528,12 @@ mod shutdown_summary_tests {
     // tool_a returns [error], triggering self-reflection which calls chat() → Text.
     // tool_b returns success with FilterStats. The remaining-tools loop processes tool_b.
     #[tokio::test]
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     async fn filter_stats_metrics_recorded_in_self_reflection_remaining_tools_loop() {
         use crate::config::LearningConfig;
         use crate::metrics::MetricsSnapshot;
-        use std::sync::Mutex;
         use tokio::sync::watch;
         use zeph_llm::mock::MockProvider;
         use zeph_llm::provider::{ChatResponse, ToolUseRequest};
-        use zeph_tools::executor::{FilterStats, ToolCall, ToolError, ToolExecutor, ToolOutput};
-
-        // Executor: tool_a returns error, tool_b returns filtered success.
-        struct TwoToolExecutor {
-            call_count: Mutex<u32>,
-        }
-
-        impl ToolExecutor for TwoToolExecutor {
-            async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
-            }
-
-            async fn execute_tool_call(
-                &self,
-                call: &ToolCall,
-            ) -> Result<Option<ToolOutput>, ToolError> {
-                let n = {
-                    let mut g = self.call_count.lock().unwrap();
-                    *g += 1;
-                    *g
-                };
-                if n == 1 || call.tool_id == "tool_a_id" {
-                    Ok(Some(ToolOutput {
-                        tool_name: "tool_a".into(),
-                        summary: "[error] command failed [exit code 1]".to_owned(),
-                        blocks_executed: 1,
-                        filter_stats: None,
-                        diff: None,
-                        streamed: false,
-                        terminal_id: None,
-                        locations: None,
-                        raw_response: None,
-                        claim_source: None,
-                    }))
-                } else {
-                    Ok(Some(ToolOutput {
-                        tool_name: "tool_b".into(),
-                        summary: "filtered output".to_owned(),
-                        blocks_executed: 1,
-                        filter_stats: Some(FilterStats {
-                            raw_chars: 400,
-                            filtered_chars: 200,
-                            raw_lines: 20,
-                            filtered_lines: 10,
-                            confidence: None,
-                            command: None,
-                            kept_lines: vec![],
-                        }),
-                        diff: None,
-                        streamed: false,
-                        terminal_id: None,
-                        locations: None,
-                        raw_response: None,
-                        claim_source: None,
-                    }))
-                }
-            }
-        }
 
         // Provider: one ToolUse response (two parallel tools), then Text for self-reflection.
         // When chat_with_tools queue is exhausted, fallback to chat() which returns "ok".
@@ -5556,7 +5559,7 @@ mod shutdown_summary_tests {
         let channel = MockChannel::new(vec!["run tools".to_owned()]);
         let registry = create_test_registry();
         let executor = TwoToolExecutor {
-            call_count: Mutex::new(0),
+            call_count: std::sync::Mutex::new(0),
         };
         let (tx, rx) = watch::channel(MetricsSnapshot::default());
 

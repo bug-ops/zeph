@@ -221,6 +221,7 @@ fn lifecycle_state_last_no_providers_at_starts_none() {
 }
 
 #[test]
+#[allow(clippy::unchecked_time_subtraction, clippy::nonminimal_bool)]
 fn lifecycle_state_last_no_providers_at_elapsed_check() {
     use std::time::{Duration, Instant};
     // Simulate the backoff gate logic used in advance_context_lifecycle_guarded.

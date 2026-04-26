@@ -84,6 +84,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-core`: decomposed all `#[allow(clippy::too_many_lines)]` functions in `crates/zeph-core/src/agent/`
+  into focused private helpers (A.1–A.13, issue #3453). Affected modules: `mod.rs` (tool-call batch
+  dispatch, background-agent dispatch, self-reflection loop), `context/assembler.rs` (budget
+  allocation, cross-session recall, structured recall formatting), `corrections.rs` (LLM-classifier
+  evaluation, judge evaluation, user-correction detection), `mcp.rs` (server validation,
+  `ServerEntry` construction, shared metrics update). No behavior changes. (~640 lines reorganised;
+  13 `#[allow]` suppressions removed.)
 - Enable `task-metrics` and `self-check` as default Cargo features; the default binary now emits
   `cost.cps_cents` / `task.class.*` metrics and runs agent invariant checks without needing
   `--features full`. Both features have been verified across CI-593b..CI-613 with no regressions.

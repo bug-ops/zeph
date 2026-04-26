@@ -435,15 +435,12 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     pub(super) async fn finalize_plan_execution(
         &mut self,
         completed_graph: zeph_orchestration::TaskGraph,
         final_status: zeph_orchestration::GraphStatus,
     ) -> Result<&'static str, error::AgentError> {
-        use std::fmt::Write;
-
-        use zeph_orchestration::{Aggregator, GraphStatus, LlmAggregator};
+        use zeph_orchestration::GraphStatus;
 
         // AdaptOrch: record outcome synchronously before aggregation.
         if let Some(verdict) = self.orchestration.last_advisor_verdict.take()
@@ -458,136 +455,8 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
 
         let result_label = match final_status {
-            GraphStatus::Completed => {
-                let completed_count = completed_graph
-                    .tasks
-                    .iter()
-                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Completed)
-                    .count() as u64;
-                let skipped_count = completed_graph
-                    .tasks
-                    .iter()
-                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Skipped)
-                    .count() as u64;
-                self.update_metrics(|m| {
-                    m.orchestration.tasks_completed += completed_count;
-                    m.orchestration.tasks_skipped += skipped_count;
-                });
-
-                let aggregator = LlmAggregator::new(
-                    self.provider.clone(),
-                    &self.orchestration.orchestration_config,
-                );
-                match aggregator.aggregate(&completed_graph).await {
-                    Ok((synthesis, aggregator_usage)) => {
-                        let (aggr_prompt, aggr_completion) = aggregator_usage.unwrap_or((0, 0));
-                        self.update_metrics(|m| {
-                            m.api_calls += 1;
-                            m.prompt_tokens += aggr_prompt;
-                            m.completion_tokens += aggr_completion;
-                            m.total_tokens = m.prompt_tokens + m.completion_tokens;
-                        });
-                        self.record_cost_and_cache(aggr_prompt, aggr_completion);
-                        self.record_successful_task();
-                        self.channel.send(&synthesis).await?;
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "aggregation failed");
-                        self.channel
-                            .send(
-                                "Plan completed but aggregation failed. \
-                                 Check individual task results.",
-                            )
-                            .await?;
-                    }
-                }
-
-                if let Some(ref cache) = self.orchestration.plan_cache
-                    && let Some(embedding) = self.orchestration.pending_goal_embedding.take()
-                {
-                    let embed_model = self.skill_state.embedding_model.clone();
-                    if let Err(e) = cache
-                        .cache_plan(&completed_graph, &embedding, &embed_model)
-                        .await
-                    {
-                        tracing::warn!(error = %e, "plan cache: failed to cache completed plan");
-                    }
-                }
-
-                "completed"
-            }
-            GraphStatus::Failed => {
-                let failed_tasks: Vec<_> = completed_graph
-                    .tasks
-                    .iter()
-                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Failed)
-                    .collect();
-                let cancelled_tasks: Vec<_> = completed_graph
-                    .tasks
-                    .iter()
-                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Canceled)
-                    .collect();
-                let completed_count = completed_graph
-                    .tasks
-                    .iter()
-                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Completed)
-                    .count() as u64;
-                let skipped_count = completed_graph
-                    .tasks
-                    .iter()
-                    .filter(|t| t.status == zeph_orchestration::TaskStatus::Skipped)
-                    .count() as u64;
-                self.update_metrics(|m| {
-                    m.orchestration.tasks_failed += failed_tasks.len() as u64;
-                    m.orchestration.tasks_completed += completed_count;
-                    m.orchestration.tasks_skipped += skipped_count;
-                });
-                let total = completed_graph.tasks.len();
-                let msg = if failed_tasks.is_empty() && !cancelled_tasks.is_empty() {
-                    format!(
-                        "Plan canceled. {}/{} tasks did not run.\n\
-                         Use `/plan retry` to retry or check logs for details.",
-                        cancelled_tasks.len(),
-                        total
-                    )
-                } else if failed_tasks.is_empty() && cancelled_tasks.is_empty() {
-                    tracing::warn!(
-                        "plan finished with GraphStatus::Failed but no failed or canceled tasks"
-                    );
-                    "Plan failed. No task errors recorded; check logs for details.".to_string()
-                } else {
-                    let mut m = if cancelled_tasks.is_empty() {
-                        format!(
-                            "Plan failed. {}/{} tasks failed:\n",
-                            failed_tasks.len(),
-                            total
-                        )
-                    } else {
-                        format!(
-                            "Plan failed. {}/{} tasks failed, {} canceled:\n",
-                            failed_tasks.len(),
-                            total,
-                            cancelled_tasks.len()
-                        )
-                    };
-                    for t in &failed_tasks {
-                        let err: std::borrow::Cow<str> =
-                            t.result.as_ref().map_or("unknown error".into(), |r| {
-                                if r.output.len() > 500 {
-                                    r.output.chars().take(500).collect::<String>().into()
-                                } else {
-                                    r.output.as_str().into()
-                                }
-                            });
-                        let _ = writeln!(m, "  - {}: {err}", t.title);
-                    }
-                    m.push_str("\nUse `/plan retry` to retry failed tasks.");
-                    m
-                };
-                self.channel.send(&msg).await?;
-                self.orchestration.pending_graph = Some(completed_graph);
-                "failed"
-            }
+            GraphStatus::Completed => self.finalize_plan_completed(completed_graph).await?,
+            GraphStatus::Failed => self.finalize_plan_failed(completed_graph).await?,
             GraphStatus::Paused => {
                 self.channel
                     .send(
@@ -622,9 +491,189 @@ impl<C: crate::channel::Channel> Agent<C> {
         Ok(result_label)
     }
 
+    async fn finalize_plan_completed(
+        &mut self,
+        completed_graph: zeph_orchestration::TaskGraph,
+    ) -> Result<&'static str, error::AgentError> {
+        use zeph_orchestration::{Aggregator, LlmAggregator};
+
+        let completed_count = completed_graph
+            .tasks
+            .iter()
+            .filter(|t| t.status == zeph_orchestration::TaskStatus::Completed)
+            .count() as u64;
+        let skipped_count = completed_graph
+            .tasks
+            .iter()
+            .filter(|t| t.status == zeph_orchestration::TaskStatus::Skipped)
+            .count() as u64;
+        self.update_metrics(|m| {
+            m.orchestration.tasks_completed += completed_count;
+            m.orchestration.tasks_skipped += skipped_count;
+        });
+
+        let aggregator = LlmAggregator::new(
+            self.provider.clone(),
+            &self.orchestration.orchestration_config,
+        );
+        match aggregator.aggregate(&completed_graph).await {
+            Ok((synthesis, aggregator_usage)) => {
+                let (aggr_prompt, aggr_completion) = aggregator_usage.unwrap_or((0, 0));
+                self.update_metrics(|m| {
+                    m.api_calls += 1;
+                    m.prompt_tokens += aggr_prompt;
+                    m.completion_tokens += aggr_completion;
+                    m.total_tokens = m.prompt_tokens + m.completion_tokens;
+                });
+                self.record_cost_and_cache(aggr_prompt, aggr_completion);
+                self.record_successful_task();
+                self.channel.send(&synthesis).await?;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "aggregation failed");
+                self.channel
+                    .send(
+                        "Plan completed but aggregation failed. \
+                         Check individual task results.",
+                    )
+                    .await?;
+            }
+        }
+
+        if let Some(ref cache) = self.orchestration.plan_cache
+            && let Some(embedding) = self.orchestration.pending_goal_embedding.take()
+        {
+            let embed_model = self.skill_state.embedding_model.clone();
+            if let Err(e) = cache
+                .cache_plan(&completed_graph, &embedding, &embed_model)
+                .await
+            {
+                tracing::warn!(error = %e, "plan cache: failed to cache completed plan");
+            }
+        }
+
+        Ok("completed")
+    }
+
+    async fn finalize_plan_failed(
+        &mut self,
+        completed_graph: zeph_orchestration::TaskGraph,
+    ) -> Result<&'static str, error::AgentError> {
+        use std::fmt::Write;
+
+        let failed_tasks: Vec<_> = completed_graph
+            .tasks
+            .iter()
+            .filter(|t| t.status == zeph_orchestration::TaskStatus::Failed)
+            .collect();
+        let cancelled_tasks: Vec<_> = completed_graph
+            .tasks
+            .iter()
+            .filter(|t| t.status == zeph_orchestration::TaskStatus::Canceled)
+            .collect();
+        let completed_count = completed_graph
+            .tasks
+            .iter()
+            .filter(|t| t.status == zeph_orchestration::TaskStatus::Completed)
+            .count() as u64;
+        let skipped_count = completed_graph
+            .tasks
+            .iter()
+            .filter(|t| t.status == zeph_orchestration::TaskStatus::Skipped)
+            .count() as u64;
+        self.update_metrics(|m| {
+            m.orchestration.tasks_failed += failed_tasks.len() as u64;
+            m.orchestration.tasks_completed += completed_count;
+            m.orchestration.tasks_skipped += skipped_count;
+        });
+        let total = completed_graph.tasks.len();
+        let msg = if failed_tasks.is_empty() && !cancelled_tasks.is_empty() {
+            format!(
+                "Plan canceled. {}/{} tasks did not run.\n\
+                 Use `/plan retry` to retry or check logs for details.",
+                cancelled_tasks.len(),
+                total
+            )
+        } else if failed_tasks.is_empty() && cancelled_tasks.is_empty() {
+            tracing::warn!(
+                "plan finished with GraphStatus::Failed but no failed or canceled tasks"
+            );
+            "Plan failed. No task errors recorded; check logs for details.".to_string()
+        } else {
+            let mut m = if cancelled_tasks.is_empty() {
+                format!(
+                    "Plan failed. {}/{} tasks failed:\n",
+                    failed_tasks.len(),
+                    total
+                )
+            } else {
+                format!(
+                    "Plan failed. {}/{} tasks failed, {} canceled:\n",
+                    failed_tasks.len(),
+                    total,
+                    cancelled_tasks.len()
+                )
+            };
+            for t in &failed_tasks {
+                let err: std::borrow::Cow<str> =
+                    t.result.as_ref().map_or("unknown error".into(), |r| {
+                        if r.output.len() > 500 {
+                            r.output.chars().take(500).collect::<String>().into()
+                        } else {
+                            r.output.as_str().into()
+                        }
+                    });
+                let _ = writeln!(m, "  - {}: {err}", t.title);
+            }
+            m.push_str("\nUse `/plan retry` to retry failed tasks.");
+            m
+        };
+        self.channel.send(&msg).await?;
+        self.orchestration.pending_graph = Some(completed_graph);
+        Ok("failed")
+    }
+
     // ----- _as_string variants (used by AgentAccess / CommandHandler) -----
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
+    async fn compute_topology_hint(
+        &mut self,
+        goal: &str,
+    ) -> Option<zeph_orchestration::TopologyHint> {
+        let advisor = self.orchestration.topology_advisor.clone()?;
+        let verdict = advisor.recommend(goal).await;
+        tracing::debug!(
+            class = ?verdict.class,
+            hint = ?verdict.hint,
+            exploit = verdict.exploit,
+            fallback = verdict.fallback,
+            "adaptorch verdict"
+        );
+        let hint = verdict.hint;
+        self.orchestration.last_advisor_verdict = Some(verdict);
+        Some(hint)
+    }
+
+    fn record_plan_metrics(
+        &mut self,
+        graph: &zeph_orchestration::TaskGraph,
+        usage: Option<(u64, u64)>,
+    ) {
+        let task_count = graph.tasks.len() as u64;
+        let snapshot = crate::metrics::TaskGraphSnapshot::from(graph);
+        let (planner_prompt, planner_completion) = usage.unwrap_or((0, 0));
+        self.update_metrics(|m| {
+            m.api_calls += 1;
+            m.prompt_tokens += planner_prompt;
+            m.completion_tokens += planner_completion;
+            m.total_tokens = m.prompt_tokens + m.completion_tokens;
+            m.orchestration.plans_total += 1;
+            m.orchestration.tasks_total += task_count;
+            m.orchestration_graph = Some(snapshot);
+        });
+        self.record_cost_and_cache(planner_prompt, planner_completion);
+        self.record_successful_task();
+    }
+
     pub(super) async fn handle_plan_goal_as_string(
         &mut self,
         goal: &str,
@@ -643,7 +692,6 @@ impl<C: crate::channel::Channel> Agent<C> {
             .as_ref()
             .map(|m| m.definitions().to_vec())
             .unwrap_or_default();
-
         let confirm_before_execute = self
             .orchestration
             .orchestration_config
@@ -651,29 +699,13 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         self.init_plan_cache_if_needed().await;
         let goal_embedding = self.goal_embedding_for_cache(goal).await;
-
         tracing::debug!(
             cache_enabled = self.orchestration.orchestration_config.plan_cache.enabled,
             has_embedding = goal_embedding.is_some(),
             "plan cache state for goal"
         );
 
-        // AdaptOrch: classify goal and obtain topology hint before planning.
-        let topology_hint = if let Some(ref advisor) = self.orchestration.topology_advisor.clone() {
-            let verdict = advisor.recommend(goal).await;
-            tracing::debug!(
-                class = ?verdict.class,
-                hint = ?verdict.hint,
-                exploit = verdict.exploit,
-                fallback = verdict.fallback,
-                "adaptorch verdict"
-            );
-            let hint = verdict.hint;
-            self.orchestration.last_advisor_verdict = Some(verdict);
-            Some(hint)
-        } else {
-            None
-        };
+        let topology_hint = self.compute_topology_hint(goal).await;
 
         let planner_provider = self
             .orchestration
@@ -686,7 +718,6 @@ impl<C: crate::channel::Channel> Agent<C> {
         let max_tasks = self.orchestration.orchestration_config.max_tasks;
         let (graph, planner_usage) = {
             use zeph_orchestration::Planner as _;
-            // Use cache when there is no hint, or when the hint has no prompt sentence (Hybrid).
             let use_cache = topology_hint
                 .as_ref()
                 .is_none_or(|h| h.prompt_sentence().is_none());
@@ -711,21 +742,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         };
 
         self.orchestration.pending_goal_embedding = goal_embedding;
-
-        let task_count = graph.tasks.len() as u64;
-        let snapshot = crate::metrics::TaskGraphSnapshot::from(&graph);
-        let (planner_prompt, planner_completion) = planner_usage.unwrap_or((0, 0));
-        self.update_metrics(|m| {
-            m.api_calls += 1;
-            m.prompt_tokens += planner_prompt;
-            m.completion_tokens += planner_completion;
-            m.total_tokens = m.prompt_tokens + m.completion_tokens;
-            m.orchestration.plans_total += 1;
-            m.orchestration.tasks_total += task_count;
-            m.orchestration_graph = Some(snapshot);
-        });
-        self.record_cost_and_cache(planner_prompt, planner_completion);
-        self.record_successful_task();
+        self.record_plan_metrics(&graph, planner_usage);
 
         let summary = format_plan_summary(&graph);
         if confirm_before_execute {
@@ -804,10 +821,78 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
-    // too_many_lines: sequential status×action dispatch table; branching is inherent
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
+    fn resume_loaded_graph(
+        &mut self,
+        loaded: zeph_orchestration::TaskGraph,
+        id_str: &str,
+    ) -> String {
+        use zeph_orchestration::{GraphStatus, TaskStatus};
+        match loaded.status {
+            GraphStatus::Completed => {
+                format!("Plan '{id_str}' is already Completed. Use `/plan status` to view results.")
+            }
+            GraphStatus::Canceled => format!(
+                "Plan '{id_str}' was Canceled and cannot be resumed. \
+                 Start a new plan with `/plan <goal>`."
+            ),
+            GraphStatus::Paused => {
+                let msg = format!(
+                    "Resuming plan: {}\nUse `/plan confirm` to continue execution.",
+                    loaded.goal
+                );
+                tracing::info!(graph_id = %loaded.id, "rehydrated paused graph from disk");
+                self.orchestration.pending_graph = Some(loaded);
+                msg
+            }
+            GraphStatus::Running => {
+                // Crash recovery: reset in-flight tasks to Ready and treat as Paused.
+                let mut graph = loaded;
+                let running_count = graph
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == TaskStatus::Running)
+                    .count();
+                for task in &mut graph.tasks {
+                    if task.status == TaskStatus::Running {
+                        task.status = TaskStatus::Ready;
+                        task.assigned_agent = None;
+                    }
+                }
+                graph.status = GraphStatus::Paused;
+                let msg = format!(
+                    "Recovered plan after interruption ({running_count} in-flight task(s) reset). \
+                     Use `/plan confirm` to continue."
+                );
+                tracing::info!(
+                    graph_id = %graph.id,
+                    running_count,
+                    "crash-recovery: rehydrated Running graph from disk, reset to Paused"
+                );
+                self.orchestration.pending_graph = Some(graph);
+                msg
+            }
+            GraphStatus::Failed => {
+                let msg = format!(
+                    "Plan '{id_str}' is in Failed status. \
+                     Use `/plan retry` to retry failed tasks or `/plan status` to inspect."
+                );
+                tracing::info!(graph_id = %loaded.id, "rehydrated failed graph from disk");
+                self.orchestration.pending_graph = Some(loaded);
+                msg
+            }
+            GraphStatus::Created => {
+                let msg = format!(
+                    "Plan '{id_str}' has not started executing. Use `/plan confirm` to start."
+                );
+                tracing::info!(graph_id = %loaded.id, "rehydrated created graph from disk");
+                self.orchestration.pending_graph = Some(loaded);
+                msg
+            }
+        }
+    }
+
     pub(super) async fn handle_plan_resume_as_string(&mut self, graph_id: Option<&str>) -> String {
-        use zeph_orchestration::{GraphId, GraphStatus, TaskStatus};
+        use zeph_orchestration::{GraphId, GraphStatus};
 
         // Path A: active pending_graph exists — use existing status-gate logic.
         if let Some(ref graph) = self.orchestration.pending_graph {
@@ -846,92 +931,22 @@ impl<C: crate::channel::Channel> Agent<C> {
             return "No paused plan to resume. Use `/plan status` to check the current state."
                 .to_owned();
         };
-
         let graph_id_parsed = match id_str.parse::<GraphId>() {
             Ok(id) => id,
             Err(e) => return format!("Invalid graph id '{id_str}': {e}"),
         };
-
         let Some(ref persistence) = self.orchestration.graph_persistence else {
             return "Graph persistence is disabled. \
                     Set `orchestration.persistence_enabled = true` in config."
                 .to_owned();
         };
-
         let loaded = match persistence.load(&graph_id_parsed).await {
             Ok(Some(g)) => g,
             Ok(None) => return format!("Graph '{id_str}' not found in persistence."),
             Err(e) => return format!("Failed to load graph '{id_str}' from persistence: {e}"),
         };
 
-        match loaded.status {
-            GraphStatus::Completed => {
-                format!(
-                    "Plan '{id_str}' is already Completed. \
-                     Use `/plan status` to view results."
-                )
-            }
-            GraphStatus::Canceled => {
-                format!(
-                    "Plan '{id_str}' was Canceled and cannot be resumed. \
-                     Start a new plan with `/plan <goal>`."
-                )
-            }
-            GraphStatus::Paused => {
-                let msg = format!(
-                    "Resuming plan: {}\nUse `/plan confirm` to continue execution.",
-                    loaded.goal
-                );
-                tracing::info!(graph_id = %loaded.id, "rehydrated paused graph from disk");
-                self.orchestration.pending_graph = Some(loaded);
-                msg
-            }
-            GraphStatus::Running => {
-                // Crash recovery: treat as paused, reset in-flight tasks to Ready.
-                let mut graph = loaded;
-                let running_count = graph
-                    .tasks
-                    .iter()
-                    .filter(|t| t.status == TaskStatus::Running)
-                    .count();
-                for task in &mut graph.tasks {
-                    if task.status == TaskStatus::Running {
-                        task.status = TaskStatus::Ready;
-                        task.assigned_agent = None;
-                    }
-                }
-                graph.status = GraphStatus::Paused;
-                let msg = format!(
-                    "Recovered plan after interruption ({running_count} in-flight task(s) reset). \
-                     Use `/plan confirm` to continue."
-                );
-                tracing::info!(
-                    graph_id = %graph.id,
-                    running_count,
-                    "crash-recovery: rehydrated Running graph from disk, reset to Paused"
-                );
-                self.orchestration.pending_graph = Some(graph);
-                msg
-            }
-            GraphStatus::Failed => {
-                let msg = format!(
-                    "Plan '{id_str}' is in Failed status. \
-                     Use `/plan retry` to retry failed tasks or `/plan status` to inspect."
-                );
-                tracing::info!(graph_id = %loaded.id, "rehydrated failed graph from disk");
-                self.orchestration.pending_graph = Some(loaded);
-                msg
-            }
-            GraphStatus::Created => {
-                let msg = format!(
-                    "Plan '{id_str}' has not started executing. \
-                     Use `/plan confirm` to start."
-                );
-                tracing::info!(graph_id = %loaded.id, "rehydrated created graph from disk");
-                self.orchestration.pending_graph = Some(loaded);
-                msg
-            }
-        }
+        self.resume_loaded_graph(loaded, id_str)
     }
 
     pub(super) fn handle_plan_retry_as_string(

@@ -436,9 +436,7 @@ impl<C: Channel> Agent<C> {
     /// `has_injection_flags` controls whether Qdrant embedding is skipped for this message.
     /// When `true` and `guard_memory_writes` is enabled, only `SQLite` is written — the message
     /// is saved for conversation continuity but will not pollute semantic search (M2, D2).
-    #[allow(clippy::too_many_lines)]
     // TODO(B2): extract sub-functions or move logic to reduce function length
-    // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "agent.persist_message", skip_all)
@@ -457,21 +455,8 @@ impl<C: Channel> Agent<C> {
             return;
         };
 
-        let parts_json = if parts.is_empty() {
-            "[]".to_string()
-        } else {
-            match serde_json::to_string(parts) {
-                Ok(json) => json,
-                Err(e) => {
-                    tracing::error!(
-                        role = ?role,
-                        parts_count = parts.len(),
-                        error = %e,
-                        "failed to serialize message parts — skipping persist to avoid orphaned tool pair"
-                    );
-                    return;
-                }
-            }
+        let Some(parts_json) = serialize_parts_json(parts, role) else {
+            return;
         };
 
         // M2: injection flag is passed explicitly to avoid stale mutable-bool state on Agent.
@@ -494,79 +479,34 @@ impl<C: Channel> Agent<C> {
             );
         }
 
-        let skip_embedding = guard_event.is_some();
-
-        // Do not embed [skipped] or [stopped] ToolResult content into Qdrant — these are
-        // internal policy markers that carry no useful semantic information and would
-        // contaminate memory_search results, causing the utility-gate Retrieve loop (#2620).
-        let has_skipped_tool_result = parts.iter().any(|p| {
-            if let MessagePart::ToolResult { content, .. } = p {
-                content.starts_with("[skipped]") || content.starts_with("[stopped]")
-            } else {
-                false
-            }
-        });
-
-        let should_embed = if skip_embedding || has_skipped_tool_result {
-            false
-        } else {
-            match role {
-                Role::Assistant => {
-                    self.memory_state.persistence.autosave_assistant
-                        && content.len() >= self.memory_state.persistence.autosave_min_length
-                }
-                _ => true,
-            }
-        };
+        let should_embed = should_embed_message(
+            guard_event.is_some(),
+            parts,
+            role,
+            self.memory_state.persistence.autosave_assistant,
+            self.memory_state.persistence.autosave_min_length,
+            content.len(),
+        );
 
         let goal_text = self.memory_state.extraction.goal_text.clone();
 
         tracing::debug!(
             "persist_message: calling remember_with_parts, embed dispatched to background"
         );
-        let (embedding_stored, was_persisted) = if should_embed {
-            match memory
-                .remember_with_parts(
-                    cid,
-                    role_str(role),
-                    content,
-                    &parts_json,
-                    goal_text.as_deref(),
-                )
-                .await
-            {
-                Ok((Some(message_id), stored)) => {
-                    self.msg.last_persisted_message_id = Some(message_id.0);
-                    (stored, true)
-                }
-                Ok((None, _)) => {
-                    // A-MAC admission rejected — skip increment and further processing.
-                    return;
-                }
-                Err(e) => {
-                    tracing::error!("failed to persist message: {e:#}");
-                    return;
-                }
-            }
-        } else {
-            match memory
-                .save_only(cid, role_str(role), content, &parts_json)
-                .await
-            {
-                Ok(message_id) => {
-                    self.msg.last_persisted_message_id = Some(message_id.0);
-                    (false, true)
-                }
-                Err(e) => {
-                    tracing::error!("failed to persist message: {e:#}");
-                    return;
-                }
-            }
-        };
-
-        if !was_persisted {
+        let Some((embedding_stored, message_id)) = write_message_to_memory(
+            memory,
+            cid,
+            role,
+            content,
+            &parts_json,
+            goal_text.as_deref(),
+            should_embed,
+        )
+        .await
+        else {
             return;
-        }
+        };
+        self.msg.last_persisted_message_id = Some(message_id);
 
         self.memory_state.persistence.unsummarized_count += 1;
 
@@ -666,15 +606,12 @@ impl<C: Channel> Agent<C> {
     ///
     /// Guards (enabled check, injection/tool-result skip) stay on the foreground path.
     /// The RPE check and actual extraction run in background (S2: no `send_status`).
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     async fn enqueue_graph_extraction_task(
         &mut self,
         content: &str,
         has_injection_flags: bool,
         has_tool_result_parts: bool,
     ) {
-        use zeph_memory::semantic::GraphExtractionConfig;
-
         if self.memory_state.persistence.memory.is_none()
             || self.memory_state.persistence.conversation_id.is_none()
         {
@@ -689,34 +626,14 @@ impl<C: Channel> Agent<C> {
             return;
         }
 
-        let extraction_cfg = {
-            let cfg = &self.memory_state.extraction.graph_config;
-            if !cfg.enabled {
-                return;
-            }
-            GraphExtractionConfig {
-                max_entities: cfg.max_entities_per_message,
-                max_edges: cfg.max_edges_per_message,
-                extraction_timeout_secs: cfg.extraction_timeout_secs,
-                community_refresh_interval: cfg.community_refresh_interval,
-                expired_edge_retention_days: cfg.expired_edge_retention_days,
-                max_entities_cap: cfg.max_entities,
-                community_summary_max_prompt_bytes: cfg.community_summary_max_prompt_bytes,
-                community_summary_concurrency: cfg.community_summary_concurrency,
-                lpa_edge_chunk_size: cfg.lpa_edge_chunk_size,
-                note_linking: zeph_memory::NoteLinkingConfig {
-                    enabled: cfg.note_linking.enabled,
-                    similarity_threshold: cfg.note_linking.similarity_threshold,
-                    top_k: cfg.note_linking.top_k,
-                    timeout_secs: cfg.note_linking.timeout_secs,
-                },
-                link_weight_decay_lambda: cfg.link_weight_decay_lambda,
-                link_weight_decay_interval_secs: cfg.link_weight_decay_interval_secs,
-                belief_revision_enabled: cfg.belief_revision.enabled,
-                belief_revision_similarity_threshold: cfg.belief_revision.similarity_threshold,
-                conversation_id: self.memory_state.persistence.conversation_id.map(|c| c.0),
-            }
-        };
+        let cfg = &self.memory_state.extraction.graph_config;
+        if !cfg.enabled {
+            return;
+        }
+        let extraction_cfg = build_graph_extraction_config(
+            cfg,
+            self.memory_state.persistence.conversation_id.map(|c| c.0),
+        );
 
         // RPE check: embed + compute surprise score. Stays on foreground to avoid
         // capturing the rpe_router mutex in a background task.
@@ -725,27 +642,7 @@ impl<C: Channel> Agent<C> {
             return;
         }
 
-        let context_messages: Vec<String> = self
-            .msg
-            .messages
-            .iter()
-            .rev()
-            .filter(|m| {
-                m.role == Role::User
-                    && !m
-                        .parts
-                        .iter()
-                        .any(|p| matches!(p, MessagePart::ToolResult { .. }))
-            })
-            .take(4)
-            .map(|m| {
-                if m.content.len() > 2048 {
-                    m.content[..m.content.floor_char_boundary(2048)].to_owned()
-                } else {
-                    m.content.clone()
-                }
-            })
-            .collect();
+        let context_messages = collect_context_messages(&self.msg.messages);
 
         let Some(memory) = self.memory_state.persistence.memory.clone() else {
             return;
@@ -762,6 +659,28 @@ impl<C: Channel> Agent<C> {
                 None
             };
 
+        self.spawn_graph_extraction_task(
+            memory,
+            content,
+            context_messages,
+            extraction_cfg,
+            validator,
+        );
+
+        // Sync community failures and extraction metrics (cheap, foreground-safe).
+        self.sync_community_detection_failures();
+        self.sync_graph_extraction_metrics();
+        self.enqueue_graph_count_sync_task();
+    }
+
+    fn spawn_graph_extraction_task(
+        &mut self,
+        memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
+        content: &str,
+        context_messages: Vec<String>,
+        extraction_cfg: zeph_memory::semantic::GraphExtractionConfig,
+        validator: zeph_memory::semantic::PostExtractValidator,
+    ) {
         let content_owned = content.to_owned();
         let graph_store = memory.graph_store.clone();
         let metrics_tx = self.metrics.metrics_tx.clone();
@@ -778,7 +697,7 @@ impl<C: Channel> Agent<C> {
                     validator,
                 );
 
-                // After extraction completes, refresh graph count metrics (was Telemetry spawn).
+                // After extraction completes, refresh graph count metrics.
                 if let (Some(store), Some(tx)) = (graph_store, metrics_tx) {
                     let _ = extraction_handle.await;
                     let (entities, edges, communities) = tokio::join!(
@@ -800,11 +719,10 @@ impl<C: Channel> Agent<C> {
                 tracing::debug!("background graph extraction complete");
             },
         );
+    }
 
-        // Sync community failures and extraction metrics (cheap, foreground-safe).
-        self.sync_community_detection_failures();
-        self.sync_graph_extraction_metrics();
-        // sync_graph_counts and sync_guidelines_status are DB reads; move to Telemetry background.
+    // sync_graph_counts and sync_guidelines_status are DB reads; enqueued as Telemetry background.
+    fn enqueue_graph_count_sync_task(&mut self) {
         let memory_for_sync = self.memory_state.persistence.memory.clone();
         let metrics_tx_sync = self.metrics.metrics_tx.clone();
         let start_time_sync = self.lifecycle.start_time;
@@ -1129,6 +1047,144 @@ impl<C: Channel> Agent<C> {
             false
         }
     }
+}
+
+fn serialize_parts_json(parts: &[MessagePart], role: Role) -> Option<String> {
+    if parts.is_empty() {
+        return Some("[]".to_string());
+    }
+    match serde_json::to_string(parts) {
+        Ok(json) => Some(json),
+        Err(e) => {
+            tracing::error!(
+                role = ?role,
+                parts_count = parts.len(),
+                error = %e,
+                "failed to serialize message parts — skipping persist to avoid orphaned tool pair"
+            );
+            None
+        }
+    }
+}
+
+fn should_embed_message(
+    skip_embedding: bool,
+    parts: &[MessagePart],
+    role: Role,
+    autosave_assistant: bool,
+    autosave_min_length: usize,
+    content_len: usize,
+) -> bool {
+    if skip_embedding {
+        return false;
+    }
+    // Do not embed [skipped] or [stopped] ToolResult content into Qdrant — these are
+    // internal policy markers that carry no useful semantic information and would
+    // contaminate memory_search results, causing the utility-gate Retrieve loop (#2620).
+    let has_skipped_tool_result = parts.iter().any(|p| {
+        if let MessagePart::ToolResult { content, .. } = p {
+            content.starts_with("[skipped]") || content.starts_with("[stopped]")
+        } else {
+            false
+        }
+    });
+    if has_skipped_tool_result {
+        return false;
+    }
+    match role {
+        Role::Assistant => autosave_assistant && content_len >= autosave_min_length,
+        _ => true,
+    }
+}
+
+fn build_graph_extraction_config(
+    cfg: &zeph_config::memory::GraphConfig,
+    conversation_id: Option<i64>,
+) -> zeph_memory::semantic::GraphExtractionConfig {
+    zeph_memory::semantic::GraphExtractionConfig {
+        max_entities: cfg.max_entities_per_message,
+        max_edges: cfg.max_edges_per_message,
+        extraction_timeout_secs: cfg.extraction_timeout_secs,
+        community_refresh_interval: cfg.community_refresh_interval,
+        expired_edge_retention_days: cfg.expired_edge_retention_days,
+        max_entities_cap: cfg.max_entities,
+        community_summary_max_prompt_bytes: cfg.community_summary_max_prompt_bytes,
+        community_summary_concurrency: cfg.community_summary_concurrency,
+        lpa_edge_chunk_size: cfg.lpa_edge_chunk_size,
+        note_linking: zeph_memory::NoteLinkingConfig {
+            enabled: cfg.note_linking.enabled,
+            similarity_threshold: cfg.note_linking.similarity_threshold,
+            top_k: cfg.note_linking.top_k,
+            timeout_secs: cfg.note_linking.timeout_secs,
+        },
+        link_weight_decay_lambda: cfg.link_weight_decay_lambda,
+        link_weight_decay_interval_secs: cfg.link_weight_decay_interval_secs,
+        belief_revision_enabled: cfg.belief_revision.enabled,
+        belief_revision_similarity_threshold: cfg.belief_revision.similarity_threshold,
+        conversation_id,
+    }
+}
+
+// Returns `(embedding_stored, message_id)` on success, or `None` when the message was rejected
+// (A-MAC admission) or a DB error occurred.
+async fn write_message_to_memory(
+    memory: &zeph_memory::semantic::SemanticMemory,
+    cid: zeph_memory::ConversationId,
+    role: Role,
+    content: &str,
+    parts_json: &str,
+    goal_text: Option<&str>,
+    should_embed: bool,
+) -> Option<(bool, i64)> {
+    if should_embed {
+        match memory
+            .remember_with_parts(cid, role_str(role), content, parts_json, goal_text)
+            .await
+        {
+            Ok((Some(message_id), stored)) => Some((stored, message_id.0)),
+            Ok((None, _)) => {
+                // A-MAC admission rejected — skip increment and further processing.
+                None
+            }
+            Err(e) => {
+                tracing::error!("failed to persist message: {e:#}");
+                None
+            }
+        }
+    } else {
+        match memory
+            .save_only(cid, role_str(role), content, parts_json)
+            .await
+        {
+            Ok(message_id) => Some((false, message_id.0)),
+            Err(e) => {
+                tracing::error!("failed to persist message: {e:#}");
+                None
+            }
+        }
+    }
+}
+
+fn collect_context_messages(messages: &[zeph_llm::provider::Message]) -> Vec<String> {
+    messages
+        .iter()
+        .rev()
+        .filter(|m| {
+            m.role == Role::User
+                && !m
+                    .parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::ToolResult { .. }))
+        })
+        .take(4)
+        .map(|m| {
+            if m.content.len() > 2048 {
+                m.content[..m.content.floor_char_boundary(2048)].to_owned()
+            } else {
+                m.content.clone()
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

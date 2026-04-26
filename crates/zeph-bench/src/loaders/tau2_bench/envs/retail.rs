@@ -702,6 +702,7 @@ mod tests {
         RetailEnv::new_from_seed(&db_path).unwrap()
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn call(tool: &str, params: serde_json::Value) -> ToolCall {
         use zeph_common::ToolName;
         ToolCall {

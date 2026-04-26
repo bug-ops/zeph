@@ -164,7 +164,6 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     /// Return formatted session status string for use via [`AgentAccess::session_status`].
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     pub(super) fn handle_status_as_string(&mut self) -> String {
         use std::fmt::Write;
         use zeph_llm::provider::Role;
@@ -177,37 +176,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .filter(|m| m.role == Role::User)
             .count();
 
-        let (
-            api_calls,
-            prompt_tokens,
-            completion_tokens,
-            cost_cents,
-            mcp_servers,
-            orch_plans,
-            orch_tasks,
-            orch_completed,
-            orch_failed,
-            orch_skipped,
-            provider_breakdown,
-        ) = if let Some(ref tx) = self.metrics.metrics_tx {
-            let m = tx.borrow();
-            (
-                m.api_calls,
-                m.prompt_tokens,
-                m.completion_tokens,
-                m.cost_spent_cents,
-                m.mcp_server_count,
-                m.orchestration.plans_total,
-                m.orchestration.tasks_total,
-                m.orchestration.tasks_completed,
-                m.orchestration.tasks_failed,
-                m.orchestration.tasks_skipped,
-                m.provider_cost_breakdown.clone(),
-            )
-        } else {
-            (0, 0, 0, 0.0, 0, 0, 0, 0, 0, 0, vec![])
-        };
-
+        let metrics = collect_status_metrics(self.metrics.metrics_tx.as_ref());
         let skill_count = self.skill_state.registry.read().all_meta().len();
 
         let mut out = String::from("Session status:\n\n");
@@ -215,13 +184,14 @@ impl<C: crate::channel::Channel> Agent<C> {
         let _ = writeln!(out, "Model:     {}", self.runtime.model_name);
         let _ = writeln!(out, "Uptime:    {uptime}s");
         let _ = writeln!(out, "Turns:     {msg_count}");
-        let _ = writeln!(out, "API calls: {api_calls}");
+        let _ = writeln!(out, "API calls: {}", metrics.api_calls);
         let _ = writeln!(
             out,
-            "Tokens:    {prompt_tokens} prompt / {completion_tokens} completion"
+            "Tokens:    {} prompt / {} completion",
+            metrics.prompt_tokens, metrics.completion_tokens
         );
         let _ = writeln!(out, "Skills:    {skill_count}");
-        let _ = writeln!(out, "MCP:       {mcp_servers} server(s)");
+        let _ = writeln!(out, "MCP:       {} server(s)", metrics.mcp_servers);
         if let Some(ref tf) = self.tool_state.tool_schema_filter {
             let _ = writeln!(
                 out,
@@ -243,78 +213,22 @@ impl<C: crate::channel::Channel> Agent<C> {
                 provider_display, adv.policy_count, adv.fail_open
             );
         }
-        if cost_cents > 0.0 {
-            let _ = writeln!(out, "Cost:      ${:.4}", cost_cents / 100.0);
-            if !provider_breakdown.is_empty() {
-                let _ = writeln!(
-                    out,
-                    "  {:<16} {:>8} {:>8} {:>8}",
-                    "Provider", "Requests", "Tokens", "Cost"
-                );
-                for (name, usage) in &provider_breakdown {
-                    let total_tokens = usage.input_tokens + usage.output_tokens;
-                    let _ = writeln!(
-                        out,
-                        "  {:<16} {:>8} {:>8} {:>8}",
-                        name,
-                        usage.request_count,
-                        total_tokens,
-                        format!("${:.4}", usage.cost_cents / 100.0),
-                    );
-                }
-            }
-        }
-        if orch_plans > 0 {
-            let _ = writeln!(out);
-            let _ = writeln!(out, "Orchestration:");
-            let _ = writeln!(out, "  Plans:     {orch_plans}");
-            let _ = writeln!(out, "  Tasks:     {orch_completed}/{orch_tasks} completed");
-            if orch_failed > 0 {
-                let _ = writeln!(out, "  Failed:    {orch_failed}");
-            }
-            if orch_skipped > 0 {
-                let _ = writeln!(out, "  Skipped:   {orch_skipped}");
-            }
-        }
-
-        {
-            use crate::config::PruningStrategy;
-            if matches!(
-                self.context_manager.compression.pruning_strategy,
-                PruningStrategy::Subgoal | PruningStrategy::SubgoalMig
-            ) {
-                let _ = writeln!(out);
-                let _ = writeln!(
-                    out,
-                    "Pruning:   {}",
-                    match self.context_manager.compression.pruning_strategy {
-                        PruningStrategy::SubgoalMig => "subgoal_mig",
-                        _ => "subgoal",
-                    }
-                );
-                let subgoal_count = self.compression.subgoal_registry.subgoals.len();
-                let _ = writeln!(out, "Subgoals:  {subgoal_count} tracked");
-                if let Some(active) = self.compression.subgoal_registry.active_subgoal() {
-                    let _ = writeln!(out, "Active:    \"{}\"", active.description);
-                } else {
-                    let _ = writeln!(out, "Active:    (none yet)");
-                }
-            }
-        }
-
-        let gc = &self.memory_state.extraction.graph_config;
-        if gc.enabled {
-            let _ = writeln!(out);
-            if gc.spreading_activation.enabled {
-                let _ = writeln!(
-                    out,
-                    "Graph recall: spreading activation (lambda={:.2}, hops={})",
-                    gc.spreading_activation.decay_lambda, gc.spreading_activation.max_hops,
-                );
-            } else {
-                let _ = writeln!(out, "Graph recall: BFS (hops={})", gc.max_hops);
-            }
-        }
+        append_cost_section(&mut out, metrics.cost_cents, &metrics.provider_breakdown);
+        append_orchestration_section(
+            &mut out,
+            metrics.orch_plans,
+            metrics.orch_tasks,
+            metrics.orch_completed,
+            metrics.orch_failed,
+            metrics.orch_skipped,
+        );
+        append_pruning_section(
+            &mut out,
+            self.context_manager.compression.pruning_strategy,
+            self.compression.subgoal_registry.subgoals.len(),
+            self.compression.subgoal_registry.active_subgoal(),
+        );
+        append_graph_recall_section(&mut out, &self.memory_state.extraction.graph_config);
 
         out.trim_end().to_owned()
     }
@@ -661,6 +575,153 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         let report = matcher.confusability_report(&refs, threshold).await;
         Ok(report.to_string())
+    }
+}
+
+struct StatusMetrics {
+    api_calls: u64,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    cost_cents: f64,
+    mcp_servers: usize,
+    orch_plans: u64,
+    orch_tasks: u64,
+    orch_completed: u64,
+    orch_failed: u64,
+    orch_skipped: u64,
+    provider_breakdown: Vec<(String, crate::cost::ProviderUsage)>,
+}
+
+fn collect_status_metrics(
+    metrics_tx: Option<&tokio::sync::watch::Sender<crate::metrics::MetricsSnapshot>>,
+) -> StatusMetrics {
+    if let Some(tx) = metrics_tx {
+        let m = tx.borrow();
+        StatusMetrics {
+            api_calls: m.api_calls,
+            prompt_tokens: m.prompt_tokens,
+            completion_tokens: m.completion_tokens,
+            cost_cents: m.cost_spent_cents,
+            mcp_servers: m.mcp_server_count,
+            orch_plans: m.orchestration.plans_total,
+            orch_tasks: m.orchestration.tasks_total,
+            orch_completed: m.orchestration.tasks_completed,
+            orch_failed: m.orchestration.tasks_failed,
+            orch_skipped: m.orchestration.tasks_skipped,
+            provider_breakdown: m.provider_cost_breakdown.clone(),
+        }
+    } else {
+        StatusMetrics {
+            api_calls: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            cost_cents: 0.0,
+            mcp_servers: 0,
+            orch_plans: 0,
+            orch_tasks: 0,
+            orch_completed: 0,
+            orch_failed: 0,
+            orch_skipped: 0,
+            provider_breakdown: vec![],
+        }
+    }
+}
+
+fn append_cost_section(
+    out: &mut String,
+    cost_cents: f64,
+    provider_breakdown: &[(String, crate::cost::ProviderUsage)],
+) {
+    use std::fmt::Write;
+    if cost_cents > 0.0 {
+        let _ = writeln!(out, "Cost:      ${:.4}", cost_cents / 100.0);
+        if !provider_breakdown.is_empty() {
+            let _ = writeln!(
+                out,
+                "  {:<16} {:>8} {:>8} {:>8}",
+                "Provider", "Requests", "Tokens", "Cost"
+            );
+            for (name, usage) in provider_breakdown {
+                let total_tokens = usage.input_tokens + usage.output_tokens;
+                let _ = writeln!(
+                    out,
+                    "  {:<16} {:>8} {:>8} {:>8}",
+                    name,
+                    usage.request_count,
+                    total_tokens,
+                    format!("${:.4}", usage.cost_cents / 100.0),
+                );
+            }
+        }
+    }
+}
+
+fn append_orchestration_section(
+    out: &mut String,
+    orch_plans: u64,
+    orch_tasks: u64,
+    orch_completed: u64,
+    orch_failed: u64,
+    orch_skipped: u64,
+) {
+    use std::fmt::Write;
+    if orch_plans > 0 {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "Orchestration:");
+        let _ = writeln!(out, "  Plans:     {orch_plans}");
+        let _ = writeln!(out, "  Tasks:     {orch_completed}/{orch_tasks} completed");
+        if orch_failed > 0 {
+            let _ = writeln!(out, "  Failed:    {orch_failed}");
+        }
+        if orch_skipped > 0 {
+            let _ = writeln!(out, "  Skipped:   {orch_skipped}");
+        }
+    }
+}
+
+fn append_pruning_section(
+    out: &mut String,
+    pruning_strategy: crate::config::PruningStrategy,
+    subgoal_count: usize,
+    active_subgoal: Option<&super::compaction_strategy::Subgoal>,
+) {
+    use crate::config::PruningStrategy;
+    use std::fmt::Write;
+    if matches!(
+        pruning_strategy,
+        PruningStrategy::Subgoal | PruningStrategy::SubgoalMig
+    ) {
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "Pruning:   {}",
+            match pruning_strategy {
+                PruningStrategy::SubgoalMig => "subgoal_mig",
+                _ => "subgoal",
+            }
+        );
+        let _ = writeln!(out, "Subgoals:  {subgoal_count} tracked");
+        if let Some(active) = active_subgoal {
+            let _ = writeln!(out, "Active:    \"{}\"", active.description);
+        } else {
+            let _ = writeln!(out, "Active:    (none yet)");
+        }
+    }
+}
+
+fn append_graph_recall_section(out: &mut String, gc: &zeph_config::memory::GraphConfig) {
+    use std::fmt::Write;
+    if gc.enabled {
+        let _ = writeln!(out);
+        if gc.spreading_activation.enabled {
+            let _ = writeln!(
+                out,
+                "Graph recall: spreading activation (lambda={:.2}, hops={})",
+                gc.spreading_activation.decay_lambda, gc.spreading_activation.max_hops,
+            );
+        } else {
+            let _ = writeln!(out, "Graph recall: BFS (hops={})", gc.max_hops);
+        }
     }
 }
 

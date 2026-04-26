@@ -90,7 +90,6 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// Tasks are supervised via [`BackgroundSupervisor`] (`TaskClass::Enrichment`).
     /// If the concurrency limit is reached, the correction check is silently dropped —
     /// corrections are non-critical lossy data.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     pub(super) fn spawn_judge_correction_check(
         &mut self,
         trimmed: &str,
@@ -110,57 +109,25 @@ impl<C: crate::channel::Channel> Agent<C> {
             .learning_engine
             .config
             .as_ref()
-            .map_or(0.6, |c| c.correction_confidence_threshold);
+            .map_or(0.6_f32, |c| c.correction_confidence_threshold);
 
         if let Some(llm_classifier) = self.feedback.llm_classifier.clone() {
-            let user_msg = user_msg_owned.clone();
-            let assistant = assistant_snippet.clone();
-            let memory_arc2 = memory_arc.clone();
-            let skill_name2 = skill_name.clone();
             let classifier_metrics_bg = self.metrics.classifier_metrics.clone();
             let metrics_tx_bg = self.metrics.metrics_tx.clone();
             self.lifecycle.supervisor.spawn(
                 super::agent_supervisor::TaskClass::Enrichment,
                 "llm_classifier_correction",
-                async move {
-                    match llm_classifier
-                        .classify_feedback(&user_msg, &assistant, confidence_threshold)
-                        .await
-                    {
-                        Ok(verdict) => {
-                            if let (Some(ref cm), Some(ref tx)) =
-                                (classifier_metrics_bg, metrics_tx_bg)
-                            {
-                                let snap = cm.snapshot();
-                                tx.send_modify(|ms| ms.classifier = snap);
-                            }
-                            if let Some(signal) = feedback_verdict_into_signal(&verdict, &user_msg)
-                            {
-                                let is_self_correction = signal.kind
-                                    == feedback_detector::CorrectionKind::SelfCorrection;
-                                tracing::info!(
-                                    kind = signal.kind.as_str(),
-                                    confidence = signal.confidence,
-                                    source = "llm-classifier",
-                                    is_self_correction,
-                                    "correction signal detected"
-                                );
-                                store_correction_in_memory(
-                                    memory_arc2,
-                                    conv_id_bg,
-                                    &assistant,
-                                    &user_msg,
-                                    skill_name2,
-                                    signal.kind.as_str(),
-                                )
-                                .await;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("llm-classifier failed: {e:#}");
-                        }
-                    }
-                },
+                evaluate_with_llm_classifier(
+                    llm_classifier,
+                    user_msg_owned,
+                    assistant_snippet,
+                    confidence_threshold,
+                    classifier_metrics_bg,
+                    metrics_tx_bg,
+                    memory_arc,
+                    conv_id_bg,
+                    skill_name,
+                ),
             );
         } else {
             let judge_provider = self
@@ -168,47 +135,18 @@ impl<C: crate::channel::Channel> Agent<C> {
                 .judge_provider
                 .clone()
                 .unwrap_or_else(|| self.provider.clone());
-            let user_msg = user_msg_owned.clone();
-            let assistant = assistant_snippet.clone();
             self.lifecycle.supervisor.spawn(
                 super::agent_supervisor::TaskClass::Enrichment,
                 "judge_correction",
-                async move {
-                    match feedback_detector::JudgeDetector::evaluate(
-                        &judge_provider,
-                        &user_msg,
-                        &assistant,
-                        confidence_threshold,
-                    )
-                    .await
-                    {
-                        Ok(verdict) => {
-                            if let Some(signal) = verdict.into_signal(&user_msg) {
-                                let is_self_correction = signal.kind
-                                    == feedback_detector::CorrectionKind::SelfCorrection;
-                                tracing::info!(
-                                    kind = signal.kind.as_str(),
-                                    confidence = signal.confidence,
-                                    source = "judge",
-                                    is_self_correction,
-                                    "correction signal detected"
-                                );
-                                store_correction_in_memory(
-                                    memory_arc,
-                                    conv_id_bg,
-                                    &assistant,
-                                    &user_msg,
-                                    skill_name,
-                                    signal.kind.as_str(),
-                                )
-                                .await;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("judge detector failed: {e:#}");
-                        }
-                    }
-                },
+                evaluate_with_judge(
+                    judge_provider,
+                    user_msg_owned,
+                    assistant_snippet,
+                    confidence_threshold,
+                    memory_arc,
+                    conv_id_bg,
+                    skill_name,
+                ),
             );
         }
     }
@@ -219,7 +157,6 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// regex result is borderline, the LLM judge runs in a background task (non-blocking).
     /// When `DetectorMode::Model` and an `LlmClassifier` is attached, the LLM classifier is
     /// used instead of `JudgeDetector`, sharing the same adaptive thresholds and rate limiter.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     pub(super) async fn detect_and_record_corrections(
         &mut self,
         trimmed: &str,
@@ -234,54 +171,13 @@ impl<C: crate::channel::Channel> Agent<C> {
             return;
         }
 
-        let previous_user_messages: Vec<&str> = self
-            .msg
-            .messages
-            .iter()
-            .filter(|m| m.role == Role::User)
-            .map(|m| m.content.as_str())
-            .collect();
-
+        let previous_user_messages = self.collect_previous_user_messages();
         let regex_signal = self
             .feedback
             .detector
             .detect(trimmed, &previous_user_messages);
 
-        let judge_should_run = if self.feedback.llm_classifier.is_some() {
-            let adaptive_low = self
-                .learning_engine
-                .config
-                .as_ref()
-                .map_or(0.5, |c| c.judge_adaptive_low);
-            let adaptive_high = self
-                .learning_engine
-                .config
-                .as_ref()
-                .map_or(0.8, |c| c.judge_adaptive_high);
-            let should_invoke = self
-                .feedback
-                .judge
-                .get_or_insert_with(|| {
-                    feedback_detector::JudgeDetector::new(adaptive_low, adaptive_high)
-                })
-                .should_invoke(regex_signal.as_ref());
-            should_invoke
-                && self
-                    .feedback
-                    .judge
-                    .as_mut()
-                    .is_some_and(feedback_detector::JudgeDetector::check_rate_limit)
-        } else {
-            self.feedback
-                .judge
-                .as_ref()
-                .is_some_and(|jd| jd.should_invoke(regex_signal.as_ref()))
-                && self
-                    .feedback
-                    .judge
-                    .as_mut()
-                    .is_some_and(feedback_detector::JudgeDetector::check_rate_limit)
-        };
+        let judge_should_run = self.should_run_judge(regex_signal.as_ref());
 
         let (signal, signal_source) = if judge_should_run {
             self.spawn_judge_correction_check(trimmed, conv_id);
@@ -308,32 +204,93 @@ impl<C: crate::channel::Channel> Agent<C> {
             )
             .await;
         }
-        if let Some(memory) = &self.memory_state.persistence.memory {
-            let correction_text = context::truncate_chars(trimmed, 500);
-            match memory
-                .sqlite()
-                .store_user_correction(
-                    conv_id.map(|c| c.0),
-                    "",
-                    &correction_text,
-                    self.skill_state
-                        .active_skill_names
-                        .first()
-                        .map(String::as_str),
-                    signal.kind.as_str(),
-                )
-                .await
-            {
-                Ok(correction_id) => {
-                    if let Err(e) = memory
-                        .store_correction_embedding(correction_id, &correction_text)
-                        .await
-                    {
-                        tracing::warn!("failed to store correction embedding: {e:#}");
-                    }
+        self.store_user_correction_inline(trimmed, conv_id, signal.kind.as_str())
+            .await;
+    }
+
+    fn collect_previous_user_messages(&self) -> Vec<&str> {
+        self.msg
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .map(|m| m.content.as_str())
+            .collect()
+    }
+
+    fn should_run_judge(
+        &mut self,
+        regex_signal: Option<&feedback_detector::CorrectionSignal>,
+    ) -> bool {
+        if self.feedback.llm_classifier.is_some() {
+            let adaptive_low = self
+                .learning_engine
+                .config
+                .as_ref()
+                .map_or(0.5, |c| c.judge_adaptive_low);
+            let adaptive_high = self
+                .learning_engine
+                .config
+                .as_ref()
+                .map_or(0.8, |c| c.judge_adaptive_high);
+            let should_invoke = self
+                .feedback
+                .judge
+                .get_or_insert_with(|| {
+                    feedback_detector::JudgeDetector::new(adaptive_low, adaptive_high)
+                })
+                .should_invoke(regex_signal);
+            should_invoke
+                && self
+                    .feedback
+                    .judge
+                    .as_mut()
+                    .is_some_and(feedback_detector::JudgeDetector::check_rate_limit)
+        } else {
+            self.feedback
+                .judge
+                .as_ref()
+                .is_some_and(|jd| jd.should_invoke(regex_signal))
+                && self
+                    .feedback
+                    .judge
+                    .as_mut()
+                    .is_some_and(feedback_detector::JudgeDetector::check_rate_limit)
+        }
+    }
+
+    async fn store_user_correction_inline(
+        &self,
+        trimmed: &str,
+        conv_id: Option<zeph_memory::ConversationId>,
+        kind_str: &str,
+    ) {
+        let Some(memory) = &self.memory_state.persistence.memory else {
+            return;
+        };
+        let correction_text = context::truncate_chars(trimmed, 500);
+        match memory
+            .sqlite()
+            .store_user_correction(
+                conv_id.map(|c| c.0),
+                "",
+                &correction_text,
+                self.skill_state
+                    .active_skill_names
+                    .first()
+                    .map(String::as_str),
+                kind_str,
+            )
+            .await
+        {
+            Ok(correction_id) => {
+                if let Err(e) = memory
+                    .store_correction_embedding(correction_id, &correction_text)
+                    .await
+                {
+                    tracing::warn!("failed to store correction embedding: {e:#}");
                 }
-                Err(e) => tracing::warn!("failed to store user correction: {e:#}"),
             }
+            Err(e) => tracing::warn!("failed to store user correction: {e:#}"),
         }
     }
 
@@ -416,5 +373,98 @@ impl<C: crate::channel::Channel> Agent<C> {
             .await?;
 
         Ok(format!("Feedback recorded for \"{skill_name}\"."))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn evaluate_with_llm_classifier(
+    llm_classifier: zeph_llm::classifier::llm::LlmClassifier,
+    user_msg: String,
+    assistant: String,
+    confidence_threshold: f32,
+    classifier_metrics_bg: Option<std::sync::Arc<zeph_llm::ClassifierMetrics>>,
+    metrics_tx_bg: Option<tokio::sync::watch::Sender<crate::metrics::MetricsSnapshot>>,
+    memory_arc: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
+    conv_id: Option<zeph_memory::ConversationId>,
+    skill_name: String,
+) {
+    match llm_classifier
+        .classify_feedback(&user_msg, &assistant, confidence_threshold)
+        .await
+    {
+        Ok(verdict) => {
+            if let (Some(ref cm), Some(ref tx)) = (classifier_metrics_bg, metrics_tx_bg) {
+                let snap = cm.snapshot();
+                tx.send_modify(|ms| ms.classifier = snap);
+            }
+            if let Some(signal) = feedback_verdict_into_signal(&verdict, &user_msg) {
+                let is_self_correction =
+                    signal.kind == feedback_detector::CorrectionKind::SelfCorrection;
+                tracing::info!(
+                    kind = signal.kind.as_str(),
+                    confidence = signal.confidence,
+                    source = "llm-classifier",
+                    is_self_correction,
+                    "correction signal detected"
+                );
+                store_correction_in_memory(
+                    memory_arc,
+                    conv_id,
+                    &assistant,
+                    &user_msg,
+                    skill_name,
+                    signal.kind.as_str(),
+                )
+                .await;
+            }
+        }
+        Err(e) => {
+            tracing::warn!("llm-classifier failed: {e:#}");
+        }
+    }
+}
+
+async fn evaluate_with_judge(
+    judge_provider: zeph_llm::any::AnyProvider,
+    user_msg: String,
+    assistant: String,
+    confidence_threshold: f32,
+    memory_arc: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
+    conv_id: Option<zeph_memory::ConversationId>,
+    skill_name: String,
+) {
+    match feedback_detector::JudgeDetector::evaluate(
+        &judge_provider,
+        &user_msg,
+        &assistant,
+        confidence_threshold,
+    )
+    .await
+    {
+        Ok(verdict) => {
+            if let Some(signal) = verdict.into_signal(&user_msg) {
+                let is_self_correction =
+                    signal.kind == feedback_detector::CorrectionKind::SelfCorrection;
+                tracing::info!(
+                    kind = signal.kind.as_str(),
+                    confidence = signal.confidence,
+                    source = "judge",
+                    is_self_correction,
+                    "correction signal detected"
+                );
+                store_correction_in_memory(
+                    memory_arc,
+                    conv_id,
+                    &assistant,
+                    &user_msg,
+                    skill_name,
+                    signal.kind.as_str(),
+                )
+                .await;
+            }
+        }
+        Err(e) => {
+            tracing::warn!("judge detector failed: {e:#}");
+        }
     }
 }

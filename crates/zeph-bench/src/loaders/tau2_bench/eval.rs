@@ -206,6 +206,7 @@ mod tests {
 
     use super::*;
 
+    #[allow(clippy::needless_pass_by_value)]
     fn make_scenario(criteria: serde_json::Value) -> Scenario {
         Scenario::single(
             "test_0",

@@ -25,7 +25,6 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     async fn handle_mcp_add(&mut self, args: &[&str]) -> Result<String, super::error::AgentError> {
         if args.len() < 2 {
             return Ok("Usage: /mcp add <id> <command> [args...] | /mcp add <id> <url>".to_owned());
@@ -37,17 +36,8 @@ impl<C: Channel> Agent<C> {
         };
 
         let target = args[1];
-        let is_url = target.starts_with("http://") || target.starts_with("https://");
-
-        // SEC-MCP-01: validate command against allowlist (stdio only)
-        if !is_url
-            && !self.mcp.allowed_commands.is_empty()
-            && !self.mcp.allowed_commands.iter().any(|c| c == target)
-        {
-            return Ok(format!(
-                "Command '{target}' is not allowed. Permitted: {}",
-                self.mcp.allowed_commands.join(", ")
-            ));
+        if let Some(err) = validate_mcp_command(target, &self.mcp.allowed_commands) {
+            return Ok(err);
         }
 
         // SEC-MCP-03: enforce server limit
@@ -59,32 +49,7 @@ impl<C: Channel> Agent<C> {
             ));
         }
 
-        let transport = if is_url {
-            zeph_mcp::McpTransport::Http {
-                url: target.to_owned(),
-                headers: std::collections::HashMap::new(),
-            }
-        } else {
-            zeph_mcp::McpTransport::Stdio {
-                command: target.to_owned(),
-                args: args[2..].iter().map(|&s| s.to_owned()).collect(),
-                env: std::collections::HashMap::new(),
-            }
-        };
-
-        let entry = zeph_mcp::ServerEntry {
-            id: args[0].to_owned(),
-            transport,
-            timeout: std::time::Duration::from_secs(30),
-            trust_level: zeph_mcp::McpTrustLevel::Untrusted,
-            tool_allowlist: None,
-            expected_tools: Vec::new(),
-            roots: Vec::new(),
-            tool_metadata: std::collections::HashMap::new(),
-            elicitation_enabled: false,
-            elicitation_timeout_secs: 120,
-            env_isolation: false,
-        };
+        let entry = build_server_entry(args[0], target, &args[2..]);
 
         match manager.add_server(&entry).await {
             Ok(tools) => {
@@ -103,35 +68,7 @@ impl<C: Channel> Agent<C> {
                 // Defer rebuild to check_tool_refresh (next turn) so this method
                 // stays Send-compatible for use in AgentAccess::handle_mcp.
                 self.mcp.pending_semantic_rebuild = true;
-                let mcp_total = self.mcp.tools.len();
-                let mcp_server_count = self.mcp.server_outcomes.len();
-                let mcp_connected_count = self
-                    .mcp
-                    .server_outcomes
-                    .iter()
-                    .filter(|o| o.connected)
-                    .count();
-                let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
-                    .mcp
-                    .server_outcomes
-                    .iter()
-                    .map(|o| crate::metrics::McpServerStatus {
-                        id: o.id.clone(),
-                        status: if o.connected {
-                            crate::metrics::McpServerConnectionStatus::Connected
-                        } else {
-                            crate::metrics::McpServerConnectionStatus::Failed
-                        },
-                        tool_count: o.tool_count,
-                        error: o.error.clone(),
-                    })
-                    .collect();
-                self.update_metrics(|m| {
-                    m.mcp_tool_count = mcp_total;
-                    m.mcp_server_count = mcp_server_count;
-                    m.mcp_connected_count = mcp_connected_count;
-                    m.mcp_servers = mcp_servers;
-                });
+                self.update_mcp_metrics();
                 Ok(format!(
                     "Connected MCP server '{}' ({count} tool(s))",
                     entry.id
@@ -221,36 +158,11 @@ impl<C: Channel> Agent<C> {
                 // Defer rebuild to check_tool_refresh (next turn) so this method
                 // stays Send-compatible for use in AgentAccess::handle_mcp.
                 self.mcp.pending_semantic_rebuild = true;
-                let mcp_total = self.mcp.tools.len();
-                let mcp_server_count = self.mcp.server_outcomes.len();
-                let mcp_connected_count = self
-                    .mcp
-                    .server_outcomes
-                    .iter()
-                    .filter(|o| o.connected)
-                    .count();
-                let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
-                    .mcp
-                    .server_outcomes
-                    .iter()
-                    .map(|o| crate::metrics::McpServerStatus {
-                        id: o.id.clone(),
-                        status: if o.connected {
-                            crate::metrics::McpServerConnectionStatus::Connected
-                        } else {
-                            crate::metrics::McpServerConnectionStatus::Failed
-                        },
-                        tool_count: o.tool_count,
-                        error: o.error.clone(),
-                    })
-                    .collect();
+                self.update_mcp_metrics();
+                let sid = server_id.to_owned();
                 self.update_metrics(|m| {
-                    m.mcp_tool_count = mcp_total;
-                    m.mcp_server_count = mcp_server_count;
-                    m.mcp_connected_count = mcp_connected_count;
-                    m.mcp_servers = mcp_servers;
                     m.active_mcp_tools
-                        .retain(|name| !name.starts_with(&format!("{server_id}:")));
+                        .retain(|name| !name.starts_with(&format!("{sid}:")));
                 });
                 Ok(format!(
                     "Disconnected MCP server '{server_id}' (removed {removed} tools)"
@@ -567,6 +479,38 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    fn update_mcp_metrics(&mut self) {
+        let mcp_total = self.mcp.tools.len();
+        let mcp_server_count = self.mcp.server_outcomes.len();
+        let mcp_connected_count = self
+            .mcp
+            .server_outcomes
+            .iter()
+            .filter(|o| o.connected)
+            .count();
+        let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
+            .mcp
+            .server_outcomes
+            .iter()
+            .map(|o| crate::metrics::McpServerStatus {
+                id: o.id.clone(),
+                status: if o.connected {
+                    crate::metrics::McpServerConnectionStatus::Connected
+                } else {
+                    crate::metrics::McpServerConnectionStatus::Failed
+                },
+                tool_count: o.tool_count,
+                error: o.error.clone(),
+            })
+            .collect();
+        self.update_metrics(|m| {
+            m.mcp_tool_count = mcp_total;
+            m.mcp_server_count = mcp_server_count;
+            m.mcp_connected_count = mcp_connected_count;
+            m.mcp_servers = mcp_servers;
+        });
+    }
+
     /// Rebuild the in-memory semantic tool index.
     ///
     /// Only runs when `discovery_strategy == Embedding`.  On failure (all embeddings fail),
@@ -628,6 +572,51 @@ impl<C: Channel> Agent<C> {
                 self.mcp.semantic_index = None;
             }
         }
+    }
+}
+
+/// SEC-MCP-01: validate that a stdio command target is on the allowlist.
+///
+/// Returns `Some(error_message)` when the command is blocked, `None` when it is allowed.
+fn validate_mcp_command(target: &str, allowed_commands: &[String]) -> Option<String> {
+    let is_url = target.starts_with("http://") || target.starts_with("https://");
+    if !is_url && !allowed_commands.is_empty() && !allowed_commands.iter().any(|c| c == target) {
+        Some(format!(
+            "Command '{target}' is not allowed. Permitted: {}",
+            allowed_commands.join(", ")
+        ))
+    } else {
+        None
+    }
+}
+
+/// Build a `ServerEntry` for a newly added MCP server from parsed `/mcp add` arguments.
+fn build_server_entry(id: &str, target: &str, extra_args: &[&str]) -> zeph_mcp::ServerEntry {
+    let is_url = target.starts_with("http://") || target.starts_with("https://");
+    let transport = if is_url {
+        zeph_mcp::McpTransport::Http {
+            url: target.to_owned(),
+            headers: std::collections::HashMap::new(),
+        }
+    } else {
+        zeph_mcp::McpTransport::Stdio {
+            command: target.to_owned(),
+            args: extra_args.iter().map(|&s| s.to_owned()).collect(),
+            env: std::collections::HashMap::new(),
+        }
+    };
+    zeph_mcp::ServerEntry {
+        id: id.to_owned(),
+        transport,
+        timeout: std::time::Duration::from_secs(30),
+        trust_level: zeph_mcp::McpTrustLevel::Untrusted,
+        tool_allowlist: None,
+        expected_tools: Vec::new(),
+        roots: Vec::new(),
+        tool_metadata: std::collections::HashMap::new(),
+        elicitation_enabled: false,
+        elicitation_timeout_secs: 120,
+        env_isolation: false,
     }
 }
 

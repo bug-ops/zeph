@@ -31,6 +31,11 @@ pub(super) fn effective_recall_timeout_ms(configured: u64) -> u64 {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::map_unwrap_or
+)]
 pub(super) async fn fetch_graph_facts(
     memory_state: &MemoryState,
     query: &str,
@@ -423,6 +428,7 @@ fn format_plain_recall_entry(item: &zeph_memory::RecalledMessage) -> String {
     format!("- [{}] {}\n", role_label, item.message.content)
 }
 
+#[allow(clippy::map_unwrap_or)]
 fn format_structured_recall_entry(item: &zeph_memory::RecalledMessage) -> String {
     let source = match item.message.role {
         Role::User => "user",

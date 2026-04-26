@@ -227,13 +227,15 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
-    // too_many_lines: sequential scheduler event loop with 4 tokio::select! branches
+    // SAFETY(too_many_lines): sequential scheduler event loop with 4 tokio::select! branches
     // (cancel token, scheduler tick, channel recv with /plan cancel + channel-close paths,
-    // shutdown signal) — each branch requires distinct cancel/fail/ignore semantics that
-    // cannot be split without introducing shared mutable state across async boundaries.
+    // shutdown signal) — each branch requires distinct cancel/fail/ignore semantics and
+    // shares the labeled `'tick` break target. Splitting branches across methods would
+    // require threading `&mut DagScheduler` into futures that cross `.await` points,
+    // violating Send bounds on the async trait. The per-branch dispatch helpers
+    // (`handle_scheduler_spawn_action`, `handle_run_inline_action`, `cancel_agents_from_actions`)
+    // already carry the extractable work; the remaining body is irreducible control flow.
     #[allow(clippy::too_many_lines)]
-    // TODO(B2): extract sub-functions or move logic to reduce function length
-    // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     /// Drive the [`DagScheduler`] tick loop until it emits `SchedulerAction::Done`.
     ///
     /// Each iteration yields at `wait_event()`, during which `channel.recv()` is polled

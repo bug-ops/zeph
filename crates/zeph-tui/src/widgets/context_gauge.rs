@@ -67,10 +67,11 @@ mod tests {
 
     /// Returns a zero-sized rect so render is a no-op — we are only testing the label logic.
     fn make_metrics(context_tokens: u64, context_max_tokens: u64) -> MetricsSnapshot {
-        let mut m = MetricsSnapshot::default();
-        m.context_tokens = context_tokens;
-        m.context_max_tokens = context_max_tokens;
-        m
+        MetricsSnapshot {
+            context_tokens,
+            context_max_tokens,
+            ..MetricsSnapshot::default()
+        }
     }
 
     #[test]
@@ -86,7 +87,10 @@ mod tests {
             let r = used.min(max) as f64 / max as f64;
             r
         };
-        assert_eq!(ratio, 0.0);
+        assert!(
+            ratio.abs() < f64::EPSILON,
+            "ratio must be exactly 0.0 when max is 0"
+        );
     }
 
     #[test]

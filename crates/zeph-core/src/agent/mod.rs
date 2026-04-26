@@ -2199,123 +2199,130 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     async fn handle_agent_command(&mut self, cmd: zeph_subagent::AgentCommand) -> Option<String> {
         use zeph_subagent::AgentCommand;
 
         match cmd {
             AgentCommand::List => self.handle_agent_list(),
             AgentCommand::Background { name, prompt } => {
-                let provider = self.provider.clone();
-                let tool_executor = Arc::clone(&self.tool_executor);
-                let skills = self.filtered_skills_for(&name);
-                let cfg = self.orchestration.subagent_config.clone();
-                let spawn_ctx = self.build_spawn_context(&cfg);
-                let mgr = self.orchestration.subagent_manager.as_mut()?;
-                match mgr.spawn(
-                    &name,
-                    &prompt,
-                    provider,
-                    tool_executor,
-                    skills,
-                    &cfg,
-                    spawn_ctx,
-                ) {
-                    Ok(id) => Some(format!(
-                        "Sub-agent '{name}' started in background (id: {short})",
-                        short = &id[..8.min(id.len())]
-                    )),
-                    Err(e) => Some(format!("Failed to spawn sub-agent: {e}")),
-                }
+                self.handle_agent_background(&name, &prompt)
             }
             AgentCommand::Spawn { name, prompt }
             | AgentCommand::Mention {
                 agent: name,
                 prompt,
-            } => {
-                // Foreground spawn: launch and await completion, streaming status to user.
-                let provider = self.provider.clone();
-                let tool_executor = Arc::clone(&self.tool_executor);
-                let skills = self.filtered_skills_for(&name);
-                let cfg = self.orchestration.subagent_config.clone();
-                let spawn_ctx = self.build_spawn_context(&cfg);
-                let mgr = self.orchestration.subagent_manager.as_mut()?;
-                let task_id = match mgr.spawn(
-                    &name,
-                    &prompt,
-                    provider,
-                    tool_executor,
-                    skills,
-                    &cfg,
-                    spawn_ctx,
-                ) {
-                    Ok(id) => id,
-                    Err(e) => return Some(format!("Failed to spawn sub-agent: {e}")),
-                };
-                let short = task_id[..8.min(task_id.len())].to_owned();
-                let _ = self
-                    .channel
-                    .send(&format!("Sub-agent '{name}' running... (id: {short})"))
-                    .await;
-                let label = format!("Sub-agent '{name}'");
-                self.poll_subagent_until_done(&task_id, &label).await
-            }
+            } => self.handle_agent_spawn_foreground(&name, &prompt).await,
             AgentCommand::Status => self.handle_agent_status(),
-            AgentCommand::Cancel { id } => {
-                let mgr = self.orchestration.subagent_manager.as_mut()?;
-                // Accept prefix match on task_id.
-                let ids: Vec<String> = mgr
-                    .statuses()
-                    .into_iter()
-                    .map(|(task_id, _)| task_id)
-                    .filter(|task_id| task_id.starts_with(&id))
-                    .collect();
-                match ids.as_slice() {
-                    [] => Some(format!("No sub-agent with id prefix '{id}'")),
-                    [full_id] => {
-                        let full_id = full_id.clone();
-                        match mgr.cancel(&full_id) {
-                            Ok(()) => Some(format!("Cancelled sub-agent {full_id}.")),
-                            Err(e) => Some(format!("Cancel failed: {e}")),
-                        }
-                    }
-                    _ => Some(format!(
-                        "Ambiguous id prefix '{id}': matches {} agents",
-                        ids.len()
-                    )),
-                }
-            }
+            AgentCommand::Cancel { id } => self.handle_agent_cancel(&id),
             AgentCommand::Approve { id } => self.handle_agent_approve(&id),
             AgentCommand::Deny { id } => self.handle_agent_deny(&id),
-            AgentCommand::Resume { id, prompt } => {
-                let cfg = self.orchestration.subagent_config.clone();
-                // Resolve definition name from transcript meta before spawning so we can
-                // look up skills by definition name rather than the UUID prefix (S1 fix).
-                let def_name = {
-                    let mgr = self.orchestration.subagent_manager.as_ref()?;
-                    match mgr.def_name_for_resume(&id, &cfg) {
-                        Ok(name) => name,
-                        Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
-                    }
-                };
-                let skills = self.filtered_skills_for(&def_name);
-                let provider = self.provider.clone();
-                let tool_executor = Arc::clone(&self.tool_executor);
-                let mgr = self.orchestration.subagent_manager.as_mut()?;
-                let (task_id, _) =
-                    match mgr.resume(&id, &prompt, provider, tool_executor, skills, &cfg) {
-                        Ok(pair) => pair,
-                        Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
-                    };
-                let short = task_id[..8.min(task_id.len())].to_owned();
-                let _ = self
-                    .channel
-                    .send(&format!("Resuming sub-agent '{id}'... (new id: {short})"))
-                    .await;
-                self.poll_subagent_until_done(&task_id, "Resumed sub-agent")
-                    .await
-            }
+            AgentCommand::Resume { id, prompt } => self.handle_agent_resume(&id, &prompt).await,
         }
+    }
+
+    fn handle_agent_background(&mut self, name: &str, prompt: &str) -> Option<String> {
+        let provider = self.provider.clone();
+        let tool_executor = Arc::clone(&self.tool_executor);
+        let skills = self.filtered_skills_for(name);
+        let cfg = self.orchestration.subagent_config.clone();
+        let spawn_ctx = self.build_spawn_context(&cfg);
+        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        match mgr.spawn(
+            name,
+            prompt,
+            provider,
+            tool_executor,
+            skills,
+            &cfg,
+            spawn_ctx,
+        ) {
+            Ok(id) => Some(format!(
+                "Sub-agent '{name}' started in background (id: {short})",
+                short = &id[..8.min(id.len())]
+            )),
+            Err(e) => Some(format!("Failed to spawn sub-agent: {e}")),
+        }
+    }
+
+    async fn handle_agent_spawn_foreground(&mut self, name: &str, prompt: &str) -> Option<String> {
+        let provider = self.provider.clone();
+        let tool_executor = Arc::clone(&self.tool_executor);
+        let skills = self.filtered_skills_for(name);
+        let cfg = self.orchestration.subagent_config.clone();
+        let spawn_ctx = self.build_spawn_context(&cfg);
+        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        let task_id = match mgr.spawn(
+            name,
+            prompt,
+            provider,
+            tool_executor,
+            skills,
+            &cfg,
+            spawn_ctx,
+        ) {
+            Ok(id) => id,
+            Err(e) => return Some(format!("Failed to spawn sub-agent: {e}")),
+        };
+        let short = task_id[..8.min(task_id.len())].to_owned();
+        let _ = self
+            .channel
+            .send(&format!("Sub-agent '{name}' running... (id: {short})"))
+            .await;
+        let label = format!("Sub-agent '{name}'");
+        self.poll_subagent_until_done(&task_id, &label).await
+    }
+
+    fn handle_agent_cancel(&mut self, id: &str) -> Option<String> {
+        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        // Accept prefix match on task_id.
+        let ids: Vec<String> = mgr
+            .statuses()
+            .into_iter()
+            .map(|(task_id, _)| task_id)
+            .filter(|task_id| task_id.starts_with(id))
+            .collect();
+        match ids.as_slice() {
+            [] => Some(format!("No sub-agent with id prefix '{id}'")),
+            [full_id] => {
+                let full_id = full_id.clone();
+                match mgr.cancel(&full_id) {
+                    Ok(()) => Some(format!("Cancelled sub-agent {full_id}.")),
+                    Err(e) => Some(format!("Cancel failed: {e}")),
+                }
+            }
+            _ => Some(format!(
+                "Ambiguous id prefix '{id}': matches {} agents",
+                ids.len()
+            )),
+        }
+    }
+
+    async fn handle_agent_resume(&mut self, id: &str, prompt: &str) -> Option<String> {
+        let cfg = self.orchestration.subagent_config.clone();
+        // Resolve definition name from transcript meta before spawning so we can
+        // look up skills by definition name rather than the UUID prefix (S1 fix).
+        let def_name = {
+            let mgr = self.orchestration.subagent_manager.as_ref()?;
+            match mgr.def_name_for_resume(id, &cfg) {
+                Ok(name) => name,
+                Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
+            }
+        };
+        let skills = self.filtered_skills_for(&def_name);
+        let provider = self.provider.clone();
+        let tool_executor = Arc::clone(&self.tool_executor);
+        let mgr = self.orchestration.subagent_manager.as_mut()?;
+        let (task_id, _) = match mgr.resume(id, prompt, provider, tool_executor, skills, &cfg) {
+            Ok(pair) => pair,
+            Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
+        };
+        let short = task_id[..8.min(task_id.len())].to_owned();
+        let _ = self
+            .channel
+            .send(&format!("Resuming sub-agent '{id}'... (new id: {short})"))
+            .await;
+        self.poll_subagent_until_done(&task_id, "Resumed sub-agent")
+            .await
     }
 
     fn filtered_skills_for(&self, agent_name: &str) -> Option<Vec<String>> {
@@ -2888,10 +2895,7 @@ impl<C: Channel> Agent<C> {
     /// Phase 2 (schedule, this turn): rebuild cursors and spawn a background `tokio::spawn`
     /// task for the LLM call. The result is stored in `pending_sidequest_result` and applied
     /// next turn, so the current agent turn is never blocked by the LLM call.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3453): decompose into smaller helpers
     fn maybe_sidequest_eviction(&mut self) {
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-
         // S1 runtime guard: warn when SideQuest is enabled alongside a non-Reactive pruning
         // strategy — the two systems share the same pool of evictable tool outputs and can
         // interfere. Disable sidequest.enabled when pruning_strategy != Reactive.
@@ -2918,68 +2922,78 @@ impl<C: Channel> Agent<C> {
         }
 
         // Phase 1: apply pending result from last turn's background LLM call.
-        if let Some(handle) = self.compression.pending_sidequest_result.take() {
-            // `now_or_never` avoids blocking — if the task isn't done yet, skip this turn.
-            use futures::FutureExt as _;
-            match handle.now_or_never() {
-                Some(Ok(Some(evicted_indices))) if !evicted_indices.is_empty() => {
-                    let cursors_snapshot = self.sidequest.tool_output_cursors.clone();
-                    let freed = self.sidequest.apply_eviction(
-                        &mut self.msg.messages,
-                        &evicted_indices,
-                        &self.metrics.token_counter,
-                    );
-                    if freed > 0 {
-                        self.recompute_prompt_tokens();
-                        // C1 fix: prevent maybe_compact() from firing in the same turn.
-                        // cooldown=0: eviction does not impose post-compaction cooldown.
-                        self.context_manager.compaction =
-                            crate::agent::context_manager::CompactionState::CompactedThisTurn {
-                                cooldown: 0,
-                            };
-                        tracing::info!(
-                            freed_tokens = freed,
-                            evicted_cursors = evicted_indices.len(),
-                            pass = self.sidequest.passes_run,
-                            "sidequest eviction complete"
-                        );
-                        if let Some(ref d) = self.debug_state.debug_dumper {
-                            d.dump_sidequest_eviction(&cursors_snapshot, &evicted_indices, freed);
-                        }
-                        if let Some(ref tx) = self.session.status_tx {
-                            let _ = tx.send(format!("SideQuest evicted {freed} tokens"));
-                        }
-                    } else {
-                        // apply_eviction returned 0 — clear spinner so it doesn't dangle.
-                        if let Some(ref tx) = self.session.status_tx {
-                            let _ = tx.send(String::new());
-                        }
-                    }
-                }
-                Some(Ok(None | Some(_))) => {
-                    tracing::debug!("sidequest: pending result: no cursors to evict");
-                    if let Some(ref tx) = self.session.status_tx {
-                        let _ = tx.send(String::new());
-                    }
-                }
-                Some(Err(e)) => {
-                    tracing::debug!("sidequest: background task panicked: {e}");
-                    if let Some(ref tx) = self.session.status_tx {
-                        let _ = tx.send(String::new());
-                    }
-                }
-                None => {
-                    // Task still running — re-store and wait another turn.
-                    // We already took it; we'd need to re-spawn, but instead just drop and
-                    // schedule fresh below to keep the cursor list current.
-                    tracing::debug!(
-                        "sidequest: background LLM task not yet complete, rescheduling"
-                    );
-                }
-            }
-        }
+        self.sidequest_apply_pending();
 
         // Phase 2: rebuild cursors and schedule the next background eviction LLM call.
+        self.sidequest_schedule_next();
+    }
+
+    fn sidequest_apply_pending(&mut self) {
+        use futures::FutureExt as _;
+
+        let Some(handle) = self.compression.pending_sidequest_result.take() else {
+            return;
+        };
+        // `now_or_never` avoids blocking — if the task isn't done yet, skip this turn.
+        match handle.now_or_never() {
+            Some(Ok(Some(evicted_indices))) if !evicted_indices.is_empty() => {
+                let cursors_snapshot = self.sidequest.tool_output_cursors.clone();
+                let freed = self.sidequest.apply_eviction(
+                    &mut self.msg.messages,
+                    &evicted_indices,
+                    &self.metrics.token_counter,
+                );
+                if freed > 0 {
+                    self.recompute_prompt_tokens();
+                    // C1 fix: prevent maybe_compact() from firing in the same turn.
+                    // cooldown=0: eviction does not impose post-compaction cooldown.
+                    self.context_manager.compaction =
+                        crate::agent::context_manager::CompactionState::CompactedThisTurn {
+                            cooldown: 0,
+                        };
+                    tracing::info!(
+                        freed_tokens = freed,
+                        evicted_cursors = evicted_indices.len(),
+                        pass = self.sidequest.passes_run,
+                        "sidequest eviction complete"
+                    );
+                    if let Some(ref d) = self.debug_state.debug_dumper {
+                        d.dump_sidequest_eviction(&cursors_snapshot, &evicted_indices, freed);
+                    }
+                    if let Some(ref tx) = self.session.status_tx {
+                        let _ = tx.send(format!("SideQuest evicted {freed} tokens"));
+                    }
+                } else {
+                    // apply_eviction returned 0 — clear spinner so it doesn't dangle.
+                    if let Some(ref tx) = self.session.status_tx {
+                        let _ = tx.send(String::new());
+                    }
+                }
+            }
+            Some(Ok(None | Some(_))) => {
+                tracing::debug!("sidequest: pending result: no cursors to evict");
+                if let Some(ref tx) = self.session.status_tx {
+                    let _ = tx.send(String::new());
+                }
+            }
+            Some(Err(e)) => {
+                tracing::debug!("sidequest: background task panicked: {e}");
+                if let Some(ref tx) = self.session.status_tx {
+                    let _ = tx.send(String::new());
+                }
+            }
+            None => {
+                // Task still running — re-store and wait another turn.
+                // We already took it; we'd need to re-spawn, but instead just drop and
+                // schedule fresh below to keep the cursor list current.
+                tracing::debug!("sidequest: background LLM task not yet complete, rescheduling");
+            }
+        }
+    }
+
+    fn sidequest_schedule_next(&mut self) {
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+
         self.sidequest
             .rebuild_cursors(&self.msg.messages, &self.metrics.token_counter);
 
