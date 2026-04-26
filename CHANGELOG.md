@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-bench`: `BookReservationParams`, `UpdateReservationFlightsParams`, and
+  `UpdateReservationPassengersParams` used `Vec<serde_json::Value>` for `flights` and
+  `passengers` fields. `schemars` emits an `array` schema without `items` for `Value`,
+  which OpenAI rejects with HTTP 400. Replaced with typed structs `FlightSegment` and
+  `Passenger`; the tau2-bench-airline dataset now produces valid tool schemas. (#3426)
+- `zeph-bench`: `bench run --scenario <id>` silently exited 0 with "Benchmark complete:
+  0/0 exact" when the ID matched no scenarios. Now returns an error with a descriptive
+  message and non-zero exit code. (#3427)
+- `zeph-llm`: `RouterProvider::model_identifier()` fell through to the default empty-string
+  implementation, causing `results.json` to record `model: ""` when the router was used as
+  the bench provider. Overridden to return `"router"`. (#3430)
+
 ### Changed
 
 - Enable `task-metrics` and `self-check` as default Cargo features; the default binary now emits
