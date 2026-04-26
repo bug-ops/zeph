@@ -11,8 +11,30 @@
 #![allow(dead_code)]
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use zeph_tools::registry::{InvocationHint, ToolDef};
+
+// ─── Airline nested types ────────────────────────────────────────────────────
+
+/// A single flight leg in a reservation (flight number + departure date).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FlightSegment {
+    /// IATA or internal flight number (e.g. `"AA123"`).
+    pub flight_number: String,
+    /// Departure date in `YYYY-MM-DD` format.
+    pub date: String,
+}
+
+/// Passenger identity data required when booking or updating a reservation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Passenger {
+    /// Passenger's given name.
+    pub first_name: String,
+    /// Passenger's family name.
+    pub last_name: String,
+    /// Date of birth in `YYYY-MM-DD` format.
+    pub dob: String,
+}
 
 // ─── Retail shared params ────────────────────────────────────────────────────
 
@@ -297,10 +319,10 @@ pub(super) struct BookReservationParams {
     pub flight_type: String,
     /// Cabin class: `basic_economy`, `economy`, `business`.
     pub cabin: String,
-    /// List of flights to include (each has `flight_number` and `date`).
-    pub flights: Vec<serde_json::Value>,
-    /// List of passenger objects with `first_name`, `last_name`, `dob`.
-    pub passengers: Vec<serde_json::Value>,
+    /// List of flights to include.
+    pub flights: Vec<FlightSegment>,
+    /// List of passengers.
+    pub passengers: Vec<Passenger>,
     /// Payment method id.
     pub payment_method_id: String,
     /// Total number of checked bags.
@@ -376,7 +398,7 @@ pub(super) struct UpdateReservationFlightsParams {
     /// Cabin class for the updated flights.
     pub cabin: String,
     /// New list of flights.
-    pub flights: Vec<serde_json::Value>,
+    pub flights: Vec<FlightSegment>,
     /// Payment method id.
     pub payment_method_id: String,
 }
@@ -386,7 +408,7 @@ pub(super) struct UpdateReservationPassengersParams {
     /// Reservation id.
     pub reservation_id: String,
     /// Updated passenger list.
-    pub passengers: Vec<serde_json::Value>,
+    pub passengers: Vec<Passenger>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
