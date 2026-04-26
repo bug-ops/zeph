@@ -1150,7 +1150,7 @@ impl<C: Channel> Agent<C> {
 
     /// Attach the session-level task supervisor.
     ///
-    /// Replaces the default supervisor created in [`LifecycleState::new`] with the
+    /// Replaces the default supervisor created during `Agent` construction with the
     /// session-level instance shared with bootstrap and TUI, enabling observability
     /// and graceful shutdown of all background agent tasks.
     #[must_use]
