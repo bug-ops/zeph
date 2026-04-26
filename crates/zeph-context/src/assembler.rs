@@ -79,6 +79,193 @@ pub struct PreparedContext {
 /// All logic is in [`ContextAssembler::gather`]. No state is stored on this type.
 pub struct ContextAssembler;
 
+type CtxFuture<'a> = Pin<Box<dyn Future<Output = Result<ContextSlot, ContextError>> + Send + 'a>>;
+
+fn empty_prepared_context() -> PreparedContext {
+    PreparedContext {
+        graph_facts: None,
+        doc_rag: None,
+        corrections: None,
+        recall: None,
+        recall_confidence: None,
+        cross_session: None,
+        summaries: None,
+        code_context: None,
+        persona_facts: None,
+        trajectory_hints: None,
+        tree_memory: None,
+        reasoning_hints: None,
+        memory_first: false,
+        recent_history_budget: 0,
+    }
+}
+
+// TODO(critic): consider impl Default for PreparedContext to make this constructor obsolete (#3442 follow-up).
+
+fn resolve_effective_strategy(
+    memory: &crate::input::ContextMemoryView,
+    sidequest_turn_counter: u64,
+) -> zeph_config::ContextStrategy {
+    match memory.context_strategy {
+        zeph_config::ContextStrategy::FullHistory => zeph_config::ContextStrategy::FullHistory,
+        zeph_config::ContextStrategy::MemoryFirst => zeph_config::ContextStrategy::MemoryFirst,
+        zeph_config::ContextStrategy::Adaptive => {
+            if sidequest_turn_counter >= u64::from(memory.crossover_turn_threshold) {
+                zeph_config::ContextStrategy::MemoryFirst
+            } else {
+                zeph_config::ContextStrategy::FullHistory
+            }
+        }
+    }
+}
+
+fn correction_params(cfg: Option<&crate::input::CorrectionConfig>) -> (usize, f32) {
+    cfg.filter(|c| c.correction_detection)
+        .map_or((3, 0.75), |c| {
+            (
+                c.correction_recall_limit as usize,
+                c.correction_min_similarity,
+            )
+        })
+}
+
+/// Schedules all enabled context fetchers and returns them as a set of concurrent futures.
+///
+/// `router_ref` borrows from `router`, which is a local owned by `gather`. Using a separate
+/// lifetime `'r` for `router_ref` avoids tying it to `'a` (the input lifetime), which would
+/// require `router` to outlive `input`. All `usize` budget values are passed by copy so the
+/// returned futures do not borrow from `alloc`.
+#[allow(clippy::too_many_arguments)]
+fn schedule_context_fetchers<'r>(
+    memory: &'r crate::input::ContextMemoryView,
+    tc: &'r zeph_memory::TokenCounter,
+    query: &'r str,
+    scrub: fn(&str) -> std::borrow::Cow<'_, str>,
+    index: Option<&'r dyn crate::input::IndexAccess>,
+    router_ref: &'r dyn zeph_memory::AsyncMemoryRouter,
+    summaries_budget: usize,
+    cross_session_budget: usize,
+    semantic_recall_budget: usize,
+    code_context_budget: usize,
+    graph_facts_budget: usize,
+    recall_limit: usize,
+    min_sim: f32,
+) -> FuturesUnordered<CtxFuture<'r>> {
+    let fetchers: FuturesUnordered<CtxFuture<'r>> = FuturesUnordered::new();
+
+    if summaries_budget > 0 {
+        fetchers.push(Box::pin(async move {
+            fetch_summaries(memory, summaries_budget, tc)
+                .await
+                .map(ContextSlot::Summaries)
+        }));
+    }
+    if cross_session_budget > 0 {
+        fetchers.push(Box::pin(async move {
+            fetch_cross_session(memory, query, cross_session_budget, tc)
+                .await
+                .map(ContextSlot::CrossSession)
+        }));
+    }
+    if semantic_recall_budget > 0 {
+        fetchers.push(Box::pin(async move {
+            fetch_semantic_recall(memory, query, semantic_recall_budget, tc, Some(router_ref))
+                .await
+                .map(|(msg, score)| ContextSlot::SemanticRecall(msg, score))
+        }));
+        fetchers.push(Box::pin(async move {
+            fetch_document_rag(memory, query, semantic_recall_budget, tc)
+                .await
+                .map(ContextSlot::DocumentRag)
+        }));
+    }
+    // Corrections are safety-critical and never budget-gated.
+    fetchers.push(Box::pin(async move {
+        fetch_corrections(memory, query, recall_limit, min_sim, scrub)
+            .await
+            .map(ContextSlot::Corrections)
+    }));
+    if code_context_budget > 0
+        && let Some(idx) = index
+    {
+        fetchers.push(Box::pin(async move {
+            let result: Result<Option<String>, ContextError> =
+                idx.fetch_code_rag(query, code_context_budget).await;
+            result.map(ContextSlot::CodeContext)
+        }));
+    }
+    if graph_facts_budget > 0 {
+        fetchers.push(Box::pin(async move {
+            fetch_graph_facts(memory, query, graph_facts_budget, tc)
+                .await
+                .map(ContextSlot::GraphFacts)
+        }));
+    }
+    if memory.persona_config.context_budget_tokens > 0 {
+        fetchers.push(Box::pin(async move {
+            let persona_budget = memory.persona_config.context_budget_tokens;
+            fetch_persona_facts(memory, persona_budget, tc)
+                .await
+                .map(ContextSlot::PersonaFacts)
+        }));
+    }
+    if memory.trajectory_config.context_budget_tokens > 0 {
+        fetchers.push(Box::pin(async move {
+            let tbudget = memory.trajectory_config.context_budget_tokens;
+            fetch_trajectory_hints(memory, tbudget, tc)
+                .await
+                .map(ContextSlot::TrajectoryHints)
+        }));
+    }
+    if memory.tree_config.context_budget_tokens > 0 {
+        fetchers.push(Box::pin(async move {
+            let tbudget = memory.tree_config.context_budget_tokens;
+            fetch_tree_memory(memory, tbudget, tc)
+                .await
+                .map(ContextSlot::TreeMemory)
+        }));
+    }
+    if memory.reasoning_config.enabled && memory.reasoning_config.context_budget_tokens > 0 {
+        fetchers.push(Box::pin(async move {
+            let rbudget = memory.reasoning_config.context_budget_tokens;
+            let top_k = memory.reasoning_config.top_k;
+            fetch_reasoning_strategies(memory, query, rbudget, top_k, tc)
+                .await
+                .map(ContextSlot::ReasoningStrategies)
+        }));
+    }
+
+    fetchers
+}
+
+async fn drive_fetchers(
+    mut fetchers: FuturesUnordered<CtxFuture<'_>>,
+    prepared: &mut PreparedContext,
+) -> Result<(), ContextError> {
+    while let Some(result) = fetchers.next().await {
+        match result {
+            Ok(slot) => match slot {
+                ContextSlot::Summaries(msg) => prepared.summaries = msg,
+                ContextSlot::CrossSession(msg) => prepared.cross_session = msg,
+                ContextSlot::SemanticRecall(msg, score) => {
+                    prepared.recall = msg;
+                    prepared.recall_confidence = score;
+                }
+                ContextSlot::DocumentRag(msg) => prepared.doc_rag = msg,
+                ContextSlot::Corrections(msg) => prepared.corrections = msg,
+                ContextSlot::CodeContext(text) => prepared.code_context = text,
+                ContextSlot::GraphFacts(msg) => prepared.graph_facts = msg,
+                ContextSlot::PersonaFacts(msg) => prepared.persona_facts = msg,
+                ContextSlot::TrajectoryHints(msg) => prepared.trajectory_hints = msg,
+                ContextSlot::TreeMemory(msg) => prepared.tree_memory = msg,
+                ContextSlot::ReasoningStrategies(msg) => prepared.reasoning_hints = msg,
+            },
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 impl ContextAssembler {
     /// Gather all context sources concurrently and return a [`PreparedContext`].
     ///
@@ -87,44 +274,15 @@ impl ContextAssembler {
     /// # Errors
     ///
     /// Propagates errors from any async fetch operation.
-    #[allow(clippy::too_many_lines)] // long function; decomposition would require extracting state into additional structs — TODO(#3442): decompose into smaller helpers
     pub async fn gather(input: &ContextAssemblyInput<'_>) -> Result<PreparedContext, ContextError> {
-        type CtxFuture<'a> =
-            Pin<Box<dyn Future<Output = Result<ContextSlot, ContextError>> + Send + 'a>>;
-
         let Some(ref budget) = input.context_manager.budget else {
-            return Ok(PreparedContext {
-                graph_facts: None,
-                doc_rag: None,
-                corrections: None,
-                recall: None,
-                recall_confidence: None,
-                cross_session: None,
-                summaries: None,
-                code_context: None,
-                persona_facts: None,
-                trajectory_hints: None,
-                tree_memory: None,
-                reasoning_hints: None,
-                memory_first: false,
-                recent_history_budget: 0,
-            });
+            return Ok(empty_prepared_context());
         };
 
         let memory = input.memory;
         let tc = input.token_counter;
 
-        let effective_strategy = match memory.context_strategy {
-            zeph_config::ContextStrategy::FullHistory => zeph_config::ContextStrategy::FullHistory,
-            zeph_config::ContextStrategy::MemoryFirst => zeph_config::ContextStrategy::MemoryFirst,
-            zeph_config::ContextStrategy::Adaptive => {
-                if input.sidequest_turn_counter >= u64::from(memory.crossover_turn_threshold) {
-                    zeph_config::ContextStrategy::MemoryFirst
-                } else {
-                    zeph_config::ContextStrategy::FullHistory
-                }
-            }
-        };
+        let effective_strategy = resolve_effective_strategy(memory, input.sidequest_turn_counter);
         let memory_first = effective_strategy == zeph_config::ContextStrategy::MemoryFirst;
 
         let system_prompt = input
@@ -138,162 +296,46 @@ impl ContextAssembler {
             .as_ref()
             .map_or(0, |(_, tokens)| *tokens);
 
-        let graph_enabled = memory.graph_config.enabled;
-
         let alloc = budget.allocate_with_opts(
             system_prompt,
             input.skills_prompt,
             tc,
-            graph_enabled,
+            memory.graph_config.enabled,
             digest_tokens,
             memory_first,
         );
 
-        let correction_params = input
-            .correction_config
-            .filter(|c| c.correction_detection)
-            .map(|c| {
-                (
-                    c.correction_recall_limit as usize,
-                    c.correction_min_similarity,
-                )
-            });
-        let (recall_limit, min_sim) = correction_params.unwrap_or((3, 0.75));
+        let (recall_limit, min_sim) = correction_params(input.correction_config.as_ref());
 
         let router = input.context_manager.build_router();
         let router_ref: &dyn zeph_memory::AsyncMemoryRouter = router.as_ref();
-        let query = input.query;
-        let scrub = input.scrub;
-
-        let mut fetchers: FuturesUnordered<CtxFuture<'_>> = FuturesUnordered::new();
 
         tracing::debug!(
             active_sources = alloc.active_sources(),
             "context budget allocated"
         );
 
-        if alloc.summaries > 0 {
-            fetchers.push(Box::pin(async {
-                fetch_summaries(memory, alloc.summaries, tc)
-                    .await
-                    .map(ContextSlot::Summaries)
-            }));
-        }
-        if alloc.cross_session > 0 {
-            fetchers.push(Box::pin(async {
-                fetch_cross_session(memory, query, alloc.cross_session, tc)
-                    .await
-                    .map(ContextSlot::CrossSession)
-            }));
-        }
-        if alloc.semantic_recall > 0 {
-            fetchers.push(Box::pin(async {
-                fetch_semantic_recall(memory, query, alloc.semantic_recall, tc, Some(router_ref))
-                    .await
-                    .map(|(msg, score)| ContextSlot::SemanticRecall(msg, score))
-            }));
-            fetchers.push(Box::pin(async {
-                fetch_document_rag(memory, query, alloc.semantic_recall, tc)
-                    .await
-                    .map(ContextSlot::DocumentRag)
-            }));
-        }
-        // Corrections are safety-critical and never budget-gated.
-        fetchers.push(Box::pin(async {
-            fetch_corrections(memory, query, recall_limit, min_sim, scrub)
-                .await
-                .map(ContextSlot::Corrections)
-        }));
-        if alloc.code_context > 0
-            && let Some(index) = input.index
-        {
-            let budget = alloc.code_context;
-            fetchers.push(Box::pin(async move {
-                let result: Result<Option<String>, ContextError> =
-                    index.fetch_code_rag(query, budget).await;
-                result.map(ContextSlot::CodeContext)
-            }));
-        }
-        if alloc.graph_facts > 0 {
-            fetchers.push(Box::pin(async {
-                fetch_graph_facts(memory, query, alloc.graph_facts, tc)
-                    .await
-                    .map(ContextSlot::GraphFacts)
-            }));
-        }
-        if memory.persona_config.context_budget_tokens > 0 {
-            fetchers.push(Box::pin(async {
-                let persona_budget = memory.persona_config.context_budget_tokens;
-                fetch_persona_facts(memory, persona_budget, tc)
-                    .await
-                    .map(ContextSlot::PersonaFacts)
-            }));
-        }
-        if memory.trajectory_config.context_budget_tokens > 0 {
-            fetchers.push(Box::pin(async {
-                let tbudget = memory.trajectory_config.context_budget_tokens;
-                fetch_trajectory_hints(memory, tbudget, tc)
-                    .await
-                    .map(ContextSlot::TrajectoryHints)
-            }));
-        }
-        if memory.tree_config.context_budget_tokens > 0 {
-            fetchers.push(Box::pin(async {
-                let tbudget = memory.tree_config.context_budget_tokens;
-                fetch_tree_memory(memory, tbudget, tc)
-                    .await
-                    .map(ContextSlot::TreeMemory)
-            }));
-        }
-        if memory.reasoning_config.enabled && memory.reasoning_config.context_budget_tokens > 0 {
-            fetchers.push(Box::pin(async {
-                let rbudget = memory.reasoning_config.context_budget_tokens;
-                let top_k = memory.reasoning_config.top_k;
-                fetch_reasoning_strategies(memory, query, rbudget, top_k, tc)
-                    .await
-                    .map(ContextSlot::ReasoningStrategies)
-            }));
-        }
+        let fetchers = schedule_context_fetchers(
+            memory,
+            tc,
+            input.query,
+            input.scrub,
+            input.index,
+            router_ref,
+            alloc.summaries,
+            alloc.cross_session,
+            alloc.semantic_recall,
+            alloc.code_context,
+            alloc.graph_facts,
+            recall_limit,
+            min_sim,
+        );
 
-        let mut prepared = PreparedContext {
-            graph_facts: None,
-            doc_rag: None,
-            corrections: None,
-            recall: None,
-            recall_confidence: None,
-            cross_session: None,
-            summaries: None,
-            code_context: None,
-            persona_facts: None,
-            trajectory_hints: None,
-            tree_memory: None,
-            reasoning_hints: None,
-            memory_first,
-            recent_history_budget: alloc.recent_history,
-        };
+        let mut prepared = empty_prepared_context();
+        prepared.memory_first = memory_first;
+        prepared.recent_history_budget = alloc.recent_history;
 
-        while let Some(result) = fetchers.next().await {
-            match result {
-                Ok(slot) => match slot {
-                    ContextSlot::Summaries(msg) => prepared.summaries = msg,
-                    ContextSlot::CrossSession(msg) => prepared.cross_session = msg,
-                    ContextSlot::SemanticRecall(msg, score) => {
-                        prepared.recall = msg;
-                        prepared.recall_confidence = score;
-                    }
-                    ContextSlot::DocumentRag(msg) => prepared.doc_rag = msg,
-                    ContextSlot::Corrections(msg) => prepared.corrections = msg,
-                    ContextSlot::CodeContext(text) => prepared.code_context = text,
-                    ContextSlot::GraphFacts(msg) => prepared.graph_facts = msg,
-                    ContextSlot::PersonaFacts(msg) => prepared.persona_facts = msg,
-                    ContextSlot::TrajectoryHints(msg) => prepared.trajectory_hints = msg,
-                    ContextSlot::TreeMemory(msg) => prepared.tree_memory = msg,
-                    ContextSlot::ReasoningStrategies(msg) => prepared.reasoning_hints = msg,
-                },
-                Err(e) => return Err(e),
-            }
-        }
-
+        drive_fetchers(fetchers, &mut prepared).await?;
         Ok(prepared)
     }
 }

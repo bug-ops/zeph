@@ -28,6 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   an `Arc<ShellExecutor>` and refreshes the snapshot on each metrics update. Active runs are
   rendered under a `Background Shell (n)` header in the resources panel and as `sh:N` in the
   status bar. (#3448)
+- Decomposed long functions in `zeph-mcp` (`connect_all`, `connect_oauth_deferred`, `add_server`),
+  `zeph-index` (`index_project`), and `zeph-subagent` (`run_agent_loop`) into focused private
+  helpers; removed all `#[allow(clippy::too_many_lines)]` suppressions. (#3451, #3458, #3447)
 
 - `zeph-tools`: replaced shell-out signal sending with safe `nix`-based SIGTERM/SIGKILL
   escalation in the shell executor. `kill_process_tree` now sends SIGTERM, waits 250 ms,
