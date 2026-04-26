@@ -29,8 +29,8 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
-use crate::any::AnyProvider;
-use crate::provider::{LlmProvider, Message, Role};
+use crate::provider::{Message, Role};
+use crate::provider_dyn::LlmProviderDyn;
 
 /// Controls the quality classification strategy.
 ///
@@ -266,7 +266,7 @@ fn coherence_signal(response: &str) -> f64 {
 /// # Errors
 ///
 /// Any `LlmError` from the judge call is swallowed and represented as `None`.
-pub async fn judge_score(judge: &AnyProvider, response: &str) -> Option<f64> {
+pub async fn judge_score(judge: &dyn LlmProviderDyn, response: &str) -> Option<f64> {
     let prompt = format!(
         "Rate the following AI response on a scale from 0 to 10, \
          where 0 is completely useless or degenerate and 10 is high quality and coherent. \

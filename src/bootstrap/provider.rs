@@ -3,8 +3,11 @@
 
 pub use zeph_core::provider_factory::{BootstrapError, build_provider_from_entry};
 
+use std::sync::Arc;
+
 use zeph_llm::any::AnyProvider;
 use zeph_llm::ollama::OllamaProvider;
+use zeph_llm::provider_dyn::LlmProviderDyn;
 use zeph_llm::router::cascade::ClassifierMode;
 use zeph_llm::router::coe::CoeConfig as RouterCoeConfig;
 use zeph_llm::router::triage::{ComplexityTier, TriageRouter};
@@ -60,28 +63,29 @@ fn build_cascade_router_config(
         );
     }
     // Build summary provider for judge mode.
-    let summary_provider = if classifier_mode == ClassifierMode::Judge {
-        if let Some(model_spec) = config.llm.summary_model.as_deref() {
-            match create_summary_provider(model_spec, config) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "cascade: failed to build judge provider, falling back to heuristic"
-                    );
-                    None
+    let summary_provider: Option<Arc<dyn LlmProviderDyn>> =
+        if classifier_mode == ClassifierMode::Judge {
+            if let Some(model_spec) = config.llm.summary_model.as_deref() {
+                match create_summary_provider(model_spec, config) {
+                    Ok(p) => Some(Arc::new(p) as Arc<dyn LlmProviderDyn>),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "cascade: failed to build judge provider, falling back to heuristic"
+                        );
+                        None
+                    }
                 }
+            } else {
+                tracing::warn!(
+                    "cascade: classifier_mode=judge requires [llm] summary_model to \
+                     be configured; falling back to heuristic"
+                );
+                None
             }
         } else {
-            tracing::warn!(
-                "cascade: classifier_mode=judge requires [llm] summary_model to \
-                 be configured; falling back to heuristic"
-            );
             None
-        }
-    } else {
-        None
-    };
+        };
     CascadeRouterConfig {
         quality_threshold,
         max_escalations: cascade_cfg.max_escalations,

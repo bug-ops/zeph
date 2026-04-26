@@ -238,7 +238,7 @@ pub struct CascadeRouterConfig {
     pub max_cascade_tokens: Option<u32>,
     /// LLM provider used for judge-mode quality scoring.
     /// Required when `classifier_mode = Judge`; falls back to heuristic if `None`.
-    pub summary_provider: Option<AnyProvider>,
+    pub summary_provider: Option<Arc<dyn crate::provider_dyn::LlmProviderDyn>>,
     /// Explicit cost ordering of provider names (cheapest first).
     /// When set, providers are sorted by their position in this list at construction time.
     /// Providers not listed are appended after listed ones in original chain order.
@@ -299,7 +299,7 @@ pub struct RouterProvider {
     bandit_config: Option<BanditRouterConfig>,
     /// Dedicated embedding provider for bandit feature vectors.
     /// When `None`, bandit falls back to Thompson/uniform on embed failure.
-    bandit_embedding_provider: Option<AnyProvider>,
+    bandit_embedding_provider: Option<Arc<dyn crate::provider_dyn::LlmProviderDyn>>,
     /// LRU embedding cache: maps query-string hash to feature vector.
     /// Shared across requests; keyed by `u64` hash of query text.
     bandit_embed_cache: Arc<Mutex<BanditEmbedCache>>,
@@ -401,8 +401,8 @@ impl RouterProvider {
         }
         self.coe = Some(Arc::new(CoeRouter {
             config,
-            secondary,
-            embed,
+            secondary: Arc::new(secondary) as Arc<dyn crate::provider_dyn::LlmProviderDyn>,
+            embed: Arc::new(embed) as Arc<dyn crate::provider_dyn::LlmProviderDyn>,
             metrics: Arc::new(coe::CoeMetrics::default()),
         }));
         self
@@ -537,7 +537,8 @@ impl RouterProvider {
         self.bandit = Some(Arc::new(Mutex::new(state)));
         self.bandit_state_path = Some(path);
         self.bandit_embed_cache = Arc::new(Mutex::new(BanditEmbedCache::new(cache_size)));
-        self.bandit_embedding_provider = embedding_provider;
+        self.bandit_embedding_provider =
+            embedding_provider.map(|p| Arc::new(p) as Arc<dyn crate::provider_dyn::LlmProviderDyn>);
         // Initialize Thompson state for cold-start fallback (total_updates < warmup_queries).
         // Uses default uniform priors; no persistence path needed since it's a fallback only.
         self.thompson = Some(Arc::new(Mutex::new(ThompsonState::default())));
@@ -1261,7 +1262,7 @@ impl RouterProvider {
         response: &str,
         threshold: f64,
         mode: ClassifierMode,
-        summary_provider: Option<&AnyProvider>,
+        summary_provider: Option<&dyn crate::provider_dyn::LlmProviderDyn>,
     ) -> cascade::QualityVerdict {
         if mode == ClassifierMode::Judge {
             if let Some(judge) = summary_provider {
@@ -2051,7 +2052,7 @@ async fn cascade_evaluate_response(
         response,
         cfg.quality_threshold,
         cfg.classifier_mode,
-        cfg.summary_provider.as_ref(),
+        cfg.summary_provider.as_deref(),
     )
     .await;
 

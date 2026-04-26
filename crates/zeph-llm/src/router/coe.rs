@@ -15,9 +15,9 @@ use std::time::Duration;
 
 use zeph_common::math::cosine_similarity;
 
-use crate::any::AnyProvider;
 use crate::error::LlmError;
-use crate::provider::{LlmProvider, Message};
+use crate::provider::Message;
+use crate::provider_dyn::LlmProviderDyn;
 
 /// Configuration for the `CoE` subsystem (mirrors `[llm.coe]` in TOML).
 #[derive(Debug, Clone)]
@@ -54,13 +54,13 @@ pub struct CoeMetrics {
 }
 
 /// Runtime `CoE` state bundled into `RouterProvider`.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CoeRouter {
     pub config: CoeConfig,
     /// The provider used as the secondary/escalation target.
-    pub secondary: AnyProvider,
+    pub secondary: Arc<dyn LlmProviderDyn>,
     /// Provider used for computing inter-divergence embeddings.
-    pub embed: AnyProvider,
+    pub embed: Arc<dyn LlmProviderDyn>,
     pub metrics: Arc<CoeMetrics>,
 }
 
@@ -71,9 +71,11 @@ const MIN_INTER_LEN: usize = 50;
 ///
 /// Returns `None` when either text is shorter than the minimum guard or embedding fails.
 /// `0.0` = identical, `0.5` = orthogonal, `1.0` = opposite.
-pub async fn inter_divergence(primary: &str, secondary: &str, embed: &AnyProvider) -> Option<f32> {
-    use crate::provider::LlmProvider;
-
+pub async fn inter_divergence(
+    primary: &str,
+    secondary: &str,
+    embed: &dyn LlmProviderDyn,
+) -> Option<f32> {
     if primary.len().min(secondary.len()) < MIN_INTER_LEN {
         return None;
     }
@@ -162,7 +164,7 @@ pub async fn run_coe(
     };
 
     // Compute inter-divergence.
-    let divergence = inter_divergence(&primary_text, &secondary_text, &coe.embed).await;
+    let divergence = inter_divergence(&primary_text, &secondary_text, &*coe.embed).await;
 
     let decision = decide(entropy, divergence, &coe.config);
 
@@ -249,8 +251,8 @@ mod tests {
                 inter_threshold: 0.20,
                 shadow_sample_rate: 0.0, // disable random shadow unless explicitly set
             },
-            secondary,
-            embed,
+            secondary: Arc::new(secondary) as Arc<dyn LlmProviderDyn>,
+            embed: Arc::new(embed) as Arc<dyn LlmProviderDyn>,
             metrics: Arc::new(CoeMetrics::default()),
         }
     }

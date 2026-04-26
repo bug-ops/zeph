@@ -70,7 +70,7 @@ mod private {
 ///
 /// All async methods return [`BoxFuture`] rather than `impl Future + Send`, making this
 /// trait dyn-compatible and usable behind `Arc<dyn LlmProviderDyn>`.
-pub trait LlmProviderDyn: private::Sealed + Send + Sync {
+pub trait LlmProviderDyn: private::Sealed + std::fmt::Debug + Send + Sync {
     /// Report the model's context window size in tokens. `None` if unknown.
     fn context_window(&self) -> Option<usize>;
 
@@ -174,7 +174,7 @@ pub trait LlmProviderDyn: private::Sealed + Send + Sync {
     fn supports_structured_output(&self) -> bool;
 }
 
-impl<T: LlmProvider + Send + Sync + 'static> LlmProviderDyn for T {
+impl<T: LlmProvider + std::fmt::Debug + Send + Sync + 'static> LlmProviderDyn for T {
     fn context_window(&self) -> Option<usize> {
         LlmProvider::context_window(self)
     }
@@ -367,6 +367,7 @@ mod tests {
     use super::*;
     use crate::provider::{ChatStream, StreamChunk};
 
+    #[derive(Debug)]
     struct StubProvider {
         response: String,
     }
