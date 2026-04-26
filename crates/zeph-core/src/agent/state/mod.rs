@@ -990,7 +990,7 @@ impl SkillState {
             prompt_mode: crate::config::SkillPromptMode::Auto,
             available_custom_secrets: HashMap::new(),
             cosine_weight: 0.7,
-            hybrid_search: false,
+            hybrid_search: true,
             bm25_index: None,
             two_stage_matching: false,
             confusability_threshold: 0.0,

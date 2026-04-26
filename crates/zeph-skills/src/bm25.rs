@@ -178,6 +178,11 @@ fn tokenize(text: &str) -> Vec<String> {
 ///
 /// Uses constant `k=60` from the original RRF paper (Cormack et al., 2009).
 /// Results are sorted by fused score, highest first, and truncated to `limit`.
+///
+/// Scores in the returned `Vec` are normalized to `[0, 1]`: a rank-0 hit in both lists
+/// scores `1.0`; a rank-0 hit in one list scores `0.5`. This makes fused scores
+/// comparable to raw cosine similarity scores used by downstream consumers such as
+/// `min_injection_score`.
 #[must_use]
 pub fn rrf_fuse(
     embedding_results: &[ScoredMatch],
@@ -196,9 +201,18 @@ pub fn rrf_fuse(
         *scores.entry(*idx).or_default() += 1.0 / (K + rank as f32 + 1.0);
     }
 
+    // Normalize RRF scores to [0, 1] so they are comparable to cosine similarity scores.
+    // Theoretical maximum for two lists: 2 / (K + 1). Dividing by this makes the best
+    // possible score (rank 0 in both lists) equal to 1.0 and a single-list rank-0 hit
+    // equal to 0.5, preserving rank order while matching the scale expected by downstream
+    // consumers such as `min_injection_score`.
+    let max_rrf_score = 2.0 / (K + 1.0);
     let mut fused: Vec<ScoredMatch> = scores
         .into_iter()
-        .map(|(index, score)| ScoredMatch { index, score })
+        .map(|(index, score)| ScoredMatch {
+            index,
+            score: score / max_rrf_score,
+        })
         .collect();
     fused.sort_unstable_by(|a, b| {
         b.score
@@ -335,6 +349,63 @@ mod tests {
         let idx = Bm25Index::build(&["run git commands"]);
         let results = idx.search("git", 0);
         assert!(results.is_empty());
+    }
+
+    /// Rank-0 in one list must normalize to 0.5, which is well above
+    /// the default `min_injection_score = 0.20` threshold. This is the
+    /// regression test for issue #3435: before normalization, the score
+    /// was ~0.016 and every skill candidate was silently dropped.
+    #[test]
+    fn rrf_fuse_single_list_rank0_passes_min_injection_threshold() {
+        let emb = vec![ScoredMatch {
+            index: 0,
+            score: 0.85,
+        }];
+        let fused = rrf_fuse(&emb, &[], 5);
+        assert_eq!(fused.len(), 1);
+        // Normalized: 1/(K+1) / (2/(K+1)) = 0.5 exactly.
+        assert!(
+            (fused[0].score - 0.5).abs() < 1e-4,
+            "expected normalized RRF score 0.5 for rank-0 single-list hit, got {:.6}",
+            fused[0].score,
+        );
+    }
+
+    /// Rank-0 in both lists must normalize to exactly 1.0.
+    #[test]
+    fn rrf_fuse_both_lists_rank0_normalizes_to_one() {
+        let emb = vec![ScoredMatch {
+            index: 0,
+            score: 0.9,
+        }];
+        let bm25 = vec![(0, 2.0_f32)];
+        let fused = rrf_fuse(&emb, &bm25, 5);
+        assert_eq!(fused.len(), 1);
+        assert!(
+            (fused[0].score - 1.0).abs() < 1e-4,
+            "expected ~1.0 for rank-0 in both lists, got {:.4}",
+            fused[0].score,
+        );
+    }
+
+    /// All normalized scores must stay in [0, 1].
+    #[test]
+    fn rrf_fuse_scores_bounded_zero_to_one() {
+        let emb: Vec<ScoredMatch> = (0..10)
+            .map(|i| ScoredMatch {
+                index: i,
+                score: 1.0 - i as f32 * 0.05,
+            })
+            .collect();
+        let bm25: Vec<(usize, f32)> = (5..15).map(|i| (i, 1.0)).collect();
+        let fused = rrf_fuse(&emb, &bm25, 20);
+        for m in &fused {
+            assert!(
+                m.score >= 0.0 && m.score <= 1.0,
+                "score {:.4} is outside [0, 1]",
+                m.score,
+            );
+        }
     }
 
     #[test]
