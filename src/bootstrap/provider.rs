@@ -616,4 +616,29 @@ mod tests {
         let result = build_all_pool_providers(&config.llm.providers, &config);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn active_provider_name_skips_embed_only_first_entry() {
+        let providers = vec![
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("embedder".into()),
+                model: Some("nomic-embed-text".into()),
+                embed: true,
+                ..ProviderEntry::default()
+            },
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("chat".into()),
+                model: Some("qwen3:8b".into()),
+                embed: false,
+                ..ProviderEntry::default()
+            },
+        ];
+        let active = providers
+            .iter()
+            .find(|e| !e.embed)
+            .map_or_else(String::new, ProviderEntry::effective_name);
+        assert_eq!(active, "chat");
+    }
 }

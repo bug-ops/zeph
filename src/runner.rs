@@ -1732,7 +1732,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         tool_executor,
     )
     .apply_session_config(session_config)
-    .with_active_provider_name(config.llm.providers.first().map_or_else(
+    .with_active_provider_name(config.llm.providers.iter().find(|e| !e.embed).map_or_else(
         || provider.name().to_owned(),
         zeph_core::config::ProviderEntry::effective_name,
     ))
