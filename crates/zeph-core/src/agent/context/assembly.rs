@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::fmt::Write;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use zeph_agent_context::helpers::BudgetHint;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, MessagePart, Role};
 use zeph_skills::ScoredMatch;
 use zeph_skills::loader::SkillMeta;
@@ -1616,51 +1617,6 @@ impl<C: Channel> Agent<C> {
         if let Some(msg) = self.msg.messages.first_mut() {
             msg.content = system_prompt;
         }
-    }
-}
-
-/// Budget state injected into the volatile system prompt section (#2267).
-///
-/// All fields are optional — omitted when the corresponding data source is unavailable.
-/// `format_xml()` returns `None` when all fields would be absent (nothing to inject).
-struct BudgetHint {
-    remaining_cost_cents: Option<f64>,
-    total_budget_cents: Option<f64>,
-    remaining_tool_calls: usize,
-    max_tool_calls: usize,
-}
-
-impl BudgetHint {
-    fn format_xml(&self) -> Option<String> {
-        let has_cost = self.remaining_cost_cents.is_some();
-        // Always include tool call budget — max_tool_calls > 0 in any real config.
-        if !has_cost && self.max_tool_calls == 0 {
-            return None;
-        }
-        let mut s = String::from("<budget>");
-        if let Some(remaining) = self.remaining_cost_cents {
-            let _ = write!(
-                s,
-                "\n<remaining_cost_cents>{remaining:.2}</remaining_cost_cents>"
-            );
-        }
-        if let Some(total) = self.total_budget_cents {
-            let _ = write!(s, "\n<total_budget_cents>{total:.2}</total_budget_cents>");
-        }
-        if self.max_tool_calls > 0 {
-            let _ = write!(
-                s,
-                "\n<remaining_tool_calls>{}</remaining_tool_calls>",
-                self.remaining_tool_calls
-            );
-            let _ = write!(
-                s,
-                "\n<max_tool_calls>{}</max_tool_calls>",
-                self.max_tool_calls
-            );
-        }
-        s.push_str("\n</budget>");
-        Some(s)
     }
 }
 

@@ -35,8 +35,9 @@ pub mod service;
 pub mod state;
 
 pub use error::ContextError;
+pub use helpers::BudgetHint;
 pub use service::ContextService;
 pub use state::{
-    ContextAssemblyView, ContextSummarizationView, MessageWindowView, MetricsCounters,
-    ProviderHandles,
+    CompactionOutcome, ContextAssemblyView, ContextSummarizationView, MessageWindowView,
+    MetricsCounters, ProviderHandles,
 };

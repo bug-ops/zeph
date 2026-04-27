@@ -10,6 +10,8 @@
 //! All functions operate on [`crate::state::ContextAssemblyView`] instead of the
 //! `zeph-core`-internal `MemoryState`, keeping this crate free of `zeph-core` types.
 
+use std::fmt::Write as _;
+
 use zeph_config::ContextFormat;
 use zeph_llm::provider::{Message, MessagePart, Role};
 use zeph_memory::TokenCounter;
@@ -689,4 +691,132 @@ pub async fn fetch_cross_session(
     )
     .await
     .map_err(ContextError::Memory)
+}
+
+/// Budget state injected into the volatile system prompt section.
+///
+/// All fields are optional — omitted when the corresponding data source is unavailable.
+/// [`BudgetHint::format_xml`] returns `None` when all fields would be absent.
+///
+/// Callers should construct this from cost-tracker and tool-orchestrator state, then call
+/// `format_xml` and append the result to the system prompt when `Some`.
+pub struct BudgetHint {
+    /// Remaining daily budget in US cents, if a daily limit is configured.
+    pub remaining_cost_cents: Option<f64>,
+    /// Total daily budget in US cents, if a daily limit is configured.
+    pub total_budget_cents: Option<f64>,
+    /// Remaining tool-call iterations this turn.
+    pub remaining_tool_calls: usize,
+    /// Maximum allowed tool-call iterations per turn (0 = no limit configured).
+    pub max_tool_calls: usize,
+}
+
+impl BudgetHint {
+    /// Render the budget hint as an XML fragment for injection into the system prompt.
+    ///
+    /// Returns `None` when no meaningful budget data is available — callers must skip
+    /// injection rather than injecting an empty `<budget></budget>` block.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_agent_context::helpers::BudgetHint;
+    ///
+    /// let hint = BudgetHint {
+    ///     remaining_cost_cents: Some(50.0),
+    ///     total_budget_cents: Some(100.0),
+    ///     remaining_tool_calls: 8,
+    ///     max_tool_calls: 10,
+    /// };
+    /// let xml = hint.format_xml().unwrap();
+    /// assert!(xml.contains("<remaining_cost_cents>50.00</remaining_cost_cents>"));
+    /// assert!(xml.contains("<remaining_tool_calls>8</remaining_tool_calls>"));
+    /// ```
+    #[must_use]
+    pub fn format_xml(&self) -> Option<String> {
+        let has_cost = self.remaining_cost_cents.is_some();
+        // Always include tool call budget — max_tool_calls > 0 in any real config.
+        if !has_cost && self.max_tool_calls == 0 {
+            return None;
+        }
+        let mut s = String::from("<budget>");
+        if let Some(remaining) = self.remaining_cost_cents {
+            let _ = write!(
+                s,
+                "\n<remaining_cost_cents>{remaining:.2}</remaining_cost_cents>"
+            );
+        }
+        if let Some(total) = self.total_budget_cents {
+            let _ = write!(s, "\n<total_budget_cents>{total:.2}</total_budget_cents>");
+        }
+        if self.max_tool_calls > 0 {
+            let _ = write!(
+                s,
+                "\n<remaining_tool_calls>{}</remaining_tool_calls>",
+                self.remaining_tool_calls
+            );
+            let _ = write!(
+                s,
+                "\n<max_tool_calls>{}</max_tool_calls>",
+                self.max_tool_calls
+            );
+        }
+        s.push_str("\n</budget>");
+        Some(s)
+    }
+}
+
+#[cfg(test)]
+mod budget_hint_tests {
+    use super::*;
+
+    #[test]
+    fn format_xml_none_when_no_data() {
+        let hint = BudgetHint {
+            remaining_cost_cents: None,
+            total_budget_cents: None,
+            remaining_tool_calls: 0,
+            max_tool_calls: 0,
+        };
+        assert!(hint.format_xml().is_none());
+    }
+
+    #[test]
+    fn format_xml_with_cost_only() {
+        let hint = BudgetHint {
+            remaining_cost_cents: Some(25.5),
+            total_budget_cents: Some(100.0),
+            remaining_tool_calls: 0,
+            max_tool_calls: 0,
+        };
+        let xml = hint.format_xml().unwrap();
+        assert!(xml.contains("<remaining_cost_cents>25.50</remaining_cost_cents>"));
+        assert!(xml.contains("<total_budget_cents>100.00</total_budget_cents>"));
+    }
+
+    #[test]
+    fn format_xml_with_tool_calls_only() {
+        let hint = BudgetHint {
+            remaining_cost_cents: None,
+            total_budget_cents: None,
+            remaining_tool_calls: 3,
+            max_tool_calls: 10,
+        };
+        let xml = hint.format_xml().unwrap();
+        assert!(xml.contains("<remaining_tool_calls>3</remaining_tool_calls>"));
+        assert!(xml.contains("<max_tool_calls>10</max_tool_calls>"));
+    }
+
+    #[test]
+    fn format_xml_with_all_fields() {
+        let hint = BudgetHint {
+            remaining_cost_cents: Some(50.0),
+            total_budget_cents: Some(100.0),
+            remaining_tool_calls: 8,
+            max_tool_calls: 10,
+        };
+        let xml = hint.format_xml().unwrap();
+        assert!(xml.starts_with("<budget>"));
+        assert!(xml.ends_with("</budget>"));
+    }
 }

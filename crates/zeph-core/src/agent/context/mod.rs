@@ -12,26 +12,8 @@ pub(super) use crate::text::truncate_to_chars as truncate_chars;
 pub(super) use zeph_agent_context::helpers::{
     PERSONA_PREFIX, REASONING_PREFIX, TRAJECTORY_PREFIX, TREE_MEMORY_PREFIX,
 };
+pub(super) use zeph_agent_context::state::CompactionOutcome;
 pub(super) use zeph_context::slot::{cap_summary, chunk_messages};
-
-/// Return type from `compact_context()` that distinguishes between successful compaction,
-/// probe rejection, and no-op.
-///
-/// Gives `maybe_compact()` enough information to handle probe rejection without triggering
-/// the `Exhausted` state — which would only be correct if summarization itself is stuck.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CompactionOutcome {
-    /// Messages were drained and replaced with a summary.
-    Compacted,
-    /// Messages were drained and replaced with a summary, but persisting the result failed.
-    /// The in-memory state is correct; only persistence to storage failed.
-    CompactedWithPersistError,
-    /// Probe rejected the summary — original messages are preserved.
-    /// Caller must NOT check `freed_tokens` or transition to `Exhausted`.
-    ProbeRejected,
-    /// No compaction was performed (too few messages, empty `to_compact`, etc.).
-    NoChange,
-}
 
 impl<C: Channel> Agent<C> {
     pub(super) fn compaction_tier(&self) -> super::context_manager::CompactionTier {

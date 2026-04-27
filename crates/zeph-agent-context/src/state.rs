@@ -217,3 +217,22 @@ pub trait TrustGate: Send + Sync {
     /// Apply the given trust level to the underlying tool executor.
     fn set_effective_trust(&self, level: zeph_common::SkillTrustLevel);
 }
+
+/// Return type from `compact_context()` that distinguishes between successful compaction,
+/// probe rejection, and no-op.
+///
+/// Gives `maybe_compact()` enough information to handle probe rejection without triggering
+/// the `Exhausted` state — which would only be correct if summarization itself is stuck.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionOutcome {
+    /// Messages were drained and replaced with a summary.
+    Compacted,
+    /// Messages were drained and replaced with a summary, but persisting the result failed.
+    /// The in-memory state is correct; only persistence to storage failed.
+    CompactedWithPersistError,
+    /// Probe rejected the summary — original messages are preserved.
+    /// Caller must NOT check `freed_tokens` or transition to `Exhausted`.
+    ProbeRejected,
+    /// No compaction was performed (too few messages, empty `to_compact`, etc.).
+    NoChange,
+}
