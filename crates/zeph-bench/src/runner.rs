@@ -529,7 +529,7 @@ impl BenchRunner {
 
         // Ignore agent errors — a failed LLM call still yields an empty response that
         // the evaluator scores as 0.0 rather than aborting the entire run.
-        let _ = agent.run().await;
+        let _ = Box::pin(agent.run()).await;
         let responses = agent.into_channel().into_responses();
 
         // Best-effort cleanup: delete per-scenario SQLite file after the run.

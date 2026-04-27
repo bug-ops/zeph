@@ -898,7 +898,7 @@ async fn spawn_acp_agent(
         tracing::error!("failed to load agent history: {e:#}");
     }
 
-    if let Err(e) = agent.run().await {
+    if let Err(e) = Box::pin(agent.run()).await {
         tracing::error!("ACP agent loop error: {e:#}");
     }
 

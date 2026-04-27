@@ -55,10 +55,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::{
-    Agent, Client, SessionMessage, on_receive_notification, on_receive_request,
+    Agent, Client, SessionMessage, on_receive_request,
     schema::{
         RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-        SelectedPermissionOutcome, SessionId, SessionNotification, StopReason,
+        SelectedPermissionOutcome, SessionId, StopReason,
     },
 };
 use futures::channel::mpsc;
@@ -373,10 +373,6 @@ async fn spawn_subagent_inner(cfg: SubagentConfig) -> Result<SubagentHandle, Acp
         tokio::spawn(async move {
             let result = Client
             .builder()
-            .on_receive_notification(
-                async move |_notif: SessionNotification, _cx| Ok(()),
-                on_receive_notification!(),
-            )
             .on_receive_request(
                 async move |req: RequestPermissionRequest,
                       responder: agent_client_protocol::Responder<RequestPermissionResponse>,

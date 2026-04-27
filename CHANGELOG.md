@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(acp): restore session/update notification routing in run-agent client (#3520). Removed
+  no-op `on_receive_notification` handler from `spawn_subagent_inner` that was silently
+  discarding all `agent_message_chunk` notifications before they could reach `drain_until_stop`,
+  causing `zeph acp run-agent` to always produce empty output.
+- fix(acp,bench): box `agent.run()` future to suppress `clippy::large_futures` with
+  `--features full` (#3521). Changed `agent.run().await` to `Box::pin(agent.run()).await`
+  at `src/acp.rs:901` and `crates/zeph-bench/src/runner.rs:532` to keep the 17 400-byte
+  future on the heap rather than the stack.
+
 ### Changed
 
 - refactor(context): fix workspace compilation errors introduced during context migration
