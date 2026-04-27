@@ -500,7 +500,7 @@ mod tests {
     // ── Phase-2 Qdrant cleanup tests ─────────────────────────────────────────
 
     /// Build a test `EmbeddingStore` backed by an in-memory vector store and a
-    /// fresh SQLite database. Returns both so the caller can manipulate SQLite directly.
+    /// fresh `SQLite` database. Returns both so the caller can manipulate `SQLite` directly.
     async fn setup_embedding_store() -> (EmbeddingStore, crate::store::SqliteStore) {
         let sqlite = crate::store::SqliteStore::new(":memory:").await.unwrap();
         let pool = sqlite.pool().clone();
@@ -555,7 +555,7 @@ mod tests {
         );
     }
 
-    /// Phase 2 without an embedding store: SQLite bookkeeping still runs; no Qdrant call.
+    /// Phase 2 without an embedding store: `SQLite` bookkeeping still runs; no Qdrant call.
     #[tokio::test]
     async fn eviction_phase2_skips_delete_when_no_embedding_store() {
         let (_, store) = setup_embedding_store().await;

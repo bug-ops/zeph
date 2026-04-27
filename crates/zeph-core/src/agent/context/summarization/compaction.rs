@@ -252,14 +252,14 @@ mod tests {
         );
     }
 
-    /// Verify that `compression_guidelines` stored in SQLite flow through the proactive
+    /// Verify that `compression_guidelines` stored in `SQLite` flow through the proactive
     /// compression path and are embedded in the LLM summarization prompt.
     ///
     /// Regression guard for issue #3533: `maybe_proactive_compress` now calls
     /// `load_compression_guidelines_for_compact` and wires the result through
     /// `.with_compression_guidelines(guidelines)` before delegating to
     /// `ContextService::maybe_proactive_compress`. This test confirms the full
-    /// data-flow: SQLite → `load_compression_guidelines_for_compact` → view field →
+    /// data-flow: `SQLite` → `load_compression_guidelines_for_compact` → view field →
     /// `summarize_with_llm` prompt.
     ///
     /// A regression would cause the LLM prompt to omit the `<compression-guidelines>` block,
