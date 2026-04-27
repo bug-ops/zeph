@@ -82,15 +82,19 @@ impl<C: Channel> Agent<C> {
     /// Proactive context compression: delegates to [`ContextService::maybe_proactive_compress`].
     ///
     /// The Focus-strategy auto-consolidation path is not active in this delegation
-    /// (Focus fields are not in [`ContextSummarizationView`]). This is a known
-    /// limitation tracked by `// TODO(review)` in service.rs.
+    /// because Focus state is not part of [`ContextSummarizationView`]. Focus
+    /// auto-consolidation lives only on `Agent<C>` and is not delegated to
+    /// `ContextService`.
     pub(in crate::agent) async fn maybe_proactive_compress(
         &mut self,
     ) -> Result<(), crate::agent::error::AgentError> {
+        let guidelines = self.load_compression_guidelines_for_compact().await;
         let svc = zeph_agent_context::ContextService::new();
         let providers = self.providers();
         let status = TxStatusSink(self.services.session.status_tx.clone());
-        let mut summ = self.summarization_view();
+        let mut summ = self
+            .summarization_view()
+            .with_compression_guidelines(guidelines);
         svc.maybe_proactive_compress(&mut summ, &providers, &status)
             .await;
         Ok(())

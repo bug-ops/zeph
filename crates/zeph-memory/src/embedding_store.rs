@@ -695,6 +695,44 @@ impl EmbeddingStore {
         Ok(result)
     }
 
+    /// Delete all Qdrant vectors associated with the given message IDs.
+    ///
+    /// Resolves `message_id → qdrant_point_id` via the `embeddings_metadata` table,
+    /// then calls the underlying vector store's `delete_by_ids`. The
+    /// `embeddings_metadata` rows are **not** removed here — the `SQLite` CASCADE on
+    /// `messages` handles that when the rows are hard-deleted later.
+    ///
+    /// Returns the number of Qdrant point IDs targeted for deletion (may be less than
+    /// `ids.len()` when some messages have no embeddings).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError`] if the `SQLite` query or the vector store delete fails.
+    pub async fn delete_by_message_ids(&self, ids: &[MessageId]) -> Result<usize, MemoryError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let placeholders = zeph_db::placeholder_list(1, ids.len());
+        let query = format!(
+            "SELECT qdrant_point_id FROM embeddings_metadata WHERE message_id IN ({placeholders})"
+        );
+        let mut q = zeph_db::query_as::<_, (String,)>(&query);
+        for &id in ids {
+            q = q.bind(id);
+        }
+        let rows: Vec<(String,)> = q.fetch_all(&self.pool).await?;
+
+        let point_ids: Vec<String> = rows.into_iter().map(|(id,)| id).collect();
+        let count = point_ids.len();
+
+        if !point_ids.is_empty() {
+            self.ops.delete_by_ids(&self.collection, point_ids).await?;
+        }
+
+        Ok(count)
+    }
+
     /// Check whether an embedding already exists for the given message ID.
     ///
     /// # Errors
@@ -1092,5 +1130,61 @@ mod tests {
             (v[0] - 1.0).abs() < f32::EPSILON,
             "expected chunk_index=0 vector"
         );
+    }
+
+    /// `delete_by_message_ids` resolves `message_id → qdrant_point_id` via
+    /// `embeddings_metadata` and deletes the matching vectors.
+    ///
+    /// Verifies: (a) the correct point id is targeted, (b) `embeddings_metadata`
+    /// rows are NOT removed (CASCADE handles that on hard-delete later), and (c) the
+    /// method returns the number of point IDs found.
+    #[tokio::test]
+    async fn embedding_store_delete_by_message_ids_resolves_via_metadata() {
+        let (store, sqlite) = setup_with_store().await;
+        let cid = sqlite.create_conversation().await.unwrap();
+        let msg_id = sqlite.save_message(cid, "user", "test").await.unwrap();
+
+        // Store a vector so embeddings_metadata gets a row.
+        store
+            .store(
+                msg_id,
+                cid,
+                "user",
+                vec![1.0, 0.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "test-model",
+                0,
+            )
+            .await
+            .unwrap();
+
+        // Confirm the metadata row exists before deletion.
+        assert!(store.has_embedding(msg_id).await.unwrap());
+
+        // Delete by message id — must succeed and return 1 (one point id resolved).
+        let deleted = store.delete_by_message_ids(&[msg_id]).await.unwrap();
+        assert_eq!(deleted, 1, "one point id should have been targeted");
+
+        // embeddings_metadata rows must still be present (CASCADE removes them later).
+        let pool = sqlite.pool().clone();
+        let row: (i64,) = zeph_db::query_as(sql!(
+            "SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?"
+        ))
+        .bind(msg_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row.0, 1,
+            "embeddings_metadata row must survive delete_by_message_ids"
+        );
+    }
+
+    /// `delete_by_message_ids` is a no-op when the slice is empty.
+    #[tokio::test]
+    async fn embedding_store_delete_by_message_ids_empty_slice_is_noop() {
+        let (store, _sqlite) = setup_with_store().await;
+        let deleted = store.delete_by_message_ids(&[]).await.unwrap();
+        assert_eq!(deleted, 0);
     }
 }

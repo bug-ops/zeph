@@ -739,7 +739,16 @@ impl SubAgentManager {
 
         self.agents.insert(task_id.clone(), handle);
         // FIX-6: log permission_mode so operators can audit privilege escalation at spawn time.
-        // TODO: enforce permission_mode at runtime (restrict tool access based on mode).
+        // Per-mode runtime enforcement is split across three sites and intentionally NOT done here:
+        //   - `Plan` is enforced by `PlanModeExecutor` (build_filtered_executor, ~line 68).
+        //   - `BypassPermissions` is gated by `apply_def_config_defaults` (~line 104).
+        //   - Tool allow/deny lists are enforced for every mode by `FilteredToolExecutor`
+        //     (build_filtered_executor, ~line 76; filter.rs::is_allowed).
+        // `Default`, `AcceptEdits`, `DontAsk`, and `BypassPermissions` are documented as
+        // functionally equivalent for sub-agents (see PermissionMode doc-comment in
+        // zeph-config/src/subagent.rs). If a future requirement adds a per-mode tool gate
+        // beyond `Plan`, replace this comment with the new wrapper. Architect triage 2026-04-28:
+        // no concrete (mode, tool) counterexample found.
         tracing::info!(
             task_id,
             def_name,

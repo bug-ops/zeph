@@ -1222,6 +1222,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     if !exec_mode.bare {
         let store = std::sync::Arc::new(memory.sqlite().clone());
+        let embedding = memory.embedding_store().cloned();
         let eviction_cfg = config.memory.eviction.clone();
         let policy = std::sync::Arc::new(zeph_memory::EbbinghausPolicy::default());
         let cancel = supervisor.cancellation_token();
@@ -1231,6 +1232,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             factory: move || {
                 zeph_memory::start_eviction_loop(
                     store.clone(),
+                    embedding.clone(),
                     eviction_cfg.clone(),
                     policy.clone(),
                     cancel.clone(),

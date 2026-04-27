@@ -90,7 +90,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Extracts all fields from `&self` synchronously before the first `.await` so
     /// `&self` is not held across the await boundary (required for `Send` futures).
-    async fn load_compression_guidelines_for_compact(&mut self) -> Option<String> {
+    pub(super) async fn load_compression_guidelines_for_compact(&mut self) -> Option<String> {
         let enabled = self
             .services
             .memory
@@ -124,5 +124,245 @@ impl<C: Channel> Agent<C> {
             .await
             .map(|_| ())
             .map_err(|e| crate::agent::error::AgentError::ContextError(format!("{e:#}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use zeph_llm::any::AnyProvider;
+    use zeph_memory::semantic::SemanticMemory;
+
+    use crate::agent::Agent;
+    use crate::agent::agent_tests::{MockChannel, MockToolExecutor, create_test_registry};
+
+    /// Verify that `load_compression_guidelines_for_compact` returns `Some` containing
+    /// the stored guideline text when the feature is enabled and a guideline has been saved.
+    ///
+    /// Regression guard for Fix #2 (issue #3533): the proactive compression path in
+    /// `maybe_proactive_compress` calls this function and passes the result as
+    /// `.with_compression_guidelines(guidelines)` on the view. A silent regression here
+    /// would mean guidelines are never loaded, causing `ContextSummarizationView::
+    /// compression_guidelines` to always be `None` in the proactive path.
+    #[tokio::test]
+    async fn compression_guidelines_loaded_from_sqlite_when_enabled() {
+        let embed_provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        let memory = SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            embed_provider,
+            "test-model",
+        )
+        .await
+        .unwrap();
+
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // Store a guideline in the in-memory SQLite DB.
+        let expected = "preserve function signatures verbatim";
+        memory
+            .sqlite()
+            .save_compression_guidelines(expected, 5, Some(cid))
+            .await
+            .unwrap();
+
+        let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::with_responses(vec![]));
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        // Enable the compression guidelines feature flag — off by default.
+        agent
+            .services
+            .memory
+            .compaction
+            .compression_guidelines_config
+            .enabled = true;
+
+        let result = agent.load_compression_guidelines_for_compact().await;
+
+        assert_eq!(
+            result.as_deref(),
+            Some(expected),
+            "compression_guidelines must be loaded from SQLite and returned as Some"
+        );
+    }
+
+    /// Verify that `load_compression_guidelines_for_compact` returns `None` when the
+    /// feature flag is disabled, even if a guideline is stored in the database.
+    ///
+    /// Prevents inadvertent activation of guidelines when the user has not opted in.
+    #[tokio::test]
+    async fn compression_guidelines_returns_none_when_feature_disabled() {
+        let embed_provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        let memory = SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            embed_provider,
+            "test-model",
+        )
+        .await
+        .unwrap();
+
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        memory
+            .sqlite()
+            .save_compression_guidelines("should not be loaded", 4, Some(cid))
+            .await
+            .unwrap();
+
+        let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::with_responses(vec![]));
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        // Feature flag defaults to disabled.
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        assert!(
+            !agent
+                .services
+                .memory
+                .compaction
+                .compression_guidelines_config
+                .enabled,
+            "compression_guidelines_config must be disabled by default"
+        );
+
+        let result = agent.load_compression_guidelines_for_compact().await;
+
+        assert!(
+            result.is_none(),
+            "must return None when feature flag is disabled; got: {result:?}"
+        );
+    }
+
+    /// Verify that `compression_guidelines` stored in SQLite flow through the proactive
+    /// compression path and are embedded in the LLM summarization prompt.
+    ///
+    /// Regression guard for issue #3533: `maybe_proactive_compress` now calls
+    /// `load_compression_guidelines_for_compact` and wires the result through
+    /// `.with_compression_guidelines(guidelines)` before delegating to
+    /// `ContextService::maybe_proactive_compress`. This test confirms the full
+    /// data-flow: SQLite → `load_compression_guidelines_for_compact` → view field →
+    /// `summarize_with_llm` prompt.
+    ///
+    /// A regression would cause the LLM prompt to omit the `<compression-guidelines>` block,
+    /// silently degrading compaction quality without any error.
+    #[tokio::test]
+    async fn compression_guidelines_flow_through_proactive_compress_path() {
+        use zeph_config::CompressionStrategy;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+
+        let embed_provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        let memory = SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            embed_provider,
+            "test-model",
+        )
+        .await
+        .unwrap();
+
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        // Store a guideline that must appear in the LLM prompt.
+        let guideline = "always preserve function signatures verbatim";
+        memory
+            .sqlite()
+            .save_compression_guidelines(guideline, 5, Some(cid))
+            .await
+            .unwrap();
+
+        // Wire a recording mock so we can inspect the exact LLM request.
+        let (mock, recorded) =
+            MockProvider::with_responses(vec!["summary text".to_string()]).with_recording();
+        let provider = AnyProvider::Mock(mock);
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        // Enable guidelines and disable structured summaries so the non-structured
+        // single-pass path is taken (guidelines injected by `build_chunk_prompt`).
+        agent
+            .services
+            .memory
+            .compaction
+            .compression_guidelines_config
+            .enabled = true;
+        agent.services.memory.compaction.structured_summaries = false;
+
+        // Configure Proactive strategy with a threshold below our token count.
+        agent.context_manager.compression.strategy = CompressionStrategy::Proactive {
+            threshold_tokens: 500,
+            max_summary_tokens: 200,
+        };
+        // Set token pressure above the threshold so `should_proactively_compress` fires.
+        agent.runtime.providers.cached_prompt_tokens = 600;
+
+        // Add enough messages so compactable > 1 (preserve_tail defaults to 6,
+        // so we need len > 6 + 2 = 9; 10 additional messages give len = 11).
+        for i in 0..10 {
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            agent.msg.messages.push(Message {
+                role,
+                content: format!("message {i}"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+
+        agent.maybe_proactive_compress().await.unwrap();
+
+        // At least one LLM call must have been made (recording is non-empty).
+        let calls = recorded.lock().unwrap();
+        assert!(
+            !calls.is_empty(),
+            "LLM must be called during proactive compression"
+        );
+
+        // The guideline must appear in the messages sent to the LLM — confirming
+        // `with_compression_guidelines` was correctly populated from SQLite.
+        let guideline_in_prompt = calls
+            .iter()
+            .any(|msgs| msgs.iter().any(|m| m.content.contains(guideline)));
+        assert!(
+            guideline_in_prompt,
+            "compression guideline must be embedded in the LLM summarization prompt; \
+             recorded call contents: {:?}",
+            calls
+                .iter()
+                .flat_map(|msgs| msgs.iter().map(|m| &m.content))
+                .collect::<Vec<_>>()
+        );
     }
 }

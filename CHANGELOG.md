@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- refactor(context): delete unreachable `ContextService::rebuild_system_prompt` stub — the method
+  called `unimplemented!()` and had zero callers; the real implementation lives on `Agent<C>`. Removes
+  a runtime-panic foot-gun from the public API.
+- fix(context): populate `compression_guidelines` on the proactive compaction path
+  (`Agent<C>::maybe_proactive_compress`) — mirrors the reactive path so configured guidelines are
+  passed to the LLM summarizer on every compaction, not only when triggered reactively.
+- fix(memory): wire Qdrant vector cleanup into eviction phase 2 — `start_eviction_loop` now accepts
+  `Option<Arc<EmbeddingStore>>` and deletes vectors via `embeddings_metadata` before marking rows
+  clean; production runs no longer leak Qdrant vectors when eviction is enabled.
+- chore(subagent): replace stale `TODO: enforce permission_mode at runtime` comment in
+  `zeph-subagent/manager.rs` with a tracking comment naming the three existing enforcement sites
+  (`PlanModeExecutor`, `apply_def_config_defaults`, `FilteredToolExecutor`) — no behaviour change.
+
 ### Added
 
 - feat(agent-context): add `MetricsCallback` trait and `ToolOutputArchive`, `CompactionProbeCallback`,

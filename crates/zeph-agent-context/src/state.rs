@@ -95,7 +95,7 @@ pub trait SecurityEventSink: Send {
     fn push(&mut self, category: SecurityEventCategory, source: &'static str, detail: String);
 }
 
-/// Borrow-lens over all fields needed for `prepare_context` and `rebuild_system_prompt`.
+/// Borrow-lens over all fields needed for `prepare_context` and `Agent<C>::rebuild_system_prompt`.
 ///
 /// Every field maps to a single sub-field of `Agent<C>` and uses a type from a
 /// lower-level crate (`zeph-memory`, `zeph-skills`, `zeph-context`, `zeph-sanitizer`,
@@ -144,9 +144,9 @@ pub struct ContextAssemblyView<'a> {
     pub tree_config: TreeConfig,
 
     // ── Skill ─────────────────────────────────────────────────────────────────────────
-    /// `services.skill.last_skills_prompt` — written by `rebuild_system_prompt`.
+    /// `services.skill.last_skills_prompt` — written by `Agent<C>::rebuild_system_prompt`.
     pub last_skills_prompt: &'a mut String,
-    /// `services.skill.active_skill_names` — written by `rebuild_system_prompt`.
+    /// `services.skill.active_skill_names` — written by `Agent<C>::rebuild_system_prompt`.
     pub active_skill_names: &'a mut Vec<String>,
     /// `services.skill.registry` — `Arc` clone enables concurrent read access.
     pub skill_registry: Arc<RwLock<SkillRegistry>>,
@@ -297,10 +297,8 @@ pub struct ContextSummarizationView<'a> {
     /// `None` when the feature is disabled or the caller does not load guidelines.
     /// The service passes the contained string (or `""`) to `summarize_with_llm`. Closes #3528.
     ///
-    /// Set via [`ContextSummarizationView::with_compression_guidelines`].
-    ///
-    /// `// TODO(critic-D1)`: the proactive compression path (`maybe_proactive_compress`)
-    /// currently passes `None` here. A follow-up issue should populate guidelines there too.
+    /// Set via [`ContextSummarizationView::with_compression_guidelines`]. Both the reactive
+    /// (`compact_context`) and proactive (`maybe_proactive_compress`) paths populate this field.
     pub compression_guidelines: Option<String>,
 
     /// Optional probe-validation callback. When `Some`, the service invokes it after LLM

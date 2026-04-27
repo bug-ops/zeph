@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tokio::time::{Duration, interval};
 use tokio_util::sync::CancellationToken;
 
+use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::MessageId;
@@ -164,16 +165,20 @@ fn parse_sqlite_timestamp_secs(s: &str) -> Option<u64> {
 /// 1. Queries `SQLite` for all non-deleted entries and their eviction metadata.
 /// 2. Scores each entry using `policy`.
 /// 3. If the count exceeds `config.max_entries`, soft-deletes the excess lowest-scoring rows.
-/// 4. Queries for all soft-deleted rows and attempts to remove their Qdrant vectors.
-///    If Qdrant removal fails, it is retried on the next sweep cycle.
+/// 4. Queries for all soft-deleted rows, deletes their Qdrant vectors via `embedding` (when
+///    `Some`), then marks the rows clean. If deletion fails, clean-up is retried next sweep.
 ///
 /// If `config.max_entries == 0`, the loop exits immediately without doing anything.
+///
+/// Pass `embedding: None` when Qdrant is disabled — the loop will still clean `SQLite`
+/// bookkeeping without attempting any vector deletion.
 ///
 /// # Errors (non-fatal)
 ///
 /// Database and Qdrant errors are logged but do not stop the loop.
 pub async fn start_eviction_loop(
     store: Arc<SqliteStore>,
+    embedding: Option<Arc<EmbeddingStore>>,
     config: EvictionConfig,
     policy: Arc<dyn EvictionPolicy + 'static>,
     cancel: CancellationToken,
@@ -210,9 +215,9 @@ pub async fn start_eviction_loop(
             }
         }
 
-        // Phase 2: clean up soft-deleted entries from Qdrant.
-        // On startup or after a crash, this also cleans up any orphaned vectors.
-        match run_eviction_phase2(&store).await {
+        // Phase 2: delete Qdrant vectors for soft-deleted entries, then mark them clean.
+        // On startup or after a crash this also cleans up any orphaned vectors.
+        match run_eviction_phase2(&store, embedding.as_deref()).await {
             Ok(cleaned) => {
                 if cleaned > 0 {
                     tracing::info!(cleaned, "eviction phase 2: removed Qdrant vectors");
@@ -278,24 +283,27 @@ async fn run_eviction_phase1(
     feature = "profiling",
     tracing::instrument(name = "memory.eviction_phase2", skip_all)
 )]
-async fn run_eviction_phase2(store: &SqliteStore) -> Result<usize, MemoryError> {
+async fn run_eviction_phase2(
+    store: &SqliteStore,
+    embedding: Option<&EmbeddingStore>,
+) -> Result<usize, MemoryError> {
     // Find all soft-deleted entries that haven't been cleaned from Qdrant yet.
     let ids = store.get_soft_deleted_message_ids().await?;
     if ids.is_empty() {
         return Ok(0);
     }
 
-    // TODO: call Qdrant delete-vectors API here before marking as cleaned.
-    // The embedding_store handles vector lifecycle separately; when that API
-    // is wired in, the call should happen here and mark_qdrant_cleaned should
-    // only be called on success. Tracked in issue: phase-2 Qdrant cleanup.
-    tracing::warn!(
-        count = ids.len(),
-        "eviction phase 2: Qdrant vector removal not yet wired — marking cleaned without actual deletion (MVP)"
-    );
+    if let Some(emb) = embedding {
+        // Delete vectors before marking clean — crash-safe: if this fails, the next
+        // sweep retries (ids are still soft-deleted and not yet marked clean).
+        emb.delete_by_message_ids(&ids).await?;
+    } else {
+        tracing::debug!(
+            count = ids.len(),
+            "eviction phase 2: Qdrant disabled, cleaning SQLite bookkeeping only"
+        );
+    }
 
-    // Mark as cleaned after the (future) Qdrant call succeeds. For now this
-    // prevents infinite retries on every sweep cycle.
     store.mark_qdrant_cleaned(&ids).await?;
     Ok(ids.len())
 }
@@ -487,5 +495,93 @@ mod tests {
             ts, 1_704_067_200,
             "2024-01-01 must parse to known timestamp"
         );
+    }
+
+    // ── Phase-2 Qdrant cleanup tests ─────────────────────────────────────────
+
+    /// Build a test `EmbeddingStore` backed by an in-memory vector store and a
+    /// fresh SQLite database. Returns both so the caller can manipulate SQLite directly.
+    async fn setup_embedding_store() -> (EmbeddingStore, crate::store::SqliteStore) {
+        let sqlite = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+        let mem_store = Box::new(crate::in_memory_store::InMemoryVectorStore::new());
+        let emb = EmbeddingStore::with_store(mem_store, pool);
+        emb.ensure_collection(4).await.unwrap();
+        (emb, sqlite)
+    }
+
+    /// Seed a message, store a vector, and soft-delete the message. Returns `(MessageId, point_id)`.
+    async fn seed_soft_deleted(
+        store: &crate::store::SqliteStore,
+        emb: &EmbeddingStore,
+    ) -> (MessageId, String) {
+        let cid = store.create_conversation().await.unwrap();
+        let msg_id = store.save_message(cid, "user", "hello").await.unwrap();
+
+        let point_id = emb
+            .store(
+                msg_id,
+                cid,
+                "user",
+                vec![1.0, 0.0, 0.0, 0.0],
+                crate::embedding_store::MessageKind::Regular,
+                "test",
+                0,
+            )
+            .await
+            .unwrap();
+
+        // Soft-delete the message so it appears in `get_soft_deleted_message_ids`.
+        store.soft_delete_messages(&[msg_id]).await.unwrap();
+
+        (msg_id, point_id)
+    }
+
+    /// Phase 2 with an embedding store: must delete vectors before marking clean.
+    #[tokio::test]
+    async fn eviction_phase2_calls_delete_before_mark_clean() {
+        let (emb, store) = setup_embedding_store().await;
+        let (msg_id, _point_id) = seed_soft_deleted(&store, &emb).await;
+
+        // Phase 2 should succeed, delete the vector, and mark the row clean.
+        let cleaned = run_eviction_phase2(&store, Some(&emb)).await.unwrap();
+        assert_eq!(cleaned, 1, "one message should be cleaned");
+
+        // After phase 2 the message must no longer appear in the pending cleanup list.
+        let remaining = store.get_soft_deleted_message_ids().await.unwrap();
+        assert!(
+            !remaining.contains(&msg_id),
+            "message must not remain in soft-deleted list after phase 2"
+        );
+    }
+
+    /// Phase 2 without an embedding store: SQLite bookkeeping still runs; no Qdrant call.
+    #[tokio::test]
+    async fn eviction_phase2_skips_delete_when_no_embedding_store() {
+        let (_, store) = setup_embedding_store().await;
+        let cid = store.create_conversation().await.unwrap();
+        let msg_id = store.save_message(cid, "user", "hello").await.unwrap();
+        store.soft_delete_messages(&[msg_id]).await.unwrap();
+
+        // No embedding store — must still mark rows clean.
+        let cleaned = run_eviction_phase2(&store, None).await.unwrap();
+        assert_eq!(
+            cleaned, 1,
+            "row must be cleaned even without embedding store"
+        );
+
+        let remaining = store.get_soft_deleted_message_ids().await.unwrap();
+        assert!(
+            !remaining.contains(&msg_id),
+            "message must not remain in soft-deleted list"
+        );
+    }
+
+    /// Phase 2 returns `Ok(0)` when there are no soft-deleted messages.
+    #[tokio::test]
+    async fn eviction_phase2_empty_returns_zero() {
+        let (emb, store) = setup_embedding_store().await;
+        let cleaned = run_eviction_phase2(&store, Some(&emb)).await.unwrap();
+        assert_eq!(cleaned, 0, "no soft-deleted messages → 0 cleaned");
     }
 }

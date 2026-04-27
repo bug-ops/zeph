@@ -15,7 +15,7 @@ use crate::helpers::{
 };
 use crate::state::{
     ContextAssemblyView, ContextDelta, ContextSummarizationView, MessageWindowView,
-    ProviderHandles, StatusSink, TrustGate,
+    ProviderHandles, StatusSink,
 };
 
 /// Stateless façade for agent context-assembly operations.
@@ -774,23 +774,6 @@ impl ContextService {
         msg
     }
 
-    /// Rebuild the system prompt for the current turn.
-    ///
-    /// Updates the skill catalog, applies channel-skill filters, and rewrites the
-    /// first message in `window.messages` with the new system prompt.
-    pub async fn rebuild_system_prompt(
-        &self,
-        _query: &str,
-        _window: &mut MessageWindowView<'_>,
-        _view: &mut ContextAssemblyView<'_>,
-        _providers: &ProviderHandles,
-        _trust_gate: &(impl TrustGate + ?Sized),
-        _status: &(impl StatusSink + ?Sized),
-    ) {
-        // TODO: implement in PR6 migration (stays on Agent<C> per scope decision)
-        unimplemented!("rebuild_system_prompt stays on Agent<C> per scope decision")
-    }
-
     /// Reset the conversation history.
     ///
     /// Clears all messages except the system prompt and resets the cached token count.
@@ -1211,7 +1194,6 @@ impl ContextService {
             "proactive compression triggered"
         );
 
-        // TODO(critic-D1): populate `summ.compression_guidelines` here for the proactive path.
         match crate::summarization::compaction::compact_context(summ, Some(max_summary_tokens))
             .await
         {
