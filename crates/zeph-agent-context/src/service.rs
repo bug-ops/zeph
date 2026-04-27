@@ -1132,6 +1132,25 @@ impl ContextService {
         crate::summarization::deferred::maybe_apply_deferred_summaries(summ);
     }
 
+    /// Run unconditional LLM-based context compaction with an optional token budget.
+    ///
+    /// Bypasses tier and cooldown checks — always drains the oldest messages and inserts
+    /// a compact summary. Use this in tests or when the caller has already determined that
+    /// compaction is warranted. Production code should prefer [`Self::maybe_compact`].
+    ///
+    /// Returns the number of messages compacted, or `0` when there is nothing to compact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContextError`] if summarization fails (LLM error or timeout).
+    pub async fn compact_context(
+        &self,
+        summ: &mut ContextSummarizationView<'_>,
+        max_summary_tokens: Option<usize>,
+    ) -> Result<usize, crate::error::ContextError> {
+        crate::summarization::compaction::compact_context(summ, max_summary_tokens).await
+    }
+
     /// Apply a soft compaction pass mid-iteration if required.
     ///
     /// Applies deferred summaries and prunes tool outputs down to the soft threshold.

@@ -320,7 +320,8 @@ fn recent_user_assistant_excerpt(
 /// ```
 ///
 /// Falls back to treating the entire response as the current subgoal on malformed input.
-pub(crate) fn parse_subgoal_extraction_response(response: &str) -> SubgoalExtractionResult {
+#[must_use]
+pub fn parse_subgoal_extraction_response(response: &str) -> SubgoalExtractionResult {
     let trimmed = response.trim();
 
     if let Some(current_pos) = trimmed.find("CURRENT:") {

@@ -44,7 +44,7 @@ impl zeph_agent_context::state::SecurityEventSink for SecuritySink<'_> {
 
 impl<C: Channel> Agent<C> {
     /// Construct a `ProviderHandles` bundle from the agent's primary and embedding providers.
-    fn providers(&self) -> zeph_agent_context::state::ProviderHandles {
+    pub(in crate::agent) fn providers(&self) -> zeph_agent_context::state::ProviderHandles {
         zeph_agent_context::state::ProviderHandles {
             primary: self.provider.clone(),
             embedding: self.embedding_provider.clone(),
@@ -79,8 +79,6 @@ impl<C: Channel> Agent<C> {
     ///
     /// [`ContextSummarizationView`]: zeph_agent_context::state::ContextSummarizationView
     /// [`ContextService`]: zeph_agent_context::ContextService
-    // TODO: call sites are added per-migration PR; dead_code until PR4 lands.
-    #[allow(dead_code)]
     pub(in crate::agent) fn summarization_view(
         &mut self,
     ) -> zeph_agent_context::state::ContextSummarizationView<'_> {

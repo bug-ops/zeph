@@ -522,3 +522,25 @@ impl<C: Channel> Agent<C> {
         (sqlite_failed, Some(qdrant_fut))
     }
 }
+
+// ── Test-helper delegations ───────────────────────────────────────────────────
+//
+// `compact_context_with_budget` is used exclusively by integration tests in
+// `crates/zeph-core/src/agent/context/summarization/mod.rs` (T-ORPHAN-01, T-ORPHAN-02).
+// It delegates to `ContextService::compact_context` which exercises the same structural
+// invariants (orphan-pair detection, adjust_compact_end_for_tool_pairs) without the
+// Agent-specific probe/archive/persist/Qdrant logic.
+#[cfg(test)]
+impl<C: Channel> Agent<C> {
+    pub(in crate::agent::context) async fn compact_context_with_budget(
+        &mut self,
+        max_summary_tokens: Option<usize>,
+    ) -> Result<(), crate::agent::error::AgentError> {
+        let svc = zeph_agent_context::ContextService::new();
+        let mut summ = self.summarization_view();
+        svc.compact_context(&mut summ, max_summary_tokens)
+            .await
+            .map(|_| ())
+            .map_err(|e| crate::agent::error::AgentError::ContextError(format!("{e:#}")))
+    }
+}

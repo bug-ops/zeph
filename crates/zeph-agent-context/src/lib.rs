@@ -34,7 +34,7 @@ pub mod helpers;
 pub(crate) mod retrieved;
 pub mod service;
 pub mod state;
-pub(crate) mod summarization;
+pub mod summarization;
 
 pub use compaction::{
     BlockScore, ContentDensity, SubgoalExtractionResult, SubgoalId, SubgoalRegistry, SubgoalState,
@@ -46,5 +46,5 @@ pub use helpers::BudgetHint;
 pub use service::ContextService;
 pub use state::{
     CompactionOutcome, ContextAssemblyView, ContextDelta, ContextSummarizationView,
-    MessageWindowView, MetricsCounters, ProviderHandles,
+    MessageWindowView, MetricsCounters, ProviderHandles, StatusSink,
 };

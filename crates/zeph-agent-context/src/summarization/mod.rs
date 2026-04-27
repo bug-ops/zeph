@@ -20,4 +20,10 @@
 pub(crate) mod compaction;
 pub(crate) mod deferred;
 pub(crate) mod pruning;
-pub(crate) mod scheduling;
+pub mod scheduling;
+
+// Re-export the read-only helpers so `zeph-core` integration tests can call
+// them via `zeph_agent_context::summarization::*` without duplicating the logic.
+pub use deferred::{
+    count_deferred_summaries, count_unsummarized_pairs, find_oldest_unsummarized_pair,
+};

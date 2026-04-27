@@ -11,10 +11,6 @@ use crate::channel::Channel;
 use zeph_context::summarization::SummarizationDeps;
 
 impl<C: Channel> Agent<C> {
-    pub(super) fn build_chunk_prompt(messages: &[Message], guidelines: &str) -> String {
-        zeph_context::summarization::build_chunk_prompt(messages, guidelines)
-    }
-
     /// Build the explicit LLM deps struct used by stateless summarization helpers.
     pub(super) fn build_summarization_deps(&self) -> SummarizationDeps {
         let debug_dumper = self.runtime.debug.debug_dumper.clone();
@@ -39,19 +35,6 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    /// Attempt structured summarization via `chat_typed_erased::<AnchoredSummary>()`.
-    ///
-    /// Returns `Ok(AnchoredSummary)` on success, `Err` when mandatory fields are missing
-    /// or the LLM fails. The caller is responsible for falling back to prose on `Err`.
-    async fn try_summarize_structured(
-        &self,
-        messages: &[Message],
-        guidelines: &str,
-    ) -> Result<AnchoredSummary, zeph_llm::LlmError> {
-        let deps = self.build_summarization_deps();
-        zeph_context::summarization::summarize_structured(&deps, messages, guidelines).await
-    }
-
     async fn try_summarize_structured_with_deps(
         deps: SummarizationDeps,
         messages: &[Message],
@@ -66,15 +49,6 @@ impl<C: Channel> Agent<C> {
         zeph_context::summarization::build_metadata_summary(messages, |s, n| {
             super::truncate_chars(s, n)
         })
-    }
-
-    async fn try_summarize_with_llm(
-        &self,
-        messages: &[Message],
-        guidelines: &str,
-    ) -> Result<String, zeph_llm::LlmError> {
-        let deps = self.build_summarization_deps();
-        zeph_context::summarization::summarize_with_llm(&deps, messages, guidelines).await
     }
 
     async fn try_summarize_with_llm_with_deps(
@@ -93,98 +67,6 @@ impl<C: Channel> Agent<C> {
         fraction: f32,
     ) -> Vec<Message> {
         zeph_context::summarization::remove_tool_responses_middle_out(messages, fraction)
-    }
-
-    async fn summarize_messages(
-        &self,
-        messages: &[Message],
-        guidelines: &str,
-    ) -> Result<String, super::super::error::AgentError> {
-        // Density-aware budget partitioning (#2481).
-        //
-        // When density budgets are configured (non-default or explicitly set), log the split
-        // so operators can observe which fraction of content is high vs. low density.
-        // The budgets inform future per-density summarization passes (Phase 2).
-        {
-            use zeph_agent_context::partition_by_density;
-            let compression = &self.context_manager.compression;
-            let high_budget = compression.high_density_budget;
-            let low_budget = compression.low_density_budget;
-            let (high, low) = partition_by_density(messages);
-            tracing::debug!(
-                high_density_count = high.len(),
-                low_density_count = low.len(),
-                high_budget,
-                low_budget,
-                "compaction: density-aware partition"
-            );
-        }
-
-        // Structured path: attempt AnchoredSummary when enabled, fall back to prose on failure.
-        if self.services.memory.compaction.structured_summaries {
-            match self.try_summarize_structured(messages, guidelines).await {
-                Ok(anchored) => {
-                    if let Some(ref d) = self.runtime.debug.debug_dumper {
-                        d.dump_anchored_summary(
-                            &anchored,
-                            false,
-                            &self.runtime.metrics.token_counter,
-                        );
-                    }
-                    return Ok(super::cap_summary(anchored.to_markdown(), 16_000));
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "structured summarization failed, falling back to prose");
-                    if let Some(ref d) = self.runtime.debug.debug_dumper {
-                        let empty = AnchoredSummary {
-                            session_intent: String::new(),
-                            files_modified: vec![],
-                            decisions_made: vec![],
-                            open_questions: vec![],
-                            next_steps: vec![],
-                        };
-                        d.dump_anchored_summary(&empty, true, &self.runtime.metrics.token_counter);
-                    }
-                }
-            }
-        }
-
-        // Try direct summarization first
-        match self.try_summarize_with_llm(messages, guidelines).await {
-            Ok(summary) => return Ok(summary),
-            Err(e) if !e.is_context_length_error() => return Err(e.into()),
-            Err(e) => {
-                tracing::warn!(
-                    "summarization hit context length error ({e}), trying progressive tool response removal"
-                );
-            }
-        }
-
-        // Progressive tool response removal tiers: 10%, 20%, 50%, 100%
-        for fraction in [0.10f32, 0.20, 0.50, 1.0] {
-            let reduced = Self::remove_tool_responses_middle_out(messages.to_vec(), fraction);
-            tracing::debug!(
-                fraction,
-                "retrying summarization with reduced tool responses"
-            );
-            match self.try_summarize_with_llm(&reduced, guidelines).await {
-                Ok(summary) => {
-                    tracing::info!(
-                        fraction,
-                        "summarization succeeded after tool response removal"
-                    );
-                    return Ok(summary);
-                }
-                Err(e) if e.is_context_length_error() => {
-                    tracing::warn!(fraction, "still context length error, trying next tier");
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
-
-        // Final fallback: metadata-only summary without LLM
-        tracing::warn!("all LLM summarization attempts failed, using metadata fallback");
-        Ok(Self::build_metadata_summary(messages))
     }
 
     /// Summarize `messages` using `deps` extracted from `&self` before any `.await`.
@@ -290,22 +172,6 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    /// Load the current compression guidelines from `SQLite` if the feature is enabled.
-    ///
-    /// Returns an empty string when the feature is disabled, memory is not initialized,
-    /// or the database query fails (non-fatal).
-    async fn load_compression_guidelines_if_enabled(&self) -> String {
-        let enabled = self
-            .services
-            .memory
-            .compaction
-            .compression_guidelines_config
-            .enabled;
-        let memory = self.services.memory.persistence.memory.clone();
-        let conv_id = self.services.memory.persistence.conversation_id;
-        Self::load_compression_guidelines(enabled, memory, conv_id).await
-    }
-
     /// Archive tool output bodies from `to_compact` messages before compaction (Memex #2432).
     ///
     /// Saves each non-empty, non-already-archived `ToolOutput` body to `tool_overflow`
@@ -373,13 +239,6 @@ impl<C: Channel> Agent<C> {
             );
         }
         refs
-    }
-
-    async fn archive_tool_outputs_for_compaction(&self, to_compact: &[Message]) -> Vec<String> {
-        let archive_enabled = self.context_manager.compression.archive_tool_outputs;
-        let memory = self.services.memory.persistence.memory.clone();
-        let cid = self.services.memory.persistence.conversation_id;
-        Self::archive_tool_outputs(archive_enabled, memory, cid, to_compact.to_vec()).await
     }
 
     /// Adjust `compact_end` backward so the preserved tail begins on a clean message boundary.
@@ -669,209 +528,6 @@ mod tests {
             "guidelines content missing"
         );
     }
-
-    // T-STR-03: try_summarize_structured returns Ok(AnchoredSummary) when mock returns valid JSON.
-    #[tokio::test]
-    async fn try_summarize_structured_returns_anchored_summary_on_valid_json() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-        use zeph_memory::AnchoredSummary;
-
-        let valid_json = serde_json::to_string(&AnchoredSummary {
-            session_intent: "Implement auth middleware".into(),
-            files_modified: vec!["src/auth.rs".into()],
-            decisions_made: vec!["Decision: use JWT — Reason: stateless".into()],
-            open_questions: vec![],
-            next_steps: vec!["Write tests".into()],
-        })
-        .unwrap();
-
-        let mut agent = Agent::new(
-            mock_provider(vec![valid_json]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        agent.services.memory.compaction.structured_summaries = true;
-
-        let messages = vec![Message {
-            role: Role::User,
-            content: "implement auth".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-
-        let result = agent.try_summarize_structured(&messages, "").await;
-        assert!(result.is_ok(), "expected Ok, got: {result:?}");
-        let summary = result.unwrap();
-        assert_eq!(summary.session_intent, "Implement auth middleware");
-        assert_eq!(summary.files_modified, vec!["src/auth.rs"]);
-        assert!(summary.is_complete());
-    }
-
-    // T-STR-04: try_summarize_structured returns Err when mandatory fields are missing.
-    #[tokio::test]
-    async fn try_summarize_structured_returns_err_when_incomplete() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-        use zeph_memory::AnchoredSummary;
-
-        // next_steps is empty → is_complete() returns false → method must return Err.
-        let incomplete_json = serde_json::to_string(&AnchoredSummary {
-            session_intent: "Some intent".into(),
-            files_modified: vec![],
-            decisions_made: vec![],
-            open_questions: vec![],
-            next_steps: vec![], // missing → incomplete
-        })
-        .unwrap();
-
-        let mut agent = Agent::new(
-            mock_provider(vec![incomplete_json]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        agent.services.memory.compaction.structured_summaries = true;
-
-        let messages = vec![Message {
-            role: Role::User,
-            content: "do something".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-
-        let result = agent.try_summarize_structured(&messages, "").await;
-        assert!(
-            result.is_err(),
-            "expected Err for incomplete summary, got Ok"
-        );
-    }
-
-    // T-STR-05: try_summarize_structured returns Err when LLM returns invalid JSON.
-    #[tokio::test]
-    async fn try_summarize_structured_returns_err_on_malformed_json() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-
-        // chat_typed retries once then returns StructuredParse error on bad JSON.
-        let bad_json = "this is not json at all".to_string();
-        let mut agent = Agent::new(
-            mock_provider(vec![bad_json.clone(), bad_json]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        agent.services.memory.compaction.structured_summaries = true;
-
-        let messages = vec![Message {
-            role: Role::User,
-            content: "summarize".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-
-        let result = agent.try_summarize_structured(&messages, "").await;
-        assert!(result.is_err(), "expected Err for malformed JSON, got Ok");
-    }
-
-    // T-STR-06: summarize_messages uses prose path when structured_summaries = false.
-    #[tokio::test]
-    async fn summarize_messages_uses_prose_when_flag_disabled() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-
-        let prose_response = "1. User Intent: test\n2. Files: none".to_string();
-        let agent = Agent::new(
-            mock_provider(vec![prose_response.clone()]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        // structured_summaries = false by default in Agent::new()
-
-        let messages = vec![Message {
-            role: Role::User,
-            content: "do a thing".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-
-        let result = agent.summarize_messages(&messages, "").await;
-        assert!(result.is_ok(), "prose path must succeed");
-        // Prose path returns the raw LLM output (no markdown section headers from AnchoredSummary).
-        assert!(
-            !result.unwrap().contains("[anchored summary]"),
-            "prose path must not produce anchored summary header"
-        );
-    }
-
-    // T-STR-07: summarize_messages returns markdown with anchored headers when flag enabled.
-    #[tokio::test]
-    async fn summarize_messages_returns_anchored_markdown_when_flag_enabled() {
-        use crate::agent::tests::agent_tests::{
-            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-        };
-        use zeph_llm::provider::{Message, MessageMetadata, Role};
-        use zeph_memory::AnchoredSummary;
-
-        let valid_json = serde_json::to_string(&AnchoredSummary {
-            session_intent: "Build a CLI tool".into(),
-            files_modified: vec!["src/cli.rs".into()],
-            decisions_made: vec!["Decision: use clap — Reason: ergonomic API".into()],
-            open_questions: vec![],
-            next_steps: vec!["Add help text".into()],
-        })
-        .unwrap();
-
-        let mut agent = Agent::new(
-            mock_provider(vec![valid_json]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        );
-        agent.services.memory.compaction.structured_summaries = true;
-
-        let messages = vec![Message {
-            role: Role::User,
-            content: "build CLI".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-
-        let result = agent.summarize_messages(&messages, "").await;
-        assert!(result.is_ok(), "structured path must succeed");
-        let md = result.unwrap();
-        assert!(
-            md.contains("[anchored summary]"),
-            "output must start with anchored summary header"
-        );
-        assert!(md.contains("## Session Intent"), "missing Session Intent");
-        assert!(md.contains("## Next Steps"), "missing Next Steps");
-        assert!(
-            md.contains("Build a CLI tool"),
-            "session_intent content missing"
-        );
-    }
-
     // T-STR-08: dump_anchored_summary creates a file with required JSON fields.
     #[test]
     fn dump_anchored_summary_creates_file_with_required_fields() {

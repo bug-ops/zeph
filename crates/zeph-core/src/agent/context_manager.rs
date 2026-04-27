@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-pub(crate) use zeph_context::manager::{CompactionState, CompactionTier, ContextManager};
+#[cfg(test)]
+pub(crate) use zeph_context::manager::CompactionTier;
+pub(crate) use zeph_context::manager::{CompactionState, ContextManager};
 
 #[cfg(test)]
 mod tests {

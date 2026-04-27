@@ -7,6 +7,10 @@ use zeph_llm::provider::MessagePart;
 use crate::agent::Agent;
 use crate::channel::Channel;
 
+// TODO(review): production pruning now goes through ContextService (via ContextSummarizationView).
+// These Agent<C> methods are exercised only by integration tests in context/tests/.
+// They can be removed once the test suite is migrated to use the service path directly.
+#[allow(dead_code)]
 impl<C: Channel> Agent<C> {
     /// Prune tool output bodies.
     ///
