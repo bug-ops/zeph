@@ -123,6 +123,7 @@ impl DebugDumper {
 
     /// Dump pruning scores computed by task-aware or MIG scoring.
     /// When `format = Trace`, this is a no-op.
+    #[cfg(test)]
     pub(crate) fn dump_pruning_scores(&self, scores: &[zeph_agent_context::BlockScore]) {
         if self.format == DumpFormat::Trace {
             return;
@@ -300,6 +301,7 @@ impl DebugDumper {
     ///
     /// Writes a human-readable text file listing each subgoal with its state and message span.
     /// When `format = Trace`, this is a no-op.
+    #[cfg(test)]
     pub(crate) fn dump_subgoal_registry(&self, registry: &zeph_agent_context::SubgoalRegistry) {
         if self.format == DumpFormat::Trace {
             return;

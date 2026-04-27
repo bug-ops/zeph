@@ -282,6 +282,19 @@ impl<C: Channel> Agent<C> {
         });
     }
 
+    // TODO(review): This method cannot be simply delegated to ContextService::compact_context
+    // because the service version handles only structural compaction (partition → summarize →
+    // drain → reinsert + SQLite persist). The Agent<C> version adds:
+    //   - Probe validation (apply_compaction_probe) — probe tests rely on this
+    //   - Compression guidelines loading
+    //   - Tool output archiving before summarization (archive_tool_outputs)
+    //   - Qdrant session-summary write via BackgroundSupervisor
+    //   - Emit compaction status signal
+    //   - CompactionOutcome return type (service returns usize)
+    // Delegating would break probe tests and lose Qdrant/archive functionality.
+    // To wire this properly, ContextSummarizationView would need probe config, archive
+    // state, and a Qdrant write callback. Suggested action: extend the view and service
+    // in a follow-up PR, then replace this body with a service delegation.
     pub(in crate::agent) async fn compact_context(
         &mut self,
     ) -> Result<CompactionOutcome, crate::agent::error::AgentError> {
