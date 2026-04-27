@@ -29,7 +29,7 @@ use crate::state::{CompactionOutcome, ContextSummarizationView, ProbeOutcome};
 /// 6. Finalize: drain the range, reinsert summary + protected messages.
 /// 7. Call `summ.persistence` to persist the result; bubble the Qdrant future.
 ///
-/// Returns [`CompactionOutcome::NoChange`] when there is nothing to compact.
+/// Returns [`CompactionOutcome`]`::NoChange` when there is nothing to compact.
 ///
 /// # Errors
 ///

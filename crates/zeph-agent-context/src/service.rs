@@ -1143,7 +1143,7 @@ impl ContextService {
     /// Invokes the optional callbacks wired into `summ` in this order:
     /// archive → LLM summarization → probe → finalize → persistence.
     ///
-    /// Returns [`CompactionOutcome::NoChange`] when there is nothing to compact.
+    /// Returns [`crate::state::CompactionOutcome::NoChange`] when there is nothing to compact.
     ///
     /// # Errors
     ///
