@@ -115,7 +115,16 @@ impl SkillManager {
         let status = Command::new("git")
             .args(["clone", "--depth=1", url, tmp_dir.to_str().unwrap_or("")])
             .status()
-            .map_err(|e| SkillError::GitCloneFailed(format!("failed to run git: {e}")))?;
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    SkillError::GitCloneFailed(
+                        "git binary not found on PATH; install git to use skill install from URL"
+                            .to_owned(),
+                    )
+                } else {
+                    SkillError::GitCloneFailed(format!("failed to run git: {e}"))
+                }
+            })?;
 
         if !status.success() {
             let _ = std::fs::remove_dir_all(&tmp_dir);
