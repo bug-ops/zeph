@@ -20,8 +20,7 @@ Detects when a user is implicitly correcting a previous agent response — witho
 zeph-agent-feedback = { version = "0.20", workspace = true }
 ```
 
-> [!IMPORTANT]
-> Requires Rust 1.95 or later (Edition 2024).
+**Note:** Requires Rust 1.95 or later (Edition 2024).
 
 ## Usage
 
@@ -72,8 +71,7 @@ Each language uses two pattern tiers:
 - **Anchored** (`^`): message starts with the phrase — base confidence.
 - **Unanchored**: phrase embedded mid-sentence — base confidence minus 0.10.
 
-> [!NOTE]
-> CJK repetition detection falls through to `JudgeDetector` because whitespace tokenisation does not segment Chinese/Japanese text. For Korean, Arabic, and other unsupported languages the regex always returns `None`, triggering the judge (rate-limited to 5 calls/min).
+**Note:** CJK repetition detection falls through to `JudgeDetector` because whitespace tokenisation does not segment Chinese/Japanese text. For Korean, Arabic, and other unsupported languages the regex always returns `None`, triggering the judge (rate-limited to 5 calls/min).
 
 ## Rate Limiting
 
