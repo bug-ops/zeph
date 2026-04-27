@@ -13,46 +13,7 @@ use super::config::{QualityConfig, TriggerPolicy};
 use super::proposer::run_proposer;
 use super::types::{AssertionVerdict, SelfCheckReport, SkipReason, StageOutcome, VerdictStatus};
 
-/// Collected retrieved-memory context for a turn.
-///
-/// All fields hold borrowed slices from message parts so no allocation is needed
-/// beyond the joining step.
-#[derive(Debug, Default)]
-pub struct RetrievedContext<'a> {
-    /// Semantic recall fragments.
-    pub recall: Vec<&'a str>,
-    /// Graph/known-facts fragments.
-    pub graph_facts: Vec<&'a str>,
-    /// Cross-session memory fragments.
-    pub cross_session: Vec<&'a str>,
-    /// Compaction/conversation summaries.
-    pub summaries: Vec<&'a str>,
-}
-
-impl RetrievedContext<'_> {
-    /// Returns `true` when no retrieved context was found for this turn.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.recall.is_empty()
-            && self.graph_facts.is_empty()
-            && self.cross_session.is_empty()
-            && self.summaries.is_empty()
-    }
-
-    /// Concatenate all fragments with the given separator.
-    #[must_use]
-    pub fn joined(&self, sep: &str) -> String {
-        let parts: Vec<&str> = self
-            .recall
-            .iter()
-            .chain(&self.graph_facts)
-            .chain(&self.cross_session)
-            .chain(&self.summaries)
-            .copied()
-            .collect();
-        parts.join(sep)
-    }
-}
+pub use zeph_agent_context::retrieved::RetrievedContext;
 
 /// MARCH self-check pipeline.
 ///

@@ -31,7 +31,9 @@
 pub mod compaction;
 pub mod error;
 pub mod helpers;
-pub(crate) mod retrieved;
+#[cfg(feature = "self-check")]
+#[cfg_attr(docsrs, doc(cfg(feature = "self-check")))]
+pub mod retrieved;
 pub mod service;
 pub mod state;
 pub mod summarization;
@@ -50,3 +52,7 @@ pub use state::{
     ProbeOutcome, ProviderHandles, QdrantPersistFuture, SecurityEventSink, StatusSink,
     ToolOutputArchive, TrustGate,
 };
+
+#[cfg(feature = "self-check")]
+#[cfg_attr(docsrs, doc(cfg(feature = "self-check")))]
+pub use retrieved::{RetrievedContext, collect_retrieved_context};

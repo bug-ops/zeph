@@ -54,7 +54,7 @@ impl<C: Channel> Agent<C> {
             return;
         }
 
-        let rc = crate::agent::context::retrieved::collect_retrieved_context(&self.msg.messages);
+        let rc = zeph_agent_context::retrieved::collect_retrieved_context(&self.msg.messages);
 
         let user_query = self
             .msg

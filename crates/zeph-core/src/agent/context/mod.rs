@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod assembly;
-#[cfg(feature = "self-check")]
-pub(crate) mod retrieved;
 mod summarization;
 
 pub(super) use crate::text::truncate_to_chars as truncate_chars;

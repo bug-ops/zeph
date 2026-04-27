@@ -25,7 +25,7 @@ env-vault = ["zeph-vault/env-vault"]
 metal = ["zeph-llm/metal"]
 mock = ["zeph-vault/mock"]
 scheduler  = []
-self-check = []
+self-check = ["zeph-agent-context/self-check"]
 
 [dependencies]
 base64.workspace = true

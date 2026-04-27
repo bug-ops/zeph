@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(context): relocate `RetrievedContext` and `collect_retrieved_context` from `zeph-core`
+  to `zeph-agent-context::retrieved` (feature `self-check`); `zeph-core::quality::pipeline`
+  re-exports the type via `pub use` so existing paths remain valid. No behaviour change (#3529).
+
 - refactor(agent-context): add `compression_guidelines: Option<String>` field to
   `ContextSummarizationView` and `with_compression_guidelines` builder; `compact_context` now reads
   the guidelines from the view rather than requiring the caller to pass them separately (#3528).
