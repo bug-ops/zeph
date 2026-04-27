@@ -90,7 +90,7 @@ impl<C: Channel> Agent<C> {
         if sanitized.was_truncated {
             self.update_metrics(|m| m.sanitizer_truncations += 1);
             self.push_security_event(
-                crate::metrics::SecurityEventCategory::Truncation,
+                zeph_common::SecurityEventCategory::Truncation,
                 tool_name,
                 "Content truncated to max_content_size",
             );
@@ -164,7 +164,7 @@ impl<C: Channel> Agent<C> {
                 format!("Detected pattern: {}", f.pattern_name)
             });
         self.push_security_event(
-            crate::metrics::SecurityEventCategory::InjectionFlag,
+            zeph_common::SecurityEventCategory::InjectionFlag,
             tool_name,
             detail,
         );
@@ -209,7 +209,7 @@ impl<C: Channel> Agent<C> {
                     tracing::warn!(tool = %tool_name, "ML classifier blocked tool output");
                     self.update_metrics(|m| m.classifier_tool_blocks += 1);
                     self.push_security_event(
-                        crate::metrics::SecurityEventCategory::InjectionBlocked,
+                        zeph_common::SecurityEventCategory::InjectionBlocked,
                         tool_name,
                         "ML classifier blocked tool output",
                     );
@@ -248,7 +248,7 @@ impl<C: Channel> Agent<C> {
             "MCP tool result crossing ACP trust boundary"
         );
         self.push_security_event(
-            crate::metrics::SecurityEventCategory::CrossBoundaryMcpToAcp,
+            zeph_common::SecurityEventCategory::CrossBoundaryMcpToAcp,
             tool_name,
             "MCP result force-quarantined for ACP session",
         );
@@ -341,7 +341,7 @@ impl<C: Channel> Agent<C> {
             Ok((facts, flags)) => {
                 self.update_metrics(|m| m.quarantine_invocations += 1);
                 self.push_security_event(
-                    crate::metrics::SecurityEventCategory::Quarantine,
+                    zeph_common::SecurityEventCategory::Quarantine,
                     tool_name,
                     "Content quarantined, facts extracted",
                 );
@@ -363,7 +363,7 @@ impl<C: Channel> Agent<C> {
                 );
                 self.update_metrics(|m| m.quarantine_failures += 1);
                 self.push_security_event(
-                    crate::metrics::SecurityEventCategory::Quarantine,
+                    zeph_common::SecurityEventCategory::Quarantine,
                     tool_name,
                     format!("Quarantine failed: {e}"),
                 );

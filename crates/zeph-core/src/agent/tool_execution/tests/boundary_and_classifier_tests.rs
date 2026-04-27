@@ -292,8 +292,8 @@ async fn sanitize_tool_output_cross_boundary_acp_mcp_quarantines() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use crate::metrics::SecurityEventCategory;
     use tokio::sync::watch;
+    use zeph_common::SecurityEventCategory;
     use zeph_llm::mock::MockProvider;
     use zeph_sanitizer::QuarantineConfig;
     use zeph_sanitizer::quarantine::QuarantinedSummarizer;
@@ -351,8 +351,8 @@ async fn sanitize_tool_output_cross_boundary_disabled_skips_quarantine() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use crate::metrics::SecurityEventCategory;
     use tokio::sync::watch;
+    use zeph_common::SecurityEventCategory;
     use zeph_llm::mock::MockProvider;
     use zeph_sanitizer::QuarantineConfig;
     use zeph_sanitizer::quarantine::QuarantinedSummarizer;
@@ -413,8 +413,8 @@ async fn sanitize_tool_output_non_acp_session_normal_path() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use crate::metrics::SecurityEventCategory;
     use tokio::sync::watch;
+    use zeph_common::SecurityEventCategory;
     use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
     let provider = mock_provider(vec![]);

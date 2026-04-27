@@ -10084,6 +10084,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeph-agent-context"
+version = "0.20.0"
+dependencies = [
+ "futures",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zeph-common",
+ "zeph-config",
+ "zeph-context",
+ "zeph-index",
+ "zeph-llm",
+ "zeph-memory",
+ "zeph-sanitizer",
+ "zeph-skills",
+]
+
+[[package]]
 name = "zeph-agent-feedback"
 version = "0.20.0"
 dependencies = [
@@ -10302,6 +10323,7 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "uuid",
+ "zeph-agent-context",
  "zeph-agent-feedback",
  "zeph-agent-persistence",
  "zeph-agent-tools",

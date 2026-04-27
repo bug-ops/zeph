@@ -338,8 +338,8 @@ async fn sanitize_tool_output_injection_flag_emits_security_event() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use crate::metrics::SecurityEventCategory;
     use tokio::sync::watch;
+    use zeph_common::SecurityEventCategory;
     use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
     let provider = mock_provider(vec![]);
@@ -385,8 +385,8 @@ async fn sanitize_tool_output_truncation_emits_security_event() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use crate::metrics::SecurityEventCategory;
     use tokio::sync::watch;
+    use zeph_common::SecurityEventCategory;
     use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
     let provider = mock_provider(vec![]);
@@ -498,8 +498,8 @@ async fn scan_output_exfiltration_block_emits_security_event() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use crate::metrics::SecurityEventCategory;
     use tokio::sync::watch;
+    use zeph_common::SecurityEventCategory;
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);

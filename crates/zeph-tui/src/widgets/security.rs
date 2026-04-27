@@ -254,7 +254,8 @@ fn format_hm(ts: u64) -> String {
 mod tests {
     use std::collections::VecDeque;
 
-    use zeph_core::metrics::{SecurityEvent, SecurityEventCategory};
+    use zeph_common::SecurityEventCategory;
+    use zeph_core::metrics::SecurityEvent;
 
     use super::*;
     use crate::test_utils::render_to_string;

@@ -16,9 +16,9 @@
 //! // collector.update(|m| { /* modify metrics */ });
 //! ```
 
+pub use zeph_common::SecurityEventCategory;
 pub use zeph_core::metrics::{
     CategoryScore, ClassifierMetricsSnapshot, McpServerConnectionStatus, McpServerStatus,
-    MetricsCollector, MetricsSnapshot, ProbeCategory, ProbeVerdict, SecurityEvent,
-    SecurityEventCategory, SkillConfidence, SubAgentMetrics, TaskGraphSnapshot,
-    TaskMetricsSnapshot, TaskSnapshotRow,
+    MetricsCollector, MetricsSnapshot, ProbeCategory, ProbeVerdict, SecurityEvent, SkillConfidence,
+    SubAgentMetrics, TaskGraphSnapshot, TaskMetricsSnapshot, TaskSnapshotRow,
 };

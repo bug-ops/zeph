@@ -20,6 +20,7 @@ pub mod policy;
 pub mod quarantine;
 pub mod sanitize;
 pub mod secret;
+pub mod security_event;
 pub mod spawner;
 pub mod task_supervisor;
 pub mod text;
@@ -33,6 +34,7 @@ pub const OVERFLOW_NOTICE_PREFIX: &str = "[full output stored \u{2014} ID: ";
 
 pub use math::{EmbeddingVector, Normalized, Unnormalized};
 pub use policy::{PolicyLlmClient, PolicyMessage, PolicyRole};
+pub use security_event::SecurityEventCategory;
 pub use spawner::BlockingSpawner;
 pub use task_supervisor::{
     BlockingError, BlockingHandle, MAX_RESTART_DELAY, RestartPolicy, TaskDescriptor, TaskHandle,

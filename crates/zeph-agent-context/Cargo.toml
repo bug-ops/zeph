@@ -1,0 +1,42 @@
+[package]
+name = "zeph-agent-context"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+description = "Agent context-assembly service for Zeph: system prompt rebuild, memory injection, summarization, compaction."
+readme = "README.md"
+
+[dependencies]
+futures.workspace = true
+parking_lot.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing.workspace = true
+zeph-common.workspace = true
+zeph-config.workspace = true
+zeph-context.workspace = true
+zeph-index = { workspace = true, optional = true }
+zeph-llm.workspace = true
+zeph-memory = { workspace = true, features = ["sqlite"] }
+zeph-sanitizer.workspace = true
+zeph-skills.workspace = true
+
+[features]
+# `default = []` — opt-in only. Both features must be enabled explicitly.
+default = []
+# Gates the retrieved-memory mirror types and the `quality` field on view structs.
+# Forward this feature to `zeph-context` when needed.
+self-check = []
+# Enables `zeph-index` integration via `IndexAccess` in context assembly views.
+index = ["dep:zeph-index"]
+
+[lints]
+workspace = true

@@ -136,7 +136,7 @@ impl<C: Channel> Agent<C> {
                 "exfiltration guard: skipping Qdrant embedding for flagged content"
             );
             self.push_security_event(
-                crate::metrics::SecurityEventCategory::ExfiltrationBlock,
+                zeph_common::SecurityEventCategory::ExfiltrationBlock,
                 "memory_write",
                 "Qdrant embedding skipped: flagged content",
             );

@@ -5,7 +5,8 @@ use zeph_llm::provider::{LlmProvider, Message, MessagePart, Role};
 
 use super::{Agent, CODE_CONTEXT_PREFIX};
 use crate::channel::Channel;
-use crate::metrics::{MetricsSnapshot, SECURITY_EVENT_CAP, SecurityEvent, SecurityEventCategory};
+use crate::metrics::{MetricsSnapshot, SECURITY_EVENT_CAP, SecurityEvent};
+use zeph_common::SecurityEventCategory;
 use zeph_tools::FilterStats;
 
 impl<C: Channel> Agent<C> {

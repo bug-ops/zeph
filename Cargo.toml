@@ -140,6 +140,7 @@ walkdir = "2.5"
 wiremock = "0.6.5"
 zeroize = { version = "1.8.2", default-features = false }
 zeph-a2a = { path = "crates/zeph-a2a", version = "0.20.0" }
+zeph-agent-context = { path = "crates/zeph-agent-context", version = "0.20.0" }
 zeph-agent-feedback = { path = "crates/zeph-agent-feedback", version = "0.20.0" }
 zeph-agent-persistence = { path = "crates/zeph-agent-persistence", version = "0.20.0" }
 zeph-agent-tools = { path = "crates/zeph-agent-tools", version = "0.20.0" }

@@ -1464,7 +1464,7 @@ impl<C: Channel> Agent<C> {
                         );
                         self.update_metrics(|m| m.pre_execution_blocks += 1);
                         self.push_security_event(
-                            crate::metrics::SecurityEventCategory::PreExecutionBlock,
+                            zeph_common::SecurityEventCategory::PreExecutionBlock,
                             call.tool_id.as_str(),
                             format!("{}: {}", verifier.name(), reason),
                         );
@@ -1517,7 +1517,7 @@ impl<C: Channel> Agent<C> {
                         );
                         self.update_metrics(|m| m.pre_execution_warnings += 1);
                         self.push_security_event(
-                            crate::metrics::SecurityEventCategory::PreExecutionWarn,
+                            zeph_common::SecurityEventCategory::PreExecutionWarn,
                             call.tool_id.as_str(),
                             format!("{}: {}", verifier.name(), message),
                         );
@@ -1927,7 +1927,7 @@ impl<C: Channel> Agent<C> {
                     m.exfiltration_tool_urls_flagged += url_events.len() as u64;
                 });
                 self.push_security_event(
-                    crate::metrics::SecurityEventCategory::ExfiltrationBlock,
+                    zeph_common::SecurityEventCategory::ExfiltrationBlock,
                     tc.name.as_str(),
                     format!(
                         "{} suspicious URL(s) flagged in tool args",
@@ -2491,7 +2491,7 @@ impl<C: Channel> Agent<C> {
                 );
                 self.update_metrics(|m| m.rate_limit_trips += 1);
                 self.push_security_event(
-                    crate::metrics::SecurityEventCategory::RateLimit,
+                    zeph_common::SecurityEventCategory::RateLimit,
                     tc.name.as_str(),
                     format!(
                         "{} calls exceeded {}/min",
@@ -2704,7 +2704,7 @@ impl<C: Channel> Agent<C> {
                     );
                     self.update_metrics(|m| m.causal_ipi_flags += 1);
                     self.push_security_event(
-                        crate::metrics::SecurityEventCategory::CausalIpiFlag,
+                        zeph_common::SecurityEventCategory::CausalIpiFlag,
                         "tool_batch",
                         format!("deviation={:.3}", analysis.deviation_score),
                     );
@@ -3173,7 +3173,7 @@ impl<C: Channel> Agent<C> {
                 {
                     self.update_metrics(|m| m.memory_validation_failures += 1);
                     self.push_security_event(
-                        crate::metrics::SecurityEventCategory::MemoryValidation,
+                        zeph_common::SecurityEventCategory::MemoryValidation,
                         "memory_save",
                         e.to_string(),
                     );

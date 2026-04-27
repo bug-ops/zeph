@@ -60,6 +60,7 @@ cpu-time = { workspace = true, optional = true }
 metrics = { workspace = true, optional = true }
 tree-sitter.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
+zeph-agent-context.workspace = true
 zeph-agent-feedback.workspace = true
 zeph-agent-persistence.workspace = true
 zeph-agent-tools.workspace = true

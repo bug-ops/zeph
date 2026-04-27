@@ -4,52 +4,10 @@
 use std::collections::VecDeque;
 
 use tokio::sync::watch;
+use zeph_common::SecurityEventCategory;
 
 pub use zeph_llm::{ClassifierMetricsSnapshot, TaskMetricsSnapshot};
 pub use zeph_memory::{CategoryScore, ProbeCategory, ProbeVerdict};
-
-/// Category of a security event for TUI display.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SecurityEventCategory {
-    InjectionFlag,
-    /// ML classifier hard-blocked tool output (`enforcement_mode=block` only).
-    InjectionBlocked,
-    ExfiltrationBlock,
-    Quarantine,
-    Truncation,
-    RateLimit,
-    MemoryValidation,
-    PreExecutionBlock,
-    PreExecutionWarn,
-    ResponseVerification,
-    /// `TurnCausalAnalyzer` flagged behavioral deviation at tool-return boundary.
-    CausalIpiFlag,
-    /// MCP tool result crossing into an ACP-serving session boundary.
-    CrossBoundaryMcpToAcp,
-    /// VIGIL pre-sanitizer gate flagged a tool output.
-    VigilFlag,
-}
-
-impl SecurityEventCategory {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::InjectionFlag => "injection",
-            Self::InjectionBlocked => "injection_blocked",
-            Self::ExfiltrationBlock => "exfil",
-            Self::Quarantine => "quarantine",
-            Self::Truncation => "truncation",
-            Self::RateLimit => "rate_limit",
-            Self::MemoryValidation => "memory_validation",
-            Self::PreExecutionBlock => "pre_exec_block",
-            Self::PreExecutionWarn => "pre_exec_warn",
-            Self::ResponseVerification => "response_verify",
-            Self::CausalIpiFlag => "causal_ipi",
-            Self::CrossBoundaryMcpToAcp => "cross_boundary_mcp_to_acp",
-            Self::VigilFlag => "vigil",
-        }
-    }
-}
 
 /// A single security event record for TUI display.
 #[derive(Debug, Clone)]

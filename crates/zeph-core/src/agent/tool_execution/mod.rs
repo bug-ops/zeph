@@ -280,7 +280,7 @@ impl<C: Channel> Agent<C> {
                 m.exfiltration_images_blocked += events.len() as u64;
             });
             self.push_security_event(
-                crate::metrics::SecurityEventCategory::ExfiltrationBlock,
+                zeph_common::SecurityEventCategory::ExfiltrationBlock,
                 "llm_output",
                 format!("{} markdown image(s) blocked", events.len()),
             );
@@ -307,7 +307,7 @@ impl<C: Channel> Agent<C> {
                 let detail = matched.join(", ");
                 tracing::warn!(patterns = %detail, "response verification: injection patterns in LLM output");
                 self.push_security_event(
-                    crate::metrics::SecurityEventCategory::ResponseVerification,
+                    zeph_common::SecurityEventCategory::ResponseVerification,
                     "llm_response",
                     format!("flagged: {detail}"),
                 );
@@ -317,7 +317,7 @@ impl<C: Channel> Agent<C> {
                 let detail = matched.join(", ");
                 tracing::error!(patterns = %detail, "response verification: blocking LLM response");
                 self.push_security_event(
-                    crate::metrics::SecurityEventCategory::ResponseVerification,
+                    zeph_common::SecurityEventCategory::ResponseVerification,
                     "llm_response",
                     format!("blocked: {detail}"),
                 );
@@ -818,7 +818,7 @@ impl<C: Channel> Agent<C> {
         let (body_after, risk) = gate.apply(body, &verdict);
 
         self.push_security_event(
-            crate::metrics::SecurityEventCategory::VigilFlag,
+            zeph_common::SecurityEventCategory::VigilFlag,
             tool_name,
             reason,
         );

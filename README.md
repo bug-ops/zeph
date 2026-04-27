@@ -8,7 +8,7 @@
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
   [![Tests](https://img.shields.io/badge/tests-8849-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
-  [![Crates](https://img.shields.io/badge/crates-25-orange)](https://github.com/bug-ops/zeph/tree/main/crates)
+  [![Crates](https://img.shields.io/badge/crates-29-orange)](https://github.com/bug-ops/zeph/tree/main/crates)
   [![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 </div>
@@ -58,10 +58,10 @@ zeph               # start the agent
 - [x] **[TUI dashboard](https://bug-ops.github.io/zeph/advanced/tui.html)** — ratatui-based with real-time metrics, security panel, plan view, command palette; multi-session support with `/session switch` and `/session close`
 - [x] **[Multi-channel I/O](https://bug-ops.github.io/zeph/advanced/channels.html)** — CLI, Telegram, TUI, Discord, Slack — all with streaming, voice, and vision input
 - [x] **[OS sandbox](https://bug-ops.github.io/zeph/reference/security.html#sandbox)** — macOS Seatbelt + Linux Landlock isolation for tool execution; VIGIL verify-before-commit security gate; egress network logging
-- [x] **[Plugin system](https://bug-ops.github.io/zeph/advanced/plugins.html)** — install/remove skill packages via `zeph plugin add <url>`; runtime config overlay merge with tighten-only safety rules; hub install pipeline with trust escalation filter
-- [x] **[Session recap](https://bug-ops.github.io/zeph/advanced/sessions.html)** — `/recap` command and configurable auto-summary shown on session resume; `/loop` for repeating a prompt on a fixed schedule within a session
-- [x] **[MARCH self-check](https://bug-ops.github.io/zeph/advanced/quality.html)** — post-response factual consistency via Proposer+Checker LLM pipeline; extracts assertions, verifies against retrieved memory evidence, appends a flag marker on contradiction; configurable trigger, latency budget, and per-assertion timeout
-- [x] **[Scripted / CI mode](https://bug-ops.github.io/zeph/guides/scripted.html)** — `--bare` skips memory init, skill loading, and watcher registration; `--json` emits newline-delimited JSON events for programmatic consumption; `-y` auto-confirms tool approvals
+- [x] **[Plugin system](https://bug-ops.github.io/zeph/concepts/skills.html)** — install/remove skill packages via `zeph plugin add <url>`; runtime config overlay merge with tighten-only safety rules; hub install pipeline with trust escalation filter
+- [x] **Session recap** — `/recap` command and configurable auto-summary shown on session resume; `/loop` for repeating a prompt on a fixed schedule within a session
+- [x] **[MARCH self-check](https://bug-ops.github.io/zeph/advanced/quality-self-check.html)** — post-response factual consistency via Proposer+Checker LLM pipeline; extracts assertions, verifies against retrieved memory evidence, appends a flag marker on contradiction; configurable trigger, latency budget, and per-assertion timeout
+- [x] **[Scripted / CI mode](https://bug-ops.github.io/zeph/reference/cli.html)** — `--bare` skips memory init, skill loading, and watcher registration; `--json` emits newline-delimited JSON events for programmatic consumption; `-y` auto-confirms tool approvals
 - [x] **[LSP integration](https://bug-ops.github.io/zeph/guides/lsp.html)** — compiler-level code intelligence via rust-analyzer, pyright, gopls and others: type info, diagnostics, call hierarchy, safe rename, references — injected automatically into context after file writes and reads
 - [x] **[Code indexing](https://bug-ops.github.io/zeph/advanced/code-indexing.html)** — tree-sitter AST-based indexing (Rust, Python, JS, TS, Go), semantic search, repo map generation
 - [x] **[Document RAG](https://bug-ops.github.io/zeph/advanced/document-loaders.html)** — ingest `.txt`, `.md`, `.pdf` into Qdrant with automatic retrieval per turn
@@ -76,31 +76,38 @@ zeph               # start the agent
 ```text
 zeph (binary)
  |
- +-- zeph-core            agent loop, context builder, metrics, channel trait
+ +-- zeph-core               agent loop, turn lifecycle, channel trait, metrics
  |    |
- |    +-- zeph-config     TOML config, env overrides, migration, init wizard
- |    +-- zeph-db         SQLite/PostgreSQL pool, migrations, store trait
- |    +-- zeph-vault      age-encrypted secret storage, vault resolution
- |    +-- zeph-common     shared types, error utilities, tracing helpers
- |    +-- zeph-sanitizer  content sanitization, injection detection, PII filter
+ |    +-- zeph-agent-context    context assembly service: system prompt, memory injection, compaction
+ |    +-- zeph-agent-persistence  persistence service: history load/save, embedding writes, graph extraction
+ |    +-- zeph-agent-tools      tool dispatch loop, doom-loop detection, channel adapter trait
+ |    +-- zeph-agent-feedback   implicit correction detection: regex + LLM-backed
+ |    +-- zeph-commands         slash-command registry and handlers
  |    |
- |    +-- zeph-llm        LlmProvider trait, Ollama/Claude/OpenAI/Gemini/Candle backends
- |    +-- zeph-skills     SKILL.md parser, registry, embedding matcher, self-learning
- |    +-- zeph-memory     semantic memory orchestrator, graph memory, SYNAPSE
- |    +-- zeph-tools      ToolExecutor trait, shell/web/file/composite executors, audit
- |    +-- zeph-mcp        MCP client, multi-server lifecycle, tool registry
- |    +-- zeph-orchestration  DAG task graphs, planner, scheduler, aggregator
- |    +-- zeph-subagent   sub-agent spawner, transcript persistence, lifecycle hooks
- |    +-- zeph-index      AST code indexing, semantic retrieval, repo map
+ |    +-- zeph-context       context primitives: slot types, assembler, prepared context, TurnContext
+ |    +-- zeph-config        TOML config, env overrides, migration, init wizard
+ |    +-- zeph-db            SQLite/PostgreSQL pool, migrations, store trait
+ |    +-- zeph-vault         age-encrypted secret storage, vault resolution
+ |    +-- zeph-common        shared types, error utilities, tracing helpers
+ |    +-- zeph-sanitizer     content sanitization, injection detection, PII filter
+ |    |
+ |    +-- zeph-llm           LlmProvider trait, Ollama/Claude/OpenAI/Gemini/Candle backends
+ |    +-- zeph-skills        SKILL.md parser, registry, embedding matcher, self-learning
+ |    +-- zeph-memory        semantic memory orchestrator, graph memory, SYNAPSE
+ |    +-- zeph-tools         ToolExecutor trait, shell/web/file/composite executors, audit
+ |    +-- zeph-mcp           MCP client, multi-server lifecycle, tool registry
+ |    +-- zeph-orchestration DAG task graphs, planner, scheduler, aggregator
+ |    +-- zeph-subagent      sub-agent spawner, transcript persistence, lifecycle hooks
+ |    +-- zeph-index         AST code indexing, semantic retrieval, repo map
  |
- +-- zeph-channels        CLI, Telegram, Discord, Slack adapters
- +-- zeph-tui             ratatui TUI dashboard (feature-gated)
- +-- zeph-acp             ACP server: stdio/HTTP+SSE/WebSocket (feature-gated)
- +-- zeph-a2a             A2A client + server, agent discovery (feature-gated)
- +-- zeph-gateway         HTTP webhook gateway with bearer auth (feature-gated)
- +-- zeph-scheduler       cron-based periodic tasks (feature-gated)
- +-- zeph-plugins         plugin packaging, installation, and runtime config overlay
- +-- zeph-experiments     autonomous LLM config experimentation engine
+ +-- zeph-channels           CLI, Telegram, Discord, Slack adapters
+ +-- zeph-tui                ratatui TUI dashboard (feature-gated)
+ +-- zeph-acp                ACP server: stdio/HTTP+SSE/WebSocket (feature-gated)
+ +-- zeph-a2a                A2A client + server, agent discovery (feature-gated)
+ +-- zeph-gateway            HTTP webhook gateway with bearer auth (feature-gated)
+ +-- zeph-scheduler          cron-based periodic tasks (feature-gated)
+ +-- zeph-plugins            plugin packaging, installation, and runtime config overlay
+ +-- zeph-experiments        autonomous LLM config experimentation engine
 ```
 
 Optional features are grouped into use-case bundles: `desktop` (TUI), `ide` (ACP), `server` (gateway + A2A + otel), `chat` (Discord + Slack), `ml` (Candle + PDF). Use `--features full` for everything except hardware-specific GPU flags. See [Feature Flags](https://bug-ops.github.io/zeph/reference/feature-flags.html).

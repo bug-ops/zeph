@@ -2828,7 +2828,8 @@ mod tests {
 
         #[test]
         fn execute_security_events_with_events_shows_all() {
-            use zeph_core::metrics::{SecurityEvent, SecurityEventCategory};
+            use zeph_common::SecurityEventCategory;
+            use zeph_core::metrics::SecurityEvent;
 
             let (mut app, _rx, _tx) = make_app();
             app.metrics.security_events.push_back(SecurityEvent::new(
@@ -2850,7 +2851,8 @@ mod tests {
 
         #[test]
         fn has_recent_security_events_true_when_recent() {
-            use zeph_core::metrics::{SecurityEvent, SecurityEventCategory};
+            use zeph_common::SecurityEventCategory;
+            use zeph_core::metrics::SecurityEvent;
 
             let (mut app, _rx, _tx) = make_app();
             // Event with current timestamp is recent
@@ -2864,7 +2866,8 @@ mod tests {
 
         #[test]
         fn has_recent_security_events_false_when_event_older_than_60s() {
-            use zeph_core::metrics::{SecurityEvent, SecurityEventCategory};
+            use zeph_common::SecurityEventCategory;
+            use zeph_core::metrics::SecurityEvent;
 
             let (mut app, _rx, _tx) = make_app();
             let now = std::time::SystemTime::now()

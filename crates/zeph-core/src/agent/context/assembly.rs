@@ -730,7 +730,7 @@ impl<C: Channel> Agent<C> {
                         format!("Detected pattern: {}", f.pattern_name)
                     });
                 self.push_security_event(
-                    crate::metrics::SecurityEventCategory::InjectionFlag,
+                    zeph_common::SecurityEventCategory::InjectionFlag,
                     "code_rag",
                     detail,
                 );
@@ -738,7 +738,7 @@ impl<C: Channel> Agent<C> {
             if sanitized.was_truncated {
                 self.update_metrics(|m| m.sanitizer_truncations += 1);
                 self.push_security_event(
-                    crate::metrics::SecurityEventCategory::Truncation,
+                    zeph_common::SecurityEventCategory::Truncation,
                     "code_rag",
                     "Content truncated to max_content_size",
                 );
@@ -827,7 +827,7 @@ impl<C: Channel> Agent<C> {
                     format!("Detected pattern: {}", f.pattern_name)
                 });
             self.push_security_event(
-                crate::metrics::SecurityEventCategory::InjectionFlag,
+                zeph_common::SecurityEventCategory::InjectionFlag,
                 "memory_retrieval",
                 detail,
             );
@@ -835,7 +835,7 @@ impl<C: Channel> Agent<C> {
         if sanitized.was_truncated {
             self.update_metrics(|m| m.sanitizer_truncations += 1);
             self.push_security_event(
-                crate::metrics::SecurityEventCategory::Truncation,
+                zeph_common::SecurityEventCategory::Truncation,
                 "memory_retrieval",
                 "Content truncated to max_content_size",
             );
@@ -853,7 +853,7 @@ impl<C: Channel> Agent<C> {
                 Ok((facts, flags)) => {
                     self.update_metrics(|m| m.quarantine_invocations += 1);
                     self.push_security_event(
-                        crate::metrics::SecurityEventCategory::Quarantine,
+                        zeph_common::SecurityEventCategory::Quarantine,
                         "memory_retrieval",
                         "Content quarantined, facts extracted",
                     );
@@ -872,7 +872,7 @@ impl<C: Channel> Agent<C> {
                     );
                     self.update_metrics(|m| m.quarantine_failures += 1);
                     self.push_security_event(
-                        crate::metrics::SecurityEventCategory::Quarantine,
+                        zeph_common::SecurityEventCategory::Quarantine,
                         "memory_retrieval",
                         format!("Quarantine failed: {e}"),
                     );
