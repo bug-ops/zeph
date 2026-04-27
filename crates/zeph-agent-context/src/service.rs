@@ -3,6 +3,7 @@
 
 //! [`ContextService`] — stateless façade for agent context-assembly operations.
 
+use zeph_context::budget::ContextBudget;
 use zeph_llm::LlmProvider;
 use zeph_llm::provider::{MessagePart, Role};
 
@@ -792,96 +793,446 @@ impl ContextService {
 
     /// Reset the conversation history.
     ///
-    /// Clears all messages except the system prompt and resets context-manager state.
+    /// Clears all messages except the system prompt and resets the cached token count.
+    /// The caller (`Agent<C>`) is responsible for resetting compaction state, orchestration,
+    /// focus, and sidequest state — those fields are outside the context-service scope.
     ///
     /// # Errors
     ///
-    /// Returns [`ContextError::Memory`] if the persistence layer fails to record the reset.
+    /// Returns [`ContextError::Memory`] if creating a new conversation in `SQLite` fails.
     pub async fn reset_conversation(
         &self,
-        _window: &mut MessageWindowView<'_>,
+        window: &mut MessageWindowView<'_>,
         _view: &mut ContextAssemblyView<'_>,
     ) -> Result<(), ContextError> {
-        // TODO: implement in PR3 migration
-        unimplemented!("reset_conversation will be implemented in PR3")
+        self.clear_history(window);
+        Ok(())
     }
 
-    /// Run compaction if the token budget is exhausted.
+    /// Run tiered compaction if the token budget is exhausted.
     ///
     /// Dispatches to the appropriate compaction tier based on the current
-    /// context manager state.
+    /// context manager state:
+    ///
+    /// - **None** — context is within budget; no-op.
+    /// - **Soft** — apply deferred summaries + prune tool outputs (no LLM).
+    /// - **Hard** — Soft steps first, then LLM full summarization if pruning is insufficient.
+    ///
+    /// Increments the `turns_since_last_hard_compaction` counter unconditionally so pressure
+    /// is tracked regardless of whether compaction fires. Respects the cooldown guard: when
+    /// cooling, Hard-tier LLM summarization is skipped.
     ///
     /// # Errors
     ///
-    /// Returns [`ContextError::Memory`] if compaction persistence fails.
+    /// Returns [`ContextError::Memory`] if `SQLite` persistence fails during Hard compaction.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     pub async fn maybe_compact(
         &self,
-        _summ: &mut ContextSummarizationView<'_>,
+        summ: &mut ContextSummarizationView<'_>,
         _providers: &ProviderHandles,
-        _status: &(impl StatusSink + ?Sized),
+        status: &(impl StatusSink + ?Sized),
     ) -> Result<(), ContextError> {
-        // TODO: implement in PR8 migration
-        unimplemented!("maybe_compact will be implemented in PR8")
+        use zeph_context::manager::{CompactionState, CompactionTier};
+
+        // Increment turn counter unconditionally (tracks pressure regardless of guards).
+        if let Some(ref mut count) = summ.context_manager.turns_since_last_hard_compaction {
+            *count += 1;
+        }
+
+        // Guard: exhaustion — warn once, then no-op permanently.
+        if let CompactionState::Exhausted { ref mut warned } = summ.context_manager.compaction
+            && !*warned
+        {
+            *warned = true;
+            tracing::warn!("compaction exhausted: context budget too tight for this session");
+        }
+        if summ.context_manager.compaction.is_exhausted() {
+            return Ok(());
+        }
+
+        // Guard: server compaction active — skip unless above 95% budget (safety fallback).
+        if summ.server_compaction_active {
+            let budget = summ
+                .context_manager
+                .budget
+                .as_ref()
+                .map_or(0, ContextBudget::max_tokens);
+            if budget > 0 {
+                let fallback = (budget * 95 / 100) as u64;
+                if *summ.cached_prompt_tokens < fallback {
+                    return Ok(());
+                }
+                tracing::warn!(
+                    "server compaction active but context at 95%+ — falling back to client-side"
+                );
+            } else {
+                return Ok(());
+            }
+        }
+
+        // Guard: already compacted this turn.
+        if summ.context_manager.compaction.is_compacted_this_turn() {
+            return Ok(());
+        }
+
+        // Decrement cooldown counter; record whether we are in cooldown.
+        let in_cooldown = summ.context_manager.compaction.cooldown_remaining() > 0;
+        if in_cooldown
+            && let CompactionState::Cooling {
+                ref mut turns_remaining,
+            } = summ.context_manager.compaction
+        {
+            *turns_remaining -= 1;
+            if *turns_remaining == 0 {
+                summ.context_manager.compaction = CompactionState::Ready;
+            }
+        }
+
+        match summ
+            .context_manager
+            .compaction_tier(*summ.cached_prompt_tokens)
+        {
+            CompactionTier::None => Ok(()),
+            CompactionTier::Soft => {
+                self.do_soft_compaction(summ, status).await;
+                Ok(())
+            }
+            CompactionTier::Hard => self.do_hard_compaction(summ, status, in_cooldown).await,
+        }
     }
 
-    /// Summarize the most recent tool-use/result pair if it exceeds the budget.
+    /// Execute the Soft compaction tier: apply deferred summaries and prune tool outputs.
+    ///
+    /// Does not trigger an LLM call. Does not set `compacted_this_turn` so Hard tier
+    /// may still fire in the same turn if context remains above the hard threshold.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    async fn do_soft_compaction(
+        &self,
+        summ: &mut ContextSummarizationView<'_>,
+        status: &(impl StatusSink + ?Sized),
+    ) {
+        status.send_status("soft compacting context...").await;
+
+        // Step 0: refresh task goal / subgoal for scored pruning.
+        match &summ.context_manager.compression.pruning_strategy {
+            zeph_config::PruningStrategy::Subgoal | zeph_config::PruningStrategy::SubgoalMig => {
+                crate::summarization::scheduling::maybe_refresh_subgoal(summ);
+            }
+            _ => crate::summarization::scheduling::maybe_refresh_task_goal(summ),
+        }
+
+        // Step 1: apply deferred summaries (free tokens without LLM).
+        let applied = crate::summarization::deferred::apply_deferred_summaries(summ);
+
+        // Step 1b: rebuild subgoal index if deferred summaries were applied (S5 fix).
+        if applied > 0
+            && summ
+                .context_manager
+                .compression
+                .pruning_strategy
+                .is_subgoal()
+        {
+            summ.subgoal_registry
+                .rebuild_after_compaction(summ.messages, 0);
+        }
+
+        // Step 2: prune tool outputs down to soft threshold.
+        let budget = summ
+            .context_manager
+            .budget
+            .as_ref()
+            .map_or(0, ContextBudget::max_tokens);
+        let soft_threshold =
+            (budget as f32 * summ.context_manager.soft_compaction_threshold) as usize;
+        let cached = usize::try_from(*summ.cached_prompt_tokens).unwrap_or(usize::MAX);
+        let min_to_free = cached.saturating_sub(soft_threshold);
+        if min_to_free > 0 {
+            crate::summarization::pruning::prune_tool_outputs(summ, min_to_free);
+        }
+
+        status.send_status("").await;
+        tracing::info!(
+            cached_tokens = *summ.cached_prompt_tokens,
+            soft_threshold,
+            "soft compaction complete"
+        );
+    }
+
+    /// Execute the Hard compaction tier: soft pass first, then LLM summarization if needed.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    async fn do_hard_compaction(
+        &self,
+        summ: &mut ContextSummarizationView<'_>,
+        status: &(impl StatusSink + ?Sized),
+        in_cooldown: bool,
+    ) -> Result<(), ContextError> {
+        use zeph_context::manager::CompactionState;
+
+        // Track hard compaction event for pressure metrics.
+        if let Some(turns) = summ.context_manager.turns_since_last_hard_compaction {
+            // TODO(review): compaction_turns_after_hard metric not tracked without MetricsCallback
+            let _ = turns;
+        }
+        summ.context_manager.turns_since_last_hard_compaction = Some(0);
+        // TODO(review): compaction_hard_count metric not tracked without MetricsCallback
+
+        if in_cooldown {
+            tracing::debug!(
+                turns_remaining = summ.context_manager.compaction.cooldown_remaining(),
+                "hard compaction skipped: cooldown active"
+            );
+            return Ok(());
+        }
+
+        let budget = summ
+            .context_manager
+            .budget
+            .as_ref()
+            .map_or(0, ContextBudget::max_tokens);
+        let hard_threshold =
+            (budget as f32 * summ.context_manager.hard_compaction_threshold) as usize;
+        let cached = usize::try_from(*summ.cached_prompt_tokens).unwrap_or(usize::MAX);
+        let min_to_free = cached.saturating_sub(hard_threshold);
+
+        status.send_status("compacting context...").await;
+
+        // Step 1: apply deferred summaries.
+        crate::summarization::deferred::apply_deferred_summaries(summ);
+
+        // Step 2: attempt pruning-only.
+        let freed = crate::summarization::pruning::prune_tool_outputs(summ, min_to_free);
+        if freed >= min_to_free {
+            tracing::info!(freed, "hard compaction: pruning sufficient");
+            summ.context_manager.compaction = CompactionState::CompactedThisTurn {
+                cooldown: summ.context_manager.compaction_cooldown_turns,
+            };
+            if let Err(e) = crate::summarization::deferred::flush_deferred_summaries(summ).await {
+                tracing::warn!(%e, "flush_deferred_summaries failed after hard compaction");
+            }
+            status.send_status("").await;
+            return Ok(());
+        }
+
+        // Step 3: Guard — too few messages to compact.
+        let preserve_tail = summ.context_manager.compaction_preserve_tail;
+        let compactable = summ.messages.len().saturating_sub(preserve_tail + 1);
+        if compactable <= 1 {
+            tracing::warn!(
+                compactable,
+                "hard compaction: too few messages, marking exhausted"
+            );
+            summ.context_manager.compaction = CompactionState::Exhausted { warned: false };
+            status.send_status("").await;
+            return Ok(());
+        }
+
+        // Step 4: LLM summarization.
+        tracing::info!(
+            min_to_free,
+            "hard compaction: falling back to LLM summarization"
+        );
+        let tokens_before = *summ.cached_prompt_tokens;
+        let compacted = crate::summarization::compaction::compact_context(summ, None).await?;
+
+        let freed_tokens = tokens_before.saturating_sub(*summ.cached_prompt_tokens);
+
+        if compacted == 0 || freed_tokens == 0 {
+            tracing::warn!("hard compaction: no net reduction, marking exhausted");
+            summ.context_manager.compaction = CompactionState::Exhausted { warned: false };
+            status.send_status("").await;
+            return Ok(());
+        }
+
+        if matches!(
+            summ.context_manager
+                .compaction_tier(*summ.cached_prompt_tokens),
+            zeph_context::manager::CompactionTier::Hard
+        ) {
+            tracing::warn!(
+                freed_tokens,
+                "hard compaction: still above hard threshold after compaction, marking exhausted"
+            );
+            summ.context_manager.compaction = CompactionState::Exhausted { warned: false };
+            status.send_status("").await;
+            return Ok(());
+        }
+
+        summ.context_manager.compaction = CompactionState::CompactedThisTurn {
+            cooldown: summ.context_manager.compaction_cooldown_turns,
+        };
+
+        if tokens_before > *summ.cached_prompt_tokens {
+            tracing::info!(
+                tokens_before,
+                tokens_after = *summ.cached_prompt_tokens,
+                saved = freed_tokens,
+                "context compaction complete"
+            );
+        }
+
+        status.send_status("").await;
+        Ok(())
+    }
+
+    /// Summarize the most recent tool-use/result pair if it exceeds the cutoff.
+    ///
+    /// Drains the backlog of unsummarized tool-use/result pairs in a single pass,
+    /// storing results as `deferred_summary` on message metadata. Applied lazily
+    /// by [`Self::maybe_apply_deferred_summaries`] when context pressure rises.
     pub async fn maybe_summarize_tool_pair(
         &self,
-        _summ: &mut ContextSummarizationView<'_>,
-        _providers: &ProviderHandles,
+        summ: &mut ContextSummarizationView<'_>,
+        providers: &ProviderHandles,
     ) {
-        // TODO: implement in PR4 migration
-        unimplemented!("maybe_summarize_tool_pair will be implemented in PR4")
+        crate::summarization::deferred::maybe_summarize_tool_pair(
+            summ,
+            providers,
+            &TxStatusSink(summ.status_tx.clone()),
+        )
+        .await;
     }
 
-    /// Apply any deferred summaries to the message window.
+    /// Apply any deferred tool-pair summaries to the message window.
     ///
-    /// Returns the number of summaries applied.
+    /// Processes all pending deferred summaries in reverse order so insertions do not
+    /// invalidate lower indices. Returns the number of summaries applied.
     #[must_use]
-    pub fn apply_deferred_summaries(&self, _summ: &mut ContextSummarizationView<'_>) -> usize {
-        // TODO: implement in PR4 migration
-        unimplemented!("apply_deferred_summaries will be implemented in PR4")
+    pub fn apply_deferred_summaries(&self, summ: &mut ContextSummarizationView<'_>) -> usize {
+        crate::summarization::deferred::apply_deferred_summaries(summ)
     }
 
-    /// Flush all deferred summaries to the message window.
-    pub async fn flush_deferred_summaries(&self, _summ: &mut ContextSummarizationView<'_>) {
-        // TODO: implement in PR4 migration
-        unimplemented!("flush_deferred_summaries will be implemented in PR4")
+    /// Flush all deferred summary IDs to the database.
+    ///
+    /// Calls `apply_tool_pair_summaries` to soft-delete the original tool pairs and
+    /// persist the summaries. Always clears both deferred queues regardless of outcome.
+    pub async fn flush_deferred_summaries(&self, summ: &mut ContextSummarizationView<'_>) {
+        if let Err(e) = crate::summarization::deferred::flush_deferred_summaries(summ).await {
+            tracing::warn!(%e, "flush_deferred_summaries failed");
+        }
     }
 
-    /// Apply deferred summaries if the compaction budget permits.
-    pub fn maybe_apply_deferred_summaries(&self, _summ: &mut ContextSummarizationView<'_>) {
-        // TODO: implement in PR4 migration
-        unimplemented!("maybe_apply_deferred_summaries will be implemented in PR4")
+    /// Apply deferred summaries if context usage exceeds the soft compaction threshold.
+    ///
+    /// Two triggers: token pressure (above the soft threshold) and count pressure (pending
+    /// summaries >= `tool_call_cutoff`). This is Tier 0 — no LLM call. Does NOT set
+    /// `compacted_this_turn` so proactive/reactive compaction may still fire.
+    pub fn maybe_apply_deferred_summaries(&self, summ: &mut ContextSummarizationView<'_>) {
+        crate::summarization::deferred::maybe_apply_deferred_summaries(summ);
     }
 
     /// Apply a soft compaction pass mid-iteration if required.
-    pub fn maybe_soft_compact_mid_iteration(&self, _summ: &mut ContextSummarizationView<'_>) {
-        // TODO: implement in PR7 migration
-        unimplemented!("maybe_soft_compact_mid_iteration will be implemented in PR7")
+    ///
+    /// Applies deferred summaries and prunes tool outputs down to the soft threshold.
+    /// Never triggers a Hard tier LLM call. Returns immediately if `compacted_this_turn`
+    /// is set or context is below the soft threshold.
+    pub fn maybe_soft_compact_mid_iteration(&self, summ: &mut ContextSummarizationView<'_>) {
+        crate::summarization::scheduling::maybe_soft_compact_mid_iteration(summ);
     }
 
-    /// Run proactive compression if the token usage crosses the configured threshold.
+    /// Run proactive compression if token usage crosses the configured threshold.
+    ///
+    /// Uses the `compact_context_with_budget` path (LLM summarization with an optional
+    /// token cap). Skips when server compaction is active unless context exceeds 95% of
+    /// the budget. Does not impose a post-compaction cooldown.
     pub async fn maybe_proactive_compress(
         &self,
-        _summ: &mut ContextSummarizationView<'_>,
+        summ: &mut ContextSummarizationView<'_>,
         _providers: &ProviderHandles,
-        _status: &(impl StatusSink + ?Sized),
+        status: &(impl StatusSink + ?Sized),
     ) {
-        // TODO: implement in PR7 migration
-        unimplemented!("maybe_proactive_compress will be implemented in PR7")
+        let Some((_threshold, max_summary_tokens)) = summ
+            .context_manager
+            .should_proactively_compress(*summ.cached_prompt_tokens)
+        else {
+            return;
+        };
+
+        if summ.server_compaction_active {
+            let budget = summ
+                .context_manager
+                .budget
+                .as_ref()
+                .map_or(0, ContextBudget::max_tokens);
+            if budget > 0 {
+                let fallback = (budget * 95 / 100) as u64;
+                if *summ.cached_prompt_tokens <= fallback {
+                    return;
+                }
+                tracing::warn!(
+                    cached_prompt_tokens = *summ.cached_prompt_tokens,
+                    fallback_threshold = fallback,
+                    "server compaction active but context at 95%+ — falling back to proactive"
+                );
+            } else {
+                return;
+            }
+        }
+
+        status.send_status("compressing context...").await;
+        tracing::info!(
+            max_summary_tokens,
+            cached_tokens = *summ.cached_prompt_tokens,
+            "proactive compression triggered"
+        );
+
+        match crate::summarization::compaction::compact_context(summ, Some(max_summary_tokens))
+            .await
+        {
+            Ok(compacted) if compacted > 0 => {
+                summ.context_manager.compaction =
+                    zeph_context::manager::CompactionState::CompactedThisTurn { cooldown: 0 };
+                tracing::info!(compacted, "proactive compression complete");
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(%e, "proactive compression failed"),
+        }
+
+        status.send_status("").await;
     }
 
-    /// Refresh the task goal summary if it has expired.
-    pub fn maybe_refresh_task_goal(&self, _summ: &mut ContextSummarizationView<'_>) {
-        // TODO: implement in PR7 migration
-        unimplemented!("maybe_refresh_task_goal will be implemented in PR7")
+    /// Refresh the task goal when the last user message has changed.
+    ///
+    /// Two-phase non-blocking: applies any completed background result from the previous
+    /// turn, then schedules a new extraction if the user message hash has changed.
+    /// Only active for `TaskAware` and `Mig` pruning strategies.
+    pub fn maybe_refresh_task_goal(&self, summ: &mut ContextSummarizationView<'_>) {
+        crate::summarization::scheduling::maybe_refresh_task_goal(summ);
     }
 
-    /// Refresh the subgoal summary if it has expired.
-    pub fn maybe_refresh_subgoal(&self, _summ: &mut ContextSummarizationView<'_>) {
-        // TODO: implement in PR7 migration
-        unimplemented!("maybe_refresh_subgoal will be implemented in PR7")
+    /// Refresh the subgoal registry when the last user message has changed.
+    ///
+    /// Mirrors the two-phase `maybe_refresh_task_goal` pattern.
+    /// Only active for `Subgoal` and `SubgoalMig` pruning strategies.
+    pub fn maybe_refresh_subgoal(&self, summ: &mut ContextSummarizationView<'_>) {
+        crate::summarization::scheduling::maybe_refresh_subgoal(summ);
+    }
+}
+
+// ── StatusSink adapters ───────────────────────────────────────────────────────
+
+/// `StatusSink` adapter over an optional `UnboundedSender<String>`.
+///
+/// Sends status strings when the sender is present; silently drops them otherwise.
+struct TxStatusSink(Option<tokio::sync::mpsc::UnboundedSender<String>>);
+
+impl StatusSink for TxStatusSink {
+    fn send_status(&self, msg: &str) -> impl std::future::Future<Output = ()> + Send + '_ {
+        if let Some(ref tx) = self.0 {
+            let _ = tx.send(msg.to_owned());
+        }
+        std::future::ready(())
     }
 }
 

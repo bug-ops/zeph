@@ -34,6 +34,7 @@ pub mod helpers;
 pub(crate) mod retrieved;
 pub mod service;
 pub mod state;
+pub(crate) mod summarization;
 
 pub use compaction::{
     BlockScore, ContentDensity, SubgoalExtractionResult, SubgoalId, SubgoalRegistry, SubgoalState,
