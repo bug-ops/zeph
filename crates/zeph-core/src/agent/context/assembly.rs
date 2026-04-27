@@ -102,14 +102,17 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::super::error::AgentError> {
         self.remove_recall_messages();
 
-        let (msg, _score) = super::assembler_helpers::fetch_semantic_recall(
-            &self.services.memory,
+        let (msg, _score) = zeph_agent_context::helpers::fetch_semantic_recall_raw(
+            self.services.memory.persistence.memory.as_deref(),
+            self.services.memory.persistence.recall_limit,
+            self.services.memory.persistence.context_format,
             query,
             token_budget,
             &self.runtime.metrics.token_counter,
             None,
         )
-        .await?;
+        .await
+        .map_err(super::super::error::AgentError::Memory)?;
         if let Some(msg) = msg
             && self.msg.messages.len() > 1
         {
@@ -337,13 +340,19 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::super::error::AgentError> {
         self.remove_cross_session_messages();
 
-        if let Some(msg) = super::assembler_helpers::fetch_cross_session(
-            &self.services.memory,
+        if let Some(msg) = zeph_agent_context::helpers::fetch_cross_session_raw(
+            self.services.memory.persistence.memory.as_deref(),
+            self.services.memory.persistence.conversation_id,
+            self.services
+                .memory
+                .persistence
+                .cross_session_score_threshold,
             query,
             token_budget,
             &self.runtime.metrics.token_counter,
         )
-        .await?
+        .await
+        .map_err(super::super::error::AgentError::Memory)?
             && self.msg.messages.len() > 1
         {
             self.msg.messages.insert(1, msg);
@@ -360,12 +369,14 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), super::super::error::AgentError> {
         self.remove_summary_messages();
 
-        if let Some(msg) = super::assembler_helpers::fetch_summaries(
-            &self.services.memory,
+        if let Some(msg) = zeph_agent_context::helpers::fetch_summaries_raw(
+            self.services.memory.persistence.memory.as_deref(),
+            self.services.memory.persistence.conversation_id,
             token_budget,
             &self.runtime.metrics.token_counter,
         )
-        .await?
+        .await
+        .map_err(super::super::error::AgentError::Memory)?
             && self.msg.messages.len() > 1
         {
             self.msg.messages.insert(1, msg);
@@ -1669,19 +1680,19 @@ mod tests {
 
     #[test]
     fn effective_recall_timeout_ms_nonzero_returns_unchanged() {
-        let result = crate::agent::context::assembler_helpers::effective_recall_timeout_ms(500);
+        let result = zeph_agent_context::helpers::effective_recall_timeout_ms(500);
         assert_eq!(result, 500, "non-zero value must pass through unchanged");
     }
 
     #[test]
     fn effective_recall_timeout_ms_nonzero_large_returns_unchanged() {
-        let result = crate::agent::context::assembler_helpers::effective_recall_timeout_ms(5000);
+        let result = zeph_agent_context::helpers::effective_recall_timeout_ms(5000);
         assert_eq!(result, 5000);
     }
 
     #[test]
     fn effective_recall_timeout_ms_zero_clamps_to_100() {
-        let result = crate::agent::context::assembler_helpers::effective_recall_timeout_ms(0);
+        let result = zeph_agent_context::helpers::effective_recall_timeout_ms(0);
         assert_eq!(
             result, 100,
             "zero recall_timeout_ms must be clamped to 100ms"
@@ -1692,7 +1703,7 @@ mod tests {
     fn spreading_activation_default_timeout_is_nonzero() {
         // Ensures the default used in production is not accidentally set to zero —
         // which would always trigger the zero-clamp warn path in effective_recall_timeout_ms.
-        let result = crate::agent::context::assembler_helpers::effective_recall_timeout_ms(
+        let result = zeph_agent_context::helpers::effective_recall_timeout_ms(
             zeph_config::memory::SpreadingActivationConfig::default().recall_timeout_ms,
         );
         assert!(

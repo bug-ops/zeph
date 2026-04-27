@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(agent-context): migrate `assembler_helpers` from `zeph-core` to `zeph-agent-context`
+  as `pub mod helpers` (#3517 step 3). Deleted `zeph-core/src/agent/context/assembler_helpers.rs`;
+  all helper functions (`truncate_chars`, `format_correction_note`, `effective_recall_timeout_ms`,
+  `fetch_graph_facts`, `fetch_semantic_recall`, `fetch_summaries`, `fetch_cross_session`) now live
+  in `zeph_agent_context::helpers`. Added `_raw` variants accepting individual fields so the
+  `zeph-core` test bridge methods can call them without constructing `ContextAssemblyView`.
+  Added `context_format` field to `ContextAssemblyView`. Added `chrono` dependency to
+  `zeph-agent-context`. The `#[cfg(test)]` re-export alias
+  `use zeph_agent_context::helpers as assembler_helpers` in `context/mod.rs` keeps test callers
+  unchanged.
 - Removed backward-compatibility re-exports of `task_supervisor` items from `zeph-core`; all
   callers now import directly from `zeph_common::task_supervisor` or `zeph_common::TaskSupervisor`
 - Migrated all raw `tokio::spawn` calls in `zeph-core/src/agent/` to `TaskSupervisor`; the agent

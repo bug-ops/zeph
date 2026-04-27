@@ -828,8 +828,9 @@ async fn test_prepare_context_no_scrub_when_redact_disabled() {
 
 #[test]
 fn correction_prompt_does_not_replay_bad_path_commands() {
-    let note = crate::agent::context::assembler_helpers::format_correction_note(
-        "cd /Users/m/dev/zeph && grep -n \"acp\" Cargo.toml | head -40",
+    // format_correction_note now takes only the correction text; the caller is responsible
+    // for scrubbing before passing. The original bad command is intentionally not included.
+    let note = zeph_agent_context::helpers::format_correction_note(
         "Use the current repository and avoid hard-coded absolute paths.",
     );
 

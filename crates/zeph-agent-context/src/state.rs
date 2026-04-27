@@ -96,6 +96,8 @@ pub struct ContextAssemblyView<'a> {
     pub recall_limit: usize,
     /// `services.memory.persistence.cross_session_score_threshold`.
     pub cross_session_score_threshold: f32,
+    /// `services.memory.persistence.context_format` — determines recall entry formatting.
+    pub context_format: zeph_config::ContextFormat,
     /// `services.memory.persistence.last_recall_confidence` — written by apply path.
     pub last_recall_confidence: &'a mut Option<f32>,
 

@@ -13,6 +13,7 @@ description = "Agent context-assembly service for Zeph: system prompt rebuild, m
 readme = "README.md"
 
 [dependencies]
+chrono = { workspace = true, features = ["std"] }
 futures.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"] }

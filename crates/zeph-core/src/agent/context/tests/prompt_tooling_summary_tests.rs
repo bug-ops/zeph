@@ -10,10 +10,9 @@ use crate::agent::Agent;
 use crate::agent::agent_tests::{
     MockChannel, MockToolExecutor, create_test_registry, mock_provider, mock_provider_failing,
 };
-use crate::agent::context::assembler_helpers;
 use crate::agent::context::{cap_summary, truncate_chars};
+use zeph_agent_context::helpers as assembler_helpers;
 use crate::agent::context_manager::CompactionState;
-use crate::agent::state::MemoryState;
 
 // Helper: add a tool call/result message pair using ToolResult parts.
 fn make_tool_pair(agent: &mut Agent<MockChannel>, tool_name: &str) {
@@ -64,58 +63,6 @@ fn make_tool_result_message(content: &str) -> Message {
             is_error: false,
         }],
     )
-}
-
-fn make_mem_state(
-    memory: Arc<zeph_memory::semantic::SemanticMemory>,
-    cid: zeph_memory::ConversationId,
-    graph_enabled: bool,
-) -> MemoryState {
-    use crate::agent::state::{
-        MemoryCompactionState, MemoryExtractionState, MemoryPersistenceState, MemorySubsystemState,
-    };
-    MemoryState {
-        persistence: MemoryPersistenceState {
-            memory: Some(memory),
-            conversation_id: Some(cid),
-            history_limit: 50,
-            recall_limit: 5,
-            cross_session_score_threshold: 0.5,
-            autosave_assistant: false,
-            autosave_min_length: 20,
-            tool_call_cutoff: 6,
-            unsummarized_count: 0,
-            last_recall_confidence: None,
-            context_format: zeph_config::ContextFormat::default(),
-        },
-        compaction: MemoryCompactionState {
-            summarization_threshold: 100,
-            compression_guidelines_config: zeph_memory::CompressionGuidelinesConfig::default(),
-            shutdown_summary: true,
-            shutdown_summary_min_messages: 4,
-            shutdown_summary_max_messages: 20,
-            shutdown_summary_timeout_secs: 10,
-            structured_summaries: false,
-            digest_config: crate::config::DigestConfig::default(),
-            cached_session_digest: None,
-            context_strategy: crate::config::ContextStrategy::default(),
-            crossover_turn_threshold: 20,
-        },
-        extraction: MemoryExtractionState {
-            document_config: crate::config::DocumentConfig::default(),
-            graph_config: crate::config::GraphConfig {
-                enabled: graph_enabled,
-                ..Default::default()
-            },
-            rpe_router: None,
-            goal_text: None,
-            persona_config: crate::config::PersonaConfig::default(),
-            trajectory_config: crate::config::TrajectoryConfig::default(),
-            category_config: crate::config::CategoryConfig::default(),
-            reasoning_config: zeph_config::ReasoningConfig::default(),
-        },
-        subsystems: MemorySubsystemState::default(),
-    }
 }
 
 async fn build_graph_memory() -> zeph_memory::semantic::SemanticMemory {
@@ -1108,11 +1055,17 @@ async fn summarizer_failure_prune_still_runs() {
 async fn fetch_graph_facts_returns_none_when_graph_config_disabled() {
     let memory = build_graph_memory().await;
     let cid = memory.sqlite().create_conversation().await.unwrap();
-    let mem_state = make_mem_state(Arc::new(memory), cid, false);
+    let graph_config = zeph_config::GraphConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    let mem = Arc::new(memory);
     let tc = Arc::new(zeph_memory::TokenCounter::new());
-    let result = assembler_helpers::fetch_graph_facts(&mem_state, "test", 1000, &tc)
-        .await
-        .unwrap();
+    let _ = cid;
+    let result =
+        assembler_helpers::fetch_graph_facts_raw(Some(&*mem), &graph_config, "test", 1000, &tc)
+            .await
+            .unwrap();
     assert!(result.is_none());
 }
 
@@ -1120,11 +1073,17 @@ async fn fetch_graph_facts_returns_none_when_graph_config_disabled() {
 async fn fetch_graph_facts_returns_none_when_budget_zero() {
     let memory = build_graph_memory().await;
     let cid = memory.sqlite().create_conversation().await.unwrap();
-    let mem_state = make_mem_state(Arc::new(memory), cid, true);
+    let graph_config = zeph_config::GraphConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    let mem = Arc::new(memory);
     let tc = Arc::new(zeph_memory::TokenCounter::new());
-    let result = assembler_helpers::fetch_graph_facts(&mem_state, "test", 0, &tc)
-        .await
-        .unwrap();
+    let _ = cid;
+    let result =
+        assembler_helpers::fetch_graph_facts_raw(Some(&*mem), &graph_config, "test", 0, &tc)
+            .await
+            .unwrap();
     assert!(result.is_none());
 }
 
@@ -1132,11 +1091,17 @@ async fn fetch_graph_facts_returns_none_when_budget_zero() {
 async fn fetch_graph_facts_returns_none_when_graph_is_empty() {
     let memory = build_graph_memory().await;
     let cid = memory.sqlite().create_conversation().await.unwrap();
-    let mem_state = make_mem_state(Arc::new(memory), cid, true);
+    let graph_config = zeph_config::GraphConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    let mem = Arc::new(memory);
     let tc = Arc::new(zeph_memory::TokenCounter::new());
-    let result = assembler_helpers::fetch_graph_facts(&mem_state, "rust", 1000, &tc)
-        .await
-        .unwrap();
+    let _ = cid;
+    let result =
+        assembler_helpers::fetch_graph_facts_raw(Some(&*mem), &graph_config, "rust", 1000, &tc)
+            .await
+            .unwrap();
     assert!(result.is_none(), "empty graph must return None");
 }
 
@@ -1492,11 +1457,17 @@ async fn fetch_graph_facts_returns_some_with_entities_and_has_prefix() {
             .unwrap();
     }
 
-    let mem_state = make_mem_state(Arc::new(memory), cid, true);
+    let graph_config = zeph_config::GraphConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    let mem = Arc::new(memory);
     let tc = Arc::new(zeph_memory::TokenCounter::new());
-    let result = assembler_helpers::fetch_graph_facts(&mem_state, "rust", 2000, &tc)
-        .await
-        .unwrap();
+    let _ = cid;
+    let result =
+        assembler_helpers::fetch_graph_facts_raw(Some(&*mem), &graph_config, "rust", 2000, &tc)
+            .await
+            .unwrap();
     assert!(result.is_some());
     let msg = result.unwrap();
     assert!(msg.content.starts_with(crate::agent::GRAPH_FACTS_PREFIX));

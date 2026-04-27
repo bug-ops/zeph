@@ -29,7 +29,7 @@
 //! - `index` — enables `zeph-index` integration via the `IndexAccess` trait.
 
 pub mod error;
-pub(crate) mod helpers;
+pub mod helpers;
 pub(crate) mod retrieved;
 pub mod service;
 pub mod state;
