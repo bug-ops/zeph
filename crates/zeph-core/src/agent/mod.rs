@@ -1337,11 +1337,15 @@ impl<C: Channel> Agent<C> {
     fn begin_turn(&mut self, input: turn::TurnInput) -> turn::Turn {
         let id = turn::TurnId(self.runtime.debug.iteration_counter as u64);
         self.runtime.debug.iteration_counter += 1;
-        self.runtime.lifecycle.cancel_token = CancellationToken::new();
+        let cancel_token = CancellationToken::new();
+        // keep agent-wide token in sync with per-turn token — TODO(#3498): consolidate in Phase 2
+        self.runtime.lifecycle.cancel_token = cancel_token.clone();
         self.services.security.user_provided_urls.write().clear();
         // Reset per-turn LLM request counter for the notification gate.
         self.runtime.lifecycle.turn_llm_requests = 0;
-        turn::Turn::new(id, input)
+
+        let context = turn::TurnContext::new(id, cancel_token, self.runtime.config.timeouts);
+        turn::Turn::new(context, input)
     }
 
     /// Finalise a turn: copy accumulated timings into `MetricsState` and flush.
@@ -1403,7 +1407,7 @@ impl<C: Channel> Agent<C> {
         // real user message into a single user-role block below (N1 invariant).
         self.drain_background_completions();
 
-        self.wire_cancel_bridge(&turn.cancel_token);
+        self.wire_cancel_bridge(turn.cancel_token());
 
         // Clone text out of Turn so we can hold both `&str` borrows and mutate turn.metrics.
         let text = turn.input.text.clone();

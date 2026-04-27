@@ -16,6 +16,7 @@
 //! - [`input`] — [`input::ContextAssemblyInput`], [`input::ContextMemoryView`], traits
 //! - [`slot`] — [`slot::ContextSlot`], [`slot::CompactionOutcome`], helper functions
 //! - [`summarization`] — pure prompt-building helpers for context compaction
+//! - [`turn_context`] — [`turn_context::TurnId`], [`turn_context::TurnContext`] per-turn carrier
 //! - [`compression_feedback`] — context-loss detection and failure classification
 //! - [`microcompact`] — low-value tool detection helpers for time-based microcompact
 //! - [`error`] — [`error::ContextError`]
@@ -29,4 +30,5 @@ pub mod manager;
 pub mod microcompact;
 pub mod slot;
 pub mod summarization;
+pub mod turn_context;
 pub mod typed_page;

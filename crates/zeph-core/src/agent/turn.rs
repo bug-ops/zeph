@@ -9,37 +9,14 @@
 //!
 //! # Phase 1 scope
 //!
-//! Only input, ID, metrics (timings only), and the cancellation token are tracked.
-//! Fields `context`, `response_text`, and `tool_results` are deferred to Phase 2.
+//! Only input, context, and metrics (timings only) are tracked.
+//! Fields `response_text` and `tool_results` are deferred to Phase 2.
 
 use tokio_util::sync::CancellationToken;
+pub use zeph_context::turn_context::{TurnContext, TurnId};
 use zeph_llm::provider::MessagePart;
 
 use crate::metrics::TurnTimings;
-
-/// Monotonically increasing per-conversation turn identifier.
-///
-/// Wraps `debug_state.iteration_counter` as a proper newtype, enabling turn IDs to be passed
-/// through the turn lifecycle and recorded in metrics and traces.
-///
-/// `TurnId(0)` is the first turn in a conversation. Values are strictly increasing by 1.
-/// The counter resets to 0 when a new conversation starts (e.g., via `/new`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TurnId(pub u64);
-
-impl TurnId {
-    /// Return the next turn ID in sequence.
-    #[allow(dead_code)]
-    pub(crate) fn next(self) -> TurnId {
-        TurnId(self.0 + 1)
-    }
-}
-
-impl std::fmt::Display for TurnId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
 
 /// Resolved input for a single agent turn.
 ///
@@ -93,48 +70,50 @@ pub(crate) struct ToolOutputRecord {
 /// **Ownership**: `Turn` is stack-owned — created in `begin_turn`, passed through sub-methods
 /// by `&mut Turn`, and consumed in `end_turn`. It is never stored on the `Agent` struct.
 ///
-/// **Phase 1 scope**: carries `id`, `input`, `metrics`, and `cancel_token` only.
+/// **Phase 1 scope**: carries `context` (id, cancel token, timeouts), `input`, and `metrics`.
 pub struct Turn {
-    /// Monotonically increasing identifier for this turn within the conversation.
-    pub id: TurnId,
+    /// Per-turn execution context (id, cancel token, timeouts).
+    pub context: TurnContext,
     /// Resolved user input for this turn.
     pub input: TurnInput,
     /// Per-turn metrics accumulated during the turn lifecycle.
     pub metrics: TurnMetrics,
-    /// Per-turn cancellation token. Cancelled when the user aborts the turn or the agent shuts
-    /// down. Created fresh in [`Turn::new`] so each turn has an independent token.
-    pub cancel_token: CancellationToken,
 }
 
 impl Turn {
-    /// Create a new turn with the given ID and input.
-    ///
-    /// A fresh [`CancellationToken`] is created for each turn so that cancelling one turn
-    /// does not affect subsequent turns.
+    /// Create a new turn with the given context and input.
     ///
     /// # Examples
     ///
     /// ```no_run
-    /// # use zeph_core::agent::turn::{Turn, TurnId, TurnInput};
+    /// # use zeph_core::agent::turn::{Turn, TurnContext, TurnId, TurnInput};
+    /// # use zeph_config::security::TimeoutConfig;
+    /// # use tokio_util::sync::CancellationToken;
     /// # use zeph_llm::provider::MessagePart;
+    /// let ctx = TurnContext::new(TurnId(0), CancellationToken::new(), TimeoutConfig::default());
     /// let input = TurnInput::new("hello".to_owned(), vec![]);
-    /// let turn = Turn::new(TurnId(0), input);
-    /// assert_eq!(turn.id, TurnId(0));
+    /// let turn = Turn::new(ctx, input);
+    /// assert_eq!(turn.id(), TurnId(0));
     /// ```
     #[must_use]
-    pub fn new(id: TurnId, input: TurnInput) -> Self {
+    pub fn new(context: TurnContext, input: TurnInput) -> Self {
         Self {
-            id,
+            context,
             input,
             metrics: TurnMetrics::default(),
-            cancel_token: CancellationToken::new(),
         }
     }
 
     /// Return the turn ID.
     #[must_use]
     pub fn id(&self) -> TurnId {
-        self.id
+        self.context.id
+    }
+
+    /// Return an immutable reference to the per-turn cancellation token.
+    #[must_use]
+    pub fn cancel_token(&self) -> &CancellationToken {
+        &self.context.cancel_token
     }
 
     /// Return an immutable reference to the turn metrics.
@@ -151,13 +130,24 @@ impl Turn {
 
 #[cfg(test)]
 mod tests {
+    use tokio_util::sync::CancellationToken;
+    use zeph_config::security::TimeoutConfig;
+
     use super::*;
+
+    fn make_turn(id: u64, text: &str) -> Turn {
+        let ctx = TurnContext::new(
+            TurnId(id),
+            CancellationToken::new(),
+            TimeoutConfig::default(),
+        );
+        let input = TurnInput::new(text.to_owned(), vec![]);
+        Turn::new(ctx, input)
+    }
 
     #[test]
     fn turn_new_sets_id() {
-        let input = TurnInput::new("hello".to_owned(), vec![]);
-        let turn = Turn::new(TurnId(7), input);
-        assert_eq!(turn.id, TurnId(7));
+        let turn = make_turn(7, "hello");
         assert_eq!(turn.id(), TurnId(7));
     }
 
@@ -187,23 +177,20 @@ mod tests {
 
     #[test]
     fn turn_cancel_token_not_cancelled_on_new() {
-        let input = TurnInput::new("x".to_owned(), vec![]);
-        let turn = Turn::new(TurnId(0), input);
-        assert!(!turn.cancel_token.is_cancelled());
+        let turn = make_turn(0, "x");
+        assert!(!turn.cancel_token().is_cancelled());
     }
 
     #[test]
     fn turn_cancel_token_cancel() {
-        let input = TurnInput::new("x".to_owned(), vec![]);
-        let turn = Turn::new(TurnId(0), input);
-        turn.cancel_token.cancel();
-        assert!(turn.cancel_token.is_cancelled());
+        let turn = make_turn(0, "x");
+        turn.cancel_token().cancel();
+        assert!(turn.cancel_token().is_cancelled());
     }
 
     #[test]
     fn turn_metrics_mut_allows_write() {
-        let input = TurnInput::new("x".to_owned(), vec![]);
-        let mut turn = Turn::new(TurnId(0), input);
+        let mut turn = make_turn(0, "x");
         turn.metrics_mut().timings.prepare_context_ms = 99;
         assert_eq!(turn.metrics_snapshot().timings.prepare_context_ms, 99);
     }
