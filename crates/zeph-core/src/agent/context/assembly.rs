@@ -1132,46 +1132,6 @@ impl<C: Channel> Agent<C> {
         svc.remove_correction_messages(&mut self.message_window_view());
     }
 
-    pub(in crate::agent) fn remove_graph_facts_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_graph_facts_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_persona_facts_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_persona_facts_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_trajectory_hints_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_trajectory_hints_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_tree_memory_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_tree_memory_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_reasoning_strategies_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_reasoning_strategies_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_summary_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_summary_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_cross_session_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_cross_session_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_session_digest_message(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_session_digest_message(&mut self.message_window_view());
-    }
-
     pub(in crate::agent) async fn inject_semantic_recall(
         &mut self,
         query: &str,
@@ -1197,6 +1157,16 @@ impl<C: Channel> Agent<C> {
         }
 
         Ok(())
+    }
+
+    pub(in crate::agent) fn remove_summary_messages(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_summary_messages(&mut self.message_window_view());
+    }
+
+    pub(in crate::agent) fn remove_cross_session_messages(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_cross_session_messages(&mut self.message_window_view());
     }
 
     pub(in crate::agent) async fn inject_cross_session_context(
