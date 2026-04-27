@@ -27,19 +27,6 @@ use crate::channel::{Channel, StopHint, ToolOutputEvent, ToolStartEvent};
 ///
 /// Constructed at the dispatch boundary. Holds no state other than the borrowed channel.
 ///
-/// # Examples
-///
-/// ```no_run
-/// use zeph_core::channel::LoopbackChannel;
-/// use zeph_core::agent::channel_impl::AgentChannelView;
-/// use zeph_agent_tools::AgentChannel;
-///
-/// async fn example() {
-///     let (mut ch, _handle) = LoopbackChannel::pair(8);
-///     let mut view = AgentChannelView::new(&mut ch);
-///     view.send("hello").await.unwrap();
-/// }
-/// ```
 // TODO(review): AgentChannelView has no callers yet — the dispatcher extraction that will
 // consume it is deferred per zeph-agent-tools/lib.rs:17-20. Remove this allow once #3516
 // lands and the dispatcher moves to zeph-agent-tools.
