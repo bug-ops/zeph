@@ -11,8 +11,8 @@ use crate::agent::agent_tests::{
     MockChannel, MockToolExecutor, create_test_registry, mock_provider, mock_provider_failing,
 };
 use crate::agent::context::{cap_summary, truncate_chars};
-use zeph_agent_context::helpers as assembler_helpers;
 use crate::agent::context_manager::CompactionState;
+use zeph_agent_context::helpers as assembler_helpers;
 
 // Helper: add a tool call/result message pair using ToolResult parts.
 fn make_tool_pair(agent: &mut Agent<MockChannel>, tool_name: &str) {

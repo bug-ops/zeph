@@ -16,7 +16,7 @@ categories = ["command-line-utilities", "science"]
 publish = true
 
 [workspace.dependencies]
-age = { version = "0.11.2", default-features = false }
+age = { version = "0.11.3", default-features = false }
 agent-client-protocol = "0.11"
 agent-client-protocol-tokio = "0.11"
 anyhow = "1.0.102"
@@ -24,7 +24,7 @@ async-stream = "0.3.6"
 async-trait = "0.1.89"
 axum = "0.8.9"
 base64 = "0.22.1"
-blake3 = "1.8.4"
+blake3 = "1.8.5"
 bytemuck = "1.25"
 candle-core = { version = "0.10.2", default-features = false }
 candle-nn = { version = "0.10.2", default-features = false }
@@ -66,7 +66,7 @@ pdf-extract = "0.10"
 metrics = "0.24.3"
 metrics-util = "0.20.1"
 arc-swap = "1.9.1"
-lru = "0.17.0"
+lru = "0.18.0"
 parking_lot = "0.12.5"
 prometheus-client = "0.24.1"
 petgraph = "0.8.3"
@@ -86,7 +86,7 @@ schemars = "1.2.1"
 shell-words = "1.1"
 hmac = "0.13"
 sha2 = "0.11"
-scrape-core = "0.2.5"
+scrape-core = "0.2.6"
 semver = "1.0.28"
 serde = "1.0.228"
 serde_json = "1.0.149"
@@ -101,18 +101,18 @@ pprof = { version = "0.15.0", default-features = false }
 symphonia = { version = "0.5.5", default-features = false }
 teloxide = { version = "0.17", default-features = false }
 tempfile = "3.27"
-testcontainers = "0.27.2"
+testcontainers = "0.27.3"
 testcontainers-modules = { version = "0.15", default-features = false }
 thiserror = "2.0.18"
 throbber-widgets-tui = "0.11"
 tiktoken-rs = "0.11"
-tokenizers = { version = "0.22.2", default-features = false }
+tokenizers = { version = "0.23.1", default-features = false }
 tokio = "1"
 tokio-stream = "0.1"
 tokio-tungstenite = { version = "0.29", default-features = false }
 tokio-util = "0.7"
-toml = "1.1.2+spec-1.1.0"
-toml_edit = "0.25.11+spec-1.1.0"
+toml = "1.1.2"
+toml_edit = "0.25.11"
 tower = "0.5.3"
 tower-http = { version = "0.6.8", default-features = false }
 tracing = "0.1"

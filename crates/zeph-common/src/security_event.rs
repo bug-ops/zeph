@@ -3,8 +3,8 @@
 
 //! Security event category shared across Zeph crates.
 //!
-//! Moved from `zeph-core::metrics` so that `zeph-agent-context` can define the
-//! [`SecurityEventSink`] trait without depending on `zeph-core`.
+//! Moved from `zeph-core::metrics` so that `zeph-agent-context` can define a
+//! `SecurityEventSink` trait without depending on `zeph-core`.
 
 /// Category of a security event used for TUI display and audit logging.
 ///
