@@ -10099,6 +10099,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeph-agent-persistence"
+version = "0.20.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zeph-common",
+ "zeph-config",
+ "zeph-context",
+ "zeph-llm",
+ "zeph-memory",
+]
+
+[[package]]
+name = "zeph-agent-tools"
+version = "0.20.0"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zeph-agent-persistence",
+ "zeph-common",
+ "zeph-config",
+ "zeph-context",
+ "zeph-llm",
+ "zeph-mcp",
+ "zeph-orchestration",
+ "zeph-sanitizer",
+ "zeph-skills",
+ "zeph-tools",
+]
+
+[[package]]
 name = "zeph-bench"
 version = "0.20.0"
 dependencies = [

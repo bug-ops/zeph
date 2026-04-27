@@ -1,0 +1,28 @@
+[package]
+name = "zeph-agent-persistence"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+description = "Agent persistence service for Zeph: history loading, message persistence, tool-pair sanitization, and background extraction enqueueing."
+readme = "README.md"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing.workspace = true
+zeph-common.workspace = true
+zeph-config.workspace = true
+zeph-context.workspace = true
+zeph-llm.workspace = true
+zeph-memory = { workspace = true, features = ["sqlite"] }
+
+[lints]
+workspace = true

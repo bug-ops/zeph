@@ -1,0 +1,34 @@
+[package]
+name = "zeph-agent-tools"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+description = "Agent tool dispatcher for Zeph: native tool loop, retry, confirmation, batch tool-result processing."
+readme = "README.md"
+
+[dependencies]
+futures.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing.workspace = true
+zeph-agent-persistence.workspace = true
+zeph-common.workspace = true
+zeph-config.workspace = true
+zeph-context.workspace = true
+zeph-llm.workspace = true
+zeph-mcp.workspace = true
+zeph-orchestration.workspace = true
+zeph-sanitizer.workspace = true
+zeph-skills.workspace = true
+zeph-tools.workspace = true
+
+[lints]
+workspace = true
