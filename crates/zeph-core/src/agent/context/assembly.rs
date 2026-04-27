@@ -67,6 +67,54 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Construct a [`ContextSummarizationView`] borrow-lens from `Agent<C>` fields.
+    ///
+    /// All `&mut` borrows resolve to distinct top-level sub-fields, so the borrow checker
+    /// accepts the literal. The view is used by [`ContextService`] summarization methods
+    /// (deferred summaries, compaction, goal/subgoal scheduling) so they can access only
+    /// the state they need without taking `&mut self` on `Agent<C>`.
+    ///
+    /// Call sites are added as each summarization method is migrated in subsequent PRs
+    /// (PR4 deferred summaries, PR7 proactive compression, PR8 compaction).
+    ///
+    /// [`ContextSummarizationView`]: zeph_agent_context::state::ContextSummarizationView
+    /// [`ContextService`]: zeph_agent_context::ContextService
+    // TODO: call sites are added per-migration PR; dead_code until PR4 lands.
+    #[allow(dead_code)]
+    pub(in crate::agent) fn summarization_view(
+        &mut self,
+    ) -> zeph_agent_context::state::ContextSummarizationView<'_> {
+        let summarization_deps = self.build_summarization_deps();
+        let redact = self.runtime.config.redact_credentials;
+
+        zeph_agent_context::state::ContextSummarizationView {
+            messages: &mut self.msg.messages,
+            deferred_db_hide_ids: &mut self.msg.deferred_db_hide_ids,
+            deferred_db_summaries: &mut self.msg.deferred_db_summaries,
+            cached_prompt_tokens: &mut self.runtime.providers.cached_prompt_tokens,
+            context_manager: &mut self.context_manager,
+            server_compaction_active: self.runtime.providers.server_compaction_active,
+            token_counter: Arc::clone(&self.runtime.metrics.token_counter),
+            summarization_deps,
+            task_supervisor: Arc::clone(&self.runtime.lifecycle.task_supervisor),
+            memory: self.services.memory.persistence.memory.clone(),
+            conversation_id: self.services.memory.persistence.conversation_id,
+            tool_call_cutoff: self.services.memory.persistence.tool_call_cutoff,
+            subgoal_registry: &mut self.services.compression.subgoal_registry,
+            pending_task_goal: &mut self.services.compression.pending_task_goal,
+            pending_subgoal: &mut self.services.compression.pending_subgoal,
+            current_task_goal: &mut self.services.compression.current_task_goal,
+            task_goal_user_msg_hash: &mut self.services.compression.task_goal_user_msg_hash,
+            subgoal_user_msg_hash: &mut self.services.compression.subgoal_user_msg_hash,
+            status_tx: self.services.session.status_tx.clone(),
+            scrub: if redact {
+                crate::redact::scrub_content
+            } else {
+                |s| std::borrow::Cow::Borrowed(s)
+            },
+        }
+    }
+
     pub(in crate::agent) fn clear_history(&mut self) {
         let svc = zeph_agent_context::ContextService::new();
         svc.clear_history(&mut self.message_window_view());

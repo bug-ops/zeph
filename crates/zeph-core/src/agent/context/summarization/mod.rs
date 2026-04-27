@@ -16,7 +16,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Build the explicit LLM deps struct used by stateless summarization helpers.
-    fn build_summarization_deps(&self) -> SummarizationDeps {
+    pub(super) fn build_summarization_deps(&self) -> SummarizationDeps {
         let debug_dumper = self.runtime.debug.debug_dumper.clone();
         let token_counter = Arc::clone(&self.runtime.metrics.token_counter);
         #[allow(clippy::type_complexity)]
