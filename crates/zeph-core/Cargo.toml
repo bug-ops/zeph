@@ -61,6 +61,8 @@ metrics = { workspace = true, optional = true }
 tree-sitter.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 zeph-agent-feedback.workspace = true
+zeph-agent-persistence.workspace = true
+zeph-agent-tools.workspace = true
 zeph-commands.workspace = true
 zeph-common.workspace = true
 zeph-config.workspace = true

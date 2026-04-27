@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::agent::tool_execution::{
-    doom_loop_hash, normalize_for_doom_loop, tool_def_to_definition,
-};
+use crate::agent::tool_execution::{normalize_for_doom_loop, tool_def_to_definition};
+use zeph_agent_tools::doom_loop_hash;
 
 #[test]
 fn tool_def_strips_schema_and_title() {

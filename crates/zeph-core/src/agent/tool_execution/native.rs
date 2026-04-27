@@ -229,7 +229,7 @@ impl<C: Channel> Agent<C> {
         iteration: usize,
     ) -> Result<bool, super::super::error::AgentError> {
         if let Some(last_msg) = self.msg.messages.last() {
-            let hash = super::doom_loop_hash(&last_msg.content);
+            let hash = zeph_agent_tools::doom_loop_hash(&last_msg.content);
             tracing::debug!(
                 iteration,
                 hash,

@@ -1,428 +1,102 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::HashSet;
-
 use crate::channel::Channel;
-use zeph_llm::provider::{LlmProvider as _, Message, MessagePart, Role};
-use zeph_memory::store::role_str;
+use zeph_agent_persistence::graph::{build_graph_extraction_config, collect_context_messages};
+use zeph_agent_persistence::{
+    MemoryPersistenceView, MetricsView, PersistMessageRequest, PersistenceService, SecurityView,
+};
+use zeph_llm::provider::{LlmProvider as _, MessagePart, Role};
 
 use super::Agent;
-
-/// Remove orphaned `ToolUse`/`ToolResult` messages from restored history.
-///
-/// Four failure modes are handled:
-/// 1. Trailing orphan: the last message is an assistant with `ToolUse` parts but no subsequent
-///    user message with `ToolResult` — caused by LIMIT boundary splits or interrupted sessions.
-/// 2. Leading orphan: the first message is a user with `ToolResult` parts but no preceding
-///    assistant message with `ToolUse` — caused by LIMIT boundary cuts.
-/// 3. Mid-history orphaned `ToolUse`: an assistant message with `ToolUse` parts is not followed
-///    by a user message with matching `ToolResult` parts. The `ToolUse` parts are stripped;
-///    if no content remains the message is removed.
-/// 4. Mid-history orphaned `ToolResult`: a user message has `ToolResult` parts whose
-///    `tool_use_id` is not present in the preceding assistant message. Those `ToolResult` parts
-///    are stripped; if no content remains the message is removed.
-///
-/// Boundary cases are resolved in a loop before the mid-history scan runs.
-fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
-    let mut removed = 0;
-    let mut db_ids: Vec<i64> = Vec::new();
-
-    loop {
-        // Remove trailing orphaned tool_use (assistant message with ToolUse, no following tool_result).
-        if let Some(last) = messages.last()
-            && last.role == Role::Assistant
-            && last
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolUse { .. }))
-        {
-            let ids: Vec<String> = last
-                .parts
-                .iter()
-                .filter_map(|p| {
-                    if let MessagePart::ToolUse { id, .. } = p {
-                        Some(id.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            tracing::warn!(
-                tool_ids = ?ids,
-                "removing orphaned trailing tool_use message from restored history"
-            );
-            if let Some(db_id) = messages.last().and_then(|m| m.metadata.db_id) {
-                db_ids.push(db_id);
-            }
-            messages.pop();
-            removed += 1;
-            continue;
-        }
-
-        // Remove leading orphaned tool_result (user message with ToolResult, no preceding tool_use).
-        if let Some(first) = messages.first()
-            && first.role == Role::User
-            && first
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolResult { .. }))
-        {
-            let ids: Vec<String> = first
-                .parts
-                .iter()
-                .filter_map(|p| {
-                    if let MessagePart::ToolResult { tool_use_id, .. } = p {
-                        Some(tool_use_id.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            tracing::warn!(
-                tool_use_ids = ?ids,
-                "removing orphaned leading tool_result message from restored history"
-            );
-            if let Some(db_id) = messages.first().and_then(|m| m.metadata.db_id) {
-                db_ids.push(db_id);
-            }
-            messages.remove(0);
-            removed += 1;
-            continue;
-        }
-
-        break;
-    }
-
-    // Mid-history scan: strip ToolUse parts from any assistant message whose tool IDs are not
-    // matched by ToolResult parts in the immediately following user message.
-    let (mid_removed, mid_db_ids) = strip_mid_history_orphans(messages);
-    removed += mid_removed;
-    db_ids.extend(mid_db_ids);
-
-    (removed, db_ids)
-}
-
-/// Collect `tool_use` IDs from `msg` that have no matching `ToolResult` in `next_msg`.
-fn orphaned_tool_use_ids(msg: &Message, next_msg: Option<&Message>) -> HashSet<String> {
-    let matched: HashSet<String> = next_msg
-        .filter(|n| n.role == Role::User)
-        .map(|n| {
-            msg.parts
-                .iter()
-                .filter_map(|p| if let MessagePart::ToolUse { id, .. } = p { Some(id.clone()) } else { None })
-                .filter(|uid| n.parts.iter().any(|np| matches!(np, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == uid)))
-                .collect()
-        })
-        .unwrap_or_default();
-    msg.parts
-        .iter()
-        .filter_map(|p| {
-            if let MessagePart::ToolUse { id, .. } = p
-                && !matched.contains(id)
-            {
-                Some(id.clone())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-/// Collect `tool_result` IDs from `msg` that have no matching `ToolUse` in `prev_msg`.
-fn orphaned_tool_result_ids(msg: &Message, prev_msg: Option<&Message>) -> HashSet<String> {
-    let avail: HashSet<&str> = prev_msg
-        .filter(|p| p.role == Role::Assistant)
-        .map(|p| {
-            p.parts
-                .iter()
-                .filter_map(|part| {
-                    if let MessagePart::ToolUse { id, .. } = part {
-                        Some(id.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    msg.parts
-        .iter()
-        .filter_map(|p| {
-            if let MessagePart::ToolResult { tool_use_id, .. } = p
-                && !avail.contains(tool_use_id.as_str())
-            {
-                Some(tool_use_id.clone())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-/// Returns `true` if `content` contains human-readable text beyond legacy tool bracket markers.
-///
-/// Legacy markers produced by `Message::flatten_parts` are:
-/// - `[tool_use: name(id)]` — assistant `ToolUse`
-/// - `[tool_result: id]\nbody` — user `ToolResult` (tag + trailing body up to the next tag)
-/// - `[tool output: name] body` — `ToolOutput` (pruned or inline)
-/// - `[tool output: name]\n```\nbody\n``` ` — `ToolOutput` fenced block
-///
-/// A message whose content consists solely of such markers (and whitespace) has no
-/// user-visible text and is a candidate for soft-delete once its structured `parts` are gone.
-///
-/// Conservative rule: if a tag is malformed (no closing `]`), the content is treated as
-/// meaningful and the message is NOT deleted.
-///
-/// Note: `[image: mime, N bytes]` placeholders are intentionally treated as meaningful because
-/// they represent real media content and are not pure tool-execution artifacts.
-///
-/// Note: the Claude request-builder format `[tool_use: name] {json_input}` is used only for
-/// API payload construction and is never written to `SQLite` — it cannot appear in persisted
-/// message content, so no special handling is needed here.
-fn has_meaningful_content(content: &str) -> bool {
-    const PREFIXES: [&str; 3] = ["[tool_use: ", "[tool_result: ", "[tool output: "];
-
-    let mut remaining = content.trim();
-
-    loop {
-        // Find the earliest occurrence of any tool tag prefix.
-        let next = PREFIXES
-            .iter()
-            .filter_map(|prefix| remaining.find(prefix).map(|pos| (pos, *prefix)))
-            .min_by_key(|(pos, _)| *pos);
-
-        let Some((start, prefix)) = next else {
-            // No more tool tags — whatever remains decides the verdict.
-            break;
-        };
-
-        // Any non-whitespace text before this tag is meaningful.
-        if !remaining[..start].trim().is_empty() {
-            return true;
-        }
-
-        // Advance past the prefix to find the closing `]`.
-        let after_prefix = &remaining[start + prefix.len()..];
-        let Some(close) = after_prefix.find(']') else {
-            // Malformed tag (no closing bracket) — treat as meaningful, do not delete.
-            return true;
-        };
-
-        // Position after the `]`.
-        let tag_end = start + prefix.len() + close + 1;
-
-        if prefix == "[tool_result: " || prefix == "[tool output: " {
-            // Skip the body that immediately follows until the next tool tag prefix or end-of-string.
-            // The body is part of the tool artifact, not human-readable content.
-            let body = remaining[tag_end..].trim_start_matches('\n');
-            let next_tag = PREFIXES
-                .iter()
-                .filter_map(|p| body.find(p))
-                .min()
-                .unwrap_or(body.len());
-            remaining = &body[next_tag..];
-        } else {
-            remaining = &remaining[tag_end..];
-        }
-    }
-
-    !remaining.trim().is_empty()
-}
-
-/// Scan all messages and strip orphaned `ToolUse`/`ToolResult` parts from mid-history messages.
-///
-/// Two directions are checked:
-/// - Forward: assistant message has `ToolUse` parts not matched by `ToolResult` in the next user
-///   message — strip those `ToolUse` parts.
-/// - Reverse: user message has `ToolResult` parts whose `tool_use_id` is not present as a
-///   `ToolUse` in the preceding assistant message — strip those `ToolResult` parts.
-///
-/// Text parts are preserved; messages with no remaining content are removed entirely.
-///
-/// Returns `(count, db_ids)` where `count` is the number of messages removed entirely and
-/// `db_ids` contains the `metadata.db_id` values of those removed messages (for DB cleanup).
-fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
-    let mut removed = 0;
-    let mut db_ids: Vec<i64> = Vec::new();
-    let mut i = 0;
-    while i < messages.len() {
-        // Forward pass: strip ToolUse parts from assistant messages that lack a matching
-        // ToolResult in the next user message. Only orphaned IDs are stripped — other ToolUse
-        // parts in the same message that DO have a matching ToolResult are preserved.
-        if messages[i].role == Role::Assistant
-            && messages[i]
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolUse { .. }))
-        {
-            let next_non_system = (i + 1..messages.len())
-                .find(|&j| messages[j].role != Role::System)
-                .and_then(|j| messages.get(j));
-            let orphaned_ids = orphaned_tool_use_ids(&messages[i], next_non_system);
-            if !orphaned_ids.is_empty() {
-                tracing::warn!(
-                    tool_ids = ?orphaned_ids,
-                    index = i,
-                    "stripping orphaned mid-history tool_use parts from assistant message"
-                );
-                messages[i].parts.retain(
-                    |p| !matches!(p, MessagePart::ToolUse { id, .. } if orphaned_ids.contains(id)),
-                );
-                let is_empty =
-                    !has_meaningful_content(&messages[i].content) && messages[i].parts.is_empty();
-                if is_empty {
-                    if let Some(db_id) = messages[i].metadata.db_id {
-                        db_ids.push(db_id);
-                    }
-                    messages.remove(i);
-                    removed += 1;
-                    continue; // Do not advance i — the next message is now at position i.
-                }
-            }
-        }
-
-        // Reverse pass: user ToolResult without matching ToolUse in the preceding assistant message.
-        if messages[i].role == Role::User
-            && messages[i]
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolResult { .. }))
-        {
-            let prev_non_system = (0..i)
-                .rev()
-                .find(|&j| messages[j].role != Role::System)
-                .and_then(|j| messages.get(j));
-            let orphaned_ids = orphaned_tool_result_ids(&messages[i], prev_non_system);
-            if !orphaned_ids.is_empty() {
-                tracing::warn!(
-                    tool_use_ids = ?orphaned_ids,
-                    index = i,
-                    "stripping orphaned mid-history tool_result parts from user message"
-                );
-                messages[i].parts.retain(|p| {
-                    !matches!(p, MessagePart::ToolResult { tool_use_id, .. } if orphaned_ids.contains(tool_use_id.as_str()))
-                });
-
-                let is_empty =
-                    !has_meaningful_content(&messages[i].content) && messages[i].parts.is_empty();
-                if is_empty {
-                    if let Some(db_id) = messages[i].metadata.db_id {
-                        db_ids.push(db_id);
-                    }
-                    messages.remove(i);
-                    removed += 1;
-                    // Do not advance i — the next message is now at position i.
-                    continue;
-                }
-            }
-        }
-
-        i += 1;
-    }
-    (removed, db_ids)
-}
 
 impl<C: Channel> Agent<C> {
     /// Load conversation history from memory and inject into messages.
     ///
+    /// Delegates to [`PersistenceService::load_history`]. Post-load operations that touch
+    /// agent-internal singletons (session count increment, semantic fact count recompute,
+    /// token recompute) remain in this shim because they access fields outside the
+    /// borrow-lens view.
+    ///
     /// # Errors
     ///
     /// Returns an error if loading history from `SQLite` fails.
+    ///
+    /// # Panics
+    ///
+    /// Does not panic. The internal `unwrap_or(0)` conversions are on fallible `i64 → usize`
+    /// casts that saturate to zero on overflow; they cannot panic.
     pub async fn load_history(&mut self) -> Result<(), super::error::AgentError> {
         let (Some(memory), Some(cid)) = (
-            &self.services.memory.persistence.memory,
+            self.services.memory.persistence.memory.as_ref(),
             self.services.memory.persistence.conversation_id,
         ) else {
             return Ok(());
         };
 
-        let history = memory
-            .sqlite()
-            .load_history_filtered(
-                cid,
-                self.services.memory.persistence.history_limit,
-                Some(true),
-                None,
+        // Clone so we can call methods after the borrow-lens view is dropped.
+        let memory = memory.clone();
+
+        let mut unsummarized = self.services.memory.persistence.unsummarized_count;
+        // `memory_view` is not `mut` — the `&mut unsummarized` inside is established at
+        // construction and passed as `&memory_view` to load_history (shared borrow).
+        let memory_view = MemoryPersistenceView {
+            memory: Some(&memory),
+            conversation_id: self.services.memory.persistence.conversation_id,
+            autosave_assistant: self.services.memory.persistence.autosave_assistant,
+            autosave_min_length: self.services.memory.persistence.autosave_min_length,
+            unsummarized_count: &mut unsummarized,
+            goal_text: self.services.memory.extraction.goal_text.clone(),
+        };
+        let mut sqlite_delta = 0u64;
+        let mut embed_delta = 0u64;
+        let mut guard_delta = 0u64;
+        let mut metrics_view = MetricsView {
+            sqlite_message_count: &mut sqlite_delta,
+            embeddings_generated: &mut embed_delta,
+            exfiltration_memory_guards: &mut guard_delta,
+        };
+
+        let svc = PersistenceService::new();
+        let outcome = svc
+            .load_history(
+                &mut self.msg.messages,
+                &mut self.msg.last_persisted_message_id,
+                &mut self.msg.deferred_db_hide_ids,
+                &mut self.msg.deferred_db_summaries,
+                &memory_view,
+                &zeph_config::Config::default(),
+                &mut metrics_view,
             )
-            .await?;
-        if !history.is_empty() {
-            let mut loaded = 0;
-            let mut skipped = 0;
+            .await
+            .map_err(|e| {
+                super::error::AgentError::Memory(zeph_memory::MemoryError::Other(e.to_string()))
+            })?;
 
-            for msg in history {
-                // Only skip messages that have neither text content nor structured parts.
-                // Native tool calls produce user messages with empty `content` but non-empty
-                // `parts` (containing ToolResult). Skipping them here would orphan the
-                // preceding assistant ToolUse before sanitize_tool_pairs can clean it up.
-                if !has_meaningful_content(&msg.content) && msg.parts.is_empty() {
-                    tracing::warn!("skipping empty message from history (role: {:?})", msg.role);
-                    skipped += 1;
-                    continue;
-                }
-                self.msg.messages.push(msg);
-                loaded += 1;
-            }
+        // Write back lens-borrowed local to the field.
+        self.services.memory.persistence.unsummarized_count = unsummarized;
 
-            // Determine the start index of just-loaded messages (system prompt is at index 0).
-            let history_start = self.msg.messages.len() - loaded;
-            let mut restored_slice = self.msg.messages.split_off(history_start);
-            let (orphans, orphan_db_ids) = sanitize_tool_pairs(&mut restored_slice);
-            skipped += orphans;
-            loaded = loaded.saturating_sub(orphans);
-            self.msg.messages.append(&mut restored_slice);
-
-            if !orphan_db_ids.is_empty() {
-                let ids: Vec<zeph_memory::types::MessageId> = orphan_db_ids
-                    .iter()
-                    .map(|&id| zeph_memory::types::MessageId(id))
-                    .collect();
-                if let Err(e) = memory.sqlite().soft_delete_messages(&ids).await {
-                    tracing::warn!(
-                        count = ids.len(),
-                        error = %e,
-                        "failed to soft-delete orphaned tool-pair messages from DB"
-                    );
-                } else {
-                    tracing::debug!(
-                        count = ids.len(),
-                        "soft-deleted orphaned tool-pair messages from DB"
-                    );
-                }
-            }
-
-            tracing::info!("restored {loaded} message(s) from conversation {cid}");
-            if skipped > 0 {
-                tracing::warn!("skipped {skipped} empty/orphaned message(s) from history");
-            }
-
-            if loaded > 0 {
-                // Increment session counts so tier promotion can track cross-session access.
-                // Errors are non-fatal — promotion will simply use stale counts.
-                let _ = memory
-                    .sqlite()
-                    .increment_session_counts_for_conversation(cid)
-                    .await
-                    .inspect_err(|e| {
-                        tracing::warn!(error = %e, "failed to increment tier session counts");
-                    });
-            }
+        if outcome.messages_loaded > 0 {
+            // Increment session counts so tier promotion can track cross-session access.
+            let _ = memory
+                .sqlite()
+                .increment_session_counts_for_conversation(cid)
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!(error = %e, "failed to increment tier session counts");
+                });
         }
 
-        if let Ok(count) = memory.message_count(cid).await {
-            let count_u64 = u64::try_from(count).unwrap_or(0);
-            self.update_metrics(|m| {
-                m.sqlite_message_count = count_u64;
-            });
-        }
-
+        // Set absolute SQLite message count and semantic fact count (not deltas).
+        self.update_metrics(|m| {
+            m.sqlite_message_count = outcome.sqlite_total_messages;
+        });
         if let Ok(count) = memory.sqlite().count_semantic_facts().await {
             let count_u64 = u64::try_from(count).unwrap_or(0);
             self.update_metrics(|m| {
                 m.semantic_fact_count = count_u64;
             });
         }
-
         if let Ok(count) = memory.unsummarized_message_count(cid).await {
             self.services.memory.persistence.unsummarized_count =
                 usize::try_from(count).unwrap_or(0);
@@ -437,7 +111,6 @@ impl<C: Channel> Agent<C> {
     /// `has_injection_flags` controls whether Qdrant embedding is skipped for this message.
     /// When `true` and `guard_memory_writes` is enabled, only `SQLite` is written — the message
     /// is saved for conversation continuity but will not pollute semantic search (M2, D2).
-    // TODO(B2): extract sub-functions or move logic to reduce function length
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "agent.persist_message", skip_all)
@@ -449,20 +122,9 @@ impl<C: Channel> Agent<C> {
         parts: &[MessagePart],
         has_injection_flags: bool,
     ) {
-        let (Some(memory), Some(cid)) = (
-            &self.services.memory.persistence.memory,
-            self.services.memory.persistence.conversation_id,
-        ) else {
-            return;
-        };
-
-        let Some(parts_json) = serialize_parts_json(parts, role) else {
-            return;
-        };
-
-        // M2: injection flag is passed explicitly to avoid stale mutable-bool state on Agent.
-        // When has_injection_flags=true, skip embedding to prevent poisoned content from
-        // polluting Qdrant semantic search results.
+        // M2: call should_guard_memory_write for its diagnostic side effects (tracing + security
+        // event). The bool result is passed into SecurityView so the service can decide whether
+        // to skip Qdrant embedding.
         let guard_event = self
             .services
             .security
@@ -473,7 +135,6 @@ impl<C: Channel> Agent<C> {
                 ?event,
                 "exfiltration guard: skipping Qdrant embedding for flagged content"
             );
-            self.update_metrics(|m| m.exfiltration_memory_guards += 1);
             self.push_security_event(
                 crate::metrics::SecurityEventCategory::ExfiltrationBlock,
                 "memory_write",
@@ -481,46 +142,57 @@ impl<C: Channel> Agent<C> {
             );
         }
 
-        let should_embed = should_embed_message(
-            guard_event.is_some(),
-            parts,
-            role,
-            self.services.memory.persistence.autosave_assistant,
-            self.services.memory.persistence.autosave_min_length,
-            content.len(),
-        );
+        let req = PersistMessageRequest::from_borrowed(role, content, parts, has_injection_flags);
 
-        let goal_text = self.services.memory.extraction.goal_text.clone();
-
-        tracing::debug!(
-            "persist_message: calling remember_with_parts, embed dispatched to background"
-        );
-        let Some((embedding_stored, message_id)) = write_message_to_memory(
-            memory,
-            cid,
-            role,
-            content,
-            &parts_json,
-            goal_text.as_deref(),
-            should_embed,
-        )
-        .await
-        else {
-            return;
+        let mut unsummarized = self.services.memory.persistence.unsummarized_count;
+        let memory_arc = self.services.memory.persistence.memory.clone();
+        let mut memory_view = MemoryPersistenceView {
+            memory: memory_arc.as_ref(),
+            conversation_id: self.services.memory.persistence.conversation_id,
+            autosave_assistant: self.services.memory.persistence.autosave_assistant,
+            autosave_min_length: self.services.memory.persistence.autosave_min_length,
+            unsummarized_count: &mut unsummarized,
+            goal_text: self.services.memory.extraction.goal_text.clone(),
         };
-        self.msg.last_persisted_message_id = Some(message_id);
+        let security = SecurityView {
+            guard_memory_writes: guard_event.is_some(),
+            _phantom: std::marker::PhantomData,
+        };
+        let mut sqlite_delta = 0u64;
+        let mut embed_delta = 0u64;
+        let mut guard_delta = 0u64;
+        let mut metrics_view = MetricsView {
+            sqlite_message_count: &mut sqlite_delta,
+            embeddings_generated: &mut embed_delta,
+            exfiltration_memory_guards: &mut guard_delta,
+        };
 
-        self.services.memory.persistence.unsummarized_count += 1;
+        let svc = PersistenceService::new();
+        let outcome = svc
+            .persist_message(
+                req,
+                &mut self.msg.last_persisted_message_id,
+                &mut memory_view,
+                &security,
+                &zeph_config::Config::default(),
+                &mut metrics_view,
+            )
+            .await;
 
+        // Write back the unsummarized counter (lens borrowed a local copy).
+        self.services.memory.persistence.unsummarized_count = unsummarized;
+
+        // Forward metric deltas through the watch broadcast.
         self.update_metrics(|m| {
-            m.sqlite_message_count += 1;
-            if embedding_stored {
-                m.embeddings_generated += 1;
-            }
+            m.sqlite_message_count += sqlite_delta;
+            m.embeddings_generated += embed_delta;
+            // guard_delta is already tracked via push_security_event above.
+            m.exfiltration_memory_guards += guard_delta;
         });
 
-        tracing::debug!("persist_message: db insert complete, embedding running in background");
-        memory.reap_embed_tasks();
+        if outcome.message_id.is_none() {
+            return;
+        }
 
         // Phase 2: enqueue enrichment tasks via supervisor (non-blocking).
         // check_summarization signals completion via SummarizationSignal, consumed in reap()
@@ -1060,144 +732,6 @@ impl<C: Channel> Agent<C> {
     }
 }
 
-fn serialize_parts_json(parts: &[MessagePart], role: Role) -> Option<String> {
-    if parts.is_empty() {
-        return Some("[]".to_string());
-    }
-    match serde_json::to_string(parts) {
-        Ok(json) => Some(json),
-        Err(e) => {
-            tracing::error!(
-                role = ?role,
-                parts_count = parts.len(),
-                error = %e,
-                "failed to serialize message parts — skipping persist to avoid orphaned tool pair"
-            );
-            None
-        }
-    }
-}
-
-fn should_embed_message(
-    skip_embedding: bool,
-    parts: &[MessagePart],
-    role: Role,
-    autosave_assistant: bool,
-    autosave_min_length: usize,
-    content_len: usize,
-) -> bool {
-    if skip_embedding {
-        return false;
-    }
-    // Do not embed [skipped] or [stopped] ToolResult content into Qdrant — these are
-    // internal policy markers that carry no useful semantic information and would
-    // contaminate memory_search results, causing the utility-gate Retrieve loop (#2620).
-    let has_skipped_tool_result = parts.iter().any(|p| {
-        if let MessagePart::ToolResult { content, .. } = p {
-            content.starts_with("[skipped]") || content.starts_with("[stopped]")
-        } else {
-            false
-        }
-    });
-    if has_skipped_tool_result {
-        return false;
-    }
-    match role {
-        Role::Assistant => autosave_assistant && content_len >= autosave_min_length,
-        _ => true,
-    }
-}
-
-fn build_graph_extraction_config(
-    cfg: &zeph_config::memory::GraphConfig,
-    conversation_id: Option<i64>,
-) -> zeph_memory::semantic::GraphExtractionConfig {
-    zeph_memory::semantic::GraphExtractionConfig {
-        max_entities: cfg.max_entities_per_message,
-        max_edges: cfg.max_edges_per_message,
-        extraction_timeout_secs: cfg.extraction_timeout_secs,
-        community_refresh_interval: cfg.community_refresh_interval,
-        expired_edge_retention_days: cfg.expired_edge_retention_days,
-        max_entities_cap: cfg.max_entities,
-        community_summary_max_prompt_bytes: cfg.community_summary_max_prompt_bytes,
-        community_summary_concurrency: cfg.community_summary_concurrency,
-        lpa_edge_chunk_size: cfg.lpa_edge_chunk_size,
-        note_linking: zeph_memory::NoteLinkingConfig {
-            enabled: cfg.note_linking.enabled,
-            similarity_threshold: cfg.note_linking.similarity_threshold,
-            top_k: cfg.note_linking.top_k,
-            timeout_secs: cfg.note_linking.timeout_secs,
-        },
-        link_weight_decay_lambda: cfg.link_weight_decay_lambda,
-        link_weight_decay_interval_secs: cfg.link_weight_decay_interval_secs,
-        belief_revision_enabled: cfg.belief_revision.enabled,
-        belief_revision_similarity_threshold: cfg.belief_revision.similarity_threshold,
-        conversation_id,
-    }
-}
-
-// Returns `(embedding_stored, message_id)` on success, or `None` when the message was rejected
-// (A-MAC admission) or a DB error occurred.
-async fn write_message_to_memory(
-    memory: &zeph_memory::semantic::SemanticMemory,
-    cid: zeph_memory::ConversationId,
-    role: Role,
-    content: &str,
-    parts_json: &str,
-    goal_text: Option<&str>,
-    should_embed: bool,
-) -> Option<(bool, i64)> {
-    if should_embed {
-        match memory
-            .remember_with_parts(cid, role_str(role), content, parts_json, goal_text)
-            .await
-        {
-            Ok((Some(message_id), stored)) => Some((stored, message_id.0)),
-            Ok((None, _)) => {
-                // A-MAC admission rejected — skip increment and further processing.
-                None
-            }
-            Err(e) => {
-                tracing::error!("failed to persist message: {e:#}");
-                None
-            }
-        }
-    } else {
-        match memory
-            .save_only(cid, role_str(role), content, parts_json)
-            .await
-        {
-            Ok(message_id) => Some((false, message_id.0)),
-            Err(e) => {
-                tracing::error!("failed to persist message: {e:#}");
-                None
-            }
-        }
-    }
-}
-
-fn collect_context_messages(messages: &[zeph_llm::provider::Message]) -> Vec<String> {
-    messages
-        .iter()
-        .rev()
-        .filter(|m| {
-            m.role == Role::User
-                && !m
-                    .parts
-                    .iter()
-                    .any(|p| matches!(p, MessagePart::ToolResult { .. }))
-        })
-        .take(4)
-        .map(|m| {
-            if m.content.len() > 2048 {
-                m.content[..m.content.floor_char_boundary(2048)].to_owned()
-            } else {
-                m.content.clone()
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::agent_tests::{
@@ -1205,6 +739,7 @@ mod tests {
     };
     use super::*;
     use zeph_llm::any::AnyProvider;
+    use zeph_llm::provider::{Message, MessageMetadata};
     use zeph_memory::semantic::SemanticMemory;
 
     async fn test_memory(provider: &AnyProvider) -> SemanticMemory {
@@ -3343,135 +2878,6 @@ mod tests {
         }
     }
 
-    // ---- has_meaningful_content unit tests ----
-
-    #[test]
-    fn meaningful_content_empty_string() {
-        assert!(!has_meaningful_content(""));
-    }
-
-    #[test]
-    fn meaningful_content_whitespace_only() {
-        assert!(!has_meaningful_content("   \n\t  "));
-    }
-
-    #[test]
-    fn meaningful_content_tool_use_only() {
-        assert!(!has_meaningful_content("[tool_use: shell(call_1)]"));
-    }
-
-    #[test]
-    fn meaningful_content_tool_use_no_parens() {
-        // Format produced when tool_use is stored without explicit id parens.
-        assert!(!has_meaningful_content("[tool_use: memory_save]"));
-    }
-
-    #[test]
-    fn meaningful_content_tool_result_with_body() {
-        assert!(!has_meaningful_content(
-            "[tool_result: call_1]\nsome output here"
-        ));
-    }
-
-    #[test]
-    fn meaningful_content_tool_result_empty_body() {
-        assert!(!has_meaningful_content("[tool_result: call_1]\n"));
-    }
-
-    #[test]
-    fn meaningful_content_tool_output_inline() {
-        assert!(!has_meaningful_content("[tool output: bash] some result"));
-    }
-
-    #[test]
-    fn meaningful_content_tool_output_pruned() {
-        assert!(!has_meaningful_content("[tool output: bash] (pruned)"));
-    }
-
-    #[test]
-    fn meaningful_content_tool_output_fenced() {
-        assert!(!has_meaningful_content(
-            "[tool output: bash]\n```\nls output\n```"
-        ));
-    }
-
-    #[test]
-    fn meaningful_content_multiple_tool_use_tags() {
-        assert!(!has_meaningful_content(
-            "[tool_use: bash(id1)][tool_use: read(id2)]"
-        ));
-    }
-
-    #[test]
-    fn meaningful_content_multiple_tool_use_tags_space_separator() {
-        // Space between tags is not meaningful content.
-        assert!(!has_meaningful_content(
-            "[tool_use: bash(id1)] [tool_use: read(id2)]"
-        ));
-    }
-
-    #[test]
-    fn meaningful_content_multiple_tool_use_tags_newline_separator() {
-        // Newline-only separator is also not meaningful.
-        assert!(!has_meaningful_content(
-            "[tool_use: bash(id1)]\n[tool_use: read(id2)]"
-        ));
-    }
-
-    #[test]
-    fn meaningful_content_tool_result_followed_by_tool_use() {
-        // Two tags in sequence — no real text between them.
-        assert!(!has_meaningful_content(
-            "[tool_result: call_1]\nresult\n[tool_use: bash(call_2)]"
-        ));
-    }
-
-    #[test]
-    fn meaningful_content_real_text_only() {
-        assert!(has_meaningful_content("Hello, how can I help you?"));
-    }
-
-    #[test]
-    fn meaningful_content_text_before_tool_tag() {
-        assert!(has_meaningful_content("Let me check. [tool_use: bash(id)]"));
-    }
-
-    #[test]
-    fn meaningful_content_text_after_tool_use_tag() {
-        // Text appearing after a [tool_use: name] tag (without parens) is a JSON body
-        // in the request-builder format — but since that format never reaches the DB,
-        // this test verifies conservative behavior: the helper returns true (do not delete).
-        assert!(has_meaningful_content("[tool_use: bash] I ran the command"));
-    }
-
-    #[test]
-    fn meaningful_content_text_between_tags() {
-        assert!(has_meaningful_content(
-            "[tool_use: bash(id1)]\nand then\n[tool_use: read(id2)]"
-        ));
-    }
-
-    #[test]
-    fn meaningful_content_malformed_tag_no_closing_bracket() {
-        // Conservative: malformed tag must not trigger delete.
-        assert!(has_meaningful_content("[tool_use: "));
-    }
-
-    #[test]
-    fn meaningful_content_tool_use_and_tool_result_only() {
-        // Typical persisted assistant+user pair content with no extra text.
-        assert!(!has_meaningful_content(
-            "[tool_use: memory_save(call_abc)]\n[tool_result: call_abc]\nsaved"
-        ));
-    }
-
-    #[test]
-    fn meaningful_content_tool_result_body_with_json_array() {
-        assert!(!has_meaningful_content(
-            "[tool_result: id1]\n[\"array\", \"value\"]"
-        ));
-    }
-
     // ---- Integration tests for the #2529 fix: soft-delete of legacy-content orphans ----
 
     /// #2529 regression: orphaned assistant `ToolUse` + user `ToolResult` pair where BOTH messages
@@ -4015,59 +3421,6 @@ mod tests {
         assert!(
             user_msg.parts.iter().any(|p| matches!(p, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == "r3168_call")),
             "ToolResult part must be preserved in user message"
-        );
-    }
-
-    /// A System message between an `Assistant[tool_use]` and the matching `User[tool_result]`
-    /// must not cause the `tool_use` to be treated as an orphan.
-    #[test]
-    fn regression_3168_system_between_tool_pair_not_stripped() {
-        use zeph_llm::provider::{MessageMetadata, MessagePart};
-
-        let tool_id = "call_sys_between".to_string();
-
-        let mut messages = vec![
-            Message {
-                role: Role::Assistant,
-                content: "[tool_use: shell(call_sys_between)]".to_string(),
-                parts: vec![MessagePart::ToolUse {
-                    id: tool_id.clone(),
-                    name: "shell".to_string(),
-                    input: serde_json::json!({"command": "ls"}),
-                }],
-                metadata: MessageMetadata::default(),
-            },
-            Message {
-                role: Role::System,
-                content: "system hint injected between tool calls".to_string(),
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            },
-            Message {
-                role: Role::User,
-                content: "[tool_result: call_sys_between]".to_string(),
-                parts: vec![MessagePart::ToolResult {
-                    tool_use_id: tool_id.clone(),
-                    content: "output".to_string(),
-                    is_error: false,
-                }],
-                metadata: MessageMetadata::default(),
-            },
-        ];
-
-        let (removed, _db_ids) = strip_mid_history_orphans(&mut messages);
-
-        assert_eq!(
-            removed, 0,
-            "no messages should be removed when System sits between a matched tool_use/tool_result pair"
-        );
-        assert_eq!(messages.len(), 3, "all three messages must remain");
-        assert!(
-            messages[0]
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolUse { id, .. } if id == &tool_id)),
-            "ToolUse part must not be stripped from assistant message"
         );
     }
 
