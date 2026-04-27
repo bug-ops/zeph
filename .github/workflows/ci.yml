@@ -381,7 +381,6 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-          ignore-unfixed: true
           exit-code: '1'
           limit-severities-for-sarif: true
       - name: Upload Trivy results to GitHub Security tab
