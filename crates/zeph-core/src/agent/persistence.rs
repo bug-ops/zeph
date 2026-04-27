@@ -739,7 +739,7 @@ mod tests {
     };
     use super::*;
     use zeph_llm::any::AnyProvider;
-    use zeph_llm::provider::{Message, MessageMetadata};
+    use zeph_llm::provider::Message;
     use zeph_memory::semantic::SemanticMemory;
 
     async fn test_memory(provider: &AnyProvider) -> SemanticMemory {
