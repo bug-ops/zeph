@@ -205,7 +205,7 @@ pub struct ContextAssemblyView<'a> {
     pub scrub: fn(&str) -> Cow<'_, str>,
 }
 
-/// Values produced by [`ContextService::prepare_context`] that must be applied by the caller.
+/// Values produced by [`crate::service::ContextService::prepare_context`] that must be applied by the caller.
 ///
 /// `ContextService` cannot inject code context directly because `inject_code_context` touches
 /// the system prompt (position-0 message), which involves subsystems beyond the context-window
