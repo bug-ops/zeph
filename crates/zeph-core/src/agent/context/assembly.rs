@@ -210,7 +210,7 @@ impl<C: Channel> Agent<C> {
             self.services.compression.current_task_goal = None;
             self.services.compression.task_goal_user_msg_hash = None;
             self.services.compression.subgoal_registry =
-                crate::agent::compaction_strategy::SubgoalRegistry::default();
+                zeph_agent_context::SubgoalRegistry::default();
             self.services.compression.subgoal_user_msg_hash = None;
         }
 

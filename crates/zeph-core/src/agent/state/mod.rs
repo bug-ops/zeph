@@ -585,14 +585,6 @@ pub(crate) struct ExperimentState {
     pub(crate) notify_tx: tokio::sync::mpsc::Sender<String>,
 }
 
-/// Output of a background subgoal extraction LLM call.
-pub(crate) struct SubgoalExtractionResult {
-    /// Current subgoal the agent is working toward.
-    pub(crate) current: String,
-    /// Just-completed subgoal, if the LLM detected a transition (`COMPLETED:` non-NONE).
-    pub(crate) completed: Option<String>,
-}
-
 /// Groups context-compression feature state (gated behind `context-compression` feature flag).
 #[derive(Default)]
 pub(crate) struct CompressionState {
@@ -610,10 +602,13 @@ pub(crate) struct CompressionState {
     pub(crate) pending_sidequest_result:
         Option<zeph_common::task_supervisor::BlockingHandle<Option<Vec<usize>>>>,
     /// In-memory subgoal registry for `Subgoal`/`SubgoalMig` pruning strategies (#2022).
-    pub(crate) subgoal_registry: crate::agent::compaction_strategy::SubgoalRegistry,
+    pub(crate) subgoal_registry: zeph_agent_context::SubgoalRegistry,
     /// Pending background subgoal extraction task.
-    pub(crate) pending_subgoal:
-        Option<zeph_common::task_supervisor::BlockingHandle<Option<SubgoalExtractionResult>>>,
+    pub(crate) pending_subgoal: Option<
+        zeph_common::task_supervisor::BlockingHandle<
+            Option<zeph_agent_context::SubgoalExtractionResult>,
+        >,
+    >,
     /// Hash of the last user message when subgoal extraction was scheduled.
     pub(crate) subgoal_user_msg_hash: Option<u64>,
 }

@@ -145,8 +145,8 @@ impl<C: Channel> Agent<C> {
     /// at the pruning level. `SideQuest` uses the same `focus_pinned` protection to avoid evicting
     /// Knowledge block content.
     pub(in crate::agent) fn prune_tool_outputs_scored(&mut self, min_to_free: usize) -> usize {
-        use crate::agent::compaction_strategy::score_blocks_task_aware;
         use crate::config::PruningStrategy;
+        use zeph_agent_context::score_blocks_task_aware;
 
         let goal = match &self.context_manager.compression.pruning_strategy {
             PruningStrategy::TaskAware => self.services.compression.current_task_goal.clone(),
@@ -241,7 +241,7 @@ impl<C: Channel> Agent<C> {
     /// MIG-scored pruning. Uses relevance − redundancy scoring to identify the best eviction
     /// candidates. Requires `context-compression` feature.
     pub(in crate::agent) fn prune_tool_outputs_mig(&mut self, min_to_free: usize) -> usize {
-        use crate::agent::compaction_strategy::score_blocks_mig;
+        use zeph_agent_context::score_blocks_mig;
 
         let goal = self.services.compression.current_task_goal.as_deref();
         let mut scores = score_blocks_mig(
@@ -328,7 +328,7 @@ impl<C: Channel> Agent<C> {
     /// Active-subgoal tool outputs receive relevance 1.0 and are effectively protected
     /// from eviction as long as lower-tier outputs can satisfy `min_to_free`.
     pub(in crate::agent) fn prune_tool_outputs_subgoal(&mut self, min_to_free: usize) -> usize {
-        use crate::agent::compaction_strategy::score_blocks_subgoal;
+        use zeph_agent_context::score_blocks_subgoal;
 
         if let Some(ref d) = self.runtime.debug.debug_dumper {
             d.dump_subgoal_registry(&self.services.compression.subgoal_registry);
@@ -358,7 +358,7 @@ impl<C: Channel> Agent<C> {
     /// Subgoal + MIG hybrid pruning: combines subgoal tier relevance with pairwise
     /// redundancy scoring (MIG = relevance − redundancy).
     pub(in crate::agent) fn prune_tool_outputs_subgoal_mig(&mut self, min_to_free: usize) -> usize {
-        use crate::agent::compaction_strategy::score_blocks_subgoal_mig;
+        use zeph_agent_context::score_blocks_subgoal_mig;
 
         if let Some(ref d) = self.runtime.debug.debug_dumper {
             d.dump_subgoal_registry(&self.services.compression.subgoal_registry);
@@ -392,7 +392,7 @@ impl<C: Channel> Agent<C> {
     /// `prune_tool_outputs_mig`, and the new subgoal pruning variants.
     fn evict_sorted_blocks(
         &mut self,
-        sorted_scores: &[crate::agent::compaction_strategy::BlockScore],
+        sorted_scores: &[zeph_agent_context::BlockScore],
         min_to_free: usize,
         strategy: &str,
     ) -> usize {

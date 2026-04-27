@@ -491,7 +491,7 @@ impl<C: Channel> Agent<C> {
     async fn run_focus_auto_consolidation_pass(
         &mut self,
     ) -> Result<(), crate::agent::error::AgentError> {
-        use crate::agent::compaction_strategy::run_focus_auto_consolidation;
+        use zeph_agent_context::run_focus_auto_consolidation;
 
         if !self.services.focus.try_acquire_compression() {
             tracing::debug!("focus auto-consolidation skipped — compression already in progress");
@@ -976,7 +976,7 @@ impl<C: Channel> Agent<C> {
     /// Register a subgoal transition: complete the current active subgoal and start a new one.
     fn register_subgoal_transition(
         &mut self,
-        result: &crate::agent::state::SubgoalExtractionResult,
+        result: &zeph_agent_context::SubgoalExtractionResult,
         msg_len: usize,
     ) {
         if let Some(completed_desc) = &result.completed {
@@ -1008,7 +1008,7 @@ impl<C: Channel> Agent<C> {
     /// Register a subgoal continuation: extend or create the first subgoal.
     fn register_subgoal_continuation(
         &mut self,
-        result: &crate::agent::state::SubgoalExtractionResult,
+        result: &zeph_agent_context::SubgoalExtractionResult,
         msg_len: usize,
     ) {
         let is_first = self
@@ -1280,9 +1280,8 @@ fn spawn_subgoal_extraction(
     provider: AnyProvider,
     recent: Vec<(Role, String)>,
     supervisor: &std::sync::Arc<zeph_common::TaskSupervisor>,
-) -> zeph_common::task_supervisor::BlockingHandle<
-    Option<crate::agent::state::SubgoalExtractionResult>,
-> {
+) -> zeph_common::task_supervisor::BlockingHandle<Option<zeph_agent_context::SubgoalExtractionResult>>
+{
     let task = async move {
         use zeph_llm::provider::{Message, MessageMetadata, Role};
 
@@ -1380,8 +1379,8 @@ where
 /// Falls back to treating the entire response as the current subgoal on malformed input.
 pub(super) fn parse_subgoal_extraction_response(
     response: &str,
-) -> crate::agent::state::SubgoalExtractionResult {
-    use crate::agent::state::SubgoalExtractionResult;
+) -> zeph_agent_context::SubgoalExtractionResult {
+    use zeph_agent_context::SubgoalExtractionResult;
 
     let trimmed = response.trim();
 

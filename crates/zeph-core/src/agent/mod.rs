@@ -13,7 +13,6 @@ mod autodream;
 mod builder;
 pub(crate) mod channel_impl;
 mod command_context_impls;
-pub(crate) mod compaction_strategy;
 pub(super) mod compression_feedback;
 mod context;
 mod context_impls;

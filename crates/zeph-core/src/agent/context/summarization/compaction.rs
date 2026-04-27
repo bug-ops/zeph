@@ -43,7 +43,7 @@ impl<C: Channel> Agent<C> {
             .pruning_strategy
             .is_subgoal()
         {
-            use crate::agent::compaction_strategy::SubgoalState;
+            use zeph_agent_context::SubgoalState;
             self.msg.messages[1..compact_end]
                 .iter()
                 .enumerate()
@@ -74,7 +74,7 @@ impl<C: Channel> Agent<C> {
                 .is_subgoal();
 
             if is_subgoal {
-                use crate::agent::compaction_strategy::SubgoalState;
+                use zeph_agent_context::SubgoalState;
                 self.msg.messages[1..compact_end]
                     .iter()
                     .enumerate()

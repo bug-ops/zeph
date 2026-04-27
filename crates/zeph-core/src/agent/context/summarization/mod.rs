@@ -106,7 +106,7 @@ impl<C: Channel> Agent<C> {
         // so operators can observe which fraction of content is high vs. low density.
         // The budgets inform future per-density summarization passes (Phase 2).
         {
-            use crate::agent::compaction_strategy::partition_by_density;
+            use zeph_agent_context::partition_by_density;
             let compression = &self.context_manager.compression;
             let high_budget = compression.high_density_budget;
             let low_budget = compression.low_density_budget;

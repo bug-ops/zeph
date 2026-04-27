@@ -123,10 +123,7 @@ impl DebugDumper {
 
     /// Dump pruning scores computed by task-aware or MIG scoring.
     /// When `format = Trace`, this is a no-op.
-    pub(crate) fn dump_pruning_scores(
-        &self,
-        scores: &[crate::agent::compaction_strategy::BlockScore],
-    ) {
+    pub(crate) fn dump_pruning_scores(&self, scores: &[zeph_agent_context::BlockScore]) {
         if self.format == DumpFormat::Trace {
             return;
         }
@@ -303,10 +300,7 @@ impl DebugDumper {
     ///
     /// Writes a human-readable text file listing each subgoal with its state and message span.
     /// When `format = Trace`, this is a no-op.
-    pub(crate) fn dump_subgoal_registry(
-        &self,
-        registry: &crate::agent::compaction_strategy::SubgoalRegistry,
-    ) {
+    pub(crate) fn dump_subgoal_registry(&self, registry: &zeph_agent_context::SubgoalRegistry) {
         if self.format == DumpFormat::Trace {
             return;
         }
@@ -317,8 +311,8 @@ impl DebugDumper {
         } else {
             for sg in &registry.subgoals {
                 let state_str = match sg.state {
-                    crate::agent::compaction_strategy::SubgoalState::Active => "Active   ",
-                    crate::agent::compaction_strategy::SubgoalState::Completed => "Completed",
+                    zeph_agent_context::SubgoalState::Active => "Active   ",
+                    zeph_agent_context::SubgoalState::Completed => "Completed",
                 };
                 let _ = std::fmt::write(
                     &mut output,

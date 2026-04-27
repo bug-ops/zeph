@@ -19,12 +19,14 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use zeph_common::SecurityEventCategory;
+use zeph_common::task_supervisor::{BlockingHandle, TaskSupervisor};
 use zeph_config::{
     ContextStrategy, DocumentConfig, GraphConfig, PersonaConfig, ReasoningConfig, TrajectoryConfig,
     TreeConfig,
 };
 use zeph_context::input::CorrectionConfig;
 use zeph_context::manager::ContextManager;
+use zeph_context::summarization::SummarizationDeps;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::Message;
 use zeph_memory::semantic::SemanticMemory;
@@ -33,6 +35,8 @@ use zeph_sanitizer::ContentSanitizer;
 use zeph_sanitizer::quarantine::QuarantinedSummarizer;
 use zeph_skills::proactive::ProactiveExplorer;
 use zeph_skills::registry::SkillRegistry;
+
+use crate::compaction::{SubgoalExtractionResult, SubgoalRegistry};
 
 /// Borrow-lens over the agent's conversation window fields.
 ///
@@ -214,16 +218,77 @@ pub struct ContextDelta {
     pub code_context: Option<String>,
 }
 
-/// Borrow-lens over fields needed for compaction and summarization operations.
+/// Borrow-lens over all fields needed for compaction and summarization operations.
 ///
-/// Fields are enumerated in Step 8 of the migration once the summarization
-/// sub-module is moved. This placeholder holds the minimum surface needed by
-/// the scaffold stage.
+/// Every field maps to a specific sub-field of `Agent<C>` and uses a type from a
+/// crate below `zeph-core` in the dependency graph. Constructed in `zeph-core` using
+/// one literal struct expression; the borrow checker verifies disjointness.
 ///
-/// # TODO(review): enumerate full field set in Step 8 migration
+/// The view covers: message history mutation, deferred summary queues, context-manager
+/// compaction state, provider handles for LLM calls, memory persistence for flushing,
+/// subgoal registry for context-compression strategies, and background task handles for
+/// non-blocking goal/subgoal extraction.
 pub struct ContextSummarizationView<'a> {
-    #[doc(hidden)]
-    pub _phantom: std::marker::PhantomData<&'a ()>,
+    // ── Message window ────────────────────────────────────────────────────────
+    /// Full conversation history. Mutated by pruning, compaction, and deferred summary
+    /// application.
+    pub messages: &'a mut Vec<Message>,
+    /// `SQLite` row IDs to be soft-deleted after deferred summaries are applied.
+    pub deferred_db_hide_ids: &'a mut Vec<i64>,
+    /// Summary strings paired with the hide IDs above — flushed to `SQLite` as a batch.
+    pub deferred_db_summaries: &'a mut Vec<String>,
+    /// Running token count for the current prompt window. Updated after every mutation
+    /// that changes message content.
+    pub cached_prompt_tokens: &'a mut u64,
+
+    // ── Context manager ───────────────────────────────────────────────────────
+    /// Full context manager — contains compaction state, thresholds, strategy config.
+    pub context_manager: &'a mut ContextManager,
+
+    // ── Runtime ───────────────────────────────────────────────────────────────
+    /// Whether server-side compaction is currently active (skip client compaction when
+    /// true, unless context has grown past the safety fallback threshold).
+    pub server_compaction_active: bool,
+    /// Token counter used for budget calculations and prompt recomputation.
+    pub token_counter: Arc<TokenCounter>,
+    /// Pre-built summarization deps (provider + timeout + `token_counter` + callbacks).
+    /// Built by the `zeph-core` shim from `build_summarization_deps()` before constructing
+    /// the view, so the view does not need to hold a raw `DebugDumper` reference.
+    pub summarization_deps: SummarizationDeps,
+    /// Background task supervisor for spawning non-blocking goal/subgoal extractions.
+    pub task_supervisor: Arc<TaskSupervisor>,
+
+    // ── Memory persistence ────────────────────────────────────────────────────
+    /// Semantic memory store — used to flush deferred summaries and store session digests.
+    pub memory: Option<Arc<SemanticMemory>>,
+    /// Conversation ID for all SQLite/Qdrant persistence calls.
+    pub conversation_id: Option<ConversationId>,
+    /// Maximum unsummarized tool-call pairs before forced deferred summarization kicks in.
+    pub tool_call_cutoff: usize,
+
+    // ── Context-compression (SubgoalRegistry + task handles) ─────────────────
+    /// In-memory registry of all subgoals in the current session.
+    pub subgoal_registry: &'a mut SubgoalRegistry,
+    /// Handle to the background task-goal extraction spawned last turn.
+    pub pending_task_goal: &'a mut Option<BlockingHandle<Option<String>>>,
+    /// Handle to the background subgoal extraction spawned last turn.
+    pub pending_subgoal: &'a mut Option<BlockingHandle<Option<SubgoalExtractionResult>>>,
+    /// Cached task goal for `TaskAware`/`MIG` pruning. `None` before first extraction.
+    pub current_task_goal: &'a mut Option<String>,
+    /// Hash of the last user message when `current_task_goal` was populated.
+    /// Used to detect when a new extraction is needed.
+    pub task_goal_user_msg_hash: &'a mut Option<u64>,
+    /// Hash of the last user message when subgoal extraction was scheduled.
+    pub subgoal_user_msg_hash: &'a mut Option<u64>,
+    /// TUI / channel status sender for spinner messages. `None` when TUI is disabled.
+    pub status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+
+    // ── Credential scrubber ───────────────────────────────────────────────────
+    /// Function pointer for scrubbing credentials from summary text.
+    ///
+    /// Set to `crate::redact::scrub_content` by the `zeph-core` shim when
+    /// `redact_credentials = true`, or to a no-op identity function otherwise.
+    pub scrub: fn(&str) -> Cow<'_, str>,
 }
 
 /// Bundle of LLM provider handles needed for async context operations.

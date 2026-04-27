@@ -28,12 +28,18 @@
 //! - `self-check` — gates retrieved-memory mirror types for the MARCH self-check pipeline.
 //! - `index` — enables `zeph-index` integration via the `IndexAccess` trait.
 
+pub mod compaction;
 pub mod error;
 pub mod helpers;
 pub(crate) mod retrieved;
 pub mod service;
 pub mod state;
 
+pub use compaction::{
+    BlockScore, ContentDensity, SubgoalExtractionResult, SubgoalId, SubgoalRegistry, SubgoalState,
+    classify_density, extract_scorable_text, partition_by_density, run_focus_auto_consolidation,
+    score_blocks_mig, score_blocks_subgoal, score_blocks_subgoal_mig, score_blocks_task_aware,
+};
 pub use error::ContextError;
 pub use helpers::BudgetHint;
 pub use service::ContextService;

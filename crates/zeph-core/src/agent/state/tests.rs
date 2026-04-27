@@ -268,7 +268,7 @@ fn compression_state_construction() {
         task_goal_user_msg_hash: None,
         pending_task_goal: None,
         pending_sidequest_result: None,
-        subgoal_registry: crate::agent::compaction_strategy::SubgoalRegistry::default(),
+        subgoal_registry: zeph_agent_context::SubgoalRegistry::default(),
         pending_subgoal: None,
         subgoal_user_msg_hash: None,
     };

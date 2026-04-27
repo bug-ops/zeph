@@ -707,7 +707,7 @@ fn append_pruning_section(
     out: &mut String,
     pruning_strategy: crate::config::PruningStrategy,
     subgoal_count: usize,
-    active_subgoal: Option<&super::compaction_strategy::Subgoal>,
+    active_subgoal: Option<&zeph_agent_context::compaction::Subgoal>,
 ) {
     use crate::config::PruningStrategy;
     use std::fmt::Write;
