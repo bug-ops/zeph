@@ -6,93 +6,81 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use zeph_agent_context::helpers::BudgetHint;
-use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, MessagePart, Role};
+use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
 use zeph_skills::ScoredMatch;
 use zeph_skills::loader::SkillMeta;
 use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt_compact};
 
-use super::super::LSP_NOTE_PREFIX;
-use super::super::{
-    Agent, CODE_CONTEXT_PREFIX, CORRECTIONS_PREFIX, CROSS_SESSION_PREFIX, DOCUMENT_RAG_PREFIX,
-    GRAPH_FACTS_PREFIX, RECALL_PREFIX, SESSION_DIGEST_PREFIX, SUMMARY_PREFIX, Skill,
-    format_skills_prompt,
-};
+use super::super::{Agent, SESSION_DIGEST_PREFIX, Skill, format_skills_prompt};
 use crate::channel::Channel;
 use crate::context::build_system_prompt_with_instructions;
 use crate::redact::scrub_content;
 use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
 
 impl<C: Channel> Agent<C> {
-    pub(in crate::agent) fn clear_history(&mut self) {
-        let system_prompt = self.msg.messages.first().cloned();
-        self.msg.messages.clear();
-        if let Some(sp) = system_prompt {
-            self.msg.messages.push(sp);
+    /// Construct a `MessageWindowView` from disjoint `Agent<C>` sub-fields.
+    ///
+    /// All `&mut` borrows resolve to distinct top-level fields (`msg`, `runtime.providers`,
+    /// `runtime.metrics`, `services.tool_state`), so the borrow checker accepts the literal.
+    fn message_window_view(&mut self) -> zeph_agent_context::state::MessageWindowView<'_> {
+        zeph_agent_context::state::MessageWindowView {
+            messages: &mut self.msg.messages,
+            last_persisted_message_id: &mut self.msg.last_persisted_message_id,
+            deferred_db_hide_ids: &mut self.msg.deferred_db_hide_ids,
+            deferred_db_summaries: &mut self.msg.deferred_db_summaries,
+            cached_prompt_tokens: &mut self.runtime.providers.cached_prompt_tokens,
+            token_counter: Arc::clone(&self.runtime.metrics.token_counter),
+            completed_tool_ids: &mut self.services.tool_state.completed_tool_ids,
         }
-        // Clear completed tool IDs along with message history: dependency state is
-        // session-scoped and should reset when the conversation resets.
-        self.services.tool_state.completed_tool_ids.clear();
-        self.recompute_prompt_tokens();
     }
 
-    fn remove_by_prefix(&mut self, role: Role, prefix: &str) {
-        self.msg
-            .messages
-            .retain(|m| m.role != role || !m.content.starts_with(prefix));
-    }
-
-    fn remove_by_part_or_prefix(
-        &mut self,
-        prefix: &str,
-        part_matches: impl Fn(&MessagePart) -> bool,
-    ) {
-        self.msg.messages.retain(|m| {
-            if m.role != Role::System {
-                return true;
-            }
-            if m.parts.first().is_some_and(&part_matches) {
-                return false;
-            }
-            !m.content.starts_with(prefix)
-        });
+    pub(in crate::agent) fn clear_history(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.clear_history(&mut self.message_window_view());
     }
 
     pub(in crate::agent) fn remove_recall_messages(&mut self) {
-        self.remove_by_part_or_prefix(RECALL_PREFIX, |p| matches!(p, MessagePart::Recall { .. }));
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_recall_messages(&mut self.message_window_view());
     }
 
     pub(in crate::agent) fn remove_correction_messages(&mut self) {
-        self.remove_by_prefix(Role::System, CORRECTIONS_PREFIX);
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_correction_messages(&mut self.message_window_view());
     }
 
     pub(in crate::agent) fn remove_graph_facts_messages(&mut self) {
-        self.remove_by_prefix(Role::System, GRAPH_FACTS_PREFIX);
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_graph_facts_messages(&mut self.message_window_view());
     }
 
     pub(in crate::agent) fn remove_persona_facts_messages(&mut self) {
-        self.remove_by_prefix(Role::System, super::PERSONA_PREFIX);
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_persona_facts_messages(&mut self.message_window_view());
     }
 
     pub(in crate::agent) fn remove_trajectory_hints_messages(&mut self) {
-        self.remove_by_prefix(Role::System, super::TRAJECTORY_PREFIX);
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_trajectory_hints_messages(&mut self.message_window_view());
     }
 
     pub(in crate::agent) fn remove_tree_memory_messages(&mut self) {
-        self.remove_by_prefix(Role::System, super::TREE_MEMORY_PREFIX);
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_tree_memory_messages(&mut self.message_window_view());
     }
 
     pub(in crate::agent) fn remove_reasoning_strategies_messages(&mut self) {
-        self.remove_by_prefix(Role::System, super::REASONING_PREFIX);
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_reasoning_strategies_messages(&mut self.message_window_view());
     }
 
     /// Remove previously injected LSP context notes from the message history.
     ///
     /// Called before injecting fresh notes each turn so stale diagnostics/hover
     /// data from the previous tool call do not accumulate across iterations.
-    /// LSP notes use `Role::System` (consistent with graph facts and recall),
-    /// so they are skipped by tool-pair summarization automatically.
     pub(in crate::agent) fn remove_lsp_messages(&mut self) {
-        self.remove_by_prefix(Role::System, LSP_NOTE_PREFIX);
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_lsp_messages(&mut self.message_window_view());
     }
 
     #[cfg(test)]
@@ -124,27 +112,28 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(in crate::agent) fn remove_code_context_messages(&mut self) {
-        self.remove_by_part_or_prefix(CODE_CONTEXT_PREFIX, |p| {
-            matches!(p, MessagePart::CodeContext { .. })
-        });
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_code_context_messages(&mut self.message_window_view());
     }
 
     pub(super) fn remove_summary_messages(&mut self) {
-        self.remove_by_part_or_prefix(SUMMARY_PREFIX, |p| matches!(p, MessagePart::Summary { .. }));
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_summary_messages(&mut self.message_window_view());
     }
 
     pub(super) fn remove_cross_session_messages(&mut self) {
-        self.remove_by_part_or_prefix(CROSS_SESSION_PREFIX, |p| {
-            matches!(p, MessagePart::CrossSession { .. })
-        });
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_cross_session_messages(&mut self.message_window_view());
     }
 
     fn remove_document_rag_messages(&mut self) {
-        self.remove_by_prefix(Role::System, DOCUMENT_RAG_PREFIX);
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_document_rag_messages(&mut self.message_window_view());
     }
 
     pub(in crate::agent) fn remove_session_digest_message(&mut self) {
-        self.remove_by_prefix(Role::User, SESSION_DIGEST_PREFIX);
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_session_digest_message(&mut self.message_window_view());
     }
 
     /// Spawn a fire-and-forget background task to generate and persist a session digest for
@@ -388,47 +377,8 @@ impl<C: Channel> Agent<C> {
     }
 
     pub(super) fn trim_messages_to_budget(&mut self, token_budget: usize) {
-        if token_budget == 0 {
-            return;
-        }
-
-        let history_start = self
-            .msg
-            .messages
-            .iter()
-            .position(|m| m.role != Role::System)
-            .unwrap_or(self.msg.messages.len());
-
-        if history_start >= self.msg.messages.len() {
-            return;
-        }
-
-        let mut total = 0usize;
-        let mut keep_from = self.msg.messages.len();
-
-        for i in (history_start..self.msg.messages.len()).rev() {
-            let msg_tokens = self
-                .runtime
-                .metrics
-                .token_counter
-                .count_message_tokens(&self.msg.messages[i]);
-            if total + msg_tokens > token_budget {
-                break;
-            }
-            total += msg_tokens;
-            keep_from = i;
-        }
-
-        if keep_from > history_start {
-            let removed = keep_from - history_start;
-            self.msg.messages.drain(history_start..keep_from);
-            self.recompute_prompt_tokens();
-            tracing::info!(
-                removed,
-                token_budget,
-                "trimmed messages to fit context budget"
-            );
-        }
+        let svc = zeph_agent_context::ContextService::new();
+        svc.trim_messages_to_budget(&mut self.message_window_view(), token_budget);
     }
 
     /// Gather context from all memory sources and inject into the message window.

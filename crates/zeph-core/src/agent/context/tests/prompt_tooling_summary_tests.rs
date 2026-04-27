@@ -1470,7 +1470,10 @@ async fn fetch_graph_facts_returns_some_with_entities_and_has_prefix() {
             .unwrap();
     assert!(result.is_some());
     let msg = result.unwrap();
-    assert!(msg.content.starts_with(crate::agent::GRAPH_FACTS_PREFIX));
+    assert!(
+        msg.content
+            .starts_with(zeph_agent_context::helpers::GRAPH_FACTS_PREFIX)
+    );
 }
 
 // Suppress unused import warning: chunk_messages is imported for module coherence

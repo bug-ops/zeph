@@ -37,6 +37,17 @@ pub const SUMMARY_PREFIX: &str = "[conversation summaries]\n";
 /// System message prefix for cross-session context entries.
 pub const CROSS_SESSION_PREFIX: &str = "[cross-session context]\n";
 
+/// System message prefix for past user corrections injected into context.
+pub const CORRECTIONS_PREFIX: &str = "[past corrections]\n";
+/// System message prefix for code-context (repo-map / file context) injections.
+pub const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
+/// User message prefix for session digest summaries from the previous interaction.
+pub const SESSION_DIGEST_PREFIX: &str = "[Session digest from previous interaction]\n";
+/// System message prefix for LSP context notes (diagnostics, hover data, etc.).
+pub const LSP_NOTE_PREFIX: &str = "[lsp ";
+/// System message prefix for document RAG results.
+pub const DOCUMENT_RAG_PREFIX: &str = "## Relevant documents\n";
+
 /// Truncate `s` to at most `max_chars` Unicode scalar values.
 ///
 /// Delegates to `zeph_common::text::truncate_to_chars` which respects UTF-8 boundaries.

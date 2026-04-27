@@ -34,7 +34,7 @@ fn make_tool_pair_with_output(agent: &mut Agent<MockChannel>, tool_name: &str) {
 
 #[test]
 fn remove_lsp_messages_removes_lsp_system_keeps_others() {
-    use crate::agent::LSP_NOTE_PREFIX;
+    use zeph_agent_context::helpers::LSP_NOTE_PREFIX;
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);

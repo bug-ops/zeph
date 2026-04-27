@@ -13,7 +13,7 @@ use crate::agent::agent_tests::{
 };
 use crate::agent::context::chunk_messages;
 use crate::agent::context_manager::CompactionTier;
-use crate::agent::{CORRECTIONS_PREFIX, RECALL_PREFIX, SUMMARY_PREFIX};
+use zeph_agent_context::helpers::{CORRECTIONS_PREFIX, RECALL_PREFIX, SUMMARY_PREFIX};
 
 async fn create_memory_with_summaries(
     provider: zeph_llm::any::AnyProvider,

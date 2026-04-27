@@ -12,6 +12,7 @@
 //! expression. The borrow checker proves disjointness at that level without additional
 //! helper methods — each `&mut` resolves to a unique field path under `Agent<C>`.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,8 +28,8 @@ use zeph_context::input::CorrectionConfig;
 use zeph_context::manager::ContextManager;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::Message;
-use zeph_memory::ConversationId;
 use zeph_memory::semantic::SemanticMemory;
+use zeph_memory::{ConversationId, TokenCounter};
 use zeph_sanitizer::ContentSanitizer;
 use zeph_sanitizer::quarantine::QuarantinedSummarizer;
 use zeph_skills::proactive::ProactiveExplorer;
@@ -48,6 +49,16 @@ pub struct MessageWindowView<'a> {
     pub deferred_db_hide_ids: &'a mut Vec<i64>,
     /// Deferred summary strings to be appended after context assembly completes.
     pub deferred_db_summaries: &'a mut Vec<String>,
+    /// Running token count for the current prompt window — updated after every
+    /// message-list mutation to keep provider call budgets accurate.
+    /// Maps to `Agent<C>::runtime.providers.cached_prompt_tokens`.
+    pub cached_prompt_tokens: &'a mut u64,
+    /// Shared token counter — cheap `Arc` clone from `Agent<C>::runtime.metrics.token_counter`.
+    pub token_counter: Arc<TokenCounter>,
+    /// Tool IDs that completed successfully in the current session.
+    /// Maps to `Agent<C>::services.tool_state.completed_tool_ids`.
+    /// Cleared by `clear_history` together with the message list.
+    pub completed_tool_ids: &'a mut HashSet<String>,
 }
 
 /// Narrow mutable counters lens for sanitizer and quarantine metrics.
