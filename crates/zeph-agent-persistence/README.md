@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/zeph-agent-persistence)](https://crates.io/crates/zeph-agent-persistence)
 [![docs.rs](https://img.shields.io/docsrs/zeph-agent-persistence)](https://docs.rs/zeph-agent-persistence)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
 
 Agent persistence service for Zeph: loads conversation history from and writes messages to the
 `SemanticMemory` backend (SQLite + Qdrant), with tool-pair sanitization and embedding decisions.

@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/zeph-agent-tools)](https://crates.io/crates/zeph-agent-tools)
 [![docs.rs](https://img.shields.io/docsrs/zeph-agent-tools)](https://docs.rs/zeph-agent-tools)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
 
 Agent tool dispatcher for Zeph: provides the `AgentChannel` sealed trait, borrowed event
 carriers, and doom-loop detection utilities used by the tool dispatch loop in `zeph-core`.
