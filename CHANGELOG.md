@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(context): relocate `CompactionOutcome` and `BudgetHint` from `zeph-core` to
+  `zeph-agent-context` (#3523 PR0a). `CompactionOutcome` (with new `CompactedWithPersistError`
+  variant) and `BudgetHint` (with `format_xml()`) now live in `zeph_agent_context::state` and
+  `zeph_agent_context::helpers` respectively. All `zeph-core` callers updated; old definitions
+  deleted.
+- refactor(context): expand `MessageWindowView` and migrate 15 trivial mutators to `ContextService`
+  (#3523 PR0b+PR1). `MessageWindowView` gains `cached_prompt_tokens`, `token_counter`, and
+  `completed_tool_ids` fields. `clear_history`, 13 `remove_*` methods, and
+  `trim_messages_to_budget` are now implemented on `ContextService` (zero-sized type); each
+  `Agent<C>` shim delegates via `message_window_view()` with all original logic deleted from
+  `zeph-core`. Message prefix constants (`CORRECTIONS_PREFIX`, `CODE_CONTEXT_PREFIX`,
+  `SESSION_DIGEST_PREFIX`, `LSP_NOTE_PREFIX`, `DOCUMENT_RAG_PREFIX`) moved to
+  `zeph_agent_context::helpers`.
 - refactor(agent-context): migrate `assembler_helpers` from `zeph-core` to `zeph-agent-context`
   as `pub mod helpers` (#3517 step 3). Deleted `zeph-core/src/agent/context/assembler_helpers.rs`;
   all helper functions (`truncate_chars`, `format_correction_note`, `effective_recall_timeout_ms`,
