@@ -8,8 +8,10 @@
 
 use zeph_llm::provider::{Message, MessagePart, Role};
 
-use crate::agent::{CROSS_SESSION_PREFIX, GRAPH_FACTS_PREFIX, RECALL_PREFIX, SUMMARY_PREFIX};
 use crate::quality::pipeline::RetrievedContext;
+use zeph_agent_context::helpers::{
+    CROSS_SESSION_PREFIX, GRAPH_FACTS_PREFIX, RECALL_PREFIX, SUMMARY_PREFIX,
+};
 
 /// Walk the message list and collect all retrieved-memory fragments.
 ///

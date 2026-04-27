@@ -38,6 +38,6 @@ pub use error::ContextError;
 pub use helpers::BudgetHint;
 pub use service::ContextService;
 pub use state::{
-    CompactionOutcome, ContextAssemblyView, ContextSummarizationView, MessageWindowView,
-    MetricsCounters, ProviderHandles,
+    CompactionOutcome, ContextAssemblyView, ContextDelta, ContextSummarizationView,
+    MessageWindowView, MetricsCounters, ProviderHandles,
 };

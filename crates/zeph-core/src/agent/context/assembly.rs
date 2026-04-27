@@ -1,23 +1,56 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use zeph_agent_context::helpers::BudgetHint;
-use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
+use zeph_llm::provider::LlmProvider;
 use zeph_skills::ScoredMatch;
 use zeph_skills::loader::SkillMeta;
 use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt_compact};
 
-use super::super::{Agent, SESSION_DIGEST_PREFIX, Skill, format_skills_prompt};
+use super::super::{Agent, Skill, format_skills_prompt};
 use crate::channel::Channel;
 use crate::context::build_system_prompt_with_instructions;
-use crate::redact::scrub_content;
-use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
+
+// ── Security event sink adapter ───────────────────────────────────────────────
+//
+// Wraps the metrics watch-channel sender so `ContextService::prepare_context`
+// can publish security events without depending on `zeph-core`-internal types.
+// Defined at module scope to satisfy clippy::items_after_statements.
+struct SecuritySink<'a>(
+    &'a mut Option<tokio::sync::watch::Sender<crate::metrics::MetricsSnapshot>>,
+);
+
+impl zeph_agent_context::state::SecurityEventSink for SecuritySink<'_> {
+    fn push(
+        &mut self,
+        category: zeph_common::SecurityEventCategory,
+        source: &'static str,
+        detail: String,
+    ) {
+        if let Some(tx) = &self.0 {
+            let event = crate::metrics::SecurityEvent::new(category, source, detail);
+            tx.send_modify(|m| {
+                if m.security_events.len() >= crate::metrics::SECURITY_EVENT_CAP {
+                    m.security_events.pop_front();
+                }
+                m.security_events.push_back(event);
+            });
+        }
+    }
+}
 
 impl<C: Channel> Agent<C> {
+    /// Construct a `ProviderHandles` bundle from the agent's primary and embedding providers.
+    fn providers(&self) -> zeph_agent_context::state::ProviderHandles {
+        zeph_agent_context::state::ProviderHandles {
+            primary: self.provider.clone(),
+            embedding: self.embedding_provider.clone(),
+        }
+    }
+
     /// Construct a `MessageWindowView` from disjoint `Agent<C>` sub-fields.
     ///
     /// All `&mut` borrows resolve to distinct top-level fields (`msg`, `runtime.providers`,
@@ -39,41 +72,6 @@ impl<C: Channel> Agent<C> {
         svc.clear_history(&mut self.message_window_view());
     }
 
-    pub(in crate::agent) fn remove_recall_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_recall_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_correction_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_correction_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_graph_facts_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_graph_facts_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_persona_facts_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_persona_facts_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_trajectory_hints_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_trajectory_hints_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_tree_memory_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_tree_memory_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_reasoning_strategies_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_reasoning_strategies_messages(&mut self.message_window_view());
-    }
-
     /// Remove previously injected LSP context notes from the message history.
     ///
     /// Called before injecting fresh notes each turn so stale diagnostics/hover
@@ -83,57 +81,9 @@ impl<C: Channel> Agent<C> {
         svc.remove_lsp_messages(&mut self.message_window_view());
     }
 
-    #[cfg(test)]
-    pub(in crate::agent) async fn inject_semantic_recall(
-        &mut self,
-        query: &str,
-        token_budget: usize,
-    ) -> Result<(), super::super::error::AgentError> {
-        self.remove_recall_messages();
-
-        let (msg, _score) = zeph_agent_context::helpers::fetch_semantic_recall_raw(
-            self.services.memory.persistence.memory.as_deref(),
-            self.services.memory.persistence.recall_limit,
-            self.services.memory.persistence.context_format,
-            query,
-            token_budget,
-            &self.runtime.metrics.token_counter,
-            None,
-        )
-        .await
-        .map_err(super::super::error::AgentError::Memory)?;
-        if let Some(msg) = msg
-            && self.msg.messages.len() > 1
-        {
-            self.msg.messages.insert(1, msg);
-        }
-
-        Ok(())
-    }
-
     pub(in crate::agent) fn remove_code_context_messages(&mut self) {
         let svc = zeph_agent_context::ContextService::new();
         svc.remove_code_context_messages(&mut self.message_window_view());
-    }
-
-    pub(super) fn remove_summary_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_summary_messages(&mut self.message_window_view());
-    }
-
-    pub(super) fn remove_cross_session_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_cross_session_messages(&mut self.message_window_view());
-    }
-
-    fn remove_document_rag_messages(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_document_rag_messages(&mut self.message_window_view());
-    }
-
-    pub(in crate::agent) fn remove_session_digest_message(&mut self) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.remove_session_digest_message(&mut self.message_window_view());
     }
 
     /// Spawn a fire-and-forget background task to generate and persist a session digest for
@@ -160,7 +110,7 @@ impl<C: Channel> Agent<C> {
         let sanitizer = self.services.security.sanitizer.clone();
         let status_tx = self.services.session.status_tx.clone();
         let task_supervisor = Arc::clone(&self.runtime.lifecycle.task_supervisor);
-        if let Some(ref tx) = self.services.session.status_tx {
+        if let Some(tx) = &self.services.session.status_tx {
             let _ = tx.send("Generating session digest...".to_string());
         }
         let digest_future = async move {
@@ -322,163 +272,49 @@ impl<C: Channel> Agent<C> {
         Ok((old_conversation_id, new_conversation_id))
     }
 
-    #[cfg(test)]
-    pub(super) async fn inject_cross_session_context(
-        &mut self,
-        query: &str,
-        token_budget: usize,
-    ) -> Result<(), super::super::error::AgentError> {
-        self.remove_cross_session_messages();
-
-        if let Some(msg) = zeph_agent_context::helpers::fetch_cross_session_raw(
-            self.services.memory.persistence.memory.as_deref(),
-            self.services.memory.persistence.conversation_id,
-            self.services
-                .memory
-                .persistence
-                .cross_session_score_threshold,
-            query,
-            token_budget,
-            &self.runtime.metrics.token_counter,
-        )
-        .await
-        .map_err(super::super::error::AgentError::Memory)?
-            && self.msg.messages.len() > 1
-        {
-            self.msg.messages.insert(1, msg);
-            tracing::debug!("injected cross-session context");
-        }
-
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(super) async fn inject_summaries(
-        &mut self,
-        token_budget: usize,
-    ) -> Result<(), super::super::error::AgentError> {
-        self.remove_summary_messages();
-
-        if let Some(msg) = zeph_agent_context::helpers::fetch_summaries_raw(
-            self.services.memory.persistence.memory.as_deref(),
-            self.services.memory.persistence.conversation_id,
-            token_budget,
-            &self.runtime.metrics.token_counter,
-        )
-        .await
-        .map_err(super::super::error::AgentError::Memory)?
-            && self.msg.messages.len() > 1
-        {
-            self.msg.messages.insert(1, msg);
-            tracing::debug!("injected summaries into context");
-        }
-
-        Ok(())
-    }
-
-    pub(super) fn trim_messages_to_budget(&mut self, token_budget: usize) {
-        let svc = zeph_agent_context::ContextService::new();
-        svc.trim_messages_to_budget(&mut self.message_window_view(), token_budget);
-    }
-
     /// Gather context from all memory sources and inject into the message window.
     ///
-    /// Delegates concurrent fetching to [`zeph_context::assembler::ContextAssembler::gather`] and
-    /// then calls [`Self::apply_prepared_context`] to mutate the message window.
-    #[allow(clippy::too_many_lines)] // sequential context-assembly pipeline; splitting would reduce readability
+    /// Delegates to [`zeph_agent_context::ContextService::prepare_context`] and then
+    /// applies the returned [`ContextDelta`] (injects code context via
+    /// [`Self::inject_code_context`] which stays on `Agent<C>` per scope decision).
+    #[allow(clippy::too_many_lines)] // view construction: all fields are required by ContextAssemblyView; splitting would reduce readability
     pub(in crate::agent) async fn prepare_context(
         &mut self,
         query: &str,
     ) -> Result<(), super::super::error::AgentError> {
-        if self.context_manager.budget.is_none() {
-            return Ok(());
-        }
-        let _ = self.channel.send_status("recalling context...").await;
+        use zeph_agent_context::state::ContextAssemblyView;
 
-        // Remove stale injected messages before concurrent fetch.
-        self.remove_session_digest_message();
-        self.remove_summary_messages();
-        self.remove_cross_session_messages();
-        self.remove_recall_messages();
-        self.remove_document_rag_messages();
-        self.remove_correction_messages();
-        self.remove_code_context_messages();
-        self.remove_graph_facts_messages();
-        self.remove_persona_facts_messages();
-        self.remove_trajectory_hints_messages();
-        self.remove_tree_memory_messages();
-        // S3: only scan for the reasoning prefix when the feature is enabled; with
-        // enabled=false the prefix is never injected so the scan is always a no-op.
-        if self.services.memory.extraction.reasoning_config.enabled {
-            self.remove_reasoning_strategies_messages();
-        }
+        let svc = zeph_agent_context::ContextService::new();
 
-        // #3320 — Proactive world-knowledge exploration (feature-gated).
-        // NOTE: newly generated skills are available *next* turn; this turn we
-        // only trigger generation so it is ready when the user's next query arrives.
-        // See arch spec §1.2 (C2 fix) for the rationale.
-        if let Some(explorer) = self.services.proactive_explorer.clone()
-            && let Some(domain) = explorer.classify(query)
-        {
-            let already_known = {
-                let registry_guard = self.services.skill.registry.read();
-                explorer.has_knowledge(&registry_guard, &domain)
-            };
-            let excluded = explorer.is_excluded(&domain);
+        // Capture values that are needed in the view but cannot be borrowed mutably alongside
+        // the mutable borrows in window/view — snapshot before establishing the long-lived
+        // mutable borrows so the borrow checker accepts disjoint field access.
+        let cached_prompt_tokens_snapshot = self.runtime.providers.cached_prompt_tokens;
+        let providers = self.providers();
 
-            if !already_known && !excluded {
-                tracing::debug!(domain = %domain.0, query_len = query.len(), "proactive.explore triggered");
-                let timeout_ms = explorer.timeout_ms();
-                let result = tokio::time::timeout(
-                    std::time::Duration::from_millis(timeout_ms),
-                    explorer.explore(&domain),
-                )
-                .await;
-                match result {
-                    Ok(Ok(())) => {
-                        // Re-scan configured skill paths so the new SKILL.md is
-                        // registered. Matcher rebuild happens at the next turn via
-                        // reload_skills(); see documented next-turn visibility invariant.
-                        let reload_paths = self.services.skill.skill_paths.clone();
-                        self.services.skill.registry.write().reload(&reload_paths);
-                        tracing::debug!(domain = %domain.0, "proactive.explore complete, registry reloaded");
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!(domain = %domain.0, error = %e, "proactive exploration failed");
-                    }
-                    Err(_) => {
-                        tracing::warn!(domain = %domain.0, timeout_ms, "proactive exploration timed out");
-                    }
-                }
+        let correction_config = self.services.learning_engine.config.as_ref().map(|c| {
+            zeph_context::input::CorrectionConfig {
+                correction_detection: c.correction_detection,
+                correction_recall_limit: c.correction_recall_limit,
+                correction_min_similarity: c.correction_min_similarity,
             }
-        }
+        });
 
-        // #3305 — Compression spectrum: compute remaining token ratio and select active tiers
-        // for context retrieval (#3455 plumbing).
-        let active_levels: &'static [zeph_memory::compression::CompressionLevel] =
-            if let Some(ref budget) = self.context_manager.budget {
-                let used = self.runtime.providers.cached_prompt_tokens;
-                let max = budget.max_tokens();
-                #[allow(clippy::cast_precision_loss)]
-                let remaining_ratio = if max == 0 {
-                    1.0_f32
-                } else {
-                    1.0 - (used as f32 / max as f32).clamp(0.0, 1.0)
-                };
-                let levels =
-                    zeph_memory::compression::RetrievalPolicy::default().select(remaining_ratio);
-                tracing::debug!(
-                    remaining_ratio,
-                    active_levels = ?levels,
-                    "compression_spectrum: retrieval policy selected"
-                );
-                levels
-            } else {
-                // No budget configured — assembler exits early in this branch anyway.
-                &[]
-            };
+        let mut security_sink = SecuritySink(&mut self.runtime.metrics.metrics_tx);
 
-        let memory_view = zeph_context::input::ContextMemoryView {
+        // Construct the view using disjoint field projections.
+        // Each `&mut` resolves to a unique top-level path under `Agent<C>`.
+        let mut window = zeph_agent_context::state::MessageWindowView {
+            messages: &mut self.msg.messages,
+            last_persisted_message_id: &mut self.msg.last_persisted_message_id,
+            deferred_db_hide_ids: &mut self.msg.deferred_db_hide_ids,
+            deferred_db_summaries: &mut self.msg.deferred_db_summaries,
+            cached_prompt_tokens: &mut self.runtime.providers.cached_prompt_tokens,
+            token_counter: Arc::clone(&self.runtime.metrics.token_counter),
+            completed_tool_ids: &mut self.services.tool_state.completed_tool_ids,
+        };
+
+        let mut view = ContextAssemblyView {
             memory: self.services.memory.persistence.memory.clone(),
             conversation_id: self.services.memory.persistence.conversation_id,
             recall_limit: self.services.memory.persistence.recall_limit,
@@ -487,6 +323,8 @@ impl<C: Channel> Agent<C> {
                 .memory
                 .persistence
                 .cross_session_score_threshold,
+            context_format: self.services.memory.persistence.context_format,
+            last_recall_confidence: &mut self.services.memory.persistence.last_recall_confidence,
             context_strategy: self.services.memory.compaction.context_strategy,
             crossover_turn_threshold: self.services.memory.compaction.crossover_turn_threshold,
             cached_session_digest: self
@@ -495,408 +333,67 @@ impl<C: Channel> Agent<C> {
                 .compaction
                 .cached_session_digest
                 .clone(),
+            digest_enabled: self.services.memory.compaction.digest_config.enabled,
             graph_config: self.services.memory.extraction.graph_config.clone(),
             document_config: self.services.memory.extraction.document_config.clone(),
             persona_config: self.services.memory.extraction.persona_config.clone(),
             trajectory_config: self.services.memory.extraction.trajectory_config.clone(),
             reasoning_config: self.services.memory.extraction.reasoning_config.clone(),
             tree_config: self.services.memory.subsystems.tree_config.clone(),
-        };
-        let correction_config = self.services.learning_engine.config.as_ref().map(|c| {
-            zeph_context::input::CorrectionConfig {
-                correction_detection: c.correction_detection,
-                correction_recall_limit: c.correction_recall_limit,
-                correction_min_similarity: c.correction_min_similarity,
-            }
-        });
-        let index_access: Option<&dyn zeph_context::input::IndexAccess> =
-            self.services.index.as_index_access();
-        let input = zeph_context::input::ContextAssemblyInput {
-            memory: &memory_view,
-            context_manager: &self.context_manager,
-            token_counter: &self.runtime.metrics.token_counter,
-            skills_prompt: &self.services.skill.last_skills_prompt,
-            index: index_access,
+            last_skills_prompt: &mut self.services.skill.last_skills_prompt,
+            active_skill_names: &mut self.services.skill.active_skill_names,
+            skill_registry: Arc::clone(&self.services.skill.registry),
+            skill_paths: &self.services.skill.skill_paths,
             correction_config,
             sidequest_turn_counter: self.services.sidequest.turn_counter,
-            messages: &self.msg.messages,
-            query,
+            proactive_explorer: self.services.proactive_explorer.clone(),
+            sanitizer: &self.services.security.sanitizer,
+            quarantine_summarizer: self.services.security.quarantine_summarizer.as_ref(),
+            context_manager: &mut self.context_manager,
+            token_counter: Arc::clone(&self.runtime.metrics.token_counter),
+            metrics: zeph_agent_context::MetricsCounters::default(),
+            security_events: &mut security_sink,
+            cached_prompt_tokens: cached_prompt_tokens_snapshot,
+            redact_credentials: self.runtime.config.redact_credentials,
+            channel_skills: &self.runtime.config.channel_skills.allowed,
             scrub: crate::redact::scrub_content,
-            active_levels,
         };
-
-        let prepared = zeph_context::assembler::ContextAssembler::gather(&input)
-            .await
-            .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))
-            .inspect_err(|_| {
-                // Status clear is best-effort; we drop the future intentionally.
-                std::mem::drop(self.channel.send_status(""));
-            })?;
-
-        self.apply_prepared_context(prepared).await;
+        let _ = self.channel.send_status("recalling context...").await;
+        let result = svc
+            .prepare_context(query, &mut window, &mut view, &providers)
+            .await;
         let _ = self.channel.send_status("").await;
+
+        let delta =
+            result.map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))?;
+
+        // Apply accumulated metric deltas to the metrics snapshot.
+        let m = view.metrics;
+        self.update_metrics(|ms| {
+            ms.sanitizer_runs += m.sanitizer_runs;
+            ms.sanitizer_injection_flags += m.sanitizer_injection_flags;
+            ms.sanitizer_truncations += m.sanitizer_truncations;
+            ms.quarantine_invocations += m.quarantine_invocations;
+            ms.quarantine_failures += m.quarantine_failures;
+        });
+
+        if let Some(body) = delta.code_context {
+            self.inject_code_context(&body);
+        }
         Ok(())
     }
 
-    /// Apply a [`zeph_context::assembler::PreparedContext`] to the agent's message window.
-    ///
-    /// Injects all fetched messages in order, handles `MemoryFirst` history drain, sanitizes
-    /// memory content, trims to budget, and injects the session digest.
-    #[allow(clippy::too_many_lines)] // sequential message injection: order matters, cannot split
-    async fn apply_prepared_context(&mut self, prepared: zeph_context::assembler::PreparedContext) {
-        use std::borrow::Cow;
-        use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
-
-        // Store top-1 recall score on agent state for MAR routing signal.
-        self.services.memory.persistence.last_recall_confidence = prepared.recall_confidence;
-
-        // MemoryFirst: drain conversation history BEFORE inserting memory messages so that the
-        // memory inserts land into the shorter array and are not accidentally removed.
-        if prepared.memory_first {
-            let history_start = 1usize; // skip system prompt
-            let len = self.msg.messages.len();
-            let keep_tail = memory_first_keep_tail(&self.msg.messages, history_start);
-            if len > history_start + keep_tail {
-                self.msg.messages.drain(history_start..len - keep_tail);
-                self.recompute_prompt_tokens();
-                tracing::debug!(
-                    strategy = "memory_first",
-                    keep_tail,
-                    "dropped conversation history, kept last {keep_tail} messages"
-                );
-            }
-        }
-
-        // Insert fetched messages (order: doc_rag, corrections, recall, cross-session, summaries at position 1)
-        // All memory-sourced messages are sanitized before insertion (CRIT-02: memory poisoning defense).
-        // Each path carries a MemorySourceHint that modulates injection detection sensitivity:
-        //   ExternalContent  — full detection (graph facts, document RAG may hold adversarial content)
-        //   ConversationHistory — detection skipped (user's own prior turns, false-positive suppression)
-        //   LlmSummary       — detection skipped (generated by our model from already-sanitized content)
-        if let Some(msg) = prepared.graph_facts.filter(|_| self.msg.messages.len() > 1) {
-            self.msg.messages.insert(
-                1,
-                self.sanitize_memory_message(msg, MemorySourceHint::ExternalContent)
-                    .await,
-            ); // lgtm[rust/cleartext-logging]
-            tracing::debug!("injected knowledge graph facts into context");
-        }
-        if let Some(msg) = prepared.doc_rag.filter(|_| self.msg.messages.len() > 1) {
-            self.msg.messages.insert(
-                1,
-                self.sanitize_memory_message(msg, MemorySourceHint::ExternalContent)
-                    .await,
-            ); // lgtm[rust/cleartext-logging]
-            tracing::debug!("injected document RAG context");
-        }
-        if let Some(msg) = prepared.corrections.filter(|_| self.msg.messages.len() > 1) {
-            self.msg.messages.insert(
-                1,
-                self.sanitize_memory_message(msg, MemorySourceHint::ConversationHistory)
-                    .await,
-            ); // lgtm[rust/cleartext-logging]
-            tracing::debug!("injected past corrections into context");
-        }
-        if let Some(msg) = prepared.recall.filter(|_| self.msg.messages.len() > 1) {
-            self.msg.messages.insert(
-                1,
-                self.sanitize_memory_message(msg, MemorySourceHint::ConversationHistory)
-                    .await,
-            ); // lgtm[rust/cleartext-logging]
-        }
-        if let Some(msg) = prepared
-            .cross_session
-            .filter(|_| self.msg.messages.len() > 1)
-        {
-            self.msg.messages.insert(
-                1,
-                self.sanitize_memory_message(msg, MemorySourceHint::LlmSummary)
-                    .await,
-            ); // lgtm[rust/cleartext-logging]
-        }
-        if let Some(msg) = prepared.summaries.filter(|_| self.msg.messages.len() > 1) {
-            self.msg.messages.insert(
-                1,
-                self.sanitize_memory_message(msg, MemorySourceHint::LlmSummary)
-                    .await,
-            ); // lgtm[rust/cleartext-logging]
-            tracing::debug!("injected summaries into context");
-        }
-        // Persona facts are inserted last so they land immediately after the system prompt (pos 1).
-        if let Some(msg) = prepared
-            .persona_facts
-            .filter(|_| self.msg.messages.len() > 1)
-        {
-            self.msg.messages.insert(
-                1,
-                self.sanitize_memory_message(msg, MemorySourceHint::ExternalContent)
-                    .await,
-            ); // lgtm[rust/cleartext-logging]
-            tracing::debug!("injected persona facts into context");
-        }
-
-        if let Some(msg) = prepared
-            .trajectory_hints
-            .filter(|_| self.msg.messages.len() > 1)
-        {
-            self.msg.messages.insert(
-                1,
-                self.sanitize_memory_message(msg, MemorySourceHint::ExternalContent)
-                    .await,
-            );
-            tracing::debug!("injected trajectory hints into context");
-        }
-
-        if let Some(msg) = prepared.tree_memory.filter(|_| self.msg.messages.len() > 1) {
-            self.msg.messages.insert(
-                1,
-                self.sanitize_memory_message(msg, MemorySourceHint::ExternalContent)
-                    .await,
-            );
-            tracing::debug!("injected tree memory summary into context");
-        }
-
-        if let Some(msg) = prepared
-            .reasoning_hints
-            .filter(|_| self.msg.messages.len() > 1)
-        {
-            self.msg.messages.insert(
-                1,
-                self.sanitize_memory_message(msg, MemorySourceHint::ExternalContent)
-                    .await,
-            );
-            tracing::debug!("injected reasoning strategies into context");
-        }
-
-        if let Some(text) = prepared.code_context {
-            // Sanitize before injection: indexed repo files can contain injection patterns
-            // embedded in comments, docstrings, or string literals.
-            let sanitized = self
-                .services
-                .security
-                .sanitizer
-                .sanitize(&text, ContentSource::new(ContentSourceKind::ToolResult));
-            self.update_metrics(|m| m.sanitizer_runs += 1);
-            if !sanitized.injection_flags.is_empty() {
-                tracing::warn!(
-                    flags = sanitized.injection_flags.len(),
-                    "injection patterns detected in code RAG context"
-                );
-                self.update_metrics(|m| {
-                    m.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
-                });
-                let detail = sanitized
-                    .injection_flags
-                    .first()
-                    .map_or_else(String::new, |f| {
-                        format!("Detected pattern: {}", f.pattern_name)
-                    });
-                self.push_security_event(
-                    zeph_common::SecurityEventCategory::InjectionFlag,
-                    "code_rag",
-                    detail,
-                );
-            }
-            if sanitized.was_truncated {
-                self.update_metrics(|m| m.sanitizer_truncations += 1);
-                self.push_security_event(
-                    zeph_common::SecurityEventCategory::Truncation,
-                    "code_rag",
-                    "Content truncated to max_content_size",
-                );
-            }
-            self.inject_code_context(&sanitized.body);
-        }
-
-        if !prepared.memory_first {
-            self.trim_messages_to_budget(prepared.recent_history_budget);
-        }
-
-        // Inject session digest AFTER all other memory inserts so it lands at position 1
-        // (closest to the system prompt). #2289
-        // Gate on digest_config.enabled: disabling digest generation also disables injection
-        // even when a cached digest was loaded for recap purposes (#3064 C3-bis fix).
-        if self.services.memory.compaction.digest_config.enabled
-            && let Some((digest_text, _)) = self
-                .services
-                .memory
-                .compaction
-                .cached_session_digest
-                .clone()
-                .filter(|_| self.msg.messages.len() > 1)
-        {
-            let digest_msg = Message {
-                role: Role::User,
-                content: format!("{SESSION_DIGEST_PREFIX}{digest_text}"),
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            };
-            let sanitized = self
-                .sanitize_memory_message(digest_msg, MemorySourceHint::LlmSummary)
-                .await;
-            self.msg.messages.insert(1, sanitized);
-            tracing::debug!("injected session digest into context");
-        }
-
-        if self.runtime.config.redact_credentials {
-            for msg in &mut self.msg.messages {
-                if msg.role == Role::System {
-                    continue;
-                }
-                if let Cow::Owned(s) = scrub_content(&msg.content) {
-                    msg.content = s;
-                }
-            }
-        }
-
-        self.recompute_prompt_tokens();
-    }
-
-    /// Apply spotlighting sanitization to a memory retrieval message before inserting it
-    /// into the context. Memory content is `ExternalUntrusted` because prior sessions may
-    /// have stored poisoned content retrieved from web scraping or MCP responses.
-    ///
-    /// This is the SOLE sanitization point for the 6 memory retrieval paths (`doc_rag`,
-    /// corrections, recall, `cross_session`, summaries, `graph_facts`). Do not add redundant
-    /// sanitization in zeph-memory or at other call sites.
-    ///
-    /// The `hint` parameter modulates injection detection sensitivity:
-    /// - `ConversationHistory` / `LlmSummary`: detection skipped (false-positive suppression).
-    /// - `ExternalContent`: full detection (document RAG, graph facts).
-    ///
-    /// Truncation, control-char stripping, delimiter escaping, and spotlighting remain active
-    /// for all hints (defense-in-depth invariant).
-    async fn sanitize_memory_message(&self, mut msg: Message, hint: MemorySourceHint) -> Message {
-        let source = ContentSource::new(ContentSourceKind::MemoryRetrieval).with_memory_hint(hint);
-        let sanitized = self
-            .services
-            .security
-            .sanitizer
-            .sanitize(&msg.content, source);
-        self.update_metrics(|m| m.sanitizer_runs += 1);
-        if !sanitized.injection_flags.is_empty() {
-            tracing::warn!(
-                flags = sanitized.injection_flags.len(),
-                "injection patterns detected in memory retrieval"
-            );
-            self.update_metrics(|m| {
-                m.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
-            });
-            let detail = sanitized
-                .injection_flags
-                .first()
-                .map_or_else(String::new, |f| {
-                    format!("Detected pattern: {}", f.pattern_name)
-                });
-            self.push_security_event(
-                zeph_common::SecurityEventCategory::InjectionFlag,
-                "memory_retrieval",
-                detail,
-            );
-        }
-        if sanitized.was_truncated {
-            self.update_metrics(|m| m.sanitizer_truncations += 1);
-            self.push_security_event(
-                zeph_common::SecurityEventCategory::Truncation,
-                "memory_retrieval",
-                "Content truncated to max_content_size",
-            );
-        }
-
-        // Quarantine step: route high-risk sources through an isolated LLM (defense-in-depth).
-        if self.services.security.sanitizer.is_enabled()
-            && let Some(ref qs) = self.services.security.quarantine_summarizer
-            && qs.should_quarantine(ContentSourceKind::MemoryRetrieval)
-        {
-            match qs
-                .extract_facts(&sanitized, &self.services.security.sanitizer)
-                .await
-            {
-                Ok((facts, flags)) => {
-                    self.update_metrics(|m| m.quarantine_invocations += 1);
-                    self.push_security_event(
-                        zeph_common::SecurityEventCategory::Quarantine,
-                        "memory_retrieval",
-                        "Content quarantined, facts extracted",
-                    );
-                    let escaped = zeph_sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
-                    msg.content = zeph_sanitizer::ContentSanitizer::apply_spotlight(
-                        &escaped,
-                        &sanitized.source,
-                        &flags,
-                    );
-                    return msg;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "quarantine failed for memory retrieval, using original sanitized content"
-                    );
-                    self.update_metrics(|m| m.quarantine_failures += 1);
-                    self.push_security_event(
-                        zeph_common::SecurityEventCategory::Quarantine,
-                        "memory_retrieval",
-                        format!("Quarantine failed: {e}"),
-                    );
-                }
-            }
-        }
-
-        msg.content = sanitized.body;
-        msg
-    }
-
+    /// Delegate skill disambiguation to [`ContextService::disambiguate_skills`].
     pub(super) async fn disambiguate_skills(
         &self,
         query: &str,
         all_meta: &[&SkillMeta],
         scored: &[ScoredMatch],
     ) -> Option<Vec<usize>> {
-        let mut candidates = String::new();
-        for sm in scored {
-            if let Some(meta) = all_meta.get(sm.index) {
-                let _ = writeln!(
-                    candidates,
-                    "- {} (score: {:.3}): {}",
-                    meta.name, sm.score, meta.description
-                );
-            }
-        }
-
-        let prompt = format!(
-            "The user said: \"{query}\"\n\n\
-             These skills matched with similar scores:\n{candidates}\n\
-             Which skill best matches the user's intent? \
-             Return the skill_name, your confidence (0-1), and any extracted parameters."
-        );
-
-        let messages = vec![Message::from_legacy(Role::User, prompt)];
-        match self
-            .provider
-            .chat_typed::<zeph_skills::IntentClassification>(&messages)
+        let svc = zeph_agent_context::ContextService::new();
+        let providers = self.providers();
+        svc.disambiguate_skills(query, all_meta, scored, &providers)
             .await
-        {
-            Ok(classification) => {
-                tracing::info!(
-                    skill = %classification.skill_name,
-                    confidence = classification.confidence,
-                    "disambiguation selected skill"
-                );
-                let mut indices: Vec<usize> = scored.iter().map(|s| s.index).collect();
-                if let Some(pos) = indices.iter().position(|&i| {
-                    all_meta
-                        .get(i)
-                        .is_some_and(|m| m.name == classification.skill_name)
-                }) {
-                    indices.swap(0, pos);
-                }
-                Some(indices)
-            }
-            Err(e) => {
-                tracing::warn!("disambiguation failed, using original order: {e:#}");
-                None
-            }
-        }
     }
 
     #[allow(clippy::too_many_lines)] // system prompt assembly: skills + tools + knowledge sections, tightly coupled formatting
@@ -1570,16 +1067,154 @@ impl<C: Channel> Agent<C> {
     }
 }
 
-/// Compute the number of tail messages to retain during a `MemoryFirst` drain.
-///
-/// Starts at 2 (coherence anchor) and extends backward past any leading `Role::User` messages
-/// that carry `MessagePart::ToolResult` parts. Such messages must always be immediately preceded
-use zeph_context::assembler::memory_first_keep_tail;
+// ── Test-only integration bridges ─────────────────────────────────────────────
+//
+// These shim methods expose individual context-service operations directly on
+// `Agent<C>` so that Category 2 integration tests can drive them in isolation
+// without going through the full `prepare_context` pipeline. They are not part
+// of the production call path — production code uses `ContextService` methods
+// directly via `prepare_context`.
+#[cfg(test)]
+impl<C: Channel> Agent<C> {
+    pub(in crate::agent) fn remove_recall_messages(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_recall_messages(&mut self.message_window_view());
+    }
+
+    pub(in crate::agent) fn remove_correction_messages(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_correction_messages(&mut self.message_window_view());
+    }
+
+    pub(in crate::agent) fn remove_graph_facts_messages(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_graph_facts_messages(&mut self.message_window_view());
+    }
+
+    pub(in crate::agent) fn remove_persona_facts_messages(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_persona_facts_messages(&mut self.message_window_view());
+    }
+
+    pub(in crate::agent) fn remove_trajectory_hints_messages(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_trajectory_hints_messages(&mut self.message_window_view());
+    }
+
+    pub(in crate::agent) fn remove_tree_memory_messages(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_tree_memory_messages(&mut self.message_window_view());
+    }
+
+    pub(in crate::agent) fn remove_reasoning_strategies_messages(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_reasoning_strategies_messages(&mut self.message_window_view());
+    }
+
+    pub(in crate::agent) fn remove_summary_messages(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_summary_messages(&mut self.message_window_view());
+    }
+
+    pub(in crate::agent) fn remove_cross_session_messages(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_cross_session_messages(&mut self.message_window_view());
+    }
+
+    pub(in crate::agent) fn remove_session_digest_message(&mut self) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.remove_session_digest_message(&mut self.message_window_view());
+    }
+
+    pub(in crate::agent) async fn inject_semantic_recall(
+        &mut self,
+        query: &str,
+        token_budget: usize,
+    ) -> Result<(), super::super::error::AgentError> {
+        self.remove_recall_messages();
+
+        let (msg, _score) = zeph_agent_context::helpers::fetch_semantic_recall_raw(
+            self.services.memory.persistence.memory.as_deref(),
+            self.services.memory.persistence.recall_limit,
+            self.services.memory.persistence.context_format,
+            query,
+            token_budget,
+            &self.runtime.metrics.token_counter,
+            None,
+        )
+        .await
+        .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))?;
+        if let Some(msg) = msg
+            && self.msg.messages.len() > 1
+        {
+            self.msg.messages.insert(1, msg);
+        }
+
+        Ok(())
+    }
+
+    pub(in crate::agent) async fn inject_cross_session_context(
+        &mut self,
+        query: &str,
+        token_budget: usize,
+    ) -> Result<(), super::super::error::AgentError> {
+        self.remove_cross_session_messages();
+
+        if let Some(msg) = zeph_agent_context::helpers::fetch_cross_session_raw(
+            self.services.memory.persistence.memory.as_deref(),
+            self.services.memory.persistence.conversation_id,
+            self.services
+                .memory
+                .persistence
+                .cross_session_score_threshold,
+            query,
+            token_budget,
+            &self.runtime.metrics.token_counter,
+        )
+        .await
+        .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))?
+            && self.msg.messages.len() > 1
+        {
+            self.msg.messages.insert(1, msg);
+            tracing::debug!("injected cross-session context");
+        }
+
+        Ok(())
+    }
+
+    pub(in crate::agent) async fn inject_summaries(
+        &mut self,
+        token_budget: usize,
+    ) -> Result<(), super::super::error::AgentError> {
+        self.remove_summary_messages();
+
+        if let Some(msg) = zeph_agent_context::helpers::fetch_summaries_raw(
+            self.services.memory.persistence.memory.as_deref(),
+            self.services.memory.persistence.conversation_id,
+            token_budget,
+            &self.runtime.metrics.token_counter,
+        )
+        .await
+        .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))?
+            && self.msg.messages.len() > 1
+        {
+            self.msg.messages.insert(1, msg);
+            tracing::debug!("injected summaries into context");
+        }
+
+        Ok(())
+    }
+
+    pub(in crate::agent) fn trim_messages_to_budget(&mut self, token_budget: usize) {
+        let svc = zeph_agent_context::ContextService::new();
+        svc.trim_messages_to_budget(&mut self.message_window_view(), token_budget);
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeph_context::assembler::MAX_KEEP_TAIL_SCAN;
+    use zeph_context::assembler::{MAX_KEEP_TAIL_SCAN, memory_first_keep_tail};
     use zeph_llm::provider::{Message, MessagePart, Role};
 
     // ── effective_recall_timeout_ms tests (#2514) ────────────────────────────

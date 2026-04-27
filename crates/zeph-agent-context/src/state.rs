@@ -12,13 +12,12 @@
 //! expression. The borrow checker proves disjointness at that level without additional
 //! helper methods — each `&mut` resolves to a unique field path under `Agent<C>`.
 
+use parking_lot::RwLock;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
-
-use parking_lot::RwLock;
 use zeph_common::SecurityEventCategory;
 use zeph_config::{
     ContextStrategy, DocumentConfig, GraphConfig, PersonaConfig, ReasoningConfig, TrajectoryConfig,
@@ -61,21 +60,24 @@ pub struct MessageWindowView<'a> {
     pub completed_tool_ids: &'a mut HashSet<String>,
 }
 
-/// Narrow mutable counters lens for sanitizer and quarantine metrics.
+/// Accumulated metric deltas for one context-assembly pass.
 ///
-/// Groups five disjoint sub-fields of `Agent<C>::runtime.metrics` into one struct
-/// so the borrow checker can prove disjointness at the shim literal expression.
-pub struct MetricsCounters<'a> {
-    /// Total sanitizer checks performed.
-    pub sanitizer_runs: &'a mut u64,
-    /// Total injection flags raised by the sanitizer.
-    pub sanitizer_injection_flags: &'a mut u64,
-    /// Total truncations applied by the sanitizer.
-    pub sanitizer_truncations: &'a mut u64,
-    /// Total quarantine invocations.
-    pub quarantine_invocations: &'a mut u64,
-    /// Total quarantine failures (summarizer error or timeout).
-    pub quarantine_failures: &'a mut u64,
+/// Holds owned counters that the service increments during `prepare_context`.
+/// After the call returns, the `zeph-core` shim applies these deltas to the agent's
+/// metrics snapshot via `update_metrics`. Using owned values (not references) avoids
+/// borrowing into `MetricsSnapshot`, which lives behind a watch channel.
+#[derive(Debug, Default)]
+pub struct MetricsCounters {
+    /// Sanitizer checks performed during this pass.
+    pub sanitizer_runs: u64,
+    /// Injection flags raised during this pass.
+    pub sanitizer_injection_flags: u64,
+    /// Truncations applied during this pass.
+    pub sanitizer_truncations: u64,
+    /// Quarantine invocations during this pass.
+    pub quarantine_invocations: u64,
+    /// Quarantine failures during this pass.
+    pub quarantine_failures: u64,
 }
 
 /// Abstract sink for security events raised during context assembly.
@@ -117,7 +119,9 @@ pub struct ContextAssemblyView<'a> {
     /// `services.memory.compaction.crossover_turn_threshold`.
     pub crossover_turn_threshold: u32,
     /// `services.memory.compaction.cached_session_digest` — cloned into assembler input.
-    pub cached_session_digest: Option<(String, Instant)>,
+    ///
+    /// The `usize` is the token count of the digest (used by `ContextMemoryView`).
+    pub cached_session_digest: Option<(String, usize)>,
     /// `services.memory.compaction.digest_config.enabled`.
     pub digest_enabled: bool,
 
@@ -157,15 +161,15 @@ pub struct ContextAssemblyView<'a> {
     /// never crosses the crate boundary.
     pub correction_config: Option<CorrectionConfig>,
     /// `services.sidequest.turn_counter`.
-    pub sidequest_turn_counter: u32,
+    pub sidequest_turn_counter: u64,
     /// `services.proactive_explorer` — `Arc` clone for async use without borrowing self.
     pub proactive_explorer: Option<Arc<ProactiveExplorer>>,
 
     // ── Security ──────────────────────────────────────────────────────────────────────
-    /// `services.security.sanitizer` — `Arc` clone is cheap.
-    pub sanitizer: Arc<ContentSanitizer>,
-    /// `services.security.quarantine_summarizer` — `Arc` clone is cheap.
-    pub quarantine_summarizer: Option<Arc<QuarantinedSummarizer>>,
+    /// `services.security.sanitizer` — borrowed from `SecurityState`; not Arc-wrapped in `zeph-core`.
+    pub sanitizer: &'a ContentSanitizer,
+    /// `services.security.quarantine_summarizer` — borrowed from `SecurityState`.
+    pub quarantine_summarizer: Option<&'a QuarantinedSummarizer>,
 
     // ── Context manager ───────────────────────────────────────────────────────────────
     /// `self.context_manager` — mutably borrowed for token recompute hooks.
@@ -174,8 +178,9 @@ pub struct ContextAssemblyView<'a> {
     // ── Runtime / metrics ─────────────────────────────────────────────────────────────
     /// `runtime.metrics.token_counter` — `Arc` clone is cheap.
     pub token_counter: Arc<zeph_memory::TokenCounter>,
-    /// Five disjoint mutable counters from `runtime.metrics`.
-    pub metrics: MetricsCounters<'a>,
+    /// Accumulated metric deltas — incremented during the pass, applied to the metrics
+    /// snapshot by the `zeph-core` shim after `prepare_context` returns.
+    pub metrics: MetricsCounters,
     /// Abstract sink for security events raised during context assembly.
     pub security_events: &'a mut dyn SecurityEventSink,
     /// `runtime.providers.cached_prompt_tokens` — read for compression-spectrum ratio.
@@ -186,6 +191,27 @@ pub struct ContextAssemblyView<'a> {
     pub redact_credentials: bool,
     /// `runtime.config.channel_skills` — per-channel skill filter for system prompt rebuild.
     pub channel_skills: &'a [String],
+
+    // ── Credential scrubber ───────────────────────────────────────────────────────────
+    /// Function pointer for scrubbing credentials from message content.
+    ///
+    /// Passed as a function pointer so `zeph-agent-context` does not need to depend on
+    /// `zeph-core::redact`. The shim in `zeph-core` sets this to `crate::redact::scrub_content`.
+    /// When `redact_credentials = false` the service does not call this function.
+    pub scrub: fn(&str) -> Cow<'_, str>,
+}
+
+/// Values produced by [`ContextService::prepare_context`] that must be applied by the caller.
+///
+/// `ContextService` cannot inject code context directly because `inject_code_context` touches
+/// the system prompt (position-0 message), which involves subsystems beyond the context-window
+/// boundary. Instead, the service returns the code-context body and the caller applies it.
+#[derive(Debug, Default)]
+pub struct ContextDelta {
+    /// Sanitized code-context body to inject into the system prompt by the `Agent<C>` shim.
+    ///
+    /// `None` when no code context was fetched or the fetch returned empty.
+    pub code_context: Option<String>,
 }
 
 /// Borrow-lens over fields needed for compaction and summarization operations.

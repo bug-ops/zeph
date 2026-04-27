@@ -88,11 +88,10 @@ use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
 use state::MessageState;
 
 pub(crate) const DOOM_LOOP_WINDOW: usize = 3;
-// Message prefix constants are defined in zeph-agent-context::helpers and accessed via
-// zeph_agent_context::helpers::* in non-agent modules. The agent-local SESSION_DIGEST_PREFIX
-// and CODE_CONTEXT_PREFIX are still needed here since they are used in non-test production code.
+// CODE_CONTEXT_PREFIX is re-exported from zeph-agent-context::helpers so callers inside
+// zeph-core that build system-prompt injections can use it without depending on zeph-agent-context
+// directly. SESSION_DIGEST_PREFIX was removed when assembly migrated to ContextService.
 pub(crate) use zeph_agent_context::helpers::CODE_CONTEXT_PREFIX;
-pub(crate) use zeph_agent_context::helpers::SESSION_DIGEST_PREFIX;
 pub(crate) const SCHEDULED_TASK_PREFIX: &str = "Execute the following scheduled task now: ";
 pub(crate) const TOOL_OUTPUT_SUFFIX: &str = "\n```";
 

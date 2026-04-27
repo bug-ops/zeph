@@ -3,6 +3,7 @@
 
 //! [`ContextService`] — stateless façade for agent context-assembly operations.
 
+use zeph_llm::LlmProvider;
 use zeph_llm::provider::{MessagePart, Role};
 
 use crate::error::ContextError;
@@ -12,8 +13,8 @@ use crate::helpers::{
     SESSION_DIGEST_PREFIX, SUMMARY_PREFIX, TRAJECTORY_PREFIX, TREE_MEMORY_PREFIX,
 };
 use crate::state::{
-    ContextAssemblyView, ContextSummarizationView, MessageWindowView, ProviderHandles, StatusSink,
-    TrustGate,
+    ContextAssemblyView, ContextDelta, ContextSummarizationView, MessageWindowView,
+    ProviderHandles, StatusSink, TrustGate,
 };
 
 /// Stateless façade for agent context-assembly operations.
@@ -187,27 +188,589 @@ impl ContextService {
         }
     }
 
-    // ── Placeholder stubs for later PRs ──────────────────────────────────────
+    // ── prepare_context family (PR2) ─────────────────────────────────────────
 
-    /// Prepare the context window for the current turn.
+    /// Inject semantic recall messages into the window for the given query.
     ///
-    /// Removes stale injection messages, gathers semantic recall and graph facts,
-    /// applies the configured retrieval policy, and injects the fresh context block.
+    /// Removes any existing recall messages first, fetches fresh recall up to
+    /// `token_budget` tokens, and inserts the result at position 1 (immediately
+    /// after the system prompt).
     ///
     /// # Errors
     ///
-    /// Returns [`ContextError::Memory`] if recall fails, [`ContextError::Assembler`]
+    /// Returns [`ContextError::Memory`] if the recall backend returns an error.
+    pub async fn inject_semantic_recall(
+        &self,
+        query: &str,
+        token_budget: usize,
+        window: &mut MessageWindowView<'_>,
+        view: &ContextAssemblyView<'_>,
+    ) -> Result<(), ContextError> {
+        self.remove_recall_messages(window);
+
+        let (msg, _score) = crate::helpers::fetch_semantic_recall_raw(
+            view.memory.as_deref(),
+            view.recall_limit,
+            view.context_format,
+            query,
+            token_budget,
+            &view.token_counter,
+            None,
+        )
+        .await?;
+
+        if let Some(msg) = msg
+            && window.messages.len() > 1
+        {
+            window.messages.insert(1, msg);
+        }
+
+        Ok(())
+    }
+
+    /// Inject cross-session context messages into the window for the given query.
+    ///
+    /// Removes any existing cross-session messages first, fetches fresh cross-session
+    /// context for the current conversation, and inserts the result at position 1.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContextError::Memory`] if the memory backend returns an error.
+    pub async fn inject_cross_session_context(
+        &self,
+        query: &str,
+        token_budget: usize,
+        window: &mut MessageWindowView<'_>,
+        view: &ContextAssemblyView<'_>,
+    ) -> Result<(), ContextError> {
+        self.remove_cross_session_messages(window);
+
+        if let Some(msg) = crate::helpers::fetch_cross_session_raw(
+            view.memory.as_deref(),
+            view.conversation_id,
+            view.cross_session_score_threshold,
+            query,
+            token_budget,
+            &view.token_counter,
+        )
+        .await?
+            && window.messages.len() > 1
+        {
+            window.messages.insert(1, msg);
+            tracing::debug!("injected cross-session context");
+        }
+
+        Ok(())
+    }
+
+    /// Inject conversation-summary messages into the window.
+    ///
+    /// Removes any existing summary messages first, fetches stored summaries for the
+    /// current conversation, and inserts the result at position 1.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContextError::Memory`] if the memory backend returns an error.
+    pub async fn inject_summaries(
+        &self,
+        token_budget: usize,
+        window: &mut MessageWindowView<'_>,
+        view: &ContextAssemblyView<'_>,
+    ) -> Result<(), ContextError> {
+        self.remove_summary_messages(window);
+
+        if let Some(msg) = crate::helpers::fetch_summaries_raw(
+            view.memory.as_deref(),
+            view.conversation_id,
+            token_budget,
+            &view.token_counter,
+        )
+        .await?
+            && window.messages.len() > 1
+        {
+            window.messages.insert(1, msg);
+            tracing::debug!("injected summaries into context");
+        }
+
+        Ok(())
+    }
+
+    /// Select the best-matching skill among ambiguous candidates via an LLM classification call.
+    ///
+    /// Returns the reordered index list with the most likely skill first, or `None` if the
+    /// LLM call fails (caller falls back to original score order).
+    pub async fn disambiguate_skills(
+        &self,
+        query: &str,
+        all_meta: &[&zeph_skills::loader::SkillMeta],
+        scored: &[zeph_skills::ScoredMatch],
+        providers: &ProviderHandles,
+    ) -> Option<Vec<usize>> {
+        use std::fmt::Write as _;
+
+        let mut candidates = String::new();
+        for sm in scored {
+            if let Some(meta) = all_meta.get(sm.index) {
+                let _ = writeln!(
+                    candidates,
+                    "- {} (score: {:.3}): {}",
+                    meta.name, sm.score, meta.description
+                );
+            }
+        }
+
+        let prompt = format!(
+            "The user said: \"{query}\"\n\n\
+             These skills matched with similar scores:\n{candidates}\n\
+             Which skill best matches the user's intent? \
+             Return the skill_name, your confidence (0-1), and any extracted parameters."
+        );
+
+        let messages = vec![zeph_llm::provider::Message::from_legacy(
+            zeph_llm::provider::Role::User,
+            prompt,
+        )];
+        match providers
+            .primary
+            .chat_typed::<zeph_skills::IntentClassification>(&messages)
+            .await
+        {
+            Ok(classification) => {
+                tracing::info!(
+                    skill = %classification.skill_name,
+                    confidence = classification.confidence,
+                    "disambiguation selected skill"
+                );
+                let mut indices: Vec<usize> = scored.iter().map(|s| s.index).collect();
+                if let Some(pos) = indices.iter().position(|&i| {
+                    all_meta
+                        .get(i)
+                        .is_some_and(|m| m.name == classification.skill_name)
+                }) {
+                    indices.swap(0, pos);
+                }
+                Some(indices)
+            }
+            Err(e) => {
+                tracing::warn!("disambiguation failed, using original order: {e:#}");
+                None
+            }
+        }
+    }
+
+    /// Prepare the context window for the current turn.
+    ///
+    /// Removes stale injection messages, runs proactive skill exploration, gathers
+    /// semantic recall and graph facts via the concurrent assembler, applies the
+    /// retrieval policy, and injects fresh context. Returns a [`ContextDelta`] whose
+    /// `code_context` field must be applied by the caller (via `inject_code_context`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContextError::Memory`] if recall fails or [`ContextError::Assembler`]
     /// if the context assembler encounters an internal error.
+    #[allow(clippy::too_many_lines)] // sequential context-assembly pipeline; splitting would reduce readability
     pub async fn prepare_context(
         &self,
-        _query: &str,
-        _window: &mut MessageWindowView<'_>,
-        _view: &mut ContextAssemblyView<'_>,
+        query: &str,
+        window: &mut MessageWindowView<'_>,
+        view: &mut ContextAssemblyView<'_>,
         _providers: &ProviderHandles,
-        _status: &(impl StatusSink + ?Sized),
-    ) -> Result<(), ContextError> {
-        // TODO: implement in PR2 migration
-        unimplemented!("prepare_context will be implemented in PR2")
+    ) -> Result<ContextDelta, ContextError> {
+        if view.context_manager.budget.is_none() {
+            return Ok(ContextDelta::default());
+        }
+
+        // Remove stale injected messages before concurrent fetch.
+        self.remove_session_digest_message(window);
+        self.remove_summary_messages(window);
+        self.remove_cross_session_messages(window);
+        self.remove_recall_messages(window);
+        self.remove_document_rag_messages(window);
+        self.remove_correction_messages(window);
+        self.remove_code_context_messages(window);
+        self.remove_graph_facts_messages(window);
+        self.remove_persona_facts_messages(window);
+        self.remove_trajectory_hints_messages(window);
+        self.remove_tree_memory_messages(window);
+        if view.reasoning_config.enabled {
+            self.remove_reasoning_strategies_messages(window);
+        }
+
+        // Proactive world-knowledge exploration (feature-gated, #3320).
+        if let Some(explorer) = view.proactive_explorer.clone()
+            && let Some(domain) = explorer.classify(query)
+        {
+            let already_known = {
+                let registry_guard = view.skill_registry.read();
+                explorer.has_knowledge(&registry_guard, &domain)
+            };
+            let excluded = explorer.is_excluded(&domain);
+
+            if !already_known && !excluded {
+                tracing::debug!(domain = %domain.0, query_len = query.len(), "proactive.explore triggered");
+                let timeout_ms = explorer.timeout_ms();
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout_ms),
+                    explorer.explore(&domain),
+                )
+                .await;
+                match result {
+                    Ok(Ok(())) => {
+                        view.skill_registry.write().reload(view.skill_paths);
+                        tracing::debug!(domain = %domain.0, "proactive.explore complete, registry reloaded");
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(domain = %domain.0, error = %e, "proactive exploration failed");
+                    }
+                    Err(_) => {
+                        tracing::warn!(domain = %domain.0, timeout_ms, "proactive exploration timed out");
+                    }
+                }
+            }
+        }
+
+        // Compression-spectrum retrieval policy (#3305, #3455).
+        let active_levels: &'static [zeph_memory::compression::CompressionLevel] =
+            if let Some(ref budget) = view.context_manager.budget {
+                let used = view.cached_prompt_tokens;
+                let max = budget.max_tokens();
+                #[allow(clippy::cast_precision_loss)]
+                let remaining_ratio = if max == 0 {
+                    1.0_f32
+                } else {
+                    1.0 - (used as f32 / max as f32).clamp(0.0, 1.0)
+                };
+                let levels =
+                    zeph_memory::compression::RetrievalPolicy::default().select(remaining_ratio);
+                tracing::debug!(
+                    remaining_ratio,
+                    active_levels = ?levels,
+                    "compression_spectrum: retrieval policy selected"
+                );
+                levels
+            } else {
+                &[]
+            };
+
+        let memory_view = zeph_context::input::ContextMemoryView {
+            memory: view.memory.clone(),
+            conversation_id: view.conversation_id,
+            recall_limit: view.recall_limit,
+            cross_session_score_threshold: view.cross_session_score_threshold,
+            context_strategy: view.context_strategy,
+            crossover_turn_threshold: view.crossover_turn_threshold,
+            cached_session_digest: view.cached_session_digest.clone(),
+            graph_config: view.graph_config.clone(),
+            document_config: view.document_config.clone(),
+            persona_config: view.persona_config.clone(),
+            trajectory_config: view.trajectory_config.clone(),
+            reasoning_config: view.reasoning_config.clone(),
+            tree_config: view.tree_config.clone(),
+        };
+
+        #[cfg(feature = "index")]
+        let index_access = view.index;
+        #[cfg(not(feature = "index"))]
+        let index_access: Option<&dyn zeph_context::input::IndexAccess> = None;
+
+        let input = zeph_context::input::ContextAssemblyInput {
+            memory: &memory_view,
+            context_manager: view.context_manager,
+            token_counter: &view.token_counter,
+            skills_prompt: view.last_skills_prompt,
+            index: index_access,
+            correction_config: view.correction_config,
+            sidequest_turn_counter: view.sidequest_turn_counter,
+            messages: window.messages,
+            query,
+            scrub: view.scrub,
+            active_levels,
+        };
+
+        let prepared = zeph_context::assembler::ContextAssembler::gather(&input).await?;
+
+        let delta = self.apply_prepared_context(window, view, prepared).await;
+        Ok(delta)
+    }
+
+    /// Apply a [`PreparedContext`] to the message window.
+    ///
+    /// Injects all fetched messages in insertion order (`doc_rag` → corrections → recall →
+    /// cross-session → summaries → persona → trajectory → tree → reasoning), handles
+    /// `MemoryFirst` history drain, sanitizes memory content, trims to budget, and injects
+    /// the session digest. Returns a [`ContextDelta`] whose `code_context` field the caller
+    /// must apply via `inject_code_context`.
+    #[allow(clippy::too_many_lines)] // sequential message injection: order matters, cannot split
+    async fn apply_prepared_context(
+        &self,
+        window: &mut MessageWindowView<'_>,
+        view: &mut ContextAssemblyView<'_>,
+        prepared: zeph_context::assembler::PreparedContext,
+    ) -> ContextDelta {
+        use std::borrow::Cow;
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+        use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
+
+        // Store top-1 recall score for MAR routing signal.
+        *view.last_recall_confidence = prepared.recall_confidence;
+
+        // MemoryFirst: drain conversation history BEFORE inserting memory messages.
+        if prepared.memory_first {
+            let history_start = 1usize;
+            let len = window.messages.len();
+            let keep_tail =
+                zeph_context::assembler::memory_first_keep_tail(window.messages, history_start);
+            if len > history_start + keep_tail {
+                window.messages.drain(history_start..len - keep_tail);
+                recompute_prompt_tokens(window);
+                tracing::debug!(
+                    strategy = "memory_first",
+                    keep_tail,
+                    "dropped conversation history, kept last {keep_tail} messages"
+                );
+            }
+        }
+
+        // Insert memory messages at position 1 (all sanitized before insertion — CRIT-02).
+        if let Some(msg) = prepared.graph_facts.filter(|_| window.messages.len() > 1) {
+            let sanitized = self
+                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
+                .await;
+            window.messages.insert(1, sanitized);
+            tracing::debug!("injected knowledge graph facts into context");
+        }
+        if let Some(msg) = prepared.doc_rag.filter(|_| window.messages.len() > 1) {
+            let sanitized = self
+                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
+                .await;
+            window.messages.insert(1, sanitized);
+            tracing::debug!("injected document RAG context");
+        }
+        if let Some(msg) = prepared.corrections.filter(|_| window.messages.len() > 1) {
+            let sanitized = self
+                .sanitize_memory_message(msg, MemorySourceHint::ConversationHistory, view)
+                .await;
+            window.messages.insert(1, sanitized);
+            tracing::debug!("injected past corrections into context");
+        }
+        if let Some(msg) = prepared.recall.filter(|_| window.messages.len() > 1) {
+            let sanitized = self
+                .sanitize_memory_message(msg, MemorySourceHint::ConversationHistory, view)
+                .await;
+            window.messages.insert(1, sanitized);
+        }
+        if let Some(msg) = prepared.cross_session.filter(|_| window.messages.len() > 1) {
+            let sanitized = self
+                .sanitize_memory_message(msg, MemorySourceHint::LlmSummary, view)
+                .await;
+            window.messages.insert(1, sanitized);
+        }
+        if let Some(msg) = prepared.summaries.filter(|_| window.messages.len() > 1) {
+            let sanitized = self
+                .sanitize_memory_message(msg, MemorySourceHint::LlmSummary, view)
+                .await;
+            window.messages.insert(1, sanitized);
+            tracing::debug!("injected summaries into context");
+        }
+        if let Some(msg) = prepared.persona_facts.filter(|_| window.messages.len() > 1) {
+            let sanitized = self
+                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
+                .await;
+            window.messages.insert(1, sanitized);
+            tracing::debug!("injected persona facts into context");
+        }
+        if let Some(msg) = prepared
+            .trajectory_hints
+            .filter(|_| window.messages.len() > 1)
+        {
+            let sanitized = self
+                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
+                .await;
+            window.messages.insert(1, sanitized);
+            tracing::debug!("injected trajectory hints into context");
+        }
+        if let Some(msg) = prepared.tree_memory.filter(|_| window.messages.len() > 1) {
+            let sanitized = self
+                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
+                .await;
+            window.messages.insert(1, sanitized);
+            tracing::debug!("injected tree memory summary into context");
+        }
+        if let Some(msg) = prepared
+            .reasoning_hints
+            .filter(|_| window.messages.len() > 1)
+        {
+            let sanitized = self
+                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
+                .await;
+            window.messages.insert(1, sanitized);
+            tracing::debug!("injected reasoning strategies into context");
+        }
+
+        // Code context: sanitize inline, return body to caller via ContextDelta.
+        let code_context = if let Some(text) = prepared.code_context {
+            let sanitized = view
+                .sanitizer
+                .sanitize(&text, ContentSource::new(ContentSourceKind::ToolResult));
+            view.metrics.sanitizer_runs += 1;
+            if !sanitized.injection_flags.is_empty() {
+                tracing::warn!(
+                    flags = sanitized.injection_flags.len(),
+                    "injection patterns detected in code RAG context"
+                );
+                view.metrics.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
+                let detail = sanitized
+                    .injection_flags
+                    .first()
+                    .map_or_else(String::new, |f| {
+                        format!("Detected pattern: {}", f.pattern_name)
+                    });
+                view.security_events.push(
+                    zeph_common::SecurityEventCategory::InjectionFlag,
+                    "code_rag",
+                    detail,
+                );
+            }
+            if sanitized.was_truncated {
+                view.metrics.sanitizer_truncations += 1;
+                view.security_events.push(
+                    zeph_common::SecurityEventCategory::Truncation,
+                    "code_rag",
+                    "Content truncated to max_content_size".to_string(),
+                );
+            }
+            Some(sanitized.body)
+        } else {
+            None
+        };
+
+        if !prepared.memory_first {
+            self.trim_messages_to_budget(window, prepared.recent_history_budget);
+        }
+
+        // Session digest injected AFTER all other memory inserts (closest to system prompt).
+        if view.digest_enabled
+            && let Some((digest_text, _)) = view
+                .cached_session_digest
+                .clone()
+                .filter(|_| window.messages.len() > 1)
+        {
+            let digest_msg = Message {
+                role: Role::User,
+                content: format!("{}{digest_text}", crate::helpers::SESSION_DIGEST_PREFIX),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            };
+            let sanitized = self
+                .sanitize_memory_message(digest_msg, MemorySourceHint::LlmSummary, view)
+                .await;
+            window.messages.insert(1, sanitized);
+            tracing::debug!("injected session digest into context");
+        }
+
+        // Credential scrubbing pass.
+        if view.redact_credentials {
+            for msg in &mut *window.messages {
+                if msg.role == Role::System {
+                    continue;
+                }
+                if let Cow::Owned(s) = (view.scrub)(&msg.content) {
+                    msg.content = s;
+                }
+            }
+        }
+
+        recompute_prompt_tokens(window);
+
+        ContextDelta { code_context }
+    }
+
+    /// Sanitize a memory retrieval message before inserting it into the context window.
+    ///
+    /// This is the sole sanitization point for the six memory retrieval paths (`doc_rag`,
+    /// corrections, recall, `cross_session`, summaries, `graph_facts`). The `hint` parameter
+    /// modulates injection-detection sensitivity — `ConversationHistory` and `LlmSummary`
+    /// skip detection to suppress false positives; `ExternalContent` enables full detection.
+    ///
+    /// Truncation, control-char stripping, delimiter escaping, and spotlighting are active
+    /// for all hints (defense-in-depth invariant).
+    async fn sanitize_memory_message(
+        &self,
+        mut msg: zeph_llm::provider::Message,
+        hint: zeph_sanitizer::MemorySourceHint,
+        view: &mut ContextAssemblyView<'_>,
+    ) -> zeph_llm::provider::Message {
+        use zeph_sanitizer::{ContentSource, ContentSourceKind};
+
+        let source = ContentSource::new(ContentSourceKind::MemoryRetrieval).with_memory_hint(hint);
+        let sanitized = view.sanitizer.sanitize(&msg.content, source);
+        view.metrics.sanitizer_runs += 1;
+        if !sanitized.injection_flags.is_empty() {
+            tracing::warn!(
+                flags = sanitized.injection_flags.len(),
+                "injection patterns detected in memory retrieval"
+            );
+            view.metrics.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
+            let detail = sanitized
+                .injection_flags
+                .first()
+                .map_or_else(String::new, |f| {
+                    format!("Detected pattern: {}", f.pattern_name)
+                });
+            view.security_events.push(
+                zeph_common::SecurityEventCategory::InjectionFlag,
+                "memory_retrieval",
+                detail,
+            );
+        }
+        if sanitized.was_truncated {
+            view.metrics.sanitizer_truncations += 1;
+            view.security_events.push(
+                zeph_common::SecurityEventCategory::Truncation,
+                "memory_retrieval",
+                "Content truncated to max_content_size".to_string(),
+            );
+        }
+
+        // Quarantine step: route high-risk sources through an isolated LLM (defense-in-depth).
+        if view.sanitizer.is_enabled()
+            && let Some(qs) = view.quarantine_summarizer
+            && qs.should_quarantine(ContentSourceKind::MemoryRetrieval)
+        {
+            match qs.extract_facts(&sanitized, view.sanitizer).await {
+                Ok((facts, flags)) => {
+                    view.metrics.quarantine_invocations += 1;
+                    view.security_events.push(
+                        zeph_common::SecurityEventCategory::Quarantine,
+                        "memory_retrieval",
+                        "Content quarantined, facts extracted".to_string(),
+                    );
+                    let escaped = zeph_sanitizer::ContentSanitizer::escape_delimiter_tags(&facts);
+                    msg.content = zeph_sanitizer::ContentSanitizer::apply_spotlight(
+                        &escaped,
+                        &sanitized.source,
+                        &flags,
+                    );
+                    return msg;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "quarantine failed for memory retrieval, using original sanitized content"
+                    );
+                    view.metrics.quarantine_failures += 1;
+                    view.security_events.push(
+                        zeph_common::SecurityEventCategory::Quarantine,
+                        "memory_retrieval",
+                        format!("Quarantine failed: {e}"),
+                    );
+                }
+            }
+        }
+
+        msg.content = sanitized.body;
+        msg
     }
 
     /// Rebuild the system prompt for the current turn.
