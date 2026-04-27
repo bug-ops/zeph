@@ -981,12 +981,14 @@ impl ContextService {
         use zeph_context::manager::CompactionState;
 
         // Track hard compaction event for pressure metrics.
-        if let Some(turns) = summ.context_manager.turns_since_last_hard_compaction {
-            // TODO(review): compaction_turns_after_hard metric not tracked without MetricsCallback
-            let _ = turns;
-        }
+        let turns_since_last = summ
+            .context_manager
+            .turns_since_last_hard_compaction
+            .map(|t| u32::try_from(t).unwrap_or(u32::MAX));
         summ.context_manager.turns_since_last_hard_compaction = Some(0);
-        // TODO(review): compaction_hard_count metric not tracked without MetricsCallback
+        if let Some(metrics) = summ.metrics {
+            metrics.record_hard_compaction(turns_since_last);
+        }
 
         if in_cooldown {
             tracing::debug!(
@@ -1044,11 +1046,11 @@ impl ContextService {
             "hard compaction: falling back to LLM summarization"
         );
         let tokens_before = *summ.cached_prompt_tokens;
-        let compacted = crate::summarization::compaction::compact_context(summ, None).await?;
+        let outcome = crate::summarization::compaction::compact_context(summ, None).await?;
 
         let freed_tokens = tokens_before.saturating_sub(*summ.cached_prompt_tokens);
 
-        if compacted == 0 || freed_tokens == 0 {
+        if !outcome.is_compacted() || freed_tokens == 0 {
             tracing::warn!("hard compaction: no net reduction, marking exhausted");
             summ.context_manager.compaction = CompactionState::Exhausted { warned: false };
             status.send_status("").await;
@@ -1138,7 +1140,10 @@ impl ContextService {
     /// a compact summary. Use this in tests or when the caller has already determined that
     /// compaction is warranted. Production code should prefer [`Self::maybe_compact`].
     ///
-    /// Returns the number of messages compacted, or `0` when there is nothing to compact.
+    /// Invokes the optional callbacks wired into `summ` in this order:
+    /// archive → LLM summarization → probe → finalize → persistence.
+    ///
+    /// Returns [`CompactionOutcome::NoChange`] when there is nothing to compact.
     ///
     /// # Errors
     ///
@@ -1147,7 +1152,7 @@ impl ContextService {
         &self,
         summ: &mut ContextSummarizationView<'_>,
         max_summary_tokens: Option<usize>,
-    ) -> Result<usize, crate::error::ContextError> {
+    ) -> Result<crate::state::CompactionOutcome, crate::error::ContextError> {
         crate::summarization::compaction::compact_context(summ, max_summary_tokens).await
     }
 
@@ -1206,13 +1211,14 @@ impl ContextService {
             "proactive compression triggered"
         );
 
+        // TODO(critic-D1): populate `summ.compression_guidelines` here for the proactive path.
         match crate::summarization::compaction::compact_context(summ, Some(max_summary_tokens))
             .await
         {
-            Ok(compacted) if compacted > 0 => {
+            Ok(outcome) if outcome.is_compacted() => {
                 summ.context_manager.compaction =
                     zeph_context::manager::CompactionState::CompactedThisTurn { cooldown: 0 };
-                tracing::info!(compacted, "proactive compression complete");
+                tracing::info!("proactive compression complete");
             }
             Ok(_) => {}
             Err(e) => tracing::warn!(%e, "proactive compression failed"),

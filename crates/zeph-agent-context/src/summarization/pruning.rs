@@ -102,7 +102,9 @@ pub(crate) fn prune_tool_outputs_oldest_first(
     }
 
     if freed > 0 {
-        // TODO(review): metric increment (tool_output_prunes) not tracked without MetricsCallback
+        if let Some(metrics) = summ.metrics {
+            metrics.record_tool_output_prune(1);
+        }
         tracing::info!(freed, protection_boundary, "pruned tool outputs");
     }
     freed
@@ -248,7 +250,9 @@ fn evict_sorted_blocks(
     }
 
     if freed > 0 {
-        // TODO(review): metric increment (tool_output_prunes) not tracked without MetricsCallback
+        if let Some(metrics) = summ.metrics {
+            metrics.record_tool_output_prune(pruned_indices.len());
+        }
         tracing::info!(
             freed,
             pruned = pruned_indices.len(),

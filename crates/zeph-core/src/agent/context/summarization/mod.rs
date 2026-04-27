@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
 use zeph_llm::provider::{Message, MessagePart, Role};
 use zeph_memory::AnchoredSummary;
 
@@ -35,113 +36,6 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    async fn try_summarize_structured_with_deps(
-        deps: SummarizationDeps,
-        messages: &[Message],
-        guidelines: &str,
-    ) -> Result<AnchoredSummary, zeph_llm::LlmError> {
-        zeph_context::summarization::summarize_structured(&deps, messages, guidelines).await
-    }
-
-    /// Build a metadata-only summary without calling the LLM.
-    /// Used as last-resort fallback when LLM summarization repeatedly fails.
-    pub(super) fn build_metadata_summary(messages: &[Message]) -> String {
-        zeph_context::summarization::build_metadata_summary(messages, |s, n| {
-            super::truncate_chars(s, n)
-        })
-    }
-
-    async fn try_summarize_with_llm_with_deps(
-        deps: SummarizationDeps,
-        messages: &[Message],
-        guidelines: &str,
-    ) -> Result<String, zeph_llm::LlmError> {
-        zeph_context::summarization::summarize_with_llm(&deps, messages, guidelines).await
-    }
-
-    /// Remove tool response parts from messages using middle-out order.
-    /// `fraction` is in range (0.0, 1.0] — fraction of tool responses to remove.
-    /// Returns the modified message list.
-    pub(super) fn remove_tool_responses_middle_out(
-        messages: Vec<Message>,
-        fraction: f32,
-    ) -> Vec<Message> {
-        zeph_context::summarization::remove_tool_responses_middle_out(messages, fraction)
-    }
-
-    /// Summarize `messages` using `deps` extracted from `&self` before any `.await`.
-    ///
-    /// Equivalent to `summarize_messages` but takes all inputs by value so the
-    /// caller can extract them synchronously, then call this without holding `&self`
-    /// or any borrowed slice across any `.await`, making the enclosing future `Send`.
-    async fn summarize_messages_with_deps(
-        deps: SummarizationDeps,
-        structured_summaries: bool,
-        messages: Vec<Message>,
-        guidelines: String,
-    ) -> Result<String, super::super::error::AgentError> {
-        if structured_summaries {
-            match Self::try_summarize_structured_with_deps(deps.clone(), &messages, &guidelines)
-                .await
-            {
-                Ok(anchored) => {
-                    if let Some(ref cb) = deps.on_anchored_summary {
-                        cb(&anchored, false);
-                    }
-                    return Ok(super::cap_summary(anchored.to_markdown(), 16_000));
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "structured summarization failed, falling back to prose");
-                    if let Some(ref cb) = deps.on_anchored_summary {
-                        let empty = AnchoredSummary {
-                            session_intent: String::new(),
-                            files_modified: vec![],
-                            decisions_made: vec![],
-                            open_questions: vec![],
-                            next_steps: vec![],
-                        };
-                        cb(&empty, true);
-                    }
-                }
-            }
-        }
-
-        match Self::try_summarize_with_llm_with_deps(deps.clone(), &messages, &guidelines).await {
-            Ok(summary) => return Ok(summary),
-            Err(e) if !e.is_context_length_error() => return Err(e.into()),
-            Err(e) => {
-                tracing::warn!(
-                    "summarization hit context length error ({e}), trying progressive tool response removal"
-                );
-            }
-        }
-
-        for fraction in [0.10f32, 0.20, 0.50, 1.0] {
-            let reduced = Self::remove_tool_responses_middle_out(messages.clone(), fraction);
-            tracing::debug!(
-                fraction,
-                "retrying summarization with reduced tool responses"
-            );
-            match Self::try_summarize_with_llm_with_deps(deps.clone(), &reduced, &guidelines).await
-            {
-                Ok(summary) => {
-                    tracing::info!(
-                        fraction,
-                        "summarization succeeded after tool response removal"
-                    );
-                    return Ok(summary);
-                }
-                Err(e) if e.is_context_length_error() => {
-                    tracing::warn!(fraction, "still context length error, trying next tier");
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
-
-        tracing::warn!("all LLM summarization attempts failed, using metadata fallback");
-        Ok(Self::build_metadata_summary(&messages))
-    }
-
     /// Load the current compression guidelines from `SQLite` if the feature is enabled.
     ///
     /// Returns an empty string when the feature is disabled, memory is not initialized,
@@ -172,75 +66,6 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    /// Archive tool output bodies from `to_compact` messages before compaction (Memex #2432).
-    ///
-    /// Saves each non-empty, non-already-archived `ToolOutput` body to `tool_overflow`
-    /// with `archive_type = 'archive'`. Returns a list of reference strings in the format
-    /// `[archived:{uuid} — tool: {tool_name} — {bytes} bytes]` for use as a postfix.
-    ///
-    /// References are injected AFTER summarization (fix C1: LLM would destroy them).
-    /// Returns an empty vec when `archive_tool_outputs` is disabled or memory is unavailable.
-    ///
-    /// Callers must extract `memory` and `cid` from `&self` before the first `.await`
-    /// so that `&self` is not held across the await boundary (required for Send futures).
-    async fn archive_tool_outputs(
-        archive_enabled: bool,
-        memory: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
-        cid: Option<zeph_memory::ConversationId>,
-        to_compact: Vec<Message>,
-    ) -> Vec<String> {
-        if !archive_enabled {
-            return Vec::new();
-        }
-        let (Some(memory), Some(cid)) = (memory, cid) else {
-            return Vec::new();
-        };
-
-        let mut refs = Vec::new();
-        // Clone DbStore before the loop to avoid holding &SemanticMemory across .await points.
-        let sqlite = memory.sqlite().clone();
-
-        for msg in to_compact {
-            for part in &msg.parts {
-                if let MessagePart::ToolOutput {
-                    body, tool_name, ..
-                } = part
-                {
-                    // Skip empty, already-archived, or already-overflowed bodies.
-                    if body.is_empty()
-                        || body.starts_with("[archived:")
-                        || body.starts_with("[full output stored")
-                        || body.starts_with("[tool output pruned")
-                    {
-                        continue;
-                    }
-                    match sqlite.save_archive(cid.0, body.as_bytes()).await {
-                        Ok(uuid) => {
-                            let bytes = body.len();
-                            refs.push(format!(
-                                "[archived:{uuid} — tool: {tool_name} — {bytes} bytes]"
-                            ));
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "Memex: failed to archive tool output (non-fatal)"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        if !refs.is_empty() {
-            tracing::debug!(
-                archived = refs.len(),
-                "Memex: archived tool outputs before compaction"
-            );
-        }
-        refs
-    }
-
     /// Adjust `compact_end` backward so the preserved tail begins on a clean message boundary.
     ///
     /// If `messages[compact_end]` is a `Role::User` message that contains only `ToolResult`
@@ -251,6 +76,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns the adjusted `compact_end`.  The minimum returned value is `1` (drain nothing
     /// beyond the system message).
+    #[cfg(test)]
     fn adjust_compact_end_for_tool_pairs(messages: &[Message], compact_end: usize) -> usize {
         let mut end = compact_end;
         loop {
@@ -291,10 +117,39 @@ impl<C: Channel> Agent<C> {
     }
 }
 
+pub(in crate::agent) mod adapters;
 mod compaction;
 mod deferred;
 mod pruning;
 mod scheduling;
+
+// ── Test-helper delegations ───────────────────────────────────────────────────
+//
+// These thin wrappers expose stateless `zeph_context` helpers directly on `Agent<C>`
+// for test assertions. They are only compiled in test builds and are not part of
+// the public or production API.
+#[cfg(test)]
+impl<C: Channel> Agent<C> {
+    /// Build a metadata-only summary string from `messages` without calling the LLM.
+    ///
+    /// Delegates to [`zeph_context::summarization::build_metadata_summary`].
+    pub(in crate::agent::context) fn build_metadata_summary(messages: &[Message]) -> String {
+        zeph_context::summarization::build_metadata_summary(messages, |s, n| {
+            super::truncate_chars(s, n)
+        })
+    }
+
+    /// Remove `ToolOutput` parts from `messages` using middle-out eviction order.
+    ///
+    /// `fraction` is in `(0.0, 1.0]` — the fraction of tool responses to remove.
+    /// Delegates to [`zeph_context::summarization::remove_tool_responses_middle_out`].
+    pub(in crate::agent::context) fn remove_tool_responses_middle_out(
+        messages: Vec<Message>,
+        fraction: f32,
+    ) -> Vec<Message> {
+        zeph_context::summarization::remove_tool_responses_middle_out(messages, fraction)
+    }
+}
 
 #[cfg(test)]
 mod tests {

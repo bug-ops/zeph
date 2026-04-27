@@ -110,6 +110,12 @@ impl<C: Channel> Agent<C> {
             } else {
                 |s| std::borrow::Cow::Borrowed(s)
             },
+            // Compaction callbacks — populated by the shim before calling compact_context.
+            compression_guidelines: None,
+            probe: None,
+            archive: None,
+            persistence: None,
+            metrics: None,
         }
     }
 

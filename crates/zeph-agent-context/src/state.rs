@@ -17,6 +17,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use zeph_common::SecurityEventCategory;
 use zeph_common::task_supervisor::{BlockingHandle, TaskSupervisor};
@@ -289,6 +290,51 @@ pub struct ContextSummarizationView<'a> {
     /// Set to `crate::redact::scrub_content` by the `zeph-core` shim when
     /// `redact_credentials = true`, or to a no-op identity function otherwise.
     pub scrub: fn(&str) -> Cow<'_, str>,
+
+    // ── Compaction callbacks (populated by zeph-core shim) ────────────────────
+    /// Compression guidelines text loaded from `SQLite` by the `zeph-core` shim.
+    ///
+    /// `None` when the feature is disabled or the caller does not load guidelines.
+    /// The service passes the contained string (or `""`) to `summarize_with_llm`. Closes #3528.
+    ///
+    /// Set via [`ContextSummarizationView::with_compression_guidelines`].
+    ///
+    /// `// TODO(critic-D1)`: the proactive compression path (`maybe_proactive_compress`)
+    /// currently passes `None` here. A follow-up issue should populate guidelines there too.
+    pub compression_guidelines: Option<String>,
+
+    /// Optional probe-validation callback. When `Some`, the service invokes it after LLM
+    /// summarization and before draining/reinsert. See [`CompactionProbeCallback`] for the
+    /// full implementor contract.
+    pub probe: Option<&'a mut dyn CompactionProbeCallback>,
+
+    /// Optional pre-summary archive hook (Memex #2432). The service calls `archive(to_compact)`
+    /// BEFORE summarization and appends the returned reference list as a postfix AFTER the
+    /// LLM call so the LLM cannot destroy the `[archived:UUID]` markers.
+    pub archive: Option<&'a dyn ToolOutputArchive>,
+
+    /// Optional persistence completion callback. The service calls `after_compaction` once
+    /// the in-memory drain+reinsert is finalized. The optional Qdrant future returned by the
+    /// callback is bubbled back through [`CompactionOutcome::Compacted::qdrant_future`].
+    pub persistence: Option<&'a dyn CompactionPersistence>,
+
+    /// Metrics sink for compaction-related counter increments. Used for
+    /// `compaction_hard_count`, `tool_output_prunes`, and the four probe-outcome counters.
+    /// Closes #3527.
+    pub metrics: Option<&'a dyn MetricsCallback>,
+}
+
+impl ContextSummarizationView<'_> {
+    /// Set the compression guidelines text.
+    ///
+    /// Call this on the view returned by `Agent::summarization_view()` before passing it to
+    /// `ContextService::compact_context`. Using a builder method keeps construction uniform
+    /// and avoids direct field mutation.
+    #[must_use]
+    pub fn with_compression_guidelines(mut self, guidelines: Option<String>) -> Self {
+        self.compression_guidelines = guidelines;
+        self
+    }
 }
 
 /// Bundle of LLM provider handles needed for async context operations.
@@ -320,21 +366,218 @@ pub trait TrustGate: Send + Sync {
     fn set_effective_trust(&self, level: zeph_common::SkillTrustLevel);
 }
 
+/// Boxed `'static` future for the off-thread Qdrant session-summary write.
+///
+/// Returned from [`CompactionPersistence::after_compaction`] and bubbled back through
+/// [`CompactionOutcome::Compacted`] / [`CompactionOutcome::CompactedWithPersistError`].
+/// The caller (shim in `zeph-core`) dispatches this through `BackgroundSupervisor::spawn_summarization`.
+/// The future must return `bool` (`false` = success, `true` = error) to match the supervisor API.
+pub type QdrantPersistFuture = Pin<Box<dyn Future<Output = bool> + Send + 'static>>;
+
 /// Return type from `compact_context()` that distinguishes between successful compaction,
 /// probe rejection, and no-op.
 ///
 /// Gives `maybe_compact()` enough information to handle probe rejection without triggering
 /// the `Exhausted` state — which would only be correct if summarization itself is stuck.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
 pub enum CompactionOutcome {
-    /// Messages were drained and replaced with a summary.
-    Compacted,
-    /// Messages were drained and replaced with a summary, but persisting the result failed.
-    /// The in-memory state is correct; only persistence to storage failed.
-    CompactedWithPersistError,
+    /// Messages were drained and replaced with a summary. `SQLite` persistence succeeded.
+    ///
+    /// `qdrant_future` is an optional `'static` future for the off-thread Qdrant write;
+    /// the shim must dispatch it through `BackgroundSupervisor::spawn_summarization` and
+    /// must not await it inline.
+    Compacted {
+        /// Optional Qdrant write future to dispatch via the supervisor.
+        qdrant_future: Option<QdrantPersistFuture>,
+    },
+    /// Messages were drained and replaced with a summary, but synchronous `SQLite` persistence
+    /// reported failure. The in-memory state is correct; only persistence failed.
+    CompactedWithPersistError {
+        /// Optional Qdrant write future to dispatch via the supervisor.
+        qdrant_future: Option<QdrantPersistFuture>,
+    },
     /// Probe rejected the summary — original messages are preserved.
     /// Caller must NOT check `freed_tokens` or transition to `Exhausted`.
     ProbeRejected,
     /// No compaction was performed (too few messages, empty `to_compact`, etc.).
     NoChange,
+}
+
+impl PartialEq for CompactionOutcome {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare variants only; qdrant_future is not comparable (it is a dyn Future).
+        matches!(
+            (self, other),
+            (Self::Compacted { .. }, Self::Compacted { .. })
+                | (
+                    Self::CompactedWithPersistError { .. },
+                    Self::CompactedWithPersistError { .. }
+                )
+                | (Self::ProbeRejected, Self::ProbeRejected)
+                | (Self::NoChange, Self::NoChange)
+        )
+    }
+}
+
+impl std::fmt::Debug for CompactionOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Compacted { qdrant_future } => f
+                .debug_struct("Compacted")
+                .field("qdrant_future", &qdrant_future.as_ref().map(|_| "<future>"))
+                .finish(),
+            Self::CompactedWithPersistError { qdrant_future } => f
+                .debug_struct("CompactedWithPersistError")
+                .field("qdrant_future", &qdrant_future.as_ref().map(|_| "<future>"))
+                .finish(),
+            Self::ProbeRejected => write!(f, "ProbeRejected"),
+            Self::NoChange => write!(f, "NoChange"),
+        }
+    }
+}
+
+impl CompactionOutcome {
+    /// Remove and return the Qdrant persistence future embedded in `Compacted` or
+    /// `CompactedWithPersistError` variants. Returns `None` for `ProbeRejected` / `NoChange`.
+    ///
+    /// The shim calls this immediately after the service returns and dispatches the
+    /// future through `BackgroundSupervisor::spawn_summarization`.
+    pub fn qdrant_future_take(&mut self) -> Option<QdrantPersistFuture> {
+        match self {
+            Self::Compacted { qdrant_future }
+            | Self::CompactedWithPersistError { qdrant_future } => qdrant_future.take(),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` when compaction succeeded (either variant of `Compacted`).
+    #[must_use]
+    pub fn is_compacted(&self) -> bool {
+        matches!(
+            self,
+            Self::Compacted { .. } | Self::CompactedWithPersistError { .. }
+        )
+    }
+}
+
+/// Verdict returned by a [`CompactionProbeCallback`] after evaluating a candidate summary.
+///
+/// The implementor — not the service — is responsible for routing the verdict-specific data
+/// (score, `category_scores`, thresholds) through [`MetricsCallback`] and for calling
+/// `dump_compaction_probe` before returning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// Probe accepted the summary; pipeline continues normally.
+    Pass,
+    /// Probe soft-rejected; pipeline continues but the summary is flagged as borderline.
+    SoftFail,
+    /// Probe hard-rejected; service must abort and return [`CompactionOutcome::ProbeRejected`].
+    HardFail,
+}
+
+/// Probe-validation callback invoked by `ContextService::compact_context` after the LLM
+/// produces a candidate summary.
+///
+/// # Contract (mandatory)
+///
+/// Implementations MUST, before returning:
+/// 1. Call `dump_compaction_probe(result)` if a debug dumper is configured.
+/// 2. Update verdict-specific metric counters via the appropriate
+///    `MetricsCallback::record_compaction_probe_*` method. The score, `category_scores`,
+///    threshold, and `hard_fail_threshold` travel through the metrics adapter and are not
+///    part of the `ProbeOutcome` payload.
+/// 3. On internal validation error (`validate_compaction` returns `Err`), call
+///    `MetricsCallback::record_compaction_probe_error()` and return `ProbeOutcome::Pass`.
+///    An error must not abort compaction.
+///
+/// The service treats the returned `ProbeOutcome` exclusively as routing:
+/// `HardFail` → abort with `ProbeRejected`; `Pass | SoftFail` → continue.
+pub trait CompactionProbeCallback: Send {
+    /// Validate the candidate `summary` produced from `to_compact` messages.
+    fn validate<'a>(
+        &'a mut self,
+        to_compact: &'a [Message],
+        summary: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ProbeOutcome> + Send + 'a>>;
+}
+
+/// Pre-summary tool-output archiving hook (Memex #2432).
+///
+/// The service calls `archive(to_compact)` BEFORE summarization. The returned reference
+/// strings are appended as a postfix AFTER the LLM summary to prevent the LLM from
+/// destroying the `[archived:UUID]` markers.
+pub trait ToolOutputArchive: Send + Sync {
+    /// Archive tool output bodies from `to_compact` and return reference strings.
+    ///
+    /// Returns an empty `Vec` when archiving is disabled or no bodies are archived.
+    fn archive<'a>(
+        &'a self,
+        to_compact: &'a [Message],
+    ) -> Pin<Box<dyn Future<Output = Vec<String>> + Send + 'a>>;
+}
+
+/// Persistence completion hook invoked after the in-memory drain/reinsert is finalized.
+///
+/// Returns:
+/// - `persist_failed`: whether the synchronous `SQLite` persistence step failed.
+/// - `qdrant_future`: optional `'static` future for the off-thread Qdrant write, bubbled
+///   back to the caller via [`CompactionOutcome::Compacted::qdrant_future`].
+pub trait CompactionPersistence: Send + Sync {
+    /// Persist the compaction result and return the Qdrant write future.
+    fn after_compaction<'a>(
+        &'a self,
+        compacted_count: usize,
+        summary_content: &'a str,
+        summary: &'a str,
+    ) -> Pin<Box<dyn Future<Output = (bool, Option<QdrantPersistFuture>)> + Send + 'a>>;
+}
+
+/// Metrics-counter sink for `ContextService` increments.
+///
+/// Implemented in `zeph-core` by an adapter wrapping `Arc<MetricsCollector>`. Keeps
+/// `zeph-agent-context` free of `zeph-core` internal metrics types. Closes #3527.
+///
+/// All four `record_compaction_probe_*` methods are called from inside the
+/// [`CompactionProbeCallback`] implementation — not from the service itself — per the
+/// probe-callback contract.
+pub trait MetricsCallback: Send + Sync {
+    /// Record that a hard-compaction event occurred.
+    ///
+    /// `turns_since_last` is `None` on the first hard compaction of the session.
+    fn record_hard_compaction(&self, turns_since_last: Option<u32>);
+
+    /// Record that tool outputs were pruned.
+    ///
+    /// `count` is the number of tool-output bodies pruned in this pass.
+    fn record_tool_output_prune(&self, count: usize);
+
+    /// Record a probe pass verdict with full score data.
+    fn record_compaction_probe_pass(
+        &self,
+        score: f32,
+        category_scores: Vec<zeph_memory::CategoryScore>,
+        threshold: f32,
+        hard_fail_threshold: f32,
+    );
+
+    /// Record a probe soft-fail verdict with full score data.
+    fn record_compaction_probe_soft_fail(
+        &self,
+        score: f32,
+        category_scores: Vec<zeph_memory::CategoryScore>,
+        threshold: f32,
+        hard_fail_threshold: f32,
+    );
+
+    /// Record a probe hard-fail verdict with full score data.
+    fn record_compaction_probe_hard_fail(
+        &self,
+        score: f32,
+        category_scores: Vec<zeph_memory::CategoryScore>,
+        threshold: f32,
+        hard_fail_threshold: f32,
+    );
+
+    /// Record that the probe returned an error (non-fatal; compaction proceeded).
+    fn record_compaction_probe_error(&self);
 }

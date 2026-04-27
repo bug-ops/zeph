@@ -87,7 +87,7 @@ impl<C: Channel> Agent<C> {
                         .channel
                         .send_status("context too long, compacting...")
                         .await;
-                    self.compact_context().await?;
+                    let _ = self.compact_context().await?;
                     let _ = self.channel.send_status("").await;
                 }
                 Err(e) if e.is_beta_header_rejected() && attempt + 1 < max_attempts => {
@@ -433,7 +433,7 @@ impl<C: Channel> Agent<C> {
                         .channel
                         .send_status("context too long, compacting...")
                         .await;
-                    self.compact_context().await?;
+                    let _ = self.compact_context().await?;
                     let _ = self.channel.send_status("").await;
                 }
                 Err(e) => return Err(e),

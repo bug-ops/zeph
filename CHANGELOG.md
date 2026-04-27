@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(agent-context): add `MetricsCallback` trait and `ToolOutputArchive`, `CompactionProbeCallback`,
+  `CompactionPersistence` callback traits to `zeph-agent-context` (#3527). These four traits define
+  the cross-crate interface for compaction side-effects; `zeph-agent-context` declares them and
+  `zeph-core` provides concrete implementations, preserving the crate isolation invariant.
+  `MetricsCallback` exposes six recording methods (hard-compaction, tool-output-prune, probe
+  pass/soft-fail/hard-fail/error) consumed by `ContextService` internals.
+
+### Changed
+
+- refactor(agent-context): add `compression_guidelines: Option<String>` field to
+  `ContextSummarizationView` and `with_compression_guidelines` builder; `compact_context` now reads
+  the guidelines from the view rather than requiring the caller to pass them separately (#3528).
+  `ContextSummarizationView` also gains four optional callback fields: `probe`, `archive`,
+  `persistence`, and `metrics`.
+- refactor(core): wire `Agent<C>::compact_context` to `ContextService::compact_context` via callback
+  traits (#3526). The old 100-line `compact_context` method is replaced by a ≤11-statement shim;
+  all structural logic (partition, archive, summarize, probe, finalize, persist) lives in
+  `zeph_agent_context`. Four adapter types (`MetricsCollectorCallback`, `AgentProbe`,
+  `AgentArchive`, `AgentPersistence`) implemented in a new `adapters` module, bundled by
+  `CompactionAdapters`. Dead helpers (`archive_tool_outputs`, `summarize_messages_with_deps`,
+  `try_summarize_structured_with_deps`, `try_summarize_with_llm_with_deps`,
+  `remove_tool_responses_middle_out`) removed from `zeph-core`; test-only wrappers added back as
+  `#[cfg(test)]` delegations. `PartialEq` (variant-only, ignores `qdrant_future`) added to
+  `CompactionOutcome` for test assertions.
+
 ### Fixed
 
 - fix(acp): restore session/update notification routing in run-agent client (#3520). Removed

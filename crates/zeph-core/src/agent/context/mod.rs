@@ -7,7 +7,9 @@ pub(crate) mod retrieved;
 mod summarization;
 
 pub(super) use crate::text::truncate_to_chars as truncate_chars;
+#[cfg(test)]
 pub(super) use zeph_agent_context::state::CompactionOutcome;
+#[cfg(test)]
 pub(super) use zeph_context::slot::cap_summary;
 #[cfg(test)]
 pub(super) use zeph_context::slot::chunk_messages;

@@ -45,6 +45,8 @@ pub use error::ContextError;
 pub use helpers::BudgetHint;
 pub use service::ContextService;
 pub use state::{
-    CompactionOutcome, ContextAssemblyView, ContextDelta, ContextSummarizationView,
-    MessageWindowView, MetricsCounters, ProviderHandles, StatusSink,
+    CompactionOutcome, CompactionPersistence, CompactionProbeCallback, ContextAssemblyView,
+    ContextDelta, ContextSummarizationView, MessageWindowView, MetricsCallback, MetricsCounters,
+    ProbeOutcome, ProviderHandles, QdrantPersistFuture, SecurityEventSink, StatusSink,
+    ToolOutputArchive, TrustGate,
 };

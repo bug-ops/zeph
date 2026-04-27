@@ -9,31 +9,35 @@
 //! compaction without being sent to the LLM.
 //!
 //! The caller (scheduling module) is responsible for deciding *when* to compact.
-//! This module only handles the mechanics: partition → summarize → drain → reinsert.
+//! This module handles: archive → partition → summarize → probe → drain → reinsert → persist.
 
 use zeph_context::slot::cap_summary;
 use zeph_llm::provider::{Message, MessageMetadata, Role};
 
 use crate::compaction::SubgoalState;
 use crate::error::ContextError;
-use crate::state::ContextSummarizationView;
+use crate::state::{CompactionOutcome, ContextSummarizationView, ProbeOutcome};
 
 /// Compact the context window using LLM summarization.
 ///
-/// Applies pending deferred summaries first (`CRIT-01`), then drains
-/// `messages[1..compact_end]`, summarizes the non-pinned messages via the LLM,
-/// and reinserts the summary at position 1. Focus-pinned and active-subgoal messages
-/// survive compaction and are reinserted after the summary.
+/// Pipeline:
+/// 1. Apply pending deferred summaries (`CRIT-01`).
+/// 2. Partition `messages[1..compact_end]` into pinned, active-subgoal, and to-compact.
+/// 3. Call `summ.archive` to save tool output bodies before summarization (Memex #2432).
+/// 4. Invoke the LLM via `summarize_messages`.
+/// 5. Call `summ.probe` to validate the summary quality; abort on `HardFail`.
+/// 6. Finalize: drain the range, reinsert summary + protected messages.
+/// 7. Call `summ.persistence` to persist the result; bubble the Qdrant future.
 ///
-/// Returns the number of compacted messages, or `0` when there was nothing to compact.
+/// Returns [`CompactionOutcome::NoChange`] when there is nothing to compact.
 ///
 /// # Errors
 ///
-/// Returns [`ContextError::Memory`] when the `SQLite` persist call fails.
+/// Returns [`ContextError`] if LLM summarization fails.
 pub(crate) async fn compact_context(
     summ: &mut ContextSummarizationView<'_>,
     max_summary_tokens: Option<usize>,
-) -> Result<usize, ContextError> {
+) -> Result<CompactionOutcome, ContextError> {
     use super::deferred::apply_deferred_summaries;
 
     // CRIT-01: force-apply pending deferred summaries before draining.
@@ -42,7 +46,7 @@ pub(crate) async fn compact_context(
     let preserve_tail = summ.context_manager.compaction_preserve_tail;
 
     if summ.messages.len() <= preserve_tail + 1 {
-        return Ok(0);
+        return Ok(CompactionOutcome::NoChange);
     }
 
     let compact_end = {
@@ -51,22 +55,63 @@ pub(crate) async fn compact_context(
     };
 
     if compact_end <= 1 {
-        return Ok(0);
+        return Ok(CompactionOutcome::NoChange);
     }
 
     let (pinned, active_subgoal, to_compact) = partition_messages_for_compaction(summ, compact_end);
 
     if to_compact.is_empty() {
-        return Ok(0);
+        return Ok(CompactionOutcome::NoChange);
     }
 
-    let summary = summarize_messages(summ, &to_compact, max_summary_tokens).await?;
+    // Step 3: archive tool outputs before summarization (Memex #2432).
+    // Extract the archive pointer before .await so no &summ crosses the await boundary.
+    // References are appended as a postfix AFTER the LLM call so the LLM never sees them.
+    let archived_refs: Vec<String> = if let Some(archive) = summ.archive.as_ref() {
+        archive.archive(&to_compact).await
+    } else {
+        Vec::new()
+    };
+
+    // Step 4: LLM summarization.
+    // Extract deps and guidelines from summ synchronously before .await so no reference to
+    // summ (which contains !Sync fields) is held across the await boundary.
+    let summary = {
+        let deps = summ.summarization_deps.clone();
+        let guidelines = summ
+            .compression_guidelines
+            .as_deref()
+            .unwrap_or("")
+            .to_owned();
+        summarize_messages(deps, &to_compact, guidelines, max_summary_tokens).await?
+    };
+
+    // Step 5: probe validation (optional).
+    if let Some(probe) = summ.probe.as_mut() {
+        let outcome = probe.validate(&to_compact, &summary).await;
+        if outcome == ProbeOutcome::HardFail {
+            return Ok(CompactionOutcome::ProbeRejected);
+        }
+    }
 
     let compacted_count = to_compact.len();
 
-    let summary_content =
-        format!("[conversation summary — {compacted_count} messages compacted]\n{summary}");
+    // Build archive postfix (injected after LLM summary to protect [archived:UUID] markers).
+    let archive_postfix = if archived_refs.is_empty() {
+        String::new()
+    } else {
+        let refs = archived_refs.join("\n");
+        format!("\n\n[archived tool outputs — retrievable via read_overflow]\n{refs}")
+    };
 
+    let summary_content = format!(
+        "[conversation summary — {compacted_count} messages compacted]\n{summary}{archive_postfix}"
+    );
+
+    // Step 6: finalize — drain + reinsert.
+    // CONTRACT (S3): `finalize_compacted_messages` MUST update `*summ.cached_prompt_tokens`
+    // before returning. Callers that read cached_prompt_tokens for delta computation
+    // (e.g. `do_hard_compaction`'s freed-tokens calculation) rely on this update.
     finalize_compacted_messages(
         summ,
         compact_end,
@@ -77,31 +122,21 @@ pub(crate) async fn compact_context(
         &summary,
     );
 
-    // Persist to SQLite; non-fatal — log and continue.
-    if let (Some(memory), Some(cid)) = (summ.memory.as_deref(), summ.conversation_id) {
-        let sqlite = memory.sqlite().clone();
-        let ids = sqlite
-            .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))
-            .await;
-        match ids {
-            Ok(ids) if ids.len() >= 2 => {
-                let start = ids[1];
-                let end = ids[compacted_count.min(ids.len() - 1)];
-                if let Err(e) = sqlite
-                    .replace_conversation(cid, start..=end, "system", &summary_content)
-                    .await
-                {
-                    tracing::warn!("failed to persist compaction in sqlite: {e:#}");
-                }
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!("failed to get message ids for compaction: {e:#}");
-            }
-        }
-    }
+    // Step 7: persistence (optional).
+    // Extract pointer before .await so no &summ crosses the await boundary.
+    let (persist_failed, qdrant_future) = if let Some(persistence) = summ.persistence.as_ref() {
+        persistence
+            .after_compaction(compacted_count, &summary_content, &summary)
+            .await
+    } else {
+        (false, None)
+    };
 
-    Ok(compacted_count)
+    if persist_failed {
+        Ok(CompactionOutcome::CompactedWithPersistError { qdrant_future })
+    } else {
+        Ok(CompactionOutcome::Compacted { qdrant_future })
+    }
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -167,6 +202,8 @@ fn partition_messages_for_compaction(
 }
 
 /// Drain the compaction range and reinsert the summary plus protected messages.
+///
+/// Updates `*summ.cached_prompt_tokens` before returning (CONTRACT S3).
 fn finalize_compacted_messages(
     summ: &mut ContextSummarizationView<'_>,
     compact_end: usize,
@@ -214,7 +251,8 @@ fn finalize_compacted_messages(
         "compacted context"
     );
 
-    // Recompute cached token count after mutation.
+    // CONTRACT (S3): update cached token count after mutation so callers computing
+    // freed-token deltas see the correct post-compaction value.
     *summ.cached_prompt_tokens = summ
         .messages
         .iter()
@@ -223,19 +261,22 @@ fn finalize_compacted_messages(
 }
 
 /// Invoke the LLM summarization path via `SummarizationDeps`.
+///
+/// Takes `deps` and `guidelines` by value (already extracted from `summ` by the caller)
+/// so no reference to `ContextSummarizationView` (which contains `!Sync` fields) is held
+/// across the `.await` boundary.
 async fn summarize_messages(
-    summ: &ContextSummarizationView<'_>,
+    deps: zeph_context::summarization::SummarizationDeps,
     messages: &[Message],
+    guidelines: String,
     max_summary_tokens: Option<usize>,
 ) -> Result<String, ContextError> {
-    let deps = &summ.summarization_deps;
-    let guidelines = String::new(); // TODO(review): load compression_guidelines via ContextSummarizationView
+    let cap = max_summary_tokens.unwrap_or(16_000).saturating_mul(4);
 
-    let raw = zeph_context::summarization::summarize_with_llm(deps, messages, &guidelines)
+    let raw = zeph_context::summarization::summarize_with_llm(&deps, messages, &guidelines)
         .await
         .map_err(|e| ContextError::Memory(zeph_memory::MemoryError::Llm(e)))?;
 
-    let cap = max_summary_tokens.unwrap_or(16_000).saturating_mul(4);
     Ok(cap_summary(raw, cap))
 }
 
