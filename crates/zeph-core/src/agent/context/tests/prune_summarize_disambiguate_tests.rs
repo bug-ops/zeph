@@ -396,7 +396,7 @@ async fn test_store_session_summary_on_compaction() {
     }
 
     // compact_context should succeed (non-fatal store)
-    agent.compact_context().await.unwrap();
+    let _ = agent.compact_context().await.unwrap();
     assert!(agent.msg.messages[1].content.contains("compacted summary"));
 }
 
@@ -445,7 +445,7 @@ async fn test_compact_context_calls_replace_conversation() {
         });
     }
 
-    agent.compact_context().await.unwrap();
+    let _ = agent.compact_context().await.unwrap();
 
     // After compaction, replace_conversation() must have been called:
     // original messages become agent_visible=0, summary row is inserted with agent_visible=1.

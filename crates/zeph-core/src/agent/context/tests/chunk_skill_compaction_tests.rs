@@ -249,7 +249,7 @@ async fn compact_context_preserves_system_and_tail() {
         });
     }
 
-    agent.compact_context().await.unwrap();
+    let _ = agent.compact_context().await.unwrap();
 
     assert_eq!(agent.msg.messages[0].role, Role::System);
     assert_eq!(agent.msg.messages[0].content, system_content);
@@ -291,7 +291,7 @@ async fn compact_context_too_few_messages() {
     });
 
     let len_before = agent.msg.messages.len();
-    agent.compact_context().await.unwrap();
+    let _ = agent.compact_context().await.unwrap();
     assert_eq!(agent.msg.messages.len(), len_before);
 }
 
@@ -347,7 +347,7 @@ async fn compact_context_increments_metric() {
         });
     }
 
-    agent.compact_context().await.unwrap();
+    let _ = agent.compact_context().await.unwrap();
     assert_eq!(rx.borrow().context_compactions, 1);
 }
 
