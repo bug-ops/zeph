@@ -1084,4 +1084,33 @@ mod skip_ml_internal_tools {
             "invoke_skill is an internal tool — classify_injection must be skipped"
         );
     }
+
+    // #3547: DeBERTa fires false positives on bash output containing shell metacharacters
+    // such as `$ expr 15 '*' 3` (the `$ <cmd>` prefix added by ShellExecutor).
+    // Both "bash" and "shell" must be in INTERNAL_TOOLS so the ML path is bypassed.
+    #[tokio::test]
+    async fn sanitize_tool_output_bash_tool_skips_ml_classifier() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        let cfg = zeph_sanitizer::ContentIsolationConfig {
+            enabled: true,
+            flag_injection_patterns: true,
+            ..Default::default()
+        };
+        agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg)
+            .with_classifier(Arc::new(BlockedBackend), 5_000, 0.5)
+            .with_enforcement_mode(zeph_config::InjectionEnforcementMode::Block);
+
+        for tool in ["bash", "shell"] {
+            let body = "$ expr 15 '*' 3\n45";
+            let (result, _) = agent.sanitize_tool_output(body, tool).await;
+            assert_ne!(
+                result, "[tool output blocked: injection detected by classifier]",
+                "'{tool}' output with shell metacharacters must bypass the ML classifier (#3547)"
+            );
+        }
+    }
 }

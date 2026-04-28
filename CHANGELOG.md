@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(sanitizer): `"bash"` and `"shell"` tool outputs no longer trigger false-positive ML injection
+  classifier warnings when the output contains shell special characters (single quotes, asterisks,
+  arithmetic expressions). Both tools are now in the `INTERNAL_TOOLS` allowlist; only ML
+  classification is skipped — regex-based injection detection continues to run (#3547).
+
 - fix(gateway): `POST /webhook` error responses now return `application/json` with a structured
   `{"error": "...", "status": <code>}` body instead of `text/plain`; covers both JSON deserialization
   failures (axum `JsonRejection`) and field-length validation failures (#3540).

@@ -29,6 +29,8 @@ fn is_policy_blocked_output(body: &str) -> bool {
 /// different policy but must stay consistent.
 #[cfg(feature = "classifiers")]
 const INTERNAL_TOOLS: &[&str] = &[
+    "bash",
+    "shell",
     "invoke_skill",
     "load_skill",
     "memory_save",
@@ -380,6 +382,8 @@ mod tests {
     #[test]
     fn internal_tool_allowlist_covers_all_zeph_tools() {
         for name in [
+            "bash",
+            "shell",
             "invoke_skill",
             "load_skill",
             "memory_save",
@@ -401,7 +405,6 @@ mod tests {
     #[test]
     fn external_and_mcp_tools_not_in_allowlist() {
         for name in [
-            "shell",
             "web-scrape",
             "fetch",
             "read_overflow",
