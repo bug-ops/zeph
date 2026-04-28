@@ -4,7 +4,7 @@
 //! Exfiltration guards: prevent LLM-generated content from leaking data via
 //! outbound channels (markdown images, tool URL injection, poisoned memory writes).
 //!
-//! The [`ExfiltrationGuard`] is stateless and covers three attack vectors:
+//! The [`ExfiltrationGuard`] is stateless and covers five attack vectors:
 //!
 //! 1. **Markdown image exfiltration** — an adversary plants `![t](https://evil.com/track.gif)`
 //!    in content. When the LLM echoes it, the rendered image loads silently, leaking session data.
@@ -18,10 +18,12 @@
 //!    Qdrant embedding. [`ExfiltrationGuard::should_guard_memory_write`] signals the caller to
 //!    skip the embedding step, preventing poisoned content from polluting semantic search.
 //!
-//! # Phase 5 TODO
-//! - HTML img tag detection (`<img src="https://...">`) — requires HTML parser
-//! - Unicode zero-width joiner bypass (`!\u{200B}[alt](url)`) — requires Unicode-aware matching
-//! - Both are low-priority: the LLM context wrapper already limits what arrives here
+//! 4. **HTML img tag exfiltration** — `<img src="https://evil.com/track.gif">` embeds are
+//!    stripped alongside markdown images. Controlled by the same `block_markdown_images` flag.
+//!
+//! 5. **Unicode zero-width character bypass** — inserting zero-width joiners/non-joiners between
+//!    `!` and `[` breaks naive markdown regex matchers. [`ExfiltrationGuard::scan_output`]
+//!    detects and strips these sequences when `block_markdown_images` is enabled.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -59,6 +61,24 @@ static REFERENCE_USAGE_RE: LazyLock<Regex> =
 static URL_EXTRACT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>]+"#).expect("valid URL_EXTRACT_RE"));
 
+/// Matches HTML `<img>` tags with external http/https `src` attributes.
+///
+/// Both single-quoted and double-quoted `src` values are matched. The captured group 1 contains
+/// the URL. The full tag (`<img … >`) is replaced with `[image removed: <url>]`.
+static HTML_IMG_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)<img\b[^>]*\bsrc\s*=\s*["'](https?://[^"']+)["'][^>]*>"#)
+        .expect("valid HTML_IMG_RE")
+});
+
+/// Detects zero-width Unicode characters between `!` and `[` used to bypass markdown regex.
+///
+/// Adversaries insert U+200B (ZWSP), U+200C (ZWNJ), U+200D (ZWJ), or U+FEFF (BOM) between
+/// the `!` and `[` characters to prevent standard regex matchers from recognising the
+/// markdown image syntax. This pattern catches those sequences for stripping.
+static UNICODE_BYPASS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new("![\u{200B}\u{200C}\u{200D}\u{FEFF}]+\\[").expect("valid UNICODE_BYPASS_RE")
+});
+
 // ---------------------------------------------------------------------------
 // Event types
 // ---------------------------------------------------------------------------
@@ -83,6 +103,8 @@ static URL_EXTRACT_RE: LazyLock<Regex> =
 pub enum ExfiltrationEvent {
     /// A markdown image with an external URL was stripped from LLM output.
     MarkdownImageBlocked { url: String },
+    /// An HTML `<img src="…">` tag with an external URL was stripped from LLM output.
+    HtmlImageBlocked { url: String },
     /// A tool call argument contained a URL that appeared in untrusted flagged content.
     SuspiciousToolUrl { url: String, tool_name: ToolName },
     /// A memory write was intercepted because the content had injection flags.
@@ -152,12 +174,10 @@ impl ExfiltrationGuard {
     /// - Reference-style images: `![alt][ref]` + `[ref]: https://evil.com/img`
     /// - Percent-encoded URLs inside already-captured groups: decoded before `is_external_url()`
     ///
-    /// # Not covered (Phase 5, tracked in #1195)
+    /// # Not covered (tracked in #1195)
     /// - Percent-encoded scheme bypass: `%68ttps://evil.com` — the regex requires literal
     ///   `https?://`, so a percent-encoded scheme is never captured. Fix requires pre-decoding
     ///   the full input text before regex matching.
-    /// - HTML `<img src="...">` tags
-    /// - Unicode zero-width joiner tricks (`!\u{200B}[alt](url)`)
     /// - Reference definitions inside fenced code blocks (false positive risk)
     ///
     /// # Panics
@@ -247,6 +267,33 @@ impl ExfiltrationGuard {
                 def_cleaned.pop();
             }
             result = def_cleaned;
+        }
+
+        // --- Pass 3: HTML img tags with external URLs ---
+        let mut html_result = String::with_capacity(result.len());
+        let mut html_last_end = 0usize;
+        for cap in HTML_IMG_RE.captures_iter(&result) {
+            let m = cap.get(0).expect("full match");
+            let url = cap.get(1).expect("src url group").as_str().to_owned();
+            tracing::warn!(url = %url, "HTML img tag with external URL stripped from LLM output");
+            html_result.push_str(&result[html_last_end..m.start()]);
+            let _ = write!(html_result, "[image removed: {url}]");
+            html_last_end = m.end();
+            events.push(ExfiltrationEvent::HtmlImageBlocked { url });
+        }
+        if html_last_end > 0 {
+            html_result.push_str(&result[html_last_end..]);
+            result = html_result;
+        }
+
+        // --- Pass 4: Unicode zero-width bypass sequences ---
+        // Adversaries insert zero-width chars between `!` and `[` to defeat markdown regexes.
+        // Strip the entire `!<zwc+>[` sequence to defuse the payload.
+        if UNICODE_BYPASS_RE.is_match(&result) {
+            tracing::warn!("Unicode zero-width bypass attempt detected in LLM output; stripping");
+            result = UNICODE_BYPASS_RE
+                .replace_all(&result, "[blocked]")
+                .into_owned();
         }
 
         (result, events)
@@ -569,6 +616,85 @@ mod tests {
             "replacement label must be present: {cleaned}"
         );
         assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn html_img_tag_blocked() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        let (cleaned, events) = guard.scan_output(r#"text <img src="https://evil.com/p.gif"> end"#);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ExfiltrationEvent::HtmlImageBlocked { .. })),
+            "expected HtmlImageBlocked event"
+        );
+        assert!(
+            !cleaned.contains("<img"),
+            "img tag must be removed: {cleaned}"
+        );
+        assert!(
+            cleaned.contains("[image removed:"),
+            "replacement label must be present: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn html_img_tag_single_quote_blocked() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        let (cleaned, events) = guard.scan_output("text <img src='https://evil.com/p.gif'> end");
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ExfiltrationEvent::HtmlImageBlocked { .. })),
+            "expected HtmlImageBlocked event for single-quoted src"
+        );
+        assert!(
+            !cleaned.contains("<img"),
+            "img tag must be removed: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn html_img_tag_noop_when_disabled() {
+        let input = r#"text <img src="https://evil.com/p.gif"> end"#;
+        let (cleaned, events) = guard_disabled().scan_output(input);
+        assert_eq!(cleaned, input);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn unicode_zwj_bypass_blocked() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        // Insert U+200B (ZWSP) between ! and [ to try to evade markdown regex.
+        let input = "!\u{200B}[alt](https://evil.com/track)";
+        let (cleaned, _events) = guard.scan_output(input);
+        // The bypass sequence `!\u{200B}[` is replaced with `[blocked]`, defusing
+        // the markdown image syntax — the `!` prefix that triggers image rendering is gone.
+        assert!(
+            !cleaned.contains('\u{200B}'),
+            "zero-width char must be stripped: {cleaned}"
+        );
+        assert!(
+            !cleaned.starts_with('!'),
+            "image trigger `!` must be removed: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn unicode_bypass_noop_when_disabled() {
+        let input = "!\u{200B}[alt](https://evil.com/track)";
+        let (cleaned, events) = guard_disabled().scan_output(input);
+        assert_eq!(cleaned, input);
+        assert!(events.is_empty());
     }
 
     // --- validate_tool_call ---

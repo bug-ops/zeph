@@ -74,6 +74,10 @@ pub struct EntityResolver<'a> {
     name_locks: NameLockMap,
     /// Counter for error-triggered fallbacks (embed/LLM failures). Tests can read this via Arc.
     fallback_count: Arc<std::sync::atomic::AtomicU64>,
+    /// Ensures `ensure_named_collection()` is called at most once per resolver lifetime.
+    ///
+    /// Arc-wrapped so future clones or spawned tasks can share the same gate.
+    collection_ensured: Arc<tokio::sync::OnceCell<()>>,
 }
 
 impl<'a> EntityResolver<'a> {
@@ -87,6 +91,7 @@ impl<'a> EntityResolver<'a> {
             ambiguous_threshold: 0.70,
             name_locks: Arc::new(DashMap::new()),
             fallback_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            collection_ensured: Arc::new(tokio::sync::OnceCell::new()),
         }
     }
 
@@ -619,12 +624,19 @@ impl<'a> EntityResolver<'a> {
         summary: &str,
         vector: &[f32],
     ) {
-        // TODO(PERF-05): ensure_named_collection() is called on every store_entity_embedding()
-        // invocation, generating one Qdrant network roundtrip per entity in a batch. Cache this
-        // result at resolver construction time via `std::sync::OnceLock<bool>` to call it once.
+        // Ensure the Qdrant collection exists exactly once per resolver lifetime.
+        // All entity embeddings use the same model dimension, so the first call's
+        // vector_size wins — subsequent entities share the same collection.
+        // On error the cell stays unset, so the next entity retries — transient
+        // network failures do not permanently disable embedding storage.
         let vector_size = u64::try_from(vector.len()).unwrap_or(384);
-        if let Err(err) = emb_store
-            .ensure_named_collection(ENTITY_COLLECTION, vector_size)
+        let collection_ensured = Arc::clone(&self.collection_ensured);
+        if let Err(err) = collection_ensured
+            .get_or_try_init(|| async {
+                emb_store
+                    .ensure_named_collection(ENTITY_COLLECTION, vector_size)
+                    .await
+            })
             .await
         {
             tracing::error!(
