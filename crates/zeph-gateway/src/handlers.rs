@@ -3,10 +3,18 @@
 
 use axum::Json;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
 use super::server::AppState;
+
+/// JSON body returned for all error responses from `POST /webhook`.
+#[derive(serde::Serialize)]
+struct ErrorResponse {
+    error: String,
+    status: u16,
+}
 
 /// JSON body expected on `POST /webhook`.
 ///
@@ -78,10 +86,30 @@ struct HealthResponse {
 /// | 503 | Internal channel is closed (agent shut down) |
 pub(crate) async fn webhook_handler(
     State(state): State<AppState>,
-    Json(payload): Json<WebhookPayload>,
+    payload: Result<Json<WebhookPayload>, JsonRejection>,
 ) -> impl IntoResponse {
+    let Json(payload) = match payload {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                e.status(),
+                Json(ErrorResponse {
+                    error: e.body_text(),
+                    status: e.status().as_u16(),
+                }),
+            )
+                .into_response();
+        }
+    };
     if let Err(e) = payload.validate() {
-        return (StatusCode::UNPROCESSABLE_ENTITY, e).into_response();
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: e.to_string(),
+                status: StatusCode::UNPROCESSABLE_ENTITY.as_u16(),
+            }),
+        )
+            .into_response();
     }
     let sender = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&payload.sender);
     let channel = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&payload.channel);

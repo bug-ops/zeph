@@ -335,6 +335,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn webhook_missing_field_returns_json_error() {
+        let (app, _rx) = make_router(None, 0);
+        // Missing "sender" field
+        let body = serde_json::json!({"channel": "ci643", "body": "test"});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhook")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 422);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "expected JSON content-type, got: {ct}"
+        );
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("error").is_some());
+        assert_eq!(json["status"], 422);
+    }
+
+    #[tokio::test]
+    async fn webhook_validation_failure_returns_json_error() {
+        let (app, _rx) = make_router(None, 0);
+        let body = serde_json::json!({
+            "channel": "ci643",
+            "sender": "a".repeat(257),
+            "body": "hello"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhook")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 422);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "expected JSON content-type, got: {ct}"
+        );
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("error").is_some());
+        assert_eq!(json["status"], 422);
+    }
+
+    #[tokio::test]
     async fn body_size_limit() {
         let (state, _rx) = test_state();
         let app = build_router(state, None, 0, 64);

@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(gateway): `POST /webhook` error responses now return `application/json` with a structured
+  `{"error": "...", "status": <code>}` body instead of `text/plain`; covers both JSON deserialization
+  failures (axum `JsonRejection`) and field-length validation failures (#3540).
+
 - refactor(context): delete unreachable `ContextService::rebuild_system_prompt` stub — the method
   called `unimplemented!()` and had zero callers; the real implementation lives on `Agent<C>`. Removes
   a runtime-panic foot-gun from the public API.
