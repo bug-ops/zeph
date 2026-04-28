@@ -10,5 +10,5 @@
 #[tokio::test]
 async fn ingested_document_chunk_appears_in_agent_context() {
     // Placeholder: full implementation tracked in the live-testing playbook.
-    // The test body requires a running GatewayServer and agent instance (see #1026).
+    // The test body requires a running Qdrant instance and embedding provider (see #1028).
 }
