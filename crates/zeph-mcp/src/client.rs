@@ -970,6 +970,36 @@ impl McpClient {
         }
     }
 
+    /// Create a stub `McpClient` backed by a dropped in-memory duplex transport.
+    ///
+    /// The service task will exit immediately because the remote half of the duplex is
+    /// dropped. Safe to call `shutdown()` on the returned client — `cancel()` simply
+    /// signals the cancellation token.
+    ///
+    /// Only available in `#[cfg(test)]` contexts.
+    #[cfg(test)]
+    pub(crate) fn new_disconnected_for_test(server_id: impl Into<String>) -> Self {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<ToolRefreshEvent>();
+        let handler = ToolListChangedHandler::new(
+            "test",
+            tx,
+            Arc::new(DashMap::new()),
+            Arc::new(vec![]),
+            1024,
+            None,
+            Duration::from_secs(5),
+        );
+        // The server half is immediately dropped — the service task will exit after
+        // the first I/O error, which is fine for tests that only exercise state logic.
+        let (client_rw, _server_rw) = tokio::io::duplex(64);
+        let service = rmcp::service::serve_directly(handler, client_rw, None);
+        Self {
+            server_id: server_id.into(),
+            service: Arc::new(service),
+            timeout: Duration::from_secs(5),
+        }
+    }
+
     /// Graceful shutdown.
     #[cfg_attr(
         feature = "profiling",

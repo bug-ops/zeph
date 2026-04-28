@@ -8,6 +8,7 @@ use zeph_llm::provider::{
     ToolDefinition,
 };
 
+// TODO(refactor): migrate super::super::* uses to crate::agent::* (follow-up to #3497, ~30 instances in this file)
 use super::super::Agent;
 use super::{
     AnomalyOutcome, retry_backoff_ms, strip_tafc_fields, tool_args_hash,

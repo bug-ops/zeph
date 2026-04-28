@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// TODO(critic): #3497 follow-up — replace remaining super:: paths with absolute crate:: paths for clarity
-
 pub mod agent_tests; // path-preserving — DO NOT rename (used by 24+ modules via crate::agent::agent_tests::*)
 
 #[cfg(test)]

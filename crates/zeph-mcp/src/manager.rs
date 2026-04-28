@@ -1260,25 +1260,32 @@ impl McpManager {
         client: McpClient,
         tools: Vec<McpTool>,
     ) -> Result<(), McpError> {
-        // TODO(critic): commit_added_server holds `clients` write guard across
-        // `server_trust.write().await` and `server_tools.write().await`. This
-        // violates Await Discipline §4 (.claude/rules/rust-code.md). Preserved
-        // verbatim during the #3451 decomposition; file a follow-up issue to
-        // drop the guard before subsequent writes.
+        // TOCTOU check + insert under clients guard. No awaits while the guard is held,
+        // satisfying Await Discipline rule #4 (.claude/rules/rust-code.md).
+        {
+            let mut clients = self.clients.write().await;
+            if clients.contains_key(&entry.id) {
+                drop(clients);
+                client.shutdown().await;
+                return Err(McpError::ServerAlreadyConnected {
+                    server_id: entry.id.clone(),
+                });
+            }
+            clients.insert(entry.id.clone(), client);
+            self.connected_server_ids.write().insert(entry.id.clone());
+        } // clients guard dropped here
 
-        // Re-check under write lock to prevent TOCTOU race
-        let mut clients = self.clients.write().await;
-        if clients.contains_key(&entry.id) {
-            drop(clients);
-            client.shutdown().await;
-            return Err(McpError::ServerAlreadyConnected {
-                server_id: entry.id.clone(),
-            });
-        }
-        clients.insert(entry.id.clone(), client);
-        self.connected_server_ids.write().insert(entry.id.clone());
+        // TODO(bug): narrow race window — if `remove_server` runs between here and the
+        // `server_trust`/`server_tools` writes below, those maps will retain orphaned entries
+        // until `shutdown_all`. The three-RwLock design makes full atomicity without a
+        // serialization mutex impossible. Tracked in #3536.
 
-        // Register trust config for the refresh task.
+        // Register trust and tools after the client is visible.
+        // Each guard is acquired and dropped independently — no guard crosses an .await.
+        //
+        // Invariant: the refresh task cannot deliver events for entry.id before this function
+        // returns Ok, because the refresh channel is wired through the client's notification
+        // handler which is not active until after connect_and_list_tools completes.
         self.server_trust.write().await.insert(
             entry.id.clone(),
             (
@@ -1287,7 +1294,6 @@ impl McpManager {
                 entry.expected_tools.clone(),
             ),
         );
-
         self.server_tools
             .write()
             .await
@@ -2156,6 +2162,58 @@ mod tests {
             self.connected_server_ids
                 .write()
                 .insert(server_id.to_owned());
+        }
+    }
+
+    // --- commit_added_server ---
+
+    #[tokio::test]
+    async fn commit_added_server_rejects_duplicate() {
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+        let entry = ServerEntry {
+            id: "srv1".into(),
+            trust_level: McpTrustLevel::Trusted,
+            ..make_entry("srv1")
+        };
+        let tool = make_tool("srv1", "t1");
+
+        // First call succeeds.
+        let first = McpClient::new_disconnected_for_test("srv1");
+        mgr.commit_added_server(&entry, first, vec![tool.clone()])
+            .await
+            .expect("first commit must succeed");
+
+        // Second call with same id must be rejected.
+        let second = McpClient::new_disconnected_for_test("srv1");
+        let err = mgr
+            .commit_added_server(&entry, second, vec![make_tool("srv1", "t2")])
+            .await
+            .expect_err("duplicate commit must fail");
+        assert!(
+            matches!(err, McpError::ServerAlreadyConnected { ref server_id } if server_id == "srv1"),
+            "unexpected error: {err:?}"
+        );
+
+        // The winner's trust and tools must be intact — not overwritten or cleared by the loser.
+        {
+            let trust_guard = mgr.server_trust.read().await;
+            assert_eq!(trust_guard.len(), 1, "exactly one trust entry must survive");
+            let (level, _, _) = trust_guard["srv1"];
+            assert_eq!(
+                level,
+                McpTrustLevel::Trusted,
+                "winner's trust level must be preserved"
+            );
+        }
+        {
+            let tools_guard = mgr.server_tools.read().await;
+            assert_eq!(tools_guard.len(), 1, "exactly one tools entry must survive");
+            let tools = &tools_guard["srv1"];
+            assert_eq!(tools.len(), 1);
+            assert_eq!(
+                tools[0].name, "t1",
+                "winner's tools must be preserved, not replaced by loser's"
+            );
         }
     }
 
