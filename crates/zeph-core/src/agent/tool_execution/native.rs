@@ -8,12 +8,11 @@ use zeph_llm::provider::{
     ToolDefinition,
 };
 
-// TODO(refactor): migrate super::super::* uses to crate::agent::* (follow-up to #3497, ~30 instances in this file)
-use super::super::Agent;
 use super::{
     AnomalyOutcome, retry_backoff_ms, strip_tafc_fields, tool_args_hash,
     tool_def_to_definition_with_tafc,
 };
+use crate::agent::Agent;
 use crate::channel::{Channel, StopHint, ToolOutputEvent, ToolStartEvent};
 use crate::overflow_tools::OverflowToolExecutor;
 use tracing::Instrument;
@@ -75,7 +74,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         tool_defs: &[ToolDefinition],
         max_attempts: usize,
-    ) -> Result<Option<ChatResponse>, super::super::error::AgentError> {
+    ) -> Result<Option<ChatResponse>, crate::agent::error::AgentError> {
         for attempt in 0..max_attempts {
             match self.call_chat_with_tools(tool_defs).await {
                 Ok(result) => return Ok(result),
@@ -119,14 +118,14 @@ impl<C: Channel> Agent<C> {
         feature = "profiling",
         tracing::instrument(name = "agent.process_response", skip_all)
     )]
-    pub(crate) async fn process_response(&mut self) -> Result<(), super::super::error::AgentError> {
+    pub(crate) async fn process_response(&mut self) -> Result<(), crate::agent::error::AgentError> {
         self.services.security.flagged_urls.clear();
         self.process_response_native_tools().await
     }
 
     pub(super) async fn process_response_native_tools(
         &mut self,
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<(), crate::agent::error::AgentError> {
         self.tool_orchestrator.clear_doom_history();
         self.tool_orchestrator.clear_recent_tool_calls();
         self.tool_orchestrator.clear_utility_state();
@@ -142,11 +141,11 @@ impl<C: Channel> Agent<C> {
 
         // Inject focus tool definitions when the feature is enabled and configured (#1850).
         if self.services.focus.config.enabled {
-            tool_defs.extend(super::super::focus::focus_tool_definitions());
+            tool_defs.extend(crate::agent::focus::focus_tool_definitions());
         }
 
         // Inject compress_context tool — always available when context-compression is enabled (#2218).
-        tool_defs.push(super::super::focus::compress_context_tool_definition());
+        tool_defs.push(crate::agent::focus::compress_context_tool_definition());
 
         // Pre-compute the full tool set for iterations 1+ before filtering.
         let all_tool_defs = tool_defs.clone();
@@ -228,7 +227,7 @@ impl<C: Channel> Agent<C> {
     async fn check_doom_loop(
         &mut self,
         iteration: usize,
-    ) -> Result<bool, super::super::error::AgentError> {
+    ) -> Result<bool, crate::agent::error::AgentError> {
         if let Some(last_msg) = self.msg.messages.last() {
             let hash = zeph_agent_tools::doom_loop_hash(&last_msg.content);
             tracing::debug!(
@@ -246,7 +245,7 @@ impl<C: Channel> Agent<C> {
                     content_len = last_msg.content.len(),
                     content_preview = &last_msg.content[..last_msg.content.len().min(200)],
                     "doom-loop detected: {} consecutive identical outputs",
-                    super::super::DOOM_LOOP_WINDOW
+                    crate::agent::DOOM_LOOP_WINDOW
                 );
                 self.channel
                     .send("Stopping: detected repeated identical tool outputs.")
@@ -260,7 +259,7 @@ impl<C: Channel> Agent<C> {
     #[cfg(test)]
     pub(super) async fn call_llm_with_timeout(
         &mut self,
-    ) -> Result<Option<String>, super::super::error::AgentError> {
+    ) -> Result<Option<String>, crate::agent::error::AgentError> {
         if self.runtime.lifecycle.cancel_token.is_cancelled() {
             return Ok(None);
         }
@@ -356,7 +355,7 @@ impl<C: Channel> Agent<C> {
         dump_id: Option<u32>,
         llm_span: tracing::Span,
         query_embedding: Option<Vec<f32>>,
-    ) -> Result<Option<String>, super::super::error::AgentError> {
+    ) -> Result<Option<String>, crate::agent::error::AgentError> {
         let cancel = self.runtime.lifecycle.cancel_token.clone();
         let chat_fut = self.provider.chat(&self.msg.messages).instrument(llm_span);
         let result = tokio::select! {
@@ -421,7 +420,7 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) async fn call_llm_with_retry(
         &mut self,
         max_attempts: usize,
-    ) -> Result<Option<String>, super::super::error::AgentError> {
+    ) -> Result<Option<String>, crate::agent::error::AgentError> {
         for attempt in 0..max_attempts {
             match self.call_llm_with_timeout().await {
                 Ok(result) => return Ok(result),
@@ -448,7 +447,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         response: &str,
         result: Result<Option<zeph_tools::executor::ToolOutput>, zeph_tools::executor::ToolError>,
-    ) -> Result<bool, super::super::error::AgentError> {
+    ) -> Result<bool, crate::agent::error::AgentError> {
         use zeph_sanitizer::{ContentSource, ContentSourceKind};
         use zeph_skills::evolution::FailureKind;
         use zeph_tools::executor::ToolError;
@@ -528,7 +527,7 @@ impl<C: Channel> Agent<C> {
     async fn record_tool_output_outcome(
         &mut self,
         output: &zeph_tools::executor::ToolOutput,
-    ) -> Result<bool, super::super::error::AgentError> {
+    ) -> Result<bool, crate::agent::error::AgentError> {
         use zeph_skills::evolution::FailureKind;
 
         if let Some(ref fs) = output.filter_stats {
@@ -560,8 +559,8 @@ impl<C: Channel> Agent<C> {
     async fn process_successful_tool_output(
         &mut self,
         output: zeph_tools::executor::ToolOutput,
-    ) -> Result<bool, super::super::error::AgentError> {
-        use super::super::format_tool_output;
+    ) -> Result<bool, crate::agent::error::AgentError> {
+        use crate::agent::format_tool_output;
         use crate::channel::{ToolOutputEvent, ToolStartEvent};
         use zeph_llm::provider::{Message, MessagePart, Role};
 
@@ -659,8 +658,8 @@ impl<C: Channel> Agent<C> {
         &mut self,
         response: &str,
         command: &str,
-    ) -> Result<bool, super::super::error::AgentError> {
-        use super::super::format_tool_output;
+    ) -> Result<bool, crate::agent::error::AgentError> {
+        use crate::agent::format_tool_output;
         use crate::channel::{ToolOutputEvent, ToolStartEvent};
         use zeph_llm::provider::{Message, MessagePart, Role};
         let prompt = format!("Allow command: {command}?");
@@ -743,7 +742,7 @@ impl<C: Channel> Agent<C> {
         tool_defs: &[ToolDefinition],
         iteration: usize,
         query_embedding: Option<Vec<f32>>,
-    ) -> Result<Option<()>, super::super::error::AgentError> {
+    ) -> Result<Option<()>, crate::agent::error::AgentError> {
         // Track iteration for BudgetHint injection (#2267).
         self.services.tool_state.current_tool_iteration = iteration;
         self.channel.send_typing().await?;
@@ -866,7 +865,7 @@ impl<C: Channel> Agent<C> {
     async fn call_chat_with_tools(
         &mut self,
         tool_defs: &[ToolDefinition],
-    ) -> Result<Option<ChatResponse>, super::super::error::AgentError> {
+    ) -> Result<Option<ChatResponse>, crate::agent::error::AgentError> {
         if let Some(ref tracker) = self.runtime.metrics.cost_tracker
             && let Err(e) = tracker.check_budget()
         {
@@ -978,7 +977,7 @@ impl<C: Channel> Agent<C> {
     async fn run_before_chat_layers(
         &self,
         tool_defs: &[ToolDefinition],
-    ) -> Result<Option<ChatResponse>, super::super::error::AgentError> {
+    ) -> Result<Option<ChatResponse>, crate::agent::error::AgentError> {
         if self.runtime.config.layers.is_empty() {
             return Ok(None);
         }
@@ -1066,7 +1065,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         start: std::time::Instant,
         result: &ChatResponse,
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<(), crate::agent::error::AgentError> {
         let elapsed = start.elapsed();
         let latency = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         let prompt_estimate = self.runtime.providers.cached_prompt_tokens;
@@ -1211,7 +1210,7 @@ impl<C: Channel> Agent<C> {
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
         max_retries: usize,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<(), crate::agent::error::AgentError> {
         self.handle_confirmation_phase(tool_calls, calls, tool_results, cancel)
             .await?;
         self.handle_retry_phase(tool_calls, calls, tool_results, max_retries, cancel)
@@ -1228,7 +1227,7 @@ impl<C: Channel> Agent<C> {
         calls: &[ToolCall],
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<(), crate::agent::error::AgentError> {
         for idx in 0..tool_results.len() {
             if cancel.is_cancelled() {
                 self.tool_executor.set_skill_env(None);
@@ -1291,7 +1290,7 @@ impl<C: Channel> Agent<C> {
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
         max_retries: usize,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<(), crate::agent::error::AgentError> {
         if max_retries == 0 {
             return Ok(());
         }
@@ -1391,7 +1390,7 @@ impl<C: Channel> Agent<C> {
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<(), crate::agent::error::AgentError> {
         if self
             .tool_orchestrator
             .parameter_reformat_provider
@@ -1501,7 +1500,7 @@ impl<C: Channel> Agent<C> {
                             };
                             let logger = std::sync::Arc::clone(logger);
                             self.runtime.lifecycle.supervisor.spawn(
-                                super::super::agent_supervisor::TaskClass::Telemetry,
+                                crate::agent::agent_supervisor::TaskClass::Telemetry,
                                 "audit-log",
                                 async move { logger.log(&entry).await },
                             );
@@ -1624,7 +1623,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         text: Option<&str>,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<(), crate::agent::error::AgentError> {
         let t_tool_exec = std::time::Instant::now();
         tracing::debug!("turn timing: tool_exec start");
         // Scan for image-exfiltration in accompanying text, send to channel, persist
@@ -1724,7 +1723,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         text: Option<&str>,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<(), crate::agent::error::AgentError> {
         // S4: scan text accompanying ToolUse responses for markdown image exfiltration.
         let cleaned_text: Option<String> = if let Some(t) = text
             && !t.is_empty()
@@ -1978,7 +1977,7 @@ impl<C: Channel> Agent<C> {
         cancel: &tokio_util::sync::CancellationToken,
         tool_call_ids: &[String],
         tool_started_ats: &mut [std::time::Instant],
-    ) -> Result<TierLoopOutput, super::super::error::AgentError> {
+    ) -> Result<TierLoopOutput, crate::agent::error::AgentError> {
         // Build a dependency DAG over tool_use_id references in call arguments. When the
         // DAG is trivial (no dependencies — the common case), we execute all calls in a
         // single tier with zero overhead. When dependencies exist, we partition calls into
@@ -2144,7 +2143,7 @@ impl<C: Channel> Agent<C> {
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
         tool_call_ids: &[String],
         tool_started_ats: &mut [std::time::Instant],
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<(), crate::agent::error::AgentError> {
         let tier_start = std::time::Instant::now();
         for &idx in tier_indices {
             tool_started_ats[idx] = tier_start;
@@ -2177,7 +2176,7 @@ impl<C: Channel> Agent<C> {
         tc: &zeph_llm::provider::ToolUseRequest,
         utility_actions: &[zeph_tools::UtilityAction],
         pending_system_hints: &mut Vec<String>,
-    ) -> Result<Option<(usize, ToolExecFut)>, super::super::error::AgentError> {
+    ) -> Result<Option<(usize, ToolExecFut)>, crate::agent::error::AgentError> {
         match utility_actions[idx] {
             zeph_tools::UtilityAction::ToolCall => Ok(None),
             zeph_tools::UtilityAction::Respond => {
@@ -2343,7 +2342,7 @@ impl<C: Channel> Agent<C> {
         utility_actions: &[zeph_tools::UtilityAction],
         repeat_blocked: &[bool],
         pending_system_hints: &mut Vec<String>,
-    ) -> Result<Option<(usize, ToolExecFut)>, super::super::error::AgentError> {
+    ) -> Result<Option<(usize, ToolExecFut)>, crate::agent::error::AgentError> {
         if has_failed_dep {
             return Ok(Some(ready_fut(
                 idx,
@@ -2426,7 +2425,7 @@ impl<C: Channel> Agent<C> {
         cache_hits: &[Option<zeph_tools::ToolOutput>],
         semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
         pending_system_hints: &mut Vec<String>,
-    ) -> Result<Vec<(usize, ToolExecFut)>, super::super::error::AgentError> {
+    ) -> Result<Vec<(usize, ToolExecFut)>, crate::agent::error::AgentError> {
         let tier_tool_names: Vec<&str> = tier_indices
             .iter()
             .map(|&i| tool_calls[i].name.as_str())
@@ -2548,7 +2547,7 @@ impl<C: Channel> Agent<C> {
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
     ) -> Result<
         Option<Vec<Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>>>,
-        super::super::error::AgentError,
+        crate::agent::error::AgentError,
     > {
         let mut join_fut = std::pin::pin!(futures::future::join_all(futs));
         // Take elicitation_rx out of self so we can hold &mut self for handling.
@@ -2735,7 +2734,7 @@ impl<C: Channel> Agent<C> {
         causal_pre_response: Option<(String, String)>,
         pending_focus_checkpoint: Option<zeph_llm::provider::Message>,
         pending_system_hints: Vec<String>,
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<(), crate::agent::error::AgentError> {
         self.tool_executor.set_skill_env(None);
 
         // Sync cache counters to metrics after all tool execution is complete.
@@ -2945,7 +2944,7 @@ impl<C: Channel> Agent<C> {
         };
         let logger = std::sync::Arc::clone(logger);
         self.runtime.lifecycle.supervisor.spawn(
-            super::super::agent_supervisor::TaskClass::Telemetry,
+            crate::agent::agent_supervisor::TaskClass::Telemetry,
             "vigil-audit-log",
             async move { logger.log(&entry).await },
         );
@@ -2995,7 +2994,7 @@ impl<C: Channel> Agent<C> {
         let turn = i64::try_from(self.services.sidequest.turn_counter).unwrap_or(i64::MAX);
         let tool_name_owned = tool_name.to_owned();
         let accepted = self.runtime.lifecycle.supervisor.spawn(
-            super::super::agent_supervisor::TaskClass::Telemetry,
+            crate::agent::agent_supervisor::TaskClass::Telemetry,
             "experience-record",
             async move {
                 if let Err(e) = exp
@@ -3216,7 +3215,7 @@ impl<C: Channel> Agent<C> {
         has_any_injection_flags: &mut bool,
         pending_reflection: &mut Option<String>,
         pending_outcomes: &mut Vec<crate::agent::learning::PendingSkillOutcome>,
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<(), crate::agent::error::AgentError> {
         let ToolResultClassification {
             output,
             mut is_error,

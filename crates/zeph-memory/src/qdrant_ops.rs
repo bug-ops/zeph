@@ -38,8 +38,10 @@ impl QdrantOps {
     /// # Errors
     ///
     /// Returns an error if the Qdrant client cannot be created.
-    // TODO(#2389): add optional `api_key: Option<String>` parameter and wire it via
-    // `.with_api_key()` on the builder once the Qdrant config struct exposes the field.
+    // TODO(critic, #3543): wire optional Qdrant API key end-to-end (MemoryConfig field,
+    // vault key ZEPH_QDRANT_API_KEY, bootstrap resolution, init wizard prompt,
+    // EmbeddingStore mirror, --migrate-config step, WARN log on non-localhost without key,
+    // playbook + coverage-status). Tracked separately from the todo-cleanup epic.
     pub fn new(url: &str) -> QdrantResult<Self> {
         let client = Qdrant::from_url(url).build().map_err(Box::new)?;
         Ok(Self { client })
