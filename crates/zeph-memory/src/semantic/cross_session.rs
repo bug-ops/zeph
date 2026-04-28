@@ -204,6 +204,7 @@ mod tests {
         SemanticMemory::new(
             ":memory:",
             "http://127.0.0.1:1",
+            None,
             AnyProvider::Mock(MockProvider::default()),
             "test-model",
         )

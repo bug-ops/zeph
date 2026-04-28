@@ -13,6 +13,25 @@ use zeph_core::config::{Config, ProviderEntry, ProviderKind};
 use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::ollama::OllamaProvider;
 
+// ── is_qdrant_localhost ───────────────────────────────────────────────────────
+
+#[test]
+fn localhost_variants_detected() {
+    assert!(is_qdrant_localhost("http://127.0.0.1:6333"));
+    assert!(is_qdrant_localhost("http://localhost:6333"));
+    assert!(is_qdrant_localhost("http://[::1]:6334"));
+    assert!(is_qdrant_localhost("http://0.0.0.0:6333"));
+    assert!(is_qdrant_localhost("http://host.docker.internal:6333"));
+}
+
+#[test]
+fn remote_url_not_localhost() {
+    assert!(!is_qdrant_localhost("https://qdrant.example.com"));
+    assert!(!is_qdrant_localhost("http://10.0.0.5:6333"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[test]
 fn vault_args_defaults_in_test_context() {
     let config = Config::load(Path::new("/nonexistent")).unwrap();
@@ -519,7 +538,7 @@ fn appbuilder_qdrant_ops_invalid_url_returns_err() {
     config.memory.vector_backend = zeph_core::config::VectorBackend::Qdrant;
     config.memory.qdrant_url = "not a valid url".into();
 
-    let result = zeph_memory::QdrantOps::new(&config.memory.qdrant_url);
+    let result = zeph_memory::QdrantOps::new(&config.memory.qdrant_url, None);
     assert!(
         result.is_err(),
         "QdrantOps::new with invalid URL must fail (CRIT-04)"
@@ -528,7 +547,7 @@ fn appbuilder_qdrant_ops_invalid_url_returns_err() {
 
 #[test]
 fn appbuilder_qdrant_ops_valid_url_succeeds() {
-    let result = zeph_memory::QdrantOps::new("http://localhost:6334");
+    let result = zeph_memory::QdrantOps::new("http://localhost:6334", None);
     assert!(result.is_ok(), "QdrantOps::new with valid URL must succeed");
 }
 

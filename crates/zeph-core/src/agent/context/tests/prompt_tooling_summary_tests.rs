@@ -69,6 +69,7 @@ async fn build_graph_memory() -> zeph_memory::semantic::SemanticMemory {
     let mem = zeph_memory::semantic::SemanticMemory::new(
         ":memory:",
         "http://127.0.0.1:1",
+        None,
         AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
         "test-model",
     )

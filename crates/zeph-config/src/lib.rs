@@ -49,6 +49,9 @@
 //! | `ZEPH_SQLITE_PATH` | `memory.sqlite_path` |
 //! | `ZEPH_QDRANT_URL` | `memory.qdrant_url` |
 //!
+//! The Qdrant API key is vault-only (not an env-var override):
+//! `zeph vault set ZEPH_QDRANT_API_KEY "<key>"` → `memory.qdrant_api_key`.
+//!
 //! # Config migration
 //!
 //! Use [`migrate::ConfigMigrator`] to upgrade existing TOML configs with newly-added

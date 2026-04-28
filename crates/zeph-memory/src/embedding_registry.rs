@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn registry_new_valid_url() {
-        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         let ns = uuid::Uuid::from_bytes([0u8; 16]);
         let reg = EmbeddingRegistry::new(ops, "test_col", ns);
         let dbg = format!("{reg:?}");
@@ -718,7 +718,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_raw_embed_fail_returns_error() {
-        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         let ns = uuid::Uuid::from_bytes([0u8; 16]);
         let reg = EmbeddingRegistry::new(ops, "test", ns);
         let embed_fn = |_: &str| -> EmbedFuture {
@@ -738,7 +738,7 @@ mod tests {
     /// issuing a gRPC search that would silently return near-zero cosine scores.
     #[tokio::test]
     async fn search_raw_dimension_mismatch_returns_error() {
-        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         let ns = uuid::Uuid::from_bytes([0u8; 16]);
         let reg = EmbeddingRegistry::new(ops, "test_dim_guard", ns);
 
@@ -760,7 +760,7 @@ mod tests {
     /// the error (if any) comes from the Qdrant network call — not from the guard itself.
     #[tokio::test]
     async fn search_raw_matching_dimension_passes_guard() {
-        let ops = QdrantOps::new("http://127.0.0.1:1").unwrap(); // unreachable — forces network error
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap(); // unreachable — forces network error
         let ns = uuid::Uuid::from_bytes([0u8; 16]);
         let reg = EmbeddingRegistry::new(ops, "test_dim_pass", ns);
 
@@ -779,7 +779,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_with_unreachable_qdrant_fails() {
-        let ops = QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
         let ns = uuid::Uuid::from_bytes([0u8; 16]);
         let mut reg = EmbeddingRegistry::new(ops, "test", ns);
         let items = vec![make_item("k", "text")];
@@ -845,7 +845,7 @@ mod tests {
 
     #[test]
     fn concurrency_zero_clamped_to_one() {
-        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         let ns = uuid::Uuid::from_bytes([0u8; 16]);
         let mut reg = EmbeddingRegistry::new(ops, "test", ns);
         reg.concurrency = 0;
@@ -876,7 +876,7 @@ mod tests {
             .await
             .unwrap();
         let port = container.get_host_port_ipv4(6334).await.unwrap();
-        let ops = QdrantOps::new(&format!("http://127.0.0.1:{port}")).unwrap();
+        let ops = QdrantOps::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
         let ns = uuid::Uuid::new_v4();
         let mut reg = EmbeddingRegistry::new(ops, "test_progress", ns);
 
@@ -932,7 +932,7 @@ mod tests {
             .await
             .unwrap();
         let port = container.get_host_port_ipv4(6334).await.unwrap();
-        let ops = QdrantOps::new(&format!("http://127.0.0.1:{port}")).unwrap();
+        let ops = QdrantOps::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
         let ns = uuid::Uuid::new_v4();
         let mut reg = EmbeddingRegistry::new(ops, "test_partial", ns);
 
@@ -985,7 +985,7 @@ mod tests {
             .await
             .unwrap();
         let port = container.get_host_port_ipv4(6334).await.unwrap();
-        let ops = QdrantOps::new(&format!("http://127.0.0.1:{port}")).unwrap();
+        let ops = QdrantOps::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
         let ns = uuid::Uuid::new_v4();
         let mut reg = EmbeddingRegistry::new(ops, "test_dim_guard_live", ns);
 

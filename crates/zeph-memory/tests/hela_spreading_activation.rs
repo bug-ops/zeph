@@ -44,7 +44,7 @@ async fn setup() -> (
 
     let sqlite = SqliteStore::new(":memory:").await.unwrap();
     let pool = sqlite.pool().clone();
-    let embeddings = EmbeddingStore::new(&url, pool.clone()).unwrap();
+    let embeddings = EmbeddingStore::new(&url, None, pool.clone()).unwrap();
     let graph = GraphStore::new(pool);
     (graph, embeddings, sqlite, container)
 }

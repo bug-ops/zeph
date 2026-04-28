@@ -27,7 +27,7 @@ async fn setup_with_qdrant() -> (SqliteStore, EmbeddingStore, ContainerAsync<Gen
 
     let sqlite = SqliteStore::new(":memory:").await.unwrap();
     let pool = sqlite.pool().clone();
-    let store = EmbeddingStore::new(&url, pool).unwrap();
+    let store = EmbeddingStore::new(&url, None, pool).unwrap();
 
     (sqlite, store, container)
 }
@@ -138,7 +138,7 @@ async fn setup_semantic_memory_with_qdrant() -> (SemanticMemory, ContainerAsync<
     mock.embedding = vec![0.1_f32; 384];
     let provider = AnyProvider::Mock(mock);
 
-    let memory = SemanticMemory::new(":memory:", &url, provider, "test-model")
+    let memory = SemanticMemory::new(":memory:", &url, None, provider, "test-model")
         .await
         .unwrap();
 

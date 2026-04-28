@@ -601,6 +601,7 @@ async fn agent_with_memory() {
     let memory = SemanticMemory::new(
         ":memory:",
         "http://invalid:6334", // Will fail gracefully, qdrant=None
+        None,
         provider.clone(),
         "test-model",
     )
@@ -672,9 +673,15 @@ async fn agent_load_history_with_memory() {
     let channel = MockChannel::new(vec![], outputs.clone());
     let executor = MockToolExecutor;
 
-    let memory = SemanticMemory::new(":memory:", "http://invalid:6334", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        ":memory:",
+        "http://invalid:6334",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
     memory
         .sqlite()
@@ -1287,9 +1294,15 @@ async fn agent_persist_message_with_memory() {
     let channel = MockChannel::new(vec!["save me"], outputs.clone());
     let executor = MockToolExecutor;
 
-    let memory = SemanticMemory::new(":memory:", "http://invalid:6334", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        ":memory:",
+        "http://invalid:6334",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     let mut agent = Agent::new(
@@ -1316,9 +1329,15 @@ async fn agent_check_summarization_triggers() {
     let channel = MockChannel::new(vec!["msg1", "msg2", "msg3"], outputs.clone());
     let executor = MockToolExecutor;
 
-    let memory = SemanticMemory::new(":memory:", "http://invalid:6334", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        ":memory:",
+        "http://invalid:6334",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     let mut agent = Agent::new(
@@ -1356,9 +1375,15 @@ async fn agent_skills_command_with_usage_stats() {
 
     let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
 
-    let memory = SemanticMemory::new(":memory:", "http://invalid:6334", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        ":memory:",
+        "http://invalid:6334",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
@@ -1695,9 +1720,15 @@ async fn agent_persist_messages_verified() {
     let channel = MockChannel::new(vec!["user-input"], outputs.clone());
     let executor = MockToolExecutor;
 
-    let memory = SemanticMemory::new(db_str, "http://invalid:6334", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        db_str,
+        "http://invalid:6334",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     let mut agent = Agent::new(
@@ -1727,9 +1758,15 @@ async fn agent_load_history_skips_empty_messages() {
     let channel = MockChannel::new(vec![], outputs.clone());
     let executor = MockToolExecutor;
 
-    let memory = SemanticMemory::new(":memory:", "http://invalid:6334", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        ":memory:",
+        "http://invalid:6334",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
     memory
         .sqlite()
@@ -1773,9 +1810,15 @@ async fn agent_persist_multiple_exchanges() {
     let channel = MockChannel::new(vec!["msg1", "msg2"], outputs.clone());
     let executor = MockToolExecutor;
 
-    let memory = SemanticMemory::new(db_str, "http://invalid:6334", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        db_str,
+        "http://invalid:6334",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     let mut agent = Agent::new(
@@ -1809,9 +1852,15 @@ async fn agent_tool_output_persisted_in_memory() {
         output: "tool result text".into(),
     };
 
-    let memory = SemanticMemory::new(db_str, "http://invalid:6334", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        db_str,
+        "http://invalid:6334",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     let mut agent = Agent::new(
@@ -1884,9 +1933,15 @@ async fn agent_confirmation_approved_with_output_persisted() {
     };
     let executor = ConfirmToolExecutor;
 
-    let memory = SemanticMemory::new(db_str, "http://invalid:6334", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        db_str,
+        "http://invalid:6334",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     let mut agent = Agent::new(
@@ -2210,9 +2265,15 @@ async fn agent_records_skill_usage() {
         .expect("matcher must build");
     let backend = Some(SkillMatcherBackend::InMemory(matcher));
 
-    let memory = SemanticMemory::new(db_str, "http://invalid:6334", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        db_str,
+        "http://invalid:6334",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     let mut agent = Agent::new(provider.clone(), channel, registry, backend, 5, executor)
@@ -2249,9 +2310,15 @@ async fn agent_no_matcher_skips_skill_usage() {
 
     let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
 
-    let memory = SemanticMemory::new(db_str, "http://invalid:6334", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        db_str,
+        "http://invalid:6334",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     // No matcher: all skills fall back to the full set — usage must NOT be recorded.
@@ -2520,10 +2587,15 @@ mod self_learning {
     }
 
     async fn make_memory(provider: &AnyProvider) -> (SemanticMemory, ConversationId) {
-        let memory =
-            SemanticMemory::new(":memory:", "http://invalid:6334", provider.clone(), "test")
-                .await
-                .unwrap();
+        let memory = SemanticMemory::new(
+            ":memory:",
+            "http://invalid:6334",
+            None,
+            provider.clone(),
+            "test",
+        )
+        .await
+        .unwrap();
         let cid = memory.sqlite().create_conversation().await.unwrap();
         (memory, cid)
     }
@@ -2532,9 +2604,15 @@ mod self_learning {
         provider: &AnyProvider,
         db_path: &str,
     ) -> (SemanticMemory, ConversationId) {
-        let memory = SemanticMemory::new(db_path, "http://invalid:6334", provider.clone(), "test")
-            .await
-            .unwrap();
+        let memory = SemanticMemory::new(
+            db_path,
+            "http://invalid:6334",
+            None,
+            provider.clone(),
+            "test",
+        )
+        .await
+        .unwrap();
         let cid = memory.sqlite().create_conversation().await.unwrap();
         (memory, cid)
     }
@@ -3794,10 +3872,15 @@ mod trust_commands {
     }
 
     async fn make_memory(provider: &AnyProvider) -> (SemanticMemory, ConversationId) {
-        let memory =
-            SemanticMemory::new(":memory:", "http://invalid:6334", provider.clone(), "test")
-                .await
-                .unwrap();
+        let memory = SemanticMemory::new(
+            ":memory:",
+            "http://invalid:6334",
+            None,
+            provider.clone(),
+            "test",
+        )
+        .await
+        .unwrap();
         let cid = memory.sqlite().create_conversation().await.unwrap();
         (memory, cid)
     }

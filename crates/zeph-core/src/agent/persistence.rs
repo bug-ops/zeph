@@ -746,6 +746,7 @@ mod tests {
         SemanticMemory::new(
             ":memory:",
             "http://127.0.0.1:1",
+            None,
             provider.clone(),
             "test-model",
         )

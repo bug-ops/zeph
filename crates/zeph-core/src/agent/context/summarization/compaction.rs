@@ -151,6 +151,7 @@ mod tests {
         let memory = SemanticMemory::new(
             ":memory:",
             "http://127.0.0.1:1",
+            None,
             embed_provider,
             "test-model",
         )
@@ -207,6 +208,7 @@ mod tests {
         let memory = SemanticMemory::new(
             ":memory:",
             "http://127.0.0.1:1",
+            None,
             embed_provider,
             "test-model",
         )
@@ -274,6 +276,7 @@ mod tests {
         let memory = SemanticMemory::new(
             ":memory:",
             "http://127.0.0.1:1",
+            None,
             embed_provider,
             "test-model",
         )

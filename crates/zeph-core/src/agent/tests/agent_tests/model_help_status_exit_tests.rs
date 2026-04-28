@@ -503,9 +503,15 @@ async fn bare_image_command_sends_usage() {
 #[tokio::test]
 async fn feedback_positive_records_user_approval() {
     let provider = mock_provider(vec![]);
-    let memory = SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        ":memory:",
+        "http://127.0.0.1:1",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
     let memory = std::sync::Arc::new(memory);
 
@@ -540,9 +546,15 @@ async fn feedback_positive_records_user_approval() {
 #[tokio::test]
 async fn feedback_negative_records_user_rejection() {
     let provider = mock_provider(vec![]);
-    let memory = SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        ":memory:",
+        "http://127.0.0.1:1",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
     let memory = std::sync::Arc::new(memory);
 
@@ -577,9 +589,15 @@ async fn feedback_negative_records_user_rejection() {
 #[tokio::test]
 async fn feedback_neutral_records_user_approval() {
     let provider = mock_provider(vec![]);
-    let memory = SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider.clone(), "test")
-        .await
-        .unwrap();
+    let memory = SemanticMemory::new(
+        ":memory:",
+        "http://127.0.0.1:1",
+        None,
+        provider.clone(),
+        "test",
+    )
+    .await
+    .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();
     let memory = std::sync::Arc::new(memory);
 

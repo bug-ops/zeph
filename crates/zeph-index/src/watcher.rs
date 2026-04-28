@@ -202,7 +202,7 @@ mod tests {
     }
 
     async fn create_test_indexer() -> Arc<CodeIndexer> {
-        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         let store = crate::store::CodeStore::with_ops(ops, create_test_pool().await);
         let provider = AnyProvider::Ollama(OllamaProvider::new(
             "http://127.0.0.1:1",

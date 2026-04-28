@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use zeph_common::secret::Secret;
 
 use crate::defaults::{default_sqlite_path_field, default_true};
 use crate::providers::ProviderName;
@@ -703,6 +704,16 @@ pub struct MemoryConfig {
     pub history_limit: u32,
     #[serde(default = "default_qdrant_url")]
     pub qdrant_url: String,
+    /// Optional API key for authenticating to a remote or managed Qdrant cluster.
+    ///
+    /// Required when `qdrant_url` points to a non-localhost host (e.g. Qdrant Cloud).
+    /// Leave `None` for local dev instances. The actual key is resolved from the vault:
+    /// `zeph vault set ZEPH_QDRANT_API_KEY "<key>"`.
+    ///
+    /// The value is wrapped in [`Secret`] to prevent accidental logging.
+    /// `skip_serializing` prevents the key from being written back to TOML on config save.
+    #[serde(default, skip_serializing)]
+    pub qdrant_api_key: Option<Secret>,
     #[serde(default)]
     pub semantic: SemanticConfig,
     #[serde(default = "default_summarization_threshold")]

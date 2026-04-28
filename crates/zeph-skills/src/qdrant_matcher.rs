@@ -216,7 +216,7 @@ mod tests {
     }
 
     fn make_matcher() -> QdrantSkillMatcher {
-        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         QdrantSkillMatcher::with_ops(ops)
     }
 

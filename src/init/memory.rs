@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Confirm, Input, Password, Select};
 
 use super::WizardState;
 
@@ -58,6 +58,29 @@ pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
                 .default("http://localhost:6334".into())
                 .interact_text()?,
         );
+
+        // The API key is not stored in config.toml — it belongs in the vault only.
+        // Prompt only to detect whether the user has a key to store; if so, print instructions.
+        let has_existing = state.qdrant_api_key;
+        let prompt = if has_existing {
+            "Qdrant API key (optional; press Enter to skip — store via vault command below)"
+                .to_owned()
+        } else {
+            "Qdrant API key (optional; blank for local instances — store via vault command below)"
+                .to_owned()
+        };
+        let raw = Password::new()
+            .with_prompt(prompt)
+            .allow_empty_password(true)
+            .interact()?;
+        if !raw.is_empty() {
+            println!(
+                "\nTo store the Qdrant API key securely, run after init completes:\n  \
+                 zeph vault set ZEPH_QDRANT_API_KEY \"{raw}\"\n"
+            );
+            // Track that a key was provided so re-runs show the correct prompt.
+            state.qdrant_api_key = true;
+        }
     }
 
     state.soft_compaction_threshold = Input::new()

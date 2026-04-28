@@ -462,6 +462,7 @@ async fn sanitize_tool_output_text_only_injection_guards_memory_write() {
     let memory = SemanticMemory::new(
         ":memory:",
         "http://127.0.0.1:1",
+        None,
         zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
         "test-model",
     )

@@ -19,7 +19,7 @@ async fn create_memory_with_summaries(
     provider: zeph_llm::any::AnyProvider,
     summaries: &[&str],
 ) -> (SemanticMemory, zeph_memory::ConversationId) {
-    let memory = SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test")
+    let memory = SemanticMemory::new(":memory:", "http://127.0.0.1:1", None, provider, "test")
         .await
         .unwrap();
     let cid = memory.sqlite().create_conversation().await.unwrap();

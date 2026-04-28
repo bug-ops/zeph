@@ -33,17 +33,24 @@ impl std::fmt::Debug for QdrantOps {
 }
 
 impl QdrantOps {
-    /// Create a new `QdrantOps` connected to the given URL.
+    /// Create a new `QdrantOps` connected to the given URL with optional API key.
+    ///
+    /// When `api_key` is `Some(k)` and `k` is non-empty, the key is attached to the gRPC
+    /// client builder. Empty strings are treated as `None` so callers can pass empty config
+    /// values without accidentally disabling auth.
+    ///
+    /// The key is consumed by `qdrant-client` during `.build()` and is never stored on
+    /// `QdrantOps` itself.
     ///
     /// # Errors
     ///
-    /// Returns an error if the Qdrant client cannot be created.
-    // TODO(critic, #3543): wire optional Qdrant API key end-to-end (MemoryConfig field,
-    // vault key ZEPH_QDRANT_API_KEY, bootstrap resolution, init wizard prompt,
-    // EmbeddingStore mirror, --migrate-config step, WARN log on non-localhost without key,
-    // playbook + coverage-status). Tracked separately from the todo-cleanup epic.
-    pub fn new(url: &str) -> QdrantResult<Self> {
-        let client = Qdrant::from_url(url).build().map_err(Box::new)?;
+    /// Returns an error if the Qdrant client cannot be created (e.g. malformed URL).
+    pub fn new(url: &str, api_key: Option<&str>) -> QdrantResult<Self> {
+        let mut builder = Qdrant::from_url(url);
+        if let Some(key) = api_key.filter(|k| !k.trim().is_empty()) {
+            builder = builder.api_key(key.trim());
+        }
+        let client = builder.build().map_err(Box::new)?;
         Ok(Self { client })
     }
 
@@ -605,19 +612,44 @@ mod tests {
 
     #[test]
     fn new_valid_url() {
-        let ops = QdrantOps::new("http://localhost:6334");
+        let ops = QdrantOps::new("http://localhost:6334", None);
         assert!(ops.is_ok());
     }
 
     #[test]
     fn new_invalid_url() {
-        let ops = QdrantOps::new("not a valid url");
+        let ops = QdrantOps::new("not a valid url", None);
         assert!(ops.is_err());
+    }
+
+    /// Empty `api_key` must be silently treated as `None` — the whitespace guard in
+    /// `QdrantOps::new` must not panic and the client must be built successfully.
+    #[test]
+    fn new_empty_api_key_is_treated_as_none() {
+        let result = QdrantOps::new("http://127.0.0.1:9999", Some(""));
+        assert!(result.is_ok(), "empty key must not cause a build error");
+    }
+
+    /// Whitespace-only keys must be dropped the same way as empty keys.
+    #[test]
+    fn new_whitespace_api_key_is_treated_as_none() {
+        let result = QdrantOps::new("http://127.0.0.1:9999", Some("   "));
+        assert!(
+            result.is_ok(),
+            "whitespace-only key must not cause a build error"
+        );
+    }
+
+    /// A non-empty, non-whitespace key must be accepted without errors.
+    #[test]
+    fn new_with_api_key_constructs_successfully() {
+        let result = QdrantOps::new("http://127.0.0.1:9999", Some("valid-key"));
+        assert!(result.is_ok(), "valid key must not cause a build error");
     }
 
     #[test]
     fn debug_format() {
-        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         let dbg = format!("{ops:?}");
         assert!(dbg.contains("QdrantOps"));
     }
@@ -641,7 +673,7 @@ mod tests {
         // Constructing QdrantOps with a valid URL succeeds even without a live server.
         // delete_by_ids with empty list short-circuits before any network call.
         // We validate the early-return logic via the async test below.
-        let ops = QdrantOps::new("http://localhost:6334");
+        let ops = QdrantOps::new("http://localhost:6334", None);
         assert!(ops.is_ok());
     }
 
@@ -649,7 +681,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live Qdrant instance at localhost:6334"]
     async fn ensure_collection_with_quantization_idempotent() {
-        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         let collection = "test_quant_idempotent";
 
         // Clean up from any prior run
@@ -675,7 +707,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live Qdrant instance at localhost:6334"]
     async fn delete_by_ids_empty_no_network_call() {
-        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         // Empty ID list must short-circuit and return Ok without hitting Qdrant.
         let result = ops.delete_by_ids("nonexistent_collection", vec![]).await;
         assert!(result.is_ok());
@@ -685,7 +717,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live Qdrant instance at localhost:6334"]
     async fn ensure_collection_idempotent_same_size() {
-        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         let collection = "test_ensure_idempotent";
 
         let _ = ops.delete_collection(collection).await;
@@ -707,7 +739,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live Qdrant instance at localhost:6334"]
     async fn ensure_collection_recreates_on_dimension_mismatch() {
-        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         let collection = "test_dim_mismatch";
 
         let _ = ops.delete_collection(collection).await;
@@ -736,7 +768,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live Qdrant instance at localhost:6334"]
     async fn ensure_collection_with_quantization_recreates_on_dimension_mismatch() {
-        let ops = QdrantOps::new("http://localhost:6334").unwrap();
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         let collection = "test_quant_dim_mismatch";
 
         let _ = ops.delete_collection(collection).await;

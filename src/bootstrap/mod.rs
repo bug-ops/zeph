@@ -37,12 +37,27 @@ use zeph_skills::matcher::SkillMatcherBackend;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::{SkillEvent, SkillWatcher};
 
+use url::Url;
 use zeph_core::config::{Config, SecretResolver};
 use zeph_core::config_watcher::{ConfigEvent, ConfigWatcher};
-use zeph_core::vault::AgeVaultProvider;
 #[cfg(any(test, feature = "env-vault"))]
 use zeph_core::vault::EnvVaultProvider;
-use zeph_core::vault::VaultProvider;
+use zeph_core::vault::{AgeVaultProvider, Secret, VaultProvider};
+
+/// Return `true` if the Qdrant URL points to a local development instance.
+///
+/// Used to decide whether to emit a warning about a missing API key — local instances
+/// typically do not require authentication.
+fn is_qdrant_localhost(url: &str) -> bool {
+    let host = Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned));
+    // `url::Url::host_str()` preserves IPv6 brackets: `http://[::1]:6334` → `"[::1]"`.
+    matches!(
+        host.as_deref(),
+        Some("127.0.0.1" | "localhost" | "[::1]" | "0.0.0.0" | "host.docker.internal")
+    )
+}
 
 pub struct AppBuilder {
     config: Config,
@@ -147,7 +162,17 @@ impl AppBuilder {
 
         let qdrant_ops = match config.memory.vector_backend {
             zeph_core::config::VectorBackend::Qdrant => {
-                let ops = QdrantOps::new(&config.memory.qdrant_url).map_err(|e| {
+                let api_key_str = config.memory.qdrant_api_key.as_ref().map(Secret::expose);
+                if api_key_str.unwrap_or("").trim().is_empty()
+                    && !is_qdrant_localhost(&config.memory.qdrant_url)
+                {
+                    tracing::warn!(
+                        url = %config.memory.qdrant_url,
+                        "qdrant_api_key is not set for non-localhost Qdrant — \
+                         set ZEPH_QDRANT_API_KEY in the vault to authenticate"
+                    );
+                }
+                let ops = QdrantOps::new(&config.memory.qdrant_url, api_key_str).map_err(|e| {
                     BootstrapError::Provider(format!(
                         "invalid qdrant_url '{}': {e}",
                         config.memory.qdrant_url

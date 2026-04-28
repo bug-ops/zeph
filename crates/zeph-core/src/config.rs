@@ -76,6 +76,9 @@ pub trait SecretResolver {
     ) -> impl std::future::Future<Output = Result<(), ConfigError>> + Send;
 }
 
+// TODO(critic): vault values are inserted verbatim into typed config fields.
+// Consider centralizing whitespace trimming and empty-string normalization
+// here so every consumer (qdrant client, claude, openai, etc.) sees a clean value.
 impl SecretResolver for Config {
     async fn resolve_secrets(&mut self, vault: &dyn VaultProvider) -> Result<(), ConfigError> {
         if let Some(val) = vault.get_secret("ZEPH_CLAUDE_API_KEY").await? {
@@ -118,6 +121,9 @@ impl SecretResolver for Config {
         }
         if let Some(val) = vault.get_secret("ZEPH_DATABASE_URL").await? {
             self.memory.database_url = Some(val);
+        }
+        if let Some(val) = vault.get_secret("ZEPH_QDRANT_API_KEY").await? {
+            self.memory.qdrant_api_key = Some(Secret::new(val));
         }
         if let Some(val) = vault.get_secret("ZEPH_DISCORD_TOKEN").await?
             && let Some(dc) = self.discord.as_mut()

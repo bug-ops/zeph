@@ -45,7 +45,7 @@ fn make_doc(content: &str) -> Document {
 async fn ingest_single_document() {
     let container = qdrant_image().start().await.unwrap();
     let port = container.get_host_port_ipv4(6334).await.unwrap();
-    let qdrant = QdrantOps::new(&format!("http://127.0.0.1:{port}")).unwrap();
+    let qdrant = QdrantOps::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
     qdrant
         .ensure_collection(COLLECTION, VECTOR_SIZE)
         .await
@@ -73,7 +73,7 @@ async fn ingest_single_document() {
 async fn ingest_empty_document_returns_zero() {
     let container = qdrant_image().start().await.unwrap();
     let port = container.get_host_port_ipv4(6334).await.unwrap();
-    let qdrant = QdrantOps::new(&format!("http://127.0.0.1:{port}")).unwrap();
+    let qdrant = QdrantOps::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
     qdrant
         .ensure_collection(COLLECTION, VECTOR_SIZE)
         .await
@@ -94,7 +94,7 @@ async fn ingest_empty_document_returns_zero() {
 async fn ingest_multi_chunk_document() {
     let container = qdrant_image().start().await.unwrap();
     let port = container.get_host_port_ipv4(6334).await.unwrap();
-    let qdrant = QdrantOps::new(&format!("http://127.0.0.1:{port}")).unwrap();
+    let qdrant = QdrantOps::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
     qdrant
         .ensure_collection(COLLECTION, VECTOR_SIZE)
         .await
@@ -126,7 +126,7 @@ async fn ingest_multi_chunk_document() {
 async fn load_and_ingest_text_file() {
     let container = qdrant_image().start().await.unwrap();
     let port = container.get_host_port_ipv4(6334).await.unwrap();
-    let qdrant = QdrantOps::new(&format!("http://127.0.0.1:{port}")).unwrap();
+    let qdrant = QdrantOps::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
     qdrant
         .ensure_collection(COLLECTION, VECTOR_SIZE)
         .await
@@ -158,7 +158,7 @@ async fn load_and_ingest_text_file() {
 async fn ingested_chunks_have_correct_payload() {
     let container = qdrant_image().start().await.unwrap();
     let port = container.get_host_port_ipv4(6334).await.unwrap();
-    let qdrant = QdrantOps::new(&format!("http://127.0.0.1:{port}")).unwrap();
+    let qdrant = QdrantOps::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
     let collection = "test_payload";
     qdrant
         .ensure_collection(collection, VECTOR_SIZE)

@@ -22,10 +22,11 @@ use super::{
     migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
     migrate_memory_retrieval_query_bias, migrate_microcompact_config,
     migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
-    migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
-    migrate_scheduler_daemon_config, migrate_session_provider_persistence,
-    migrate_session_recap_config, migrate_shell_transactional, migrate_stt_to_provider,
-    migrate_supervisor_config, migrate_telemetry_config, migrate_vigil_config,
+    migrate_qdrant_api_key, migrate_quality_config, migrate_sandbox_config,
+    migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
+    migrate_session_provider_persistence, migrate_session_recap_config,
+    migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
+    migrate_telemetry_config, migrate_vigil_config,
 };
 
 // ── Wrapper structs for all 35 sequential migration steps ───────────────────────────────────────
@@ -445,5 +446,16 @@ impl Migration for MigrateMemoryPersonaConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_memory_persona_config(toml_src)
+    }
+}
+
+pub(super) struct MigrateQdrantApiKey;
+impl Migration for MigrateQdrantApiKey {
+    fn name(&self) -> &'static str {
+        "migrate_qdrant_api_key"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_qdrant_api_key(toml_src)
     }
 }

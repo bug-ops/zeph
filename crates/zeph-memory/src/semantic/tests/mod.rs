@@ -72,7 +72,7 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
 
 #[tokio::test]
 async fn with_qdrant_ops_constructs_successfully() {
-    let ops = crate::QdrantOps::new("http://127.0.0.1:1").unwrap();
+    let ops = crate::QdrantOps::new("http://127.0.0.1:1", None).unwrap();
     let provider = test_provider();
     let result =
         SemanticMemory::with_qdrant_ops(":memory:", ops, provider, "test-model", 0.7, 0.3, 1).await;
@@ -423,8 +423,14 @@ async fn new_with_invalid_qdrant_url_graceful() {
     let mut mock = MockProvider::default();
     mock.supports_embeddings = true;
     let provider = AnyProvider::Mock(mock);
-    let result =
-        SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test-model").await;
+    let result = SemanticMemory::new(
+        ":memory:",
+        "http://127.0.0.1:1",
+        None,
+        provider,
+        "test-model",
+    )
+    .await;
     assert!(result.is_ok());
 }
 

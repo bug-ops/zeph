@@ -363,10 +363,20 @@ impl SemanticMemory {
     pub async fn new(
         sqlite_path: &str,
         qdrant_url: &str,
+        api_key: Option<&str>,
         provider: AnyProvider,
         embedding_model: &str,
     ) -> Result<Self, MemoryError> {
-        Self::with_weights(sqlite_path, qdrant_url, provider, embedding_model, 0.7, 0.3).await
+        Self::with_weights(
+            sqlite_path,
+            qdrant_url,
+            api_key,
+            provider,
+            embedding_model,
+            0.7,
+            0.3,
+        )
+        .await
     }
 
     /// Create a new `SemanticMemory` with custom vector/keyword weights for hybrid search.
@@ -380,6 +390,7 @@ impl SemanticMemory {
     pub async fn with_weights(
         sqlite_path: &str,
         qdrant_url: &str,
+        api_key: Option<&str>,
         provider: AnyProvider,
         embedding_model: &str,
         vector_weight: f64,
@@ -388,6 +399,7 @@ impl SemanticMemory {
         Self::with_weights_and_pool_size(
             sqlite_path,
             qdrant_url,
+            api_key,
             provider,
             embedding_model,
             vector_weight,
@@ -405,9 +417,11 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if `SQLite` cannot be initialized.
+    #[allow(clippy::too_many_arguments)]
     pub async fn with_weights_and_pool_size(
         sqlite_path: &str,
         qdrant_url: &str,
+        api_key: Option<&str>,
         provider: AnyProvider,
         embedding_model: &str,
         vector_weight: f64,
@@ -417,7 +431,7 @@ impl SemanticMemory {
         let sqlite = SqliteStore::with_pool_size(sqlite_path, pool_size).await?;
         let pool = sqlite.pool().clone();
 
-        let qdrant = match EmbeddingStore::new(qdrant_url, pool) {
+        let qdrant = match EmbeddingStore::new(qdrant_url, api_key, pool) {
             Ok(store) => Some(Arc::new(store)),
             Err(e) => {
                 tracing::warn!("Qdrant unavailable, semantic search disabled: {e:#}");

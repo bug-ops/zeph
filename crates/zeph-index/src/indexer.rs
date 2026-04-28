@@ -764,7 +764,7 @@ mod tests {
             .unwrap();
         }
 
-        let ops = QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
         let store = crate::store::CodeStore::with_ops(ops, pool);
         let provider = Arc::new(AnyProvider::Mock(
             MockProvider::default().with_embedding(vec![0.0_f32; 384]),
@@ -825,7 +825,7 @@ mod tests {
         .await
         .unwrap();
 
-        let ops = QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
         let store = crate::store::CodeStore::with_ops(ops, pool);
         let provider = Arc::new(AnyProvider::Mock(
             MockProvider::default().with_embedding(vec![0.0_f32; 384]),

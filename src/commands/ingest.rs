@@ -5,6 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::bootstrap::AppBuilder;
+use zeph_core::vault::Secret;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::{IngestionPipeline, QdrantOps, SplitterConfig, TextLoader, TextSplitter};
 
@@ -18,8 +19,11 @@ pub(crate) async fn handle_ingest(
     let app = AppBuilder::new(config_path, None, None, None).await?;
     let config = app.config();
 
-    let qdrant = QdrantOps::new(&config.memory.qdrant_url)
-        .map_err(|e| anyhow::anyhow!("failed to connect to Qdrant: {e}"))?;
+    let qdrant = QdrantOps::new(
+        &config.memory.qdrant_url,
+        config.memory.qdrant_api_key.as_ref().map(Secret::expose),
+    )
+    .map_err(|e| anyhow::anyhow!("failed to connect to Qdrant: {e}"))?;
 
     let (provider, _status_tx, _status_rx) = app.build_provider().await?;
     let provider = std::sync::Arc::new(provider);

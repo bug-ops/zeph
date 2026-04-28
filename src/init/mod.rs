@@ -39,6 +39,9 @@ pub(crate) struct WizardState {
     pub(crate) sessions_max_history: usize,
     pub(crate) sessions_title_max_chars: usize,
     pub(crate) qdrant_url: Option<String>,
+    /// Tracks whether the user provided a Qdrant API key during a previous wizard run.
+    /// The key itself is never stored here — it must be set via `zeph vault set ZEPH_QDRANT_API_KEY`.
+    pub(crate) qdrant_api_key: bool,
     pub(crate) semantic_enabled: bool,
     pub(crate) channel: ChannelChoice,
     pub(crate) telegram_token: Option<String>,
@@ -248,6 +251,7 @@ impl Default for WizardState {
             sessions_max_history: 0,
             sessions_title_max_chars: 0,
             qdrant_url: None,
+            qdrant_api_key: false,
             semantic_enabled: false,
             channel: ChannelChoice::default(),
             telegram_token: None,
@@ -680,6 +684,9 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             title_max_chars: state.sessions_title_max_chars,
         },
         database_url: state.database_url.clone(),
+        // Never write the Qdrant API key to config — it lives in the vault only.
+        // The vault key ZEPH_QDRANT_API_KEY is resolved at runtime by resolve_secrets().
+        qdrant_api_key: None,
         ..config.memory
     };
     config.memory.graph.enabled = state.graph_memory_enabled;

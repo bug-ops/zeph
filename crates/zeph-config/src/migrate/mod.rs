@@ -3066,6 +3066,43 @@ pub fn migrate_memory_persona_config(toml_src: &str) -> Result<MigrationResult, 
     })
 }
 
+/// No-op migration for the optional `qdrant_api_key` field added in #3543.
+///
+/// The field has `#[serde(default)]` so existing configs parse as `None` without changes.
+/// This step adds a commented-out hint under `[memory]` if not already present.
+///
+/// # Errors
+///
+/// Returns `MigrateError` if the TOML cannot be parsed or `[memory]` is malformed.
+pub fn migrate_qdrant_api_key(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("qdrant_api_key") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    if !doc.contains_key("memory") {
+        doc.insert("memory", toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+
+    let comment = "\n# Qdrant API key (optional; required when connecting to remote/managed Qdrant clusters).\n\
+         # Leave empty for local Qdrant instances. Store the actual key in the vault:\n\
+         #   zeph vault set ZEPH_QDRANT_API_KEY \"<key>\"\n\
+         # qdrant_api_key = \"\"\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.qdrant_api_key".to_owned()],
+    })
+}
+
 // ── Migration trait and registry ────────────────────────────────────────────────────────────────
 
 /// A single idempotent config migration step.
@@ -3114,13 +3151,13 @@ use steps::{
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
     MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
-    MigrateOtelFilter, MigratePlannerModelToProvider, MigrateQualityConfig, MigrateSandboxConfig,
-    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionProviderPersistence,
-    MigrateSessionRecapConfig, MigrateShellTransactional, MigrateSttToProvider,
-    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateVigilConfig,
+    MigrateOtelFilter, MigratePlannerModelToProvider, MigrateQdrantApiKey, MigrateQualityConfig,
+    MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
+    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellTransactional,
+    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateVigilConfig,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–38).
+/// Ordered registry of all sequential migration steps (steps 1–39).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -3180,6 +3217,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateSessionProviderPersistence),
             Box::new(MigrateMemoryRetrievalQueryBias),
             Box::new(MigrateMemoryPersonaConfig),
+            // Step 39 — optional Qdrant API key (#3543)
+            Box::new(MigrateQdrantApiKey),
         ]
     });
 
@@ -3198,8 +3237,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            38,
-            "MIGRATIONS registry must contain all 38 sequential steps"
+            39,
+            "MIGRATIONS registry must contain all 39 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -4785,8 +4824,8 @@ prompt_cache_ttl = "1h"
     // ── Migration registry ────────────────────────────────────────────────────
 
     #[test]
-    fn registry_has_thirty_eight_entries() {
-        assert_eq!(MIGRATIONS.len(), 38);
+    fn registry_has_thirty_nine_entries() {
+        assert_eq!(MIGRATIONS.len(), 39);
     }
 
     #[test]
@@ -4825,7 +4864,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_preserves_order_matches_dispatch() {
-        // Names must follow the documented step order (steps 1–38).
+        // Names must follow the documented step order (steps 1–39).
         let expected = [
             "migrate_stt_to_provider",
             "migrate_planner_model_to_provider",
@@ -4865,8 +4904,52 @@ prompt_cache_ttl = "1h"
             "migrate_session_provider_persistence",
             "migrate_memory_retrieval_query_bias",
             "migrate_memory_persona_config",
+            "migrate_qdrant_api_key",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
+    }
+
+    // ── migrate_qdrant_api_key tests (#3543) ─────────────────────────────────
+
+    #[test]
+    fn migrate_qdrant_api_key_adds_comment_when_absent() {
+        let src = "[memory]\nqdrant_url = \"http://localhost:6334\"\n";
+        let result = migrate_qdrant_api_key(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result
+                .sections_changed
+                .contains(&"memory.qdrant_api_key".to_owned())
+        );
+        assert!(result.output.contains("# qdrant_api_key = \"\""));
+    }
+
+    #[test]
+    fn migrate_qdrant_api_key_is_noop_when_present() {
+        let src =
+            "[memory]\nqdrant_url = \"https://xyz.cloud.qdrant.io\"\nqdrant_api_key = \"secret\"\n";
+        let result = migrate_qdrant_api_key(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert!(result.sections_changed.is_empty());
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_qdrant_api_key_creates_memory_section_when_absent() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_qdrant_api_key(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(result.output.contains("# qdrant_api_key = \"\""));
+    }
+
+    #[test]
+    fn migrate_qdrant_api_key_idempotent_on_commented_output() {
+        let base = "[memory]\nqdrant_url = \"http://localhost:6334\"\n";
+        let first = migrate_qdrant_api_key(base).unwrap();
+        assert_eq!(first.changed_count, 1);
+        let second = migrate_qdrant_api_key(&first.output).unwrap();
+        assert_eq!(second.changed_count, 0, "second run must not double-append");
+        assert_eq!(second.output, first.output);
     }
 }

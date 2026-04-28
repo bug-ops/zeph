@@ -207,6 +207,7 @@ impl Default for Config {
                 sqlite_path: default_sqlite_path_field(),
                 history_limit: 50,
                 qdrant_url: "http://localhost:6334".into(),
+                qdrant_api_key: None,
                 semantic: SemanticConfig::default(),
                 summarization_threshold: 50,
                 context_budget_tokens: 0,

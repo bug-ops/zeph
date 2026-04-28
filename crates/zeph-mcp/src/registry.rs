@@ -101,7 +101,7 @@ fn compute_hash(tool: &McpTool) -> String {
 /// use zeph_memory::QdrantOps;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let ops = QdrantOps::new("http://localhost:6334")?;
+/// let ops = QdrantOps::new("http://localhost:6334", None)?;
 /// let mut registry = McpToolRegistry::with_ops(ops);
 /// // Sync tools after connect_all():
 /// // registry.sync(&tools, "nomic-embed-text", embed_fn).await?;
@@ -316,7 +316,7 @@ mod tests {
     }
 
     fn make_registry(url: &str) -> McpToolRegistry {
-        let ops = QdrantOps::new(url).unwrap();
+        let ops = QdrantOps::new(url, None).unwrap();
         McpToolRegistry::with_ops(ops)
     }
 

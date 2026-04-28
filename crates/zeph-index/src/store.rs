@@ -111,7 +111,7 @@ impl CodeStore {
     /// # async fn example() -> zeph_index::Result<()> {
     /// # let pool: zeph_db::DbPool = panic!("placeholder");
     ///
-    /// let ops = QdrantOps::new("http://localhost:6334").unwrap();
+    /// let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
     /// let store = CodeStore::with_ops(ops, pool);
     /// store.ensure_collection(1536).await?;
     /// # Ok(())
@@ -717,7 +717,7 @@ mod tests {
     #[tokio::test]
     async fn existing_hashes_empty_input_returns_empty_set() {
         let pool = setup_pool().await;
-        let ops = zeph_memory::QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let ops = zeph_memory::QdrantOps::new("http://127.0.0.1:1", None).unwrap();
         let store = CodeStore::with_ops(ops, pool);
         let result = store.existing_hashes(&[]).await.unwrap();
         assert!(result.is_empty());
@@ -749,7 +749,7 @@ mod tests {
         let all_hashes: Vec<String> = (0..901).map(|i| format!("hash{i:04}")).collect();
         let refs: Vec<&str> = all_hashes.iter().map(String::as_str).collect();
 
-        let ops = zeph_memory::QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let ops = zeph_memory::QdrantOps::new("http://127.0.0.1:1", None).unwrap();
         let store = CodeStore::with_ops(ops, pool);
         let result = store.existing_hashes(&refs).await.unwrap();
 

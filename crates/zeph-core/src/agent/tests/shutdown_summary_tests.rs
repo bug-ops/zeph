@@ -83,6 +83,7 @@ async fn shutdown_summary_too_few_user_messages_skips_llm() {
     let memory = SemanticMemory::new(
         ":memory:",
         "http://127.0.0.1:1",
+        None,
         AnyProvider::Mock(MockProvider::default()),
         "test-model",
     )
@@ -137,6 +138,7 @@ async fn shutdown_summary_only_counts_user_role_messages() {
     let memory = SemanticMemory::new(
         ":memory:",
         "http://127.0.0.1:1",
+        None,
         AnyProvider::Mock(MockProvider::default()),
         "test-model",
     )
@@ -536,10 +538,15 @@ async fn correction_stored_when_learning_disabled() {
 
     let mock = MockProvider::default();
     let provider = AnyProvider::Mock(mock);
-    let memory: SemanticMemory =
-        SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test-model")
-            .await
-            .expect("in-memory SQLite must init");
+    let memory: SemanticMemory = SemanticMemory::new(
+        ":memory:",
+        "http://127.0.0.1:1",
+        None,
+        provider,
+        "test-model",
+    )
+    .await
+    .expect("in-memory SQLite must init");
     let memory = Arc::new(memory);
 
     let agent_provider = mock_provider(vec![]);

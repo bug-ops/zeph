@@ -16,9 +16,15 @@ use zeph_skills::registry::SkillRegistry;
 
 async fn test_memory() -> SemanticMemory {
     let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
-    SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test-model")
-        .await
-        .unwrap()
+    SemanticMemory::new(
+        ":memory:",
+        "http://127.0.0.1:1",
+        None,
+        provider,
+        "test-model",
+    )
+    .await
+    .unwrap()
 }
 
 /// Creates a registry with a "test-skill" and returns both the registry and the `TempDir`.

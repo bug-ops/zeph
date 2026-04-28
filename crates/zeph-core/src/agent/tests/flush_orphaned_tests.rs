@@ -11,9 +11,15 @@ use crate::agent::agent_tests::{
 
 async fn flush_test_memory() -> SemanticMemory {
     let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
-    SemanticMemory::new(":memory:", "http://127.0.0.1:1", provider, "test-model")
-        .await
-        .unwrap()
+    SemanticMemory::new(
+        ":memory:",
+        "http://127.0.0.1:1",
+        None,
+        provider,
+        "test-model",
+    )
+    .await
+    .unwrap()
 }
 
 /// FO1: no-op when the message list has no assistant message.

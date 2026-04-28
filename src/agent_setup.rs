@@ -1597,7 +1597,7 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db_url = format!("sqlite:{}", tmp.path().display());
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
-        let qdrant = QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let qdrant = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
 
         let (watcher, _progress_rx) = apply_code_indexer(
             &config,
@@ -1640,7 +1640,7 @@ mod tests {
         let tmp_db = tempfile::NamedTempFile::new().unwrap();
         let db_url = format!("sqlite:{}", tmp_db.path().display());
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
-        let qdrant = QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let qdrant = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
 
         let (watcher, _) = apply_code_indexer(
             &config,
@@ -1713,7 +1713,7 @@ mod tests {
             budget_ratio: 0.4,
             ..IndexConfig::default()
         };
-        let qdrant = QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let qdrant = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
         let result =
             apply_code_rag_retriever(agent, &config, Some(qdrant), offline_provider(), pool);
         assert!(

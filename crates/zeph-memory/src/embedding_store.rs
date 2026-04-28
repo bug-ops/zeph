@@ -59,7 +59,7 @@ pub async fn ensure_qdrant_collection(
 
 /// Typed wrapper over a [`VectorStore`] backend for conversation message embeddings.
 ///
-/// Constructed via [`EmbeddingStore::new`] (Qdrant URL) or
+/// Constructed via [`EmbeddingStore::new`] (Qdrant URL + optional API key) or
 /// [`EmbeddingStore::with_store`] (custom backend for testing).
 pub struct EmbeddingStore {
     ops: Box<dyn VectorStore>,
@@ -99,16 +99,17 @@ pub struct SearchResult {
 }
 
 impl EmbeddingStore {
-    /// Create a new `EmbeddingStore` connected to the given Qdrant URL.
+    /// Create a new `EmbeddingStore` connected to the given Qdrant URL with optional API key.
     ///
-    /// The `pool` is used for `SQLite` metadata operations on the `embeddings_metadata`
-    /// table (which must already exist via sqlx migrations).
+    /// `api_key` is forwarded to [`QdrantOps::new`]. The `pool` is used for `SQLite` metadata
+    /// operations on the `embeddings_metadata` table (which must already exist via sqlx
+    /// migrations).
     ///
     /// # Errors
     ///
     /// Returns an error if the Qdrant client cannot be created.
-    pub fn new(url: &str, pool: DbPool) -> Result<Self, MemoryError> {
-        let ops = QdrantOps::new(url).map_err(MemoryError::Qdrant)?;
+    pub fn new(url: &str, api_key: Option<&str>, pool: DbPool) -> Result<Self, MemoryError> {
+        let ops = QdrantOps::new(url, api_key).map_err(MemoryError::Qdrant)?;
 
         Ok(Self {
             ops: Box::new(ops),

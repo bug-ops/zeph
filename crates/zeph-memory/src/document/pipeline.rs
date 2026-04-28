@@ -119,7 +119,7 @@ mod tests {
     async fn ingest_empty_document_returns_zero() {
         // Empty document should short-circuit before calling Qdrant.
         // We use an invalid Qdrant URL; the early-return path won't reach it.
-        let qdrant = crate::QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let qdrant = crate::QdrantOps::new("http://127.0.0.1:1", None).unwrap();
         let splitter = TextSplitter::new(SplitterConfig::default());
         let pipeline = IngestionPipeline::new(splitter, qdrant, "col", noop_embed());
 
@@ -131,7 +131,7 @@ mod tests {
     #[tokio::test]
     async fn ingest_document_embedding_error_propagates() {
         // Embedding failure should return DocumentError without reaching Qdrant.
-        let qdrant = crate::QdrantOps::new("http://127.0.0.1:1").unwrap();
+        let qdrant = crate::QdrantOps::new("http://127.0.0.1:1", None).unwrap();
         let splitter = TextSplitter::new(SplitterConfig::default());
         let pipeline = IngestionPipeline::new(splitter, qdrant, "col", error_embed());
 
