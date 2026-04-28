@@ -510,14 +510,40 @@ pub async fn assign_to_community(
 ///
 /// Returns an error if `Qdrant` operations fail.
 pub async fn cleanup_stale_entity_embeddings(
-    _store: &GraphStore,
-    _embeddings: &crate::embedding_store::EmbeddingStore,
+    store: &GraphStore,
+    embeddings: &crate::embedding_store::EmbeddingStore,
 ) -> Result<usize, MemoryError> {
-    // TODO: implement when EmbeddingStore exposes a scroll_all API
-    // (follow-up: add pub async fn scroll_all(&self, collection, key_field) delegating to
-    // self.ops.scroll_all). Then enumerate Qdrant points, collect IDs where entity_id is
-    // not in SQLite, and delete stale points.
-    Ok(0)
+    const ENTITY_COLLECTION: &str = "zeph_graph_entities";
+
+    // Enumerate all (point_id, entity_id) pairs in the Qdrant entity collection.
+    // Points without `entity_id_str` (legacy writes) are silently skipped; they will
+    // gain the field on the next merge_entity / store_entity_embedding call.
+    let pairs = embeddings.scroll_all_entity_ids(ENTITY_COLLECTION).await?;
+    if pairs.is_empty() {
+        return Ok(0);
+    }
+
+    let qdrant_ids: Vec<i64> = pairs.iter().map(|(_, eid)| *eid).collect();
+    let live: std::collections::HashSet<i64> = store
+        .entity_ids_in(&qdrant_ids)
+        .await?
+        .into_iter()
+        .collect();
+
+    let stale_point_ids: Vec<String> = pairs
+        .into_iter()
+        .filter_map(|(pid, eid)| (!live.contains(&eid)).then_some(pid))
+        .collect();
+
+    if stale_point_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let count = stale_point_ids.len();
+    embeddings
+        .delete_from_collection(ENTITY_COLLECTION, stale_point_ids)
+        .await?;
+    Ok(count)
 }
 
 /// Run graph eviction: clean expired edges, orphan entities, and cap entity count.
@@ -1333,5 +1359,100 @@ mod tests {
             calls_after_second, 2,
             "adding an edge must change fingerprint and trigger re-summarization"
         );
+    }
+
+    /// `cleanup_stale_entity_embeddings` returns `Ok(0)` when the collection is empty.
+    #[tokio::test]
+    async fn cleanup_stale_empty_collection() {
+        let store = setup().await;
+        let sqlite_store = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite_store.pool().clone();
+        let mem_store = Box::new(crate::in_memory_store::InMemoryVectorStore::new());
+        let emb_store = crate::embedding_store::EmbeddingStore::with_store(mem_store, pool);
+        emb_store
+            .ensure_named_collection("zeph_graph_entities", 4)
+            .await
+            .unwrap();
+
+        let deleted = cleanup_stale_entity_embeddings(&store, &emb_store)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 0, "nothing to delete from empty collection");
+    }
+
+    /// `cleanup_stale_entity_embeddings` deletes the Qdrant point when the SQLite entity row
+    /// has been removed, and leaves live entities untouched.
+    #[tokio::test]
+    async fn cleanup_stale_deletes_orphaned_points() {
+        use crate::graph::types::EntityType;
+
+        let sqlite_store = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite_store.pool().clone();
+        let graph_store = GraphStore::new(pool.clone());
+
+        let mem_store = Box::new(crate::in_memory_store::InMemoryVectorStore::new());
+        let emb_store = crate::embedding_store::EmbeddingStore::with_store(mem_store, pool.clone());
+        emb_store
+            .ensure_named_collection("zeph_graph_entities", 4)
+            .await
+            .unwrap();
+
+        // Insert two entities in SQLite.
+        let live_id = graph_store
+            .upsert_entity("Live", "live", EntityType::Person, None)
+            .await
+            .unwrap();
+        let stale_id = graph_store
+            .upsert_entity("Stale", "stale", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        // Store embeddings with `entity_id_str` for both.
+        let live_payload = serde_json::json!({
+            "entity_id": live_id,
+            "entity_id_str": live_id.to_string(),
+            "name": "Live",
+        });
+        let stale_payload = serde_json::json!({
+            "entity_id": stale_id,
+            "entity_id_str": stale_id.to_string(),
+            "name": "Stale",
+        });
+        emb_store
+            .store_to_collection(
+                "zeph_graph_entities",
+                live_payload,
+                vec![1.0, 0.0, 0.0, 0.0],
+            )
+            .await
+            .unwrap();
+        emb_store
+            .store_to_collection(
+                "zeph_graph_entities",
+                stale_payload,
+                vec![0.0, 1.0, 0.0, 0.0],
+            )
+            .await
+            .unwrap();
+
+        // Delete the stale entity from SQLite (simulating eviction).
+        zeph_db::query(zeph_db::sql!("DELETE FROM graph_entities WHERE id = ?"))
+            .bind(stale_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let deleted = cleanup_stale_entity_embeddings(&graph_store, &emb_store)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1, "exactly one stale point should be removed");
+
+        // The live entity's embedding must remain.
+        let remaining = emb_store
+            .scroll_all_entity_ids("zeph_graph_entities")
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].1, live_id);
     }
 }

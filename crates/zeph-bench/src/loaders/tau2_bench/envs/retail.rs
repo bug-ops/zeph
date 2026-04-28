@@ -110,18 +110,55 @@ pub struct RetailEnv {
     trace: ActionTrace,
 }
 
+/// Load `RetailState` from `db_path`, memoising the result for the process lifetime.
+///
+/// The cache is keyed by the canonicalized (real) path so different relative paths to the
+/// same file share an entry. Cache entries are never evicted — the process is short-lived
+/// for benchmark runs, so unbounded growth is not a concern.
+///
+/// Lock poisoning falls through to a fresh disk reload; returning a valid state is always
+/// preferable to propagating the poison error.
+fn cached_retail_load(db_path: &Path) -> Result<RetailState, BenchError> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static CACHE: OnceLock<Mutex<HashMap<std::path::PathBuf, Arc<RetailState>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    // Canonicalize so different relative-path spellings share the same entry.
+    let key = std::fs::canonicalize(db_path).unwrap_or_else(|_| db_path.to_path_buf());
+
+    // Fast path: cache hit — clone the Arc (cheap pointer bump) and return.
+    if let Ok(guard) = cache.lock()
+        && let Some(hit) = guard.get(&key)
+    {
+        return Ok((**hit).clone());
+    }
+
+    // Slow path: load from disk, then memoize.
+    let state = RetailState::load(db_path)?;
+    let arc = Arc::new(state.clone());
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(key, arc);
+    }
+    Ok(state)
+}
+
 impl RetailEnv {
     /// Load state from `db.json` and return `(env, trace)`.
     ///
     /// The returned `ActionTrace` is the same `Arc` stored inside the env. The evaluator
     /// must hold this clone to read recorded calls after the run completes.
     ///
+    /// The `db.json` file is loaded once per process per unique path and memoised via
+    /// a process-global cache. Each call receives an independent deep clone of the state
+    /// so mutations in one scenario cannot affect another.
+    ///
     /// # Errors
     ///
     /// Returns [`BenchError::InvalidFormat`] when `db.json` is missing or malformed.
     pub fn new_from_seed(db_path: &Path) -> Result<(Self, ActionTrace), BenchError> {
-        // TODO(#3417/D3): cache the loaded state to avoid re-reading db.json per scenario.
-        let state = RetailState::load(db_path)?;
+        let state = cached_retail_load(db_path)?;
         let trace: ActionTrace = Arc::new(Mutex::new(Vec::new()));
         let env = Self {
             state: Arc::new(Mutex::new(state)),
@@ -794,5 +831,34 @@ mod tests {
     #[test]
     fn eval_expr_divide_by_zero() {
         assert!(eval_expr("1 / 0").contains("zero"));
+    }
+
+    /// `new_from_seed` called twice with the same path must return independently mutable
+    /// environments (mutations in one must not affect the other).
+    #[tokio::test]
+    async fn new_from_seed_returns_independent_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("db_iso.json");
+        std::fs::write(&db_path, RETAIL_DB_MIN).unwrap();
+
+        let (env1, _trace1) = RetailEnv::new_from_seed(&db_path).unwrap();
+        let (env2, _trace2) = RetailEnv::new_from_seed(&db_path).unwrap();
+
+        // Cancel the pending order #W0001 in env1.
+        let c = call(
+            "cancel_pending_order",
+            serde_json::json!({"order_id": "#W0001", "reason": "changed mind"}),
+        );
+        env1.execute_tool_call(&c).await.unwrap();
+
+        // env2 must still have the order.
+        let get = call(
+            "get_order_details",
+            serde_json::json!({"order_id": "#W0001"}),
+        );
+        assert!(
+            env2.execute_tool_call(&get).await.unwrap().is_some(),
+            "mutation in env1 must not affect env2"
+        );
     }
 }

@@ -270,6 +270,63 @@ impl QdrantOps {
         Ok(result)
     }
 
+    /// Scroll all points in a collection, returning `(point_id, string_payload_fields)` pairs.
+    ///
+    /// Only points whose payload contains `key_field` as a `StringValue` are included.
+    /// The Qdrant point ID is preserved as the first tuple element.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scroll operation fails.
+    pub async fn scroll_all_with_point_ids(
+        &self,
+        collection: &str,
+        key_field: &str,
+    ) -> QdrantResult<Vec<(String, HashMap<String, String>)>> {
+        let mut result = Vec::new();
+        let mut offset: Option<PointId> = None;
+
+        loop {
+            let mut builder = ScrollPointsBuilder::new(collection)
+                .with_payload(true)
+                .with_vectors(false)
+                .limit(100);
+
+            if let Some(ref off) = offset {
+                builder = builder.offset(off.clone());
+            }
+
+            let response = self.client.scroll(builder).await.map_err(Box::new)?;
+
+            for point in &response.result {
+                let Some(key_val) = point.payload.get(key_field) else {
+                    continue;
+                };
+                let Some(Kind::StringValue(_)) = &key_val.kind else {
+                    continue;
+                };
+                let Some(point_id_str) = point_id_to_string(point.id.clone()) else {
+                    continue;
+                };
+
+                let mut fields = HashMap::new();
+                for (k, val) in &point.payload {
+                    if let Some(Kind::StringValue(s)) = &val.kind {
+                        fields.insert(k.clone(), s.clone());
+                    }
+                }
+                result.push((point_id_str, fields));
+            }
+
+            match response.next_page_offset {
+                Some(next) => offset = Some(next),
+                None => break,
+            }
+        }
+
+        Ok(result)
+    }
+
     /// Create a collection with scalar INT8 quantization if it does not exist,
     /// then create keyword indexes for the given fields.
     ///
@@ -450,6 +507,21 @@ impl crate::vector_store::VectorStore for QdrantOps {
         let key_field = key_field.to_owned();
         Box::pin(async move {
             self.scroll_all(&collection, &key_field)
+                .await
+                .map_err(|e| crate::VectorStoreError::Scroll(e.to_string()))
+        })
+    }
+
+    fn scroll_all_with_point_ids(
+        &self,
+        collection: &str,
+        key_field: &str,
+    ) -> BoxFuture<'_, Result<crate::vector_store::ScrollWithIdsResult, crate::VectorStoreError>>
+    {
+        let collection = collection.to_owned();
+        let key_field = key_field.to_owned();
+        Box::pin(async move {
+            self.scroll_all_with_point_ids(&collection, &key_field)
                 .await
                 .map_err(|e| crate::VectorStoreError::Scroll(e.to_string()))
         })

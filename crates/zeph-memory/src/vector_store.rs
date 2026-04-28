@@ -97,6 +97,11 @@ pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// Result of [`VectorStore::scroll_all`]: maps point ID → key → value payload strings.
 pub type ScrollResult = HashMap<String, HashMap<String, String>>;
 
+/// Result of [`VectorStore::scroll_all_with_point_ids`]: a list of `(point_id, string_fields)` pairs.
+///
+/// Only points whose payload contains `key_field` as a `StringValue` are included.
+pub type ScrollWithIdsResult = Vec<(String, HashMap<String, String>)>;
+
 /// Abstraction over a vector database backend.
 ///
 /// Implementations must be `Send + Sync` so they can be wrapped in `Arc` and shared
@@ -161,6 +166,22 @@ pub trait VectorStore: Send + Sync {
         collection: &str,
         key_field: &str,
     ) -> BoxFuture<'_, Result<ScrollResult, VectorStoreError>>;
+
+    /// Scroll all points in `collection`, returning `(point_id, string_payload_fields)` pairs.
+    ///
+    /// Only points whose payload contains `key_field` as a string value are included.
+    /// Unlike [`Self::scroll_all`], the Qdrant point ID is preserved as the first tuple element
+    /// rather than being used as the map key — this is required when consumers need to delete
+    /// points by their IDs (e.g. stale-embedding cleanup).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying scroll operation fails.
+    fn scroll_all_with_point_ids(
+        &self,
+        collection: &str,
+        key_field: &str,
+    ) -> BoxFuture<'_, Result<ScrollWithIdsResult, VectorStoreError>>;
 
     /// Return `true` if the backend is reachable and operational.
     fn health_check(&self) -> BoxFuture<'_, Result<bool, VectorStoreError>>;

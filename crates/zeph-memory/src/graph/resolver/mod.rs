@@ -282,6 +282,7 @@ impl<'a> EntityResolver<'a> {
         emb_store: &EmbeddingStore,
         provider: &AnyProvider,
         payload: &std::collections::HashMap<String, serde_json::Value>,
+        point_id: &str,
         score: f32,
         surface_name: &str,
         normalized: &str,
@@ -308,6 +309,8 @@ impl<'a> EntityResolver<'a> {
             .and_then(|v| v.as_str())
             .unwrap_or(et.as_str())
             .to_owned();
+        let existing_canonical = payload.get("canonical_name").and_then(|v| v.as_str());
+        let existing_summary_str = payload.get("summary").and_then(|v| v.as_str());
         match self
             .llm_disambiguate(
                 provider,
@@ -330,6 +333,9 @@ impl<'a> EntityResolver<'a> {
                     normalized,
                     et,
                     summary,
+                    existing_canonical,
+                    existing_summary_str,
+                    Some(point_id),
                 )
                 .await?;
                 Ok(Some((entity_id, ResolutionOutcome::LlmDisambiguated)))
@@ -405,6 +411,10 @@ impl<'a> EntityResolver<'a> {
                     .ok_or_else(|| {
                         MemoryError::GraphStore("missing entity_id in payload".into())
                     })?;
+                let existing_canonical =
+                    best.payload.get("canonical_name").and_then(|v| v.as_str());
+                let existing_summary = best.payload.get("summary").and_then(|v| v.as_str());
+                let existing_pid = Some(best.id.as_str());
                 self.merge_entity(
                     emb_store,
                     provider,
@@ -413,6 +423,9 @@ impl<'a> EntityResolver<'a> {
                     normalized,
                     et,
                     summary,
+                    existing_canonical,
+                    existing_summary,
+                    existing_pid,
                 )
                 .await?;
                 return Ok(Some((
@@ -425,6 +438,7 @@ impl<'a> EntityResolver<'a> {
                         emb_store,
                         provider,
                         &best.payload,
+                        &best.id,
                         score,
                         surface_name,
                         normalized,
@@ -505,6 +519,11 @@ impl<'a> EntityResolver<'a> {
     }
 
     /// Merge an existing entity with new information: combine summaries, update Qdrant.
+    ///
+    /// `existing_canonical_name` and `existing_summary` are read from the Qdrant payload at
+    /// the call site (hot path, no `SQLite` roundtrip). Pass `None` for either when the point
+    /// predates the payload fields — a targeted `find_entity_by_id` read is then used as a
+    /// one-time fallback (legacy transition path, removed after all points are rewritten).
     #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn merge_entity(
         &self,
@@ -515,14 +534,51 @@ impl<'a> EntityResolver<'a> {
         new_canonical_name: &str,
         entity_type: EntityType,
         new_summary: Option<&str>,
+        existing_canonical_name: Option<&str>,
+        existing_summary_payload: Option<&str>,
+        existing_point_id: Option<&str>,
     ) -> Result<(), MemoryError> {
-        // TODO(PERF-03): The Qdrant payload already contains name/summary at the call site;
-        // pass them in as parameters to eliminate this extra SQLite roundtrip per merge.
-        let existing = self.store.find_entity_by_id(entity_id).await?;
-        let existing_summary = existing
-            .as_ref()
-            .and_then(|e| e.summary.as_deref())
-            .unwrap_or("");
+        // Hot path: use values from the Qdrant payload (no SQLite roundtrip).
+        // Both canonical_name AND summary must be present; if either is absent the point
+        // predates the payload field — fall back to a targeted SQLite read to avoid
+        // silently dropping a summary that was written outside merge_entity.
+        let (existing_canonical, existing_summary, existing_point_id_owned) =
+            if existing_canonical_name.is_some() && existing_summary_payload.is_some() {
+                (
+                    existing_canonical_name
+                        .unwrap_or(new_canonical_name)
+                        .to_owned(),
+                    existing_summary_payload.unwrap_or("").to_owned(),
+                    existing_point_id.map(ToOwned::to_owned),
+                )
+            } else {
+                // Transition-period fallback. Legacy Qdrant points pre-date the payload
+                // fields; one targeted read is acceptable until the embedding is rewritten
+                // on the next merge. Also used when canonical_name is present but summary
+                // is absent — prevents overwriting a SQLite summary with empty string.
+                let existing = self.store.find_entity_by_id(entity_id).await?;
+                let canonical = existing_canonical_name.map_or_else(
+                    || {
+                        existing.as_ref().map_or_else(
+                            || new_canonical_name.to_owned(),
+                            |e| e.canonical_name.clone(),
+                        )
+                    },
+                    ToOwned::to_owned,
+                );
+                let summary = existing
+                    .as_ref()
+                    .and_then(|e| e.summary.as_deref())
+                    .unwrap_or("")
+                    .to_owned();
+                let pid = existing_point_id.map(ToOwned::to_owned).or_else(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|e| e.qdrant_point_id.as_deref())
+                        .map(ToOwned::to_owned)
+                });
+                (canonical, summary, pid)
+            };
 
         let merged_summary = if let Some(new) = new_summary {
             if !new.is_empty() && !existing_summary.is_empty() {
@@ -532,10 +588,10 @@ impl<'a> EntityResolver<'a> {
             } else if !new.is_empty() {
                 new.to_owned()
             } else {
-                existing_summary.to_owned()
+                existing_summary.clone()
             }
         } else {
-            existing_summary.to_owned()
+            existing_summary.clone()
         };
 
         let summary_opt = if merged_summary.is_empty() {
@@ -544,31 +600,19 @@ impl<'a> EntityResolver<'a> {
             Some(merged_summary.as_str())
         };
 
-        // Update the EXISTING entity's summary (keep its canonical_name, update surface display name).
-        let existing_canonical = existing.as_ref().map_or_else(
-            || new_canonical_name.to_owned(),
-            |e| e.canonical_name.clone(),
-        );
-        let existing_name_owned = existing
-            .as_ref()
-            .map_or_else(|| new_surface_name.to_owned(), |e| e.name.clone());
+        // Preserve the existing display name from the payload; fall back to the incoming surface
+        // name only for brand-new entities (where the payload had no "name" field).
         self.store
             .upsert_entity(
-                &existing_name_owned,
+                new_surface_name,
                 &existing_canonical,
                 entity_type,
                 summary_opt,
             )
             .await?;
 
-        // Retrieve existing qdrant_point_id to reuse it (avoids orphaned stale points, IC-S1)
-        let existing_point_id = existing
-            .as_ref()
-            .and_then(|e| e.qdrant_point_id.as_deref())
-            .map(ToOwned::to_owned);
-
         // Re-embed merged text and upsert to Qdrant
-        let embed_text = format!("{existing_name_owned}: {merged_summary}");
+        let embed_text = format!("{new_surface_name}: {merged_summary}");
         let embed_result = tokio::time::timeout(
             std::time::Duration::from_secs(EMBED_TIMEOUT_SECS),
             provider.embed(&embed_text),
@@ -580,8 +624,8 @@ impl<'a> EntityResolver<'a> {
                 self.store_entity_embedding(
                     emb_store,
                     entity_id,
-                    existing_point_id.as_deref(),
-                    &existing_name_owned,
+                    existing_point_id_owned.as_deref(),
+                    new_surface_name,
                     entity_type,
                     &merged_summary,
                     &vec,
@@ -648,6 +692,11 @@ impl<'a> EntityResolver<'a> {
 
         let payload = serde_json::json!({
             "entity_id": entity_id,
+            // String mirror of entity_id for scroll_all enumeration (scroll_all only surfaces
+            // StringValue payload fields; the i64 entity_id is preserved for existing search
+            // consumers which read it directly from ScoredVectorPoint.payload).
+            "entity_id_str": entity_id.to_string(),
+            "canonical_name": name,
             "name": name,
             "entity_type": entity_type.as_str(),
             "summary": summary,

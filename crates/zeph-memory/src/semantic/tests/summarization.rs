@@ -12,8 +12,8 @@ use crate::store::SqliteStore;
 use crate::token_counter::TokenCounter;
 use crate::types::{ConversationId, MessageId};
 use crate::vector_store::{
-    BoxFuture, ScoredVectorPoint, ScrollResult, VectorFilter, VectorPoint, VectorStore,
-    VectorStoreError,
+    BoxFuture, ScoredVectorPoint, ScrollResult, ScrollWithIdsResult, VectorFilter, VectorPoint,
+    VectorStore, VectorStoreError,
 };
 
 use super::super::*;
@@ -73,6 +73,14 @@ impl VectorStore for FailingSearchStore {
         key_field: &str,
     ) -> BoxFuture<'_, Result<ScrollResult, VectorStoreError>> {
         self.0.scroll_all(collection, key_field)
+    }
+
+    fn scroll_all_with_point_ids(
+        &self,
+        collection: &str,
+        key_field: &str,
+    ) -> BoxFuture<'_, Result<ScrollWithIdsResult, VectorStoreError>> {
+        self.0.scroll_all_with_point_ids(collection, key_field)
     }
 
     fn health_check(&self) -> BoxFuture<'_, Result<bool, VectorStoreError>> {

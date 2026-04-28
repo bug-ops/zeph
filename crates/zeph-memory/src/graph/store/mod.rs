@@ -1307,6 +1307,36 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Return the subset of `ids` that exist in `graph_entities`.
+    ///
+    /// Useful for cross-referencing Qdrant-side entity IDs against the `SQLite` truth.
+    /// Processes in chunks of 490 to stay under the `SQLite` variable limit (~32 k).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn entity_ids_in(&self, ids: &[i64]) -> Result<Vec<i64>, MemoryError> {
+        const MAX_BATCH: usize = 490;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // TODO: chunk when ids.len() > 5_000 to guard against extreme cases
+        let mut result = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(MAX_BATCH) {
+            let placeholders = zeph_db::placeholder_list(1, chunk.len());
+            let sql = format!("SELECT id FROM graph_entities WHERE id IN ({placeholders})");
+            let mut q = zeph_db::query_as::<_, (i64,)>(&sql);
+            for id in chunk {
+                q = q.bind(*id);
+            }
+            let rows = q.fetch_all(&self.pool).await?;
+            for (id,) in rows {
+                result.push(id);
+            }
+        }
+        Ok(result)
+    }
+
     /// Resolve entity IDs to their Qdrant point IDs in a single batched `SELECT` (HL-F5, #3346).
     ///
     /// Entities without a `qdrant_point_id` are silently omitted from the result.

@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use parking_lot::RwLock;
 
 use crate::vector_store::{
-    BoxFuture, FieldValue, ScoredVectorPoint, VectorFilter, VectorPoint, VectorStore,
-    VectorStoreError,
+    BoxFuture, FieldValue, ScoredVectorPoint, ScrollWithIdsResult, VectorFilter, VectorPoint,
+    VectorStore, VectorStoreError,
 };
 
 struct StoredPoint {
@@ -239,6 +239,38 @@ impl VectorStore for InMemoryVectorStore {
         })
     }
 
+    fn scroll_all_with_point_ids(
+        &self,
+        collection: &str,
+        key_field: &str,
+    ) -> BoxFuture<'_, Result<ScrollWithIdsResult, VectorStoreError>> {
+        let collection = collection.to_owned();
+        let key_field = key_field.to_owned();
+        Box::pin(async move {
+            let cols = self.collections.read();
+            let col = cols.get(&collection).ok_or_else(|| {
+                VectorStoreError::Scroll(format!("collection {collection} not found"))
+            })?;
+
+            let mut result = Vec::new();
+            for (point_id, sp) in &col.points {
+                let Some(key_val) = sp.payload.get(&key_field).and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let mut fields = HashMap::new();
+                for (k, v) in &sp.payload {
+                    if let Some(s) = v.as_str() {
+                        fields.insert(k.clone(), s.to_owned());
+                    }
+                }
+                // Ensure the key_field value is always present in the fields map.
+                fields.insert(key_field.clone(), key_val.to_owned());
+                result.push((point_id.clone(), fields));
+            }
+            Ok(result)
+        })
+    }
+
     fn health_check(&self) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
         Box::pin(async { Ok(true) })
     }
@@ -400,6 +432,48 @@ mod tests {
         let fields = result.get("alpha").unwrap();
         assert_eq!(fields.get("desc").unwrap(), "first");
         assert!(!fields.contains_key("num"));
+    }
+
+    #[tokio::test]
+    async fn scroll_all_with_point_ids_returns_point_id() {
+        let store = InMemoryVectorStore::new();
+        store.ensure_collection("test", 3).await.unwrap();
+
+        let points = vec![
+            VectorPoint {
+                id: "pid-1".into(),
+                vector: vec![1.0, 0.0, 0.0],
+                payload: HashMap::from([
+                    ("entity_id_str".into(), serde_json::json!("42")),
+                    ("name".into(), serde_json::json!("Alpha")),
+                    ("count".into(), serde_json::json!(7)), // non-string, must be excluded
+                ]),
+            },
+            VectorPoint {
+                id: "pid-2".into(),
+                vector: vec![0.0, 1.0, 0.0],
+                // Missing key_field: must be excluded from results.
+                payload: HashMap::from([("name".into(), serde_json::json!("Beta"))]),
+            },
+        ];
+        store.upsert("test", points).await.unwrap();
+
+        let result = store
+            .scroll_all_with_point_ids("test", "entity_id_str")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.len(),
+            1,
+            "only the point with key_field should appear"
+        );
+        let (point_id, fields) = &result[0];
+        assert_eq!(point_id, "pid-1");
+        assert_eq!(fields.get("entity_id_str").map(String::as_str), Some("42"));
+        assert_eq!(fields.get("name").map(String::as_str), Some("Alpha"));
+        // Non-string field must be absent.
+        assert!(!fields.contains_key("count"));
     }
 
     #[test]

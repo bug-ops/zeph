@@ -558,6 +558,60 @@ impl EmbeddingStore {
         Ok(results)
     }
 
+    /// Enumerate `(point_id, entity_id)` pairs for all points in `collection` that carry
+    /// an `entity_id_str` payload field.
+    ///
+    /// `entity_id_str` is a string mirror of the i64 `entity_id` written alongside the numeric
+    /// field at embedding time. The scroll API only surfaces string-typed payload values, so a
+    /// parallel string field is necessary for enumeration. Points missing `entity_id_str`
+    /// (written before this field was added) are silently skipped — they will gain the field on
+    /// the next `merge_entity` or `store_entity_embedding` call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying scroll operation fails.
+    pub async fn scroll_all_entity_ids(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<(String, i64)>, MemoryError> {
+        let rows = self
+            .ops
+            .scroll_all_with_point_ids(collection, "entity_id_str")
+            .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (point_id, fields) in rows {
+            let Some(s) = fields.get("entity_id_str") else {
+                continue;
+            };
+            if let Ok(id) = s.parse::<i64>() {
+                out.push((point_id, id));
+            } else {
+                tracing::debug!(point_id, value = %s, "entity_id_str unparseable, skipping");
+            }
+        }
+        Ok(out)
+    }
+
+    /// Delete a set of points from a named collection by their Qdrant point IDs.
+    ///
+    /// This is a thin wrapper over [`VectorStore::delete_by_ids`] for use by
+    /// the stale-embedding cleanup path in `community.rs`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying delete operation fails.
+    pub async fn delete_from_collection(
+        &self,
+        collection: &str,
+        ids: Vec<String>,
+    ) -> Result<(), MemoryError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        self.ops.delete_by_ids(collection, ids).await?;
+        Ok(())
+    }
+
     /// Retrieve raw vectors for the given Qdrant point IDs from `collection`.
     ///
     /// Returns a map of `point_id → embedding`. Missing ids are silently dropped.

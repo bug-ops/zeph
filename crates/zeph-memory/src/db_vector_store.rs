@@ -14,8 +14,8 @@ use zeph_db::sql;
 use zeph_db::{ActiveDialect, DbPool};
 
 use crate::vector_store::{
-    BoxFuture, FieldValue, ScoredVectorPoint, ScrollResult, VectorFilter, VectorPoint, VectorStore,
-    VectorStoreError,
+    BoxFuture, FieldValue, ScoredVectorPoint, ScrollResult, ScrollWithIdsResult, VectorFilter,
+    VectorPoint, VectorStore, VectorStoreError,
 };
 
 /// Database-backed in-process vector store.
@@ -283,6 +283,43 @@ impl VectorStore for DbVectorStore {
                     );
                     result.insert(id, map);
                 }
+            }
+            Ok(result)
+        })
+    }
+
+    fn scroll_all_with_point_ids(
+        &self,
+        collection: &str,
+        key_field: &str,
+    ) -> BoxFuture<'_, Result<ScrollWithIdsResult, VectorStoreError>> {
+        let collection = collection.to_owned();
+        let key_field = key_field.to_owned();
+        Box::pin(async move {
+            let rows: Vec<(String, String)> = zeph_db::query_as(sql!(
+                "SELECT id, payload FROM vector_points WHERE collection = ?"
+            ))
+            .bind(&collection)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| VectorStoreError::Scroll(e.to_string()))?;
+
+            let mut result = Vec::new();
+            for (point_id, payload_str) in rows {
+                let payload: HashMap<String, serde_json::Value> =
+                    serde_json::from_str(&payload_str).unwrap_or_default();
+                let Some(key_val) = payload.get(&key_field).and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let mut fields = HashMap::new();
+                for (k, v) in &payload {
+                    if let Some(s) = v.as_str() {
+                        fields.insert(k.clone(), s.to_owned());
+                    }
+                }
+                // Ensure the key_field value is always present in the fields map.
+                fields.insert(key_field.clone(), key_val.to_owned());
+                result.push((point_id, fields));
             }
             Ok(result)
         })
@@ -766,5 +803,87 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "valid");
+    }
+
+    #[tokio::test]
+    async fn scroll_all_with_point_ids_basic() {
+        let (vs, _) = setup().await;
+        vs.ensure_collection("c", 4).await.unwrap();
+        vs.upsert(
+            "c",
+            vec![
+                VectorPoint {
+                    id: "p1".into(),
+                    vector: vec![1.0, 0.0, 0.0, 0.0],
+                    payload: HashMap::from([
+                        ("entity_id_str".into(), serde_json::json!("42")),
+                        ("name".into(), serde_json::json!("alice")),
+                    ]),
+                },
+                VectorPoint {
+                    id: "p2".into(),
+                    vector: vec![0.0, 1.0, 0.0, 0.0],
+                    payload: HashMap::from([
+                        ("entity_id_str".into(), serde_json::json!("99")),
+                        ("name".into(), serde_json::json!("bob")),
+                    ]),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let result = vs
+            .scroll_all_with_point_ids("c", "entity_id_str")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 2);
+
+        // Collect into a sorted map for deterministic assertion
+        let mut by_id: std::collections::BTreeMap<
+            String,
+            std::collections::HashMap<String, String>,
+        > = result.into_iter().collect();
+        let p1 = by_id.remove("p1").expect("p1 missing");
+        let p2 = by_id.remove("p2").expect("p2 missing");
+        assert_eq!(p1.get("entity_id_str").map(String::as_str), Some("42"));
+        assert_eq!(p1.get("name").map(String::as_str), Some("alice"));
+        assert_eq!(p2.get("entity_id_str").map(String::as_str), Some("99"));
+        assert_eq!(p2.get("name").map(String::as_str), Some("bob"));
+    }
+
+    #[tokio::test]
+    async fn scroll_all_with_point_ids_skips_missing_key_field() {
+        let (vs, _) = setup().await;
+        vs.ensure_collection("c", 4).await.unwrap();
+        vs.upsert(
+            "c",
+            vec![
+                VectorPoint {
+                    id: "has-key".into(),
+                    vector: vec![1.0, 0.0, 0.0, 0.0],
+                    payload: HashMap::from([("entity_id_str".into(), serde_json::json!("7"))]),
+                },
+                VectorPoint {
+                    id: "no-key".into(),
+                    vector: vec![0.0, 1.0, 0.0, 0.0],
+                    payload: HashMap::from([("other".into(), serde_json::json!("value"))]),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let result = vs
+            .scroll_all_with_point_ids("c", "entity_id_str")
+            .await
+            .unwrap();
+        // Only the point that has the key field must be returned
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "has-key");
+        assert_eq!(
+            result[0].1.get("entity_id_str").map(String::as_str),
+            Some("7")
+        );
     }
 }
