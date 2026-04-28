@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-04-28
+
 ### Fixed
 
 - fix(sanitizer): `"bash"` and `"shell"` tool outputs no longer trigger false-positive ML injection
@@ -5309,7 +5311,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/bug-ops/zeph/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/bug-ops/zeph/compare/v0.19.3...v0.20.0
 [0.19.3]: https://github.com/bug-ops/zeph/compare/v0.19.2...v0.19.3
 [0.19.2]: https://github.com/bug-ops/zeph/compare/v0.19.1...v0.19.2
