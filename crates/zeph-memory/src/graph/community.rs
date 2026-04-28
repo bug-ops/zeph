@@ -1380,7 +1380,7 @@ mod tests {
         assert_eq!(deleted, 0, "nothing to delete from empty collection");
     }
 
-    /// `cleanup_stale_entity_embeddings` deletes the Qdrant point when the SQLite entity row
+    /// `cleanup_stale_entity_embeddings` deletes the Qdrant point when the `SQLite` entity row
     /// has been removed, and leaves live entities untouched.
     #[tokio::test]
     async fn cleanup_stale_deletes_orphaned_points() {
