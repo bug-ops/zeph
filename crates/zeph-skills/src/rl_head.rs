@@ -286,7 +286,7 @@ impl RoutingHead {
     ///
     /// # Panics
     ///
-    /// Panics if the mutex is poisoned.
+    /// Panics if the mutex is poisoned, or if `stats.len() < candidates.len()`.
     #[must_use]
     pub fn rerank(
         &self,
@@ -299,12 +299,21 @@ impl RoutingHead {
         let mut inner = self.inner.lock().expect("RoutingHead mutex poisoned");
 
         if inner.update_count < warmup_updates {
-            // Cold start: use pure cosine order
+            // Cold start: use pure cosine order.
+            // Still run a forward pass on the top cosine candidate so last_forward is populated
+            // and update() can increment update_count — otherwise warmup never ends.
             let mut ranked: Vec<(usize, f32)> = candidates
                 .iter()
                 .map(|&(idx, _, cosine)| (idx, cosine))
                 .collect();
             ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            if let Some(&(winner_idx, _)) = ranked.first()
+                && let Some(pos) = candidates.iter().position(|&(i, _, _)| i == winner_idx)
+            {
+                let (_, skill_embed, cosine) = candidates[pos];
+                let (success_rate, use_count) = stats[pos];
+                inner.score(query_embed, skill_embed, cosine, success_rate, use_count);
+            }
             return ranked;
         }
 
@@ -603,6 +612,37 @@ mod tests {
     }
 
     #[test]
+    fn warmup_exits_after_updates() {
+        // Regression test for #3535: rerank() during warmup must populate last_forward so
+        // update() can increment update_count, allowing warmup to eventually complete.
+        let head = make_head();
+        let q = dummy_embed(0.1, 4);
+        let s1 = dummy_embed(0.1, 4);
+        let s2 = dummy_embed(0.9, 4);
+        let candidates: Vec<(usize, &[f32], f32)> = vec![(0, &s1, 0.9), (1, &s2, 0.5)];
+        let stats = vec![(0.8, 5u32), (0.6, 3)];
+        let warmup = 3u32;
+
+        for _ in 0..warmup {
+            let _ = head.rerank(&q, &candidates, &stats, 0.3, warmup);
+            let updated = head.update(1.0, 0.01);
+            assert!(
+                updated,
+                "update() must apply during warmup so update_count grows"
+            );
+        }
+
+        assert_eq!(
+            head.update_count(),
+            warmup,
+            "update_count must reach warmup threshold"
+        );
+        // One more rerank should now use blended scores (post-warmup).
+        let ranked = head.rerank(&q, &candidates, &stats, 0.3, warmup);
+        assert_eq!(ranked.len(), 2);
+    }
+
+    #[test]
     fn update_changes_weights() {
         let head = make_head();
         let q = dummy_embed(0.5, 4);
@@ -618,5 +658,101 @@ mod tests {
             (score_before - score_after).abs() > 1e-6,
             "weights should change after update: {score_before} vs {score_after}"
         );
+    }
+
+    // --- Edge cases added for #3535 coverage ---
+
+    #[test]
+    fn rerank_warmup_empty_candidates_returns_empty() {
+        // Empty candidate list must not panic and must return an empty vec — no winner to score.
+        let head = make_head();
+        let q = dummy_embed(0.1, 4);
+        let candidates: Vec<(usize, &[f32], f32)> = vec![];
+        let stats: Vec<(f32, u32)> = vec![];
+        let ranked = head.rerank(&q, &candidates, &stats, 0.3, 10);
+        assert!(
+            ranked.is_empty(),
+            "empty candidates must produce empty ranked list"
+        );
+        // No forward cache was populated — update must be a safe no-op.
+        assert!(
+            !head.update(1.0, 0.01),
+            "update() after rerank with empty candidates must return false"
+        );
+    }
+
+    #[test]
+    fn rerank_warmup_single_candidate_populates_last_forward() {
+        // Single candidate during warmup: the fix's winner-scoring path handles exactly one element.
+        // Verify last_forward is populated (update returns true) and update_count grows.
+        let head = make_head();
+        let q = dummy_embed(0.2, 4);
+        let s = dummy_embed(0.8, 4);
+        let candidates: Vec<(usize, &[f32], f32)> = vec![(42, &s, 0.95)];
+        let stats = vec![(1.0, 10u32)];
+
+        let ranked = head.rerank(&q, &candidates, &stats, 0.3, 5);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].0, 42);
+        assert!(
+            head.update(1.0, 0.01),
+            "update() must return true after single-candidate warmup rerank"
+        );
+        assert_eq!(
+            head.update_count(),
+            1,
+            "update_count must be 1 after one update"
+        );
+    }
+
+    #[test]
+    fn rerank_warmup_preserves_cosine_ordering_with_multiple_candidates() {
+        // During warmup the fix must not alter the cosine-ordered output even though it runs
+        // a forward pass on the winner.  Verify the returned order is pure-cosine descending.
+        let head = make_head();
+        let q = dummy_embed(0.1, 4);
+        let sa = dummy_embed(0.1, 4);
+        let sb = dummy_embed(0.5, 4);
+        let sc = dummy_embed(0.9, 4);
+        // cosine scores: idx 0 → 0.3, idx 1 → 0.9 (highest), idx 2 → 0.6
+        let candidates: Vec<(usize, &[f32], f32)> =
+            vec![(0, &sa, 0.3), (1, &sb, 0.9), (2, &sc, 0.6)];
+        let stats = vec![(0.5, 1u32), (0.7, 2), (0.6, 3)];
+
+        let ranked = head.rerank(&q, &candidates, &stats, 0.3, 20);
+        assert_eq!(
+            ranked[0].0, 1,
+            "idx 1 has highest cosine 0.9, must be first"
+        );
+        assert_eq!(ranked[1].0, 2, "idx 2 has cosine 0.6, must be second");
+        assert_eq!(ranked[2].0, 0, "idx 0 has lowest cosine 0.3, must be last");
+    }
+
+    #[test]
+    fn rerank_post_warmup_winner_cache_used_by_update() {
+        // After warmup, rerank must store the winner's ForwardCache so update() returns true.
+        let head = make_head();
+        let q = dummy_embed(0.3, 4);
+        let sa = dummy_embed(0.3, 4);
+        let sb = dummy_embed(0.7, 4);
+        let candidates: Vec<(usize, &[f32], f32)> = vec![(0, &sa, 0.4), (1, &sb, 0.8)];
+        let stats = vec![(0.5, 1u32), (0.9, 5)];
+
+        // Advance past warmup.
+        let warmup = 2u32;
+        for _ in 0..warmup {
+            let _ = head.rerank(&q, &candidates, &stats, 0.3, warmup);
+            let _ = head.update(1.0, 0.01);
+        }
+        assert_eq!(head.update_count(), warmup);
+
+        // Now in post-warmup mode: rerank then update.
+        let ranked = head.rerank(&q, &candidates, &stats, 0.3, warmup);
+        assert_eq!(ranked.len(), 2);
+        assert!(
+            head.update(1.0, 0.01),
+            "update() must succeed after post-warmup rerank"
+        );
+        assert_eq!(head.update_count(), warmup + 1);
     }
 }
