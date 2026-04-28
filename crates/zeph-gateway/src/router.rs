@@ -396,6 +396,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn webhook_503_returns_json_error() {
+        // Build a state whose channel is already closed (rx dropped) so that
+        // the send in webhook_handler will fail immediately.
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(1);
+        drop(rx);
+        let state = AppState {
+            webhook_tx: tx,
+            started_at: Instant::now(),
+        };
+        let app = build_router(state, None, 0, 1_048_576);
+
+        let body = serde_json::json!({"channel": "c", "sender": "s", "body": "b"});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhook")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 503);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "expected application/json content-type for 503, got: {ct}"
+        );
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["status"], 503);
+        assert!(json.get("error").is_some());
+    }
+
+    #[tokio::test]
     async fn body_size_limit() {
         let (state, _rx) = test_state();
         let app = build_router(state, None, 0, 64);

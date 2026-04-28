@@ -116,7 +116,14 @@ pub(crate) async fn webhook_handler(
     let msg = format!("[{}@{}] {}", sender, channel, payload.body);
     match state.webhook_tx.send(msg).await {
         Ok(()) => Json(WebhookResponse { status: "accepted" }).into_response(),
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "agent unavailable".to_string(),
+                status: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            }),
+        )
+            .into_response(),
     }
 }
 
