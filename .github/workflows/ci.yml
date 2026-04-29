@@ -198,8 +198,8 @@ jobs:
         with:
           cache-targets: "false"
           shared-key: "ci"
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - uses: taiki-e/install-action@dfd6a81ff1efc1c100332d760e0c9edfe2ae0a51 # nextest
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      - uses: taiki-e/install-action@a987447a36adfd8769c91cf36dd91c79b8452fe0 # nextest
       - name: Build and archive tests
         run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features "desktop,ide,server,chat,pdf,scheduler" --lib --bins --tests --archive-file nextest-archive.tar.zst
       - name: Upload test archive
@@ -238,7 +238,7 @@ jobs:
         partition: ["1/5", "2/5", "3/5", "4/5", "5/5"]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: taiki-e/install-action@dfd6a81ff1efc1c100332d760e0c9edfe2ae0a51 # nextest
+      - uses: taiki-e/install-action@a987447a36adfd8769c91cf36dd91c79b8452fe0 # nextest
       - name: Download test archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -260,7 +260,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: taiki-e/install-action@dfd6a81ff1efc1c100332d760e0c9edfe2ae0a51 # nextest
+      - uses: taiki-e/install-action@a987447a36adfd8769c91cf36dd91c79b8452fe0 # nextest
       - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -330,9 +330,9 @@ jobs:
         with:
           cache-targets: "false"
           shared-key: "coverage"
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - uses: taiki-e/install-action@195422eb3ed4087e3a6571fac204cfc3cb1dd3ed # cargo-llvm-cov
-      - uses: taiki-e/install-action@dfd6a81ff1efc1c100332d760e0c9edfe2ae0a51 # nextest
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      - uses: taiki-e/install-action@ff869c26e4a7acc3087d9d6c1163a80d3957bca7 # cargo-llvm-cov
+      - uses: taiki-e/install-action@a987447a36adfd8769c91cf36dd91c79b8452fe0 # nextest
       - name: Generate coverage
         run: cargo llvm-cov nextest --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --lcov --output-path lcov.info
       - name: Upload coverage
@@ -372,7 +372,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         # continue-on-error: trivy exits 1 when vulnerabilities are found; without
         # this the upload step would be skipped and findings lost from the dashboard.
         continue-on-error: true
