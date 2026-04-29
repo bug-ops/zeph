@@ -116,12 +116,12 @@ toml = "1.1.2"
 toml_edit = "0.25.11"
 tower = "0.5.3"
 tower-http = { version = "0.6.8", default-features = false }
-tracing = "0.1"
-tracing-appender = "0.2"
-tracing-chrome = "0.7"
-tracing-opentelemetry = "0.32"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["parking_lot"] }
-tracing-test = "0.2"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-chrome = "0.7.2"
+tracing-opentelemetry = "0.32.1"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["parking_lot"] }
+tracing-test = "0.2.6"
 tree-sitter = "0.26.8"
 tree-sitter-bash = "0.25.1"
 tree-sitter-go = "0.25"
