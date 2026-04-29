@@ -17,8 +17,8 @@ publish = true
 
 [workspace.dependencies]
 age = { version = "0.11.3", default-features = false }
-agent-client-protocol = "0.11"
-agent-client-protocol-tokio = "0.11"
+agent-client-protocol = "0.11.1"
+agent-client-protocol-tokio = "0.11.1"
 anyhow = "1.0.102"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
@@ -52,7 +52,7 @@ include_dir = { version = "0.7.4", features = ["glob"] }
 indexmap = "2.14.0"
 indoc = "2.0.7"
 insta = "1.47.2"
-nix = { version = "0.31", default-features = false }
+nix = { version = "0.31.2", default-features = false }
 notify = "8.2.0"
 notify-debouncer-mini = "0.7"
 nucleo-matcher = "0.3.1"
@@ -79,11 +79,11 @@ ratatui = "0.30"
 regex = "1.12.3"
 reqwest = { version = "0.13.2", default-features = false }
 rmcp = "1.5"
-rustix = { version = "1.1", default-features = false }
+rustix = { version = "1.1.4", default-features = false }
 audioadapter-buffers = "3.0"
 rubato = "2.0"
 schemars = "1.2.1"
-shell-words = "1.1"
+shell-words = "1.1.1"
 hmac = "0.13"
 sha2 = "0.11"
 scrape-core = "0.2.6"
@@ -95,7 +95,7 @@ serial_test = "3.4"
 globset = "0.4.18"
 similar = "3.1"
 sqlx = { version = "0.8.6", default-features = false }
-libsqlite3-sys = { version = "0.30", features = ["bundled"] }
+libsqlite3-sys = { version = "0.37.0", features = ["bundled"] }
 subtle = "2.6"
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 pprof = { version = "0.15.0", default-features = false }
@@ -136,7 +136,7 @@ tree-sitter-typescript = "0.23.2"
 unicode-normalization = "0.1.25"
 unicode-width = "0.2.2"
 url = "2.5.8"
-uuid = "1.23"
+uuid = "1.23.1"
 walkdir = "2.5"
 wiremock = "0.6.5"
 zeroize = { version = "1.8.2", default-features = false }
