@@ -59,7 +59,7 @@ jobs:
         run: sudo apt-get install -y musl-tools
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         if: "!matrix.use_cross"
-      - uses: taiki-e/install-action@61d5b80b1edc1e3817a272d1d2428b30da7fb0b0 # cross
+      - uses: taiki-e/install-action@b8153da15e82ddb851f29be81a76a859360db51e # cross
       - name: Build binary (cross)
         if: matrix.use_cross
         run: cross build --release --features full --target ${{ matrix.target }}
