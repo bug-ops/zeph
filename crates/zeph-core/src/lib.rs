@@ -74,6 +74,7 @@ pub mod cost;
 pub mod daemon;
 pub mod debug_dump;
 pub mod file_watcher;
+pub mod goal;
 pub mod instructions;
 pub mod instrumented_channel;
 pub mod metrics;

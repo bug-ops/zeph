@@ -280,10 +280,12 @@ impl<C: Channel> Agent<C> {
             focus: focus::FocusState::default(),
             sidequest: sidequest::SidequestState::default(),
             tool_state: ToolState::default(),
+            goal_accounting: None,
             #[cfg(feature = "self-check")]
             quality: None,
             proactive_explorer: None,
             promotion_engine: None,
+            taco_compressor: None,
         };
 
         let runtime = AgentRuntime {
@@ -1023,6 +1025,7 @@ impl<C: Channel> Agent<C> {
                     agent_cmd::AgentCommand,
                     compaction::{CompactCommand, NewConversationCommand, RecapCommand},
                     experiment::ExperimentCommand,
+                    goal::GoalCommand,
                     loop_cmd::LoopCommand,
                     lsp::LspCommand,
                     mcp::McpCommand,
@@ -1072,6 +1075,7 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(AcpCommand);
                 agent_reg.register(TrajectoryCommand);
                 agent_reg.register(ScopeCommand);
+                agent_reg.register(GoalCommand);
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut agent_null_sink,
@@ -1447,7 +1451,7 @@ impl<C: Channel> Agent<C> {
             .debug
             .start_iteration_span(turn_idx, t.input.text.trim());
 
-        let result = self.process_user_message_inner(&mut t).await;
+        let result = Box::pin(self.process_user_message_inner(&mut t)).await;
 
         // Close iteration span regardless of outcome (partial trace preserved on error).
         let span_status = if result.is_ok() {
@@ -1468,6 +1472,13 @@ impl<C: Channel> Agent<C> {
         turn: &mut turn::Turn,
     ) -> Result<(), error::AgentError> {
         self.reap_background_tasks_and_update_metrics();
+
+        let tokens_before_turn = self
+            .runtime
+            .metrics
+            .metrics_tx
+            .as_ref()
+            .map_or(0, |tx| tx.borrow().total_tokens);
 
         // Drain any background shell completions that arrived since the last turn.
         // They are buffered in `pending_background_completions` and merged with the
@@ -1593,6 +1604,8 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.flush_chunks().await;
 
         self.maybe_fire_completion_notification(turn, turn_had_error);
+
+        self.flush_goal_accounting(tokens_before_turn);
 
         // Collect llm_chat_ms and tool_exec_ms from MetricsState.pending_timings (accumulated
         // by the tool execution chain) into turn.metrics so end_turn can flush them.
@@ -1761,6 +1774,40 @@ impl<C: Channel> Agent<C> {
                     }
                 },
             );
+        }
+    }
+
+    /// Publish the active goal snapshot to `MetricsSnapshot` and fire `on_turn_complete`
+    /// accounting as a tracked background task.
+    fn flush_goal_accounting(&mut self, tokens_before: u64) {
+        let goal_snap = self
+            .services
+            .goal_accounting
+            .as_ref()
+            .and_then(|a| a.snapshot());
+        self.update_metrics(|m| m.active_goal = goal_snap);
+
+        if let Some(ref accounting) = self.services.goal_accounting {
+            let tokens_after = self
+                .runtime
+                .metrics
+                .metrics_tx
+                .as_ref()
+                .map_or(0, |tx| tx.borrow().total_tokens);
+            let turn_tokens = tokens_after.saturating_sub(tokens_before);
+            let mut spawned: Option<
+                std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+            > = None;
+            accounting.on_turn_complete(turn_tokens, |fut| {
+                spawned = Some(fut);
+            });
+            if let Some(fut) = spawned {
+                let _ = self.runtime.lifecycle.supervisor.spawn(
+                    agent_supervisor::TaskClass::Telemetry,
+                    "goal-accounting",
+                    fut,
+                );
+            }
         }
     }
 

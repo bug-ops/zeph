@@ -943,6 +943,268 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     fn handle_scope(&self, args: &str) -> String {
         self.handle_scope_command_as_string(args)
     }
+
+    // ----- /goal -----
+
+    fn handle_goal<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        // Extract all non-Send data synchronously before entering the async block.
+        if self.services.goal_accounting.is_none() {
+            if !self.runtime.config.goals.enabled {
+                return Box::pin(async {
+                    Ok("Goals are disabled. Set `[goals] enabled = true` in config.".to_owned())
+                });
+            }
+            let pool = match self.services.memory.persistence.memory.as_ref() {
+                Some(m) => std::sync::Arc::new(m.sqlite().pool().clone()),
+                None => {
+                    return Box::pin(async {
+                        Ok("Goals require a database backend (memory not configured).".to_owned())
+                    });
+                }
+            };
+            let store = std::sync::Arc::new(crate::goal::GoalStore::new(pool));
+            let accounting = std::sync::Arc::new(crate::goal::GoalAccounting::new(store));
+            self.services.goal_accounting = Some(accounting);
+        }
+
+        let accounting = self.services.goal_accounting.clone().unwrap();
+        let max_chars = self.runtime.config.goals.max_text_chars;
+        let default_budget = self.runtime.config.goals.default_token_budget;
+
+        Box::pin(async move {
+            let _ = accounting.refresh().await;
+            let store = accounting.get_store();
+
+            match args {
+                "" | "status" => goal_status(&accounting).await,
+                "pause" => goal_pause(&accounting, &store).await,
+                "resume" => goal_resume(&accounting, &store).await,
+                "complete" => goal_complete(&accounting, &store).await,
+                "clear" => goal_clear(&accounting, &store).await,
+                "list" => goal_list(&store).await,
+                _ if args.starts_with("create") => {
+                    goal_create(args, &accounting, &store, max_chars, default_budget).await
+                }
+                _ => Ok(
+                    "Unknown /goal subcommand. Try: create, pause, resume, complete, clear, status, list."
+                        .to_owned(),
+                ),
+            }
+        })
+    }
+
+    fn active_goal_snapshot(&self) -> Option<zeph_commands::GoalSnapshot> {
+        let accounting = self.services.goal_accounting.as_ref()?;
+        let snap = accounting.snapshot()?;
+        Some(zeph_commands::GoalSnapshot {
+            id: snap.id,
+            text: snap.text,
+            status: match snap.status {
+                crate::goal::GoalStatus::Active => zeph_commands::GoalStatusView::Active,
+                crate::goal::GoalStatus::Paused => zeph_commands::GoalStatusView::Paused,
+                crate::goal::GoalStatus::Completed => zeph_commands::GoalStatusView::Completed,
+                crate::goal::GoalStatus::Cleared => zeph_commands::GoalStatusView::Cleared,
+            },
+            turns_used: snap.turns_used,
+            tokens_used: snap.tokens_used,
+            token_budget: snap.token_budget,
+        })
+    }
+}
+
+type GoalStore = crate::goal::GoalStore;
+type GoalAccounting = crate::goal::GoalAccounting;
+
+async fn goal_status(accounting: &GoalAccounting) -> Result<String, CommandError> {
+    match accounting.get_active().await {
+        Ok(Some(g)) => {
+            let budget_line = g.token_budget.map_or_else(
+                || format!("  tokens used: {}", g.tokens_used),
+                |b| format!("  budget: {}/{b}", g.tokens_used),
+            );
+            Ok(format!(
+                "Active goal [{}]: {}\n  status: {}\n  turns: {}\n{}",
+                &g.id[..8],
+                g.text,
+                g.status,
+                g.turns_used,
+                budget_line
+            ))
+        }
+        Ok(None) => Ok("No active goal. Use `/goal create <text>` to set one.".to_owned()),
+        Err(e) => Ok(format!("Goal lookup failed: {e}")),
+    }
+}
+
+async fn goal_create(
+    args: &str,
+    accounting: &GoalAccounting,
+    store: &GoalStore,
+    max_chars: usize,
+    default_budget: u64,
+) -> Result<String, CommandError> {
+    let rest = args.strip_prefix("create").unwrap_or("").trim();
+    let (text, explicit_budget) = parse_goal_create_args(rest);
+    if text.is_empty() {
+        return Ok("Usage: /goal create <text> [--budget N]".to_owned());
+    }
+    let budget = explicit_budget.or(if default_budget > 0 {
+        Some(default_budget)
+    } else {
+        None
+    });
+    match store.create(text, budget, max_chars).await {
+        Ok(g) => {
+            let _ = accounting.refresh().await;
+            Ok(format!("Goal created [{}]: {}", &g.id[..8], g.text))
+        }
+        Err(crate::goal::store::GoalError::TextTooLong { max }) => Ok(format!(
+            "Goal text exceeds {max} characters. Please shorten it."
+        )),
+        Err(e) => Ok(format!("Failed to create goal: {e}")),
+    }
+}
+
+async fn goal_pause(
+    accounting: &GoalAccounting,
+    store: &GoalStore,
+) -> Result<String, CommandError> {
+    match accounting.get_active().await {
+        Ok(Some(g)) => {
+            match store
+                .transition(&g.id, crate::goal::GoalStatus::Paused, g.updated_at)
+                .await
+            {
+                Ok(_) => {
+                    let _ = accounting.refresh().await;
+                    Ok(format!("Goal [{}] paused.", &g.id[..8]))
+                }
+                Err(crate::goal::store::GoalError::StaleUpdate(_)) => {
+                    let current = accounting.get_active().await.ok().flatten();
+                    Ok(format!(
+                        "Goal state changed concurrently. Current: {}",
+                        current.map_or_else(|| "none".into(), |g| g.status.to_string())
+                    ))
+                }
+                Err(e) => Ok(format!("Pause failed: {e}")),
+            }
+        }
+        Ok(None) => Ok("No active goal to pause.".to_owned()),
+        Err(e) => Ok(format!("Failed: {e}")),
+    }
+}
+
+async fn goal_resume(
+    accounting: &GoalAccounting,
+    store: &GoalStore,
+) -> Result<String, CommandError> {
+    let goals = store.list(10).await.unwrap_or_default();
+    let paused = goals
+        .into_iter()
+        .find(|g| g.status == crate::goal::GoalStatus::Paused);
+    match paused {
+        Some(g) => {
+            match store
+                .transition(&g.id, crate::goal::GoalStatus::Active, g.updated_at)
+                .await
+            {
+                Ok(_) => {
+                    let _ = accounting.refresh().await;
+                    Ok(format!("Goal [{}] resumed: {}", &g.id[..8], g.text))
+                }
+                Err(crate::goal::store::GoalError::StaleUpdate(_)) => {
+                    Ok("Goal state changed concurrently — please retry.".to_owned())
+                }
+                Err(e) => Ok(format!("Resume failed: {e}")),
+            }
+        }
+        None => Ok("No paused goal to resume.".to_owned()),
+    }
+}
+
+async fn goal_complete(
+    accounting: &GoalAccounting,
+    store: &GoalStore,
+) -> Result<String, CommandError> {
+    match accounting.get_active().await {
+        Ok(Some(g)) => {
+            match store
+                .transition(&g.id, crate::goal::GoalStatus::Completed, g.updated_at)
+                .await
+            {
+                Ok(_) => {
+                    let _ = accounting.refresh().await;
+                    Ok(format!("Goal [{}] marked complete.", &g.id[..8]))
+                }
+                Err(e) => Ok(format!("Complete failed: {e}")),
+            }
+        }
+        Ok(None) => Ok("No active goal.".to_owned()),
+        Err(e) => Ok(format!("Failed: {e}")),
+    }
+}
+
+async fn goal_clear(
+    accounting: &GoalAccounting,
+    store: &GoalStore,
+) -> Result<String, CommandError> {
+    let goals = store.list(10).await.unwrap_or_default();
+    let target = goals.into_iter().find(|g| {
+        g.status == crate::goal::GoalStatus::Active || g.status == crate::goal::GoalStatus::Paused
+    });
+    match target {
+        Some(g) => {
+            match store
+                .transition(&g.id, crate::goal::GoalStatus::Cleared, g.updated_at)
+                .await
+            {
+                Ok(_) => {
+                    let _ = accounting.refresh().await;
+                    Ok(format!("Goal [{}] cleared.", &g.id[..8]))
+                }
+                Err(e) => Ok(format!("Clear failed: {e}")),
+            }
+        }
+        None => Ok("No active or paused goal to clear.".to_owned()),
+    }
+}
+
+async fn goal_list(store: &GoalStore) -> Result<String, CommandError> {
+    let goals = store.list(20).await.unwrap_or_default();
+    if goals.is_empty() {
+        return Ok("No goals recorded.".to_owned());
+    }
+    let mut out = String::from("Goals:\n");
+    for g in goals {
+        let _ = std::fmt::Write::write_fmt(
+            &mut out,
+            format_args!(
+                "  {} [{}] {} — {} turns\n",
+                g.status.badge_symbol(),
+                &g.id[..8],
+                g.text,
+                g.turns_used
+            ),
+        );
+    }
+    Ok(out.trim_end().to_owned())
+}
+
+fn parse_goal_create_args(args: &str) -> (&str, Option<u64>) {
+    if let Some(pos) = args.find("--budget") {
+        let text = args[..pos].trim();
+        let rest = args[pos + "--budget".len()..].trim();
+        let budget = rest
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<u64>().ok());
+        (text, budget)
+    } else {
+        (args, None)
+    }
 }
 
 /// Convert `AgentError` to `CommandError` for the trait boundary.

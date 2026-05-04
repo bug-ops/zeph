@@ -1920,6 +1920,7 @@ impl<C: Channel> Agent<C> {
             secrets,
             recap,
             loop_min_interval_secs,
+            goal_config,
         } = cfg;
 
         self.tool_orchestrator.apply_config(
@@ -1983,6 +1984,12 @@ impl<C: Channel> Agent<C> {
         self.runtime.config.budget_hint_enabled = budget_hint_enabled;
         self.runtime.config.recap_config = recap;
         self.runtime.config.loop_min_interval_secs = loop_min_interval_secs;
+        self.runtime.config.goals = crate::agent::state::GoalRuntimeConfig {
+            enabled: goal_config.enabled,
+            max_text_chars: goal_config.max_text_chars,
+            default_token_budget: goal_config.default_token_budget.unwrap_or(0),
+            inject_into_system_prompt: goal_config.inject_into_system_prompt,
+        };
 
         self.runtime.debug.reasoning_model_warning = anomaly_config.reasoning_model_warning;
         if anomaly_config.enabled {
@@ -2123,6 +2130,29 @@ impl<C: Channel> Agent<C> {
         engine: Option<std::sync::Arc<zeph_memory::compression::promotion::PromotionEngine>>,
     ) -> Self {
         self.services.promotion_engine = engine;
+        self
+    }
+
+    /// Wire the TACO [`zeph_tools::RuleBasedCompressor`] for hit-count flushing during
+    /// `maybe_autodream`. Set to `None` when `[tools.compression] enabled = false`.
+    #[must_use]
+    pub fn with_taco_compressor(
+        mut self,
+        compressor: Option<std::sync::Arc<zeph_tools::RuleBasedCompressor>>,
+    ) -> Self {
+        self.services.taco_compressor = compressor;
+        self
+    }
+
+    /// Wire the [`crate::goal::GoalAccounting`] service for per-turn token accounting (G4).
+    ///
+    /// Set to `None` when `[goals] enabled = false`.
+    #[must_use]
+    pub fn with_goal_accounting(
+        mut self,
+        accounting: Option<std::sync::Arc<crate::goal::GoalAccounting>>,
+    ) -> Self {
+        self.services.goal_accounting = accounting;
         self
     }
 }

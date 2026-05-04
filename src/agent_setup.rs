@@ -14,22 +14,10 @@ use zeph_tools::{
     LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,
 };
 
-type ToolExecutor = zeph_tools::CompositeExecutor<
-    zeph_tools::CompositeExecutor<
-        zeph_tools::FileExecutor,
-        zeph_tools::CompositeExecutor<
-            std::sync::Arc<zeph_tools::ShellExecutor>,
-            zeph_tools::CompositeExecutor<
-                zeph_tools::WebScrapeExecutor,
-                zeph_tools::SetCwdExecutor,
-            >,
-        >,
-    >,
-    zeph_mcp::McpToolExecutor,
->;
-
 pub(crate) struct ToolSetup {
-    pub(crate) executor: ToolExecutor,
+    pub(crate) executor: zeph_tools::DynExecutor,
+    /// TACO compressor handle for `maybe_autodream` hit-count flushing. `None` when disabled.
+    pub(crate) taco_compressor: Option<std::sync::Arc<zeph_tools::RuleBasedCompressor>>,
     pub(crate) mcp_tools: Vec<zeph_mcp::McpTool>,
     pub(crate) mcp_outcomes: Vec<zeph_mcp::ServerConnectOutcome>,
     pub(crate) mcp_manager: Arc<zeph_mcp::McpManager>,
@@ -550,10 +538,13 @@ pub(crate) async fn build_tool_setup(
             zeph_tools::CompositeExecutor::new(scrape_executor, cwd_executor),
         ),
     );
-    let executor = zeph_tools::CompositeExecutor::new(base_executor, mcp_executor);
+    let composite = zeph_tools::CompositeExecutor::new(base_executor, mcp_executor);
+    let (executor, taco_compressor) =
+        build_compressed_executor(composite, &config.tools.compression, pool).await;
 
     ToolSetup {
         executor,
+        taco_compressor,
         mcp_tools,
         mcp_outcomes,
         mcp_manager,
@@ -567,6 +558,58 @@ pub(crate) async fn build_tool_setup(
         background_completion_rx: Some(bg_completion_rx),
         shell_executor_handle,
     }
+}
+
+/// Wrap `inner` in a [`zeph_tools::CompressedExecutor`] when `cfg.enabled = true` and a DB pool
+/// is available. Returns the executor and a compressor handle for hit-count flushing during
+/// `maybe_autodream`. Falls back to a plain [`zeph_tools::DynExecutor`] when disabled.
+async fn build_compressed_executor<
+    E: zeph_tools::ToolExecutor + zeph_tools::ErasedToolExecutor + 'static,
+>(
+    inner: E,
+    cfg: &zeph_config::ToolCompressionConfig,
+    pool: Option<&zeph_db::DbPool>,
+) -> (
+    zeph_tools::DynExecutor,
+    Option<Arc<zeph_tools::RuleBasedCompressor>>,
+) {
+    if cfg.enabled {
+        if let Some(pool) = pool {
+            let store = Arc::new(zeph_tools::CompressionRuleStore::new(Arc::new(
+                pool.clone(),
+            )));
+            match zeph_tools::RuleBasedCompressor::load(
+                store,
+                cfg.min_lines_to_compress,
+                cfg.regex_compile_timeout_ms,
+            )
+            .await
+            {
+                Ok(compressor) => {
+                    tracing::info!("tools.compression: TACO enabled, rule-based compressor loaded");
+                    let compressor = Arc::new(compressor);
+                    let compressed = zeph_tools::CompressedExecutor::new(
+                        inner,
+                        Arc::clone(&compressor) as Arc<dyn zeph_tools::OutputCompressor>,
+                        cfg.min_lines_to_compress,
+                    );
+                    return (
+                        zeph_tools::DynExecutor(Arc::new(compressed)),
+                        Some(compressor),
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "tools.compression: failed to load rules, running without compression"
+                    );
+                }
+            }
+        } else {
+            tracing::warn!("tools.compression: enabled but no DB pool available, skipping");
+        }
+    }
+    (zeph_tools::DynExecutor(Arc::new(inner)), None)
 }
 
 use zeph_core::agent::Agent;

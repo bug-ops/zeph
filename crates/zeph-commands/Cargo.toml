@@ -12,6 +12,7 @@ publish.workspace = true
 description = "Slash command registry, handler trait, and channel sink abstraction for Zeph"
 
 [dependencies]
+serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true

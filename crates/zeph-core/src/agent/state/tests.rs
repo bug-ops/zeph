@@ -98,6 +98,7 @@ fn make_runtime_config() -> RuntimeConfig {
         acp_subagent_spawn_fn: None,
         channel_type: String::new(),
         provider_persistence_enabled: true,
+        goals: crate::agent::state::GoalRuntimeConfig::default(),
     }
 }
 

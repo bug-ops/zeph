@@ -27,6 +27,7 @@ pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rec
     let mut spans: Vec<Span<'_>> = vec![Span::styled(main_text, theme.status_bar)];
     append_security_spans(&mut spans, metrics, &theme);
     append_compaction_segment(&mut spans, metrics, &theme);
+    append_goal_badge(&mut spans, metrics, &theme);
     let suffix = build_suffix(metrics, cancel_hint, &uptime);
     spans.push(Span::styled(suffix, theme.status_bar));
     let line = Line::from(spans);
@@ -70,6 +71,32 @@ fn append_compaction_segment(spans: &mut Vec<Span<'_>>, metrics: &MetricsSnapsho
             Style::default().fg(Color::Cyan),
         ));
     }
+}
+
+fn append_goal_badge(spans: &mut Vec<Span<'_>>, metrics: &MetricsSnapshot, theme: &Theme) {
+    use zeph_core::goal::GoalStatus;
+    let Some(ref snap) = metrics.active_goal else {
+        return;
+    };
+    let (icon, color) = match snap.status {
+        GoalStatus::Active => ("▶", Color::Green),
+        GoalStatus::Paused => ("⏸", Color::Yellow),
+        GoalStatus::Completed => ("✓", Color::Cyan),
+        GoalStatus::Cleared => ("✗", Color::Red),
+    };
+    let label = if snap.text.is_empty() {
+        format!(" {icon} goal")
+    } else {
+        let short: String = snap.text.chars().take(30).collect();
+        let truncated = if snap.text.chars().count() > 30 {
+            format!("{short}…")
+        } else {
+            short
+        };
+        format!(" {icon} {truncated}")
+    };
+    spans.push(Span::styled(" | ", theme.status_bar));
+    spans.push(Span::styled(label, Style::default().fg(color)));
 }
 
 fn build_suffix(metrics: &MetricsSnapshot, cancel_hint: &str, uptime: &str) -> String {

@@ -13,6 +13,7 @@ description = "Tool executor trait with shell, web scrape, and composite executo
 readme = "README.md"
 
 [dependencies]
+dashmap.workspace = true
 dirs.workspace = true
 glob.workspace = true
 globset.workspace = true
@@ -43,8 +44,10 @@ tree-sitter-typescript.workspace = true
 unicode-normalization.workspace = true
 url.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
+sqlx.workspace = true
 zeph-common = { workspace = true, features = ["treesitter"] }
 zeph-config.workspace = true
+zeph-db = { workspace = true, features = ["sqlite"] }
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]

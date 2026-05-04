@@ -14,7 +14,7 @@ use super::{
     MigrateError, Migration, MigrationResult, migrate_acp_subagents_config,
     migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry, migrate_autodream_config,
     migrate_compression_predictor_config, migrate_database_url, migrate_egress_config,
-    migrate_focus_auto_consolidate_min_window, migrate_forgetting_config,
+    migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
     migrate_magic_docs_config, migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts,
     migrate_mcp_trust_levels, migrate_memory_graph_config, migrate_memory_hebbian_config,
@@ -27,7 +27,7 @@ use super::{
     migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
     migrate_session_provider_persistence, migrate_session_recap_config,
     migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
-    migrate_telemetry_config, migrate_vigil_config,
+    migrate_telemetry_config, migrate_tools_compression_config, migrate_vigil_config,
 };
 
 // ── Wrapper structs for all 35 sequential migration steps ───────────────────────────────────────
@@ -469,5 +469,27 @@ impl Migration for MigrateMcpMaxConnectAttempts {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_mcp_max_connect_attempts(toml_src)
+    }
+}
+
+pub(super) struct MigrateGoalsConfig;
+impl Migration for MigrateGoalsConfig {
+    fn name(&self) -> &'static str {
+        "migrate_goals_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_goals_config(toml_src)
+    }
+}
+
+pub(super) struct MigrateToolsCompressionConfig;
+impl Migration for MigrateToolsCompressionConfig {
+    fn name(&self) -> &'static str {
+        "migrate_tools_compression_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_tools_compression_config(toml_src)
     }
 }

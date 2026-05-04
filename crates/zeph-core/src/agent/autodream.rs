@@ -106,30 +106,7 @@ impl<C: Channel> super::Agent<C> {
             .as_ref()
             .map(|tx| tx.send("Consolidating memories…".into()));
 
-        // Resolve provider: use consolidation_provider if named, else fall back to primary.
-        let provider = if cfg.consolidation_provider.is_empty() {
-            self.provider.clone()
-        } else if let (Some(entry), Some(snapshot)) = (
-            self.runtime
-                .providers
-                .provider_pool
-                .iter()
-                .find(|e| e.name.as_deref() == Some(cfg.consolidation_provider.as_str())),
-            self.runtime.providers.provider_config_snapshot.as_ref(),
-        ) {
-            crate::provider_factory::build_provider_for_switch(entry, snapshot).unwrap_or_else(
-                |e| {
-                    tracing::warn!(
-                        provider = cfg.consolidation_provider.as_str(),
-                        error = %e,
-                        "autoDream: failed to build consolidation_provider, falling back"
-                    );
-                    self.provider.clone()
-                },
-            )
-        } else {
-            self.provider.clone()
-        };
+        let provider = self.resolve_consolidation_provider(&cfg.consolidation_provider);
 
         let store = memory.sqlite().clone();
         let consolidation_cfg = zeph_memory::ConsolidationConfig {
@@ -174,6 +151,44 @@ impl<C: Channel> super::Agent<C> {
                     "autoDream: consolidation timed out"
                 );
             }
+        }
+
+        self.flush_taco_hit_counts().await;
+    }
+
+    async fn flush_taco_hit_counts(&self) {
+        if let Some(ref compressor) = self.services.taco_compressor
+            && let Err(e) = compressor.flush_hit_counts().await
+        {
+            tracing::warn!(error = %e, "autoDream: TACO flush_hit_counts failed");
+        }
+    }
+
+    /// Resolve the consolidation provider by name, falling back to the primary provider.
+    fn resolve_consolidation_provider(&self, name: &str) -> zeph_llm::any::AnyProvider {
+        if name.is_empty() {
+            return self.provider.clone();
+        }
+        if let (Some(entry), Some(snapshot)) = (
+            self.runtime
+                .providers
+                .provider_pool
+                .iter()
+                .find(|e| e.name.as_deref() == Some(name)),
+            self.runtime.providers.provider_config_snapshot.as_ref(),
+        ) {
+            crate::provider_factory::build_provider_for_switch(entry, snapshot).unwrap_or_else(
+                |e| {
+                    tracing::warn!(
+                        provider = name,
+                        error = %e,
+                        "autoDream: failed to build consolidation_provider, falling back"
+                    );
+                    self.provider.clone()
+                },
+            )
+        } else {
+            self.provider.clone()
         }
     }
 }

@@ -1078,6 +1078,10 @@ impl<C: Channel> Agent<C> {
         // do not invalidate the stable/semi-stable cache blocks (S2 fix).
         self.inject_learned_preferences(&mut system_prompt).await;
 
+        // Inject active goal block (G3 invariant: appears after <!-- cache:volatile -->).
+        // Only injected when goal tracking is enabled and an active goal exists.
+        self.inject_active_goal(&mut system_prompt).await;
+
         // If memory_save was used this session, remind the model to use memory_search
         // (not search_code) to recall user-provided facts (#2475).
         if self
@@ -1133,6 +1137,63 @@ impl<C: Channel> Agent<C> {
             msg.content = system_prompt;
         }
     }
+
+    /// Inject the active goal into the volatile system-prompt region (G3 invariant).
+    ///
+    /// Appends an `<active_goal>` XML block only when all conditions are met:
+    /// 1. `[goals] enabled = true`
+    /// 2. `[goals] inject_into_system_prompt = true`
+    /// 3. A goal with status `Active` exists in the database.
+    ///
+    /// No empty XML is emitted. The block always appears after `<!-- cache:volatile -->`.
+    pub(in crate::agent) async fn inject_active_goal(&mut self, prompt: &mut String) {
+        if !self.runtime.config.goals.enabled
+            || !self.runtime.config.goals.inject_into_system_prompt
+        {
+            return;
+        }
+        let Some(accounting) = self.services.goal_accounting.as_ref() else {
+            return;
+        };
+        let snap = accounting.snapshot();
+        // snapshot() returns None for non-Active goals; do nothing if paused/cleared.
+        let Some(snap) = snap else { return };
+        // If the cached snapshot has no text, fetch from DB.
+        let text = if snap.text.is_empty() {
+            match accounting.get_active().await {
+                Ok(Some(g)) => g.text,
+                _ => return,
+            }
+        } else {
+            snap.text
+        };
+        // Guard against prompt injection: reject goal text that contains the closing tag.
+        if text.contains("</active_goal>") {
+            tracing::warn!(goal_id = %snap.id, "inject_active_goal: rejected — goal text contains closing tag");
+            return;
+        }
+        let safe_text = html_escape_goal(&text);
+        drop(tracing::info_span!("core.context.inject_goal", goal_id = %snap.id).entered());
+        prompt.push_str("\n\n<active_goal id=\"");
+        prompt.push_str(&snap.id);
+        prompt.push_str("\">\n");
+        prompt.push_str(&safe_text);
+        prompt.push_str("\n</active_goal>");
+    }
+}
+
+/// HTML-escape `<`, `>`, and `&` in goal text to prevent prompt injection.
+fn html_escape_goal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // ── Test-only integration bridges ─────────────────────────────────────────────

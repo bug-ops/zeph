@@ -103,7 +103,7 @@ pub mod ui;
 pub mod vigil;
 
 pub use agent::{
-    AgentConfig, ContextInjectionMode, FocusConfig, ModelSpec, SubAgentConfig,
+    AgentConfig, ContextInjectionMode, FocusConfig, GoalConfig, ModelSpec, SubAgentConfig,
     SubAgentLifecycleHooks, TaskSupervisorConfig, ToolFilterConfig,
 };
 pub use channels::{
@@ -171,6 +171,7 @@ pub use subagent::{
     ToolPolicy,
 };
 pub use telemetry::{TelemetryBackend, TelemetryConfig};
+pub use tools::ToolCompressionConfig;
 pub use ui::{
     AcpAuthMethod, AcpConfig, AcpLspConfig, AcpSubagentsConfig, AcpTransport, AdditionalDir,
     AdditionalDirError, SubagentPresetConfig, TuiConfig,

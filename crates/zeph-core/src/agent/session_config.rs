@@ -110,6 +110,9 @@ pub struct AgentSessionConfig {
     /// Minimum allowed `/loop` tick interval in seconds. From `[cli.loop] min_interval_secs`.
     pub loop_min_interval_secs: u64,
 
+    /// Long-horizon goal lifecycle configuration.
+    pub goal_config: zeph_config::GoalConfig,
+
     /// Custom secrets from config.
     ///
     /// Stored as `Arc` because `Secret` intentionally does not implement `Clone` —
@@ -183,6 +186,7 @@ impl AgentSessionConfig {
                 .into(),
             recap: config.session.recap.clone(),
             loop_min_interval_secs: config.cli.loop_.min_interval_secs,
+            goal_config: config.goals.clone(),
         }
     }
 }
@@ -283,5 +287,7 @@ mod tests {
         assert_eq!(sc.secrets.len(), config.secrets.custom.len());
         assert_eq!(sc.recap.on_resume, config.session.recap.on_resume);
         assert_eq!(sc.recap.max_tokens, config.session.recap.max_tokens);
+        assert_eq!(sc.goal_config.enabled, config.goals.enabled);
+        assert_eq!(sc.goal_config.max_text_chars, config.goals.max_text_chars);
     }
 }

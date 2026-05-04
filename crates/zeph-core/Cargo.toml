@@ -17,16 +17,18 @@ profiling = ["dep:tracing-subscriber"]
 profiling-alloc = ["profiling"]
 sysinfo = ["dep:sysinfo"]
 task-metrics = ["dep:cpu-time", "dep:metrics", "zeph-common/task-metrics"]
-default = []
+default = ["sqlite"]
 candle = ["zeph-llm/candle"]
 classifiers = ["zeph-llm/classifiers", "zeph-sanitizer/classifiers"]
 cuda = ["zeph-llm/cuda"]
 env-vault = ["zeph-vault/env-vault"]
 metal = ["zeph-llm/metal"]
 mock = ["zeph-vault/mock"]
+postgres = ["zeph-db/postgres"]
 scheduler  = []
 index = ["zeph-agent-context/index"]
 self-check = ["zeph-agent-context/self-check"]
+sqlite = ["zeph-db/sqlite"]
 
 [dependencies]
 base64.workspace = true
@@ -47,7 +49,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_norway.workspace = true
 tempfile.workspace = true
-zeph-db = { workspace = true, features = ["sqlite"] }
+sqlx.workspace = true
+zeph-db.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "macros", "process", "rt-multi-thread", "sync", "time"] }
 tokio-stream.workspace = true

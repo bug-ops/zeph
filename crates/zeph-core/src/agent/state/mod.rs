@@ -276,6 +276,8 @@ pub(crate) struct RuntimeConfig {
     /// Controlled by `[session] provider_persistence = true` (the default). When `false`,
     /// the stored provider preference is never read or written.
     pub(crate) provider_persistence_enabled: bool,
+    /// Goal lifecycle feature configuration.
+    pub(crate) goals: GoalRuntimeConfig,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.
@@ -937,6 +939,30 @@ impl Default for FeedbackState {
     }
 }
 
+/// Goal lifecycle feature configuration stored in `RuntimeConfig`.
+#[derive(Debug, Clone)]
+pub(crate) struct GoalRuntimeConfig {
+    /// Whether goal tracking is enabled.
+    pub(crate) enabled: bool,
+    /// Maximum allowed length (in Unicode chars) of goal text at creation.
+    pub(crate) max_text_chars: usize,
+    /// Default token budget for new goals (0 = unlimited).
+    pub(crate) default_token_budget: u64,
+    /// Whether to inject the active goal block into the volatile system prompt region.
+    pub(crate) inject_into_system_prompt: bool,
+}
+
+impl Default for GoalRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_text_chars: 2000,
+            default_token_budget: 0,
+            inject_into_system_prompt: true,
+        }
+    }
+}
+
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
@@ -967,6 +993,7 @@ impl Default for RuntimeConfig {
             acp_subagent_spawn_fn: None,
             channel_type: String::new(),
             provider_persistence_enabled: true,
+            goals: GoalRuntimeConfig::default(),
         }
     }
 }

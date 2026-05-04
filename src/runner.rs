@@ -1672,6 +1672,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let shell_executor_for_tui = tool_setup.tool_event_rx;
     #[cfg(not(feature = "tui"))]
     let _tool_event_rx = tool_setup.tool_event_rx;
+    let taco_compressor = tool_setup.taco_compressor;
     let egress_rx = tool_setup.egress_rx;
     let shell_policy_handle = tool_setup.shell_policy_handle;
     let background_completion_rx = tool_setup.background_completion_rx;
@@ -2189,6 +2190,18 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             eval_threshold,
             &skill_paths_for_features,
         )
+    };
+    let agent = agent.with_taco_compressor(taco_compressor);
+
+    // Wire GoalAccounting — gated on config.goals.enabled (G4 invariant: always off in bare mode).
+    let agent = if config.goals.enabled && !exec_mode.bare {
+        let goal_pool = std::sync::Arc::new(memory.sqlite().pool().clone());
+        let goal_store = std::sync::Arc::new(zeph_core::goal::GoalStore::new(goal_pool));
+        let accounting = std::sync::Arc::new(zeph_core::goal::GoalAccounting::new(goal_store));
+        tracing::info!("goals: enabled, GoalAccounting wired");
+        agent.with_goal_accounting(Some(accounting))
+    } else {
+        agent
     };
 
     let judge_provider = app.build_judge_provider();

@@ -35,6 +35,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   buffer is written to every debug dump (Json and Raw formats) alongside the LLM request
   payload for offline analysis.
 
+- **Goal lifecycle subsystem** (`/goal` command, #3567): long-horizon goal tracking across
+  conversation turns. `GoalStore` (SQLite/Postgres-backed) with transactional `create()` that
+  atomically pauses any previously active goal (partial unique index enforces at-most-one-active
+  invariant). `GoalAccounting` caches the active goal ID in memory and dispatches `record_turn`
+  as a fire-and-forget background task (G4). Active goal text is injected into the volatile
+  system-prompt region as `<active_goal>` after `<!-- cache:volatile -->` (G3). Subcommands:
+  `create [--budget N]`, `pause`, `resume`, `complete`, `clear`, `status`, `list`.
+  Config section `[goals]` with `enabled`, `inject_into_system_prompt`, `max_text_chars`,
+  `default_token_budget`, `max_history`. SQLite migration `081_goal_lifecycle.sql`.
+
+- **TACO tool output compression** (#3306): `OutputCompressor` async trait with
+  `IdentityCompressor` (zero-cost no-op) and `RuleBasedCompressor` (regex rules loaded from
+  the `compression_rules` table). `CompressedExecutor<E>` decorator wraps the root tool executor
+  outside the audit boundary (T4). `safe_compile` bounds regex compilation via `spawn_blocking`
+  + timeout + `RegexBuilder` size limits (S6 DoS protection). Hit counts tracked per rule in a
+  `DashMap<String, AtomicU64>` decoupled from the rules vec for safe concurrent swap-on-reload.
+  Config section `[tools.compression]` with `enabled`, `min_lines_to_compress`,
+  `evolution_provider`, `evolution_min_interval_secs`, `max_rules`, `regex_compile_timeout_ms`.
+  SQLite migration `082_compression_rules.sql`.
+
 - feat(mcp): MCP server startup now retries failed initial connections with exponential backoff
   (`500 ms`, `1 s`, `2 s`, `4 s`, `8 s`, capped at `8 s`). The new `mcp.max_connect_attempts`
   config key (default `3`, range `1..=10`) controls how many attempts are made. Backoff sleeps are

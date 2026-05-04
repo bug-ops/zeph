@@ -14,6 +14,7 @@ pub mod agent_cmd;
 pub mod compaction;
 pub mod debug;
 pub mod experiment;
+pub mod goal;
 pub mod help;
 pub mod loop_cmd;
 pub mod lsp;

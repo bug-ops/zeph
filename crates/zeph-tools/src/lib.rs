@@ -61,6 +61,7 @@ pub mod anomaly;
 pub mod audit;
 pub mod cache;
 pub mod composite;
+pub mod compression;
 pub mod config;
 pub mod cwd;
 pub mod diagnostics;
@@ -99,6 +100,10 @@ pub use audit::{
 };
 pub use cache::{CacheKey, ToolResultCache, is_cacheable};
 pub use composite::CompositeExecutor;
+pub use compression::{
+    CompressedExecutor, CompressionError, CompressionRule, CompressionRuleStore,
+    IdentityCompressor, OutputCompressor, RuleBasedCompressor, safe_compile,
+};
 pub use config::{build_permission_policy, validate_sandbox_denied_domains};
 pub use cwd::SetCwdExecutor;
 pub use diagnostics::DiagnosticsExecutor;

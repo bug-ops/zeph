@@ -279,6 +279,56 @@ fn default_budget_hint_enabled() -> bool {
     true
 }
 
+fn default_goal_max_text_chars() -> usize {
+    2000
+}
+
+fn default_goal_max_history() -> usize {
+    50
+}
+
+/// Long-horizon goal lifecycle configuration (`[goals]` TOML section).
+///
+/// When enabled, the agent tracks a single active goal across turns, injecting an
+/// `<active_goal>` block into the volatile system-prompt region and accounting for
+/// token consumption per turn.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [goals]
+/// enabled = true
+/// default_token_budget = 50000
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct GoalConfig {
+    /// Enable the goal lifecycle subsystem. Default: `false`.
+    pub enabled: bool,
+    /// Inject `<active_goal>` block into the volatile system-prompt region. Default: `true`.
+    pub inject_into_system_prompt: bool,
+    /// Maximum characters allowed for goal text at creation time. Default: `2000`.
+    #[serde(default = "default_goal_max_text_chars")]
+    pub max_text_chars: usize,
+    /// Default token budget for new goals (`None` = unlimited). Default: `None`.
+    pub default_token_budget: Option<u64>,
+    /// Maximum number of goals to return in `/goal list`. Default: `50`.
+    #[serde(default = "default_goal_max_history")]
+    pub max_history: usize,
+}
+
+impl Default for GoalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            inject_into_system_prompt: true,
+            max_text_chars: default_goal_max_text_chars(),
+            default_token_budget: None,
+            max_history: default_goal_max_history(),
+        }
+    }
+}
+
 fn default_enrichment_limit() -> usize {
     4
 }

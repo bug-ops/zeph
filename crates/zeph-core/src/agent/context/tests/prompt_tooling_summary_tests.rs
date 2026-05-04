@@ -1483,3 +1483,82 @@ async fn fetch_graph_facts_returns_some_with_entities_and_has_prefix() {
 // but tests in this file call it via its alias to avoid conflicts.
 #[allow(unused_imports)]
 use crate::agent::context::chunk_messages;
+
+// ── G3: active_goal appears after <!-- cache:volatile --> ──────────────────────
+
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+async fn goal_test_store() -> crate::goal::GoalStore {
+    let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+    sqlx::query(
+        "CREATE TABLE zeph_goals (\
+         id TEXT PRIMARY KEY, text TEXT NOT NULL, \
+         status TEXT NOT NULL DEFAULT 'active' \
+         CHECK (status IN ('active','paused','completed','cleared')), \
+         token_budget INTEGER, turns_used INTEGER NOT NULL DEFAULT 0, \
+         tokens_used INTEGER NOT NULL DEFAULT 0, \
+         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE UNIQUE INDEX idx_goal_single_active ON zeph_goals(status) WHERE status = 'active'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    crate::goal::GoalStore::new(std::sync::Arc::new(pool))
+}
+
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+#[tokio::test]
+async fn g3_active_goal_appears_after_volatile_marker() {
+    use crate::goal::GoalAccounting;
+    use std::sync::Arc;
+
+    let store = goal_test_store().await;
+    store
+        .create("Implement /goal lifecycle", None, 2000)
+        .await
+        .unwrap();
+
+    let accounting = Arc::new(GoalAccounting::new(Arc::new(store)));
+    accounting.refresh().await.unwrap();
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+        .with_context_budget(10_000, 0.80, 0.75, 2, 0);
+
+    // Enable goal injection.
+    agent.runtime.config.goals.enabled = true;
+    agent.runtime.config.goals.inject_into_system_prompt = true;
+    agent.services.goal_accounting = Some(Arc::clone(&accounting));
+
+    agent.rebuild_system_prompt("test goal injection").await;
+
+    // G3 invariant: <active_goal appears after <!-- cache:volatile -->.
+    let system_msg = agent
+        .msg
+        .messages
+        .first()
+        .expect("system message must exist");
+    let content = system_msg.content.clone();
+    let volatile_pos = content
+        .find("<!-- cache:volatile -->")
+        .expect("<!-- cache:volatile --> must be present");
+    let goal_pos = content
+        .find("<active_goal")
+        .expect("<active_goal> must be injected when goal is active");
+    assert!(
+        goal_pos > volatile_pos,
+        "<active_goal> (pos {goal_pos}) must appear AFTER <!-- cache:volatile --> (pos {volatile_pos})"
+    );
+    assert!(
+        content.contains("Implement /goal lifecycle"),
+        "goal text must appear in system prompt"
+    );
+}

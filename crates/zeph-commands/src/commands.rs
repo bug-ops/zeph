@@ -58,6 +58,14 @@ pub const COMMANDS: &[CommandInfo] = &[
         category: SlashCategory::Debugging,
         feature_gate: None,
     },
+    // --- Goals ---
+    CommandInfo {
+        name: "/goal",
+        args: "create <text> [--budget N] | pause | resume | complete | clear | status | list",
+        description: "Manage long-horizon goals that persist across conversation turns",
+        category: SlashCategory::Session,
+        feature_gate: None,
+    },
     // --- Session ---
     CommandInfo {
         name: "/exit",

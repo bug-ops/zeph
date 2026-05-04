@@ -10253,6 +10253,7 @@ dependencies = [
 name = "zeph-commands"
 version = "0.20.1"
 dependencies = [
+ "serde",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -10752,6 +10753,7 @@ name = "zeph-tools"
 version = "0.20.1"
 dependencies = [
  "arc-swap",
+ "dashmap",
  "dirs",
  "glob",
  "globset",
@@ -10767,6 +10769,7 @@ dependencies = [
  "seccompiler",
  "serde",
  "serde_json",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -10789,6 +10792,7 @@ dependencies = [
  "wiremock",
  "zeph-common",
  "zeph-config",
+ "zeph-db",
 ]
 
 [[package]]

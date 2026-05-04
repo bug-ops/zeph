@@ -35,6 +35,9 @@ pub(crate) struct Services {
     pub(crate) tool_state: ToolState,
 
     // Optional service singletons
+    /// Goal lifecycle store and accounting, initialised at startup when `[goals] enabled = true`.
+    pub(crate) goal_accounting: Option<std::sync::Arc<crate::goal::GoalAccounting>>,
+
     /// MARCH self-check pipeline, built at startup and rebuilt on provider swap.
     #[cfg(feature = "self-check")]
     pub(crate) quality: Option<std::sync::Arc<crate::quality::SelfCheckPipeline>>,
@@ -48,4 +51,9 @@ pub(crate) struct Services {
     /// `Some` when `config.memory.compression_spectrum.enabled = true`.
     pub(crate) promotion_engine:
         Option<std::sync::Arc<zeph_memory::compression::promotion::PromotionEngine>>,
+
+    /// TACO rule-based compressor, kept alive for hit-count flushing during `maybe_autodream`.
+    ///
+    /// `Some` when `config.tools.compression.enabled = true` and a DB pool is available.
+    pub(crate) taco_compressor: Option<std::sync::Arc<zeph_tools::RuleBasedCompressor>>,
 }

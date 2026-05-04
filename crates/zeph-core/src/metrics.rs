@@ -380,6 +380,8 @@ pub struct MetricsSnapshot {
     pub compaction_last_after: u64,
     /// Unix epoch milliseconds when the most recent compaction occurred. `0` = never compacted.
     pub compaction_last_at_ms: u64,
+    /// Active long-horizon goal for TUI display. `None` when no goal is active.
+    pub active_goal: Option<crate::goal::GoalSnapshot>,
 }
 
 /// Snapshot of a single in-flight background shell run for TUI display.

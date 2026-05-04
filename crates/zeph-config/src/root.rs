@@ -8,7 +8,7 @@ use crate::tools::ToolsConfig;
 use serde::{Deserialize, Serialize};
 use zeph_common::secret::Secret;
 
-use crate::agent::{AgentConfig, FocusConfig, SubAgentConfig};
+use crate::agent::{AgentConfig, FocusConfig, GoalConfig, SubAgentConfig};
 use crate::channels::{A2aServerConfig, DiscordConfig, McpConfig, SlackConfig, TelegramConfig};
 use crate::classifiers::ClassifiersConfig;
 use crate::cli::CliConfig;
@@ -123,6 +123,9 @@ pub struct Config {
     /// Per-turn completion notification settings (macOS banners, ntfy webhook).
     #[serde(default)]
     pub notifications: NotificationsConfig,
+    /// Long-horizon goal lifecycle configuration.
+    #[serde(default)]
+    pub goals: GoalConfig,
     /// Resolved secrets from vault. Never serialized — populated at runtime.
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
@@ -297,6 +300,7 @@ impl Default for Config {
             cli: CliConfig::default(),
             quality: crate::quality::QualityConfig::default(),
             notifications: NotificationsConfig::default(),
+            goals: GoalConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

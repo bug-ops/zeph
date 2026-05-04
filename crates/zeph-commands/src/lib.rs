@@ -36,6 +36,56 @@ pub use context::CommandContext;
 pub use sink::{ChannelSink, NullSink};
 pub use traits::agent::{AgentAccess, NullAgent};
 
+/// Status of a long-horizon goal.
+///
+/// Mirrors `zeph_core::goal::GoalStatus`. Defined here to avoid a dependency cycle
+/// (`zeph-commands` cannot depend on `zeph-core`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStatusView {
+    /// Goal is being actively tracked.
+    Active,
+    /// Goal is paused; not injected into context.
+    Paused,
+    /// Goal was marked as achieved. Terminal state.
+    Completed,
+    /// Goal was dismissed. Terminal state.
+    Cleared,
+}
+
+impl GoalStatusView {
+    /// Short ASCII symbol used in TUI status badge.
+    #[must_use]
+    pub fn badge_symbol(self) -> &'static str {
+        match self {
+            Self::Active => "▶",
+            Self::Paused => "⏸",
+            Self::Completed => "✓",
+            Self::Cleared => "✗",
+        }
+    }
+}
+
+/// Lightweight cross-crate snapshot of an active goal.
+///
+/// Produced by [`AgentAccess::active_goal_snapshot`] and consumed by the TUI status bar
+/// and metrics bridge. Contains only display-relevant fields.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GoalSnapshot {
+    /// UUID string of the goal.
+    pub id: String,
+    /// Goal text, pre-validated to fit within `max_text_chars`.
+    pub text: String,
+    /// Current FSM status.
+    pub status: GoalStatusView,
+    /// Number of turns completed under this goal.
+    pub turns_used: u64,
+    /// Total tokens consumed across all turns.
+    pub tokens_used: u64,
+    /// Optional token budget (`None` = unlimited).
+    pub token_budget: Option<u64>,
+}
+
 use std::future::Future;
 use std::pin::Pin;
 

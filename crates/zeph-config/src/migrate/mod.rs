@@ -3140,6 +3140,65 @@ pub fn migrate_qdrant_api_key(toml_src: &str) -> Result<MigrationResult, Migrate
     })
 }
 
+/// Add the `[goals]` section as commented-out defaults when it is absent.
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_goals_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("[goals]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Long-horizon goal lifecycle tracking (#3567).\n\
+         # [goals]\n\
+         # enabled = false\n\
+         # inject_into_system_prompt = true\n\
+         # max_text_chars = 2000\n\
+         # max_history = 50\n";
+
+    Ok(MigrationResult {
+        output: format!("{toml_src}{comment}"),
+        changed_count: 1,
+        sections_changed: vec!["goals".to_owned()],
+    })
+}
+
+/// Add the `[tools.compression]` section as commented-out defaults when it is absent.
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_tools_compression_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("tools.compression")
+        || toml_src.contains("[tools]\n") && toml_src.contains("compression")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# TACO self-evolving tool output compression (#3306).\n\
+         # [tools.compression]\n\
+         # enabled = false\n\
+         # min_lines_to_compress = 10\n\
+         # evolution_provider = \"\"\n\
+         # evolution_min_interval_secs = 3600\n\
+         # max_rules = 200\n";
+
+    Ok(MigrationResult {
+        output: format!("{toml_src}{comment}"),
+        changed_count: 1,
+        sections_changed: vec!["tools.compression".to_owned()],
+    })
+}
+
 // ── Migration trait and registry ────────────────────────────────────────────────────────────────
 
 /// A single idempotent config migration step.
@@ -3183,16 +3242,17 @@ use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAutodreamConfig, MigrateCompressionPredictorConfig, MigrateDatabaseUrl,
     MigrateEgressConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
-    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateMagicDocsConfig,
-    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpTrustLevels,
-    MigrateMemoryGraph, MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation,
-    MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig, MigrateMemoryReasoning,
-    MigrateMemoryReasoningJudge, MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias,
-    MigrateMicrocompactConfig, MigrateOrchestrationPersistence, MigrateOtelFilter,
-    MigratePlannerModelToProvider, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
-    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionProviderPersistence,
-    MigrateSessionRecapConfig, MigrateShellTransactional, MigrateSttToProvider,
-    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateVigilConfig,
+    MigrateGoalsConfig, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
+    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
+    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
+    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
+    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
+    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
+    MigrateOtelFilter, MigratePlannerModelToProvider, MigrateQdrantApiKey, MigrateQualityConfig,
+    MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
+    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellTransactional,
+    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
+    MigrateToolsCompressionConfig, MigrateVigilConfig,
 };
 
 /// Ordered registry of all sequential migration steps (steps 1–40).
@@ -3259,6 +3319,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateQdrantApiKey),
             // Step 40 — MCP startup auto-retry max_connect_attempts (#3568)
             Box::new(MigrateMcpMaxConnectAttempts),
+            // Steps 41–42 — goal lifecycle and TACO compression (#3567, #3306)
+            Box::new(MigrateGoalsConfig),
+            Box::new(MigrateToolsCompressionConfig),
         ]
     });
 
@@ -3277,8 +3340,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            40,
-            "MIGRATIONS registry must contain all 40 sequential steps"
+            42,
+            "MIGRATIONS registry must contain all 42 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -4865,7 +4928,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_has_thirty_nine_entries() {
-        assert_eq!(MIGRATIONS.len(), 40);
+        assert_eq!(MIGRATIONS.len(), 42);
     }
 
     #[test]
@@ -4904,7 +4967,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_preserves_order_matches_dispatch() {
-        // Names must follow the documented step order (steps 1–40).
+        // Names must follow the documented step order (steps 1–42).
         let expected = [
             "migrate_stt_to_provider",
             "migrate_planner_model_to_provider",
@@ -4946,6 +5009,8 @@ prompt_cache_ttl = "1h"
             "migrate_memory_persona_config",
             "migrate_qdrant_api_key",
             "migrate_mcp_max_connect_attempts",
+            "migrate_goals_config",
+            "migrate_tools_compression_config",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);

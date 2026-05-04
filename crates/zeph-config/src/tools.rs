@@ -1125,6 +1125,73 @@ impl Default for EgressConfig {
     }
 }
 
+// ── ToolCompressionConfig ─────────────────────────────────────────────────────
+
+fn default_compression_min_lines() -> usize {
+    10
+}
+
+fn default_compression_max_rules() -> u32 {
+    200
+}
+
+fn default_regex_compile_timeout_ms() -> u64 {
+    500
+}
+
+fn default_evolution_min_interval_secs() -> u64 {
+    3600
+}
+
+/// TACO self-evolving tool output compression configuration (`[tools.compression]` TOML section).
+///
+/// When enabled, a `RuleBasedCompressor` is wrapped around the root tool executor.
+/// Rules are loaded from the `compression_rules` `SQLite` table and optionally evolved by an
+/// LLM provider specified in `evolution_provider`.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [tools.compression]
+/// enabled = true
+/// evolution_provider = "fast"
+/// min_lines_to_compress = 15
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ToolCompressionConfig {
+    /// Enable rule-based tool output compression. Default: `false`.
+    pub enabled: bool,
+    /// Minimum output line count before compression is attempted. Default: `10`.
+    #[serde(default = "default_compression_min_lines")]
+    pub min_lines_to_compress: usize,
+    /// LLM provider name for self-evolution. Empty string = evolution disabled. Default: `""`.
+    #[serde(default)]
+    pub evolution_provider: String,
+    /// Minimum interval in seconds between self-evolution runs. Default: `3600`.
+    #[serde(default = "default_evolution_min_interval_secs")]
+    pub evolution_min_interval_secs: u64,
+    /// Maximum number of rules to keep in the DB (prune lowest-hit rules above this). Default: `200`.
+    #[serde(default = "default_compression_max_rules")]
+    pub max_rules: u32,
+    /// Timeout in milliseconds for safe regex compilation. Default: `500`.
+    #[serde(default = "default_regex_compile_timeout_ms")]
+    pub regex_compile_timeout_ms: u64,
+}
+
+impl Default for ToolCompressionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_lines_to_compress: default_compression_min_lines(),
+            evolution_provider: String::new(),
+            evolution_min_interval_secs: default_evolution_min_interval_secs(),
+            max_rules: default_compression_max_rules(),
+            regex_compile_timeout_ms: default_regex_compile_timeout_ms(),
+        }
+    }
+}
+
 // ── ToolsConfig ───────────────────────────────────────────────────────────────
 
 /// Top-level configuration for tool execution.
@@ -1200,6 +1267,9 @@ pub struct ToolsConfig {
     /// Egress network event logging configuration.
     #[serde(default)]
     pub egress: EgressConfig,
+    /// TACO self-evolving tool output compression configuration.
+    #[serde(default)]
+    pub compression: ToolCompressionConfig,
 }
 
 impl Default for ToolsConfig {
@@ -1227,6 +1297,7 @@ impl Default for ToolsConfig {
             speculative: SpeculativeConfig::default(),
             sandbox: SandboxConfig::default(),
             egress: EgressConfig::default(),
+            compression: ToolCompressionConfig::default(),
         }
     }
 }
