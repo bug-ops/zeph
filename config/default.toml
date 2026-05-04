@@ -437,6 +437,10 @@ max_dynamic_servers = 10
 # elicitation_queue_capacity = 16
 # When true, warn the user before prompting for sensitive-looking fields (password, token, etc.).
 # elicitation_warn_sensitive_fields = true
+# Maximum number of connection attempts per MCP server at startup (1 = no retry, default: 3).
+# Backoff: 500 ms, 1 s, 2 s, 4 s, 8 s, ... (capped at 8 s). Must be in 1..=10.
+# Note: dynamic /mcp add retains single-attempt behaviour; a follow-up tracks retry there.
+# max_connect_attempts = 3
 
 [mcp.pruning]
 # Enable dynamic MCP tool pruning (LLM-based relevance filter before main inference)

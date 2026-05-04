@@ -3,7 +3,8 @@
 
 //! Migration step wrapper structs — one per sequential migration in [`super::MIGRATIONS`].
 //!
-//! Steps 1–35 are pre-existing; steps 36–38 were added for the stable-defaults flip.
+//! Steps 1–35 are pre-existing; steps 36–38 were added for the stable-defaults flip;
+//! step 39 adds optional Qdrant API key; step 40 adds MCP `max_connect_attempts`.
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -15,8 +16,8 @@ use super::{
     migrate_compression_predictor_config, migrate_database_url, migrate_egress_config,
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
-    migrate_magic_docs_config, migrate_mcp_elicitation_config, migrate_mcp_trust_levels,
-    migrate_memory_graph_config, migrate_memory_hebbian_config,
+    migrate_magic_docs_config, migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts,
+    migrate_mcp_trust_levels, migrate_memory_graph_config, migrate_memory_hebbian_config,
     migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
     migrate_memory_persona_config, migrate_memory_reasoning_config,
     migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
@@ -457,5 +458,16 @@ impl Migration for MigrateQdrantApiKey {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_qdrant_api_key(toml_src)
+    }
+}
+
+pub(super) struct MigrateMcpMaxConnectAttempts;
+impl Migration for MigrateMcpMaxConnectAttempts {
+    fn name(&self) -> &'static str {
+        "migrate_mcp_max_connect_attempts"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_mcp_max_connect_attempts(toml_src)
     }
 }

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex as SyncMutex, RwLock as SyncRwLock};
+use tokio_util::sync::CancellationToken;
 
 use dashmap::DashMap;
 use rmcp::model::CallToolResult;
@@ -245,6 +246,15 @@ pub struct McpManager {
     /// `commit_added_server` releases the `clients` guard but before it writes to `server_trust`
     /// and `server_tools`, leaving orphaned trust/tools entries that persist until restart.
     add_remove_lock: tokio::sync::Mutex<()>,
+    /// Cancellation token broadcast to all in-flight startup retry tasks.
+    ///
+    /// Cancelled in `shutdown_all_shared` before any other shutdown work so that retry
+    /// sleeps are interrupted immediately rather than contributing tail latency.
+    shutdown_token: CancellationToken,
+    /// Maximum number of connection attempts per server at startup.
+    ///
+    /// `1` = no retry, `3` = two retries. Validated at config-parse time: `1..=10`.
+    max_connect_attempts: u8,
     /// When `true`, `tools/list_changed` refresh events are rejected for servers whose
     /// initial tool list has been committed (i.e. their ID is in `tool_list_locked`).
     ///
@@ -359,6 +369,8 @@ impl McpManager {
             add_remove_lock: tokio::sync::Mutex::new(()),
             lock_tool_list: false,
             tool_list_locked: Arc::new(DashMap::new()),
+            shutdown_token: CancellationToken::new(),
+            max_connect_attempts: 3,
         }
     }
 
@@ -430,6 +442,17 @@ impl McpManager {
     #[must_use]
     pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
         self.status_tx = Some(tx);
+        self
+    }
+
+    /// Set the maximum number of connection attempts per server at startup.
+    ///
+    /// Value `1` means a single attempt with no retry; value `3` (default) allows two retries.
+    /// Values outside `1..=10` are clamped as defence in depth — prefer validation at the config
+    /// deserialisation boundary so callers get an early, descriptive error.
+    #[must_use]
+    pub fn with_max_connect_attempts(mut self, attempts: u8) -> Self {
+        self.max_connect_attempts = attempts.clamp(1, 10);
         self
     }
 
@@ -648,6 +671,7 @@ impl McpManager {
         let allowed = self.allowed_commands.clone();
         let suppress = self.suppress_stderr;
         let cloned_status_tx = self.status_tx.clone();
+        let max_attempts = self.max_connect_attempts;
 
         let non_oauth: Vec<_> = self
             .configs
@@ -671,13 +695,20 @@ impl McpManager {
                 self.tool_list_locked.insert(config.id.clone(), ());
             }
             let status_tx = cloned_status_tx.clone();
+            let shutdown = self.shutdown_token.clone();
             join_set.spawn(async move {
-                // SECURITY: only config.id is included — never transport URL, headers, or tokens.
-                if let Some(ref stx) = status_tx {
-                    let _ = stx.send(format!("Connecting to {}...", config.id));
-                }
-                let result =
-                    connect_entry(&config, &allowed, suppress, tx, last_refresh, handler_cfg).await;
+                let result = connect_with_retry(
+                    &config,
+                    &allowed,
+                    suppress,
+                    tx,
+                    last_refresh,
+                    &handler_cfg,
+                    max_attempts,
+                    status_tx.as_ref(),
+                    &shutdown,
+                )
+                .await;
                 (config.id, result)
             });
         }
@@ -1132,11 +1163,13 @@ impl McpManager {
     pub async fn add_server(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
         self.check_not_already_connected(&entry.id).await?;
 
+        // NOTE: add_server retains single-attempt behaviour intentionally; retry policy for
+        // dynamic connections requires idempotency review of probe/ingest/commit stages.
+        // A follow-up issue tracks extending retry to this path.
         let tx = self
             .clone_refresh_tx()
-            .ok_or_else(|| McpError::Connection {
+            .ok_or_else(|| McpError::ManagerShuttingDown {
                 server_id: entry.id.clone(),
-                message: "manager is shutting down".into(),
             })?;
 
         let (client, raw_tools) = self.connect_and_list_tools(entry, tx).await?;
@@ -1207,13 +1240,14 @@ impl McpManager {
         if self.lock_tool_list {
             self.tool_list_locked.insert(entry.id.clone(), ());
         }
+        let handler_cfg = self.handler_cfg_for(entry);
         let client = match connect_entry(
             entry,
             &self.allowed_commands,
             self.suppress_stderr,
             tx,
             Arc::clone(&self.last_refresh),
-            self.handler_cfg_for(entry),
+            &handler_cfg,
         )
         .await
         {
@@ -1388,6 +1422,11 @@ impl McpManager {
     /// # Panics
     ///
     pub async fn shutdown_all_shared(&self) {
+        // Signal all in-flight startup retry tasks to stop sleeping and exit immediately.
+        // Must be the very first action so that retry sleeps are interrupted before we
+        // begin draining clients and dropping senders.
+        self.shutdown_token.cancel();
+
         // Drop the manager's sender so the refresh task can terminate once
         // all ToolListChangedHandler senders are also dropped (via client shutdown).
         let _ = self.refresh_tx.lock().take();
@@ -1770,6 +1809,172 @@ fn ingest_tools(
     (filtered, sanitize_result)
 }
 
+/// Compute the sleep duration before retry attempt `attempt + 1`.
+///
+/// Doubling exponential backoff capped at 8 s:
+/// `min(500ms * 2^(attempt - 1), 8_000ms)`.
+///
+/// For `max_connect_attempts = 3` the sequence is **500 ms, 1 s**
+/// (three attempts → two inter-attempt gaps).
+/// For `max_connect_attempts = 10` the full sequence is
+/// 500, 1000, 2000, 4000, 8000, 8000, 8000, 8000, 8000 ms (total ≤ 47 s).
+///
+/// `attempt` is 1-based and corresponds to the just-failed attempt index.
+fn connect_retry_backoff(attempt: u8) -> Duration {
+    const BASE_MS: u64 = 500;
+    const CAP_MS: u64 = 8_000;
+    let exp = u32::from(attempt.saturating_sub(1));
+    let raw = BASE_MS.saturating_mul(2u64.saturating_pow(exp.min(20)));
+    Duration::from_millis(raw.min(CAP_MS))
+}
+
+/// Classify whether a connection error is transient and worth retrying.
+///
+/// Every [`McpError`] variant must be explicitly listed so that adding a new variant
+/// triggers a compile error that forces deliberate classification.
+fn is_retryable_connect_error(err: &McpError) -> bool {
+    match err {
+        // Transient transport / handshake failures.
+        McpError::Connection { .. } | McpError::Timeout { .. } => true,
+        // Permanent / structural failures — never retry.
+        McpError::ManagerShuttingDown { .. }
+        | McpError::CommandNotAllowed { .. }
+        | McpError::EnvVarBlocked { .. }
+        | McpError::SsrfBlocked { .. }
+        | McpError::InvalidUrl { .. }
+        | McpError::PolicyViolation(_)
+        | McpError::OAuthError { .. }
+        | McpError::OAuthCallbackTimeout { .. }
+        | McpError::ServerNotFound { .. }
+        | McpError::ServerAlreadyConnected { .. }
+        | McpError::ToolListLocked { .. }
+        | McpError::ToolCall { .. }
+        | McpError::ToolNotFound { .. }
+        | McpError::Qdrant(_)
+        | McpError::Json(_)
+        | McpError::IntConversion(_)
+        | McpError::Embedding(_) => false,
+    }
+}
+
+/// Retry an async `attempt_fn` up to `max_attempts` times with exponential backoff.
+///
+/// Status messages are emitted via `status_tx` (when present):
+/// - Attempt 1: `"Connecting to MCP server {server_id}..."`
+/// - Attempts 2..max: `"Reconnecting to MCP server {server_id} (attempt {n}/{max})..."`
+///
+/// Cancellation via `shutdown` is checked before every attempt and during backoff sleeps.
+/// On cancellation, returns `Err(McpError::ManagerShuttingDown)` immediately.
+async fn retry_loop<F, Fut>(
+    server_id: &str,
+    max_attempts: u8,
+    status_tx: Option<&StatusTx>,
+    shutdown: &CancellationToken,
+    mut attempt_fn: F,
+) -> Result<McpClient, McpError>
+where
+    F: FnMut(u8) -> Fut,
+    Fut: std::future::Future<Output = Result<McpClient, McpError>>,
+{
+    let mut last_err = McpError::ManagerShuttingDown {
+        server_id: server_id.to_owned(),
+    };
+
+    for attempt in 1..=max_attempts {
+        // Pre-attempt cancellation check.
+        if shutdown.is_cancelled() {
+            return Err(McpError::ManagerShuttingDown {
+                server_id: server_id.to_owned(),
+            });
+        }
+
+        // Emit status message.
+        if let Some(stx) = status_tx {
+            // SECURITY: only server_id is included — never transport URL, headers, or tokens.
+            let msg = if attempt == 1 {
+                format!("Connecting to MCP server {server_id}...")
+            } else {
+                format!(
+                    "Reconnecting to MCP server {server_id} (attempt {attempt}/{max_attempts})..."
+                )
+            };
+            let _ = stx.send(msg);
+        }
+
+        match attempt_fn(attempt).await {
+            Ok(client) => return Ok(client),
+            Err(e) => {
+                let retryable = is_retryable_connect_error(&e);
+                tracing::warn!(
+                    server_id,
+                    attempt,
+                    max_attempts,
+                    retryable,
+                    error = %e,
+                    "MCP server connection attempt failed"
+                );
+                last_err = e;
+                if !retryable || attempt == max_attempts {
+                    break;
+                }
+                // Cancellable backoff sleep.
+                let delay = connect_retry_backoff(attempt);
+                tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => {
+                        return Err(McpError::ManagerShuttingDown {
+                            server_id: server_id.to_owned(),
+                        });
+                    }
+                    () = tokio::time::sleep(delay) => {}
+                }
+            }
+        }
+    }
+
+    Err(last_err)
+}
+
+/// Connect to a single MCP server with startup retry and exponential backoff.
+///
+/// This is a thin shim over [`retry_loop`] that binds [`connect_entry`] as the attempt
+/// function. `add_server` uses [`connect_entry`] directly (single-attempt, no retry).
+#[allow(clippy::too_many_arguments)]
+async fn connect_with_retry(
+    entry: &ServerEntry,
+    allowed_commands: &[String],
+    suppress_stderr: bool,
+    tx: mpsc::UnboundedSender<ToolRefreshEvent>,
+    last_refresh: Arc<DashMap<String, Instant>>,
+    handler_cfg: &crate::client::HandlerConfig,
+    max_attempts: u8,
+    status_tx: Option<&StatusTx>,
+    shutdown: &CancellationToken,
+) -> Result<McpClient, McpError> {
+    retry_loop(
+        entry.id.as_str(),
+        max_attempts,
+        status_tx,
+        shutdown,
+        |_attempt| {
+            let tx = tx.clone();
+            let last_refresh = Arc::clone(&last_refresh);
+            async move {
+                connect_entry(
+                    entry,
+                    allowed_commands,
+                    suppress_stderr,
+                    tx,
+                    last_refresh,
+                    handler_cfg,
+                )
+                .await
+            }
+        },
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 async fn connect_entry(
     entry: &ServerEntry,
@@ -1777,7 +1982,7 @@ async fn connect_entry(
     suppress_stderr: bool,
     tx: mpsc::UnboundedSender<ToolRefreshEvent>,
     last_refresh: Arc<DashMap<String, Instant>>,
-    handler_cfg: crate::client::HandlerConfig,
+    handler_cfg: &crate::client::HandlerConfig,
 ) -> Result<McpClient, McpError> {
     match &entry.transport {
         McpTransport::Stdio { command, args, env } => {
@@ -1792,7 +1997,7 @@ async fn connect_entry(
                 entry.env_isolation,
                 tx,
                 last_refresh,
-                handler_cfg,
+                handler_cfg.clone(),
             )
             .await
         }
@@ -1806,7 +2011,7 @@ async fn connect_entry(
                     trusted,
                     tx,
                     last_refresh,
-                    handler_cfg,
+                    handler_cfg.clone(),
                 )
                 .await
             } else {
@@ -1818,7 +2023,7 @@ async fn connect_entry(
                     trusted,
                     tx,
                     last_refresh,
-                    handler_cfg,
+                    handler_cfg.clone(),
                 )
                 .await
             }
@@ -3146,6 +3351,252 @@ mod tests {
         assert!(
             err.to_string().contains("dup-srv"),
             "error message must contain server id"
+        );
+    }
+
+    // ── Backoff curve ──────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn connect_retry_backoff_table() {
+        let expected_ms: &[(u8, u64)] = &[
+            (1, 500),
+            (2, 1000),
+            (3, 2000),
+            (4, 4000),
+            (5, 8000),
+            (6, 8000),
+            (7, 8000),
+            (8, 8000),
+            (9, 8000),
+            (10, 8000),
+        ];
+        for &(attempt, expected) in expected_ms {
+            let actual = u64::try_from(connect_retry_backoff(attempt).as_millis())
+                .expect("backoff duration fits u64");
+            assert_eq!(
+                actual, expected,
+                "backoff for attempt {attempt} should be {expected} ms"
+            );
+        }
+    }
+
+    // ── Error classifier ───────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_retryable_connect_error_exhaustive() {
+        use crate::error::McpErrorCode;
+        let retryable = vec![
+            McpError::Connection {
+                server_id: "s".into(),
+                message: "refused".into(),
+            },
+            McpError::Timeout {
+                server_id: "s".into(),
+                tool_name: "t".into(),
+                timeout_secs: 30,
+            },
+        ];
+        for err in &retryable {
+            assert!(is_retryable_connect_error(err), "{err} should be retryable");
+        }
+
+        let non_retryable: Vec<McpError> = vec![
+            McpError::ManagerShuttingDown {
+                server_id: "s".into(),
+            },
+            McpError::CommandNotAllowed {
+                command: "sh".into(),
+            },
+            McpError::EnvVarBlocked {
+                var_name: "HOME".into(),
+            },
+            McpError::SsrfBlocked {
+                url: "http://localhost".into(),
+                addr: "127.0.0.1".into(),
+            },
+            McpError::InvalidUrl {
+                url: "bad".into(),
+                message: "nope".into(),
+            },
+            McpError::PolicyViolation("denied".into()),
+            McpError::OAuthError {
+                server_id: "s".into(),
+                message: "e".into(),
+            },
+            McpError::OAuthCallbackTimeout {
+                server_id: "s".into(),
+                timeout_secs: 10,
+            },
+            McpError::ServerNotFound {
+                server_id: "s".into(),
+            },
+            McpError::ServerAlreadyConnected {
+                server_id: "s".into(),
+            },
+            McpError::ToolListLocked {
+                server_id: "s".into(),
+            },
+            McpError::ToolCall {
+                server_id: "s".into(),
+                tool_name: "t".into(),
+                message: "e".into(),
+                code: McpErrorCode::ServerError,
+            },
+            McpError::ToolNotFound {
+                server_id: "s".into(),
+                tool_name: "t".into(),
+            },
+            McpError::Json(serde_json::from_str::<i32>("bad").unwrap_err()),
+            McpError::Embedding("e".into()),
+        ];
+        for err in &non_retryable {
+            assert!(
+                !is_retryable_connect_error(err),
+                "{err} should NOT be retryable"
+            );
+        }
+    }
+
+    // ── retry_loop unit tests ──────────────────────────────────────────────────────────────────
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_loop_attempt_counter_starts_at_one() {
+        let token = CancellationToken::new();
+        let first_attempt = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let first_clone = std::sync::Arc::clone(&first_attempt);
+        let _: Result<McpClient, McpError> = retry_loop("srv", 1, None, &token, |attempt| {
+            let first = std::sync::Arc::clone(&first_clone);
+            async move {
+                first.store(attempt, std::sync::atomic::Ordering::SeqCst);
+                Err(McpError::CommandNotAllowed {
+                    command: "x".into(),
+                })
+            }
+        })
+        .await;
+        assert_eq!(
+            first_attempt.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "first attempt index must be 1"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_loop_cancels_before_first_attempt() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let mut called = false;
+        let result = retry_loop("srv", 3, None, &token, |_attempt| {
+            called = true;
+            async move {
+                Err(McpError::Connection {
+                    server_id: "srv".into(),
+                    message: "should not be called".into(),
+                })
+            }
+        })
+        .await;
+        assert!(
+            !called,
+            "attempt_fn must not be called when shutdown is pre-cancelled"
+        );
+        assert!(
+            matches!(result, Err(McpError::ManagerShuttingDown { .. })),
+            "expected ManagerShuttingDown, got {result:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_loop_cancels_during_backoff_sleep() {
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        let attempt_count = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let count_clone = std::sync::Arc::clone(&attempt_count);
+
+        // Spawn a task that cancels the token shortly after the first attempt fails and
+        // the retry_loop is sleeping its backoff.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            token_clone.cancel();
+        });
+
+        let result = retry_loop("srv", 3, None, &token, |_| {
+            let count = std::sync::Arc::clone(&count_clone);
+            async move {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(McpError::Connection {
+                    server_id: "srv".into(),
+                    message: "transient".into(),
+                })
+            }
+        })
+        .await;
+
+        assert_eq!(
+            attempt_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "only the first attempt should run before cancellation"
+        );
+        assert!(
+            matches!(result, Err(McpError::ManagerShuttingDown { .. })),
+            "expected ManagerShuttingDown, got {result:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_loop_stops_on_non_retryable_error() {
+        let token = CancellationToken::new();
+        let attempt_count = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let count_clone = std::sync::Arc::clone(&attempt_count);
+
+        let result = retry_loop("srv", 5, None, &token, |_| {
+            let count = std::sync::Arc::clone(&count_clone);
+            async move {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(McpError::CommandNotAllowed {
+                    command: "rm".into(),
+                })
+            }
+        })
+        .await;
+
+        assert_eq!(
+            attempt_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "non-retryable error must stop after first attempt"
+        );
+        assert!(
+            matches!(result, Err(McpError::CommandNotAllowed { .. })),
+            "last error should be propagated"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_loop_exhausts_all_attempts_for_retryable_error() {
+        let token = CancellationToken::new();
+        let attempt_count = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let count_clone = std::sync::Arc::clone(&attempt_count);
+
+        let result = retry_loop("srv", 3, None, &token, |_| {
+            let count = std::sync::Arc::clone(&count_clone);
+            async move {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(McpError::Connection {
+                    server_id: "srv".into(),
+                    message: "refused".into(),
+                })
+            }
+        })
+        .await;
+
+        assert_eq!(
+            attempt_count.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "should exhaust all 3 attempts for retryable errors"
+        );
+        assert!(
+            matches!(result, Err(McpError::Connection { .. })),
+            "last error should be propagated"
         );
     }
 }

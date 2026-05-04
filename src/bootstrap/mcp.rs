@@ -81,7 +81,8 @@ pub fn create_mcp_manager_with_vault(
         config.mcp.max_description_bytes,
         config.mcp.max_instructions_bytes,
     )
-    .with_lock_tool_list(config.mcp.lock_tool_list);
+    .with_lock_tool_list(config.mcp.lock_tool_list)
+    .with_max_connect_attempts(config.mcp.max_connect_attempts);
 
     // Register OAuth credential stores
     for s in &config.mcp.servers {

@@ -127,6 +127,12 @@ pub enum McpError {
 
     #[error("tool list refresh rejected for '{server_id}': list is locked after initial connect")]
     ToolListLocked { server_id: String },
+
+    /// The MCP manager is shutting down; the connection attempt was aborted.
+    ///
+    /// This is a terminal lifecycle signal, not a transient error. Callers must not retry.
+    #[error("MCP manager is shutting down (server '{server_id}')")]
+    ManagerShuttingDown { server_id: String },
 }
 
 impl McpError {
@@ -148,7 +154,12 @@ impl McpError {
                 Some(McpErrorCode::InvalidInput)
             }
             Self::Embedding(_) => Some(McpErrorCode::ServerError),
-            _ => None,
+            // Lifecycle, infrastructure, and structural errors have no taxonomy code.
+            Self::ManagerShuttingDown { .. }
+            | Self::ServerAlreadyConnected { .. }
+            | Self::Qdrant(_)
+            | Self::Json(_)
+            | Self::IntConversion(_) => None,
         }
     }
 }

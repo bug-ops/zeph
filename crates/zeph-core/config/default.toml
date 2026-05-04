@@ -316,6 +316,10 @@ repo_map_ttl_secs = 300
 allowed_commands = ["npx", "uvx", "node", "python", "python3"]
 # Maximum number of dynamically added MCP servers
 max_dynamic_servers = 10
+# Maximum number of connection attempts per MCP server at startup (1 = no retry, default: 3).
+# Backoff: 500 ms, 1 s, 2 s, 4 s, 8 s, ... (capped at 8 s). Must be in 1..=10.
+# Note: dynamic /mcp add retains single-attempt behaviour; a follow-up tracks retry there.
+# max_connect_attempts = 3
 
 # Stdio transport (spawn child process):
 # [[mcp.servers]]

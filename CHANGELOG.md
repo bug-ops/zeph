@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(mcp): MCP server startup now retries failed initial connections with exponential backoff
+  (`500 ms`, `1 s`, `2 s`, `4 s`, `8 s`, capped at `8 s`). The new `mcp.max_connect_attempts`
+  config key (default `3`, range `1..=10`) controls how many attempts are made. Backoff sleeps are
+  interrupted immediately on agent shutdown via a `CancellationToken`. Status messages
+  (`Connecting to MCP server …` / `Reconnecting … (attempt N/M)`) are sent to the TUI/Telegram
+  status channel throughout. The new `McpError::ManagerShuttingDown` variant is used instead of a
+  generic connection error when shutdown is detected. Dynamic `/mcp add` retains single-attempt
+  behaviour; a follow-up issue tracks extending retry there (#3568).
+
 ### Documentation
 
 - research: synthesize MemCoT, OmniMem, and OCR-Memory memory architecture papers; document integration roadmap and file follow-up issues (#3564, #3566, #3571); add Research Backlog to APEX-MEM spec (see specs §14)

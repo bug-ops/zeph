@@ -2316,6 +2316,43 @@ pub fn migrate_mcp_elicitation_config(toml_src: &str) -> Result<MigrationResult,
     })
 }
 
+/// Add a commented-out `max_connect_attempts` key under `[mcp]` if absent (#3568).
+///
+/// This key was introduced alongside the MCP startup auto-retry feature. All prior
+/// configs omit it and get the default value of `3`. This migration surfaces the key
+/// as a comment so users can discover and tune it.
+///
+/// # Errors
+///
+/// Returns `Ok` with unchanged output when the key is already present or `[mcp]` is absent.
+pub fn migrate_mcp_max_connect_attempts(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("max_connect_attempts") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    if !toml_src.contains("[mcp]\n") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# max_connect_attempts = 3  \
+        # startup retry count per server (1 = no retry, 1..=10, backoff: 500ms/1s/2s/...)\n";
+    let output = toml_src.replacen("[mcp]\n", &format!("[mcp]\n{comment}"), 1);
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["mcp".to_owned()],
+    })
+}
+
 /// Add a commented-out `[quality]` block if the config lacks it (#3228).
 ///
 /// Introduced alongside the MARCH self-check pipeline (#3226). All `QualityConfig`
@@ -3147,17 +3184,18 @@ use steps::{
     MigrateAutodreamConfig, MigrateCompressionPredictorConfig, MigrateDatabaseUrl,
     MigrateEgressConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
     MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateMagicDocsConfig,
-    MigrateMcpElicitationConfig, MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
-    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
-    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
-    MigrateOtelFilter, MigratePlannerModelToProvider, MigrateQdrantApiKey, MigrateQualityConfig,
-    MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
-    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellTransactional,
-    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateVigilConfig,
+    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpTrustLevels,
+    MigrateMemoryGraph, MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation,
+    MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig, MigrateMemoryReasoning,
+    MigrateMemoryReasoningJudge, MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias,
+    MigrateMicrocompactConfig, MigrateOrchestrationPersistence, MigrateOtelFilter,
+    MigratePlannerModelToProvider, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionProviderPersistence,
+    MigrateSessionRecapConfig, MigrateShellTransactional, MigrateSttToProvider,
+    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateVigilConfig,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–39).
+/// Ordered registry of all sequential migration steps (steps 1–40).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -3219,6 +3257,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateMemoryPersonaConfig),
             // Step 39 — optional Qdrant API key (#3543)
             Box::new(MigrateQdrantApiKey),
+            // Step 40 — MCP startup auto-retry max_connect_attempts (#3568)
+            Box::new(MigrateMcpMaxConnectAttempts),
         ]
     });
 
@@ -3237,8 +3277,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            39,
-            "MIGRATIONS registry must contain all 39 sequential steps"
+            40,
+            "MIGRATIONS registry must contain all 40 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -4825,7 +4865,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_has_thirty_nine_entries() {
-        assert_eq!(MIGRATIONS.len(), 39);
+        assert_eq!(MIGRATIONS.len(), 40);
     }
 
     #[test]
@@ -4864,7 +4904,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_preserves_order_matches_dispatch() {
-        // Names must follow the documented step order (steps 1–39).
+        // Names must follow the documented step order (steps 1–40).
         let expected = [
             "migrate_stt_to_provider",
             "migrate_planner_model_to_provider",
@@ -4905,6 +4945,7 @@ prompt_cache_ttl = "1h"
             "migrate_memory_retrieval_query_bias",
             "migrate_memory_persona_config",
             "migrate_qdrant_api_key",
+            "migrate_mcp_max_connect_attempts",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
@@ -4951,5 +4992,35 @@ prompt_cache_ttl = "1h"
         let second = migrate_qdrant_api_key(&first.output).unwrap();
         assert_eq!(second.changed_count, 0, "second run must not double-append");
         assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn migrate_mcp_max_connect_attempts_adds_comment_when_absent() {
+        let src = "[mcp]\nallowed_commands = []\n";
+        let result = migrate_mcp_max_connect_attempts(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result.output.contains("max_connect_attempts"),
+            "output must mention max_connect_attempts"
+        );
+    }
+
+    #[test]
+    fn migrate_mcp_max_connect_attempts_idempotent_when_present() {
+        let src = "[mcp]\n# max_connect_attempts = 3\nallowed_commands = []\n";
+        let result = migrate_mcp_max_connect_attempts(src).expect("migrate");
+        assert_eq!(
+            result.changed_count, 0,
+            "must not modify already-present key"
+        );
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_mcp_max_connect_attempts_skips_when_no_mcp_section() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_mcp_max_connect_attempts(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
     }
 }

@@ -129,6 +129,47 @@ mod tests {
     }
 
     #[test]
+    fn max_connect_attempts_default_is_3() {
+        let cfg = McpConfig::default();
+        assert_eq!(cfg.max_connect_attempts, 3);
+    }
+
+    #[test]
+    fn max_connect_attempts_accepts_valid_range() {
+        for v in [1u8, 3, 10] {
+            let src = format!("max_connect_attempts = {v}\n");
+            let cfg: McpConfig = toml::from_str(&src)
+                .unwrap_or_else(|e| panic!("max_connect_attempts = {v} should be valid, got: {e}"));
+            assert_eq!(cfg.max_connect_attempts, v);
+        }
+    }
+
+    #[test]
+    fn max_connect_attempts_rejects_zero() {
+        let src = "max_connect_attempts = 0\n";
+        let result = toml::from_str::<McpConfig>(src);
+        assert!(
+            result.is_err(),
+            "max_connect_attempts = 0 should be rejected"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("max_connect_attempts"),
+            "error message should mention the field name, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn max_connect_attempts_rejects_eleven() {
+        let src = "max_connect_attempts = 11\n";
+        let result = toml::from_str::<McpConfig>(src);
+        assert!(
+            result.is_err(),
+            "max_connect_attempts = 11 should be rejected"
+        );
+    }
+
+    #[test]
     fn wildcard_star_allows_any_skill() {
         let cfg = allow(&["*"]);
         assert!(is_skill_allowed("anything", &cfg));
@@ -617,6 +658,23 @@ fn default_output_schema_hint_bytes() -> usize {
     1024
 }
 
+fn default_max_connect_attempts() -> u8 {
+    3
+}
+
+fn validate_max_connect_attempts<'de, D>(d: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = u8::deserialize(d)?;
+    if !(1..=10).contains(&v) {
+        return Err(serde::de::Error::custom(format!(
+            "mcp.max_connect_attempts must be in 1..=10 (got {v})"
+        )));
+    }
+    Ok(v)
+}
+
 #[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpConfig {
@@ -658,6 +716,22 @@ pub struct McpConfig {
     /// patterns (password, token, secret, key, credential, etc.). Default: true.
     #[serde(default = "default_true")]
     pub elicitation_warn_sensitive_fields: bool,
+    /// Maximum number of connection attempts for each MCP server at startup.
+    ///
+    /// Value `1` means one attempt with no retry. Value `3` (default) means up to three
+    /// attempts with exponential backoff: 500 ms then 1 s between attempts.
+    ///
+    /// For `max_connect_attempts = N`, the inter-attempt delay sequence is
+    /// `min(500 * 2^(k-1), 8_000) ms` for k = 1..N-1, giving at most ~47 s total backoff
+    /// at the cap of `10`. Must be in `1..=10`.
+    ///
+    /// Note: dynamic `add_server` calls retain single-attempt behaviour regardless of this
+    /// setting; a follow-up issue tracks extending retry there.
+    #[serde(
+        default = "default_max_connect_attempts",
+        deserialize_with = "validate_max_connect_attempts"
+    )]
+    pub max_connect_attempts: u8,
     /// Lock tool lists after initial connection for all servers.
     ///
     /// When `true`, `tools/list_changed` refresh events are rejected for servers that have
@@ -708,6 +782,7 @@ impl Default for McpConfig {
             default_env_isolation: false,
             forward_output_schema: false,
             output_schema_hint_bytes: default_output_schema_hint_bytes(),
+            max_connect_attempts: default_max_connect_attempts(),
         }
     }
 }
