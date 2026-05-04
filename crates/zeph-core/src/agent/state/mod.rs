@@ -558,6 +558,13 @@ pub(crate) struct OrchestrationState {
     pub(crate) graph_persistence: Option<
         zeph_orchestration::GraphPersistence<zeph_memory::store::graph_store::TaskGraphStore>,
     >,
+    /// Named execution environment for the current orchestration task.
+    ///
+    /// Set by the scheduler when dispatching a `TaskNode` that has
+    /// `execution_environment: Some(name)`. Cleared between tasks. When `Some`,
+    /// `prepare_tool_dispatch` injects an [`ExecutionContext`] named `name` into
+    /// every `ToolCall` so that `ShellExecutor::resolve_context` uses the right env.
+    pub(crate) task_execution_env: Option<String>,
 }
 
 /// Groups instruction hot-reload state.

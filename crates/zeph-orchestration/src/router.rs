@@ -159,6 +159,7 @@ mod tests {
             execution_mode: crate::graph::ExecutionMode::default(),
             verify_predicate: None,
             predicate_outcome: None,
+            execution_environment: None,
         }
     }
 

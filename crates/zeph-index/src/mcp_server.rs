@@ -676,6 +676,7 @@ impl Foo {
                 _ => serde_json::Map::new(),
             },
             caller_id: None,
+            context: None,
         }
     }
 

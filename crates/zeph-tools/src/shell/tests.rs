@@ -1223,6 +1223,7 @@ async fn execute_tool_call_valid_command() {
             .into_iter()
             .collect(),
         caller_id: None,
+        context: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
     assert!(result.summary.contains("hi"));
@@ -1235,6 +1236,7 @@ async fn execute_tool_call_missing_command_returns_invalid_params() {
         tool_id: ToolName::new("bash"),
         params: serde_json::Map::new(),
         caller_id: None,
+        context: None,
     };
     let result = executor.execute_tool_call(&call).await;
     assert!(matches!(result, Err(ToolError::InvalidParams { .. })));
@@ -1249,6 +1251,7 @@ async fn execute_tool_call_empty_command_returns_none() {
             .into_iter()
             .collect(),
         caller_id: None,
+        context: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap();
     assert!(result.is_none());
@@ -2544,6 +2547,7 @@ async fn execute_tool_call_with_background_true() {
         .into_iter()
         .collect(),
         caller_id: None,
+        context: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
     assert!(
@@ -2695,4 +2699,439 @@ async fn background_runs_snapshot_returns_active_run() {
     assert!(!row.run_id.is_empty(), "snapshot run_id must be non-empty");
 
     executor.shutdown().await;
+}
+
+// ============================================================
+// §13 — resolve_context: CWD / blocklist / trust tests
+// ============================================================
+
+mod resolve_context {
+    use std::collections::{BTreeMap, HashMap};
+
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::ExecutionContext;
+    use crate::executor::ToolCall;
+
+    /// Build a `ShellExecutor` whose only `allowed_path` is `dir`, so sandbox checks
+    /// are deterministic. `env_blocklist` blocks `"SECRET_"`.
+    fn executor_for_dir(dir: &TempDir) -> ShellExecutor {
+        let path = dir.path().to_string_lossy().into_owned();
+        ShellExecutor::new(&ShellConfig {
+            allowed_paths: vec![path],
+            env_blocklist: vec!["SECRET_".to_owned()],
+            ..default_config()
+        })
+    }
+
+    // --- CWD resolution ---
+
+    #[test]
+    fn no_context_uses_process_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let executor = executor_for_dir(&dir);
+        let resolved = executor.resolve_context(None).unwrap();
+        assert_eq!(resolved.cwd, std::env::current_dir().unwrap());
+    }
+
+    #[test]
+    fn context_with_cwd_overrides_process_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let executor = executor_for_dir(&dir);
+        let canonical = dir.path().canonicalize().unwrap();
+        let ctx = ExecutionContext::new().with_cwd(canonical.clone());
+        let resolved = executor.resolve_context(Some(&ctx)).unwrap();
+        assert_eq!(resolved.cwd, canonical);
+    }
+
+    #[test]
+    fn nonexistent_cwd_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let executor = executor_for_dir(&dir);
+        let ctx = ExecutionContext::new().with_cwd("/this/path/does/not/exist/at/all");
+        let result = executor.resolve_context(Some(&ctx));
+        assert!(
+            result.is_err(),
+            "non-existent cwd must return Err, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn cwd_outside_allowed_paths_is_sandbox_violation() {
+        let allowed = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let executor = executor_for_dir(&allowed);
+        let outside_canonical = outside.path().canonicalize().unwrap();
+        let ctx = ExecutionContext::new().with_cwd(outside_canonical);
+        let result = executor.resolve_context(Some(&ctx));
+        assert!(
+            matches!(
+                result,
+                Err(crate::executor::ToolError::SandboxViolation { .. })
+            ),
+            "cwd outside allowed_paths must be SandboxViolation, got: {result:?}"
+        );
+    }
+
+    // --- named registry lookup ---
+
+    #[test]
+    fn unknown_context_name_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let executor = executor_for_dir(&dir);
+        let ctx = ExecutionContext::new().with_name("nonexistent-env");
+        let result = executor.resolve_context(Some(&ctx));
+        assert!(
+            result.is_err(),
+            "unknown named env must be Err, got: {result:?}"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("nonexistent-env"),
+            "error must name the missing env, got: {err}"
+        );
+    }
+
+    #[test]
+    fn named_registry_entry_provides_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().canonicalize().unwrap();
+        let mut registry = HashMap::new();
+        registry.insert(
+            "repo".to_owned(),
+            ExecutionContext::trusted_from_parts(
+                Some("repo".to_owned()),
+                Some(canonical.clone()),
+                BTreeMap::default(),
+            ),
+        );
+        let executor = executor_for_dir(&dir)
+            .with_environments(registry, None)
+            .unwrap();
+        let ctx = ExecutionContext::new().with_name("repo");
+        let resolved = executor.resolve_context(Some(&ctx)).unwrap();
+        assert_eq!(resolved.cwd, canonical);
+        assert_eq!(resolved.name.as_deref(), Some("repo"));
+    }
+
+    #[test]
+    fn call_site_cwd_overrides_registry_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("sub");
+        std::fs::create_dir_all(&subdir).unwrap();
+        let canonical_sub = subdir.canonicalize().unwrap();
+        let canonical_root = dir.path().canonicalize().unwrap();
+
+        let mut registry = HashMap::new();
+        registry.insert(
+            "repo".to_owned(),
+            ExecutionContext::trusted_from_parts(
+                Some("repo".to_owned()),
+                Some(canonical_root.clone()),
+                BTreeMap::default(),
+            ),
+        );
+        let executor = executor_for_dir(&dir)
+            .with_environments(registry, None)
+            .unwrap();
+
+        // Call-site CWD is subdir — must win over registry cwd (root).
+        let ctx = ExecutionContext::new()
+            .with_name("repo")
+            .with_cwd(canonical_sub.clone());
+        let resolved = executor.resolve_context(Some(&ctx)).unwrap();
+        assert_eq!(resolved.cwd, canonical_sub);
+    }
+
+    #[test]
+    fn default_env_provides_cwd_when_no_ctx() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().canonicalize().unwrap();
+        let mut registry = HashMap::new();
+        registry.insert(
+            "default".to_owned(),
+            ExecutionContext::trusted_from_parts(
+                Some("default".to_owned()),
+                Some(canonical.clone()),
+                BTreeMap::default(),
+            ),
+        );
+        let executor = executor_for_dir(&dir)
+            .with_environments(registry, Some("default".to_owned()))
+            .unwrap();
+        let resolved = executor.resolve_context(None).unwrap();
+        assert_eq!(resolved.cwd, canonical);
+        assert_eq!(resolved.name.as_deref(), Some("default"));
+    }
+
+    // --- env_blocklist filtering ---
+
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    #[test]
+    fn blocklist_strips_process_env_in_base() {
+        unsafe { std::env::set_var("SECRET_TEST_KEY", "leaked") };
+        let dir = tempfile::tempdir().unwrap();
+        let executor = executor_for_dir(&dir);
+        let resolved = executor.resolve_context(None).unwrap();
+        unsafe { std::env::remove_var("SECRET_TEST_KEY") };
+        assert!(
+            !resolved.env.contains_key("SECRET_TEST_KEY"),
+            "blocklist must strip SECRET_ from process env"
+        );
+    }
+
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    #[test]
+    fn untrusted_ctx_cannot_reintroduce_blocked_var() {
+        // Untrusted call-site env_overrides with a blocklisted key must be stripped (step 6).
+        unsafe { std::env::set_var("SECRET_INJECTED", "should-not-appear") };
+        let dir = tempfile::tempdir().unwrap();
+        let executor = executor_for_dir(&dir);
+        // Untrusted context explicitly sets a SECRET_ var.
+        let ctx = ExecutionContext::new().with_env("SECRET_INJECTED", "injected-by-llm");
+        let resolved = executor.resolve_context(Some(&ctx)).unwrap();
+        unsafe { std::env::remove_var("SECRET_INJECTED") };
+        assert!(
+            !resolved.env.contains_key("SECRET_INJECTED"),
+            "step-6 re-apply must strip SECRET_ re-introduced by untrusted ctx"
+        );
+    }
+
+    #[test]
+    fn trusted_default_env_preserves_blocked_var() {
+        // When the default_env is a trusted registry entry and no call-site ctx is
+        // supplied, the resolved context is trusted and step 6 is skipped — so a
+        // SECRET_* var set by the operator TOML survives in the final env map.
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = HashMap::new();
+        registry.insert(
+            "ops".to_owned(),
+            ExecutionContext::trusted_from_parts(
+                Some("ops".to_owned()),
+                Some(dir.path().canonicalize().unwrap()),
+                {
+                    let mut e = std::collections::BTreeMap::new();
+                    e.insert("SECRET_ALLOWED".to_owned(), "operator-value".to_owned());
+                    e
+                },
+            ),
+        );
+        let executor = executor_for_dir(&dir)
+            .with_environments(registry, Some("ops".to_owned()))
+            .unwrap();
+        // No call-site ctx → default_env used → trusted = true → SECRET_ALLOWED survives.
+        let resolved = executor.resolve_context(None).unwrap();
+        assert_eq!(
+            resolved.env.get("SECRET_ALLOWED").map(String::as_str),
+            Some("operator-value"),
+            "trusted default_env registry env must bypass step-6 blocklist"
+        );
+        assert!(
+            resolved.trusted,
+            "resolved.trusted must be true when only default_env (trusted) is active"
+        );
+    }
+
+    #[test]
+    fn untrusted_named_ctx_strips_registry_blocked_var() {
+        // When a named registry entry sets a SECRET_ var but the call-site ctx is
+        // untrusted, step 6 must strip it — the untrusted ctx forces trusted = false.
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = HashMap::new();
+        registry.insert(
+            "ops".to_owned(),
+            ExecutionContext::trusted_from_parts(
+                Some("ops".to_owned()),
+                Some(dir.path().canonicalize().unwrap()),
+                {
+                    let mut e = std::collections::BTreeMap::new();
+                    e.insert("SECRET_INJECTED".to_owned(), "from-registry".to_owned());
+                    e
+                },
+            ),
+        );
+        let executor = executor_for_dir(&dir)
+            .with_environments(registry, None)
+            .unwrap();
+        // Untrusted call-site ctx → trusted = false → step 6 strips SECRET_.
+        let ctx = ExecutionContext::new().with_name("ops");
+        let resolved = executor.resolve_context(Some(&ctx)).unwrap();
+        assert!(
+            !resolved.env.contains_key("SECRET_INJECTED"),
+            "untrusted call-site ctx must cause step-6 to strip registry SECRET_ vars"
+        );
+    }
+
+    #[test]
+    fn untrusted_ctx_forces_trusted_false_even_with_named_registry() {
+        // When a named registry entry is trusted but the call-site ctx is untrusted,
+        // the resolved context must NOT be trusted (ctx.is_trusted() == false dominates).
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().canonicalize().unwrap();
+        let mut registry = HashMap::new();
+        registry.insert(
+            "ops".to_owned(),
+            ExecutionContext::trusted_from_parts(
+                Some("ops".to_owned()),
+                Some(canonical),
+                BTreeMap::default(),
+            ),
+        );
+        let executor = executor_for_dir(&dir)
+            .with_environments(registry, None)
+            .unwrap();
+        // Untrusted call-site ctx forces trusted = false.
+        let ctx = ExecutionContext::new().with_name("ops");
+        let resolved = executor.resolve_context(Some(&ctx)).unwrap();
+        assert!(
+            !resolved.trusted,
+            "untrusted call-site ctx must override registry trusted flag"
+        );
+    }
+
+    // --- skill_env layer ---
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_env_applied_before_call_site() {
+        // skill_env is step 3; call-site env_overrides is step 5 → call-site wins on conflict.
+        let dir = tempfile::tempdir().unwrap();
+        let executor = executor_for_dir(&dir);
+        let mut skill = HashMap::new();
+        skill.insert("MY_VAR".to_owned(), "from-skill".to_owned());
+        executor.set_skill_env(Some(skill));
+
+        // No call-site override → skill_env value present.
+        let resolved = executor.resolve_context(None).unwrap();
+        assert_eq!(
+            resolved.env.get("MY_VAR").map(String::as_str),
+            Some("from-skill"),
+            "skill_env must be applied (step 3)"
+        );
+
+        // Call-site override beats skill_env.
+        let ctx = ExecutionContext::new().with_env("MY_VAR", "from-callsite");
+        let resolved2 = executor.resolve_context(Some(&ctx)).unwrap();
+        assert_eq!(
+            resolved2.env.get("MY_VAR").map(String::as_str),
+            Some("from-callsite"),
+            "call-site env_override must beat skill_env"
+        );
+    }
+
+    // --- with_environments validation ---
+
+    #[test]
+    fn with_environments_rejects_cwd_outside_allowed_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_canonical = outside.path().canonicalize().unwrap();
+        let mut registry = HashMap::new();
+        registry.insert(
+            "bad".to_owned(),
+            ExecutionContext::trusted_from_parts(
+                Some("bad".to_owned()),
+                Some(outside_canonical),
+                BTreeMap::default(),
+            ),
+        );
+        let result = executor_for_dir(&dir).with_environments(registry, None);
+        assert!(
+            result.is_err(),
+            "with_environments must reject cwd outside allowed_paths"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("bad"),
+            "error must name the offending env: {msg}"
+        );
+    }
+
+    #[test]
+    fn with_environments_rejects_nonexistent_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = HashMap::new();
+        registry.insert(
+            "ghost".to_owned(),
+            ExecutionContext::trusted_from_parts(
+                Some("ghost".to_owned()),
+                Some(std::path::PathBuf::from("/nonexistent/path/for/test")),
+                BTreeMap::default(),
+            ),
+        );
+        let result = executor_for_dir(&dir).with_environments(registry, None);
+        assert!(
+            result.is_err(),
+            "with_environments must reject non-existent cwd"
+        );
+    }
+
+    // --- ToolCall dispatch ---
+
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn tool_call_with_context_cwd_used_for_execution() {
+        use crate::executor::ToolExecutor;
+        use zeph_common::ToolName;
+
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().canonicalize().unwrap();
+        let executor = executor_for_dir(&dir);
+
+        let ctx = ExecutionContext::new().with_cwd(canonical.clone());
+        let call = ToolCall {
+            tool_id: ToolName::new("bash"),
+            params: {
+                let mut m = serde_json::Map::new();
+                m.insert(
+                    "command".to_owned(),
+                    serde_json::Value::String("pwd".to_owned()),
+                );
+                m
+            },
+            caller_id: None,
+            context: Some(ctx),
+        };
+        let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(
+            output
+                .summary
+                .contains(canonical.to_string_lossy().as_ref()),
+            "pwd output must reflect context cwd, got: {}",
+            output.summary
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn tool_call_without_context_uses_process_cwd() {
+        use crate::executor::ToolExecutor;
+        use zeph_common::ToolName;
+
+        let dir = tempfile::tempdir().unwrap();
+        let executor = executor_for_dir(&dir);
+        let call = ToolCall {
+            tool_id: ToolName::new("bash"),
+            params: {
+                let mut m = serde_json::Map::new();
+                m.insert(
+                    "command".to_owned(),
+                    serde_json::Value::String("pwd".to_owned()),
+                );
+                m
+            },
+            caller_id: None,
+            context: None,
+        };
+        let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
+        let expected = std::env::current_dir().unwrap();
+        assert!(
+            output.summary.contains(expected.to_string_lossy().as_ref()),
+            "pwd without context must reflect process cwd, got: {}",
+            output.summary
+        );
+    }
 }

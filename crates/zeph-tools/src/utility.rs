@@ -317,6 +317,7 @@ mod tests {
                 serde_json::Map::new()
             },
             caller_id: None,
+            context: None,
         }
     }
 

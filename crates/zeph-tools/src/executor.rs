@@ -29,7 +29,7 @@ pub struct DiffData {
 /// # Example
 ///
 /// ```rust
-/// use zeph_tools::ToolCall;
+/// use zeph_tools::{ToolCall, ExecutionContext};
 /// use zeph_common::ToolName;
 ///
 /// let call = ToolCall {
@@ -40,6 +40,7 @@ pub struct DiffData {
 ///         m
 ///     },
 ///     caller_id: Some("user-42".to_owned()),
+///     context: Some(ExecutionContext::new().with_name("repo")),
 /// };
 /// assert_eq!(call.tool_id, "bash");
 /// ```
@@ -52,6 +53,9 @@ pub struct ToolCall {
     /// Opaque caller identifier propagated from the channel (user ID, session ID, etc.).
     /// `None` for system-initiated calls (scheduler, self-learning, internal).
     pub caller_id: Option<String>,
+    /// Per-turn execution environment. `None` means use the executor default (process CWD
+    /// and inherited env), which is identical to the behaviour before this field existed.
+    pub context: Option<crate::ExecutionContext>,
 }
 
 /// Cumulative filter statistics for a single tool execution.
@@ -289,6 +293,12 @@ pub enum ToolEvent {
         command: String,
         /// Active sandbox profile, if any. `None` when sandbox is disabled.
         sandbox_profile: Option<String>,
+        /// Canonical absolute working directory the command will run in.
+        /// `None` for executors that do not resolve a per-turn CWD.
+        resolved_cwd: Option<String>,
+        /// Name of the resolved execution environment (from `[[execution.environments]]`),
+        /// or `None` when no named environment was selected.
+        execution_env: Option<String>,
     },
     /// A chunk of streaming output was produced (e.g. from a long-running command).
     OutputChunk {
@@ -1171,6 +1181,7 @@ mod tests {
             tool_id: ToolName::new("anything"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -1315,6 +1326,7 @@ mod tests {
             tool_id: ToolName::new("bash"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());

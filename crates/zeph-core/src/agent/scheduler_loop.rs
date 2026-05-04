@@ -210,6 +210,15 @@ impl<C: crate::channel::Channel> Agent<C> {
         let handle_id = format!("__inline_{task_id}__");
         scheduler.record_spawn(task_id, handle_id.clone(), "__main__".to_string());
 
+        // Inject per-task execution environment so that ToolCalls built inside this
+        // inline loop carry the right named env for ShellExecutor::resolve_context.
+        let prev_task_env = self.services.orchestration.task_execution_env.clone();
+        self.services.orchestration.task_execution_env = scheduler
+            .graph()
+            .tasks
+            .get(task_id.index())
+            .and_then(|t| t.execution_environment.clone());
+
         let event_tx = scheduler.event_sender();
         let max_iter = self.tool_orchestrator.max_iterations;
         let outcome = tokio::select! {
@@ -230,6 +239,9 @@ impl<C: crate::channel::Channel> Agent<C> {
                 }
             }
         };
+        // Restore prior env (supports nested RunInline, though unusual in practice).
+        self.services.orchestration.task_execution_env = prev_task_env;
+
         let event = zeph_orchestration::TaskEvent {
             task_id,
             agent_handle_id: handle_id,
@@ -649,6 +661,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                                 _ => serde_json::Map::new(),
                             },
                             caller_id: None,
+                            context: None,
                         };
                         let output = loop {
                             tokio::select! {

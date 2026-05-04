@@ -477,6 +477,8 @@ impl WebScrapeExecutor {
                 policy_match: None,
                 correlation_id,
                 vigil_risk: None,
+                execution_env: None,
+                resolved_cwd: None,
             };
             logger.log(&entry).await;
         }
@@ -2140,6 +2142,7 @@ mod tests {
                 m
             },
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -2160,6 +2163,7 @@ mod tests {
                 m
             },
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -2180,6 +2184,7 @@ mod tests {
                 m
             },
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -2193,6 +2198,7 @@ mod tests {
             tool_id: ToolName::new("unknown_tool"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.unwrap().is_none());
@@ -2421,6 +2427,7 @@ mod tests {
                 m
             },
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -2533,6 +2540,7 @@ mod tests {
                 m
             },
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -2562,6 +2570,7 @@ mod tests {
                 m
             },
             caller_id: None,
+            context: None,
         };
         // Must not panic even without an audit logger
         let result = executor.execute_tool_call(&call).await;

@@ -535,6 +535,8 @@ mod tests {
                 tool_name: "shell".into(),
                 command: "ls".into(),
                 sandbox_profile: None,
+                resolved_cwd: None,
+                execution_env: None,
             })
             .await
             .unwrap();

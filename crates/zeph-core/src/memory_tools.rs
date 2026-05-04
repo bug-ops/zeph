@@ -274,6 +274,7 @@ mod tests {
             tool_id: zeph_common::ToolName::new("unknown_tool"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -292,6 +293,7 @@ mod tests {
             tool_id: zeph_common::ToolName::new("memory_search"),
             params,
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -319,6 +321,7 @@ mod tests {
             tool_id: zeph_common::ToolName::new("memory_save"),
             params,
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -337,6 +340,7 @@ mod tests {
             tool_id: zeph_common::ToolName::new("memory_save"),
             params,
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());
@@ -355,6 +359,7 @@ mod tests {
             tool_id: zeph_common::ToolName::new("memory_save"),
             params,
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());

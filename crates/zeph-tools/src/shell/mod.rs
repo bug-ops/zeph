@@ -39,6 +39,7 @@ use zeph_common::ToolName;
 
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::config::ShellConfig;
+use crate::execution_context::ExecutionContext;
 use crate::executor::{
     ClaimSource, FilterStats, ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput,
 };
@@ -239,7 +240,6 @@ pub(crate) struct BashParams {
 pub struct ShellExecutor {
     timeout: Duration,
     policy: Arc<ArcSwap<ShellPolicy>>,
-    allowed_paths: Vec<PathBuf>,
     confirm_patterns: Vec<String>,
     env_blocklist: Vec<String>,
     audit_logger: Option<Arc<AuditLogger>>,
@@ -268,6 +268,33 @@ pub struct ShellExecutor {
     /// (bypasses the UI-facing [`ToolEventTx`] channel). `None` when the agent
     /// has not wired a background completion receiver.
     background_completion_tx: Option<tokio::sync::mpsc::Sender<BackgroundCompletion>>,
+    /// Named execution environment registry built from `[execution]` config.
+    /// Keys are case-sensitive environment names; values are trusted `ExecutionContext`s.
+    environments: Arc<HashMap<String, ExecutionContext>>,
+    /// Pre-canonicalized `allowed_paths`. Built once at construction to avoid TOCTOU
+    /// between the canonicalize call and the prefix check at `resolve_context` time.
+    allowed_paths_canonical: Vec<PathBuf>,
+    /// Optional default environment name (from `[execution] default_env`).
+    default_env: Option<String>,
+}
+
+/// Fully resolved execution context for a single shell invocation.
+///
+/// Produced by [`ShellExecutor::resolve_context`] and passed to the inner execute
+/// functions. The canonical `cwd` is what `cmd.current_dir` receives — identical to
+/// the path that was validated against `allowed_paths`.
+#[derive(Debug)]
+pub(crate) struct ResolvedContext {
+    /// Canonical absolute working directory (follows all symlinks).
+    pub(crate) cwd: PathBuf,
+    /// Final merged environment (post-blocklist filter).
+    pub(crate) env: HashMap<String, String>,
+    /// Resolved environment name, for logs and audit entries.
+    pub(crate) name: Option<String>,
+    /// Whether the context originated from a trusted source (operator TOML).
+    /// Reserved for future audit log enrichment.
+    #[allow(dead_code)]
+    pub(crate) trusted: bool,
 }
 
 impl ShellExecutor {
@@ -282,16 +309,19 @@ impl ShellExecutor {
             blocked_commands: compute_blocked_commands(config),
         }));
 
-        let allowed_paths = if config.allowed_paths.is_empty() {
+        let allowed_paths: Vec<PathBuf> = if config.allowed_paths.is_empty() {
             vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]
         } else {
             config.allowed_paths.iter().map(PathBuf::from).collect()
         };
+        let allowed_paths_canonical: Vec<PathBuf> = allowed_paths
+            .iter()
+            .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+            .collect();
 
         Self {
             timeout: Duration::from_secs(config.timeout),
             policy,
-            allowed_paths,
             confirm_patterns: config.confirm_patterns.clone(),
             env_blocklist: config.env_blocklist.clone(),
             audit_logger: None,
@@ -313,6 +343,9 @@ impl ShellExecutor {
             background_timeout: Duration::from_secs(config.background_timeout_secs),
             shutting_down: Arc::new(AtomicBool::new(false)),
             background_completion_tx: None,
+            environments: Arc::new(HashMap::new()),
+            allowed_paths_canonical,
+            default_env: None,
         }
     }
 
@@ -325,6 +358,75 @@ impl ShellExecutor {
         self.sandbox = Some(sandbox);
         self.sandbox_policy = Some(policy);
         self
+    }
+
+    /// Build the environment registry from `[execution]` config and wire it in one step.
+    ///
+    /// Convenience wrapper for agent startup. Converts [`zeph_config::ExecutionConfig`]
+    /// entries into trusted [`ExecutionContext`] instances and passes them to
+    /// [`Self::with_environments`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string when any registry entry's `cwd` cannot be canonicalized
+    /// or escapes `allowed_paths`.
+    pub fn with_execution_config(
+        self,
+        config: &zeph_config::ExecutionConfig,
+    ) -> Result<Self, String> {
+        let registry: HashMap<String, ExecutionContext> = config
+            .environments
+            .iter()
+            .map(|e| {
+                let ctx = ExecutionContext::trusted_from_parts(
+                    Some(e.name.clone()),
+                    Some(std::path::PathBuf::from(&e.cwd)),
+                    e.env.clone(),
+                );
+                (e.name.clone(), ctx)
+            })
+            .collect();
+        self.with_environments(registry, config.default_env.clone())
+    }
+
+    /// Wire the named execution environment registry from `[execution]` config.
+    ///
+    /// Builds trusted [`ExecutionContext`] instances from the operator-authored TOML
+    /// entries and canonicalizes their `cwd` paths at construction time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string (surfaced at agent startup) when a registry entry's
+    /// `cwd` path does not exist, cannot be canonicalized, or escapes `allowed_paths`.
+    pub fn with_environments(
+        mut self,
+        environments: HashMap<String, ExecutionContext>,
+        default_env: Option<String>,
+    ) -> Result<Self, String> {
+        // Validate that all registered cwds exist and are under allowed_paths.
+        for (name, ctx) in &environments {
+            if let Some(cwd) = ctx.cwd() {
+                let canonical = cwd.canonicalize().map_err(|e| {
+                    format!(
+                        "execution environment '{name}': cwd '{}' cannot be canonicalized: {e}",
+                        cwd.display()
+                    )
+                })?;
+                if !self
+                    .allowed_paths_canonical
+                    .iter()
+                    .any(|p| canonical.starts_with(p))
+                {
+                    return Err(format!(
+                        "execution environment '{name}': cwd '{}' is outside allowed_paths",
+                        cwd.display()
+                    ));
+                }
+            }
+        }
+        self.environments = Arc::new(environments);
+        self.default_env = default_env;
+        Ok(self)
     }
 
     /// Set environment variables to inject when executing the active skill's bash blocks.
@@ -445,6 +547,10 @@ impl ShellExecutor {
             return Ok(None);
         }
 
+        // Resolve with no call-site context so legacy path gets the same CWD/env
+        // treatment as the structured-tool-call path (default_env, skill_env, blocklist).
+        let resolved = self.resolve_context(None)?;
+
         let mut outputs = Vec::with_capacity(blocks.len());
         let mut cumulative_filter_stats: Option<FilterStats> = None;
         let mut last_envelope: Option<ShellOutputEnvelope> = None;
@@ -453,7 +559,7 @@ impl ShellExecutor {
 
         for block in &blocks {
             let (output_line, per_block_stats, envelope) =
-                self.execute_block(block, skip_confirm).await?;
+                self.execute_block(block, skip_confirm, &resolved).await?;
             if let Some(fs) = per_block_stats {
                 let stats = cumulative_filter_stats.get_or_insert_with(FilterStats::default);
                 stats.raw_chars += fs.raw_chars;
@@ -499,9 +605,10 @@ impl ShellExecutor {
         &self,
         block: &str,
         skip_confirm: bool,
+        resolved: &ResolvedContext,
     ) -> Result<(String, Option<FilterStats>, ShellOutputEnvelope), ToolError> {
         self.check_permissions(block, skip_confirm).await?;
-        self.validate_sandbox(block)?;
+        self.validate_sandbox_with_cwd(block, &resolved.cwd)?;
 
         let (snapshot, snapshot_warning) = self.capture_snapshot_for(block)?;
 
@@ -515,24 +622,23 @@ impl ShellExecutor {
                 tool_name: ToolName::new("bash"),
                 command: block.to_owned(),
                 sandbox_profile,
+                resolved_cwd: Some(resolved.cwd.display().to_string()),
+                execution_env: resolved.name.clone(),
             });
         }
 
         let start = Instant::now();
-        let skill_env_snapshot: Option<std::collections::HashMap<String, String>> =
-            self.skill_env.read().clone();
         let sandbox_pair = self
             .sandbox
             .as_ref()
             .zip(self.sandbox_policy.as_ref())
             .map(|(sb, pol)| (sb.as_ref(), pol));
-        let (mut envelope, out) = execute_bash(
+        let (mut envelope, out) = execute_bash_with_context(
             block,
             self.timeout,
             self.tool_event_tx.as_ref(),
             self.cancel_token.as_ref(),
-            skill_env_snapshot.as_ref(),
-            &self.env_blocklist,
+            resolved,
             sandbox_pair,
         )
         .await;
@@ -582,13 +688,14 @@ impl ShellExecutor {
         } else {
             AuditResult::Success
         };
-        self.log_audit(
+        self.log_audit_with_context(
             block,
             audit_result,
             duration_ms,
             None,
             Some(exit_code),
             envelope.truncated,
+            resolved,
         )
         .await;
 
@@ -597,6 +704,126 @@ impl ShellExecutor {
             None => format!("$ {block}\n{filtered}"),
         };
         Ok((output_line, per_block_stats, envelope))
+    }
+
+    /// Execute `command` using a pre-resolved [`ResolvedContext`] (from `resolve_context`).
+    ///
+    /// This is the structured-tool-call path — it uses the resolved CWD and env directly
+    /// instead of re-reading process state on every call.
+    #[tracing::instrument(name = "tool.shell.execute_block", skip(self, resolved), level = "info",
+        fields(cwd = %resolved.cwd.display(), env_name = resolved.name.as_deref().unwrap_or("")))]
+    async fn execute_block_with_context(
+        &self,
+        command: &str,
+        skip_confirm: bool,
+        resolved: &ResolvedContext,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        self.check_permissions(command, skip_confirm).await?;
+        self.validate_sandbox_with_cwd(command, &resolved.cwd)?;
+
+        let (snapshot, snapshot_warning) = self.capture_snapshot_for(command)?;
+
+        if let Some(ref tx) = self.tool_event_tx {
+            let sandbox_profile = self
+                .sandbox_policy
+                .as_ref()
+                .map(|p| format!("{:?}", p.profile));
+            let _ = tx.try_send(ToolEvent::Started {
+                tool_name: ToolName::new("bash"),
+                command: command.to_owned(),
+                sandbox_profile,
+                resolved_cwd: Some(resolved.cwd.display().to_string()),
+                execution_env: resolved.name.clone(),
+            });
+        }
+
+        let start = Instant::now();
+        let sandbox_pair = self
+            .sandbox
+            .as_ref()
+            .zip(self.sandbox_policy.as_ref())
+            .map(|(sb, pol)| (sb.as_ref(), pol));
+        let (mut envelope, out) = execute_bash_with_context(
+            command,
+            self.timeout,
+            self.tool_event_tx.as_ref(),
+            self.cancel_token.as_ref(),
+            resolved,
+            sandbox_pair,
+        )
+        .await;
+        let exit_code = envelope.exit_code;
+        if exit_code == 130
+            && self
+                .cancel_token
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(ToolError::Cancelled);
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        if let Some(snap) = snapshot {
+            self.maybe_rollback(snap, command, exit_code, duration_ms)
+                .await;
+        }
+
+        if let Some(err) = self
+            .classify_and_audit(command, &out, exit_code, duration_ms)
+            .await
+        {
+            self.emit_completed(command, &out, false, None, None).await;
+            return Err(err);
+        }
+
+        let (filtered, per_block_stats) = self.apply_output_filter(command, &out, exit_code);
+
+        self.emit_completed(
+            command,
+            &out,
+            !out.contains("[error]"),
+            per_block_stats.clone(),
+            None,
+        )
+        .await;
+
+        envelope.truncated = filtered.len() < out.len();
+
+        let audit_result = if out.contains("[error]") || out.contains("[stderr]") {
+            AuditResult::Error {
+                message: out.clone(),
+            }
+        } else {
+            AuditResult::Success
+        };
+        self.log_audit_with_context(
+            command,
+            audit_result,
+            duration_ms,
+            None,
+            Some(exit_code),
+            envelope.truncated,
+            resolved,
+        )
+        .await;
+
+        let output_line = match snapshot_warning {
+            Some(warn) => format!("{warn}\n$ {command}\n{filtered}"),
+            None => format!("$ {command}\n{filtered}"),
+        };
+        Ok(Some(ToolOutput {
+            tool_name: ToolName::new("bash"),
+            summary: output_line,
+            blocks_executed: 1,
+            filter_stats: per_block_stats,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+            claim_source: Some(ClaimSource::Shell),
+        }))
     }
 
     fn capture_snapshot_for(
@@ -835,12 +1062,152 @@ impl ShellExecutor {
         Ok(())
     }
 
-    fn validate_sandbox(&self, code: &str) -> Result<(), ToolError> {
-        let cwd = std::env::current_dir().unwrap_or_default();
+    /// Resolve the effective `(cwd, env, name, trusted)` for a single tool call.
+    ///
+    /// Implements the 6-step merge defined in the per-turn env spec:
+    /// 1. Base = inherited process env.
+    /// 2. Filter `env_blocklist`.
+    /// 3. Apply `skill_env` overrides.
+    /// 4. If `ctx` or `default_env` points to a named registry entry, apply its overrides.
+    /// 5. Apply call-site `ctx.env_overrides`.
+    /// 6. If context is untrusted, re-apply `env_blocklist` to strip any re-introduced keys.
+    ///
+    /// CWD precedence (highest wins): call-site `ctx.cwd` → named registry `cwd` → `default_env`
+    /// registry `cwd` → `std::env::current_dir()`.
+    #[tracing::instrument(name = "tools.shell.resolve_context", skip(self, ctx), level = "info")]
+    pub(crate) fn resolve_context(
+        &self,
+        ctx: Option<&ExecutionContext>,
+    ) -> Result<ResolvedContext, ToolError> {
+        // Step 1: base env = process env.
+        let mut env: HashMap<String, String> = std::env::vars().collect();
 
+        // Step 2: filter env_blocklist (prefix match, consistent with build_bash_command).
+        env.retain(|k, _| {
+            !self
+                .env_blocklist
+                .iter()
+                .any(|prefix| k.starts_with(prefix.as_str()))
+        });
+
+        // Step 3: apply skill_env.
+        if let Some(skill) = self.skill_env.read().as_ref() {
+            for (k, v) in skill {
+                env.insert(k.clone(), v.clone());
+            }
+        }
+
+        // Determine the resolved name, cwd_override, and trusted flag.
+        let mut resolved_name: Option<String> = None;
+        let mut cwd_override: Option<PathBuf> = None;
+        let mut trusted = false;
+
+        // Resolve via default_env registry entry (lowest priority named layer).
+        if let Some(default_name) = &self.default_env
+            && let Some(default_ctx) = self.environments.get(default_name.as_str())
+        {
+            resolved_name.get_or_insert_with(|| default_name.clone());
+            if cwd_override.is_none() {
+                cwd_override = default_ctx.cwd().map(ToOwned::to_owned);
+            }
+            trusted = default_ctx.is_trusted();
+            for (k, v) in default_ctx.env_overrides() {
+                env.insert(k.clone(), v.clone());
+            }
+        }
+
+        // Step 4: if call-site ctx names a registry entry, apply its overrides.
+        if let Some(ctx) = ctx {
+            if let Some(name) = ctx.name() {
+                if let Some(reg_ctx) = self.environments.get(name) {
+                    resolved_name = Some(name.to_owned());
+                    if let Some(cwd) = reg_ctx.cwd() {
+                        cwd_override = Some(cwd.to_owned());
+                    }
+                    trusted = reg_ctx.is_trusted();
+                    for (k, v) in reg_ctx.env_overrides() {
+                        env.insert(k.clone(), v.clone());
+                    }
+                } else {
+                    return Err(ToolError::Execution(std::io::Error::other(format!(
+                        "unknown execution environment '{name}'"
+                    ))));
+                }
+            }
+
+            // Step 5: apply call-site cwd and env overrides (highest priority).
+            if let Some(cwd) = ctx.cwd() {
+                cwd_override = Some(cwd.to_owned());
+            }
+            if !ctx.is_trusted() {
+                trusted = false;
+            }
+            for (k, v) in ctx.env_overrides() {
+                env.insert(k.clone(), v.clone());
+            }
+        }
+
+        // Step 6: re-apply blocklist for untrusted contexts (prefix match).
+        if !trusted {
+            env.retain(|k, _| {
+                !self
+                    .env_blocklist
+                    .iter()
+                    .any(|prefix| k.starts_with(prefix.as_str()))
+            });
+        }
+
+        // Resolve final CWD: override (canonicalized) or process CWD.
+        let cwd = if let Some(raw) = cwd_override {
+            // Make relative paths absolute before canonicalize so they resolve
+            // correctly regardless of the process working directory.
+            let raw = if raw.is_absolute() {
+                raw
+            } else {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join(raw)
+            };
+            let canonical = raw
+                .canonicalize()
+                .map_err(|_| ToolError::SandboxViolation {
+                    path: raw.display().to_string(),
+                })?;
+            // Validate against allowed_paths.
+            if !self
+                .allowed_paths_canonical
+                .iter()
+                .any(|p| canonical.starts_with(p))
+            {
+                return Err(ToolError::SandboxViolation {
+                    path: canonical.display().to_string(),
+                });
+            }
+            canonical
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        };
+
+        Ok(ResolvedContext {
+            cwd,
+            env,
+            name: resolved_name,
+            trusted,
+        })
+    }
+
+    fn validate_sandbox_with_cwd(
+        &self,
+        code: &str,
+        cwd: &std::path::Path,
+    ) -> Result<(), ToolError> {
         for token in extract_paths(code) {
             if has_traversal(&token) {
                 return Err(ToolError::SandboxViolation { path: token });
+            }
+
+            if self.allowed_paths_canonical.is_empty() {
+                continue;
             }
 
             let path = if token.starts_with('/') {
@@ -848,12 +1215,34 @@ impl ShellExecutor {
             } else {
                 cwd.join(&token)
             };
-            let canonical = path
-                .canonicalize()
-                .or_else(|_| std::path::absolute(&path))
-                .unwrap_or(path);
+            // For existing paths, canonicalize to resolve symlinks before the prefix
+            // check — `std::path::absolute` does NOT collapse `..` or follow symlinks.
+            // For non-existent paths, canonicalize the nearest existing ancestor and
+            // reattach the suffix: this rejects `allowed/../../etc/shadow` while
+            // allowing references to not-yet-created files within allowed dirs.
+            let canonical = if let Ok(c) = path.canonicalize() {
+                c
+            } else {
+                // Collect path components so we can walk up from the full path.
+                let components: Vec<_> = path.components().collect();
+                let mut base_len = components.len();
+                let canonical_base = loop {
+                    if base_len == 0 {
+                        break PathBuf::new();
+                    }
+                    let candidate: PathBuf = components[..base_len].iter().collect();
+                    if let Ok(c) = candidate.canonicalize() {
+                        break c;
+                    }
+                    base_len -= 1;
+                };
+                // Reattach the non-existent suffix (components after base_len).
+                components[base_len..]
+                    .iter()
+                    .fold(canonical_base, |acc, c| acc.join(c))
+            };
             if !self
-                .allowed_paths
+                .allowed_paths_canonical
                 .iter()
                 .any(|allowed| canonical.starts_with(allowed))
             {
@@ -863,6 +1252,11 @@ impl ShellExecutor {
             }
         }
         Ok(())
+    }
+
+    fn validate_sandbox(&self, code: &str) -> Result<(), ToolError> {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        self.validate_sandbox_with_cwd(code, &cwd)
     }
 
     /// Scan `code` for commands that match the configured blocklist.
@@ -979,6 +1373,57 @@ impl ShellExecutor {
                 policy_match: None,
                 correlation_id: None,
                 vigil_risk: None,
+                execution_env: None,
+                resolved_cwd: None,
+            };
+            logger.log(&entry).await;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn log_audit_with_context(
+        &self,
+        command: &str,
+        result: AuditResult,
+        duration_ms: u64,
+        error: Option<&ToolError>,
+        exit_code: Option<i32>,
+        truncated: bool,
+        resolved: &ResolvedContext,
+    ) {
+        if let Some(ref logger) = self.audit_logger {
+            let (error_category, error_domain, error_phase) =
+                error.map_or((None, None, None), |e| {
+                    let cat = e.category();
+                    (
+                        Some(cat.label().to_owned()),
+                        Some(cat.domain().label().to_owned()),
+                        Some(cat.phase().label().to_owned()),
+                    )
+                });
+            let entry = AuditEntry {
+                timestamp: chrono_now(),
+                tool: "shell".into(),
+                command: command.into(),
+                result,
+                duration_ms,
+                error_category,
+                error_domain,
+                error_phase,
+                claim_source: Some(ClaimSource::Shell),
+                mcp_server_id: None,
+                injection_flagged: false,
+                embedding_anomalous: false,
+                cross_boundary_mcp_to_acp: false,
+                adversarial_policy_decision: None,
+                exit_code,
+                truncated,
+                caller_id: None,
+                policy_match: None,
+                correlation_id: None,
+                vigil_risk: None,
+                execution_env: resolved.name.clone(),
+                resolved_cwd: Some(resolved.cwd.display().to_string()),
             };
             logger.log(&entry).await;
         }
@@ -1019,6 +1464,8 @@ impl ToolExecutor for ShellExecutor {
         }]
     }
 
+    #[tracing::instrument(name = "tool.shell.execute_tool_call", skip(self, call), level = "info",
+        fields(tool_id = %call.tool_id, env = call.context.as_ref().and_then(|c| c.name()).unwrap_or("")))]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         if call.tool_id != "bash" {
             return Ok(None);
@@ -1029,8 +1476,14 @@ impl ToolExecutor for ShellExecutor {
         }
         let command = &params.command;
 
+        // Resolve per-turn execution context — done before the background branch so that
+        // background tasks also receive the correct env and CWD (spec §6).
+        let resolved = self.resolve_context(call.context.as_ref())?;
+
         if params.background {
-            let run_id = self.spawn_background(command).await?;
+            let run_id = self
+                .spawn_background_with_context(command, &resolved)
+                .await?;
             let id_short = &run_id.to_string()[..8];
             return Ok(Some(ToolOutput {
                 tool_name: ToolName::new("bash"),
@@ -1050,9 +1503,8 @@ impl ToolExecutor for ShellExecutor {
             }));
         }
 
-        // Wrap as a fenced block so execute_inner can extract and run it.
-        let synthetic = format!("```bash\n{command}\n```");
-        self.execute_inner(&synthetic, false).await
+        self.execute_block_with_context(command, false, &resolved)
+            .await
     }
 
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
@@ -1131,6 +1583,75 @@ impl ShellExecutor {
             background_completion_tx,
             skill_env_snapshot,
             env_blocklist,
+        ));
+
+        Ok(run_id)
+    }
+
+    /// Spawn `command` as a background process using an already-resolved [`ResolvedContext`].
+    ///
+    /// Like [`spawn_background`](Self::spawn_background) but uses the pre-resolved env and CWD
+    /// instead of reading `skill_env`/process-env at spawn time.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`spawn_background`](Self::spawn_background).
+    async fn spawn_background_with_context(
+        &self,
+        command: &str,
+        resolved: &ResolvedContext,
+    ) -> Result<RunId, ToolError> {
+        use std::sync::atomic::Ordering;
+
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(ToolError::Blocked {
+                command: command.to_owned(),
+            });
+        }
+
+        self.check_permissions(command, false).await?;
+        self.validate_sandbox_with_cwd(command, &resolved.cwd)?;
+
+        let run_id = RunId::new();
+        let mut runs = self.background_runs.lock();
+        if runs.len() >= self.max_background_runs {
+            return Err(ToolError::Blocked {
+                command: format!(
+                    "background run cap reached (max_background_runs={})",
+                    self.max_background_runs
+                ),
+            });
+        }
+        let abort = CancellationToken::new();
+        runs.insert(
+            run_id,
+            BackgroundHandle {
+                command: command.to_owned(),
+                started_at: std::time::Instant::now(),
+                abort: abort.clone(),
+                child_pid: None,
+            },
+        );
+        drop(runs);
+
+        let tool_event_tx = self.tool_event_tx.clone();
+        let background_completion_tx = self.background_completion_tx.clone();
+        let background_runs = Arc::clone(&self.background_runs);
+        let timeout = self.background_timeout;
+        let env = resolved.env.clone();
+        let cwd = resolved.cwd.clone();
+        let command_owned = command.to_owned();
+
+        tokio::spawn(run_background_task_with_env(
+            run_id,
+            command_owned,
+            timeout,
+            abort,
+            background_runs,
+            tool_event_tx,
+            background_completion_tx,
+            env,
+            cwd,
         ));
 
         Ok(run_id)
@@ -1331,6 +1852,137 @@ async fn run_background_task(
     }
 
     tracing::debug!(run_id = %run_id, exit_code, elapsed_ms, "background shell run completed");
+}
+
+/// Like [`run_background_task`] but uses a pre-resolved `env` and `cwd` from
+/// `resolve_context` instead of reading `skill_env`/process-env at spawn time.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn run_background_task_with_env(
+    run_id: RunId,
+    command: String,
+    timeout: Duration,
+    abort: CancellationToken,
+    background_runs: Arc<Mutex<HashMap<RunId, BackgroundHandle>>>,
+    tool_event_tx: Option<ToolEventTx>,
+    background_completion_tx: Option<tokio::sync::mpsc::Sender<BackgroundCompletion>>,
+    env: HashMap<String, String>,
+    cwd: PathBuf,
+) {
+    use std::process::Stdio;
+
+    let started_at = std::time::Instant::now();
+
+    let mut cmd = build_bash_command_with_context(&command, &env, &cwd);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(ref e) => {
+            let (_, out) = spawn_error_envelope(e);
+            background_runs.lock().remove(&run_id);
+            emit_completed(tool_event_tx.as_ref(), &command, out.clone(), false, run_id).await;
+            if let Some(ref tx) = background_completion_tx {
+                let _ = tx
+                    .send(BackgroundCompletion {
+                        run_id,
+                        exit_code: 1,
+                        output: out,
+                        success: false,
+                        elapsed_ms: 0,
+                        command,
+                    })
+                    .await;
+            }
+            return;
+        }
+    };
+
+    if let Some(pid) = child.id()
+        && let Some(handle) = background_runs.lock().get_mut(&run_id)
+    {
+        handle.child_pid = Some(pid);
+    }
+
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    let mut line_rx = spawn_output_readers(stdout, stderr);
+
+    let mut combined = String::new();
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+    let timeout_secs = timeout.as_secs();
+
+    let (_, out) = match run_bash_stream(
+        &command,
+        deadline,
+        Some(&abort),
+        tool_event_tx.as_ref(),
+        &mut line_rx,
+        &mut combined,
+        &mut stdout_buf,
+        &mut stderr_buf,
+        &mut child,
+    )
+    .await
+    {
+        BashLoopOutcome::TimedOut => (
+            ShellOutputEnvelope {
+                stdout: stdout_buf,
+                stderr: format!("{stderr_buf}command timed out after {timeout_secs}s"),
+                exit_code: 1,
+                truncated: false,
+            },
+            format!("[error] command timed out after {timeout_secs}s"),
+        ),
+        BashLoopOutcome::Cancelled => (
+            ShellOutputEnvelope {
+                stdout: stdout_buf,
+                stderr: stderr_buf,
+                exit_code: 130,
+                truncated: false,
+            },
+            "[cancelled] operation aborted".to_string(),
+        ),
+        BashLoopOutcome::StreamClosed => {
+            finalize_envelope(&mut child, combined, stdout_buf, stderr_buf).await
+        }
+    };
+
+    #[allow(clippy::cast_possible_truncation)]
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    let success = !out.contains("[error]");
+    let exit_code = i32::from(!success);
+    let truncated = crate::executor::truncate_tool_output_at(&out, 4096);
+
+    background_runs.lock().remove(&run_id);
+    emit_completed(
+        tool_event_tx.as_ref(),
+        &command,
+        truncated.clone(),
+        success,
+        run_id,
+    )
+    .await;
+
+    if let Some(ref tx) = background_completion_tx {
+        let completion = BackgroundCompletion {
+            run_id,
+            exit_code,
+            output: truncated,
+            success,
+            elapsed_ms,
+            command,
+        };
+        if tx.send(completion).await.is_err() {
+            tracing::warn!(
+                run_id = %run_id,
+                "background completion channel closed; agent may have shut down"
+            );
+        }
+    }
+
+    tracing::debug!(run_id = %run_id, exit_code, elapsed_ms, "background shell run (with context) completed");
 }
 
 /// Emit a `ToolEvent::Completed` to `tool_event_tx` if it is set.
@@ -1773,6 +2425,8 @@ pub struct ShellOutputEnvelope {
     pub truncated: bool,
 }
 
+// Used only in cfg(test) blocks; dead_code analysis does not see test imports.
+#[allow(dead_code)]
 async fn execute_bash(
     code: &str,
     timeout: Duration,
@@ -1866,6 +2520,100 @@ fn build_bash_command(
         cmd.envs(env);
     }
     cmd
+}
+
+/// Build a `Command` using a pre-resolved env map and explicit cwd.
+///
+/// Clears the process env and applies only `resolved_env` — no blocklist re-apply needed
+/// because the caller (`resolve_context`) has already done that.
+fn build_bash_command_with_context(
+    code: &str,
+    resolved_env: &HashMap<String, String>,
+    cwd: &std::path::Path,
+) -> Command {
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c").arg(code);
+    cmd.env_clear();
+    cmd.envs(resolved_env);
+    cmd.current_dir(cwd);
+    cmd
+}
+
+/// Execute `code` using a pre-resolved [`ResolvedContext`].
+///
+/// Unlike [`execute_bash`], this function receives the *final merged env* from
+/// `resolve_context` and sets `current_dir` to the resolved CWD.
+async fn execute_bash_with_context(
+    code: &str,
+    timeout: Duration,
+    event_tx: Option<&ToolEventTx>,
+    cancel_token: Option<&CancellationToken>,
+    resolved: &ResolvedContext,
+    sandbox: Option<(&dyn Sandbox, &SandboxPolicy)>,
+) -> (ShellOutputEnvelope, String) {
+    use std::process::Stdio;
+
+    let timeout_secs = timeout.as_secs();
+    let mut cmd = build_bash_command_with_context(code, &resolved.env, &resolved.cwd);
+
+    if let Err(envelope_err) = apply_sandbox(&mut cmd, sandbox) {
+        return envelope_err;
+    }
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(ref e) => return spawn_error_envelope(e),
+    };
+
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    let mut line_rx = spawn_output_readers(stdout, stderr);
+
+    let mut combined = String::new();
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    match run_bash_stream(
+        code,
+        deadline,
+        cancel_token,
+        event_tx,
+        &mut line_rx,
+        &mut combined,
+        &mut stdout_buf,
+        &mut stderr_buf,
+        &mut child,
+    )
+    .await
+    {
+        BashLoopOutcome::TimedOut => {
+            let msg = format!("[error] command timed out after {timeout_secs}s");
+            (
+                ShellOutputEnvelope {
+                    stdout: stdout_buf,
+                    stderr: format!("{stderr_buf}command timed out after {timeout_secs}s"),
+                    exit_code: 1,
+                    truncated: false,
+                },
+                msg,
+            )
+        }
+        BashLoopOutcome::Cancelled => (
+            ShellOutputEnvelope {
+                stdout: stdout_buf,
+                stderr: format!("{stderr_buf}operation aborted"),
+                exit_code: 130,
+                truncated: false,
+            },
+            "[cancelled] operation aborted".to_string(),
+        ),
+        BashLoopOutcome::StreamClosed => {
+            finalize_envelope(&mut child, combined, stdout_buf, stderr_buf).await
+        }
+    }
 }
 
 fn apply_sandbox(

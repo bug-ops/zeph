@@ -162,6 +162,8 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
             policy_match: None,
             correlation_id: None,
             vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
         };
         audit.log(&entry).await;
     }
@@ -327,6 +329,7 @@ mod tests {
             tool_id: tool_id.into(),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         }
     }
 

@@ -17,13 +17,16 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use zeph_common::ToolName;
 use zeph_common::task_supervisor::{BlockingError, BlockingHandle};
-use zeph_tools::{ToolError, ToolOutput};
+use zeph_tools::{ExecutionContext, ToolError, ToolOutput};
 
-/// Unique key for a speculative handle: tool name + BLAKE3 hash of normalized args.
+/// Unique key for a speculative handle: tool name + BLAKE3 hash of normalized args + context.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HandleKey {
     pub tool_id: ToolName,
     pub args_hash: blake3::Hash,
+    /// Hash of the [`ExecutionContext`] fields. Two calls with different contexts must not share
+    /// a speculative result — the resolved env/cwd would differ.
+    pub context_hash: blake3::Hash,
 }
 
 /// An in-flight speculative execution handle.
@@ -152,16 +155,18 @@ impl SpeculativeCache {
         }
     }
 
-    /// Find and remove a handle matching `tool_id` + `args_hash`.
+    /// Find and remove a handle matching `tool_id` + `args_hash` + `context_hash`.
     #[must_use]
     pub fn take_match(
         &self,
         tool_id: &ToolName,
         args_hash: &blake3::Hash,
+        context_hash: &blake3::Hash,
     ) -> Option<SpeculativeHandle> {
         let key = HandleKey {
             tool_id: tool_id.clone(),
             args_hash: *args_hash,
+            context_hash: *context_hash,
         };
         self.inner.lock().handles.remove(&key)
     }
@@ -222,6 +227,42 @@ pub fn hash_args(args: &serde_json::Map<String, serde_json::Value>) -> blake3::H
         hasher.update(v.as_bytes());
         hasher.update(b"\x00");
     }
+    hasher.finalize()
+}
+
+/// Compute a BLAKE3 hash over the fields of an [`ExecutionContext`] that affect execution.
+///
+/// Two `ToolCall`s with the same args but different contexts must produce different keys so
+/// the speculative cache does not serve a result resolved under the wrong env/cwd.
+#[must_use]
+pub fn hash_context(ctx: Option<&ExecutionContext>) -> blake3::Hash {
+    let mut hasher = blake3::Hasher::new();
+    if let Some(ctx) = ctx {
+        if let Some(name) = ctx.name() {
+            hasher.update(b"name\x00");
+            hasher.update(name.as_bytes());
+            hasher.update(b"\x00");
+        }
+        if let Some(cwd) = ctx.cwd() {
+            hasher.update(b"cwd\x00");
+            hasher.update(cwd.as_os_str().as_encoded_bytes());
+            hasher.update(b"\x00");
+        }
+        // env_overrides is a BTreeMap so iteration order is already deterministic.
+        for (k, v) in ctx.env_overrides() {
+            hasher.update(b"env\x00");
+            hasher.update(k.as_bytes());
+            hasher.update(b"\x00");
+            hasher.update(v.as_bytes());
+            hasher.update(b"\x00");
+        }
+        hasher.update(if ctx.is_trusted() {
+            b"trusted"
+        } else {
+            b"untrusted"
+        });
+    }
+    // No context → all-zeros input → distinct hash from any populated context.
     hasher.finalize()
 }
 

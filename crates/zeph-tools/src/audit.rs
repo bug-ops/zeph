@@ -188,6 +188,14 @@ pub struct AuditEntry {
     /// `None` when VIGIL did not fire (output was clean or tool was exempt).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vigil_risk: Option<VigilRiskLevel>,
+    /// Name of the resolved execution environment (from `[[execution.environments]]`).
+    /// `None` when no named environment was selected for this invocation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_env: Option<String>,
+    /// Canonical absolute working directory actually used for this shell invocation.
+    /// `None` for non-shell tools or legacy path without a resolved context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_cwd: Option<String>,
 }
 
 /// Risk level assigned by the VIGIL pre-sanitizer gate to a flagged tool output.
@@ -420,6 +428,8 @@ mod tests {
             correlation_id: None,
             caller_id: None,
             vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"success\""));
@@ -452,6 +462,8 @@ mod tests {
             correlation_id: None,
             caller_id: None,
             vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"blocked\""));
@@ -483,6 +495,8 @@ mod tests {
             correlation_id: None,
             caller_id: None,
             vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -511,6 +525,8 @@ mod tests {
             correlation_id: None,
             caller_id: None,
             vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"timeout\""));
@@ -545,6 +561,8 @@ mod tests {
             correlation_id: None,
             caller_id: None,
             vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
         };
         logger.log(&entry).await;
     }
@@ -580,6 +598,8 @@ mod tests {
             correlation_id: None,
             caller_id: None,
             vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
         };
         logger.log(&entry).await;
 
@@ -642,6 +662,8 @@ mod tests {
             correlation_id: None,
             caller_id: None,
             vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -674,6 +696,8 @@ mod tests {
             correlation_id: None,
             caller_id: None,
             vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -715,6 +739,8 @@ mod tests {
                 correlation_id: None,
                 caller_id: None,
                 vigil_risk: None,
+                execution_env: None,
+                resolved_cwd: None,
             };
             logger.log(&entry).await;
         }
@@ -746,6 +772,8 @@ mod tests {
             correlation_id: None,
             caller_id: None,
             vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -777,6 +805,8 @@ mod tests {
             correlation_id: None,
             caller_id: None,
             vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(

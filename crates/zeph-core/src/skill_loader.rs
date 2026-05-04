@@ -108,6 +108,7 @@ mod tests {
                 .unwrap()
                 .clone(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("## Instructions"));
@@ -126,6 +127,7 @@ mod tests {
                 .unwrap()
                 .clone(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("skill not found"));
@@ -151,6 +153,7 @@ mod tests {
             tool_id: zeph_common::ToolName::new("bash"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -170,6 +173,7 @@ mod tests {
                 .unwrap()
                 .clone(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("truncated"));
@@ -188,6 +192,7 @@ mod tests {
                 .unwrap()
                 .clone(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("skill not found"));
@@ -222,6 +227,7 @@ mod tests {
                             .unwrap()
                             .clone(),
                         caller_id: None,
+                        context: None,
                     };
                     ex.execute_tool_call(&call).await
                 })
@@ -247,6 +253,7 @@ mod tests {
                 .unwrap()
                 .clone(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("skill not found"));
@@ -262,6 +269,7 @@ mod tests {
             tool_id: zeph_common::ToolName::new("load_skill"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());

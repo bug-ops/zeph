@@ -66,6 +66,7 @@ pub mod cwd;
 pub mod diagnostics;
 pub mod domain_match;
 pub mod error_taxonomy;
+pub mod execution_context;
 pub mod executor;
 pub mod file;
 pub mod filter;
@@ -104,6 +105,7 @@ pub use error_taxonomy::{
     ErrorDomain, ToolErrorCategory, ToolErrorFeedback, ToolInvocationPhase, classify_http_status,
     classify_io_error,
 };
+pub use execution_context::ExecutionContext;
 pub use executor::{
     ClaimSource, DiffData, DynExecutor, ErasedToolExecutor, ErrorKind, FilterStats,
     MAX_TOOL_OUTPUT_CHARS, TOOL_EVENT_CHANNEL_CAP, ToolCall, ToolError, ToolEvent, ToolEventRx,

@@ -533,6 +533,7 @@ mod tests {
             tool_id: "shell".into(),
             params: serde_json::Map::default(),
             caller_id: None,
+            context: None,
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -548,6 +549,7 @@ mod tests {
             tool_id: "web".into(),
             params: serde_json::Map::default(),
             caller_id: None,
+            context: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err());
@@ -563,6 +565,7 @@ mod tests {
             tool_id: "shell".into(),
             params: serde_json::Map::default(),
             caller_id: None,
+            context: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err());
@@ -575,6 +578,7 @@ mod tests {
             tool_id: "shell".into(),
             params: serde_json::Map::default(),
             caller_id: None,
+            context: None,
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -649,6 +653,7 @@ mod tests {
             tool_id: "web".into(), // not in deny list → allowed
             params: serde_json::Map::default(),
             caller_id: None,
+            context: None,
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -780,6 +785,7 @@ mod tests {
             tool_id: "shell".into(),
             params: serde_json::Map::default(),
             caller_id: None,
+            context: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(
@@ -799,6 +805,7 @@ mod tests {
             tool_id: "web".into(),
             params: serde_json::Map::default(),
             caller_id: None,
+            context: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_ok(), "non-disallowed tool must be allowed");
@@ -873,6 +880,7 @@ mod tests {
             tool_id: "shell".into(),
             params: serde_json::Map::default(),
             caller_id: None,
+            context: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err(), "plan mode must block all tool execution");

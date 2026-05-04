@@ -182,6 +182,7 @@ impl ToolExecutor for McpToolExecutor {
                     _ => serde_json::Map::new(),
                 },
                 caller_id: None,
+                context: None,
             };
             if let Some(output) = self.execute_tool_call(&call).await? {
                 outputs.push(output.summary);
@@ -443,6 +444,7 @@ mod tests {
             tool_id: ToolName::new("no_colon_here"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -455,6 +457,7 @@ mod tests {
             tool_id: ToolName::new("unknown_server:tool"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -482,6 +485,7 @@ mod tests {
             tool_id: ToolName::new("gh_list_issues"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -507,6 +511,7 @@ mod tests {
             tool_id: ToolName::new("missing_server_some_tool"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err(), "expected Err when server is not connected");

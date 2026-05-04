@@ -48,6 +48,7 @@ impl Prediction {
             tool_id: self.tool_id.clone(),
             params: self.args.clone(),
             caller_id: Some(call_id.into()),
+            context: None,
         }
     }
 }

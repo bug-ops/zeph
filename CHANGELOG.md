@@ -26,6 +26,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   generic connection error when shutdown is detected. Dynamic `/mcp add` retains single-attempt
   behaviour; a follow-up issue tracks extending retry there (#3568).
 
+- feat(tools): per-turn execution environment selection (#3572)
+  - New `ExecutionContext` type (Arc-backed, cheaply clonable) attached to `ToolCall::context`
+    to specify per-call working directory and environment variable overrides.
+  - `ShellExecutor::with_execution_config` builds a named environment registry from
+    `[execution]` / `[[execution.environments]]` TOML config at agent startup.
+  - `ShellExecutor::resolve_context` implements the 6-step env merge: process env →
+    blocklist filter → skill env → registry (default_env) → registry (named) →
+    call-site overrides → untrusted re-filter.
+  - Trust model: untrusted contexts (LLM-controlled) have env_blocklist re-applied after
+    each merge step; trusted contexts (operator TOML) bypass the final filter pass.
+  - `AuditEntry` extended with `execution_env: Option<String>` and `resolved_cwd: Option<String>`
+    for per-call audit trail enrichment; `resolved_cwd` is `None` for non-shell producers and
+    omitted from serialized JSON (`skip_serializing_if`). **Breaking**: field type changed from
+    `String` to `Option<String>` — consumers reading `resolved_cwd` must handle `None`.
+  - `ToolEvent::Started` extended with `resolved_cwd: Option<String>` and
+    `execution_env: Option<String>` for TUI/channel observability.
+  - New `ExecutionConfig` / `EnvironmentConfig` types in `zeph-config` for the
+    `[execution]` TOML section.
+  - `TaskNode` gains `execution_environment: Option<String>` (serde `default`,
+    `skip_serializing_if`) for the orchestration scheduler to propagate the named
+    environment to inline task tool calls; backward-compatible with stored graphs.
+  - `OrchestrationState` gains `task_execution_env: Option<String>` set by the
+    scheduler around `RunInline` task execution and restored on completion.
+  - `ShellExecutor` gains `spawn_background_with_context` for background commands
+    that inherit the per-turn resolved environment and working directory.
+
 ### Documentation
 
 - research: synthesize MemCoT, OmniMem, and OCR-Memory memory architecture papers; document integration roadmap and file follow-up issues (#3564, #3566, #3571); add Research Backlog to APEX-MEM spec (see specs §14)

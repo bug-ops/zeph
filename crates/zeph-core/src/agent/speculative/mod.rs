@@ -44,7 +44,7 @@ use tracing::debug;
 use zeph_common::SkillTrustLevel;
 use zeph_tools::{ErasedToolExecutor, ToolCall, ToolError, ToolOutput};
 
-use cache::{HandleKey, SpeculativeCache, SpeculativeHandle, hash_args};
+use cache::{HandleKey, SpeculativeCache, SpeculativeHandle, hash_args, hash_context};
 use prediction::Prediction;
 
 pub use zeph_config::tools::{SpeculationMode, SpeculativeConfig};
@@ -208,6 +208,7 @@ impl SpeculationEngine {
 
         let call = prediction.to_tool_call(format!("spec-{}", uuid::Uuid::new_v4()));
         let args_hash = hash_args(&call.params);
+        let context_hash = hash_context(call.context.as_ref());
 
         // Policy check: skip if the tool would require user confirmation.
         // This is a pure metadata query — no execution, no side-effects (C1).
@@ -256,6 +257,7 @@ impl SpeculationEngine {
             key: HandleKey {
                 tool_id: tool_id.clone(),
                 args_hash,
+                context_hash,
             },
             join,
             cancel,
@@ -277,7 +279,11 @@ impl SpeculationEngine {
         call: &ToolCall,
     ) -> Option<Result<Option<ToolOutput>, ToolError>> {
         let args_hash = hash_args(&call.params);
-        if let Some(handle) = self.cache.take_match(&call.tool_id, &args_hash) {
+        let context_hash = hash_context(call.context.as_ref());
+        if let Some(handle) = self
+            .cache
+            .take_match(&call.tool_id, &args_hash, &context_hash)
+        {
             {
                 let mut m = self.metrics.lock();
                 m.committed += 1;

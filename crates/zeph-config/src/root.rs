@@ -13,6 +13,7 @@ use crate::channels::{A2aServerConfig, DiscordConfig, McpConfig, SlackConfig, Te
 use crate::classifiers::ClassifiersConfig;
 use crate::cli::CliConfig;
 use crate::defaults::{default_skill_paths, default_sqlite_path_field};
+use crate::execution::ExecutionConfig;
 use crate::experiment::{ExperimentConfig, OrchestrationConfig};
 use crate::features::{
     CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, SchedulerConfig,
@@ -56,6 +57,11 @@ pub struct Config {
     pub slack: Option<SlackConfig>,
     #[serde(default)]
     pub tools: ToolsConfig,
+    /// Named execution environments for per-turn CWD and env-var selection.
+    ///
+    /// Opt-in — existing configs without `[execution]` deserialise with all defaults.
+    #[serde(default)]
+    pub execution: ExecutionConfig,
     #[serde(default)]
     pub a2a: A2aServerConfig,
     #[serde(default)]
@@ -262,6 +268,7 @@ impl Default for Config {
             discord: None,
             slack: None,
             tools: ToolsConfig::default(),
+            execution: ExecutionConfig::default(),
             a2a: A2aServerConfig::default(),
             mcp: McpConfig::default(),
             index: IndexConfig::default(),

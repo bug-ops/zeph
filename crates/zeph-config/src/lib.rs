@@ -77,6 +77,7 @@ pub mod defaults;
 pub mod dump_format;
 mod env;
 pub mod error;
+pub mod execution;
 pub mod experiment;
 pub mod features;
 pub mod hooks;
@@ -119,6 +120,7 @@ pub use defaults::{
     is_legacy_default_skills_path, is_legacy_default_sqlite_path,
 };
 pub use dump_format::DumpFormat;
+pub use execution::{EnvironmentConfig, ExecutionConfig};
 pub use experiment::{
     AdaptOrchConfig, ExperimentConfig, ExperimentSchedule, OrchestrationConfig, PlanCacheConfig,
 };

@@ -459,6 +459,7 @@ impl ToolExecutor for SchedulerExecutor {
                     tool_id: tool_id.into(),
                     params,
                     caller_id: None,
+                    context: None,
                 };
                 return self.execute_tool_call(&call).await;
             }
@@ -559,6 +560,7 @@ mod tests {
             tool_id: zeph_tools::ToolName::new(tool_id),
             params,
             caller_id: None,
+            context: None,
         }
     }
 

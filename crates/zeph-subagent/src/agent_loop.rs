@@ -488,6 +488,7 @@ async fn handle_tool_step(
                     tool_id: tc.name.clone(),
                     params,
                     caller_id: None,
+                    context: None,
                 };
                 let tool_start = Instant::now();
                 let (content, is_error) = match executor.execute_tool_call_erased(&call).await {

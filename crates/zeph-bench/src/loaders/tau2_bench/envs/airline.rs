@@ -627,6 +627,7 @@ mod tests {
             tool_id: ToolName::new(tool),
             params: params.as_object().cloned().unwrap_or_default(),
             caller_id: None,
+            context: None,
         }
     }
 

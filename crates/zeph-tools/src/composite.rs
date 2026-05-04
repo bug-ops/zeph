@@ -265,6 +265,7 @@ mod tests {
             tool_id: ToolName::new("read"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = composite.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.summary, "file_handler");
@@ -277,6 +278,7 @@ mod tests {
             tool_id: ToolName::new("bash"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = composite.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.summary, "shell_handler");
@@ -289,6 +291,7 @@ mod tests {
             tool_id: ToolName::new("unknown"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let result = composite.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());

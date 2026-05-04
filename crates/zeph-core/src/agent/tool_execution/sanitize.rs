@@ -276,6 +276,8 @@ impl<C: Channel> Agent<C> {
                 policy_match: None,
                 correlation_id: None,
                 vigil_risk: None,
+                execution_env: None,
+                resolved_cwd: None,
             };
             let logger = std::sync::Arc::clone(logger);
             self.runtime.lifecycle.supervisor.spawn(

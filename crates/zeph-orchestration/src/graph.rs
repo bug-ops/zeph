@@ -376,6 +376,10 @@ pub struct TaskNode {
     /// on every tick while this is `None` and `verify_predicate.is_some()`.
     #[serde(default)]
     pub predicate_outcome: Option<PredicateOutcome>,
+    /// Named execution environment from `[[execution.environments]]` to use when
+    /// dispatching shell tool calls for this task. `None` inherits the executor default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_environment: Option<String>,
 }
 
 impl TaskNode {
@@ -398,6 +402,7 @@ impl TaskNode {
             execution_mode: ExecutionMode::default(),
             verify_predicate: None,
             predicate_outcome: None,
+            execution_environment: None,
         }
     }
 }

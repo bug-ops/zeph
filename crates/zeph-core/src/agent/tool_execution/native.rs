@@ -19,6 +19,7 @@ use tracing::Instrument;
 use zeph_llm::provider::MAX_TOKENS_TRUNCATION_MARKER;
 use zeph_sanitizer::{ContentSource, ContentSourceKind};
 use zeph_skills::evolution::FailureKind;
+use zeph_tools::ExecutionContext;
 use zeph_tools::executor::ToolCall;
 
 type ToolExecFut = futures::future::BoxFuture<
@@ -1497,6 +1498,8 @@ impl<C: Channel> Agent<C> {
                                 policy_match: None,
                                 correlation_id: None,
                                 vigil_risk: None,
+                                execution_env: None,
+                                resolved_cwd: None,
                             };
                             let logger = std::sync::Arc::clone(logger);
                             self.runtime.lifecycle.supervisor.spawn(
@@ -1781,6 +1784,15 @@ impl<C: Channel> Agent<C> {
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
     ) -> ToolDispatchContext {
         let tafc_enabled = self.tool_orchestrator.tafc.enabled;
+        // When the orchestration scheduler has set a named execution environment for the
+        // current task, inject it into every ToolCall so ShellExecutor::resolve_context
+        // uses the right env/cwd without the LLM having to supply it.
+        let task_ctx: Option<ExecutionContext> = self
+            .services
+            .orchestration
+            .task_execution_env
+            .as_deref()
+            .map(|name| ExecutionContext::default().with_name(name));
         let calls: Vec<ToolCall> = tool_calls
             .iter()
             .filter_map(|tc| {
@@ -1798,6 +1810,7 @@ impl<C: Channel> Agent<C> {
                     tool_id: tc.name.clone(),
                     params,
                     caller_id: None,
+                    context: task_ctx.clone(),
                 })
             })
             .collect();
@@ -2941,6 +2954,8 @@ impl<C: Channel> Agent<C> {
             policy_match: None,
             correlation_id: None,
             vigil_risk,
+            execution_env: None,
+            resolved_cwd: None,
         };
         let logger = std::sync::Arc::clone(logger);
         self.runtime.lifecycle.supervisor.spawn(
@@ -4252,6 +4267,7 @@ mod tests {
             tool_id: zeph_common::ToolName::new("bash"),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         };
         let ctx = UtilityContext {
             tool_calls_this_turn: 0,

@@ -100,6 +100,7 @@ fn make_calls(n: usize) -> Vec<ToolCall> {
             tool_id: zeph_common::ToolName::new(format!("tool-{i}")),
             params: serde_json::Map::new(),
             caller_id: None,
+            context: None,
         })
         .collect()
 }
