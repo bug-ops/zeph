@@ -1,4 +1,6 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+// Integration tests await full agent sessions; the future size reflects real agent state.
+#![allow(clippy::large_futures)]
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

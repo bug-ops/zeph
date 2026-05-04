@@ -270,9 +270,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::large_futures)]
     async fn reset_session_counters_clears_state() {
-        let mut cfg = MemCotConfig::default();
-        cfg.enabled = true;
+        let cfg = MemCotConfig {
+            enabled: true,
+            ..MemCotConfig::default()
+        };
         let acc = SemanticStateAccumulator::new(Arc::new(cfg));
         acc.distill_count_session.store(42, Ordering::Relaxed);
         acc.last_distill_at_secs.store(9999, Ordering::Relaxed);

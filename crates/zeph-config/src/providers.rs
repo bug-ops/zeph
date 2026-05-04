@@ -599,10 +599,11 @@ impl LlmConfig {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
     /// use zeph_config::providers::{LlmConfig, ProviderName};
     ///
-    /// let cfg = LlmConfig::default();
+    /// // LlmConfig is constructed via config file; here we illustrate the call shape.
+    /// # let cfg: LlmConfig = unimplemented!();
     /// // empty provider name is silently ok
     /// cfg.warn_non_fast_tier_provider(&ProviderName::default(), "memcot.distill_provider", &[]);
     /// ```

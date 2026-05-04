@@ -1,5 +1,7 @@
 // std::env::set_var / remove_var are unsafe in Rust 2024 edition; all callers are #[serial].
 #![allow(unsafe_code)]
+// Integration tests await full agent sessions; the future size reflects real agent state.
+#![allow(clippy::large_futures)]
 
 use std::collections::VecDeque;
 use std::path::Path;
