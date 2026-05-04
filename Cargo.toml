@@ -63,8 +63,8 @@ opentelemetry-otlp = { version = "0.31.1", default-features = false }
 opentelemetry_sdk = { version = "0.31", default-features = false }
 ordered-float = "5.3"
 pdf-extract = "0.10"
-metrics = "0.24.3"
-metrics-util = "0.20.1"
+metrics = "0.24.5"
+metrics-util = "0.20.3"
 arc-swap = "1.9.1"
 lru = "0.18.0"
 parking_lot = "0.12.5"
@@ -77,8 +77,8 @@ rand = "0.10.1"
 rand_distr = "0.6"
 ratatui = "0.30"
 regex = "1.12.3"
-reqwest = { version = "0.13.2", default-features = false }
-rmcp = "1.5"
+reqwest = { version = "0.13.3", default-features = false }
+rmcp = "1.6.0"
 rustix = { version = "1.1.4", default-features = false }
 audioadapter-buffers = "3.0"
 rubato = "2.0"
