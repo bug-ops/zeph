@@ -146,6 +146,7 @@ impl ExtractMode {
 ///         m
 ///     },
 ///     caller_id: None,
+///     context: None,
 /// };
 /// let _ = executor.execute_tool_call(&call).await;
 /// # }
