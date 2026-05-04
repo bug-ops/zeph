@@ -671,10 +671,7 @@ impl McpClient {
             let service = handler
                 .serve(transport)
                 .await
-                .map_err(|e| McpError::Connection {
-                    server_id: server_id.into(),
-                    message: e.to_string(),
-                })?;
+                .map_err(|e| classify_connect_error(server_id, &e))?;
 
             return Ok(OAuthConnectResult::Connected(McpClient {
                 server_id: server_id.into(),
@@ -794,10 +791,7 @@ impl McpClient {
         let service = handler
             .serve(transport)
             .await
-            .map_err(|e| McpError::Connection {
-                server_id: pending.server_id.clone(),
-                message: e.to_string(),
-            })?;
+            .map_err(|e| classify_connect_error(&pending.server_id, &e))?;
 
         Ok(McpClient {
             server_id: pending.server_id,
@@ -1696,6 +1690,30 @@ mod tests {
         assert!(
             matches!(&result, McpError::Connection { .. }),
             "expected Connection for non-transport error, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn connect_url_oauth_cached_tokens_401_yields_http_auth() {
+        let http_err: StreamableHttpError<reqwest::Error> =
+            StreamableHttpError::UnexpectedServerResponse("HTTP 401: Unauthorized".into());
+        let cie = make_transport_error(http_err);
+        let result = classify_connect_error("oauth-server", &cie);
+        assert!(
+            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "oauth-server" && *status == 401),
+            "expected HttpAuth(401) from connect_url_oauth cached-token path, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn complete_oauth_401_yields_http_auth() {
+        let http_err: StreamableHttpError<reqwest::Error> =
+            StreamableHttpError::UnexpectedServerResponse("HTTP 403: Forbidden".into());
+        let cie = make_transport_error(http_err);
+        let result = classify_connect_error("oauth-server", &cie);
+        assert!(
+            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "oauth-server" && *status == 403),
+            "expected HttpAuth(403) from complete_oauth path, got: {result:?}"
         );
     }
 
