@@ -473,3 +473,51 @@ AND the head remains the head (valid_to untouched)
 - [[memory-write-gate/spec]] — upstream quality gate (contradiction_risk signal composes with APEX-MEM conflicts)
 - [[024-multi-model-design/spec]] — provider tier guidance
 - [[MOC-specs]] — all specifications
+
+---
+
+## 14. Research Backlog
+
+Research findings pending implementation review. Each entry links to the originating tracking issue and proposes a concrete integration point.
+
+### 14.1 MemCoT — Test-Time Memory Scaling (arXiv:2604.08216)
+
+**Tracking issue**: #3564
+**Status**: Researched / pending implementation (P3)
+
+MemCoT introduces a training-free multi-view LTM perception layer (Zoom-In for evidence localization, Zoom-Out for causal context expansion) and a task-conditioned dual short-term memory (semantic state + episodic trajectory). Benchmarked on LoCoMo: GPT-4o-mini F1 = 58.03 vs ~30 baseline.
+
+**Proposed Zeph integration**:
+- `SemanticStateAccumulator` in `TurnContext` (new follow-up issue filed)
+- Zoom-In retrieval pass in `ReasoningMemory::recall` before spreading activation (new follow-up issue filed)
+- Config: `memory.memcot.enabled` (default: false)
+
+**Relevance to APEX-MEM**: APEX-MEM canonicalizes facts at the edge layer. MemCoT's Zoom-In retrieval and semantic-state STM operate one layer above — on top of the resolved edge set returned by SYNAPSE. The two are complementary: APEX-MEM decides which edge wins; MemCoT decides how the winning edges are presented to the reasoning model.
+
+### 14.2 OmniMem — Autoresearch-Guided Memory Discovery (arXiv:2604.01007)
+
+**Tracking issue**: #3566
+**Status**: Researched / pending implementation (P3)
+
+OmniMem's autoresearch pipeline runs ~50 self-experiments to discover memory architectural improvements. Top gains: bug fixes (+175%), prompt engineering (+188%), architectural changes (+44%). LoCoMo F1: 0.117 -> 0.598 (+411%).
+
+**Proposed Zeph integration**:
+- Log memory retrieval failures in `skill_outcomes` table (new follow-up issue filed)
+- Periodic micro-benchmark via `zeph-scheduler`
+- SYNAPSE parameter auto-tuning from failure analysis
+
+**Relevance to APEX-MEM**: SYNAPSE has tunable parameters (BFS depth cap, pheromone decay, conflict-resolution thresholds — see §6, §8). OmniMem's closed-loop discovery process suggests these should be optimized against a logged failure dataset rather than hand-set.
+
+### 14.3 OCR-Memory — Visual Trajectory Encoding (arXiv:2604.26622)
+
+**Tracking issue**: #3571
+**Status**: Researched / deferred to P4 (requires VLM provider)
+
+OCR-Memory renders agent trajectories as annotated images and uses a locate-and-transcribe retrieval paradigm, avoiding lossy summarization for long sessions. Requires a multimodal LLM for retrieval transcription.
+
+**Proposed Zeph integration** (deferred):
+- `zeph-memory` episodic store: render sessions exceeding token threshold to PNG
+- Store as Qdrant vector point with image embedding
+- Unblocked when `zeph-llm` gains a VLM provider
+
+**Relevance to APEX-MEM**: low. OCR-Memory targets the episodic-trajectory store, not the semantic graph. APEX-MEM's append-only log is orthogonal — it could feed transcript frames into a visual encoder, but this requires a VLM provider that does not exist in `zeph-llm` today.

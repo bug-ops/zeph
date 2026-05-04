@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+- research: synthesize MemCoT, OmniMem, and OCR-Memory memory architecture papers; document integration roadmap and file follow-up issues (#3564, #3566, #3571); add Research Backlog to APEX-MEM spec (see specs §14)
+
 ## [0.20.1] - 2026-04-28
 
 ### Fixed
