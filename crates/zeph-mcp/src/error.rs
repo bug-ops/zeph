@@ -133,6 +133,17 @@ pub enum McpError {
     /// This is a terminal lifecycle signal, not a transient error. Callers must not retry.
     #[error("MCP manager is shutting down (server '{server_id}')")]
     ManagerShuttingDown { server_id: String },
+
+    /// HTTP 4xx response that indicates an authentication or authorization failure.
+    ///
+    /// This error is non-retryable: the client must fix credentials or permissions before
+    /// attempting to connect again. It maps to [`McpErrorCode::AuthFailure`].
+    #[error("HTTP {status} from MCP server '{server_id}': authentication or authorization failed")]
+    HttpAuth {
+        server_id: String,
+        /// HTTP status code (e.g. 401, 403, 404, 410, 422).
+        status: u16,
+    },
 }
 
 impl McpError {
@@ -147,7 +158,7 @@ impl McpError {
             | Self::SsrfBlocked { .. }
             | Self::CommandNotAllowed { .. }
             | Self::EnvVarBlocked { .. } => Some(McpErrorCode::PolicyBlocked),
-            Self::OAuthError { .. } | Self::OAuthCallbackTimeout { .. } => {
+            Self::OAuthError { .. } | Self::OAuthCallbackTimeout { .. } | Self::HttpAuth { .. } => {
                 Some(McpErrorCode::AuthFailure)
             }
             Self::InvalidUrl { .. } | Self::ToolListLocked { .. } => {
@@ -256,6 +267,60 @@ mod tests {
             timeout_secs: 30,
         };
         assert_eq!(err.to_string(), "tool call timed out after 30s: slow/query");
+    }
+
+    #[test]
+    fn http_auth_error_display_and_code() {
+        let err = McpError::HttpAuth {
+            server_id: "remote".into(),
+            status: 401,
+        };
+        assert_eq!(
+            err.to_string(),
+            "HTTP 401 from MCP server 'remote': authentication or authorization failed"
+        );
+        assert_eq!(err.code(), Some(McpErrorCode::AuthFailure));
+        assert!(!err.code().unwrap().is_retryable());
+    }
+
+    #[test]
+    fn http_auth_403_not_retryable() {
+        let err = McpError::HttpAuth {
+            server_id: "api".into(),
+            status: 403,
+        };
+        assert_eq!(err.code(), Some(McpErrorCode::AuthFailure));
+        assert!(!err.code().unwrap().is_retryable());
+    }
+
+    #[test]
+    fn http_auth_404_not_retryable() {
+        let err = McpError::HttpAuth {
+            server_id: "srv".into(),
+            status: 404,
+        };
+        assert_eq!(err.code(), Some(McpErrorCode::AuthFailure));
+        assert!(!err.code().unwrap().is_retryable());
+    }
+
+    #[test]
+    fn http_auth_410_not_retryable() {
+        let err = McpError::HttpAuth {
+            server_id: "srv".into(),
+            status: 410,
+        };
+        assert_eq!(err.code(), Some(McpErrorCode::AuthFailure));
+        assert!(!err.code().unwrap().is_retryable());
+    }
+
+    #[test]
+    fn http_auth_422_not_retryable() {
+        let err = McpError::HttpAuth {
+            server_id: "srv".into(),
+            status: 422,
+        };
+        assert_eq!(err.code(), Some(McpErrorCode::AuthFailure));
+        assert!(!err.code().unwrap().is_retryable());
     }
 
     #[test]

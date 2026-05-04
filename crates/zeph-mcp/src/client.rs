@@ -12,13 +12,13 @@ use dashmap::DashMap;
 use http::{HeaderName, HeaderValue};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::service::{NotificationContext, RoleClient, RunningService};
+use rmcp::service::{ClientInitializeError, NotificationContext, RoleClient, RunningService};
 use rmcp::transport::TokioChildProcess;
 use rmcp::transport::auth::{
     AuthClient, AuthError, CredentialStore, InMemoryStateStore, OAuthState, StoredCredentials,
 };
 use rmcp::transport::streamable_http_client::{
-    StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
+    StreamableHttpClientTransport, StreamableHttpClientTransportConfig, StreamableHttpError,
 };
 use tokio::process::Command;
 use tokio::sync::mpsc::{Sender, UnboundedSender};
@@ -496,10 +496,7 @@ impl McpClient {
                 tool_name: "initialize".into(),
                 timeout_secs: timeout.as_secs(),
             })?
-            .map_err(|e| McpError::Connection {
-                server_id: server_id.into(),
-                message: e.to_string(),
-            })?;
+            .map_err(|e| classify_connect_error(server_id, &e))?;
 
         Ok(Self {
             server_id: server_id.into(),
@@ -583,10 +580,7 @@ impl McpClient {
                 tool_name: "initialize".into(),
                 timeout_secs: timeout.as_secs(),
             })?
-            .map_err(|e| McpError::Connection {
-                server_id: server_id.into(),
-                message: e.to_string(),
-            })?;
+            .map_err(|e| classify_connect_error(server_id, &e))?;
 
         Ok(Self {
             server_id: server_id.into(),
@@ -1020,6 +1014,104 @@ impl McpClient {
     }
 }
 
+/// Classify a [`ClientInitializeError`] into the appropriate [`McpError`] variant.
+///
+/// HTTP 4xx errors that indicate authentication or authorization failures (401, 403, 404,
+/// 410, 422) are mapped to [`McpError::HttpAuth`] (non-retryable). All other errors fall
+/// through to [`McpError::Connection`] (retryable transient).
+fn classify_connect_error(server_id: &str, e: &ClientInitializeError) -> McpError {
+    if let ClientInitializeError::TransportError { error, .. } = e
+        && let Some(http_err) = error
+            .error
+            .downcast_ref::<StreamableHttpError<reqwest::Error>>()
+    {
+        match http_err {
+            StreamableHttpError::AuthRequired(_) => {
+                tracing::warn!(server_id, status = 401, "MCP server authentication failed");
+                return McpError::HttpAuth {
+                    server_id: server_id.into(),
+                    status: 401,
+                };
+            }
+            StreamableHttpError::InsufficientScope(_) => {
+                tracing::warn!(server_id, status = 403, "MCP server authorization denied");
+                return McpError::HttpAuth {
+                    server_id: server_id.into(),
+                    status: 403,
+                };
+            }
+            // HTTP 404 from session expiry is a non-retryable endpoint error.
+            StreamableHttpError::SessionExpired => {
+                tracing::warn!(
+                    server_id,
+                    status = 404,
+                    "MCP server returned non-retryable HTTP error"
+                );
+                return McpError::HttpAuth {
+                    server_id: server_id.into(),
+                    status: 404,
+                };
+            }
+            StreamableHttpError::Client(req_err) => {
+                if let Some(status) = req_err.status().map(|s| s.as_u16())
+                    && is_non_retryable_4xx(status)
+                {
+                    tracing::warn!(
+                        server_id,
+                        status,
+                        "MCP server returned non-retryable HTTP error"
+                    );
+                    return McpError::HttpAuth {
+                        server_id: server_id.into(),
+                        status,
+                    };
+                }
+            }
+            StreamableHttpError::UnexpectedServerResponse(msg) => {
+                if let Some(status) = parse_4xx_from_response_msg(msg) {
+                    tracing::warn!(
+                        server_id,
+                        status,
+                        "MCP server returned non-retryable HTTP error"
+                    );
+                    return McpError::HttpAuth {
+                        server_id: server_id.into(),
+                        status,
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+    McpError::Connection {
+        server_id: server_id.into(),
+        message: e.to_string(),
+    }
+}
+
+/// Whether an HTTP 4xx status code is non-retryable for MCP connection purposes.
+fn is_non_retryable_4xx(status: u16) -> bool {
+    matches!(status, 401 | 403 | 404 | 410 | 422)
+}
+
+/// Parse a non-retryable 4xx status from an rmcp `UnexpectedServerResponse` message.
+///
+/// rmcp formats these as `"HTTP 401: ..."`, `"HTTP 403: ..."`, etc.
+fn parse_4xx_from_response_msg(msg: &str) -> Option<u16> {
+    for (needle, status) in [
+        ("HTTP 401", 401u16),
+        ("HTTP 403", 403),
+        ("HTTP 404", 404),
+        ("HTTP 410", 410),
+        ("HTTP 422", 422),
+    ] {
+        if msg.contains(needle) {
+            return Some(status);
+        }
+    }
+    None
+}
+
 pub(crate) async fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
     let parsed = Url::parse(url).map_err(|e| McpError::InvalidUrl {
         url: url.into(),
@@ -1057,6 +1149,7 @@ pub(crate) async fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
 mod tests {
     use super::*;
     use rmcp::ClientHandler as _;
+    use rmcp::transport::DynamicTransportError;
 
     #[tokio::test]
     async fn ssrf_blocks_localhost() {
@@ -1418,5 +1511,210 @@ mod tests {
             "expected McpError::Timeout with tool_name=tools/list, got: {err}"
         );
         assert_eq!(err.code(), Some(crate::McpErrorCode::Transient));
+    }
+
+    // --- classify_connect_error helpers ---
+
+    #[test]
+    fn is_non_retryable_4xx_accepted_statuses() {
+        assert!(is_non_retryable_4xx(401));
+        assert!(is_non_retryable_4xx(403));
+        assert!(is_non_retryable_4xx(404));
+        assert!(is_non_retryable_4xx(410));
+        assert!(is_non_retryable_4xx(422));
+    }
+
+    #[test]
+    fn is_non_retryable_4xx_retryable_statuses() {
+        assert!(!is_non_retryable_4xx(400));
+        assert!(!is_non_retryable_4xx(408));
+        assert!(!is_non_retryable_4xx(429));
+        assert!(!is_non_retryable_4xx(500));
+    }
+
+    #[test]
+    fn parse_4xx_from_response_msg_extracts_known_codes() {
+        assert_eq!(
+            parse_4xx_from_response_msg("HTTP 401: Unauthorized"),
+            Some(401)
+        );
+        assert_eq!(
+            parse_4xx_from_response_msg("HTTP 403: Forbidden"),
+            Some(403)
+        );
+        assert_eq!(
+            parse_4xx_from_response_msg("HTTP 404: Not Found"),
+            Some(404)
+        );
+        assert_eq!(parse_4xx_from_response_msg("HTTP 410: Gone"), Some(410));
+        assert_eq!(
+            parse_4xx_from_response_msg("HTTP 422: Unprocessable"),
+            Some(422)
+        );
+    }
+
+    #[test]
+    fn parse_4xx_from_response_msg_returns_none_for_retryable() {
+        assert_eq!(parse_4xx_from_response_msg("HTTP 408: Timeout"), None);
+        assert_eq!(
+            parse_4xx_from_response_msg("HTTP 429: Too Many Requests"),
+            None
+        );
+        assert_eq!(parse_4xx_from_response_msg("HTTP 500: Server Error"), None);
+        assert_eq!(parse_4xx_from_response_msg("connection refused"), None);
+    }
+
+    fn make_transport_error(
+        http_err: StreamableHttpError<reqwest::Error>,
+    ) -> ClientInitializeError {
+        let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(http_err);
+        let dyn_err = DynamicTransportError::from_parts(
+            "test-transport",
+            std::any::TypeId::of::<StreamableHttpClientTransport<reqwest::Client>>(),
+            boxed,
+        );
+        ClientInitializeError::TransportError {
+            error: dyn_err,
+            context: "test".into(),
+        }
+    }
+
+    #[test]
+    fn classify_connect_error_auth_required_yields_http_auth_401() {
+        use rmcp::transport::streamable_http_client::AuthRequiredError;
+        let http_err: StreamableHttpError<reqwest::Error> =
+            StreamableHttpError::AuthRequired(AuthRequiredError::new("Bearer".into()));
+        let cie = make_transport_error(http_err);
+        let result = classify_connect_error("myserver", &cie);
+        assert!(
+            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 401),
+            "expected HttpAuth(401), got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn classify_connect_error_insufficient_scope_yields_http_auth_403() {
+        use rmcp::transport::streamable_http_client::InsufficientScopeError;
+        let http_err: StreamableHttpError<reqwest::Error> = StreamableHttpError::InsufficientScope(
+            InsufficientScopeError::new("Bearer".into(), None),
+        );
+        let cie = make_transport_error(http_err);
+        let result = classify_connect_error("myserver", &cie);
+        assert!(
+            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 403),
+            "expected HttpAuth(403), got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn classify_connect_error_session_expired_yields_http_auth_404() {
+        let http_err: StreamableHttpError<reqwest::Error> = StreamableHttpError::SessionExpired;
+        let cie = make_transport_error(http_err);
+        let result = classify_connect_error("myserver", &cie);
+        assert!(
+            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 404),
+            "expected HttpAuth(404), got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn classify_connect_error_unexpected_response_401_yields_http_auth() {
+        let http_err: StreamableHttpError<reqwest::Error> =
+            StreamableHttpError::UnexpectedServerResponse("HTTP 401: Unauthorized".into());
+        let cie = make_transport_error(http_err);
+        let result = classify_connect_error("myserver", &cie);
+        assert!(
+            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 401),
+            "expected HttpAuth(401), got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn classify_connect_error_unexpected_response_403_yields_http_auth() {
+        let http_err: StreamableHttpError<reqwest::Error> =
+            StreamableHttpError::UnexpectedServerResponse("HTTP 403: Forbidden".into());
+        let cie = make_transport_error(http_err);
+        let result = classify_connect_error("myserver", &cie);
+        assert!(
+            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 403),
+            "expected HttpAuth(403), got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn classify_connect_error_unexpected_response_404_yields_http_auth() {
+        let http_err: StreamableHttpError<reqwest::Error> =
+            StreamableHttpError::UnexpectedServerResponse("HTTP 404: Not Found".into());
+        let cie = make_transport_error(http_err);
+        let result = classify_connect_error("myserver", &cie);
+        assert!(
+            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 404),
+            "expected HttpAuth(404), got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn classify_connect_error_unexpected_response_410_yields_http_auth() {
+        let http_err: StreamableHttpError<reqwest::Error> =
+            StreamableHttpError::UnexpectedServerResponse("HTTP 410: Gone".into());
+        let cie = make_transport_error(http_err);
+        let result = classify_connect_error("myserver", &cie);
+        assert!(
+            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 410),
+            "expected HttpAuth(410), got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn classify_connect_error_unexpected_response_408_yields_connection() {
+        let http_err: StreamableHttpError<reqwest::Error> =
+            StreamableHttpError::UnexpectedServerResponse("HTTP 408: Request Timeout".into());
+        let cie = make_transport_error(http_err);
+        let result = classify_connect_error("myserver", &cie);
+        assert!(
+            matches!(&result, McpError::Connection { .. }),
+            "expected Connection (retryable), got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn classify_connect_error_unexpected_response_429_yields_connection() {
+        let http_err: StreamableHttpError<reqwest::Error> =
+            StreamableHttpError::UnexpectedServerResponse("HTTP 429: Too Many Requests".into());
+        let cie = make_transport_error(http_err);
+        let result = classify_connect_error("myserver", &cie);
+        assert!(
+            matches!(&result, McpError::Connection { .. }),
+            "expected Connection (retryable), got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn classify_connect_error_non_transport_error_yields_connection() {
+        let cie = ClientInitializeError::ConnectionClosed("test".into());
+        let result = classify_connect_error("myserver", &cie);
+        assert!(
+            matches!(&result, McpError::Connection { .. }),
+            "expected Connection for non-transport error, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn http_auth_error_code_maps_to_auth_failure_and_non_retryable() {
+        for status in [401u16, 403, 404, 410, 422] {
+            let err = McpError::HttpAuth {
+                server_id: "srv".into(),
+                status,
+            };
+            assert_eq!(
+                err.code(),
+                Some(crate::error::McpErrorCode::AuthFailure),
+                "status {status} must map to AuthFailure"
+            );
+            assert!(
+                !err.code().unwrap().is_retryable(),
+                "status {status} must not be retryable"
+            );
+        }
     }
 }

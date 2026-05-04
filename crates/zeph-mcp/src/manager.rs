@@ -1853,7 +1853,8 @@ fn is_retryable_connect_error(err: &McpError) -> bool {
         | McpError::Qdrant(_)
         | McpError::Json(_)
         | McpError::IntConversion(_)
-        | McpError::Embedding(_) => false,
+        | McpError::Embedding(_)
+        | McpError::HttpAuth { .. } => false,
     }
 }
 
@@ -2333,7 +2334,7 @@ mod tests {
         let err = mgr.add_server(&entry).await.unwrap_err();
         assert!(matches!(
             err,
-            McpError::SsrfBlocked { .. } | McpError::Connection { .. }
+            McpError::SsrfBlocked { .. } | McpError::Connection { .. } | McpError::HttpAuth { .. }
         ));
     }
 

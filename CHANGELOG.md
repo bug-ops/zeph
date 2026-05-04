@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(mcp): HTTP 4xx responses (401, 403, 404, 410, 422) from remote MCP endpoints are now mapped
+  to the new `McpError::HttpAuth` variant, which is non-retryable (`McpErrorCode::AuthFailure`).
+  Previously these were wrapped into `McpError::Connection` (retryable), causing up to 47 s of
+  exponential-backoff delay on startup when credentials were misconfigured. Statuses 408, 425, and
+  429 remain retryable. Clear `warn!` log messages are emitted with `server_id` and `status` fields.
+  Follow-up: OAuth handshake paths tracked in #3586.
+
 ### Added
 
 - feat(mcp): MCP server startup now retries failed initial connections with exponential backoff
