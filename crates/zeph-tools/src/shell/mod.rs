@@ -1375,6 +1375,8 @@ impl ShellExecutor {
                 vigil_risk: None,
                 execution_env: None,
                 resolved_cwd: None,
+                scope_at_definition: None,
+                scope_at_dispatch: None,
             };
             logger.log(&entry).await;
         }
@@ -1424,6 +1426,8 @@ impl ShellExecutor {
                 vigil_risk: None,
                 execution_env: resolved.name.clone(),
                 resolved_cwd: Some(resolved.cwd.display().to_string()),
+                scope_at_definition: None,
+                scope_at_dispatch: None,
             };
             logger.log(&entry).await;
         }

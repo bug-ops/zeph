@@ -196,6 +196,14 @@ pub struct AuditEntry {
     /// `None` for non-shell tools or legacy path without a resolved context.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_cwd: Option<String>,
+    /// Name of the capability scope active at `tool_definitions()` time (for scope-at-definition audit).
+    /// `None` when `ScopedToolExecutor` is not in the chain or the scope is the identity (`general`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_at_definition: Option<String>,
+    /// Name of the capability scope active at `execute_tool_call()` dispatch time.
+    /// `None` when `ScopedToolExecutor` is not in the chain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_at_dispatch: Option<String>,
 }
 
 /// Risk level assigned by the VIGIL pre-sanitizer gate to a flagged tool output.
@@ -430,6 +438,8 @@ mod tests {
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"success\""));
@@ -464,6 +474,8 @@ mod tests {
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"blocked\""));
@@ -497,6 +509,8 @@ mod tests {
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -527,6 +541,8 @@ mod tests {
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"timeout\""));
@@ -563,6 +579,8 @@ mod tests {
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
         };
         logger.log(&entry).await;
     }
@@ -600,6 +618,8 @@ mod tests {
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
         };
         logger.log(&entry).await;
 
@@ -664,6 +684,8 @@ mod tests {
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -698,6 +720,8 @@ mod tests {
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -741,6 +765,8 @@ mod tests {
                 vigil_risk: None,
                 execution_env: None,
                 resolved_cwd: None,
+                scope_at_definition: None,
+                scope_at_dispatch: None,
             };
             logger.log(&entry).await;
         }
@@ -774,6 +800,8 @@ mod tests {
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -807,6 +835,8 @@ mod tests {
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(

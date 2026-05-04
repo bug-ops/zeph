@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use zeph_common::SkillTrustLevel;
 
@@ -143,6 +145,250 @@ impl Default for TrustConfig {
     }
 }
 
+// ── Trajectory Sentinel ──────────────────────────────────────────────────────
+
+fn default_decay_per_turn() -> f32 {
+    0.85
+}
+fn default_window_turns() -> u32 {
+    8
+}
+fn default_elevated_at() -> f32 {
+    2.0
+}
+fn default_high_at() -> f32 {
+    4.0
+}
+fn default_critical_at() -> f32 {
+    8.0
+}
+fn default_alert_threshold() -> f32 {
+    4.0
+}
+fn default_auto_recover_after_turns() -> u32 {
+    16
+}
+fn default_subagent_inheritance_factor() -> f32 {
+    0.5
+}
+fn default_high_call_rate_threshold() -> u32 {
+    12
+}
+fn default_unusual_read_threshold() -> u32 {
+    24
+}
+fn default_auto_recover_floor() -> u32 {
+    4
+}
+
+/// Configuration for `TrajectorySentinel`, nested under `[security.trajectory]` in TOML.
+///
+/// Controls signal decay, risk level thresholds, auto-recovery, and subagent inheritance.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [security.trajectory]
+/// decay_per_turn = 0.85
+/// elevated_at = 2.0
+/// high_at = 4.0
+/// critical_at = 8.0
+/// alert_threshold = 4.0
+/// auto_recover_after_turns = 16
+/// subagent_inheritance_factor = 0.5
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TrajectorySentinelConfig {
+    /// Multiplicative decay applied to the running score at each `advance_turn()` call.
+    ///
+    /// Must be in `(0.0, 1.0]`. Default 0.85 gives a half-life of ≈ 4.3 turns.
+    #[serde(default = "default_decay_per_turn")]
+    pub decay_per_turn: f32,
+    /// Number of past turns to keep in the signal buffer.
+    ///
+    /// Older signals are evicted once the buffer exceeds this size. Default 8.
+    #[serde(default = "default_window_turns")]
+    pub window_turns: u32,
+    /// Score threshold for transitioning from `Calm` to `Elevated`. Default 2.0.
+    #[serde(default = "default_elevated_at")]
+    pub elevated_at: f32,
+    /// Score threshold for transitioning from `Elevated` to `High`. Default 4.0.
+    #[serde(default = "default_high_at")]
+    pub high_at: f32,
+    /// Score threshold for transitioning from `High` to `Critical`. Default 8.0.
+    #[serde(default = "default_critical_at")]
+    pub critical_at: f32,
+    /// Score at which `PolicyGateExecutor` is notified via `RiskAlert`. Default 4.0.
+    ///
+    /// Decoupled from `elevated_at` to prevent alert noise for routine minor events.
+    #[serde(default = "default_alert_threshold")]
+    pub alert_threshold: f32,
+    /// Consecutive `Critical` turns before a hard auto-recover reset. Minimum 4. Default 16.
+    #[serde(default = "default_auto_recover_after_turns")]
+    pub auto_recover_after_turns: u32,
+    /// Fraction of parent score inherited by a subagent when parent is `>= Elevated`.
+    ///
+    /// Default 0.5 (≈ one decay half-life). Config validator warns when this deviates
+    /// more than 0.1 from `decay_per_turn ^ (ln(0.5) / ln(decay_per_turn))`.
+    #[serde(default = "default_subagent_inheritance_factor")]
+    pub subagent_inheritance_factor: f32,
+    /// Tool-call count per 3-turn window above which `HighCallRate` fires. Default 12.
+    #[serde(default = "default_high_call_rate_threshold")]
+    pub high_call_rate_threshold: u32,
+    /// Distinct paths read within `window_turns` above which `UnusualReadVolume` fires. Default 24.
+    #[serde(default = "default_unusual_read_threshold")]
+    pub unusual_read_threshold: u32,
+}
+
+impl Default for TrajectorySentinelConfig {
+    fn default() -> Self {
+        Self {
+            decay_per_turn: default_decay_per_turn(),
+            window_turns: default_window_turns(),
+            elevated_at: default_elevated_at(),
+            high_at: default_high_at(),
+            critical_at: default_critical_at(),
+            alert_threshold: default_alert_threshold(),
+            auto_recover_after_turns: default_auto_recover_after_turns(),
+            subagent_inheritance_factor: default_subagent_inheritance_factor(),
+            high_call_rate_threshold: default_high_call_rate_threshold(),
+            unusual_read_threshold: default_unusual_read_threshold(),
+        }
+    }
+}
+
+impl TrajectorySentinelConfig {
+    /// Validate numeric bounds. Returns an error string when validation fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description of the first validation failure found.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.decay_per_turn <= 0.0 || self.decay_per_turn > 1.0 {
+            return Err(format!(
+                "trajectory.decay_per_turn must be in (0.0, 1.0]; got {}",
+                self.decay_per_turn
+            ));
+        }
+        if self.elevated_at >= self.high_at {
+            return Err(format!(
+                "trajectory: elevated_at ({}) must be < high_at ({})",
+                self.elevated_at, self.high_at
+            ));
+        }
+        if self.high_at >= self.critical_at {
+            return Err(format!(
+                "trajectory: high_at ({}) must be < critical_at ({})",
+                self.high_at, self.critical_at
+            ));
+        }
+        if self.auto_recover_after_turns < default_auto_recover_floor() {
+            return Err(format!(
+                "trajectory.auto_recover_after_turns must be >= {}; got {}",
+                default_auto_recover_floor(),
+                self.auto_recover_after_turns
+            ));
+        }
+        // Advisory: warn when subagent_inheritance_factor deviates from calibrated value.
+        if self.decay_per_turn < 1.0 {
+            let ideal = self
+                .decay_per_turn
+                .powf(0.5_f32.ln() / self.decay_per_turn.ln());
+            if (self.subagent_inheritance_factor - ideal).abs() > 0.1 {
+                // Not a hard error — warn only.
+                tracing::warn!(
+                    configured = self.subagent_inheritance_factor,
+                    ideal = ideal,
+                    decay = self.decay_per_turn,
+                    "trajectory.subagent_inheritance_factor deviates from calibrated value by more than 0.1"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+// ── Capability Scopes ────────────────────────────────────────────────────────
+
+/// Strictness mode for glob pattern matching against the tool registry.
+///
+/// Controls whether a zero-match glob is a fatal error or a warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PatternStrictness {
+    /// All namespaces are strict — zero-match globs are fatal.
+    Strict,
+    /// All namespaces are permissive — zero-match globs are warnings only.
+    Permissive,
+    /// `builtin:` and `skill:` globs are strict; `mcp:`, `acp:`, `a2a:` are provisional.
+    ///
+    /// This is the default because MCP servers may not be connected at startup.
+    #[default]
+    ProvisionalForDynamicNamespaces,
+}
+
+/// Configuration for a single task-type scope, nested under
+/// `[security.capability_scopes.<task_type>]`.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [security.capability_scopes.research]
+/// patterns = ["builtin:fetch", "builtin:web_scrape", "builtin:search_*"]
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ScopeConfig {
+    /// Glob patterns over fully-qualified tool ids (`<namespace>:<tool>`).
+    ///
+    /// Evaluated against the materialised tool registry at agent build time.
+    #[serde(default)]
+    pub patterns: Vec<String>,
+}
+
+/// Top-level capability scopes configuration, nested under `[security.capability_scopes]`.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [security.capability_scopes]
+/// default_scope = "general"
+/// strict = true
+///
+/// [security.capability_scopes.general]
+/// patterns = ["*"]
+///
+/// [security.capability_scopes.research]
+/// patterns = ["builtin:fetch", "builtin:web_scrape", "builtin:search_*", "builtin:read"]
+///
+/// [security.capability_scopes.code_edit]
+/// patterns = ["builtin:read", "builtin:edit", "builtin:write", "builtin:shell", "builtin:glob"]
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct CapabilityScopesConfig {
+    /// Name of the scope used when no task type is specified. Default: `"general"`.
+    ///
+    /// When `default_scope = "general"` and a `[security.capability_scopes.general]` section
+    /// with `patterns = ["*"]` exists, scoping is a no-op identity (full tool set surfaced).
+    #[serde(default = "default_scope_name")]
+    pub default_scope: String,
+    /// When `true`, an unrecognised `task_type` is a fatal startup error.
+    /// When `false`, falls back to `default_scope`. Default: `false`.
+    #[serde(default)]
+    pub strict: bool,
+    /// Per-namespace strictness for zero-match glob patterns.
+    #[serde(default)]
+    pub pattern_strictness: PatternStrictness,
+    /// Named scopes. Keys are task-type names; values are their scope configurations.
+    #[serde(default, flatten)]
+    pub scopes: HashMap<String, ScopeConfig>,
+}
+
+fn default_scope_name() -> String {
+    "general".to_owned()
+}
+
+// ── Agent security configuration ─────────────────────────────────────────────
+
 /// Agent security configuration, nested under `[security]` in TOML.
 ///
 /// Aggregates all security-related subsystems: content isolation, exfiltration guards,
@@ -200,6 +446,18 @@ pub struct SecurityConfig {
     /// patterns. See `[[security.vigil]]` in TOML and spec `010-6-vigil-intent-anchoring`.
     #[serde(default)]
     pub vigil: VigilConfig,
+    /// Trajectory risk sentinel configuration.
+    ///
+    /// Controls signal decay, risk level thresholds, auto-recovery, and subagent inheritance.
+    /// See spec 050 and `crates/zeph-core/src/agent/trajectory.rs`.
+    #[serde(default)]
+    pub trajectory: TrajectorySentinelConfig,
+    /// Capability scope configuration.
+    ///
+    /// Maps task-type names to glob-pattern allow-lists over fully-qualified tool ids.
+    /// When empty, scoping is a no-op (full tool set surfaced to LLM).
+    #[serde(default)]
+    pub capability_scopes: CapabilityScopesConfig,
 }
 
 impl Default for SecurityConfig {
@@ -217,6 +475,8 @@ impl Default for SecurityConfig {
             response_verification: ResponseVerificationConfig::default(),
             causal_ipi: CausalIpiConfig::default(),
             vigil: VigilConfig::default(),
+            trajectory: TrajectorySentinelConfig::default(),
+            capability_scopes: CapabilityScopesConfig::default(),
         }
     }
 }

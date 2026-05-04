@@ -935,6 +935,14 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             }
         })
     }
+
+    fn handle_trajectory(&mut self, args: &str) -> String {
+        self.handle_trajectory_command_as_string(args)
+    }
+
+    fn handle_scope(&self, args: &str) -> String {
+        self.handle_scope_command_as_string(args)
+    }
 }
 
 /// Convert `AgentError` to `CommandError` for the trait boundary.

@@ -367,6 +367,30 @@ pub(super) fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Wizard step for spec 050 trajectory sentinel thresholds.
+pub(super) fn step_trajectory(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Trajectory Risk Sentinel (spec 050) ==\n");
+    println!(
+        "Accumulates cross-turn risk signals and downgrades tool calls to Deny when the\n\
+         score reaches the Critical threshold.\n"
+    );
+
+    let critical_raw: String = Input::new()
+        .with_prompt("Critical threshold (score at which all Allow decisions are denied)")
+        .default("10.0".to_owned())
+        .interact_text()?;
+    state.trajectory_critical_at = critical_raw.parse().unwrap_or(10.0);
+
+    let recover_raw: String = Input::new()
+        .with_prompt("Auto-recover after N consecutive Critical turns (minimum 4)")
+        .default("16".to_owned())
+        .interact_text()?;
+    state.trajectory_auto_recover = recover_raw.parse().unwrap_or(16).max(4);
+
+    println!();
+    Ok(())
+}
+
 pub(super) fn step_policy(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Policy Enforcer ==\n");
     println!(

@@ -769,6 +769,34 @@ sources = ["web_scrape", "a2a_message"]
 # (e.g. "claude", "ollama", "openai", or a compatible entry name)
 model = "claude"
 
+[security.trajectory]
+# Exponential decay factor applied to signal scores each turn (default: 0.85)
+decay_per_turn = 0.85
+# Rolling window in turns used for signal accumulation (default: 10)
+window_turns = 10
+# Score threshold for Elevated risk level (default: 2.0)
+elevated_at = 2.0
+# Score threshold for High risk level (default: 5.0)
+high_at = 5.0
+# Score threshold for Critical risk level — Allow decisions are downgraded to Deny (default: 10.0)
+critical_at = 10.0
+# Score at which a RiskAlert is emitted to the TUI/CLI (default: 4.0)
+alert_threshold = 4.0
+# Consecutive Critical turns before hard auto-reset (FR-CG-010, default: 16)
+auto_recover_after_turns = 16
+# Inheritance factor applied to parent score when spawning a subagent (default: 0.5)
+subagent_inheritance_factor = 0.5
+
+[security.capability_scopes]
+# Strictness for tool-id pattern matching: "Strict", "Permissive", or "ProvisionalForDynamicNamespaces" (default)
+# pattern_strictness = "ProvisionalForDynamicNamespaces"
+# Name of the scope to use when no task type is specified
+# default_scope = "general"
+
+# Example scope: enable all tools for the default task type
+# [security.capability_scopes.general]
+# patterns = ["*"]
+
 # [telegram]
 # token = "your-bot-token"
 # Allowed usernames (empty = allow all except for /start command)

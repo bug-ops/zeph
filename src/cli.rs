@@ -172,6 +172,14 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "PATH")]
     pub(crate) policy_file: Option<PathBuf>,
 
+    /// Set the initial capability scope task-type for this session.
+    ///
+    /// Must match a scope name defined in `[security.capability_scopes]`.
+    /// The agent starts with this scope active; the operator can change it at runtime
+    /// via `/scope <task_type>` (Phase 2). No-op when `ScopedToolExecutor` is not wired.
+    #[arg(long = "scope", value_name = "TASK_TYPE")]
+    pub(crate) initial_scope: Option<String>,
+
     /// Override debug dump format: `json`, `raw`, or `trace` (`OTel` OTLP spans).
     #[arg(long = "dump-format", value_name = "FORMAT")]
     pub(crate) dump_format: Option<zeph_core::debug_dump::DumpFormat>,

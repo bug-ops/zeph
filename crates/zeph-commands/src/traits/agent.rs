@@ -434,6 +434,16 @@ pub trait AgentAccess: Send {
     fn notify_test<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    // ----- /trajectory -----
+
+    /// Handle `/trajectory [status|reset]` and return a user-visible result.
+    fn handle_trajectory(&mut self, args: &str) -> String;
+
+    // ----- /scope -----
+
+    /// Handle `/scope [list [task_type]]` and return a user-visible result.
+    fn handle_scope(&self, args: &str) -> String;
 }
 
 /// A no-op [`AgentAccess`] implementation.
@@ -668,5 +678,13 @@ impl AgentAccess for NullAgent {
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async { Ok("Notifications not configured.".to_owned()) })
+    }
+
+    fn handle_trajectory(&mut self, _args: &str) -> String {
+        String::new()
+    }
+
+    fn handle_scope(&self, _args: &str) -> String {
+        String::new()
     }
 }

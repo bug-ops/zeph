@@ -58,6 +58,12 @@ pub struct SpawnContext {
     pub spawn_depth: u32,
     /// MCP tool names available in the parent's tool executor (for diagnostics).
     pub mcp_tool_names: Vec<String>,
+    /// Seeded trajectory risk score from the parent sentinel (spec 050 §4).
+    ///
+    /// When `Some`, the subagent's `TrajectorySentinel` starts with this pre-seeded score
+    /// rather than `0.0`, preventing a subagent spawn from acting as a free risk reset.
+    /// The subagent loop applies this via `TrajectorySentinel::seed_score` after build.
+    pub seed_trajectory_score: Option<f32>,
 }
 
 fn build_filtered_executor(

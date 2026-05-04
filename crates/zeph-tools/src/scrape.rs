@@ -480,6 +480,8 @@ impl WebScrapeExecutor {
                 vigil_risk: None,
                 execution_env: None,
                 resolved_cwd: None,
+                scope_at_definition: None,
+                scope_at_dispatch: None,
             };
             logger.log(&entry).await;
         }

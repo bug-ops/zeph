@@ -49,6 +49,11 @@ impl Default for SecurityState {
             ),
             causal_analyzer: None,
             vigil: None,
+            trajectory: crate::agent::trajectory::TrajectorySentinel::new(
+                zeph_config::TrajectorySentinelConfig::default(),
+            ),
+            trajectory_risk_slot: std::sync::Arc::new(parking_lot::RwLock::new(0u8)),
+            trajectory_signal_queue: std::sync::Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 }
