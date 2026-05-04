@@ -583,7 +583,86 @@ impl LlmConfig {
         }
         Ok(())
     }
+
+    /// Resolve `provider_name` to its model string and emit a startup warning when the
+    /// model does not look like a fast-tier model.
+    ///
+    /// **Soft check — never returns an error.** Misconfiguration produces a single
+    /// `tracing::warn!` at startup so operators can fix configs without being blocked.
+    ///
+    /// Rules:
+    /// - Empty `provider_name` → silently OK (caller will use the primary provider).
+    /// - Provider not found in pool → warns `"<label> provider '<name>' not found"`.
+    /// - Model resolved but not in `FAST_TIER_MODEL_HINTS` and not in `extra_allowlist` →
+    ///   warns `"<label> provider '<name>' uses '<model>' which may not be fast-tier"`.
+    /// - Model matches a hint or allowlist entry → silently OK.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::providers::{LlmConfig, ProviderName};
+    ///
+    /// let cfg = LlmConfig::default();
+    /// // empty provider name is silently ok
+    /// cfg.warn_non_fast_tier_provider(&ProviderName::default(), "memcot.distill_provider", &[]);
+    /// ```
+    pub fn warn_non_fast_tier_provider(
+        &self,
+        provider_name: &ProviderName,
+        feature_label: &str,
+        extra_allowlist: &[String],
+    ) {
+        if provider_name.is_empty() {
+            return;
+        }
+        let name = provider_name.as_str();
+        let Some(entry) = self.providers.iter().find(|p| p.effective_name() == name) else {
+            tracing::warn!(
+                provider = name,
+                "{feature_label} provider '{name}' not found in [[llm.providers]]"
+            );
+            return;
+        };
+        let model = entry.model.as_deref().unwrap_or("");
+        if model.is_empty() {
+            return;
+        }
+        let lower = model.to_lowercase();
+        let in_hints = FAST_TIER_MODEL_HINTS.iter().any(|h| lower.contains(h));
+        let in_extra = extra_allowlist.iter().any(|h| lower.contains(h.as_str()));
+        if !in_hints && !in_extra {
+            tracing::warn!(
+                provider = name,
+                actual = model,
+                "{feature_label} provider '{name}' uses model '{model}' \
+                 which may not be fast-tier; prefer a fast model to bound distillation cost"
+            );
+        }
+    }
 }
+
+/// Lowercased substrings that identify commonly accepted fast-tier models.
+///
+/// Used by [`LlmConfig::warn_non_fast_tier_provider`] for a soft startup check.
+/// Updating this list is non-breaking; missing a fast model only suppresses a warning.
+pub const FAST_TIER_MODEL_HINTS: &[&str] = &[
+    "gpt-4o-mini",
+    "gpt-4.1-mini",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "claude-haiku",
+    "claude-3-haiku",
+    "claude-3-5-haiku",
+    "qwen3:8b",
+    "qwen2.5:7b",
+    "qwen2:7b",
+    "llama3.2:3b",
+    "llama3.1:8b",
+    "gemma3:4b",
+    "gemma3:8b",
+    "phi4:mini",
+    "mistral:7b",
+];
 
 /// Speech-to-text configuration, nested under `[llm.stt]` in TOML.
 ///

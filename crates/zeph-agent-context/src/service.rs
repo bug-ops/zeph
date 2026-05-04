@@ -467,6 +467,8 @@ impl ContextService {
             persona_config: view.persona_config.clone(),
             trajectory_config: view.trajectory_config.clone(),
             reasoning_config: view.reasoning_config.clone(),
+            memcot_config: view.memcot_config.clone(),
+            memcot_state: view.memcot_state.clone(),
             tree_config: view.tree_config.clone(),
         };
 

@@ -75,6 +75,7 @@ pub mod facade;
 pub mod forgetting;
 pub mod hebbian_consolidation;
 pub mod reasoning;
+pub mod recall_view;
 pub mod scenes;
 pub mod tiers;
 
@@ -154,6 +155,7 @@ pub use reasoning::{
     Outcome, ProcessTurnConfig, ReasoningMemory, ReasoningStrategy, SelfJudgeOutcome,
     distill_strategy, process_turn as process_reasoning_turn, run_self_judge,
 };
+pub use recall_view::{RecallView, RecalledFact};
 pub use response_cache::ResponseCache;
 pub use router::{
     AsyncMemoryRouter, HeuristicRouter, HybridRouter, LlmRouter, MemoryRoute, MemoryRouter,

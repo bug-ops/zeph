@@ -315,6 +315,10 @@ impl<C: Channel> Agent<C> {
         self.services.memory.persistence.unsummarized_count = 0;
         // Clear cached digest — the new conversation has no prior digest yet.
         self.services.memory.compaction.cached_session_digest = None;
+        // Reset MemCoT per-session distillation counters so the new conversation starts fresh.
+        if let Some(ref acc) = self.services.memory.extraction.memcot_accumulator {
+            acc.reset_session_counters().await;
+        }
 
         // --- Step 11: clear TUI status ---
         if let Some(ref tx) = self.services.session.status_tx {
@@ -354,6 +358,14 @@ impl<C: Channel> Agent<C> {
 
         let mut security_sink = SecuritySink(&mut self.runtime.metrics.metrics_tx);
 
+        // Snapshot MemCoT semantic state before constructing the view (requires async read).
+        let memcot_state = if let Some(ref acc) = self.services.memory.extraction.memcot_accumulator
+        {
+            acc.current_state().await
+        } else {
+            None
+        };
+
         // Construct the view using disjoint field projections.
         // Each `&mut` resolves to a unique top-level path under `Agent<C>`.
         let mut window = zeph_agent_context::state::MessageWindowView {
@@ -391,6 +403,8 @@ impl<C: Channel> Agent<C> {
             persona_config: self.services.memory.extraction.persona_config.clone(),
             trajectory_config: self.services.memory.extraction.trajectory_config.clone(),
             reasoning_config: self.services.memory.extraction.reasoning_config.clone(),
+            memcot_config: self.services.memory.extraction.memcot_config.clone(),
+            memcot_state,
             tree_config: self.services.memory.subsystems.tree_config.clone(),
             last_skills_prompt: &mut self.services.skill.last_skills_prompt,
             active_skill_names: &mut self.services.skill.active_skill_names,
@@ -409,6 +423,8 @@ impl<C: Channel> Agent<C> {
             redact_credentials: self.runtime.config.redact_credentials,
             channel_skills: &self.runtime.config.channel_skills.allowed,
             scrub: crate::redact::scrub_content,
+            #[cfg(feature = "index")]
+            index: Some(&self.services.index as &dyn zeph_context::input::IndexAccess),
         };
         let _ = self.channel.send_status("recalling context...").await;
         let result = svc

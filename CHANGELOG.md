@@ -17,6 +17,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(memory): `SemanticStateAccumulator` — cost-gated background distillation of assistant
+  responses into a rolling semantic state buffer (`memory.memcot.enabled`, issues #3574/#3575).
+  The state is prepended as `[state] <buf>` to graph recall queries to improve retrieval
+  relevance over long multi-turn sessions. Distillation is skipped when
+  `min_distill_interval_secs` has not elapsed or `max_distills_per_session` is reached.
+  The accumulator is reset (buffer cleared, counters zeroed) on `/new` via
+  `reset_session_counters`. `MemCotConfig` carries all tunables.
+
+- feat(memory): `RecallView` enum (`Head` / `ZoomIn` / `ZoomOut`) and
+  `SemanticMemory::recall_graph_view` — unified enrichment layer over BFS/SA graph recall.
+  `ZoomIn` annotates each fact with the source-message provenance snippet (≤200 chars).
+  `ZoomOut` appends deduplicated 1-hop neighbour facts. `RecallViewConfig` in `MemCotConfig`
+  exposes `view`, `neighbor_cap`, and `provenance_snippet_len` tunables.
+
+- feat(debug): `RequestDebugDump::memcot_state` field — the current MemCoT semantic state
+  buffer is written to every debug dump (Json and Raw formats) alongside the LLM request
+  payload for offline analysis.
+
 - feat(mcp): MCP server startup now retries failed initial connections with exponential backoff
   (`500 ms`, `1 s`, `2 s`, `4 s`, `8 s`, capped at `8 s`). The new `mcp.max_connect_attempts`
   config key (default `3`, range `1..=10`) controls how many attempts are made. Backoff sleeps are

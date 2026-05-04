@@ -35,6 +35,12 @@ pub(crate) struct MemoryExtractionState {
     pub(crate) category_config: zeph_config::CategoryConfig,
     /// `ReasoningBank` configuration (#3342).
     pub(crate) reasoning_config: zeph_config::ReasoningConfig,
+    /// `MemCoT` semantic state configuration (#3574).
+    pub(crate) memcot_config: zeph_config::MemCotConfig,
+    /// `MemCoT` rolling state accumulator. `Some` when `memcot_config.enabled = true`.
+    ///
+    /// `None` when `MemCoT` is disabled — complete no-op with zero overhead.
+    pub(crate) memcot_accumulator: Option<crate::agent::memcot::SemanticStateAccumulator>,
 }
 
 impl MemoryExtractionState {

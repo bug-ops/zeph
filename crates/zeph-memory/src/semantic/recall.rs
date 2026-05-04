@@ -1342,6 +1342,271 @@ impl SemanticMemory {
         Ok(results)
     }
 
+    /// View-aware graph recall covering both spreading-activation and BFS code paths.
+    ///
+    /// - When `sa_params.is_some()`: delegates to [`Self::recall_graph_activated`],
+    ///   mapping each `ActivatedFact` into a `RecalledFact` with `activation_score: Some(_)`.
+    /// - When `sa_params.is_none()`: delegates to [`Self::recall_graph`],
+    ///   mapping each `GraphFact` into a `RecalledFact` with `activation_score: None`.
+    ///
+    /// View enrichment runs **after** the base retrieval step on the returned set:
+    /// - `Head`: no additional I/O; output is byte-equivalent to the legacy paths.
+    /// - `ZoomIn`: fetches source-message snippet for provenance (bulk SQL).
+    /// - `ZoomOut`: expands 1-hop neighbors per fact (capped at `neighbor_cap`).
+    ///
+    /// When `view = Head` and `sa_params = None`, this function is **byte-identical** to
+    /// calling `recall_graph` directly and then formatting with the assembler helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::MemoryError`] if the base recall or any enrichment query fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use zeph_memory::{RecallView, RecalledFact};
+    ///
+    /// # async fn example(mem: &zeph_memory::semantic::SemanticMemory) {
+    /// let facts = mem
+    ///     .recall_graph_view("tell me about Rust", 5, RecallView::Head, 3, 2, 0.0, &[], None)
+    ///     .await
+    ///     .unwrap_or_default();
+    /// # }
+    /// ```
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // single-pass enrichment pipeline: splitting would lose readability
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "memory.recall.graph_view",
+            skip_all,
+            fields(view = ?view, result_count = tracing::field::Empty)
+        )
+    )]
+    pub async fn recall_graph_view(
+        &self,
+        query: &str,
+        limit: usize,
+        view: crate::recall_view::RecallView,
+        neighbor_cap: usize,
+        bfs_max_hops: u32,
+        temporal_decay_rate: f64,
+        edge_types: &[crate::graph::EdgeType],
+        sa_params: Option<crate::graph::SpreadingActivationParams>,
+    ) -> Result<Vec<crate::recall_view::RecalledFact>, MemoryError> {
+        use crate::recall_view::{RecallView, RecalledFact};
+
+        // Step 1: base retrieval.
+        let mut recalled: Vec<RecalledFact> = if let Some(params) = sa_params {
+            let activated = self
+                .recall_graph_activated(query, limit, params, edge_types)
+                .await?;
+            activated
+                .into_iter()
+                .map(|af| {
+                    // ActivatedFact carries an Edge with id, fact, confidence, etc.
+                    // Build a RecalledFact preserving activation score and provenance.
+                    let activation_score = af.activation_score;
+                    let edge = &af.edge;
+                    let fact = crate::graph::types::GraphFact {
+                        entity_name: String::new(), // SA does not resolve entity names; assembler formats via `edge.fact`
+                        relation: edge.canonical_relation.clone(),
+                        target_name: String::new(),
+                        fact: edge.fact.clone(),
+                        entity_match_score: activation_score,
+                        hop_distance: 0,
+                        confidence: edge.confidence,
+                        valid_from: if edge.valid_from.is_empty() {
+                            None
+                        } else {
+                            Some(edge.valid_from.clone())
+                        },
+                        edge_type: edge.edge_type,
+                        retrieval_count: edge.retrieval_count,
+                        edge_id: Some(edge.id),
+                    };
+                    RecalledFact {
+                        fact,
+                        activation_score: Some(activation_score),
+                        provenance_message_id: edge.source_message_id,
+                        provenance_snippet: None,
+                        neighbors: Vec::new(),
+                    }
+                })
+                .collect()
+        } else {
+            let facts = self
+                .recall_graph(
+                    query,
+                    limit,
+                    bfs_max_hops,
+                    None,
+                    temporal_decay_rate,
+                    edge_types,
+                )
+                .await?;
+            facts
+                .into_iter()
+                .map(RecalledFact::from_graph_fact)
+                .collect()
+        };
+
+        // Step 2: Head view — no enrichment needed.
+        if view == RecallView::Head {
+            #[cfg(feature = "profiling")]
+            tracing::Span::current().record("result_count", recalled.len());
+            return Ok(recalled);
+        }
+
+        // Steps 3/4: Zoom-In / Zoom-Out — fetch provenance snippets.
+        if matches!(view, RecallView::ZoomIn | RecallView::ZoomOut) {
+            let edge_ids: Vec<i64> = recalled.iter().filter_map(|r| r.fact.edge_id).collect();
+
+            if !edge_ids.is_empty()
+                && let Some(ref store) = self.graph_store
+            {
+                // Bulk fetch source_message_id for all edge ids.
+                const MAX_IDS: usize = 490;
+                let mut edge_to_msg: std::collections::HashMap<i64, MessageId> =
+                    std::collections::HashMap::new();
+                for chunk in edge_ids.chunks(MAX_IDS) {
+                    match store.source_message_ids_for_edges(chunk).await {
+                        Ok(pairs) => {
+                            for (eid, mid) in pairs {
+                                edge_to_msg.insert(eid, mid);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "recall_graph_view: provenance fetch failed");
+                        }
+                    }
+                }
+
+                // For facts that have a source_message_id (from SA path), prefer that.
+                for rf in &mut recalled {
+                    if rf.provenance_message_id.is_none()
+                        && let Some(eid) = rf.fact.edge_id
+                    {
+                        rf.provenance_message_id = edge_to_msg.get(&eid).copied();
+                    }
+                }
+
+                // Bulk fetch message snippets.
+                let msg_ids: Vec<MessageId> = recalled
+                    .iter()
+                    .filter_map(|r| r.provenance_message_id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+
+                if !msg_ids.is_empty() {
+                    match self.sqlite.messages_by_ids(&msg_ids).await {
+                        Ok(messages) => {
+                            let mut mid_to_snippet: std::collections::HashMap<MessageId, String> =
+                                messages
+                                    .into_iter()
+                                    .map(|(id, msg)| {
+                                        let raw = &msg.content;
+                                        let scrubbed: String = raw
+                                            .chars()
+                                            .map(|c| match c {
+                                                '\n' | '\r' | '<' | '>' => ' ',
+                                                other => other,
+                                            })
+                                            .take(200)
+                                            .collect();
+                                        (id, scrubbed)
+                                    })
+                                    .collect();
+                            for rf in &mut recalled {
+                                if let Some(mid) = rf.provenance_message_id {
+                                    rf.provenance_snippet = mid_to_snippet.remove(&mid);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "recall_graph_view: message snippet fetch failed");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 5: Zoom-Out — expand 1-hop neighbors.
+        if view == RecallView::ZoomOut
+            && let Some(ref store) = self.graph_store
+        {
+            // Dedup key: use the canonical fact text when entity names are absent (SA path
+            // does not resolve entity names, leaving them as empty strings, which would cause
+            // all SA-path facts to collide on the ("", rel, "", type) key).
+            type DedupeKey = (String, String, String, crate::graph::EdgeType);
+            let make_key = |f: &crate::graph::types::GraphFact| -> DedupeKey {
+                if f.entity_name.is_empty() || f.target_name.is_empty() {
+                    (
+                        f.fact.clone(),
+                        f.relation.clone(),
+                        String::new(),
+                        f.edge_type,
+                    )
+                } else {
+                    (
+                        f.entity_name.clone(),
+                        f.relation.clone(),
+                        f.target_name.clone(),
+                        f.edge_type,
+                    )
+                }
+            };
+            let mut seen: std::collections::HashSet<DedupeKey> =
+                recalled.iter().map(|r| make_key(&r.fact)).collect();
+
+            let total_neighbor_cap = limit * neighbor_cap;
+            let mut total_neighbors = 0usize;
+
+            for rf in &mut recalled {
+                if total_neighbors >= total_neighbor_cap {
+                    break;
+                }
+                // Use edge_id as seed for 1-hop BFS via the source entity.
+                // We retrieve neighbors using the graph store's BFS on the source entity.
+                let source_entity_id = match rf.fact.edge_id {
+                    Some(eid) => match store.source_entity_id_for_edge(eid).await {
+                        Ok(Some(id)) => id,
+                        _ => continue,
+                    },
+                    None => continue,
+                };
+
+                let neighbors = match store
+                    .bfs_edges_at_depth(source_entity_id, 1, edge_types)
+                    .await
+                {
+                    Ok(edges) => edges,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "recall_graph_view: zoom_out bfs failed");
+                        continue;
+                    }
+                };
+
+                let mut added = 0usize;
+                for n_edge in neighbors {
+                    if added >= neighbor_cap || total_neighbors >= total_neighbor_cap {
+                        break;
+                    }
+                    let key = make_key(&n_edge.fact);
+                    if seen.insert(key) {
+                        rf.neighbors.push(n_edge.fact);
+                        added += 1;
+                        total_neighbors += 1;
+                    }
+                }
+            }
+        }
+
+        #[cfg(feature = "profiling")]
+        tracing::Span::current().record("result_count", recalled.len());
+        Ok(recalled)
+    }
+
     /// Retrieve graph facts via A* shortest-path traversal.
     ///
     /// Delegates to [`crate::graph::retrieval_astar::graph_recall_astar`].

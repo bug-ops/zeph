@@ -243,6 +243,7 @@ task-metrics = ["zeph-core/task-metrics"]
 # Database backend selection — mutually exclusive. Default includes sqlite.
 # NOTE: --all-features activates both, triggering compile_error! in zeph-db.
 # Use --features full or --features full,postgres instead.
+index = ["zeph-core/index"]
 sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite"]
 postgres = ["zeph-db/postgres", "zeph-memory/postgres"]
 

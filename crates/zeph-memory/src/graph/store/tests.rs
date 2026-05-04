@@ -3990,3 +3990,154 @@ async fn test_apply_hebbian_increment_skips_invalidated_edges() {
         "invalidated edge must not have weight incremented, got {weight}"
     );
 }
+
+// ── MemCoT recall_view helpers (#3574 / #3575) ────────────────────────────────
+
+#[tokio::test]
+async fn source_message_ids_for_edges_empty_input() {
+    let gs = setup().await;
+    let result = gs.source_message_ids_for_edges(&[]).await.unwrap();
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
+async fn source_message_ids_for_edges_returns_rows_with_episode_id() {
+    let gs = setup().await;
+    let src = gs
+        .upsert_entity("A", "A", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let tgt = gs
+        .upsert_entity("B", "B", EntityType::Concept, None)
+        .await
+        .unwrap();
+    // Insert edge without episode_id, then backfill directly to avoid FK cascade through
+    // conversations → messages tables in the in-memory test DB.
+    let eid = gs
+        .insert_edge(src, tgt, "knows", "A knows B", 0.8, None)
+        .await
+        .unwrap();
+    let synthetic_msg_id: i64 = 42;
+    // Disable FK checks temporarily and backfill episode_id to simulate provenance.
+    sqlx::query(sql!("PRAGMA foreign_keys = OFF"))
+        .execute(&gs.pool)
+        .await
+        .unwrap();
+    sqlx::query(sql!("UPDATE graph_edges SET episode_id = ?1 WHERE id = ?2"))
+        .bind(synthetic_msg_id)
+        .bind(eid)
+        .execute(&gs.pool)
+        .await
+        .unwrap();
+    sqlx::query(sql!("PRAGMA foreign_keys = ON"))
+        .execute(&gs.pool)
+        .await
+        .unwrap();
+
+    let pairs = gs.source_message_ids_for_edges(&[eid]).await.unwrap();
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0].0, eid);
+    assert_eq!(pairs[0].1, crate::types::MessageId(synthetic_msg_id));
+}
+
+#[tokio::test]
+async fn source_message_ids_for_edges_skips_null_episode_id() {
+    let gs = setup().await;
+    let src = gs
+        .upsert_entity("X", "X", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let tgt = gs
+        .upsert_entity("Y", "Y", EntityType::Concept, None)
+        .await
+        .unwrap();
+    // Insert with no episode_id (None).
+    let eid = gs
+        .insert_edge(src, tgt, "uses", "X uses Y", 0.7, None)
+        .await
+        .unwrap();
+
+    let pairs = gs.source_message_ids_for_edges(&[eid]).await.unwrap();
+    assert!(
+        pairs.is_empty(),
+        "edges without episode_id must not be returned"
+    );
+}
+
+#[tokio::test]
+async fn source_entity_id_for_edge_returns_correct_id() {
+    let gs = setup().await;
+    let src = gs
+        .upsert_entity("Src", "Src", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let tgt = gs
+        .upsert_entity("Tgt", "Tgt", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let eid = gs
+        .insert_edge(src, tgt, "rel", "Src rel Tgt", 0.9, None)
+        .await
+        .unwrap();
+
+    let got = gs.source_entity_id_for_edge(eid).await.unwrap();
+    assert_eq!(got, Some(src));
+}
+
+#[tokio::test]
+async fn source_entity_id_for_edge_missing_returns_none() {
+    let gs = setup().await;
+    let got = gs.source_entity_id_for_edge(999_999).await.unwrap();
+    assert!(got.is_none());
+}
+
+#[tokio::test]
+async fn bfs_edges_at_depth_returns_neighbors() {
+    let gs = setup().await;
+    let center = gs
+        .upsert_entity("Center", "Center", EntityType::Concept, None)
+        .await
+        .unwrap();
+    let neighbor = gs
+        .upsert_entity("Neighbor", "Neighbor", EntityType::Concept, None)
+        .await
+        .unwrap();
+    gs.insert_edge(
+        center,
+        neighbor,
+        "links",
+        "Center links Neighbor",
+        0.85,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let facts = gs
+        .bfs_edges_at_depth(center, 1, &[EdgeType::Semantic])
+        .await
+        .unwrap();
+    assert!(
+        !facts.is_empty(),
+        "should return at least one neighbor fact"
+    );
+    let found = facts
+        .iter()
+        .any(|rf| rf.fact.fact.contains("Center links Neighbor"));
+    assert!(found, "expected the inserted edge fact in results");
+}
+
+#[tokio::test]
+async fn bfs_edges_at_depth_empty_when_no_edges() {
+    let gs = setup().await;
+    let entity = gs
+        .upsert_entity("Isolated", "Isolated", EntityType::Concept, None)
+        .await
+        .unwrap();
+
+    let facts = gs
+        .bfs_edges_at_depth(entity, 1, &[EdgeType::Semantic])
+        .await
+        .unwrap();
+    assert!(facts.is_empty());
+}

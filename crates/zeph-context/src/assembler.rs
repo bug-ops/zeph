@@ -388,6 +388,7 @@ pub fn effective_recall_timeout_ms(configured: u64) -> u64 {
 
 use crate::input::ContextMemoryView;
 
+#[allow(clippy::too_many_lines)] // single-pass view-aware enrichment pipeline
 pub(crate) async fn fetch_graph_facts(
     memory: &ContextMemoryView,
     query: &str,
@@ -402,14 +403,35 @@ pub(crate) async fn fetch_graph_facts(
     };
     let recall_limit = memory.graph_config.recall_limit;
     let temporal_decay_rate = memory.graph_config.temporal_decay_rate;
-    let edge_types = zeph_memory::classify_graph_subgraph(query);
     let sa_config = &memory.graph_config.spreading_activation;
 
-    let mut body = String::from(GRAPH_FACTS_PREFIX);
-    let mut tokens_so_far = tc.count_tokens(&body);
+    // Fuse MemCoT semantic state into the recall query (spec §A8: state ≤ 2 × query.len()).
+    let fused_query;
+    let effective_query = if let Some(ref state) = memory.memcot_state {
+        let max_state_chars = 2 * query.len();
+        let state_slice = if state.len() > max_state_chars {
+            let boundary = state.floor_char_boundary(max_state_chars);
+            &state[..boundary]
+        } else {
+            state.as_str()
+        };
+        fused_query = format!("[state] {state_slice}\n{query}");
+        &fused_query as &str
+    } else {
+        query
+    };
 
-    if sa_config.enabled {
-        let sa_params = zeph_memory::graph::SpreadingActivationParams {
+    let edge_types = zeph_memory::classify_graph_subgraph(effective_query);
+
+    // Map config-level RecallView to the memory-crate enum.
+    let view = match memory.memcot_config.recall_view {
+        zeph_config::RecallViewConfig::Head => zeph_memory::RecallView::Head,
+        zeph_config::RecallViewConfig::ZoomIn => zeph_memory::RecallView::ZoomIn,
+        zeph_config::RecallViewConfig::ZoomOut => zeph_memory::RecallView::ZoomOut,
+    };
+
+    let sa_params = if sa_config.enabled {
+        Some(zeph_memory::graph::SpreadingActivationParams {
             decay_lambda: sa_config.decay_lambda,
             max_hops: sa_config.max_hops,
             activation_threshold: sa_config.activation_threshold,
@@ -418,71 +440,83 @@ pub(crate) async fn fetch_graph_facts(
             temporal_decay_rate,
             seed_structural_weight: sa_config.seed_structural_weight,
             seed_community_cap: sa_config.seed_community_cap,
-        };
-        let timeout_ms = effective_recall_timeout_ms(sa_config.recall_timeout_ms);
-        let recall_fut = mem.recall_graph_activated(query, recall_limit, sa_params, &edge_types);
-        let activated_facts =
-            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), recall_fut)
-                .await
-            {
-                Ok(Ok(facts)) => facts,
-                Ok(Err(e)) => {
-                    tracing::warn!("spreading activation recall failed: {e:#}");
-                    Vec::new()
-                }
-                Err(_) => {
-                    tracing::warn!("spreading activation recall timed out ({timeout_ms}ms)");
-                    Vec::new()
-                }
-            };
-
-        if activated_facts.is_empty() {
-            return Ok(None);
-        }
-
-        for f in &activated_facts {
-            let fact_text = f.edge.fact.replace(['\n', '\r', '<', '>'], " ");
-            let line = format!(
-                "- {} (confidence: {:.2}, activation: {:.2})\n",
-                fact_text, f.edge.confidence, f.activation_score
-            );
-            let line_tokens = tc.count_tokens(&line);
-            if tokens_so_far + line_tokens > budget_tokens {
-                break;
-            }
-            body.push_str(&line);
-            tokens_so_far += line_tokens;
-        }
+        })
     } else {
-        let max_hops = memory.graph_config.max_hops;
-        let facts = mem
-            .recall_graph(
-                query,
-                recall_limit,
-                max_hops,
-                None,
-                temporal_decay_rate,
-                &edge_types,
-            )
-            .await
-            .map_err(|e| {
-                tracing::warn!("graph recall failed: {e:#}");
-                ContextError::Memory(e)
-            })?;
+        None
+    };
 
-        if facts.is_empty() {
-            return Ok(None);
+    let timeout_ms = effective_recall_timeout_ms(sa_config.recall_timeout_ms);
+    let recall_fut = mem.recall_graph_view(
+        effective_query,
+        recall_limit,
+        view,
+        memory.memcot_config.zoom_out_neighbor_cap,
+        memory.graph_config.max_hops,
+        temporal_decay_rate,
+        &edge_types,
+        sa_params,
+    );
+    let recalled = match tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        recall_fut,
+    )
+    .await
+    {
+        Ok(Ok(facts)) => facts,
+        Ok(Err(e)) => {
+            tracing::warn!("graph recall failed: {e:#}");
+            Vec::new()
         }
+        Err(_) => {
+            tracing::warn!("graph recall timed out ({timeout_ms}ms)");
+            Vec::new()
+        }
+    };
 
-        for f in &facts {
-            let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
-            let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
-            let line_tokens = tc.count_tokens(&line);
-            if tokens_so_far + line_tokens > budget_tokens {
+    if recalled.is_empty() {
+        return Ok(None);
+    }
+
+    let mut body = String::from(GRAPH_FACTS_PREFIX);
+    let mut tokens_so_far = tc.count_tokens(&body);
+
+    for rf in &recalled {
+        let fact_text = rf.fact.fact.replace(['\n', '\r', '<', '>'], " ");
+        let line = if let Some(score) = rf.activation_score {
+            format!(
+                "- {} (confidence: {:.2}, activation: {:.2})\n",
+                fact_text, rf.fact.confidence, score
+            )
+        } else {
+            format!("- {} (confidence: {:.2})\n", fact_text, rf.fact.confidence)
+        };
+        let line_tokens = tc.count_tokens(&line);
+        if tokens_so_far + line_tokens > budget_tokens {
+            break;
+        }
+        body.push_str(&line);
+        tokens_so_far += line_tokens;
+
+        // Append ZoomOut neighbors after the head fact.
+        for nb in &rf.neighbors {
+            let nb_text = nb.fact.replace(['\n', '\r', '<', '>'], " ");
+            let nb_line = format!("  ~ {} (confidence: {:.2})\n", nb_text, nb.confidence);
+            let nb_tokens = tc.count_tokens(&nb_line);
+            if tokens_so_far + nb_tokens > budget_tokens {
                 break;
             }
-            body.push_str(&line);
-            tokens_so_far += line_tokens;
+            body.push_str(&nb_line);
+            tokens_so_far += nb_tokens;
+        }
+
+        // Append ZoomIn provenance snippet if present.
+        if let Some(ref snippet) = rf.provenance_snippet {
+            let snip_line = format!("  [source: {snippet}]\n");
+            let snip_tokens = tc.count_tokens(&snip_line);
+            if tokens_so_far + snip_tokens <= budget_tokens {
+                body.push_str(&snip_line);
+                tokens_so_far += snip_tokens;
+            }
         }
     }
 
@@ -990,6 +1024,8 @@ mod tests {
             persona_config: PersonaConfig::default(),
             trajectory_config: TrajectoryConfig::default(),
             reasoning_config: ReasoningConfig::default(),
+            memcot_config: zeph_config::MemCotConfig::default(),
+            memcot_state: None,
             tree_config: TreeConfig::default(),
         }
     }

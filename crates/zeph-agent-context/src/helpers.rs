@@ -379,6 +379,7 @@ pub async fn fetch_graph_facts_raw(
                             valid_from: Some(f.edge.valid_from.clone()),
                             edge_type: f.edge.edge_type,
                             retrieval_count: f.edge.retrieval_count,
+                            edge_id: Some(f.edge.id),
                         })
                         .collect()
                 }

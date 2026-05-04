@@ -2530,6 +2530,158 @@ impl GraphStore {
         }
         Ok(d)
     }
+
+    // ── MemCoT provenance helpers (issue #3574 / #3575) ───────────────────────
+
+    /// Fetch `(edge_id, source_message_id)` pairs for a batch of edge ids.
+    ///
+    /// Returns only rows where `source_message_id` (`episode_id` column) is not NULL.
+    /// Called from [`crate::semantic::SemanticMemory::recall_graph_view`] for Zoom-In provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::MemoryError`] if the SQL query fails.
+    pub async fn source_message_ids_for_edges(
+        &self,
+        edge_ids: &[i64],
+    ) -> Result<Vec<(i64, crate::types::MessageId)>, crate::error::MemoryError> {
+        if edge_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = placeholder_list(1, edge_ids.len());
+        let sql = format!(
+            "SELECT id, episode_id FROM graph_edges \
+             WHERE id IN ({placeholders}) AND episode_id IS NOT NULL"
+        );
+        let mut q = zeph_db::query_as::<_, (i64, crate::types::MessageId)>(&sql);
+        for &eid in edge_ids {
+            q = q.bind(eid);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+        Ok(rows)
+    }
+
+    /// Return the `source_entity_id` for a given edge id, or `None` if not found.
+    ///
+    /// Used by `recall_graph_view` with `ZoomOut` to seed the 1-hop BFS.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::MemoryError`] if the SQL query fails.
+    pub async fn source_entity_id_for_edge(
+        &self,
+        edge_id: i64,
+    ) -> Result<Option<i64>, crate::error::MemoryError> {
+        let row: Option<i64> = zeph_db::query_scalar(sql!(
+            "SELECT source_entity_id FROM graph_edges WHERE id = ?1 AND valid_to IS NULL LIMIT 1"
+        ))
+        .bind(edge_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Fetch all active edges exactly 1 hop away from `entity_id`, filtered by `edge_types`.
+    ///
+    /// Returns a flat list of [`crate::recall_view::RecalledFact`] wrapping `GraphFact` values
+    /// with `hop_distance = 1`. Used by `recall_graph_view` for `ZoomOut` neighbor expansion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::MemoryError`] if the SQL query or entity name lookup fails.
+    pub async fn bfs_edges_at_depth(
+        &self,
+        entity_id: i64,
+        _depth: u32,
+        edge_types: &[crate::graph::types::EdgeType],
+    ) -> Result<Vec<crate::recall_view::RecalledFact>, crate::error::MemoryError> {
+        let type_strs: Vec<&str> = if edge_types.is_empty() {
+            vec!["semantic", "temporal", "causal", "entity"]
+        } else {
+            edge_types.iter().map(|et| et.as_str()).collect()
+        };
+
+        let ph = placeholder_list(1, type_strs.len());
+        let src_pos = type_strs.len() + 1;
+        let tgt_pos = src_pos + 1;
+        let src_ph = numbered_placeholder(src_pos);
+        let tgt_ph = numbered_placeholder(tgt_pos);
+
+        let sql = format!(
+            "SELECT ge.id, ge.source_entity_id, ge.target_entity_id, ge.relation, ge.fact,
+                    ge.confidence, ge.valid_from, ge.valid_to, ge.created_at, ge.expired_at,
+                    ge.episode_id, ge.qdrant_point_id, ge.edge_type, ge.retrieval_count,
+                    ge.last_retrieved_at, ge.superseded_by, ge.canonical_relation, ge.supersedes, ge.weight
+             FROM graph_edges ge
+             WHERE ge.edge_type IN ({ph})
+               AND ge.valid_to IS NULL
+               AND (ge.source_entity_id = {src_ph} OR ge.target_entity_id = {tgt_ph})
+             LIMIT 200"
+        );
+
+        let mut q = zeph_db::query_as::<_, EdgeRow>(&sql);
+        for t in &type_strs {
+            q = q.bind(*t);
+        }
+        q = q.bind(entity_id).bind(entity_id);
+
+        let rows = q.fetch_all(&self.pool).await?;
+
+        // Resolve entity names from ids.
+        let all_ids: Vec<i64> = rows
+            .iter()
+            .flat_map(|r| [r.source_entity_id, r.target_entity_id])
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let mut name_map: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        for chunk in all_ids.chunks(490) {
+            let ph2 = placeholder_list(1, chunk.len());
+            let name_sql =
+                format!("SELECT id, canonical_name FROM graph_entities WHERE id IN ({ph2})");
+            let mut nq = zeph_db::query_as::<_, (i64, String)>(&name_sql);
+            for &id in chunk {
+                nq = nq.bind(id);
+            }
+            let name_rows = nq.fetch_all(&self.pool).await?;
+            for (id, name) in name_rows {
+                name_map.insert(id, name);
+            }
+        }
+
+        let facts: Vec<crate::recall_view::RecalledFact> = rows
+            .into_iter()
+            .filter_map(|row| {
+                let edge = edge_from_row(row);
+                let entity_name = name_map.get(&edge.source_entity_id).cloned()?;
+                let target_name = name_map.get(&edge.target_entity_id).cloned()?;
+                if entity_name.is_empty() || target_name.is_empty() {
+                    return None;
+                }
+                let fact = crate::graph::types::GraphFact {
+                    entity_name,
+                    relation: edge.canonical_relation.clone(),
+                    target_name,
+                    fact: edge.fact.clone(),
+                    entity_match_score: 0.5,
+                    hop_distance: 1,
+                    confidence: edge.confidence,
+                    valid_from: if edge.valid_from.is_empty() {
+                        None
+                    } else {
+                        Some(edge.valid_from.clone())
+                    },
+                    edge_type: edge.edge_type,
+                    retrieval_count: edge.retrieval_count,
+                    edge_id: Some(edge.id),
+                };
+                Some(crate::recall_view::RecalledFact::from_graph_fact(fact))
+            })
+            .collect();
+
+        Ok(facts)
+    }
 }
 
 // ── insert_or_supersede helpers ───────────────────────────────────────────────

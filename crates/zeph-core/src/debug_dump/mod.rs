@@ -33,6 +33,11 @@ pub struct RequestDebugDump<'a> {
     pub messages: &'a [Message],
     pub tools: &'a [ToolDefinition],
     pub provider_request: serde_json::Value,
+    /// Current `MemCoT` semantic state buffer at the time of this request, if any.
+    ///
+    /// `Some` when `memory.memcot.enabled = true` and at least one distillation has run.
+    /// Written to the dump so offline analysis can correlate state with LLM payloads.
+    pub memcot_state: Option<&'a str>,
 }
 
 impl DebugDumper {
@@ -372,6 +377,7 @@ fn json_dump(request: &RequestDebugDump<'_>) -> String {
             .get("cache_control")
             .cloned()
             .unwrap_or(serde_json::Value::Null),
+        "memcot_state": request.memcot_state,
     });
     serde_json::to_string_pretty(&payload).unwrap_or_else(|e| format!("serialization error: {e}"))
 }
@@ -403,6 +409,13 @@ fn raw_dump(request: &RequestDebugDump<'_>) -> String {
                 .cloned()
                 .unwrap_or(serde_json::Value::Null)
         });
+        obj.insert(
+            "memcot_state".to_owned(),
+            match request.memcot_state {
+                Some(s) => serde_json::Value::String(s.to_owned()),
+                None => serde_json::Value::Null,
+            },
+        );
         if !obj.contains_key("messages") && !obj.contains_key("system") {
             let generic = messages_to_api_value(request.messages);
             if let Some(generic_obj) = generic.as_object() {
@@ -652,6 +665,7 @@ mod tests {
                 "temperature": 0.7,
                 "cache_control": { "type": "ephemeral" }
             }),
+            memcot_state: None,
         });
 
         let payload = read_request_dump(dir.path());
@@ -682,6 +696,7 @@ mod tests {
                 "temperature": 0.3,
                 "cache_control": null
             }),
+            memcot_state: None,
         });
 
         let payload = read_request_dump(dir.path());
@@ -690,5 +705,51 @@ mod tests {
         assert_eq!(payload["tools"][0]["function"]["name"], "read_file");
         assert_eq!(payload["temperature"], 0.3);
         assert_eq!(payload["messages"][0]["content"], "hello");
+    }
+
+    #[test]
+    fn memcot_state_written_to_dump_when_present() {
+        for fmt in [DumpFormat::Json, DumpFormat::Raw] {
+            let dir = tempdir().unwrap();
+            let dumper = DebugDumper::new(dir.path(), fmt).unwrap();
+            let messages = sample_messages();
+            let tools = sample_tools();
+
+            let _ = dumper.dump_request(&RequestDebugDump {
+                model_name: "test-model",
+                messages: &messages,
+                tools: &tools,
+                provider_request: serde_json::json!({ "model": "test-model", "max_tokens": 1024 }),
+                memcot_state: Some("Rust uses LLVM; user is refactoring the parser"),
+            });
+
+            let payload = read_request_dump(dir.path());
+            assert_eq!(
+                payload["memcot_state"], "Rust uses LLVM; user is refactoring the parser",
+                "memcot_state must appear in {fmt:?} dump"
+            );
+        }
+    }
+
+    #[test]
+    fn memcot_state_null_when_absent() {
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
+        let messages = sample_messages();
+        let tools = sample_tools();
+
+        let _ = dumper.dump_request(&RequestDebugDump {
+            model_name: "test-model",
+            messages: &messages,
+            tools: &tools,
+            provider_request: serde_json::json!({ "model": "test-model", "max_tokens": 1024 }),
+            memcot_state: None,
+        });
+
+        let payload = read_request_dump(dir.path());
+        assert!(
+            payload["memcot_state"].is_null(),
+            "memcot_state must be null when None"
+        );
     }
 }

@@ -328,6 +328,14 @@ impl Config {
                  (override via ZEPH_LLM_SEMANTIC_CACHE_THRESHOLD env var)"
             )));
         }
+        // MemCoT distill provider fast-tier soft-warn (#3574).
+        if self.memory.memcot.enabled && !self.memory.memcot.distill_provider.is_empty() {
+            self.llm.warn_non_fast_tier_provider(
+                &self.memory.memcot.distill_provider,
+                "memory.memcot.distill_provider",
+                &self.memory.memcot.fast_tier_models,
+            );
+        }
         // Skill evaluation weight-sum validation (#3319).
         if self.skills.evaluation.enabled {
             let weight_sum = self.skills.evaluation.weight_correctness

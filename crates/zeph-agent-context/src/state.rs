@@ -140,6 +140,12 @@ pub struct ContextAssemblyView<'a> {
     pub trajectory_config: TrajectoryConfig,
     /// `services.memory.extraction.reasoning_config` — cloned.
     pub reasoning_config: ReasoningConfig,
+    /// `services.memory.extraction.memcot_config` — cloned.
+    pub memcot_config: zeph_config::MemCotConfig,
+    /// Current `MemCoT` semantic state buffer. `Some` when the accumulator has a non-empty state.
+    ///
+    /// Snapshot taken at context-assembly time; used to prefix graph recall queries.
+    pub memcot_state: Option<String>,
     /// `services.memory.subsystems.tree_config` — cloned.
     pub tree_config: TreeConfig,
 

@@ -915,6 +915,24 @@ pub struct MemoryConfig {
     /// ```
     #[serde(default)]
     pub hebbian: HebbianConfig,
+    /// `MemCoT` rolling semantic state configuration (#3574).
+    ///
+    /// When `enabled = true`, each completed assistant turn spawns a background distillation
+    /// task that compresses the response into a short semantic state buffer. The buffer is
+    /// prepended to graph recall queries so retrieval stays contextually relevant across long
+    /// multi-turn sessions.
+    ///
+    /// # Example (TOML)
+    ///
+    /// ```toml
+    /// [memory.memcot]
+    /// enabled = true
+    /// distill_provider = "fast"
+    /// min_assistant_chars = 200
+    /// max_distills_per_session = 50
+    /// ```
+    #[serde(default)]
+    pub memcot: MemCotConfig,
 }
 
 fn default_crossover_turn_threshold() -> u32 {
@@ -2854,5 +2872,150 @@ impl Default for CompactionProbeConfig {
             timeout_secs: 15,
             category_weights: None,
         }
+    }
+}
+
+// ── MemCoT semantic state config ─────────────────────────────────────────────
+
+/// `MemCoT` semantic-state distillation configuration.
+///
+/// When `enabled = true`, the agent maintains a short rolling "semantic state" buffer
+/// summarizing conceptual progress across turns. This buffer is injected into graph
+/// recall queries to improve retrieval relevance.
+///
+/// All LLM work (distillation) runs asynchronously — never on the turn thread.
+/// When `enabled = false`, this is a **complete no-op**: no allocation, no LLM calls.
+///
+/// # Config example
+///
+/// ```toml
+/// [memory.memcot]
+/// enabled = true
+/// distill_provider = "fast"
+/// distill_timeout_secs = 5
+/// min_assistant_chars = 200
+/// min_distill_interval_secs = 30
+/// max_distills_per_session = 50
+/// max_state_chars = 800
+/// recall_view = "head"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemCotConfig {
+    /// Enable the `MemCoT` semantic state pipeline. Default: `false`.
+    ///
+    /// When `false`, the accumulator is never allocated and no LLM calls are made.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for distillation.
+    ///
+    /// Must reference a **fast-tier** provider (e.g. `gpt-4o-mini`, `qwen3:8b`).
+    /// A startup warning is emitted when the resolved model does not look fast-tier.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    pub distill_provider: ProviderName,
+    /// Timeout in seconds for each distillation LLM call. Default: `5`.
+    pub distill_timeout_secs: u64,
+    /// Minimum characters in the assistant response to trigger distillation.
+    /// Short or trivial replies are skipped. Default: `200`.
+    pub min_assistant_chars: usize,
+    /// Minimum elapsed seconds between successive distillation spawns. Default: `30`.
+    ///
+    /// Prevents runaway costs on long sessions with rapid turns.
+    /// Clearing `/new` resets this counter.
+    pub min_distill_interval_secs: u64,
+    /// Maximum distillation spawns per conversation session. Default: `50`.
+    ///
+    /// Once this cap is reached the accumulator stops distilling for the rest of the
+    /// session. Counter is reset when the user sends `/new`.
+    pub max_distills_per_session: u64,
+    /// Maximum characters for the semantic state buffer (UTF-8 char boundary truncation).
+    /// Default: `800`.
+    pub max_state_chars: usize,
+    /// Recall view applied when `MemCoT` is active. Default: `Head`.
+    ///
+    /// - `head`: standard retrieval, no enrichment (suitable for low-latency setups).
+    /// - `zoom_in`: adds source-message provenance to each returned fact.
+    /// - `zoom_out`: expands 1-hop neighbors per returned fact.
+    ///
+    /// TODO(F3): add a per-call override parameter on `recall_graph_view`.
+    pub recall_view: RecallViewConfig,
+    /// Maximum 1-hop neighbor facts per head fact in `zoom_out` view. Default: `3`.
+    pub zoom_out_neighbor_cap: usize,
+    /// Optional model name allowlist for the fast-tier soft validator (lowercase substring match).
+    /// Empty (default) → falls back to the built-in `FAST_TIER_MODEL_HINTS` list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fast_tier_models: Vec<String>,
+}
+
+/// Recall view variant exposed in config.
+///
+/// Maps 1-to-1 to `zeph_memory::RecallView`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecallViewConfig {
+    /// Standard retrieval — no enrichment. Byte-identical to legacy behaviour.
+    #[default]
+    Head,
+    /// Adds source-message provenance to each returned fact.
+    ZoomIn,
+    /// Expands 1-hop neighbor facts per returned fact.
+    ZoomOut,
+}
+
+impl Default for MemCotConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            distill_provider: ProviderName::default(),
+            distill_timeout_secs: 5,
+            min_assistant_chars: 200,
+            min_distill_interval_secs: 30,
+            max_distills_per_session: 50,
+            max_state_chars: 800,
+            recall_view: RecallViewConfig::Head,
+            zoom_out_neighbor_cap: 3,
+            fast_tier_models: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod memcot_config_tests {
+    use super::*;
+
+    #[test]
+    fn memcot_config_default_disabled() {
+        let cfg = MemCotConfig::default();
+        assert!(!cfg.enabled);
+        assert!(cfg.distill_provider.is_empty());
+        assert_eq!(cfg.distill_timeout_secs, 5);
+        assert_eq!(cfg.min_assistant_chars, 200);
+        assert_eq!(cfg.min_distill_interval_secs, 30);
+        assert_eq!(cfg.max_distills_per_session, 50);
+        assert_eq!(cfg.max_state_chars, 800);
+        assert_eq!(cfg.recall_view, RecallViewConfig::Head);
+        assert_eq!(cfg.zoom_out_neighbor_cap, 3);
+    }
+
+    #[test]
+    fn memcot_config_round_trip() {
+        let toml = r#"
+            enabled = true
+            distill_provider = "fast"
+            distill_timeout_secs = 10
+            min_assistant_chars = 100
+            min_distill_interval_secs = 60
+            max_distills_per_session = 20
+            max_state_chars = 400
+            recall_view = "zoom_in"
+            zoom_out_neighbor_cap = 5
+        "#;
+        let cfg: MemCotConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.distill_provider.as_str(), "fast");
+        assert_eq!(cfg.distill_timeout_secs, 10);
+        assert_eq!(cfg.min_distill_interval_secs, 60);
+        assert_eq!(cfg.max_distills_per_session, 20);
+        assert_eq!(cfg.recall_view, RecallViewConfig::ZoomIn);
+        assert_eq!(cfg.zoom_out_neighbor_cap, 5);
     }
 }

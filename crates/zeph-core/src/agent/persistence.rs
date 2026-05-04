@@ -227,7 +227,34 @@ impl<C: Channel> Agent<C> {
             .any(|p| matches!(p, MessagePart::ToolUse { .. }));
         if role == Role::Assistant && !has_tool_use_parts && !has_injection_flags {
             self.enqueue_reasoning_extraction_task();
+            // MemCoT distillation: same guards as ReasoningBank.
+            self.enqueue_memcot_distill_task(content);
         }
+    }
+
+    /// Enqueue `MemCoT` semantic state distillation via the supervisor.
+    ///
+    /// All cost gates (interval, session cap, min chars) are checked inside
+    /// [`crate::agent::memcot::SemanticStateAccumulator::maybe_enqueue_distill`].
+    fn enqueue_memcot_distill_task(&mut self, assistant_content: &str) {
+        let Some(accumulator) = &self.services.memory.extraction.memcot_accumulator else {
+            return;
+        };
+        let distill_provider_name = self
+            .services
+            .memory
+            .extraction
+            .memcot_config
+            .distill_provider
+            .as_str();
+        let provider = self.resolve_background_provider(distill_provider_name);
+
+        let content = assistant_content.to_owned();
+        let supervisor = &mut self.runtime.lifecycle.supervisor;
+
+        accumulator.maybe_enqueue_distill(&content, provider, |name, fut| {
+            supervisor.spawn(super::agent_supervisor::TaskClass::Enrichment, name, fut);
+        });
     }
 
     /// Enqueue background summarization via the supervisor (S1 fix: no shared `AtomicUsize`).

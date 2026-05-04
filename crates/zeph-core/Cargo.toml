@@ -25,6 +25,7 @@ env-vault = ["zeph-vault/env-vault"]
 metal = ["zeph-llm/metal"]
 mock = ["zeph-vault/mock"]
 scheduler  = []
+index = ["zeph-agent-context/index"]
 self-check = ["zeph-agent-context/self-check"]
 
 [dependencies]

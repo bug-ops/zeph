@@ -29,6 +29,7 @@ mod loop_event;
 mod lsp_commands;
 mod magic_docs;
 mod mcp;
+pub(crate) mod memcot;
 mod message_queue;
 mod microcompact;
 mod model_commands;

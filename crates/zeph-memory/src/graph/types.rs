@@ -313,6 +313,12 @@ pub struct GraphFact {
     pub edge_type: EdgeType,
     /// Number of times this edge was traversed (A-MEM link weight evolution).
     pub retrieval_count: i32,
+    /// Database `id` of the underlying `graph_edges` row.
+    ///
+    /// `None` for facts produced by code paths that do not yet propagate the edge id.
+    /// Populated by [`crate::graph::retrieval::graph_recall`] and used by
+    /// [`crate::recall_view`] for Zoom-In provenance lookups.
+    pub edge_id: Option<i64>,
 }
 
 /// Compute A-MEM evolved edge weight.
@@ -477,6 +483,7 @@ mod tests {
             valid_from: None,
             retrieval_count: 0,
             edge_type: EdgeType::Semantic,
+            edge_id: None,
         };
         let causal = GraphFact {
             edge_type: EdgeType::Causal,
@@ -605,6 +612,7 @@ mod tests {
             valid_from: None,
             edge_type: EdgeType::Semantic,
             retrieval_count: 0,
+            edge_id: None,
         };
         // retrieval_count=0 → evolved_weight = confidence = 1.0
         // 1.0 * (1/(1+0)) * 1.0 = 1.0
@@ -668,6 +676,7 @@ mod tests {
             valid_from: None,
             edge_type: EdgeType::Semantic,
             retrieval_count: 0,
+            edge_id: None,
         };
         let retrieved_fact = GraphFact {
             retrieval_count: 5,
@@ -692,6 +701,7 @@ mod tests {
             valid_from: Some("2026-01-01 00:00:00".into()),
             edge_type: EdgeType::Semantic,
             retrieval_count: 0,
+            edge_id: None,
         };
         let base = fact.composite_score();
         let with_decay = fact.score_with_decay(0.0, 1_752_000_000);
@@ -714,6 +724,7 @@ mod tests {
             valid_from: Some("2026-01-01 00:00:00".into()),
             edge_type: EdgeType::Semantic,
             retrieval_count: 0,
+            edge_id: None,
         };
         let base = fact.composite_score();
         let boosted = fact.score_with_decay(0.01, now_secs);
@@ -795,6 +806,7 @@ mod tests {
             valid_from: None,
             edge_type: et,
             retrieval_count: 0,
+            edge_id: None,
         };
         assert!((fact(EdgeType::Causal).composite_score() - 1.2).abs() < 1e-5);
         assert!((fact(EdgeType::Temporal).composite_score() - 0.9).abs() < 1e-5);
@@ -814,6 +826,7 @@ mod tests {
             valid_from: None,
             edge_type: et,
             retrieval_count: 0,
+            edge_id: None,
         };
         let causal = fact(EdgeType::Causal).composite_score();
         let temporal = fact(EdgeType::Temporal).composite_score();

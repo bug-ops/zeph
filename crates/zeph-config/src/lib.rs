@@ -138,18 +138,19 @@ pub use memory::{
     AdmissionConfig, AdmissionStrategy, AdmissionWeights, AutoDreamConfig, BeliefRevisionConfig,
     CategoryConfig, CompressionConfig, CompressionStrategy, ContextFormat, ContextStrategy,
     DigestConfig, DocumentConfig, ForgettingConfig, GraphConfig, HebbianConfig, MagicDocsConfig,
-    MemoryConfig, MicrocompactConfig, NoteLinkingConfig, PersonaConfig, PruningStrategy,
-    ReasoningConfig, RetrievalConfig, RpeConfig, SemanticConfig, SessionsConfig, SidequestConfig,
-    StoreRoutingConfig, StoreRoutingStrategy, TierConfig, TrajectoryConfig, TreeConfig,
-    VectorBackend,
+    MemCotConfig, MemoryConfig, MicrocompactConfig, NoteLinkingConfig, PersonaConfig,
+    PruningStrategy, ReasoningConfig, RecallViewConfig, RetrievalConfig, RpeConfig, SemanticConfig,
+    SessionsConfig, SidequestConfig, StoreRoutingConfig, StoreRoutingStrategy, TierConfig,
+    TrajectoryConfig, TreeConfig, VectorBackend,
 };
 pub use metrics::MetricsConfig;
 pub use notifications::NotificationsConfig;
 pub use providers::{
     BanditConfig, CacheTtl, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
-    CoeConfig, ComplexityRoutingConfig, GeminiThinkingLevel, GenerationParams, LlmConfig,
-    LlmRoutingStrategy, MAX_TOKENS_CAP, ProviderEntry, ProviderKind, ProviderName, RouterConfig,
-    RouterStrategyConfig, SttConfig, ThinkingConfig, ThinkingEffort, TierMapping, validate_pool,
+    CoeConfig, ComplexityRoutingConfig, FAST_TIER_MODEL_HINTS, GeminiThinkingLevel,
+    GenerationParams, LlmConfig, LlmRoutingStrategy, MAX_TOKENS_CAP, ProviderEntry, ProviderKind,
+    ProviderName, RouterConfig, RouterStrategyConfig, SttConfig, ThinkingConfig, ThinkingEffort,
+    TierMapping, validate_pool,
 };
 pub use providers::{default_stt_language, default_stt_provider};
 pub use quality::{QualityConfig, TriggerPolicy};

@@ -189,6 +189,7 @@ pub async fn graph_recall_beam(
                 valid_from: Some(edge.valid_from.clone()),
                 edge_type: edge.edge_type,
                 retrieval_count: edge.retrieval_count,
+                edge_id: Some(edge.id),
             });
         }
     }

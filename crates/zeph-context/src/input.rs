@@ -109,6 +109,11 @@ pub struct ContextMemoryView {
     pub trajectory_config: TrajectoryConfig,
     /// `ReasoningBank` configuration (#3343).
     pub reasoning_config: ReasoningConfig,
+    /// `MemCoT` semantic state configuration (#3574).
+    pub memcot_config: zeph_config::MemCotConfig,
+    /// Current `MemCoT` semantic state buffer snapshot. `Some` when `MemCoT` is enabled and the
+    /// accumulator has distilled at least one turn.
+    pub memcot_state: Option<String>,
 
     // ── subsystem fields ──────────────────────────────────────────────────────
     /// `TiMem` temporal-hierarchical memory tree configuration.

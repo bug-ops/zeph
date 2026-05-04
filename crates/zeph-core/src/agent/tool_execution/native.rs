@@ -283,6 +283,10 @@ impl<C: Channel> Agent<C> {
         let start = std::time::Instant::now();
         let prompt_estimate = self.runtime.providers.cached_prompt_tokens;
 
+        let memcot_state = match self.services.memory.extraction.memcot_accumulator.as_ref() {
+            Some(acc) => acc.current_state().await,
+            None => None,
+        };
         let dump_id =
             self.runtime
                 .debug
@@ -303,6 +307,7 @@ impl<C: Channel> Agent<C> {
                         messages: &self.msg.messages,
                         tools: &[],
                         provider_request,
+                        memcot_state: memcot_state.as_deref(),
                     })
                 });
 
@@ -884,7 +889,12 @@ impl<C: Channel> Agent<C> {
         let llm_timeout = std::time::Duration::from_secs(self.runtime.config.timeouts.llm_seconds);
         let start = std::time::Instant::now();
 
-        let dump_id = self.prepare_chat_debug_dump(tool_defs);
+        let memcot_state_for_dump =
+            match self.services.memory.extraction.memcot_accumulator.as_ref() {
+                Some(acc) => acc.current_state().await,
+                None => None,
+            };
+        let dump_id = self.prepare_chat_debug_dump(tool_defs, memcot_state_for_dump.as_deref());
 
         // RuntimeLayer before_chat hooks (MVP: empty vec = zero iterations).
         if let Some(sc) = self.run_before_chat_layers(tool_defs).await? {
@@ -951,7 +961,11 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Prepare and dump the request debug payload, returning the dump ID for the response dump.
-    fn prepare_chat_debug_dump(&self, tool_defs: &[ToolDefinition]) -> Option<u32> {
+    fn prepare_chat_debug_dump(
+        &self,
+        tool_defs: &[ToolDefinition],
+        memcot_state: Option<&str>,
+    ) -> Option<u32> {
         self.runtime
             .debug
             .debug_dumper
@@ -969,6 +983,7 @@ impl<C: Channel> Agent<C> {
                     messages: &self.msg.messages,
                     tools: tool_defs,
                     provider_request,
+                    memcot_state,
                 })
             })
     }

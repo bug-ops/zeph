@@ -10568,6 +10568,7 @@ dependencies = [
  "criterion",
  "dashmap",
  "futures",
+ "insta",
  "lru 0.18.0",
  "parking_lot",
  "pdf-extract",

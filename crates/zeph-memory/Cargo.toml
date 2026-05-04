@@ -56,6 +56,7 @@ harness = false
 
 [dev-dependencies]
 criterion.workspace = true
+insta.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 testcontainers.workspace = true

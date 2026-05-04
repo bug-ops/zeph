@@ -1,0 +1,28 @@
+---
+source: crates/zeph-memory/src/recall_view.rs
+assertion_line: 287
+expression: rf
+---
+RecalledFact {
+    fact: GraphFact {
+        entity_name: "Rust",
+        relation: "uses",
+        target_name: "LLVM",
+        fact: "Rust uses LLVM for code generation",
+        entity_match_score: 0.9,
+        hop_distance: 0,
+        confidence: 0.95,
+        valid_from: Some(
+            "2026-01-01",
+        ),
+        edge_type: Semantic,
+        retrieval_count: 1,
+        edge_id: Some(
+            10,
+        ),
+    },
+    activation_score: None,
+    provenance_message_id: None,
+    provenance_snippet: None,
+    neighbors: [],
+}

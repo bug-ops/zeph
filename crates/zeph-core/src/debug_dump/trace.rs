@@ -846,6 +846,7 @@ mod tests {
             messages: &[],
             tools: &[],
             provider_request: serde_json::json!({}),
+            memcot_state: None,
         });
         d.dump_response(id, "resp");
         d.dump_tool_output("shell", "output");
@@ -1028,6 +1029,7 @@ mod tests {
                 messages: &[],
                 tools: &[],
                 provider_request: serde_json::json!({"model": "test-model", "max_tokens": 100}),
+                memcot_state: None,
             });
             d.dump_response(id, "hello");
             let session_dir = std::fs::read_dir(tmp.path())

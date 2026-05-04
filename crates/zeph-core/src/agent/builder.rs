@@ -1903,6 +1903,7 @@ impl<C: Channel> Agent<C> {
             trajectory_config,
             category_config,
             reasoning_config,
+            memcot_config,
             tree_config,
             microcompact_config,
             autodream_config,
@@ -1964,6 +1965,15 @@ impl<C: Channel> Agent<C> {
         self.services.memory.extraction.trajectory_config = trajectory_config;
         self.services.memory.extraction.category_config = category_config;
         self.services.memory.extraction.reasoning_config = reasoning_config;
+        if memcot_config.enabled {
+            self.services.memory.extraction.memcot_accumulator =
+                Some(crate::agent::memcot::SemanticStateAccumulator::new(
+                    std::sync::Arc::new(memcot_config.clone()),
+                ));
+        } else {
+            self.services.memory.extraction.memcot_accumulator = None;
+        }
+        self.services.memory.extraction.memcot_config = memcot_config;
         self.services.memory.subsystems.tree_config = tree_config;
         self.services.memory.subsystems.microcompact_config = microcompact_config;
         self.services.memory.subsystems.autodream_config = autodream_config;
