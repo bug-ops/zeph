@@ -42,6 +42,7 @@ specific areas, refer to the child specs below.
 | [[010-4-audit]] | Audit Trail | Immutable logging, correlation analysis, environment scrubbing |
 | [[010-5-egress-logging]] | Egress Logging | `EgressEvent` per outbound HTTP call, correlation_id, bounded telemetry |
 | [[010-6-vigil-intent-anchoring]] | Verify-Before-Commit | Pre-sanitizer regex tripwire with Block/Sanitize + per-turn intent |
+| [[050-security-capability-governance/spec]] | Capability Governance | Tool scoping, trajectory sentinel, CapSeal vault-broker sketch (#3563, #3569, #3570) |
 
 ---
 
@@ -298,9 +299,21 @@ Correlation is bounded to the current turn — signals do not carry across turn 
 
 ### Key Invariants
 
-- Cross-turn signal accumulation is NEVER performed — correlation is within-turn only
+- Cross-turn signal accumulation is NEVER performed **for injection-confirmation decisions** — `CrossToolCorrelator` correlation is within-turn only
 - `CrossToolCorrelator` state is cleared at the start of each user turn
 - AgentRFC audit failures are logged as `WARN` and escalated to the security event log — they do not hard-block the turn by default
+
+### Scope of the Cross-Turn Prohibition (architectural decision, 2026-05-04)
+
+The "cross-turn signal accumulation is NEVER performed" invariant applies specifically to **`CrossToolCorrelator`**, which makes hard injection-confirmation decisions (`InjectionConfirmed`). Letting injection signals leak across turn boundaries would let a single noisy turn poison every subsequent turn with `InjectionConfirmed` and is fundamentally incompatible with that decision's irreversible semantics.
+
+It does **not** apply to **advisory cross-turn risk budgeting** as defined in [[050-security-capability-governance/spec]] (`TrajectorySentinel`). The sentinel is materially different along three axes that justify the carve-out:
+
+1. **Decision class.** Advisory only — its output (`RiskLevel`) modulates `PolicyGate` decisions; it does not produce a separate confirmation verdict.
+2. **Reversibility.** All sentinel signals decay multiplicatively each turn; a noisy turn cannot durably elevate risk. `CrossToolCorrelator`'s `InjectionConfirmed` is one-way.
+3. **Scope of action.** Sentinel only escalates at thresholds set by config and only downgrades existing allows; it cannot synthesise new permissions or new verdicts.
+
+Both subsystems coexist: `CrossToolCorrelator` continues to be cleared at every turn boundary, while `TrajectorySentinel` accumulates an independent, bounded, decaying score across turns. They share no state and are wired at different stack layers (correlator at sanitize, sentinel at gate).
 
 ---
 

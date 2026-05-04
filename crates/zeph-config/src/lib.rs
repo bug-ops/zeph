@@ -158,7 +158,10 @@ pub use sanitizer::{
     ResponseVerificationConfig,
 };
 pub use sanitizer::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
-pub use security::{ScannerConfig, SecurityConfig, TimeoutConfig, TrustConfig};
+pub use security::{
+    CapabilityScopesConfig, PatternStrictness, ScannerConfig, ScopeConfig, SecurityConfig,
+    TimeoutConfig, TrajectorySentinelConfig, TrustConfig,
+};
 pub use session::{RecapConfig, SessionConfig};
 pub use subagent::{
     HookAction, HookDef, HookMatcher, MemoryScope, PermissionMode, SkillFilter, SubagentHooks,

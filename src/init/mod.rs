@@ -23,7 +23,7 @@ use agents::{step_agents, step_learning, step_orchestration, step_router};
 use llm::step_llm;
 use mcp::{step_mcp_discovery, step_mcp_remote, step_mcpls, write_mcpls_config};
 use memory::{step_context_compression, step_memory};
-use security::{step_policy, step_sandbox, step_security};
+use security::{step_policy, step_sandbox, step_security, step_trajectory};
 
 #[cfg_attr(test, derive(Clone))]
 #[allow(clippy::struct_excessive_bools)]
@@ -234,6 +234,9 @@ pub(crate) struct WizardState {
     pub(crate) telemetry_enabled: bool,
     // Prometheus metrics export (#2866)
     pub(crate) prometheus_enabled: bool,
+    // Trajectory risk sentinel (spec 050)
+    pub(crate) trajectory_critical_at: f32,
+    pub(crate) trajectory_auto_recover: u32,
 }
 
 impl Default for WizardState {
@@ -399,6 +402,8 @@ impl Default for WizardState {
             magic_docs_enabled: false,
             telemetry_enabled: false,
             prometheus_enabled: false,
+            trajectory_critical_at: 10.0,
+            trajectory_auto_recover: 16,
         }
     }
 }
@@ -463,6 +468,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_experiments(&mut state)?;
     step_retry(&mut state)?;
     step_policy(&mut state)?;
+    step_trajectory(&mut state)?;
     step_telemetry(&mut state)?;
     step_prometheus(&mut state)?;
     step_session_recap(&mut state)?;
@@ -946,6 +952,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     {
         config.tools.policy.enabled = state.policy_enforcer_enabled;
     }
+    config.security.trajectory.critical_at = state.trajectory_critical_at;
+    config.security.trajectory.auto_recover_after_turns = state.trajectory_auto_recover;
 
     #[cfg(feature = "classifiers")]
     {

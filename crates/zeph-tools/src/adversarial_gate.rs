@@ -162,6 +162,8 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
             policy_match: None,
             correlation_id: None,
             vigil_risk: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
         };
         audit.log(&entry).await;
     }

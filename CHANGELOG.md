@@ -26,6 +26,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   generic connection error when shutdown is detected. Dynamic `/mcp add` retains single-attempt
   behaviour; a follow-up issue tracks extending retry there (#3568).
 
+- feat(security): `TrajectorySentinel` in `zeph-core` — cross-turn risk accumulator with
+  multiplicative score decay (`decay_per_turn = 0.85`), four risk levels (`Calm`, `Elevated`,
+  `High`, `Critical`), configurable thresholds, FR-CG-010 auto-recover hard reset after
+  `auto_recover_after_turns` (default 16) consecutive Critical turns, subagent score inheritance
+  via `spawn_child()` (factor 0.5), and `poll_alert()` for `PolicyGateExecutor` integration.
+  Signal taxonomy: `VigilFlagged`, `PolicyDeny`, `ExfiltrationRedaction`, `OutOfScope`,
+  `PiiRedaction`, `ToolFailure`, `HighCallRate`, `UnusualReadVolume`, `ToolPairTransition`.
+  Stored on `SecurityState`; never exposed to LLM-callable surfaces (spec 050 Phase 1, #3570).
+
+- feat(security): `ScopedToolExecutor<E>` in `zeph-tools` — config-driven capability scope
+  wrapper that filters both `tool_definitions()` (LLM tool list) and `execute_tool_call()`
+  dispatch to an operator-configured allow-list of fully-qualified tool ids
+  (`builtin:`, `skill:`, `mcp:`, `acp:`, `a2a:` namespaces). Build-time glob resolution
+  with fatal `ScopeError::DeadPattern` for strict namespaces and
+  `ScopeWarning::ProvisionalDeadPattern` for dynamic namespaces. New `ToolError::OutOfScope`
+  variant with `error_category = "out_of_scope"` in the audit log. `scope_for_task()` method
+  and per-call `scope_at_definition` / `scope_at_dispatch` audit fields (spec 050 Phase 1, #3563).
+
+- feat(config): `[security.trajectory]` and `[security.capability_scopes]` TOML sections:
+  `TrajectorySentinelConfig` (decay, thresholds, auto-recover, subagent factor) and
+  `CapabilityScopesConfig` (named scopes, `default_scope`, `pattern_strictness`) added to
+  `SecurityConfig` with backward-compatible defaults (spec 050 Phase 1, #3563).
+
+- feat(security): agent loop wiring for spec 050 — `begin_turn()` now calls
+  `TrajectorySentinel::advance_turn()` and writes the current `RiskLevel` to the shared
+  `TrajectoryRiskSlot` before `PolicyGateExecutor` runs (Invariant 2); `RiskAlert` is emitted
+  to the TUI/CLI status channel when score crosses `alert_threshold` (NFR-CG-006).
+
+- feat(security): `PolicyGateExecutor` Critical downgrade — when `TrajectoryRiskSlot >= 3`
+  (Critical), all `Allow` policy decisions are overridden to `Deny` with
+  `error_category = "trajectory_critical_downgrade"` in the audit log before policy evaluation.
+
+- feat(cli): `/trajectory [status|reset]` and `/scope list` operator commands for live inspection
+  and reset of the trajectory sentinel; operator-only — scores and risk levels are not exposed to
+  LLM context (spec 050 LLM isolation invariant).
+
+- feat(init): `--init` wizard prompts for `[security.trajectory]` thresholds (`critical_at`,
+  `auto_recover_after_turns`) in a dedicated `step_trajectory` step after the policy enforcer step.
+
+- feat(config): `--migrate-config` support for new `[security.trajectory]` and
+  `[security.capability_scopes]` sections is automatic — `ConfigMigrator` picks up the new
+  defaults from `default.toml`.
+
 ### Documentation
 
 - research: synthesize MemCoT, OmniMem, and OCR-Memory memory architecture papers; document integration roadmap and file follow-up issues (#3564, #3566, #3571); add Research Backlog to APEX-MEM spec (see specs §14)

@@ -77,6 +77,7 @@ pub mod policy_gate;
 pub mod registry;
 pub mod sandbox;
 pub mod schema_filter;
+pub mod scope;
 pub mod scrape;
 pub mod search_code;
 pub mod shell;
@@ -117,7 +118,7 @@ pub use filter::{
 pub use net::is_private_ip;
 pub use permissions::PermissionPolicy;
 pub use policy::{PolicyCompileError, PolicyContext, PolicyDecision, PolicyEnforcer};
-pub use policy_gate::PolicyGateExecutor;
+pub use policy_gate::{PolicyGateExecutor, RiskSignalQueue, TrajectoryRiskSlot};
 pub use registry::ToolRegistry;
 #[cfg(target_os = "macos")]
 pub use sandbox::MacosSandbox;
@@ -128,6 +129,7 @@ pub use schema_filter::{
     DependencyExclusion, InclusionReason, ToolDependencyGraph, ToolEmbedding, ToolFilterResult,
     ToolSchemaFilter,
 };
+pub use scope::{ScopeError, ScopeWarning, ScopedToolExecutor, ToolScope, build_scoped_executor};
 pub use scrape::WebScrapeExecutor;
 pub use search_code::{
     LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,

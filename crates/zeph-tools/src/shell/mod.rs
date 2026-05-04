@@ -979,6 +979,8 @@ impl ShellExecutor {
                 policy_match: None,
                 correlation_id: None,
                 vigil_risk: None,
+                scope_at_definition: None,
+                scope_at_dispatch: None,
             };
             logger.log(&entry).await;
         }

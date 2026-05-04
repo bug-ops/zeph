@@ -22,6 +22,27 @@ use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::policy::{PolicyContext, PolicyDecision, PolicyEnforcer};
 use crate::registry::ToolDef;
 
+/// Shared risk level from spec 050 `TrajectorySentinel`.
+///
+/// Stored as `u8` to avoid a direct dep on `zeph-core`; mapping:
+/// `0` = Calm, `1` = Elevated, `2` = High, `3` = Critical.
+/// Written by the agent loop after each `sentinel.current_risk()` call.
+/// Read by `check_policy` — an `Allow` decision is downgraded to `Deny` at `3` (Critical).
+pub type TrajectoryRiskSlot = Arc<parking_lot::RwLock<u8>>;
+
+/// Callback invoked by executors in `zeph-tools` to record a risk signal into the sentinel
+/// that lives in `zeph-core`, avoiding a reverse crate dependency.
+///
+/// The `u8` argument is a `RiskSignalCode` — see `crates/zeph-core/src/agent/trajectory.rs`.
+pub type RiskSignalSink = Arc<dyn Fn(u8) + Send + Sync>;
+
+/// Lock-free pending signal queue shared between executor layers and the agent loop.
+///
+/// Executors push `u8` signal codes; `begin_turn()` drains the queue and calls
+/// `TrajectorySentinel::record()` for each entry. This avoids a reverse crate dependency
+/// between `zeph-tools` and `zeph-core`.
+pub type RiskSignalQueue = Arc<parking_lot::Mutex<Vec<u8>>>;
+
 /// Wraps an inner `ToolExecutor`, evaluating `PolicyEnforcer` before delegating.
 ///
 /// Policy is only applied to `execute_tool_call` / `execute_tool_call_confirmed`.
@@ -31,6 +52,11 @@ pub struct PolicyGateExecutor<T: ToolExecutor> {
     enforcer: Arc<PolicyEnforcer>,
     context: Arc<RwLock<PolicyContext>>,
     audit: Option<Arc<AuditLogger>>,
+    /// Optional trajectory risk level slot injected by the agent loop (spec 050).
+    /// When `Some` and the value is `3` (Critical), all `Allow` decisions are downgraded.
+    trajectory_risk: Option<TrajectoryRiskSlot>,
+    /// Optional signal queue — `PolicyDeny` codes are pushed here; drained by `begin_turn()`.
+    signal_queue: Option<RiskSignalQueue>,
 }
 
 impl<T: ToolExecutor + std::fmt::Debug> std::fmt::Debug for PolicyGateExecutor<T> {
@@ -54,6 +80,8 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
             enforcer,
             context,
             audit: None,
+            trajectory_risk: None,
+            signal_queue: None,
         }
     }
 
@@ -62,6 +90,31 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
     pub fn with_audit(mut self, audit: Arc<AuditLogger>) -> Self {
         self.audit = Some(audit);
         self
+    }
+
+    /// Attach a trajectory risk slot (spec 050).
+    ///
+    /// When the slot value reaches `3` (Critical), any `Allow` decision from the policy
+    /// enforcer is downgraded to `Deny` with `error_category = "trajectory_critical_downgrade"`.
+    #[must_use]
+    pub fn with_trajectory_risk(mut self, slot: TrajectoryRiskSlot) -> Self {
+        self.trajectory_risk = Some(slot);
+        self
+    }
+
+    /// Attach a shared signal queue so `PolicyDeny` decisions are recorded in the sentinel.
+    ///
+    /// The agent loop (`begin_turn`) drains the queue and feeds signals to the sentinel.
+    #[must_use]
+    pub fn with_signal_queue(mut self, queue: RiskSignalQueue) -> Self {
+        self.signal_queue = Some(queue);
+        self
+    }
+
+    fn push_signal(&self, code: u8) {
+        if let Some(ref q) = self.signal_queue {
+            q.lock().push(code);
+        }
     }
 
     fn read_context(&self) -> PolicyContext {
@@ -73,7 +126,59 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
         *self.context.write() = new_ctx;
     }
 
+    /// Return `true` when the trajectory sentinel is at Critical (spec 050).
+    fn is_trajectory_critical(&self) -> bool {
+        self.trajectory_risk
+            .as_ref()
+            .is_some_and(|slot| *slot.read() >= 3)
+    }
+
+    async fn log_audit(&self, call: &ToolCall, result: AuditResult, error_category: Option<&str>) {
+        let Some(audit) = &self.audit else { return };
+        let entry = AuditEntry {
+            timestamp: chrono_now(),
+            tool: call.tool_id.clone(),
+            command: truncate_params(&call.params),
+            result,
+            duration_ms: 0,
+            error_category: error_category.map(str::to_owned),
+            error_domain: error_category.map(|_| "security".to_owned()),
+            error_phase: None,
+            claim_source: None,
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
+            exit_code: None,
+            truncated: false,
+            caller_id: call.caller_id.clone(),
+            policy_match: None,
+            correlation_id: None,
+            vigil_risk: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
+        };
+        audit.log(&entry).await;
+    }
+
     async fn check_policy(&self, call: &ToolCall) -> Result<(), ToolError> {
+        // Spec 050: at Critical risk level, deny ALL tool calls before policy evaluation.
+        if self.is_trajectory_critical() {
+            tracing::warn!(tool = %call.tool_id, "trajectory sentinel at Critical: denied (spec 050)");
+            self.log_audit(
+                call,
+                AuditResult::Blocked {
+                    reason: "trajectory_critical_downgrade".to_owned(),
+                },
+                Some("trajectory_critical_downgrade"),
+            )
+            .await;
+            return Err(ToolError::Blocked {
+                command: "Tool call denied by policy".to_owned(),
+            });
+        }
+
         let ctx = self.read_context();
         let decision = self
             .enforcer
@@ -101,10 +206,11 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         exit_code: None,
                         truncated: false,
                         caller_id: call.caller_id.clone(),
-                        // M1: use trace field directly as policy_match
                         policy_match: Some(trace.clone()),
                         correlation_id: None,
                         vigil_risk: None,
+                        scope_at_definition: None,
+                        scope_at_dispatch: None,
                     };
                     audit.log(&entry).await;
                 }
@@ -112,6 +218,8 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
             }
             PolicyDecision::Deny { trace } => {
                 debug!(tool = %call.tool_id, trace = %trace, "policy: deny");
+                // Signal code 1 = PolicyDeny (matches RiskSignal::PolicyDeny in zeph-core).
+                self.push_signal(1);
                 if let Some(audit) = &self.audit {
                     let entry = AuditEntry {
                         timestamp: chrono_now(),
@@ -133,10 +241,11 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         exit_code: None,
                         truncated: false,
                         caller_id: call.caller_id.clone(),
-                        // M1: use trace field directly as policy_match
                         policy_match: Some(trace.clone()),
                         correlation_id: None,
                         vigil_risk: None,
+                        scope_at_definition: None,
+                        scope_at_dispatch: None,
                     };
                     audit.log(&entry).await;
                 }
@@ -203,6 +312,8 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
                     policy_match: None,
                     correlation_id: None,
                     vigil_risk: None,
+                    scope_at_definition: None,
+                    scope_at_dispatch: None,
                 };
                 audit.log(&entry).await;
             }
@@ -513,6 +624,49 @@ mod tests {
         assert!(
             result.is_ok(),
             "Trusted context must satisfy a Verified trust threshold allow rule"
+        );
+    }
+
+    // GAP-1: trajectory_risk_slot at Critical (3) must downgrade Allow to Deny.
+    #[tokio::test]
+    async fn critical_trajectory_blocks_any_allow() {
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: None,
+        };
+        let slot: TrajectoryRiskSlot = Arc::new(RwLock::new(3u8)); // Critical
+        let gate = make_gate(&config).with_trajectory_risk(slot);
+        let result = gate.execute_tool_call(&make_call("builtin:shell")).await;
+        assert!(
+            matches!(result, Err(ToolError::Blocked { .. })),
+            "Critical trajectory must block even policy-allowed tool calls"
+        );
+        // LLM isolation: error message must not reveal risk level.
+        if let Err(ToolError::Blocked { command }) = result {
+            assert!(
+                !command.contains("Critical") && !command.contains("trajectory"),
+                "error message must not leak risk info to LLM: got '{command}'"
+            );
+        }
+    }
+
+    // Corollary: slot at High (2) must NOT downgrade (only Critical does).
+    #[tokio::test]
+    async fn high_trajectory_does_not_block_allowed_tool() {
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: None,
+        };
+        let slot: TrajectoryRiskSlot = Arc::new(RwLock::new(2u8)); // High
+        let gate = make_gate(&config).with_trajectory_risk(slot);
+        let result = gate.execute_tool_call(&make_call("builtin:shell")).await;
+        assert!(
+            result.is_ok(),
+            "High (not Critical) must not block allowed tool calls"
         );
     }
 }

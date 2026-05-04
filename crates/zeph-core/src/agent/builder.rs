@@ -705,6 +705,45 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Inject an externally created trajectory risk slot.
+    ///
+    /// Used when the slot is created before the agent (e.g. in the runner to share with
+    /// `PolicyGateExecutor`). The existing slot is replaced so both sides see the same `Arc`.
+    #[must_use]
+    pub fn with_trajectory_risk_slot(mut self, slot: zeph_tools::TrajectoryRiskSlot) -> Self {
+        self.services.security.trajectory_risk_slot = slot;
+        self
+    }
+
+    /// Inject an externally created risk signal queue (spec 050 §2).
+    ///
+    /// The same queue must be passed to `PolicyGateExecutor::with_signal_queue` and
+    /// `ScopedToolExecutor::with_signal_queue` so executor-layer signals flow to `begin_turn()`.
+    #[must_use]
+    pub fn with_signal_queue(mut self, queue: zeph_tools::RiskSignalQueue) -> Self {
+        self.services.security.trajectory_signal_queue = queue;
+        self
+    }
+
+    /// Configure the trajectory sentinel and return the shared risk slot + signal queue.
+    ///
+    /// Pass the returned slot to `PolicyGateExecutor::with_trajectory_risk` and the queue to
+    /// `PolicyGateExecutor::with_signal_queue` and `ScopedToolExecutor::with_signal_queue`.
+    #[must_use]
+    pub fn with_trajectory_config(
+        mut self,
+        cfg: zeph_config::TrajectorySentinelConfig,
+    ) -> (
+        Self,
+        zeph_tools::TrajectoryRiskSlot,
+        zeph_tools::RiskSignalQueue,
+    ) {
+        self.services.security.trajectory = crate::agent::trajectory::TrajectorySentinel::new(cfg);
+        let slot = std::sync::Arc::clone(&self.services.security.trajectory_risk_slot);
+        let queue = std::sync::Arc::clone(&self.services.security.trajectory_signal_queue);
+        (self, slot, queue)
+    }
+
     /// Attach a temporal causal IPI analyzer.
     ///
     /// When `Some`, the native tool dispatch loop runs pre/post behavioral probes.

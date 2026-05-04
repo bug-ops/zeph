@@ -1480,6 +1480,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // Declarative policy (PolicyGate) is outermost — fast, deterministic, zero LLM cost.
     // Adversarial policy gate fires only for calls that pass declarative policy (CRIT-04).
     let mut adv_policy_info: Option<zeph_core::AdversarialPolicyInfo> = None;
+    // Spec 050: shared trajectory risk slot — written by begin_turn(), read by PolicyGateExecutor.
+    let trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot =
+        std::sync::Arc::new(parking_lot::RwLock::new(0u8));
+    // Spec 050: pending risk signal queue — executor layers push signal codes; begin_turn() drains.
+    let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
+        std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
     let (tool_executor, mcp_ids_handle) = {
         let trust_gated =
             zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone());
@@ -1586,7 +1592,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                         adversarial_gated,
                         std::sync::Arc::new(enforcer),
                         policy_context,
-                    );
+                    )
+                    .with_trajectory_risk(std::sync::Arc::clone(&trajectory_risk_slot))
+                    .with_signal_queue(std::sync::Arc::clone(&trajectory_signal_queue));
                     zeph_tools::DynExecutor(std::sync::Arc::new(gate))
                 }
                 Err(e) => {
@@ -1600,6 +1608,45 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             adversarial_gated
         };
         (executor, handle)
+    };
+    // Spec 050 F2: wrap with ScopedToolExecutor when capability_scopes are configured.
+    let tool_executor = {
+        let scopes_cfg = config.security.capability_scopes.clone();
+        if scopes_cfg.scopes.is_empty() {
+            tool_executor
+        } else {
+            use std::collections::HashSet;
+            use zeph_tools::DynExecutor;
+            use zeph_tools::executor::ToolExecutor as _;
+            use zeph_tools::scope::build_scoped_executor;
+            // Collect registered tool ids for glob pattern resolution.
+            let registry_ids: HashSet<String> = tool_executor
+                .tool_definitions()
+                .into_iter()
+                .map(|d| d.id.to_string())
+                .collect();
+            match build_scoped_executor(tool_executor, &scopes_cfg, &registry_ids) {
+                Ok(scoped) => {
+                    let scoped =
+                        scoped.with_signal_queue(std::sync::Arc::clone(&trajectory_signal_queue));
+                    // F6: apply --scope CLI override to initial active scope.
+                    if let Some(ref task_type) = cli.initial_scope
+                        && !scoped.set_scope_for_task(task_type)
+                    {
+                        tracing::warn!(
+                            task_type,
+                            "CLI --scope: task type not registered in capability_scopes; ignored"
+                        );
+                    }
+                    DynExecutor(std::sync::Arc::new(scoped))
+                }
+                Err(e) => {
+                    // Config validation at startup prevents reaching this branch. If we do
+                    // reach it (e.g. patterns compiled but registry was empty), abort startup.
+                    return Err(anyhow::anyhow!("capability_scopes: {e}"));
+                }
+            }
+        }
     };
     let mcp_tools = tool_setup.mcp_tools;
     let mcp_outcomes = tool_setup.mcp_outcomes;
@@ -1863,6 +1910,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
+    // Wire the trajectory risk slot and signal queue (spec 050 Invariant 2).
+    let agent = agent
+        .with_trajectory_risk_slot(trajectory_risk_slot)
+        .with_signal_queue(trajectory_signal_queue)
+        .with_trajectory_config(config.security.trajectory.clone())
+        .0;
 
     // Load provider-specific and explicit instruction files.
     // base_dir is the process CWD at startup — the most natural project root for local tools.

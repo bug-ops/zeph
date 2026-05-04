@@ -44,6 +44,7 @@ pub(crate) mod rate_limiter;
 mod scheduler_commands;
 #[cfg(feature = "scheduler")]
 mod scheduler_loop;
+mod scope_commands;
 pub mod session_config;
 mod session_digest;
 pub(crate) mod sidequest;
@@ -54,6 +55,8 @@ pub(crate) mod state;
 pub(crate) mod task_injection;
 pub(crate) mod tool_execution;
 pub(crate) mod tool_orchestrator;
+pub mod trajectory;
+mod trajectory_commands;
 mod trust_commands;
 pub mod turn;
 mod utils;
@@ -1031,6 +1034,7 @@ impl<C: Channel> Agent<C> {
                     scheduler::SchedulerCommand,
                     skill::{FeedbackCommand, SkillCommand, SkillsCommand},
                     status::{FocusCommand, GuardrailCommand, SideQuestCommand, StatusCommand},
+                    trajectory::{ScopeCommand, TrajectoryCommand},
                 };
 
                 let mut agent_reg = CommandRegistry::new();
@@ -1065,6 +1069,8 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(LoopCommand);
                 agent_reg.register(PluginsCommand);
                 agent_reg.register(AcpCommand);
+                agent_reg.register(TrajectoryCommand);
+                agent_reg.register(ScopeCommand);
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut agent_null_sink,
@@ -1334,6 +1340,73 @@ impl<C: Channel> Agent<C> {
         self.services.security.user_provided_urls.write().clear();
         // Reset per-turn LLM request counter for the notification gate.
         self.runtime.lifecycle.turn_llm_requests = 0;
+
+        // Spec 050 §2: drain pending risk signals from executor layers before advancing.
+        {
+            let pending: Vec<u8> = {
+                let mut q = self.services.security.trajectory_signal_queue.lock();
+                std::mem::take(&mut *q)
+            };
+            for code in pending {
+                self.services
+                    .security
+                    .trajectory
+                    .record(crate::agent::trajectory::RiskSignal::from_code(code));
+            }
+        }
+        // Spec 050 Invariant 2: advance trajectory sentinel BEFORE any gate evaluation.
+        // F5: write auto-recover audit entry when sentinel hard-resets.
+        if self.services.security.trajectory.advance_turn()
+            && let Some(logger) = self.tool_orchestrator.audit_logger.clone()
+        {
+            let entry = zeph_tools::AuditEntry {
+                timestamp: zeph_tools::chrono_now(),
+                tool: "<sentinel>".to_owned().into(),
+                command: String::new(),
+                result: zeph_tools::AuditResult::Success,
+                duration_ms: 0,
+                error_category: Some("trajectory_auto_recover".to_owned()),
+                error_domain: Some("security".to_owned()),
+                error_phase: None,
+                claim_source: None,
+                mcp_server_id: None,
+                injection_flagged: false,
+                embedding_anomalous: false,
+                cross_boundary_mcp_to_acp: false,
+                adversarial_policy_decision: None,
+                exit_code: None,
+                truncated: false,
+                caller_id: None,
+                policy_match: None,
+                correlation_id: None,
+                vigil_risk: None,
+                scope_at_definition: None,
+                scope_at_dispatch: None,
+            };
+            self.runtime.lifecycle.supervisor.spawn(
+                crate::agent::agent_supervisor::TaskClass::Telemetry,
+                "trajectory-auto-recover-audit",
+                async move { logger.log(&entry).await },
+            );
+        }
+        // Publish updated risk level to the shared slot so PolicyGateExecutor can read it.
+        let risk_level = self.services.security.trajectory.current_risk();
+        *self.services.security.trajectory_risk_slot.write() = u8::from(risk_level);
+        // TUI/CLI: emit a status indicator when risk reaches High or Critical (NFR-CG-006).
+        if let Some(alert) = self.services.security.trajectory.poll_alert() {
+            let msg = format!(
+                "[trajectory] Risk level: {:?} (score={:.2})",
+                alert.level, alert.score
+            );
+            tracing::warn!(
+                level = ?alert.level,
+                score = alert.score,
+                "trajectory sentinel alert"
+            );
+            if let Some(ref tx) = self.services.session.status_tx {
+                let _ = tx.send(msg);
+            }
+        }
 
         let context = turn::TurnContext::new(id, cancel_token, self.runtime.config.timeouts);
         turn::Turn::new(context, input)
@@ -2392,6 +2465,12 @@ impl<C: Channel> Agent<C> {
             },
             spawn_depth: self.runtime.config.spawn_depth,
             mcp_tool_names: self.extract_mcp_tool_names(),
+            // F3 spec 050 §4: propagate seeded score when parent is >= Elevated.
+            seed_trajectory_score: {
+                let child = self.services.security.trajectory.spawn_child();
+                let score = child.score_now();
+                if score > 0.0 { Some(score) } else { None }
+            },
         }
     }
 

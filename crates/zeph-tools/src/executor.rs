@@ -399,6 +399,19 @@ pub enum ToolError {
 
     #[error("snapshot failed: {reason}")]
     SnapshotFailed { reason: String },
+
+    /// Tool call rejected because the tool id is outside the active capability scope.
+    ///
+    /// Emitted by `ScopedToolExecutor` before any tool side-effect runs.
+    /// The audit log records `error_category = "out_of_scope"`.
+    // LLM isolation: task_type is never shown in the error message (P2-OutOfScope).
+    #[error("tool call denied by policy")]
+    OutOfScope {
+        /// Fully-qualified tool id that was rejected.
+        tool_id: String,
+        /// Active task type at dispatch time, if any.
+        task_type: Option<String>,
+    },
 }
 
 impl ToolError {
@@ -421,6 +434,7 @@ impl ToolError {
             Self::Execution(io_err) => classify_io_error(io_err),
             Self::Shell { category, .. } => *category,
             Self::SnapshotFailed { .. } => ToolErrorCategory::PermanentFailure,
+            Self::OutOfScope { .. } => ToolErrorCategory::PolicyBlocked,
         }
     }
 

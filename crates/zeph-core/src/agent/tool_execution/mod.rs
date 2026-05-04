@@ -257,6 +257,12 @@ impl<C: Channel> Agent<C> {
         if result.scrubbed {
             self.update_metrics(|m| m.pii_scrub_count += 1);
             self.push_classifier_metrics();
+            // Signal code 4 = PiiRedaction (spec 050 §2).
+            self.services
+                .security
+                .trajectory_signal_queue
+                .lock()
+                .push(4);
         }
         result.text
     }
@@ -284,6 +290,12 @@ impl<C: Channel> Agent<C> {
                 "llm_output",
                 format!("{} markdown image(s) blocked", events.len()),
             );
+            // Signal code 2 = ExfiltrationRedaction (spec 050 §2).
+            self.services
+                .security
+                .trajectory_signal_queue
+                .lock()
+                .push(2);
         }
         cleaned
     }
@@ -841,6 +853,19 @@ impl<C: Channel> Agent<C> {
             tracing::debug!(tool = %tool_name, reason = %reason, "VIGIL sanitized tool output");
             VigilOutcome::Sanitized { risk }
         };
+
+        // Spec 050 §2: record VigilFlagged signal scaled by risk level.
+        // Code 7 = VigilFlagged(High), 6 = VigilFlagged(Medium), 0 = VigilFlagged(Low).
+        let vigil_code = match risk {
+            zeph_tools::audit::VigilRiskLevel::High => 7u8,
+            zeph_tools::audit::VigilRiskLevel::Medium => 6u8,
+            zeph_tools::audit::VigilRiskLevel::Low => 0u8,
+        };
+        self.services
+            .security
+            .trajectory_signal_queue
+            .lock()
+            .push(vigil_code);
 
         (body_after, Some(outcome))
     }

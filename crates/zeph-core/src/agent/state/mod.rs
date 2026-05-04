@@ -336,6 +336,22 @@ pub(crate) struct SecurityState {
     /// VIGIL pre-sanitizer gate. `None` for subagent sessions (subagents are exempt).
     /// Set at agent build time for top-level agents; skipped for subagents (high FP rate).
     pub(crate) vigil: Option<crate::agent::vigil::VigilGate>,
+    /// Cross-turn risk accumulator (spec 050 Phase 1).
+    ///
+    /// `advance_turn()` MUST be called once per turn, before `PolicyGateExecutor::check_policy`.
+    /// Never expose score, level, or alerts to any LLM-callable surface.
+    pub(crate) trajectory: crate::agent::trajectory::TrajectorySentinel,
+    /// Shared risk-level slot for `PolicyGateExecutor` (spec 050).
+    ///
+    /// Written by the agent loop after each turn's `sentinel.current_risk()` call.
+    /// `PolicyGateExecutor::check_policy` reads it to downgrade `Allow` at `Critical`.
+    /// `u8` encoding: 0=Calm, 1=Elevated, 2=High, 3=Critical.
+    pub(crate) trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot,
+    /// Pending risk signals from executor layers (spec 050 §2).
+    ///
+    /// `PolicyGateExecutor` and `ScopedToolExecutor` push signal codes here.
+    /// `begin_turn()` drains this queue into `trajectory.record()`.
+    pub(crate) trajectory_signal_queue: zeph_tools::RiskSignalQueue,
 }
 
 /// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).
