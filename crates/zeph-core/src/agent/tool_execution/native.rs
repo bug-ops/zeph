@@ -3877,7 +3877,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
-    use zeph_llm::provider::{ChatResponse, Message, MessageMetadata, MessagePart, Role};
+    use zeph_llm::provider::{ChatResponse, Message, MessagePart, Role};
 
     use crate::agent::Agent;
     use crate::agent::tests::agent_tests::{
