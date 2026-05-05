@@ -24,6 +24,7 @@ async-stream = "0.3.6"
 async-trait = "0.1.89"
 axum = "0.8.9"
 base64 = "0.22.1"
+bech32 = "0.9.1"
 blake3 = "1.8.5"
 bytemuck = "1.25"
 candle-core = { version = "0.10.2", default-features = false }
@@ -46,6 +47,7 @@ glob = "0.3.3"
 hf-hub = { version = "0.5", default-features = false }
 hex = "0.4.3"
 http = "1.4"
+k256 = { version = "0.13", default-features = false }
 http-body-util = "0.1.3"
 ignore = "0.4.25"
 include_dir = { version = "0.7.4", features = ["glob"] }
@@ -78,6 +80,7 @@ rand_distr = "0.6"
 ratatui = "0.30"
 regex = "1.12.3"
 reqwest = { version = "0.13.3", default-features = false }
+ripemd = "0.2"
 rmcp = "1.6.0"
 rustix = { version = "1.1.4", default-features = false }
 audioadapter-buffers = "3.0"
@@ -200,7 +203,7 @@ ide     = ["acp", "acp-http"]
 server  = ["gateway", "a2a", "otel", "prometheus"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "task-metrics", "sandbox", "self-check"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "task-metrics", "sandbox", "self-check", "gonka"]
 testing = ["zeph-llm/testing"]
 env-vault  = ["zeph-core/env-vault"]
 sandbox    = ["zeph-tools/sandbox"]
@@ -243,6 +246,7 @@ task-metrics = ["zeph-core/task-metrics"]
 # Database backend selection — mutually exclusive. Default includes sqlite.
 # NOTE: --all-features activates both, triggering compile_error! in zeph-db.
 # Use --features full or --features full,postgres instead.
+gonka = ["zeph-llm/gonka"]
 index = ["zeph-core/index"]
 sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite"]
 postgres = ["zeph-db/postgres", "zeph-memory/postgres"]

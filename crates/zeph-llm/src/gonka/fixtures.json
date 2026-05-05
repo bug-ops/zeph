@@ -1,0 +1,29 @@
+[
+  {
+    "private_key_hex": "0000000000000000000000000000000000000000000000000000000000000001",
+    "chain_prefix": "gonka",
+    "body": "hello",
+    "timestamp_ns": 1000000000,
+    "transfer_address": "gonka1test",
+    "expected_address": "gonka1w508d6qejxtdg4y5r3zarvary0c5xw7k2gsyg6",
+    "expected_signature": "/x6JuvqXWpT9YNgjYt0eNLxK8nDjccY/VyJrDn4bGjNbWWu3Px9doIlUQUOOf2Eu7SqyZ4oyGlDoY+4XpGA2JQ=="
+  },
+  {
+    "private_key_hex": "0000000000000000000000000000000000000000000000000000000000000001",
+    "chain_prefix": "gonka",
+    "body": "",
+    "timestamp_ns": 0,
+    "transfer_address": "",
+    "expected_address": "gonka1w508d6qejxtdg4y5r3zarvary0c5xw7k2gsyg6",
+    "expected_signature": "NyKMAuRc/FRjptcjm94Q3Fqeevcl2fJUeb0Dxwh1HZpH7sgFk7ajJdBPt8FVa1mxG5OY623oKNb6xkGerdqIiw=="
+  },
+  {
+    "private_key_hex": "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140",
+    "chain_prefix": "gonka",
+    "body": "hello",
+    "timestamp_ns": 1000000000,
+    "transfer_address": "gonka1test",
+    "expected_address": "gonka14h0ycu78h88wzldxc7e79vhw5xsde0n85evmum",
+    "expected_signature": "jtbBiX1nUgLiIH7FjLxy7Nn1Ckp3jq+8t6iLNjCKliJPXKOGHoo997xqbo3R9FNsTK8TmCyQW3PPvRJQFKhRXg=="
+  }
+]

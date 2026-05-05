@@ -39,6 +39,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(zeph-llm): `RequestSigner` for Gonka-compatible signed-request headers (#3609).
+  Produces ECDSA/secp256k1 signatures over `sha256(sha256(body) || timestamp_ns || transfer_address)`
+  with k256 RFC6979 deterministic signing. Address derivation uses `bech32(prefix, ripemd160(sha256(pubkey)))`.
+  Three fixture-verified test vectors included. Feature-gated under `gonka`.
+
+- feat(zeph-llm): `EndpointPool` round-robin pool with fail-skip cooldown (#3610).
+  Atomic-only implementation (`AtomicUsize` cursor + `Vec<AtomicU64>` for cooldown timestamps).
+  Skips endpoints in cooldown, falls back to least-recently-failed when all are unavailable.
+  URL scheme validation (http/https only) in constructor. Feature-gated under `gonka`.
+
 - feat(orchestration): `orchestrator_provider` config field in `[orchestration]` — sets a
   dedicated provider for scheduling-tier LLM calls (aggregation, predicate evaluation, and
   verification fallback). Acts as a fallback for `verify_provider` and `predicate_provider` when
