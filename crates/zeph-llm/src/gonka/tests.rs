@@ -464,7 +464,7 @@ async fn gonka_tools_chat_with_tools_returns_tool_use() {
             assert_eq!(tool_calls[0].name.as_ref(), "get_weather");
             assert_eq!(tool_calls[0].input["location"], "London");
         }
-        other => panic!("expected ToolUse, got: {other:?}"),
+        other @ ChatResponse::Text(_) => panic!("expected ToolUse, got: {other:?}"),
     }
 }
 
