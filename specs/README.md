@@ -40,6 +40,8 @@ Spec IDs (001–044) follow a logical grouping:
 - **048**: SLM cost metrics survey and CPS metric contract
 - **049**: Agent god-object decomposition (Services aggregator + AgentRuntime newtype)
 - **050**: Security capability governance (tool scoping + trajectory sentinel + CapSeal sketch)
+- **051**: Gonka.ai Phase 1 — GonkaGate hosted gateway (CompatibleProvider, wizard, vault key)
+- **052**: Gonka.ai Phase 2 — native network transport (GonkaProvider, ECDSA signing, EndpointPool)
 
 ---
 
@@ -121,3 +123,5 @@ Spec IDs (001–044) follow a logical grouping:
 | `048-slm-cost-metrics/spec.md` | SLM survey findings (arXiv:2510.03847), CPS (cost per successful task) metric contract, `record_successful_task()` / `cps()` API, daily reset semantics | `zeph-core` |
 | `049-agent-decomposition/spec.md` | Agent god-object Phase 2 (#3509): split `Agent<C>` 25+ direct sub-state fields into `services: Services` (background subsystems) and `runtime: AgentRuntime` (config, lifecycle, providers, metrics, debug, instructions); pure refactor, no API change, separately borrowable; `TurnContext` boundary sketched for P2-prereq-3 | `zeph-core` |
 | `050-security-capability-governance/spec.md` | Capability scoping (`ScopedToolExecutor` + per-task-type allow-lists, #3563), `TrajectorySentinel` multi-turn risk accumulator with decay (#3570), and CapSeal/SUDP `VaultBroker::propose_operation` Phase-3 research sketch (#3569) | `zeph-tools`, `zeph-core` |
+| `051-gonka-gateway/spec.md` | Phase 1: gonka.ai inference via GonkaGate hosted gateway — zero new Rust code, `CompatibleProvider` reuse, wizard branch, vault key `ZEPH_COMPATIBLE_GONKAGATE_API_KEY` | `zeph-llm`, `zeph-config` |
+| `052-gonka-native/spec.md` | Phase 2: native gonka network transport — `GonkaProvider`, ECDSA secp256k1 signing (`RequestSigner`), `EndpointPool` round-robin fail-skip, `send_signed_with_retry`, `zeph gonka doctor` | `zeph-llm`, `zeph-config` |

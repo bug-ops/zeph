@@ -89,9 +89,11 @@ AnyProvider { Claude, OpenAI, Ollama, Compatible, Candle, Gemini }
 | Claude | `claude.rs` | Anthropic API, prompt caching (4 breakpoints), thinking blocks |
 | OpenAI | `openai.rs` | OpenAI API + compatible endpoints |
 | Ollama | `ollama.rs` | Local via `ollama-rs`, streaming |
-| Compatible | `compatible.rs` | OpenAI-compatible HTTP (LM Studio, vLLM, etc.) |
+| Compatible | `compatible.rs` | OpenAI-compatible HTTP (LM Studio, vLLM, etc.); also used for GonkaGate Phase 1 |
 | Candle | `candle.rs` | Local inference via HuggingFace candle (feature-gated) |
 | Gemini | `gemini.rs` | Google Gemini API |
+| Gonka (gateway) | `compatible.rs` | Phase 1: GonkaGate via `CompatibleProvider`; vault key `ZEPH_COMPATIBLE_GONKAGATE_API_KEY`; see [[051-gonka-gateway/spec]] |
+| Gonka (native) | `gonka/provider.rs` | Phase 2: direct gonka network; ECDSA secp256k1 signing; `EndpointPool`; vault keys `ZEPH_GONKA_PRIVATE_KEY`, `ZEPH_GONKA_ADDRESS`; see [[052-gonka-native/spec]] |
 
 ## Prompt Caching (Claude only)
 
