@@ -34,6 +34,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(orchestration): `orchestrator_provider` config field in `[orchestration]` — sets a
+  dedicated provider for scheduling-tier LLM calls (aggregation, predicate evaluation, and
+  verification fallback). Acts as a fallback for `verify_provider` and `predicate_provider` when
+  those are not explicitly set; does NOT affect `planner_provider`. Set to a cheap/fast model
+  (e.g. `orchestrator_provider = "fast"`) to reduce orchestration cost without impacting plan
+  quality. Resolution order per subsystem: `LlmAggregator` → `orchestrator_provider` → primary;
+  `PlanVerifier` → `verify_provider` → `orchestrator_provider` → primary; `PredicateEvaluator`
+  → `predicate_provider` → `orchestrator_provider` → `verify_provider` → primary.
+  **Trade-off**: routing `LlmAggregator` through `orchestrator_provider` may reduce final
+  synthesis quality when a cheap/fast model is chosen, since aggregation produces user-visible
+  output. A config migration step (step 43) adds the commented-out field to existing configs.
+  Implements #3300.
+
 - feat(cli): `zeph project purge` command removes all project-local state (SQLite database,
   log files, debug artifacts, trace files, audit log, and Qdrant collections) with `--dry-run`
   and `-y` flags. Includes pre-flight exclusive lock check on the SQLite database to prevent

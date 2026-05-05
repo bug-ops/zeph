@@ -147,6 +147,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -179,6 +180,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -211,6 +213,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 

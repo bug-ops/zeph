@@ -132,6 +132,8 @@ struct SharedAgentDeps {
     probe_provider: Option<zeph_llm::any::AnyProvider>,
     planner_provider: Option<zeph_llm::any::AnyProvider>,
     verify_provider: Option<zeph_llm::any::AnyProvider>,
+    orchestrator_provider: Option<zeph_llm::any::AnyProvider>,
+    predicate_provider: Option<zeph_llm::any::AnyProvider>,
     quarantine_provider: Option<(zeph_llm::any::AnyProvider, zeph_sanitizer::QuarantineConfig)>,
     guardrail_provider: Option<(
         zeph_llm::any::AnyProvider,
@@ -526,6 +528,8 @@ async fn build_acp_deps(
         probe_provider: app.build_probe_provider(),
         planner_provider: app.build_planner_provider(),
         verify_provider: app.build_verify_provider(),
+        orchestrator_provider: app.build_orchestrator_provider(),
+        predicate_provider: app.build_predicate_provider(),
         quarantine_provider: app.build_quarantine_provider(),
         guardrail_provider: app.build_guardrail_provider(),
         audit_logger: acp_audit_logger,
@@ -636,6 +640,8 @@ async fn spawn_acp_agent(
     let probe_provider = d.probe_provider.clone();
     let planner_provider = d.planner_provider.clone();
     let verify_provider = d.verify_provider.clone();
+    let orchestrator_provider = d.orchestrator_provider.clone();
+    let predicate_provider = d.predicate_provider.clone();
     let quarantine_provider = d.quarantine_provider.clone();
     let guardrail_provider = d.guardrail_provider.clone();
     let session_config = d.session_config.clone();
@@ -856,6 +862,14 @@ async fn spawn_acp_agent(
 
     if let Some(vp) = verify_provider {
         agent = agent.with_verify_provider(vp);
+    }
+
+    if let Some(op) = orchestrator_provider {
+        agent = agent.with_orchestrator_provider(op);
+    }
+
+    if let Some(pp) = predicate_provider {
+        agent = agent.with_predicate_provider(pp);
     }
 
     agent = agent_setup::apply_quarantine_provider(agent, quarantine_provider);

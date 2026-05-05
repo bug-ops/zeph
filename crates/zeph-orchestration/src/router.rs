@@ -160,6 +160,7 @@ mod tests {
             verify_predicate: None,
             predicate_outcome: None,
             execution_environment: None,
+            token_budget_cents: None,
         }
     }
 

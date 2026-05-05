@@ -181,12 +181,29 @@ impl<C: crate::channel::Channel> Agent<C> {
             mgr.reserve_slots(reserved);
         }
 
+        // Build admission gate from providers that have `max_concurrent` set (C1 fix).
+        let admission_gate = {
+            let pairs: Vec<(String, usize)> = self
+                .runtime
+                .providers
+                .provider_pool
+                .iter()
+                .filter_map(|e| e.max_concurrent.map(|c| (e.effective_name(), c as usize)))
+                .collect();
+            if pairs.is_empty() {
+                None
+            } else {
+                Some(zeph_orchestration::AdmissionGate::new(&pairs))
+            }
+        };
+
         let scheduler = if graph.status == GraphStatus::Created {
             DagScheduler::new(
                 graph,
                 &self.services.orchestration.orchestration_config,
                 Box::new(RuleBasedRouter),
                 available_agents,
+                admission_gate,
             )
         } else {
             DagScheduler::resume_from(
@@ -194,6 +211,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                 &self.services.orchestration.orchestration_config,
                 Box::new(RuleBasedRouter),
                 available_agents,
+                admission_gate,
             )
         }
         .map_err(|e| {
@@ -218,6 +236,21 @@ impl<C: crate::channel::Channel> Agent<C> {
                 }
                 error::OrchestrationFailure::VerifyConfig(e.to_string())
             })?;
+
+        // M1: warn-only validation for orchestrator_provider (typos silently fall back at runtime).
+        let op = self
+            .services
+            .orchestration
+            .orchestration_config
+            .orchestrator_provider
+            .as_str();
+        if !op.is_empty() && !provider_names.contains(&op) {
+            tracing::warn!(
+                provider = op,
+                "orchestration.orchestrator_provider not found in [[llm.providers]]; \
+                 will fall back to primary provider"
+            );
+        }
 
         Ok((scheduler, reserved))
     }
@@ -319,6 +352,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         scheduler: &mut zeph_orchestration::DagScheduler,
         final_status: zeph_orchestration::GraphStatus,
     ) -> Option<Vec<zeph_orchestration::TaskNode>> {
+        use tracing::Instrument as _;
         use zeph_orchestration::{GraphStatus, PlanVerifier};
 
         if final_status != GraphStatus::Completed
@@ -351,11 +385,15 @@ impl<C: crate::channel::Channel> Agent<C> {
             .orchestration
             .verify_provider
             .as_ref()
+            .or(self.services.orchestration.orchestrator_provider.as_ref())
             .unwrap_or(&self.provider)
             .clone();
         let mut verifier =
             PlanVerifier::new(verify_provider, self.services.security.sanitizer.clone());
-        let result = verifier.verify_plan(&goal, &truncated_output).await;
+        let result = verifier
+            .verify_plan(&goal, &truncated_output)
+            .instrument(tracing::info_span!("core.plan.whole_plan_verify"))
+            .await;
 
         tracing::debug!(
             complete = result.complete,
@@ -415,11 +453,28 @@ impl<C: crate::channel::Channel> Agent<C> {
             .map(|m| m.definitions().to_vec())
             .unwrap_or_default();
 
+        // A1 fix: replan DAG also needs admission control, same as the primary DAG.
+        let partial_admission_gate = {
+            let pairs: Vec<(String, usize)> = self
+                .runtime
+                .providers
+                .provider_pool
+                .iter()
+                .filter_map(|e| e.max_concurrent.map(|c| (e.effective_name(), c as usize)))
+                .collect();
+            if pairs.is_empty() {
+                None
+            } else {
+                Some(zeph_orchestration::AdmissionGate::new(&pairs))
+            }
+        };
+
         let mut partial_scheduler = match DagScheduler::new(
             partial_graph,
             &partial_config,
             Box::new(RuleBasedRouter),
             available_agents,
+            partial_admission_gate,
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -517,6 +572,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         &mut self,
         completed_graph: zeph_orchestration::TaskGraph,
     ) -> Result<&'static str, error::AgentError> {
+        use tracing::Instrument as _;
         use zeph_orchestration::{Aggregator, LlmAggregator};
 
         let completed_count = completed_graph
@@ -534,11 +590,22 @@ impl<C: crate::channel::Channel> Agent<C> {
             m.orchestration.tasks_skipped += skipped_count;
         });
 
+        let aggregator_provider = self
+            .services
+            .orchestration
+            .orchestrator_provider
+            .as_ref()
+            .unwrap_or(&self.provider)
+            .clone();
         let aggregator = LlmAggregator::new(
-            self.provider.clone(),
+            aggregator_provider,
             &self.services.orchestration.orchestration_config,
         );
-        match aggregator.aggregate(&completed_graph).await {
+        match aggregator
+            .aggregate(&completed_graph)
+            .instrument(tracing::info_span!("core.plan.finalize_completed"))
+            .await
+        {
             Ok((synthesis, aggregator_usage)) => {
                 let (aggr_prompt, aggr_completion) = aggregator_usage.unwrap_or((0, 0));
                 self.update_metrics(|m| {

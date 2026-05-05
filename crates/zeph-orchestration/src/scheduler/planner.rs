@@ -176,6 +176,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -211,6 +212,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -248,6 +250,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -302,7 +305,8 @@ mod tests {
         let graph = make_hierarchical_graph();
         let config = make_hierarchical_config();
         let defs = vec![make_def("worker")];
-        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
 
         assert_eq!(
             scheduler.topology().strategy,
@@ -352,7 +356,8 @@ mod tests {
         let graph = make_hierarchical_graph();
         let config = make_hierarchical_config();
         let defs = vec![make_def("worker")];
-        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
 
         scheduler.graph.tasks[0].failure_strategy = Some(crate::graph::FailureStrategy::Skip);
         scheduler.graph.tasks[0].status = TaskStatus::Running;
@@ -362,6 +367,7 @@ mod tests {
                 agent_handle_id: "h0".to_string(),
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
+                admission_permit: None,
             },
         );
 
@@ -388,7 +394,8 @@ mod tests {
         let graph = make_hierarchical_graph();
         let config = make_hierarchical_config();
         let defs = vec![make_def("worker")];
-        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
 
         scheduler.graph.tasks[0].status = TaskStatus::Completed;
         scheduler.graph.tasks[1].status = TaskStatus::Completed;
@@ -427,6 +434,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -450,6 +458,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -478,6 +487,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 

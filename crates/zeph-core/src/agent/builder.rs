@@ -439,6 +439,28 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set a dedicated provider for scheduling-tier LLM calls.
+    ///
+    /// Acts as fallback for `verify_provider` and `predicate_provider` when those are not set.
+    /// Does NOT affect `planner_provider`. When not set, scheduling-tier calls fall back to the
+    /// primary provider. Corresponds to `orchestration.orchestrator_provider` in config.
+    #[must_use]
+    pub fn with_orchestrator_provider(mut self, provider: AnyProvider) -> Self {
+        self.services.orchestration.orchestrator_provider = Some(provider);
+        self
+    }
+
+    /// Set a dedicated provider for predicate gate evaluation.
+    ///
+    /// When not set, predicate evaluation falls back to `orchestrator_provider`, then
+    /// `verify_provider`, then the primary provider.
+    /// Corresponds to `orchestration.predicate_provider` in config.
+    #[must_use]
+    pub fn with_predicate_provider(mut self, provider: AnyProvider) -> Self {
+        self.services.orchestration.predicate_provider = Some(provider);
+        self
+    }
+
     /// Set the `AdaptOrch` topology advisor.
     ///
     /// When set, `handle_plan_goal_as_string` calls `advisor.recommend()` before planning

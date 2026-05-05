@@ -292,6 +292,30 @@ pub struct OrchestrationConfig {
     /// Default: `true`.
     #[serde(default = "default_persistence_enabled")]
     pub persistence_enabled: bool,
+    /// Provider name from `[[llm.providers]]` for scheduling-tier LLM calls
+    /// (aggregation, predicate evaluation, verification when no specific provider is set).
+    ///
+    /// Acts as fallback for `verify_provider` and `predicate_provider` when those are empty.
+    /// Does NOT affect `planner_provider` — planning is a complex task and stays on the quality
+    /// provider. Empty string = use the agent's primary provider.
+    ///
+    /// # Trade-off
+    ///
+    /// Setting this to a fast/cheap model reduces aggregation quality because `LlmAggregator`
+    /// produces user-visible output. See CHANGELOG for details.
+    #[serde(default)]
+    pub orchestrator_provider: ProviderName,
+
+    /// Default per-task cost budget in US cents. `0.0` = unlimited (no budget check).
+    ///
+    /// When a sub-agent task completes, the scheduler emits a `tracing::warn!` if the
+    /// task exceeded this budget. In MVP this is **warn-only** — hard enforcement requires
+    /// per-task `CostTracker` scoping, which is deferred post-v1.0.0.
+    ///
+    /// Individual tasks can override this via `TaskNode::token_budget_cents`.
+    /// Default: `0.0` (unlimited).
+    #[serde(default)]
+    pub default_task_budget_cents: f64,
 }
 
 impl Default for OrchestrationConfig {
@@ -329,6 +353,8 @@ impl Default for OrchestrationConfig {
             max_predicate_replans: default_max_predicate_replans(),
             predicate_timeout_secs: default_predicate_timeout_secs(),
             persistence_enabled: default_persistence_enabled(),
+            orchestrator_provider: ProviderName::default(),
+            default_task_budget_cents: 0.0,
         }
     }
 }

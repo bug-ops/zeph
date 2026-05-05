@@ -380,6 +380,13 @@ pub struct TaskNode {
     /// dispatching shell tool calls for this task. `None` inherits the executor default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_environment: Option<String>,
+
+    /// Per-task cost budget in US cents. `None` = use `OrchestrationConfig::default_task_budget_cents`.
+    ///
+    /// On task completion the scheduler checks whether this budget was exceeded and
+    /// emits a `tracing::warn!`. Hard enforcement is deferred post-v1.0.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_budget_cents: Option<f64>,
 }
 
 impl TaskNode {
@@ -403,6 +410,7 @@ impl TaskNode {
             verify_predicate: None,
             predicate_outcome: None,
             execution_environment: None,
+            token_budget_cents: None,
         }
     }
 }

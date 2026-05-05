@@ -22,7 +22,8 @@ use super::{
     migrate_memory_persona_config, migrate_memory_reasoning_config,
     migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
     migrate_memory_retrieval_query_bias, migrate_microcompact_config,
-    migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
+    migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
+    migrate_otel_filter, migrate_planner_model_to_provider, migrate_provider_max_concurrent,
     migrate_qdrant_api_key, migrate_quality_config, migrate_sandbox_config,
     migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
     migrate_session_provider_persistence, migrate_session_recap_config,
@@ -491,5 +492,27 @@ impl Migration for MigrateToolsCompressionConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_tools_compression_config(toml_src)
+    }
+}
+
+pub(super) struct MigrateOrchestratorProvider;
+impl Migration for MigrateOrchestratorProvider {
+    fn name(&self) -> &'static str {
+        "migrate_orchestrator_provider"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_orchestration_orchestrator_provider(toml_src)
+    }
+}
+
+pub(super) struct MigrateProviderMaxConcurrent;
+impl Migration for MigrateProviderMaxConcurrent {
+    fn name(&self) -> &'static str {
+        "migrate_provider_max_concurrent"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_provider_max_concurrent(toml_src)
     }
 }

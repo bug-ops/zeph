@@ -156,6 +156,11 @@ pub(super) struct RunningTask {
     pub(super) agent_handle_id: String,
     pub(super) agent_def_name: String,
     pub(super) started_at: Instant,
+    /// Admission control permit; dropped when the task completes to release the provider slot.
+    /// `OwnedSemaphorePermit` does not implement `Debug`, so the manual `Debug` impl on
+    /// `DagScheduler` skips `running` (it logs `running_count` instead).
+    #[allow(dead_code)]
+    pub(super) admission_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 /// DAG execution engine.
@@ -255,14 +260,32 @@ pub struct DagScheduler {
     pub(super) lineage_ttl_secs: u64,
     /// Whether the predicate gate is enabled (`config.verify_predicate_enabled`).
     pub(super) verify_predicate_enabled: bool,
-    /// Provider name for predicate evaluation (empty = fall back to `verify_provider` then primary).
+    /// Provider name for predicate evaluation (empty = fall back to `orchestrator_provider`
+    /// then `verify_provider` then primary).
     pub(super) predicate_provider: String,
+    /// Provider name for scheduling-tier LLM calls (empty = fall back to primary).
+    /// Stored for logging and diagnostics; actual resolution happens in `zeph-core`.
+    pub(super) orchestrator_provider: String,
     /// Maximum predicate-driven re-runs across the whole DAG (S1 — independent of `max_replans`).
     pub(super) max_predicate_replans: u32,
     /// Counter of predicate-driven re-runs used so far.
     pub(super) predicate_replans_used: u32,
     /// Per-task accumulated predicate failure reasons, injected into the re-run prompt.
     pub(super) predicate_reasons: HashMap<TaskId, String>,
+    /// Per-provider admission gate. `None` when no provider has `max_concurrent` set.
+    pub(super) admission_gate: Option<super::admission::AdmissionGate>,
+    /// Default per-task cost budget in cents (`0.0` = unlimited).
+    pub(super) default_task_budget_cents: f64,
+    /// Temporary holding map for admission permits between `dispatch_ready_tasks` and
+    /// `record_spawn`. Permits are transferred into `RunningTask::admission_permit` when
+    /// the caller confirms a successful spawn via `record_spawn`.
+    pub(super) pending_permits: HashMap<TaskId, tokio::sync::OwnedSemaphorePermit>,
+    /// Maps agent definition name → provider name for admission gate lookups.
+    ///
+    /// Built at construction from `available_agents[*].model` (`ModelSpec::Named(provider_name)`).
+    /// Agents with `model = None` or `Inherit` are absent from this map; their tasks
+    /// bypass the gate (treated as ungated).
+    pub(super) agent_provider_map: HashMap<String, String>,
 }
 
 impl std::fmt::Debug for DagScheduler {
@@ -298,6 +321,7 @@ impl DagScheduler {
         config: &OrchestrationConfig,
         router: Box<dyn AgentRouter>,
         available_agents: Vec<zeph_subagent::SubAgentDef>,
+        admission_gate: Option<super::admission::AdmissionGate>,
     ) -> Result<Self, OrchestrationError> {
         if graph.status != GraphStatus::Created {
             return Err(OrchestrationError::InvalidGraph(format!(
@@ -315,6 +339,17 @@ impl DagScheduler {
                 task.status = TaskStatus::Ready;
             }
         }
+
+        let agent_provider_map: HashMap<String, String> = available_agents
+            .iter()
+            .filter_map(|def| {
+                if let Some(zeph_subagent::ModelSpec::Named(provider)) = &def.model {
+                    Some((def.name.clone(), provider.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         let (event_tx, event_rx) = mpsc::channel(64);
 
@@ -386,9 +421,14 @@ impl DagScheduler {
             lineage_ttl_secs: config.lineage_ttl_secs,
             verify_predicate_enabled: config.verify_predicate_enabled,
             predicate_provider: config.predicate_provider.as_str().trim().to_owned(),
+            orchestrator_provider: config.orchestrator_provider.as_str().trim().to_owned(),
             max_predicate_replans: config.max_predicate_replans,
             predicate_replans_used: 0,
             predicate_reasons: HashMap::new(),
+            admission_gate,
+            default_task_budget_cents: config.default_task_budget_cents,
+            pending_permits: HashMap::new(),
+            agent_provider_map,
         })
     }
 
@@ -410,6 +450,7 @@ impl DagScheduler {
         config: &OrchestrationConfig,
         router: Box<dyn AgentRouter>,
         available_agents: Vec<zeph_subagent::SubAgentDef>,
+        admission_gate: Option<super::admission::AdmissionGate>,
     ) -> Result<Self, OrchestrationError> {
         if graph.status == GraphStatus::Completed || graph.status == GraphStatus::Canceled {
             return Err(OrchestrationError::InvalidGraph(format!(
@@ -440,8 +481,21 @@ impl DagScheduler {
                         agent_def_name: def_name,
                         // Conservative: treat as just-started so timeout window is reset.
                         started_at: Instant::now(),
+                        // Permits are not persisted; resumed tasks start without a slot.
+                        admission_permit: None,
                     },
                 ))
+            })
+            .collect();
+
+        let agent_provider_map: HashMap<String, String> = available_agents
+            .iter()
+            .filter_map(|def| {
+                if let Some(zeph_subagent::ModelSpec::Named(provider)) = &def.model {
+                    Some((def.name.clone(), provider.clone()))
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -498,9 +552,19 @@ impl DagScheduler {
             lineage_ttl_secs: config.lineage_ttl_secs,
             verify_predicate_enabled: config.verify_predicate_enabled,
             predicate_provider: config.predicate_provider.as_str().trim().to_owned(),
+            orchestrator_provider: config.orchestrator_provider.as_str().trim().to_owned(),
             max_predicate_replans: config.max_predicate_replans,
             predicate_replans_used: 0,
             predicate_reasons: HashMap::new(),
+            admission_gate,
+            default_task_budget_cents: config.default_task_budget_cents,
+            // `pending_permits` is not persisted; resume always starts with an empty map.
+            // Resumed tasks that were `Running` start without an admission permit (see
+            // `RunningTask::admission_permit: None` above). This is intentional: their
+            // slots were released when the process exited and must be re-acquired on next
+            // dispatch if the task is re-spawned.
+            pending_permits: HashMap::new(),
+            agent_provider_map,
         })
     }
 
@@ -579,10 +643,17 @@ impl DagScheduler {
         &self.verify_provider
     }
 
-    /// Provider name for predicate evaluation (empty = fall back to `verify_provider` then primary).
+    /// Provider name for predicate evaluation (empty = fall back to `orchestrator_provider`
+    /// then `verify_provider` then primary).
     #[must_use]
     pub fn predicate_provider_name(&self) -> &str {
         &self.predicate_provider
+    }
+
+    /// Provider name for scheduling-tier LLM calls (empty = fall back to primary).
+    #[must_use]
+    pub fn orchestrator_provider_name(&self) -> &str {
+        &self.orchestrator_provider
     }
 
     /// Whether the predicate gate is enabled.
@@ -701,6 +772,8 @@ mod tests {
             max_predicate_replans: 2,
             predicate_timeout_secs: 30,
             persistence_enabled: true,
+            orchestrator_provider: Default::default(),
+            default_task_budget_cents: 0.0,
         }
     }
 
@@ -732,13 +805,13 @@ mod tests {
     ) -> DagScheduler {
         let config = make_config();
         let defs = vec![make_def("worker")];
-        DagScheduler::new(graph, &config, router, defs).unwrap()
+        DagScheduler::new(graph, &config, router, defs, None).unwrap()
     }
 
     pub(super) fn make_scheduler(graph: TaskGraph) -> DagScheduler {
         let config = make_config();
         let defs = vec![make_def("worker")];
-        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap()
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap()
     }
 
     // --- constructor tests ---
@@ -748,7 +821,7 @@ mod tests {
         let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
         graph.status = GraphStatus::Running; // wrong status
         let config = make_config();
-        let result = DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![]);
+        let result = DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![], None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, OrchestrationError::InvalidGraph(_)));
@@ -772,7 +845,30 @@ mod tests {
     fn test_new_validates_empty_graph() {
         let graph = graph_from_nodes(vec![]);
         let config = make_config();
-        let result = DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![]);
+        let result = DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![], None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn orchestrator_provider_name_returns_config_value() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = zeph_config::OrchestrationConfig {
+            orchestrator_provider: zeph_config::ProviderName::new("quality"),
+            ..make_config()
+        };
+        let scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![], None).unwrap();
+        assert_eq!(scheduler.orchestrator_provider_name(), "quality");
+    }
+
+    #[test]
+    fn orchestrator_provider_name_empty_is_default() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let scheduler =
+            DagScheduler::new(graph, &make_config(), Box::new(FirstRouter), vec![], None).unwrap();
+        assert!(
+            scheduler.orchestrator_provider_name().is_empty(),
+            "default config must yield empty orchestrator_provider_name"
+        );
     }
 }

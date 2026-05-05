@@ -359,14 +359,15 @@ impl<C: crate::channel::Channel> Agent<C> {
                         }
                         in_flight_predicate_evals.insert(task_id);
 
-                        // Resolve predicate provider: verify_provider fallback > primary.
-                        // Full named-provider resolution requires provider_pool lookup which is
-                        // not yet exposed here; use verify_provider as the preferred alternate.
+                        // Resolve predicate provider: predicate_provider -> orchestrator_provider
+                        // -> verify_provider -> primary.
                         let predicate_provider = self
                             .services
                             .orchestration
-                            .verify_provider
+                            .predicate_provider
                             .as_ref()
+                            .or(self.services.orchestration.orchestrator_provider.as_ref())
+                            .or(self.services.orchestration.verify_provider.as_ref())
                             .unwrap_or(&self.provider)
                             .clone();
 

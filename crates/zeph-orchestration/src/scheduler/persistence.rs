@@ -232,7 +232,8 @@ mod tests {
         let mut config = make_config();
         config.max_replans = 1;
         let defs = vec![make_def("worker")];
-        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
 
         let new1 = make_node(2, &[]);
         scheduler.inject_tasks(TaskId(0), vec![new1], 20).unwrap();
@@ -296,6 +297,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -334,6 +336,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -371,7 +374,7 @@ mod tests {
     fn make_predicate_scheduler(graph: crate::graph::TaskGraph) -> DagScheduler {
         let config = make_predicate_config();
         let defs = vec![make_def("worker")];
-        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap()
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap()
     }
 
     #[test]
@@ -520,7 +523,8 @@ mod tests {
         let mut config = make_predicate_config();
         config.max_predicate_replans = 0;
         let defs = vec![make_def("worker")];
-        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
         scheduler.graph.status = GraphStatus::Running;
 
         let result = scheduler.record_predicate_outcome(
@@ -618,7 +622,8 @@ mod tests {
         config.max_predicate_replans = 0;
         config.max_replans = 0;
         let defs = vec![make_def("worker")];
-        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
         scheduler.graph.status = GraphStatus::Running;
 
         let result = scheduler.record_predicate_outcome(
@@ -646,8 +651,14 @@ mod tests {
         let mut config = make_config();
         config.completeness_threshold = 0.85;
         let graph = graph_from_nodes(vec![make_node(0, &[])]);
-        let scheduler =
-            DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![make_def("w")]).unwrap();
+        let scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("w")],
+            None,
+        )
+        .unwrap();
         assert!((scheduler.completeness_threshold() - 0.85).abs() < f32::EPSILON);
     }
 
@@ -663,8 +674,14 @@ mod tests {
         let mut config = make_config();
         config.verify_provider = zeph_config::ProviderName::new("fast");
         let graph = graph_from_nodes(vec![make_node(0, &[])]);
-        let scheduler =
-            DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![make_def("w")]).unwrap();
+        let scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("w")],
+            None,
+        )
+        .unwrap();
         assert_eq!(scheduler.verify_provider_name(), "fast");
     }
 
@@ -680,8 +697,14 @@ mod tests {
         let mut config = make_config();
         config.max_replans = 3;
         let graph = graph_from_nodes(vec![make_node(0, &[])]);
-        let scheduler =
-            DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![make_def("w")]).unwrap();
+        let scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("w")],
+            None,
+        )
+        .unwrap();
         assert_eq!(scheduler.max_replans_remaining(), 3);
     }
 
@@ -726,6 +749,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
         let result = scheduler.validate_verify_config(&["fast", "quality"]);
@@ -744,6 +768,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
         assert!(
@@ -762,6 +787,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
         assert!(scheduler.validate_verify_config(&["fast"]).is_ok());
@@ -783,6 +809,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
         assert!(scheduler.validate_verify_config(&[]).is_ok());
@@ -797,6 +824,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
         assert!(scheduler.validate_verify_config(&["fast"]).is_ok());
@@ -811,7 +839,7 @@ mod tests {
         graph.tasks[0].status = TaskStatus::Pending;
 
         let scheduler =
-            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
+            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![], None)
                 .expect("resume_from should accept Paused graph");
         assert_eq!(scheduler.graph.status, GraphStatus::Running);
     }
@@ -823,7 +851,7 @@ mod tests {
         graph.tasks[0].status = TaskStatus::Failed;
 
         let scheduler =
-            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
+            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![], None)
                 .expect("resume_from should accept Failed graph");
         assert_eq!(scheduler.graph.status, GraphStatus::Running);
     }
@@ -833,8 +861,9 @@ mod tests {
         let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
         graph.status = GraphStatus::Completed;
 
-        let err = DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
-            .unwrap_err();
+        let err =
+            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![], None)
+                .unwrap_err();
         assert!(matches!(
             err,
             crate::error::OrchestrationError::InvalidGraph(_)
@@ -846,8 +875,9 @@ mod tests {
         let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
         graph.status = GraphStatus::Canceled;
 
-        let err = DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
-            .unwrap_err();
+        let err =
+            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![], None)
+                .unwrap_err();
         assert!(matches!(
             err,
             crate::error::OrchestrationError::InvalidGraph(_)
@@ -864,7 +894,7 @@ mod tests {
         graph.tasks[1].status = TaskStatus::Pending;
 
         let scheduler =
-            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
+            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![], None)
                 .expect("should succeed");
 
         assert!(
@@ -884,7 +914,7 @@ mod tests {
         graph.status = GraphStatus::Paused;
 
         let scheduler =
-            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![])
+            DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![], None)
                 .unwrap();
         assert_eq!(scheduler.graph.status, GraphStatus::Running);
     }

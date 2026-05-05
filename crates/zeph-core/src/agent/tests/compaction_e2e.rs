@@ -765,7 +765,7 @@ async fn plan_cancel_during_scheduler_loop_cancels_plan() {
         ..OrchestrationConfig::default()
     };
     let mut scheduler =
-        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
 
     let token = tokio_util::sync::CancellationToken::new();
     let status = agent
@@ -890,7 +890,7 @@ async fn scheduler_loop_queues_non_cancel_message() {
         ..OrchestrationConfig::default()
     };
     let mut scheduler =
-        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
 
     let token = tokio_util::sync::CancellationToken::new();
     let _ = agent
@@ -944,7 +944,7 @@ async fn scheduler_loop_channel_close_supports_exit_returns_canceled() {
         ..OrchestrationConfig::default()
     };
     let mut scheduler =
-        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
 
     let token = tokio_util::sync::CancellationToken::new();
     let status = agent
@@ -989,7 +989,7 @@ async fn scheduler_loop_channel_close_no_exit_support_returns_failed() {
         ..OrchestrationConfig::default()
     };
     let mut scheduler =
-        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
 
     let token = tokio_util::sync::CancellationToken::new();
     let status = agent
@@ -1044,7 +1044,7 @@ async fn scheduler_loop_channel_close_drain_captures_completion() {
         ..OrchestrationConfig::default()
     };
     let mut scheduler =
-        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
 
     // Inject the completion event via the public event_sender() so it sits in event_rx
     // when the drain tick calls event_rx.try_recv().  This simulates the race: the task
@@ -1120,7 +1120,7 @@ async fn stdin_closed_parks_when_tasks_running() {
         ..OrchestrationConfig::default()
     };
     let mut scheduler =
-        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
 
     // Deliver the completion event asynchronously after a short delay so that the loop
     // first observes channel-close (stdin_closed = true), then receives the event.
@@ -1191,7 +1191,7 @@ async fn stdin_closed_exits_when_no_tasks() {
     };
     // resume_from without assigned_agent → running map stays empty.
     let mut scheduler =
-        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![]).unwrap();
+        DagScheduler::resume_from(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
 
     let token = tokio_util::sync::CancellationToken::new();
     let status = agent

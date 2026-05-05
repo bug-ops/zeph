@@ -1422,6 +1422,26 @@ pub struct ProviderEntry {
     /// Provider-specific instruction file.
     #[serde(default)]
     pub instruction_file: Option<std::path::PathBuf>,
+
+    /// Maximum concurrent LLM calls from orchestrated sub-agents to this provider.
+    ///
+    /// When set, `DagScheduler` acquires a semaphore permit before dispatching a
+    /// sub-agent that targets this provider. Dispatch is deferred (using the existing
+    /// `deferral_backoff` mechanism) when the semaphore is saturated.
+    ///
+    /// `None` (default) = unlimited — no admission control applied.
+    ///
+    /// # Example (TOML)
+    ///
+    /// ```toml
+    /// [[llm.providers]]
+    /// name = "quality"
+    /// type = "openai"
+    /// model = "gpt-5"
+    /// max_concurrent = 3
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent: Option<u32>,
 }
 
 impl Default for ProviderEntry {
@@ -1448,6 +1468,7 @@ impl Default for ProviderEntry {
             candle: None,
             vision_model: None,
             instruction_file: None,
+            max_concurrent: None,
         }
     }
 }

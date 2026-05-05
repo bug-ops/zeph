@@ -70,6 +70,7 @@
 pub(crate) use zeph_db::sql;
 
 pub mod adaptorch;
+pub mod admission;
 pub mod aggregator;
 pub mod cascade;
 pub mod command;
@@ -86,6 +87,7 @@ pub mod verifier;
 pub mod verify_predicate;
 
 pub use adaptorch::{AdaptOrchMetrics, AdvisorVerdict, TaskClass, TopologyAdvisor, TopologyHint};
+pub use admission::AdmissionGate;
 pub use aggregator::{Aggregator, LlmAggregator};
 pub use cascade::{AbortDecision, CascadeConfig, CascadeDetector, RegionHealth};
 pub use command::PlanCommand;

@@ -3199,6 +3199,71 @@ pub fn migrate_tools_compression_config(toml_src: &str) -> Result<MigrationResul
     })
 }
 
+/// Add `orchestrator_provider` as a commented-out entry in `[orchestration]` when absent.
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_orchestration_orchestrator_provider(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("orchestrator_provider") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Provider for scheduling-tier LLM calls (aggregation, predicate, verify fallback).\n\
+         # Set to a cheap/fast model to reduce orchestration cost. Empty = primary provider.\n\
+         # Add under the orchestration section in your config:\n\
+         # orchestrator_provider = \"\"\n";
+
+    Ok(MigrationResult {
+        output: format!("{toml_src}{comment}"),
+        changed_count: 1,
+        sections_changed: vec!["orchestration".to_owned()],
+    })
+}
+
+/// Add a commented-out `max_concurrent` hint to `[[llm.providers]]` entries when absent.
+///
+/// `max_concurrent` limits how many orchestrated sub-agent calls may be in-flight to a
+/// given provider simultaneously. The field is optional (`None` = unlimited), so existing
+/// configs continue to work without changes.
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_provider_max_concurrent(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("max_concurrent") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    if !toml_src.contains("[[llm.providers]]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Optional: maximum concurrent sub-agent calls to this provider (admission control).\n\
+         # Remove the comment to enable; omit or set to 0 for unlimited.\n\
+         # max_concurrent = 4\n";
+
+    Ok(MigrationResult {
+        output: format!("{toml_src}{comment}"),
+        changed_count: 1,
+        sections_changed: vec!["llm.providers".to_owned()],
+    })
+}
+
 // ── Migration trait and registry ────────────────────────────────────────────────────────────────
 
 /// A single idempotent config migration step.
@@ -3248,14 +3313,15 @@ use steps::{
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
     MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
-    MigrateOtelFilter, MigratePlannerModelToProvider, MigrateQdrantApiKey, MigrateQualityConfig,
-    MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
-    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellTransactional,
-    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
-    MigrateToolsCompressionConfig, MigrateVigilConfig,
+    MigrateOrchestratorProvider, MigrateOtelFilter, MigratePlannerModelToProvider,
+    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionProviderPersistence,
+    MigrateSessionRecapConfig, MigrateShellTransactional, MigrateSttToProvider,
+    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
+    MigrateVigilConfig,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–40).
+/// Ordered registry of all sequential migration steps (steps 1–44).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -3322,6 +3388,10 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Steps 41–42 — goal lifecycle and TACO compression (#3567, #3306)
             Box::new(MigrateGoalsConfig),
             Box::new(MigrateToolsCompressionConfig),
+            // Step 43 — orchestrator_provider for scheduling-tier LLM calls (#3300)
+            Box::new(MigrateOrchestratorProvider),
+            // Step 44 — max_concurrent per-provider admission control hint (#3299)
+            Box::new(MigrateProviderMaxConcurrent),
         ]
     });
 
@@ -3340,8 +3410,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            42,
-            "MIGRATIONS registry must contain all 42 sequential steps"
+            44,
+            "MIGRATIONS registry must contain all 44 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -4928,7 +4998,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_has_thirty_nine_entries() {
-        assert_eq!(MIGRATIONS.len(), 42);
+        assert_eq!(MIGRATIONS.len(), 44);
     }
 
     #[test]
@@ -4967,7 +5037,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_preserves_order_matches_dispatch() {
-        // Names must follow the documented step order (steps 1–42).
+        // Names must follow the documented step order (steps 1–43).
         let expected = [
             "migrate_stt_to_provider",
             "migrate_planner_model_to_provider",
@@ -5011,6 +5081,8 @@ prompt_cache_ttl = "1h"
             "migrate_mcp_max_connect_attempts",
             "migrate_goals_config",
             "migrate_tools_compression_config",
+            "migrate_orchestrator_provider",
+            "migrate_provider_max_concurrent",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
@@ -5085,6 +5157,62 @@ prompt_cache_ttl = "1h"
     fn migrate_mcp_max_connect_attempts_skips_when_no_mcp_section() {
         let src = "[agent]\nname = \"Zeph\"\n";
         let result = migrate_mcp_max_connect_attempts(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    // ── Step 43 — orchestrator_provider ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn step43_adds_orchestrator_provider_comment_when_absent() {
+        let src = "[orchestration]\nenabled = true\n";
+        let result = migrate_orchestration_orchestrator_provider(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result.output.contains("orchestrator_provider"),
+            "migration must inject orchestrator_provider hint"
+        );
+    }
+
+    #[test]
+    fn step43_noop_when_orchestrator_provider_already_present() {
+        let src = "[orchestration]\nenabled = true\norchestrator_provider = \"\"\n";
+        let result = migrate_orchestration_orchestrator_provider(src).expect("migrate");
+        assert_eq!(
+            result.changed_count, 0,
+            "must not modify already-present key"
+        );
+        assert_eq!(result.output, src);
+    }
+
+    // ── Step 44 — max_concurrent per-provider ────────────────────────────────────────────────────
+
+    #[test]
+    fn step44_adds_max_concurrent_comment_when_providers_present() {
+        let src = "[[llm.providers]]\nname = \"quality\"\ntype = \"openai\"\n";
+        let result = migrate_provider_max_concurrent(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result.output.contains("max_concurrent"),
+            "migration must inject max_concurrent hint"
+        );
+    }
+
+    #[test]
+    fn step44_noop_when_max_concurrent_already_present() {
+        let src = "[[llm.providers]]\nname = \"quality\"\nmax_concurrent = 4\n";
+        let result = migrate_provider_max_concurrent(src).expect("migrate");
+        assert_eq!(
+            result.changed_count, 0,
+            "must not modify already-present key"
+        );
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn step44_noop_when_no_providers_section() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_provider_max_concurrent(src).expect("migrate");
         assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }

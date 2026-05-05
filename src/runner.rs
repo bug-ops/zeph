@@ -2053,6 +2053,18 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
+    let orchestrator_provider = app.build_orchestrator_provider();
+    let agent = if let Some(op) = orchestrator_provider {
+        agent.with_orchestrator_provider(op)
+    } else {
+        agent
+    };
+    let predicate_provider = app.build_predicate_provider();
+    let agent = if let Some(pp) = predicate_provider {
+        agent.with_predicate_provider(pp)
+    } else {
+        agent
+    };
     let agent = if let Some(ta) = app.build_topology_advisor() {
         agent.with_topology_advisor(ta)
     } else {

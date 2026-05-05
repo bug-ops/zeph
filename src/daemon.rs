@@ -623,6 +623,18 @@ pub(crate) async fn run_daemon(
     } else {
         agent
     };
+    let orchestrator_provider = app.build_orchestrator_provider();
+    let agent = if let Some(op) = orchestrator_provider {
+        agent.with_orchestrator_provider(op)
+    } else {
+        agent
+    };
+    let predicate_provider = app.build_predicate_provider();
+    let agent = if let Some(pp) = predicate_provider {
+        agent.with_predicate_provider(pp)
+    } else {
+        agent
+    };
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
     let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());
     #[cfg(feature = "classifiers")]

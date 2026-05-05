@@ -537,9 +537,16 @@ pub(crate) struct OrchestrationState {
     /// On `OrchestrationState` (not `ProviderState`) because this provider is used exclusively
     /// by `LlmPlanner` during orchestration, not shared across subsystems.
     pub(crate) planner_provider: Option<AnyProvider>,
-    /// Provider for `PlanVerifier` LLM calls. `None` falls back to the primary provider.
-    /// On `OrchestrationState` for the same reason as `planner_provider`.
+    /// Provider for `PlanVerifier` LLM calls. `None` falls back to `orchestrator_provider`
+    /// then the primary provider.
     pub(crate) verify_provider: Option<AnyProvider>,
+    /// Provider for scheduling-tier LLM calls (aggregation, predicate evaluation, verification
+    /// fallback). `None` falls back to the primary provider.
+    /// Set from `config.orchestration.orchestrator_provider` at startup.
+    pub(crate) orchestrator_provider: Option<AnyProvider>,
+    /// Provider for predicate gate evaluation. `None` falls back to `orchestrator_provider`
+    /// then `verify_provider` then primary.
+    pub(crate) predicate_provider: Option<AnyProvider>,
     /// Graph waiting for `/plan confirm` before execution starts.
     pub(crate) pending_graph: Option<zeph_orchestration::TaskGraph>,
     /// Cancellation token for the currently executing plan. `None` when no plan is running.

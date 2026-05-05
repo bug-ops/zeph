@@ -167,6 +167,33 @@ impl DagScheduler {
                 continue;
             };
 
+            // Admission control: check per-provider concurrency limit before dispatching.
+            // Resolve the provider name from agent_provider_map (keyed by agent def name).
+            // agent_hint and agent_def_name are sub-agent names, not provider names — using
+            // them directly as gate keys would silently bypass admission (C3 fix).
+            if let Some(ref gate) = self.admission_gate {
+                let provider_key: Option<&str> = self
+                    .agent_provider_map
+                    .get(&agent_def_name)
+                    .map(String::as_str);
+                if let Some(key) = provider_key.filter(|k| gate.has_gate(k)) {
+                    if let Some(permit) = gate.try_acquire(key) {
+                        self.pending_permits.insert(task_id, permit);
+                    } else {
+                        tracing::debug!(
+                            task_id = %task_id,
+                            provider = %key,
+                            agent = %agent_def_name,
+                            "admission gate saturated, deferring task to next tick"
+                        );
+                        self.consecutive_spawn_failures =
+                            self.consecutive_spawn_failures.saturating_add(1);
+                        continue;
+                    }
+                }
+                // No provider mapping → agent inherits parent provider → ungated.
+            }
+
             let prompt = self.build_task_prompt(task);
 
             // Mark task as Running optimistically (before record_spawn is called).
@@ -284,12 +311,14 @@ impl DagScheduler {
     ) {
         self.consecutive_spawn_failures = 0;
         self.graph.tasks[task_id.index()].assigned_agent = Some(agent_handle_id.clone());
+        let admission_permit = self.pending_permits.remove(&task_id);
         self.running.insert(
             task_id,
             RunningTask {
                 agent_handle_id,
                 agent_def_name,
                 started_at: std::time::Instant::now(),
+                admission_permit,
             },
         );
     }
@@ -309,6 +338,11 @@ impl DagScheduler {
         task_id: TaskId,
         error: &SubAgentError,
     ) -> Vec<SchedulerAction> {
+        // Release any pending admission permit regardless of error type (C2 fix).
+        // The permit was inserted by dispatch_ready_tasks before the spawn attempt.
+        // On failure it must be dropped here to free the provider slot.
+        self.pending_permits.remove(&task_id);
+
         // Transient condition: the SubAgentManager rejected the spawn because all
         // concurrency slots are occupied. Revert to Ready so the next tick retries.
         // consecutive_spawn_failures is updated batch-wide by record_batch_backoff().
@@ -501,6 +535,25 @@ impl DagScheduler {
             agent_id: Some(agent_handle_id),
             agent_def: agent_def_name,
         });
+
+        // MVP budget check: warn-only. Hard enforcement requires per-task CostTracker
+        // scoping (future work). We use duration_ms as a rough cost signal.
+        let effective_budget = self.graph.tasks[task_id.index()]
+            .token_budget_cents
+            .unwrap_or(self.default_task_budget_cents);
+        if effective_budget > 0.0 {
+            // 1 cent per second is a conservative placeholder until real cost attribution lands.
+            #[allow(clippy::cast_precision_loss)]
+            let estimated_cents = duration_ms as f64 / 1_000.0;
+            if estimated_cents > effective_budget {
+                tracing::warn!(
+                    task_id = %task_id,
+                    estimated_cents,
+                    budget_cents = effective_budget,
+                    "task exceeded token budget (warn-only; hard enforcement is future work)"
+                );
+            }
+        }
 
         self.lineage_chains.remove(&task_id);
 
@@ -741,7 +794,8 @@ mod tests {
         let mut config = make_config();
         config.max_parallel = 2;
         let defs = vec![make_def("worker")];
-        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
         let actions = scheduler.tick();
         let spawn_count = actions
             .iter()
@@ -759,7 +813,8 @@ mod tests {
         graph.tasks[0].status = TaskStatus::Completed;
         let config = make_config();
         let defs = vec![make_def("worker")];
-        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
         // Manually set graph to Running since new() validated Created status
         // — but all tasks are terminal. tick() should detect completion.
         let actions = scheduler.tick();
@@ -790,6 +845,7 @@ mod tests {
                 agent_handle_id: "handle-0".to_string(),
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
+                admission_permit: None,
             },
         );
 
@@ -832,6 +888,7 @@ mod tests {
                 agent_handle_id: "h0".to_string(),
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
+                admission_permit: None,
             },
         );
         scheduler.graph.tasks[1].status = TaskStatus::Running;
@@ -841,6 +898,7 @@ mod tests {
                 agent_handle_id: "h1".to_string(),
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
+                admission_permit: None,
             },
         );
 
@@ -890,6 +948,7 @@ mod tests {
                 agent_handle_id: "h0".to_string(),
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
+                admission_permit: None,
             },
         );
 
@@ -924,6 +983,7 @@ mod tests {
                 agent_handle_id: "h0".to_string(),
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
+                admission_permit: None,
             },
         );
 
@@ -967,6 +1027,7 @@ mod tests {
                 agent_handle_id: "h0".to_string(),
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
+                admission_permit: None,
             },
         );
 
@@ -999,7 +1060,8 @@ mod tests {
         let mut config = make_config();
         config.task_timeout_secs = 1; // 1 second timeout
         let defs = vec![make_def("worker")];
-        let mut scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs).unwrap();
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
 
         // Simulate a running task that started just over 1 second ago.
         scheduler.graph.tasks[0].status = TaskStatus::Running;
@@ -1011,6 +1073,7 @@ mod tests {
                 started_at: std::time::Instant::now()
                     .checked_sub(Duration::from_secs(2))
                     .unwrap(), // already timed out
+                admission_permit: None,
             },
         );
 
@@ -1034,6 +1097,7 @@ mod tests {
                 agent_handle_id: "h0".to_string(),
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
+                admission_permit: None,
             },
         );
         scheduler.graph.tasks[1].status = TaskStatus::Running;
@@ -1043,6 +1107,7 @@ mod tests {
                 agent_handle_id: "h1".to_string(),
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
+                admission_permit: None,
             },
         );
 
@@ -1136,6 +1201,7 @@ mod tests {
                 agent_handle_id: "h0".to_string(),
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
+                admission_permit: None,
             },
         );
         scheduler.graph.tasks[1].status = TaskStatus::Running;
@@ -1174,6 +1240,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -1282,6 +1349,7 @@ mod tests {
                 agent_handle_id: "current-handle".to_string(),
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
+                admission_permit: None,
             },
         );
 
@@ -1330,6 +1398,7 @@ mod tests {
                 started_at: std::time::Instant::now()
                     .checked_sub(Duration::from_millis(50))
                     .unwrap(),
+                admission_permit: None,
             },
         );
 
@@ -1420,6 +1489,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -1469,6 +1539,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -1497,6 +1568,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -1536,6 +1608,7 @@ mod tests {
             &make_config(),
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -1555,6 +1628,7 @@ mod tests {
             &make_config(),
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -1582,6 +1656,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -1656,6 +1731,7 @@ mod tests {
             &config,
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
         assert_eq!(scheduler.graph.tasks.len() * 2, 20);
@@ -1723,6 +1799,7 @@ mod tests {
             &make_config(),
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -1766,6 +1843,7 @@ mod tests {
             &make_config(),
             Box::new(FirstRouter),
             vec![make_def("worker")],
+            None,
         )
         .unwrap();
 
@@ -1778,5 +1856,149 @@ mod tests {
             "no Done action expected when a task is running; got: {actions:?}"
         );
         assert_eq!(scheduler.graph.status, GraphStatus::Running);
+    }
+
+    // ── Admission gate wiring tests ──────────────────────────────────────────────────────────────
+
+    fn make_def_with_provider(name: &str, provider: &str) -> zeph_subagent::SubAgentDef {
+        use zeph_subagent::{SkillFilter, SubAgentPermissions, SubagentHooks, ToolPolicy};
+        zeph_subagent::SubAgentDef {
+            name: name.to_string(),
+            description: format!("{name} agent"),
+            model: Some(zeph_subagent::ModelSpec::Named(provider.to_string())),
+            tools: ToolPolicy::InheritAll,
+            disallowed_tools: vec![],
+            permissions: SubAgentPermissions::default(),
+            skills: SkillFilter::default(),
+            system_prompt: String::new(),
+            hooks: SubagentHooks::default(),
+            memory: None,
+            source: None,
+            file_path: None,
+        }
+    }
+
+    #[test]
+    fn admission_gate_saturated_defers_task() {
+        // Gate with capacity=1, already at capacity → task must not be spawned.
+        let gate = crate::admission::AdmissionGate::new(&[("quality".to_string(), 1usize)]);
+        // Exhaust the single permit so the gate is at capacity.
+        let _held_permit = gate
+            .try_acquire("quality")
+            .expect("first permit must succeed");
+
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = make_config();
+        let defs = vec![make_def_with_provider("worker", "quality")];
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, Some(gate)).unwrap();
+
+        let actions = scheduler.tick();
+        let spawn_count = actions
+            .iter()
+            .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
+            .count();
+        assert_eq!(
+            spawn_count, 0,
+            "saturated gate must defer task — no Spawn emitted"
+        );
+        assert_eq!(
+            scheduler.graph.tasks[0].status,
+            TaskStatus::Ready,
+            "deferred task must stay Ready"
+        );
+    }
+
+    #[test]
+    fn admission_gate_permit_transferred_to_running() {
+        // After a successful spawn cycle the permit must live in RunningTask, not pending_permits.
+        let gate = crate::admission::AdmissionGate::new(&[("quality".to_string(), 2usize)]);
+
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = make_config();
+        let defs = vec![make_def_with_provider("worker", "quality")];
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, Some(gate)).unwrap();
+
+        let actions = scheduler.tick();
+        let spawned = actions.iter().find_map(|a| {
+            if let SchedulerAction::Spawn { task_id, .. } = a {
+                Some(*task_id)
+            } else {
+                None
+            }
+        });
+        let task_id = spawned.expect("task must be spawned");
+
+        // Permit must be in pending_permits before record_spawn.
+        assert!(
+            scheduler.pending_permits.contains_key(&task_id),
+            "permit must be in pending_permits after dispatch"
+        );
+
+        scheduler.graph.tasks[task_id.index()].status = TaskStatus::Running;
+        scheduler.record_spawn(task_id, "handle-1".into(), "worker".into());
+
+        assert!(
+            !scheduler.pending_permits.contains_key(&task_id),
+            "pending_permits must be empty after record_spawn"
+        );
+        assert!(
+            scheduler.running[&task_id].admission_permit.is_some(),
+            "admission_permit must be set in RunningTask"
+        );
+    }
+
+    #[test]
+    fn admission_gate_bypass_for_ungated_provider() {
+        // Agent uses a provider not in the gate → task dispatched normally.
+        let gate = crate::admission::AdmissionGate::new(&[("quality".to_string(), 1usize)]);
+
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = make_config();
+        // Agent maps to "fast" which has no gate entry.
+        let defs = vec![make_def_with_provider("worker", "fast")];
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, Some(gate)).unwrap();
+
+        let actions = scheduler.tick();
+        let spawn_count = actions
+            .iter()
+            .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
+            .count();
+        assert_eq!(spawn_count, 1, "ungated provider must not be blocked");
+    }
+
+    #[test]
+    fn record_spawn_failure_releases_pending_permit() {
+        // A fatal spawn failure must remove the pending admission permit (C2 fix).
+        let gate = crate::admission::AdmissionGate::new(&[("quality".to_string(), 2usize)]);
+
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = make_config();
+        let defs = vec![make_def_with_provider("worker", "quality")];
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, Some(gate)).unwrap();
+
+        // Simulate dispatch: insert a permit manually as tick() would.
+        let permit = scheduler
+            .admission_gate
+            .as_ref()
+            .unwrap()
+            .try_acquire("quality")
+            .expect("permit must be available");
+        let task_id = TaskId(0);
+        scheduler.pending_permits.insert(task_id, permit);
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+        assert!(scheduler.pending_permits.contains_key(&task_id));
+
+        let fatal = zeph_subagent::SubAgentError::Spawn("provider unavailable".to_string());
+        scheduler.record_spawn_failure(task_id, &fatal);
+
+        assert!(
+            !scheduler.pending_permits.contains_key(&task_id),
+            "pending permit must be removed after fatal spawn failure"
+        );
     }
 }
