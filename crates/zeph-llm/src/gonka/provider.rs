@@ -16,7 +16,7 @@ use crate::error::LlmError;
 use crate::gonka::endpoints::{EndpointPool, now_ns};
 use crate::gonka::signer::RequestSigner;
 use crate::openai::OpenAiProvider;
-use crate::provider::{ChatStream, LlmProvider, Message, ToolDefinition};
+use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, ToolDefinition};
 use crate::sse::openai_sse_to_stream;
 use crate::usage::UsageTracker;
 
@@ -90,9 +90,6 @@ struct EmbeddingBatchRequest<'a> {
 /// Request bodies are constructed by an inner [`OpenAiProvider`] (the Gonka gateway
 /// accepts the same wire format), then signed with a secp256k1 key and sent to the
 /// next healthy endpoint from an [`EndpointPool`].
-///
-/// Tool-calling support is planned for issue #3612 and is currently disabled
-/// (`supports_tool_use` returns `false`).
 pub struct GonkaProvider {
     /// Used only for body construction and capability flags — never called directly.
     inner: OpenAiProvider,
@@ -296,12 +293,11 @@ impl LlmProvider for GonkaProvider {
     }
 
     fn supports_tool_use(&self) -> bool {
-        // Tool-calling is deferred to issue #3612.
-        false
+        true
     }
 
     fn supports_structured_output(&self) -> bool {
-        false
+        true
     }
 
     fn last_usage(&self) -> Option<(u64, u64)> {
@@ -479,5 +475,112 @@ impl LlmProvider for GonkaProvider {
         data.sort_unstable_by_key(|d| d.index);
 
         Ok(data.into_iter().map(|d| d.embedding).collect())
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<ChatResponse, LlmError> {
+        tracing::debug!(
+            model = self.model_identifier(),
+            "llm.gonka.chat_with_tools start"
+        );
+        let body = serde_json::to_vec(&self.inner.debug_request_json(messages, tools, false))
+            .map_err(|e| LlmError::Other(format!("body serialization: {e}")))?;
+
+        let response = self.signed_request("/chat/completions", &body).await?;
+
+        let status = response.status();
+        let text = response.text().await.map_err(LlmError::Http)?;
+
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let truncated: String = text.chars().take(256).collect();
+            tracing::warn!("gonka tool chat 400 bad request: {truncated}");
+            if crate::error::body_is_context_length_error(&text) {
+                return Err(LlmError::ContextLengthExceeded);
+            }
+            return Err(LlmError::InvalidInput {
+                provider: "gonka".into(),
+                message: text.chars().take(512).collect(),
+            });
+        }
+
+        if !status.is_success() {
+            let truncated: String = text.chars().take(256).collect();
+            tracing::error!("gonka API error {status}: {truncated}");
+            return Err(LlmError::ApiError {
+                provider: "gonka".into(),
+                status: status.as_u16(),
+            });
+        }
+
+        let result = self.inner.decode_tool_chat_response(&text, "gonka")?;
+
+        // Sync usage from inner tracker to our own tracker.
+        if let Some((prompt, completion)) = self.inner.last_usage() {
+            self.usage.record_usage(prompt, completion);
+        }
+        if let Some((write, cached)) = self.inner.last_cache_usage() {
+            self.usage.record_cache(write, cached);
+        }
+
+        Ok(result)
+    }
+
+    async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
+    where
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
+        Self: Sized,
+    {
+        tracing::debug!(
+            model = self.model_identifier(),
+            "llm.gonka.chat_typed start"
+        );
+        let body_bytes = self.inner.build_typed_chat_body::<T>(messages)?;
+
+        let response = self
+            .signed_request("/chat/completions", &body_bytes)
+            .await?;
+
+        let status = response.status();
+        let text = response.text().await.map_err(LlmError::Http)?;
+
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let truncated: String = text.chars().take(256).collect();
+            tracing::warn!("gonka chat_typed 400 bad request: {truncated}");
+            if crate::error::body_is_context_length_error(&text) {
+                return Err(LlmError::ContextLengthExceeded);
+            }
+            return Err(LlmError::InvalidInput {
+                provider: "gonka".into(),
+                message: text.chars().take(512).collect(),
+            });
+        }
+
+        if !status.is_success() {
+            let truncated: String = text.chars().take(256).collect();
+            tracing::error!("gonka API error {status}: {truncated}");
+            return Err(LlmError::ApiError {
+                provider: "gonka".into(),
+                status: status.as_u16(),
+            });
+        }
+
+        let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
+        if let Some(ref usage) = resp.usage {
+            self.store_usage(usage);
+        }
+
+        let content = resp
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.message.content)
+            .ok_or(LlmError::EmptyResponse {
+                provider: "gonka".into(),
+            })?;
+
+        serde_json::from_str::<T>(&content).map_err(|e| LlmError::StructuredParse(e.to_string()))
     }
 }

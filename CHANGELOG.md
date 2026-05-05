@@ -11,8 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - feat(zeph-llm): add `GonkaProvider` for chat, streaming, and embeddings via signed transport.
   `GonkaProvider` uses a secp256k1-signed request loop over an `EndpointPool`, delegating OpenAI-compatible
   body construction to an inner `OpenAiProvider`. Includes `chat`, `chat_stream`, `embed`, and `embed_batch`
-  with automatic endpoint rotation and mark-failed cooldown on errors. Tool-calling deferred to #3612.
+  with automatic endpoint rotation and mark-failed cooldown on errors.
   `EndpointPool::next_indexed()` added to enable correct per-index mark-failed in retry loops. (#3611)
+
+- `GonkaProvider::chat_with_tools` and `chat_typed` — tool use and structured output over the Gonka signed transport (#3612)
 
 ### Changed
 

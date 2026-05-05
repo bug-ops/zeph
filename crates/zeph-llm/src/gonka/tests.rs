@@ -8,10 +8,15 @@ use tokio_stream::StreamExt;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use schemars::JsonSchema;
+use serde::Deserialize;
+
 use crate::gonka::endpoints::{EndpointPool, GonkaEndpoint};
 use crate::gonka::provider::GonkaProvider;
 use crate::gonka::signer::RequestSigner;
-use crate::provider::{LlmProvider, Message, MessageMetadata, Role, StreamChunk};
+use crate::provider::{
+    ChatResponse, LlmProvider, Message, MessageMetadata, Role, StreamChunk, ToolDefinition,
+};
 
 const PRIV_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
 
@@ -398,4 +403,108 @@ async fn gonka_embed_unsupported_without_model() {
         matches!(result, Err(crate::error::LlmError::EmbedUnsupported { .. })),
         "expected EmbedUnsupported, got: {result:?}"
     );
+}
+
+/// Test 11: `chat_with_tools` returns `ChatResponse::ToolUse` with correct call ID and arguments.
+#[tokio::test]
+async fn gonka_tools_chat_with_tools_returns_tool_use() {
+    let tool_response = r#"{
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": "{\"location\":\"London\"}"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+    }"#;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(tool_response),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = make_provider(&server.uri());
+    let messages = user_message("What is the weather in London?");
+
+    let tool = ToolDefinition {
+        name: "get_weather".into(),
+        description: "Get weather for a location".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "location": {"type": "string"}
+            },
+            "required": ["location"]
+        }),
+        output_schema: None,
+    };
+
+    let result = provider.chat_with_tools(&messages, &[tool]).await.unwrap();
+
+    match result {
+        ChatResponse::ToolUse { tool_calls, .. } => {
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(tool_calls[0].id, "call_abc123");
+            assert_eq!(tool_calls[0].name.as_ref(), "get_weather");
+            assert_eq!(tool_calls[0].input["location"], "London");
+        }
+        other => panic!("expected ToolUse, got: {other:?}"),
+    }
+}
+
+/// Test 12: `chat_typed` returns a deserialized struct from JSON content.
+#[tokio::test]
+async fn gonka_tools_chat_typed_returns_struct() {
+    #[derive(Debug, Deserialize, JsonSchema)]
+    struct CityInfo {
+        name: String,
+        population: u64,
+    }
+
+    let typed_response = r#"{
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "{\"name\":\"London\",\"population\":9000000}"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 15, "completion_tokens": 8, "total_tokens": 23}
+    }"#;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(typed_response),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = make_provider(&server.uri());
+    let messages = user_message("Give me info about London");
+
+    let result: CityInfo = provider.chat_typed(&messages).await.unwrap();
+
+    assert_eq!(result.name, "London");
+    assert_eq!(result.population, 9_000_000);
 }

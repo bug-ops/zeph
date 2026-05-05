@@ -910,12 +910,20 @@ impl LlmProvider for OpenAiProvider {
             });
         }
 
-        self.decode_tool_chat_response(&text)
+        self.decode_tool_chat_response(&text, "openai")
     }
 }
 
 impl OpenAiProvider {
-    fn decode_tool_chat_response(&self, text: &str) -> Result<ChatResponse, LlmError> {
+    /// Decode a raw tool-chat JSON response body into a [`ChatResponse`].
+    ///
+    /// Records usage via `store_cache_usage`.  Pass `provider_name` so that
+    /// `EmptyResponse` errors carry the correct provider label.
+    pub(crate) fn decode_tool_chat_response(
+        &self,
+        text: &str,
+        provider_name: &str,
+    ) -> Result<ChatResponse, LlmError> {
         let resp: ToolChatResponse = serde_json::from_str(text)?;
 
         if let Some(ref usage) = resp.usage {
@@ -927,7 +935,7 @@ impl OpenAiProvider {
             .into_iter()
             .next()
             .ok_or(LlmError::EmptyResponse {
-                provider: "openai".into(),
+                provider: provider_name.into(),
             })?;
 
         if let Some(tool_calls) = choice.message.tool_calls
@@ -975,6 +983,43 @@ impl OpenAiProvider {
             choice.message.content
         };
         Ok(ChatResponse::Text(content))
+    }
+
+    /// Build a serialized `TypedChatRequest` body for `chat_typed`.
+    ///
+    /// Extracts and normalises the JSON Schema for `T`, wraps it in
+    /// `response_format: json_schema`, and returns the raw bytes ready for an
+    /// HTTP POST body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::StructuredParse`] if schema extraction or serialisation fails.
+    pub(crate) fn build_typed_chat_body<T>(&self, messages: &[Message]) -> Result<Vec<u8>, LlmError>
+    where
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
+    {
+        let (raw_schema, _) = crate::provider::cached_schema::<T>()?;
+        let mut schema_value = raw_schema;
+        inline_refs_openai(&mut schema_value, 8);
+        normalize_for_openai_strict(&mut schema_value, 16);
+        let type_name = crate::provider::short_type_name::<T>();
+
+        let api_messages = convert_messages(messages);
+        let body = TypedChatRequest {
+            model: &self.model,
+            messages: &api_messages,
+            completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+            response_format: ResponseFormat {
+                r#type: "json_schema",
+                json_schema: JsonSchemaFormat {
+                    name: type_name,
+                    schema: schema_value,
+                    strict: true,
+                },
+            },
+        };
+
+        serde_json::to_vec(&body).map_err(|e| LlmError::StructuredParse(e.to_string()))
     }
 }
 
