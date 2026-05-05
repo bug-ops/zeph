@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(lsp): LSP diagnostics context injection now works with mcpls v0.3.6+. Previously
+  `fetch_diagnostics` silently returned `None` on every call because it expected a bare JSON array
+  from `get_diagnostics`, but mcpls changed the response shape to `{"diagnostics": [...]}`.
+  A new `parse_diagnostics_json` helper handles both the legacy bare-array format and the
+  object-wrapper format, restoring diagnostics injection into the prompt after `write` tool calls.
+
 - fix(mcp): HTTP 4xx responses (401, 403, 404, 410, 422) from remote MCP endpoints are now mapped
   to the new `McpError::HttpAuth` variant, which is non-retryable (`McpErrorCode::AuthFailure`).
   Previously these were wrapped into `McpError::Connection` (retryable), causing up to 47 s of
