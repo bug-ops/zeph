@@ -2960,6 +2960,23 @@ impl<C: Channel> Agent<C> {
         self.services.index.repo_map_ttl =
             std::time::Duration::from_secs(config.index.repo_map_ttl_secs);
 
+        self.services
+            .session
+            .hooks_config
+            .cwd_changed
+            .clone_from(&config.hooks.cwd_changed);
+        self.services
+            .session
+            .hooks_config
+            .permission_denied
+            .clone_from(&config.hooks.permission_denied);
+        self.services
+            .session
+            .hooks_config
+            .turn_complete
+            .clone_from(&config.hooks.turn_complete);
+        // file_changed_hooks require watcher restart to take effect — skipped here.
+
         tracing::info!("config reloaded");
     }
 
@@ -3277,7 +3294,10 @@ impl<C: Channel> Agent<C> {
             .await;
 
         let hooks = self.services.session.hooks_config.cwd_changed.clone();
-        if !hooks.is_empty() {
+        if hooks.is_empty() {
+            tracing::debug!("CwdChanged: no hooks configured, skipping");
+        } else {
+            tracing::debug!(count = hooks.len(), "CwdChanged: firing hooks");
             let mut env = std::collections::HashMap::new();
             env.insert("ZEPH_OLD_CWD".to_owned(), old_cwd.display().to_string());
             env.insert("ZEPH_NEW_CWD".to_owned(), current.display().to_string());
@@ -3287,6 +3307,8 @@ impl<C: Channel> Agent<C> {
                 .map(|d| d as &dyn zeph_subagent::McpDispatch);
             if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, mcp).await {
                 tracing::warn!(error = %e, "CwdChanged hook failed");
+            } else {
+                tracing::info!(count = hooks.len(), "CwdChanged: hooks fired");
             }
         }
 
@@ -3311,7 +3333,10 @@ impl<C: Channel> Agent<C> {
             .hooks_config
             .file_changed_hooks
             .clone();
-        if !hooks.is_empty() {
+        if hooks.is_empty() {
+            tracing::debug!(path = %event.path.display(), "FileChanged: no hooks configured, skipping");
+        } else {
+            tracing::debug!(count = hooks.len(), path = %event.path.display(), "FileChanged: firing hooks");
             let mut env = std::collections::HashMap::new();
             env.insert(
                 "ZEPH_CHANGED_PATH".to_owned(),
@@ -3323,6 +3348,8 @@ impl<C: Channel> Agent<C> {
                 .map(|d| d as &dyn zeph_subagent::McpDispatch);
             if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, mcp).await {
                 tracing::warn!(error = %e, "FileChanged hook failed");
+            } else {
+                tracing::info!(count = hooks.len(), path = %event.path.display(), "FileChanged: hooks fired");
             }
         }
 

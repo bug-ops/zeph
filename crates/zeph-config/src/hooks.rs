@@ -234,4 +234,50 @@ fail_closed = false
         assert!(cfg.cwd_changed.is_empty());
         assert!(cfg.permission_denied.is_empty());
     }
+
+    /// Exercises the full testing.toml hooks pattern: cwd_changed + file_changed + permission_denied
+    /// all in one TOML document, in the order they appear in testing.toml. Prevents regression of
+    /// issue #3625 where hooks appeared empty despite correct TOML config.
+    #[test]
+    fn hooks_config_parses_all_sections_in_sequence() {
+        let toml = r#"
+[[cwd_changed]]
+type = "command"
+command = "echo 'CWD_CHANGED_HOOK_FIRED'"
+timeout_secs = 10
+fail_closed = false
+
+[file_changed]
+watch_paths = ["src/", "Cargo.toml"]
+debounce_ms = 500
+[[file_changed.hooks]]
+type = "command"
+command = "cargo check"
+timeout_secs = 30
+fail_closed = false
+
+[[permission_denied]]
+type = "command"
+command = "echo 'PERMISSION_DENIED_HOOK_FIRED'"
+timeout_secs = 5
+fail_closed = false
+"#;
+        let cfg: HooksConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.cwd_changed.len(), 1, "expected 1 cwd_changed hook");
+        assert!(
+            matches!(&cfg.cwd_changed[0].action, HookAction::Command { command } if command == "echo 'CWD_CHANGED_HOOK_FIRED'")
+        );
+        let fc = cfg
+            .file_changed
+            .as_ref()
+            .expect("file_changed must be Some");
+        assert_eq!(fc.hooks.len(), 1, "expected 1 file_changed hook");
+        assert_eq!(fc.debounce_ms, 500);
+        assert_eq!(
+            cfg.permission_denied.len(),
+            1,
+            "expected 1 permission_denied hook"
+        );
+        assert!(!cfg.is_empty(), "hooks config must not be empty");
+    }
 }
