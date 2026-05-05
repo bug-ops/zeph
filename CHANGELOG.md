@@ -62,6 +62,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   output. A config migration step (step 43) adds the commented-out field to existing configs.
   Implements #3300.
 
+- feat(init): add GonkaGate option to `--init` wizard (index 5 in provider select). Sets
+  `provider = compatible`, `name = "gonkagate"`, `base_url = "https://api.gonkagate.com/v1"`,
+  offers a model picker (default: `Qwen/Qwen3-235B-A22B-Instruct-2507-FP8`), and routes vault
+  key setup through `ZEPH_COMPATIBLE_GONKAGATE_API_KEY`. A commented-out provider template is
+  appended to `config/default.toml` for manual setup. (#3604, #3605, #3606)
+
 - feat(config): add `ProviderKind::Gonka` with `GonkaNode { url, name }` struct, node pool
   validation (non-empty, http/https scheme), and `effective_gonka_chain_prefix()` helper
   (defaults to `"gonka"`). `GonkaNode` re-exported from both `zeph-config` and `zeph-core`.

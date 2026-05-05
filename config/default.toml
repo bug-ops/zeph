@@ -116,6 +116,16 @@ embedding_model = "qwen3-embedding"
 # model = "llama-3.3-70b-versatile"
 # max_tokens = 4096
 
+# GonkaGate — OpenAI-compatible decentralized inference gateway (USD billing).
+# Sign up at https://gonkagate.com/en/register, create an API key, then:
+#   zeph vault set ZEPH_COMPATIBLE_GONKAGATE_API_KEY gp-...
+# [[llm.providers]]
+# name = "gonkagate"
+# type = "compatible"
+# base_url = "https://api.gonkagate.com/v1"
+# model = "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8"
+# max_tokens = 4096
+
 # Candle local inference (feature-gated: --features candle)
 # [[llm.providers]]
 # type = "candle"

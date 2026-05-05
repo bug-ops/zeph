@@ -2435,4 +2435,48 @@ mod tests {
         let config = build_config(&state);
         assert_eq!(config.quality.trigger, TriggerPolicy::HasRetrieval);
     }
+
+    #[test]
+    fn build_config_gonkagate_provider() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Compatible),
+            compatible_name: Some("gonkagate".into()),
+            base_url: Some("https://api.gonkagate.com/v1".into()),
+            model: Some("Qwen/Qwen3-235B-A22B-Instruct-2507-FP8".into()),
+            embedding_model: Some("qwen3-embedding".into()),
+            vault_backend: "age".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.llm.providers.len(), 1);
+        let p = &config.llm.providers[0];
+        assert_eq!(p.provider_type, ProviderKind::Compatible);
+        assert_eq!(p.name.as_deref(), Some("gonkagate"));
+        assert_eq!(p.base_url.as_deref(), Some("https://api.gonkagate.com/v1"));
+        assert_eq!(
+            p.model.as_deref(),
+            Some("Qwen/Qwen3-235B-A22B-Instruct-2507-FP8")
+        );
+    }
+
+    #[test]
+    fn api_key_env_var_gonkagate() {
+        assert_eq!(
+            api_key_env_var(ProviderKind::Compatible, Some("gonkagate")),
+            Some("ZEPH_COMPATIBLE_GONKAGATE_API_KEY".to_owned())
+        );
+    }
+
+    #[test]
+    fn collect_provider_secret_gonkagate_non_age_sets_key() {
+        let mut secrets = Vec::new();
+        collect_provider_secret(
+            &mut secrets,
+            Some(ProviderKind::Compatible),
+            Some(&"gp-test-key".to_owned()),
+            Some("gonkagate"),
+            false,
+        );
+        assert_eq!(secrets, vec!["ZEPH_COMPATIBLE_GONKAGATE_API_KEY"]);
+    }
 }

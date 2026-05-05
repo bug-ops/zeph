@@ -48,6 +48,7 @@ pub(super) fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyho
         "OpenAI (API)",
         "Gemini (API)",
         "Compatible (custom)",
+        "Gonka (decentralized \u{2014} via GonkaGate)",
     ];
     let selection = Select::new()
         .with_prompt("Select LLM provider")
@@ -184,6 +185,29 @@ pub(super) fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyho
                         .allow_empty_password(true)
                         .interact()?,
                 );
+            }
+        }
+        5 => {
+            state.provider = Some(ProviderKind::Compatible);
+            state.compatible_name = Some("gonkagate".into());
+            state.base_url = Some("https://api.gonkagate.com/v1".into());
+
+            let models = ["Qwen/Qwen3-235B-A22B-Instruct-2507-FP8", "Custom..."];
+            let model_sel = Select::new()
+                .with_prompt("Select model")
+                .items(models)
+                .default(0)
+                .interact()?;
+            state.model = Some(match model_sel {
+                0 => models[0].to_owned(),
+                _ => Input::new().with_prompt("Model name").interact_text()?,
+            });
+
+            if !use_age {
+                let raw = Password::new()
+                    .with_prompt("GonkaGate API key (starts with gp-...)")
+                    .interact()?;
+                state.api_key = Some(raw);
             }
         }
         _ => unreachable!(),
