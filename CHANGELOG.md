@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(memory.graph): add `extract_provider` to `[memory.graph]` config. Graph extraction tasks
+  produce low prompt/response similarity, causing systematic quality gate false positives. Setting
+  `extract_provider` to a named provider from `[[llm.providers]]` routes extraction through a
+  provider without the quality gate. **Action required**: set `extract_provider = "<name>"` in
+  `[memory.graph]` to activate the fix; the default (empty) preserves existing behavior (#3601).
+
 - fix(cli): `zeph project purge` now returns a clear error message when stdin is not a terminal
   and neither `--dry-run` nor `-y` was provided: `Aborted: stdin is not a terminal. Use --dry-run
   to preview or -y to confirm non-interactively.` Previously the raw `IO error: not a terminal`

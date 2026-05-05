@@ -558,10 +558,19 @@ impl SemanticMemory {
         context_messages: Vec<String>,
         config: GraphExtractionConfig,
         post_extract_validator: PostExtractValidator,
+        provider_override: Option<AnyProvider>,
     ) -> tokio::task::JoinHandle<()> {
+        let using_override = provider_override.is_some();
+        let provider = provider_override.unwrap_or_else(|| self.provider.clone());
+        if using_override {
+            tracing::debug!(
+                extract_provider = provider.name(),
+                "graph extraction using override provider (quality_gate bypassed)"
+            );
+        }
         let ctx = GraphExtractionTaskCtx {
             pool: self.sqlite.pool().clone(),
-            provider: self.provider.clone(),
+            provider,
             failure_counter: self.community_detection_failures.clone(),
             extraction_count: self.graph_extraction_count.clone(),
             extraction_failures: self.graph_extraction_failures.clone(),

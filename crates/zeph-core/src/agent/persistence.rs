@@ -339,6 +339,9 @@ impl<C: Channel> Agent<C> {
                 .conversation_id
                 .map(|c| c.0),
         );
+        // Resolve a clean provider that bypasses quality_gate for JSON extraction tasks.
+        // When extract_provider is empty, falls back to the primary provider (existing behavior).
+        let extract_provider_name = cfg.extract_provider.as_str().to_owned();
 
         // RPE check: embed + compute surprise score. Stays on foreground to avoid
         // capturing the rpe_router mutex in a background task.
@@ -364,12 +367,19 @@ impl<C: Channel> Agent<C> {
                 None
             };
 
+        let provider_override = if extract_provider_name.is_empty() {
+            None
+        } else {
+            Some(self.resolve_background_provider(&extract_provider_name))
+        };
+
         self.spawn_graph_extraction_task(
             memory,
             content,
             context_messages,
             extraction_cfg,
             validator,
+            provider_override,
         );
 
         // Sync community failures and extraction metrics (cheap, foreground-safe).
@@ -385,6 +395,7 @@ impl<C: Channel> Agent<C> {
         context_messages: Vec<String>,
         extraction_cfg: zeph_memory::semantic::GraphExtractionConfig,
         validator: zeph_memory::semantic::PostExtractValidator,
+        provider_override: Option<zeph_llm::any::AnyProvider>,
     ) {
         let content_owned = content.to_owned();
         let graph_store = memory.graph_store.clone();
@@ -400,6 +411,7 @@ impl<C: Channel> Agent<C> {
                     context_messages,
                     extraction_cfg,
                     validator,
+                    provider_override,
                 );
 
                 // After extraction completes, refresh graph count metrics.

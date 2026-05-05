@@ -1035,6 +1035,11 @@ max_files = 7
 # # Do NOT use 8B local models (qwen3:8b, llama3.1:8b) without constrained decoding —
 # # they frequently produce malformed JSON and miss implicit entities (see #2192).
 # extract_model = "claude-sonnet-4-5-20250929"
+# # Named provider from [[llm.providers]] used for graph extraction.
+# # When set, bypasses the quality_gate that fires on JSON-structured tasks (#3601).
+# # Set to match the provider used by extract_model (e.g. "fast" for a gpt-4o-mini provider).
+# # Leave empty to use the primary provider (default behavior).
+# extract_provider = ""
 # # Maximum entities extracted per message
 # max_entities_per_message = 10
 # # Maximum edges (relations) extracted per message

@@ -255,6 +255,28 @@ async fn spawn_graph_extraction_zero_timeout_returns_without_panic() {
         vec![],
         cfg,
         None,
+        None,
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+}
+
+#[tokio::test]
+async fn spawn_graph_extraction_with_provider_override_does_not_panic() {
+    use zeph_llm::mock::MockProvider;
+    let memory = graph_memory().await;
+    let cfg = GraphExtractionConfig {
+        max_entities: 5,
+        max_edges: 5,
+        extraction_timeout_secs: 0,
+        ..Default::default()
+    };
+    let override_provider = AnyProvider::Mock(MockProvider::with_responses(vec![]));
+    memory.spawn_graph_extraction(
+        "I use Rust for systems programming".to_owned(),
+        vec![],
+        cfg,
+        None,
+        Some(override_provider),
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 }

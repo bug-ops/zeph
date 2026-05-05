@@ -1754,6 +1754,19 @@ pub struct GraphConfig {
     /// SYNAPSE spreading activation is used. Set to `bfs` to revert to hop-limited BFS.
     #[serde(default)]
     pub retrieval_strategy: GraphRetrievalStrategy,
+    /// Named LLM provider from `[[llm.providers]]` for graph entity/relation extraction.
+    ///
+    /// When non-empty, graph extraction (and downstream note linking and community
+    /// summarization) use this provider instead of the primary `SemanticMemory.provider`.
+    /// This is the recommended fix for `quality_gate` false positives (#3601): JSON
+    /// extraction tasks produce structurally low prompt/response similarity (~0.55–0.70),
+    /// which causes systematic quality gate rejections. A named provider built via
+    /// `resolve_background_provider` bypasses `apply_routing_signals()` and therefore
+    /// has no quality gate attached.
+    ///
+    /// Falls back to the primary provider when empty. Default: `""` (use primary).
+    #[serde(default)]
+    pub extract_provider: ProviderName,
     /// Named LLM provider for hybrid strategy classification.
     /// Falls back to the default provider when `None`.
     #[serde(default)]
@@ -1827,6 +1840,7 @@ impl Default for GraphConfig {
             note_linking: NoteLinkingConfig::default(),
             spreading_activation: SpreadingActivationConfig::default(),
             retrieval_strategy: GraphRetrievalStrategy::default(),
+            extract_provider: ProviderName::default(),
             strategy_classifier_provider: None,
             beam_search: BeamSearchConfig::default(),
             watercircles: WaterCirclesConfig::default(),
