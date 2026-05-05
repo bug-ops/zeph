@@ -41,6 +41,7 @@ pub(crate) mod messages;
 pub mod overflow;
 pub mod persona;
 pub mod preferences;
+pub mod retrieval_failures;
 pub mod session_digest;
 mod skills;
 mod summaries;

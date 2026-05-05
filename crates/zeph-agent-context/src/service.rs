@@ -217,6 +217,7 @@ impl ContextService {
             token_budget,
             &view.token_counter,
             None,
+            None,
         )
         .await?;
 

@@ -413,7 +413,30 @@ impl AppBuilder {
         memory =
             memory.with_key_facts_dedup_threshold(self.config.memory.key_facts_dedup_threshold);
 
+        if let Some(logger) = self.build_retrieval_failure_logger(memory.sqlite()) {
+            memory = memory.with_retrieval_failure_logger(logger);
+        }
+
         Ok(memory)
+    }
+
+    fn build_retrieval_failure_logger(
+        &self,
+        sqlite: &zeph_memory::store::DbStore,
+    ) -> Option<zeph_memory::RetrievalFailureLogger> {
+        if !self.config.memory.retrieval_failures.enabled {
+            return None;
+        }
+        let rf_cfg = &self.config.memory.retrieval_failures;
+        let logger = zeph_memory::RetrievalFailureLogger::new(
+            sqlite.clone(),
+            rf_cfg.channel_capacity,
+            rf_cfg.batch_size,
+            std::time::Duration::from_millis(rf_cfg.flush_interval_ms),
+            rf_cfg.retention_days,
+        );
+        tracing::info!("retrieval failure logging enabled");
+        Some(logger)
     }
 
     /// Attach `GraphStore` and optionally `ExperienceStore` to the in-progress `SemanticMemory`.

@@ -11,10 +11,11 @@
 //! `zeph-core`-internal `MemoryState`, keeping this crate free of `zeph-core` types.
 
 use std::fmt::Write as _;
+use std::time::Instant;
 
 use zeph_config::ContextFormat;
 use zeph_llm::provider::{Message, MessagePart, Role};
-use zeph_memory::TokenCounter;
+use zeph_memory::{RetrievalFailureRecord, RetrievalFailureType, TokenCounter};
 
 use crate::error::ContextError;
 use crate::state::ContextAssemblyView;
@@ -152,6 +153,31 @@ pub async fn fetch_graph_facts_raw(
     };
 
     let _span = tracing::info_span!("memory.graph.dispatch", ?effective_strategy).entered();
+    let strategy_str = format!("{effective_strategy:?}").to_lowercase();
+    let edge_types_json = serde_json::to_string(&edge_types).ok();
+
+    /// Append graph facts to `body` respecting the token budget; returns result count.
+    fn append_graph_facts(
+        facts: &[zeph_memory::graph::types::GraphFact],
+        body: &mut String,
+        tokens_so_far: &mut usize,
+        budget_tokens: usize,
+        tc: &TokenCounter,
+    ) -> usize {
+        let mut count = 0;
+        for f in facts {
+            let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
+            let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
+            let line_tokens = tc.count_tokens(&line);
+            if *tokens_so_far + line_tokens > budget_tokens {
+                break;
+            }
+            body.push_str(&line);
+            *tokens_so_far += line_tokens;
+            count += 1;
+        }
+        count
+    }
 
     match effective_strategy {
         GraphRetrievalStrategy::Synapse => {
@@ -166,6 +192,7 @@ pub async fn fetch_graph_facts_raw(
                 seed_community_cap: sa_config.seed_community_cap,
             };
             let timeout_ms = effective_recall_timeout_ms(sa_config.recall_timeout_ms);
+            let t0 = Instant::now();
             let activated_facts = match tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),
                 memory.recall_graph_activated(query, recall_limit, sa_params, &edge_types),
@@ -174,15 +201,63 @@ pub async fn fetch_graph_facts_raw(
             {
                 Ok(Ok(facts)) => facts,
                 Ok(Err(e)) => {
+                    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
                     tracing::warn!("spreading activation recall failed: {e:#}");
+                    // TODO(#3576): conversation_id and turn_index not yet propagated into
+                    // context helpers; tracked for future enhancement when
+                    // ContextAssemblyView exposes them.
+                    memory.log_retrieval_failure(RetrievalFailureRecord {
+                        conversation_id: None,
+                        turn_index: 0,
+                        failure_type: RetrievalFailureType::Error,
+                        retrieval_strategy: strategy_str.clone(),
+                        query_text: query.to_owned(),
+                        query_len: query.len(),
+                        top_score: None,
+                        confidence_threshold: None,
+                        result_count: 0,
+                        latency_ms,
+                        edge_types: edge_types_json.clone(),
+                        error_context: Some(format!("{e:#}")),
+                    });
                     Vec::new()
                 }
                 Err(_) => {
+                    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
                     tracing::warn!("spreading activation recall timed out ({timeout_ms}ms)");
+                    memory.log_retrieval_failure(RetrievalFailureRecord {
+                        conversation_id: None,
+                        turn_index: 0,
+                        failure_type: RetrievalFailureType::Timeout,
+                        retrieval_strategy: strategy_str.clone(),
+                        query_text: query.to_owned(),
+                        query_len: query.len(),
+                        top_score: None,
+                        confidence_threshold: None,
+                        result_count: 0,
+                        latency_ms,
+                        edge_types: edge_types_json.clone(),
+                        error_context: Some(format!("timeout after {timeout_ms}ms")),
+                    });
                     Vec::new()
                 }
             };
+            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
             if activated_facts.is_empty() {
+                memory.log_retrieval_failure(RetrievalFailureRecord {
+                    conversation_id: None,
+                    turn_index: 0,
+                    failure_type: RetrievalFailureType::NoHit,
+                    retrieval_strategy: strategy_str,
+                    query_text: query.to_owned(),
+                    query_len: query.len(),
+                    top_score: None,
+                    confidence_threshold: None,
+                    result_count: 0,
+                    latency_ms,
+                    edge_types: edge_types_json,
+                    error_context: None,
+                });
                 return Ok(None);
             }
             for f in &activated_facts {
@@ -200,7 +275,8 @@ pub async fn fetch_graph_facts_raw(
             }
         }
         GraphRetrievalStrategy::Bfs => {
-            let facts = memory
+            let t0 = Instant::now();
+            let facts = match memory
                 .recall_graph(
                     query,
                     recall_limit,
@@ -209,23 +285,51 @@ pub async fn fetch_graph_facts_raw(
                     temporal_decay_rate,
                     &edge_types,
                 )
-                .await?;
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                    memory.log_retrieval_failure(RetrievalFailureRecord {
+                        conversation_id: None,
+                        turn_index: 0,
+                        failure_type: RetrievalFailureType::Error,
+                        retrieval_strategy: strategy_str,
+                        query_text: query.to_owned(),
+                        query_len: query.len(),
+                        top_score: None,
+                        confidence_threshold: None,
+                        result_count: 0,
+                        latency_ms,
+                        edge_types: edge_types_json,
+                        error_context: Some(format!("{e:#}")),
+                    });
+                    return Err(e);
+                }
+            };
+            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
             if facts.is_empty() {
+                memory.log_retrieval_failure(RetrievalFailureRecord {
+                    conversation_id: None,
+                    turn_index: 0,
+                    failure_type: RetrievalFailureType::NoHit,
+                    retrieval_strategy: strategy_str,
+                    query_text: query.to_owned(),
+                    query_len: query.len(),
+                    top_score: None,
+                    confidence_threshold: None,
+                    result_count: 0,
+                    latency_ms,
+                    edge_types: edge_types_json,
+                    error_context: None,
+                });
                 return Ok(None);
             }
-            for f in &facts {
-                let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
-                let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
-                let line_tokens = tc.count_tokens(&line);
-                if tokens_so_far + line_tokens > budget_tokens {
-                    break;
-                }
-                body.push_str(&line);
-                tokens_so_far += line_tokens;
-            }
+            append_graph_facts(&facts, &mut body, &mut tokens_so_far, budget_tokens, tc);
         }
         GraphRetrievalStrategy::AStar => {
-            let facts = memory
+            let t0 = Instant::now();
+            let facts = match memory
                 .recall_graph_astar(
                     query,
                     recall_limit,
@@ -233,24 +337,52 @@ pub async fn fetch_graph_facts_raw(
                     temporal_decay_rate,
                     &edge_types,
                 )
-                .await?;
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                    memory.log_retrieval_failure(RetrievalFailureRecord {
+                        conversation_id: None,
+                        turn_index: 0,
+                        failure_type: RetrievalFailureType::Error,
+                        retrieval_strategy: strategy_str,
+                        query_text: query.to_owned(),
+                        query_len: query.len(),
+                        top_score: None,
+                        confidence_threshold: None,
+                        result_count: 0,
+                        latency_ms,
+                        edge_types: edge_types_json,
+                        error_context: Some(format!("{e:#}")),
+                    });
+                    return Err(e);
+                }
+            };
+            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
             if facts.is_empty() {
+                memory.log_retrieval_failure(RetrievalFailureRecord {
+                    conversation_id: None,
+                    turn_index: 0,
+                    failure_type: RetrievalFailureType::NoHit,
+                    retrieval_strategy: strategy_str,
+                    query_text: query.to_owned(),
+                    query_len: query.len(),
+                    top_score: None,
+                    confidence_threshold: None,
+                    result_count: 0,
+                    latency_ms,
+                    edge_types: edge_types_json,
+                    error_context: None,
+                });
                 return Ok(None);
             }
-            for f in &facts {
-                let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
-                let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
-                let line_tokens = tc.count_tokens(&line);
-                if tokens_so_far + line_tokens > budget_tokens {
-                    break;
-                }
-                body.push_str(&line);
-                tokens_so_far += line_tokens;
-            }
+            append_graph_facts(&facts, &mut body, &mut tokens_so_far, budget_tokens, tc);
         }
         GraphRetrievalStrategy::WaterCircles => {
             let ring_limit = graph_config.watercircles.ring_limit;
-            let facts = memory
+            let t0 = Instant::now();
+            let facts = match memory
                 .recall_graph_watercircles(
                     query,
                     recall_limit,
@@ -259,24 +391,52 @@ pub async fn fetch_graph_facts_raw(
                     temporal_decay_rate,
                     &edge_types,
                 )
-                .await?;
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                    memory.log_retrieval_failure(RetrievalFailureRecord {
+                        conversation_id: None,
+                        turn_index: 0,
+                        failure_type: RetrievalFailureType::Error,
+                        retrieval_strategy: strategy_str,
+                        query_text: query.to_owned(),
+                        query_len: query.len(),
+                        top_score: None,
+                        confidence_threshold: None,
+                        result_count: 0,
+                        latency_ms,
+                        edge_types: edge_types_json,
+                        error_context: Some(format!("{e:#}")),
+                    });
+                    return Err(e);
+                }
+            };
+            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
             if facts.is_empty() {
+                memory.log_retrieval_failure(RetrievalFailureRecord {
+                    conversation_id: None,
+                    turn_index: 0,
+                    failure_type: RetrievalFailureType::NoHit,
+                    retrieval_strategy: strategy_str,
+                    query_text: query.to_owned(),
+                    query_len: query.len(),
+                    top_score: None,
+                    confidence_threshold: None,
+                    result_count: 0,
+                    latency_ms,
+                    edge_types: edge_types_json,
+                    error_context: None,
+                });
                 return Ok(None);
             }
-            for f in &facts {
-                let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
-                let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
-                let line_tokens = tc.count_tokens(&line);
-                if tokens_so_far + line_tokens > budget_tokens {
-                    break;
-                }
-                body.push_str(&line);
-                tokens_so_far += line_tokens;
-            }
+            append_graph_facts(&facts, &mut body, &mut tokens_so_far, budget_tokens, tc);
         }
         GraphRetrievalStrategy::BeamSearch => {
             let beam_width = graph_config.beam_search.beam_width;
-            let facts = memory
+            let t0 = Instant::now();
+            let facts = match memory
                 .recall_graph_beam(
                     query,
                     recall_limit,
@@ -285,39 +445,91 @@ pub async fn fetch_graph_facts_raw(
                     temporal_decay_rate,
                     &edge_types,
                 )
-                .await?;
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                    memory.log_retrieval_failure(RetrievalFailureRecord {
+                        conversation_id: None,
+                        turn_index: 0,
+                        failure_type: RetrievalFailureType::Error,
+                        retrieval_strategy: strategy_str,
+                        query_text: query.to_owned(),
+                        query_len: query.len(),
+                        top_score: None,
+                        confidence_threshold: None,
+                        result_count: 0,
+                        latency_ms,
+                        edge_types: edge_types_json,
+                        error_context: Some(format!("{e:#}")),
+                    });
+                    return Err(e);
+                }
+            };
+            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
             if facts.is_empty() {
+                memory.log_retrieval_failure(RetrievalFailureRecord {
+                    conversation_id: None,
+                    turn_index: 0,
+                    failure_type: RetrievalFailureType::NoHit,
+                    retrieval_strategy: strategy_str,
+                    query_text: query.to_owned(),
+                    query_len: query.len(),
+                    top_score: None,
+                    confidence_threshold: None,
+                    result_count: 0,
+                    latency_ms,
+                    edge_types: edge_types_json,
+                    error_context: None,
+                });
                 return Ok(None);
             }
-            for f in &facts {
-                let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
-                let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
-                let line_tokens = tc.count_tokens(&line);
-                if tokens_so_far + line_tokens > budget_tokens {
-                    break;
-                }
-                body.push_str(&line);
-                tokens_so_far += line_tokens;
-            }
+            append_graph_facts(&facts, &mut body, &mut tokens_so_far, budget_tokens, tc);
         }
         GraphRetrievalStrategy::Hybrid => {
             const CLASSIFIER_TIMEOUT_MS: u64 = 2_000;
-            let classified = tokio::time::timeout(
+            let classifier_t0 = Instant::now();
+            let classified = if let Ok(s) = tokio::time::timeout(
                 std::time::Duration::from_millis(CLASSIFIER_TIMEOUT_MS),
                 memory.classify_graph_strategy(query),
             )
             .await
-            .unwrap_or_else(|_| {
+            {
+                s
+            } else {
+                let latency_ms = classifier_t0
+                    .elapsed()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX);
                 tracing::warn!(
                     "hybrid strategy classifier timed out after {CLASSIFIER_TIMEOUT_MS}ms, \
                      falling back to synapse"
                 );
+                memory.log_retrieval_failure(RetrievalFailureRecord {
+                    conversation_id: None,
+                    turn_index: 0,
+                    failure_type: RetrievalFailureType::Timeout,
+                    retrieval_strategy: "hybrid_classifier".to_owned(),
+                    query_text: query.to_owned(),
+                    query_len: query.len(),
+                    top_score: None,
+                    confidence_threshold: None,
+                    result_count: 0,
+                    latency_ms,
+                    edge_types: edge_types_json.clone(),
+                    error_context: Some(format!(
+                        "classifier timeout after {CLASSIFIER_TIMEOUT_MS}ms"
+                    )),
+                });
                 "synapse".to_owned()
-            });
+            };
             tracing::debug!(classified_strategy = %classified, "hybrid dispatch: classified");
+            let t0 = Instant::now();
             let facts = match classified.as_str() {
                 "astar" => {
-                    memory
+                    match memory
                         .recall_graph_astar(
                             query,
                             recall_limit,
@@ -325,11 +537,33 @@ pub async fn fetch_graph_facts_raw(
                             temporal_decay_rate,
                             &edge_types,
                         )
-                        .await?
+                        .await
+                    {
+                        Ok(f) => f,
+                        Err(e) => {
+                            let latency_ms =
+                                t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                            memory.log_retrieval_failure(RetrievalFailureRecord {
+                                conversation_id: None,
+                                turn_index: 0,
+                                failure_type: RetrievalFailureType::Error,
+                                retrieval_strategy: strategy_str,
+                                query_text: query.to_owned(),
+                                query_len: query.len(),
+                                top_score: None,
+                                confidence_threshold: None,
+                                result_count: 0,
+                                latency_ms,
+                                edge_types: edge_types_json,
+                                error_context: Some(format!("{e:#}")),
+                            });
+                            return Err(e);
+                        }
+                    }
                 }
                 "watercircles" => {
                     let ring_limit = graph_config.watercircles.ring_limit;
-                    memory
+                    match memory
                         .recall_graph_watercircles(
                             query,
                             recall_limit,
@@ -338,11 +572,33 @@ pub async fn fetch_graph_facts_raw(
                             temporal_decay_rate,
                             &edge_types,
                         )
-                        .await?
+                        .await
+                    {
+                        Ok(f) => f,
+                        Err(e) => {
+                            let latency_ms =
+                                t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                            memory.log_retrieval_failure(RetrievalFailureRecord {
+                                conversation_id: None,
+                                turn_index: 0,
+                                failure_type: RetrievalFailureType::Error,
+                                retrieval_strategy: strategy_str,
+                                query_text: query.to_owned(),
+                                query_len: query.len(),
+                                top_score: None,
+                                confidence_threshold: None,
+                                result_count: 0,
+                                latency_ms,
+                                edge_types: edge_types_json,
+                                error_context: Some(format!("{e:#}")),
+                            });
+                            return Err(e);
+                        }
+                    }
                 }
                 "beam_search" => {
                     let beam_width = graph_config.beam_search.beam_width;
-                    memory
+                    match memory
                         .recall_graph_beam(
                             query,
                             recall_limit,
@@ -351,7 +607,29 @@ pub async fn fetch_graph_facts_raw(
                             temporal_decay_rate,
                             &edge_types,
                         )
-                        .await?
+                        .await
+                    {
+                        Ok(f) => f,
+                        Err(e) => {
+                            let latency_ms =
+                                t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                            memory.log_retrieval_failure(RetrievalFailureRecord {
+                                conversation_id: None,
+                                turn_index: 0,
+                                failure_type: RetrievalFailureType::Error,
+                                retrieval_strategy: strategy_str,
+                                query_text: query.to_owned(),
+                                query_len: query.len(),
+                                top_score: None,
+                                confidence_threshold: None,
+                                result_count: 0,
+                                latency_ms,
+                                edge_types: edge_types_json,
+                                error_context: Some(format!("{e:#}")),
+                            });
+                            return Err(e);
+                        }
+                    }
                 }
                 _ => {
                     let sa_params = zeph_memory::graph::SpreadingActivationParams {
@@ -364,39 +642,67 @@ pub async fn fetch_graph_facts_raw(
                         seed_structural_weight: sa_config.seed_structural_weight,
                         seed_community_cap: sa_config.seed_community_cap,
                     };
-                    memory
+                    match memory
                         .recall_graph_activated(query, recall_limit, sa_params, &edge_types)
-                        .await?
-                        .into_iter()
-                        .map(|f| zeph_memory::graph::types::GraphFact {
-                            entity_name: f.edge.source_entity_id.to_string(),
-                            relation: f.edge.relation.clone(),
-                            target_name: f.edge.target_entity_id.to_string(),
-                            fact: f.edge.fact.clone(),
-                            entity_match_score: f.activation_score,
-                            hop_distance: 0,
-                            confidence: f.edge.confidence,
-                            valid_from: Some(f.edge.valid_from.clone()),
-                            edge_type: f.edge.edge_type,
-                            retrieval_count: f.edge.retrieval_count,
-                            edge_id: Some(f.edge.id),
-                        })
-                        .collect()
+                        .await
+                    {
+                        Ok(activated) => activated
+                            .into_iter()
+                            .map(|f| zeph_memory::graph::types::GraphFact {
+                                entity_name: f.edge.source_entity_id.to_string(),
+                                relation: f.edge.relation.clone(),
+                                target_name: f.edge.target_entity_id.to_string(),
+                                fact: f.edge.fact.clone(),
+                                entity_match_score: f.activation_score,
+                                hop_distance: 0,
+                                confidence: f.edge.confidence,
+                                valid_from: Some(f.edge.valid_from.clone()),
+                                edge_type: f.edge.edge_type,
+                                retrieval_count: f.edge.retrieval_count,
+                                edge_id: Some(f.edge.id),
+                            })
+                            .collect(),
+                        Err(e) => {
+                            let latency_ms =
+                                t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                            memory.log_retrieval_failure(RetrievalFailureRecord {
+                                conversation_id: None,
+                                turn_index: 0,
+                                failure_type: RetrievalFailureType::Error,
+                                retrieval_strategy: strategy_str,
+                                query_text: query.to_owned(),
+                                query_len: query.len(),
+                                top_score: None,
+                                confidence_threshold: None,
+                                result_count: 0,
+                                latency_ms,
+                                edge_types: edge_types_json,
+                                error_context: Some(format!("{e:#}")),
+                            });
+                            return Err(e);
+                        }
+                    }
                 }
             };
+            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
             if facts.is_empty() {
+                memory.log_retrieval_failure(RetrievalFailureRecord {
+                    conversation_id: None,
+                    turn_index: 0,
+                    failure_type: RetrievalFailureType::NoHit,
+                    retrieval_strategy: strategy_str,
+                    query_text: query.to_owned(),
+                    query_len: query.len(),
+                    top_score: None,
+                    confidence_threshold: None,
+                    result_count: 0,
+                    latency_ms,
+                    edge_types: edge_types_json,
+                    error_context: None,
+                });
                 return Ok(None);
             }
-            for f in &facts {
-                let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
-                let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
-                let line_tokens = tc.count_tokens(&line);
-                if tokens_so_far + line_tokens > budget_tokens {
-                    break;
-                }
-                body.push_str(&line);
-                tokens_so_far += line_tokens;
-            }
+            append_graph_facts(&facts, &mut body, &mut tokens_so_far, budget_tokens, tc);
         }
     }
 
@@ -411,9 +717,13 @@ pub async fn fetch_graph_facts_raw(
 ///
 /// Raw-args variant used by `zeph-core` test bridge methods and by [`fetch_semantic_recall`].
 ///
+/// When `low_confidence_threshold` is `Some(t)`, results with a top score below `t` are
+/// classified as low-confidence and logged via the memory's retrieval failure logger.
+///
 /// # Errors
 ///
 /// Returns [`zeph_memory::MemoryError`] when the memory backend returns an error.
+#[allow(clippy::too_many_arguments)]
 pub async fn fetch_semantic_recall_raw(
     memory: Option<&zeph_memory::semantic::SemanticMemory>,
     recall_limit: usize,
@@ -422,6 +732,7 @@ pub async fn fetch_semantic_recall_raw(
     token_budget: usize,
     tc: &TokenCounter,
     router: Option<&dyn zeph_memory::AsyncMemoryRouter>,
+    low_confidence_threshold: Option<f32>,
 ) -> Result<(Option<Message>, Option<f32>), zeph_memory::MemoryError> {
     let Some(memory) = memory else {
         return Ok((None, None));
@@ -430,6 +741,7 @@ pub async fn fetch_semantic_recall_raw(
         return Ok((None, None));
     }
 
+    let t0 = Instant::now();
     let recalled = if let Some(r) = router {
         memory
             .recall_routed_async(query, recall_limit, None, r)
@@ -437,11 +749,46 @@ pub async fn fetch_semantic_recall_raw(
     } else {
         memory.recall(query, recall_limit, None).await?
     };
+    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+
     if recalled.is_empty() {
+        memory.log_retrieval_failure(RetrievalFailureRecord {
+            conversation_id: None,
+            turn_index: 0,
+            failure_type: RetrievalFailureType::NoHit,
+            retrieval_strategy: "semantic".to_owned(),
+            query_text: query.to_owned(),
+            query_len: query.len(),
+            top_score: None,
+            confidence_threshold: low_confidence_threshold,
+            result_count: 0,
+            latency_ms,
+            edge_types: None,
+            error_context: None,
+        });
         return Ok((None, None));
     }
 
     let top_score = recalled.first().map(|r| r.score);
+
+    if let (Some(score), Some(threshold)) = (top_score, low_confidence_threshold)
+        && score < threshold
+    {
+        memory.log_retrieval_failure(RetrievalFailureRecord {
+            conversation_id: None,
+            turn_index: 0,
+            failure_type: RetrievalFailureType::LowConfidence,
+            retrieval_strategy: "semantic".to_owned(),
+            query_text: query.to_owned(),
+            query_len: query.len(),
+            top_score: Some(score),
+            confidence_threshold: Some(threshold),
+            result_count: recalled.len(),
+            latency_ms,
+            edge_types: None,
+            error_context: None,
+        });
+    }
     let initial_cap = (recall_limit * 512).min(token_budget * 3);
     let mut recall_text = String::with_capacity(initial_cap);
     recall_text.push_str(RECALL_PREFIX);
@@ -611,6 +958,7 @@ pub async fn fetch_semantic_recall(
         token_budget,
         tc,
         router,
+        None,
     )
     .await
     .map_err(ContextError::Memory)

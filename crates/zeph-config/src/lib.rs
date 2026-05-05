@@ -139,9 +139,9 @@ pub use memory::{
     CategoryConfig, CompressionConfig, CompressionStrategy, ContextFormat, ContextStrategy,
     DigestConfig, DocumentConfig, ForgettingConfig, GraphConfig, HebbianConfig, MagicDocsConfig,
     MemCotConfig, MemoryConfig, MicrocompactConfig, NoteLinkingConfig, PersonaConfig,
-    PruningStrategy, ReasoningConfig, RecallViewConfig, RetrievalConfig, RpeConfig, SemanticConfig,
-    SessionsConfig, SidequestConfig, StoreRoutingConfig, StoreRoutingStrategy, TierConfig,
-    TrajectoryConfig, TreeConfig, VectorBackend,
+    PruningStrategy, ReasoningConfig, RecallViewConfig, RetrievalConfig, RetrievalFailuresConfig,
+    RpeConfig, SemanticConfig, SessionsConfig, SidequestConfig, StoreRoutingConfig,
+    StoreRoutingStrategy, TierConfig, TrajectoryConfig, TreeConfig, VectorBackend,
 };
 pub use metrics::MetricsConfig;
 pub use notifications::NotificationsConfig;

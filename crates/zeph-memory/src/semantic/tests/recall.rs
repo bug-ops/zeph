@@ -84,6 +84,7 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         hebbian_reinforcement: super::super::HebbianReinforcement::Disabled,
         hebbian_lr: 0.1,
         hebbian_spread: crate::HelaSpreadRuntime::default(),
+        retrieval_failure_logger: None,
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();

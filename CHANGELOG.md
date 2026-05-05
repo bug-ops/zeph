@@ -23,6 +23,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(memory): `RetrievalFailureLogger` — async fire-and-forget logger for memory retrieval
+  failures in `zeph-memory`. Records no-hit turns, low-confidence recalls, timeouts, and errors
+  into a new `memory_retrieval_failures` SQLite table (migration 083). The write path uses a
+  bounded mpsc channel (256 cap) with a background batch writer (16 records / 100 ms flush),
+  keeping `try_send` on the hot path with zero latency impact. Integrated at
+  `fetch_graph_facts_raw` and `fetch_semantic_recall_raw` in `zeph-agent-context`. Configured
+  via `[memory.retrieval_failures]` with `enabled` (default `false`),
+  `low_confidence_threshold` (default `0.3`), and `retention_days` (default `90`). Implements
+  the minimum viable failure dataset required by the OmniMem self-improvement loop (issue #3576,
+  ref arXiv:2604.01007).
+
 - feat(memory): `SemanticStateAccumulator` — cost-gated background distillation of assistant
   responses into a rolling semantic state buffer (`memory.memcot.enabled`, issues #3574/#3575).
   The state is prepended as `[state] <buf>` to graph recall queries to improve retrieval

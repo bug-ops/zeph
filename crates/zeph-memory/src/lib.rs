@@ -76,6 +76,7 @@ pub mod forgetting;
 pub mod hebbian_consolidation;
 pub mod reasoning;
 pub mod recall_view;
+pub mod retrieval_failure_logger;
 pub mod scenes;
 pub mod tiers;
 
@@ -157,6 +158,7 @@ pub use reasoning::{
 };
 pub use recall_view::{RecallView, RecalledFact};
 pub use response_cache::ResponseCache;
+pub use retrieval_failure_logger::RetrievalFailureLogger;
 pub use router::{
     AsyncMemoryRouter, HeuristicRouter, HybridRouter, LlmRouter, MemoryRoute, MemoryRouter,
     RoutingDecision, TemporalRange, classify_graph_subgraph, parse_route_str,
@@ -181,6 +183,7 @@ pub use store::corrections::UserCorrectionRow;
 pub use store::experiments::{ExperimentResultRow, NewExperimentResult, SessionSummaryRow};
 pub use store::memory_tree::MemoryTreeRow;
 pub use store::persona::PersonaFactRow;
+pub use store::retrieval_failures::{RetrievalFailureRecord, RetrievalFailureType};
 pub use store::session_digest::SessionDigest;
 pub use store::trajectory::{NewTrajectoryEntry, TrajectoryEntryRow};
 pub use tiers::{TierPromotionConfig, start_tier_promotion_loop};

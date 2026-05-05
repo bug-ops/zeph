@@ -933,6 +933,41 @@ pub struct MemoryConfig {
     /// ```
     #[serde(default)]
     pub memcot: MemCotConfig,
+    /// `OmniMem` retrieval failure tracking (issue #3576).
+    ///
+    /// When `enabled = true`, no-hit and low-confidence recall events are logged
+    /// asynchronously to `memory_retrieval_failures` for closed-loop parameter tuning.
+    ///
+    /// # Example (TOML)
+    ///
+    /// ```toml
+    /// [memory.retrieval_failures]
+    /// enabled = true
+    /// low_confidence_threshold = 0.3
+    /// retention_days = 90
+    /// ```
+    #[serde(default)]
+    pub retrieval_failures: RetrievalFailuresConfig,
+}
+
+fn default_retrieval_failures_low_confidence_threshold() -> f32 {
+    0.3
+}
+
+fn default_retrieval_failures_retention_days() -> u32 {
+    90
+}
+
+fn default_retrieval_failures_channel_capacity() -> usize {
+    256
+}
+
+fn default_retrieval_failures_batch_size() -> usize {
+    16
+}
+
+fn default_retrieval_failures_flush_interval_ms() -> u64 {
+    100
 }
 
 fn default_crossover_turn_threshold() -> u32 {
@@ -2974,6 +3009,49 @@ impl Default for MemCotConfig {
             recall_view: RecallViewConfig::Head,
             zoom_out_neighbor_cap: 3,
             fast_tier_models: Vec::new(),
+        }
+    }
+}
+
+/// `OmniMem` retrieval failure tracking configuration (issue #3576).
+///
+/// Controls the async logger that records no-hit and low-confidence recall events
+/// to `memory_retrieval_failures` for closed-loop memory parameter tuning.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RetrievalFailuresConfig {
+    /// Enable retrieval failure logging. Default: `false`.
+    pub enabled: bool,
+    /// Composite recall score below which a result is classified as low-confidence.
+    ///
+    /// The threshold applies to the post-reranking composite score (which incorporates
+    /// MMR, temporal decay, importance weighting, and tier boost). Calibrate against
+    /// the scoring pipeline in use. Default: `0.3`.
+    #[serde(default = "default_retrieval_failures_low_confidence_threshold")]
+    pub low_confidence_threshold: f32,
+    /// Days to retain failure records before automatic cleanup. Default: `90`.
+    #[serde(default = "default_retrieval_failures_retention_days")]
+    pub retention_days: u32,
+    /// Bounded mpsc channel capacity for the fire-and-forget write path. Default: `256`.
+    #[serde(default = "default_retrieval_failures_channel_capacity")]
+    pub channel_capacity: usize,
+    /// Maximum records collected before flushing a batch INSERT. Default: `16`.
+    #[serde(default = "default_retrieval_failures_batch_size")]
+    pub batch_size: usize,
+    /// Maximum milliseconds to wait before flushing a partial batch. Default: `100`.
+    #[serde(default = "default_retrieval_failures_flush_interval_ms")]
+    pub flush_interval_ms: u64,
+}
+
+impl Default for RetrievalFailuresConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            low_confidence_threshold: default_retrieval_failures_low_confidence_threshold(),
+            retention_days: default_retrieval_failures_retention_days(),
+            channel_capacity: default_retrieval_failures_channel_capacity(),
+            batch_size: default_retrieval_failures_batch_size(),
+            flush_interval_ms: default_retrieval_failures_flush_interval_ms(),
         }
     }
 }

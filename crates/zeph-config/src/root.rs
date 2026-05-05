@@ -267,6 +267,7 @@ impl Default for Config {
                 reasoning: crate::memory::ReasoningConfig::default(),
                 hebbian: crate::memory::HebbianConfig::default(),
                 memcot: crate::memory::MemCotConfig::default(),
+                retrieval_failures: crate::memory::RetrievalFailuresConfig::default(),
             },
             telegram: None,
             discord: None,

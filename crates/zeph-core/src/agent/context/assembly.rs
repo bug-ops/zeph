@@ -1230,6 +1230,7 @@ impl<C: Channel> Agent<C> {
             token_budget,
             &self.runtime.metrics.token_counter,
             None,
+            None,
         )
         .await
         .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))?;

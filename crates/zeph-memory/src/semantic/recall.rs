@@ -1978,6 +1978,7 @@ mod tests {
             hebbian_reinforcement: crate::semantic::HebbianReinforcement::Disabled,
             hebbian_lr: 0.1,
             hebbian_spread: crate::HelaSpreadRuntime::default(),
+            retrieval_failure_logger: None,
         }
     }
 

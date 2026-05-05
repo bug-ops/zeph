@@ -47,7 +47,9 @@ use zeph_llm::provider::LlmProvider as _;
 use crate::admission::AdmissionControl;
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
+use crate::retrieval_failure_logger::RetrievalFailureLogger;
 use crate::store::SqliteStore;
+use crate::store::retrieval_failures::RetrievalFailureRecord;
 use crate::token_counter::TokenCounter;
 
 pub(crate) const SESSION_SUMMARIES_COLLECTION: &str = "zeph_session_summaries";
@@ -347,6 +349,10 @@ pub struct SemanticMemory {
     pub(crate) hebbian_lr: f32,
     /// HL-F5 spreading activation runtime config (#3346).
     pub(crate) hebbian_spread: HelaSpreadRuntime,
+    /// `OmniMem` retrieval failure logger (issue #3576).
+    ///
+    /// `Some` when `memory.retrieval_failures.enabled = true` at bootstrap.
+    pub(crate) retrieval_failure_logger: Option<RetrievalFailureLogger>,
 }
 
 impl SemanticMemory {
@@ -477,6 +483,7 @@ impl SemanticMemory {
             hebbian_reinforcement: HebbianReinforcement::Disabled,
             hebbian_lr: 0.1,
             hebbian_spread: HelaSpreadRuntime::default(),
+            retrieval_failure_logger: None,
         })
     }
 
@@ -539,6 +546,7 @@ impl SemanticMemory {
             hebbian_reinforcement: HebbianReinforcement::Disabled,
             hebbian_lr: 0.1,
             hebbian_spread: HelaSpreadRuntime::default(),
+            retrieval_failure_logger: None,
         })
     }
 
@@ -575,6 +583,27 @@ impl SemanticMemory {
     pub fn with_reasoning(mut self, store: Arc<crate::reasoning::ReasoningMemory>) -> Self {
         self.reasoning = Some(store);
         self
+    }
+
+    /// Attach a [`RetrievalFailureLogger`] for `OmniMem` self-improvement data collection.
+    ///
+    /// When attached, [`SemanticMemory::log_retrieval_failure`] records events
+    /// asynchronously. When absent, `log_retrieval_failure` is a no-op.
+    #[must_use]
+    pub fn with_retrieval_failure_logger(mut self, logger: RetrievalFailureLogger) -> Self {
+        self.retrieval_failure_logger = Some(logger);
+        self
+    }
+
+    /// Log a retrieval failure event asynchronously.
+    ///
+    /// No-op when retrieval failure logging is disabled (`retrieval_failure_logger` is `None`).
+    /// On the hot path this method never blocks — records are sent via a bounded mpsc channel
+    /// and dropped silently when the channel is full.
+    pub fn log_retrieval_failure(&self, record: RetrievalFailureRecord) {
+        if let Some(logger) = &self.retrieval_failure_logger {
+            logger.log(record);
+        }
     }
 
     /// Returns the cumulative count of community detection failures since startup.
@@ -1008,6 +1037,7 @@ impl SemanticMemory {
             hebbian_reinforcement: HebbianReinforcement::Disabled,
             hebbian_lr: 0.1,
             hebbian_spread: HelaSpreadRuntime::default(),
+            retrieval_failure_logger: None,
         }
     }
 
@@ -1089,6 +1119,7 @@ impl SemanticMemory {
             hebbian_reinforcement: HebbianReinforcement::Disabled,
             hebbian_lr: 0.1,
             hebbian_spread: HelaSpreadRuntime::default(),
+            retrieval_failure_logger: None,
         })
     }
 

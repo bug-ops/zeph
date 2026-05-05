@@ -67,6 +67,7 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
         hebbian_reinforcement: HebbianReinforcement::Disabled,
         hebbian_lr: 0.1,
         hebbian_spread: crate::HelaSpreadRuntime::default(),
+        retrieval_failure_logger: None,
     }
 }
 
@@ -166,6 +167,7 @@ async fn effective_embed_provider_routes_to_dedicated_embed_provider() {
         hebbian_reinforcement: HebbianReinforcement::Disabled,
         hebbian_lr: 0.1,
         hebbian_spread: crate::HelaSpreadRuntime::default(),
+        retrieval_failure_logger: None,
     };
 
     assert!(
@@ -575,6 +577,7 @@ async fn store_correction_embedding_sqlite_clean_db_roundtrip() {
         hebbian_reinforcement: HebbianReinforcement::Disabled,
         hebbian_lr: 0.1,
         hebbian_spread: crate::HelaSpreadRuntime::default(),
+        retrieval_failure_logger: None,
     };
 
     memory
@@ -694,6 +697,7 @@ async fn load_promotion_window_populates_embeddings_from_qdrant() {
         hebbian_reinforcement: HebbianReinforcement::Disabled,
         hebbian_lr: 0.1,
         hebbian_spread: crate::HelaSpreadRuntime::default(),
+        retrieval_failure_logger: None,
     };
 
     let window = memory.load_promotion_window(10).await.unwrap();
