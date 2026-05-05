@@ -146,7 +146,7 @@ mod orchestration_integration {
         let config = default_config();
         let agents = vec![make_agent("worker")];
         let mut scheduler =
-            DagScheduler::new(graph, &config, Box::new(FirstRouter), agents).unwrap();
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), agents, None).unwrap();
 
         let final_status = drive_scheduler(&mut scheduler, |task_id| TaskOutcome::Completed {
             output: format!("output from task {}", task_id.index()),
@@ -183,7 +183,7 @@ mod orchestration_integration {
         let config = default_config();
         let agents = vec![make_agent("worker")];
         let mut scheduler =
-            DagScheduler::new(graph, &config, Box::new(FirstRouter), agents).unwrap();
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), agents, None).unwrap();
 
         let final_status = drive_scheduler(&mut scheduler, |_| TaskOutcome::Completed {
             output: "done".to_string(),
@@ -208,7 +208,7 @@ mod orchestration_integration {
         let config = default_config();
         let agents = vec![make_agent("worker")];
         let mut scheduler =
-            DagScheduler::new(graph, &config, Box::new(FirstRouter), agents).unwrap();
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), agents, None).unwrap();
 
         let final_status = drive_scheduler(&mut scheduler, |task_id| {
             if task_id.index() == 0 {
@@ -255,7 +255,7 @@ mod orchestration_integration {
         let config = default_config();
         let agents = vec![make_agent("worker")];
         let mut scheduler =
-            DagScheduler::new(graph, &config, Box::new(FirstRouter), agents).unwrap();
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), agents, None).unwrap();
 
         let final_status = drive_scheduler(&mut scheduler, |task_id| {
             if task_id.index() == 0 {
@@ -312,7 +312,7 @@ mod orchestration_integration {
         let config = default_config();
         let agents = vec![make_agent("worker")];
         let mut scheduler =
-            DagScheduler::new(graph, &config, Box::new(FirstRouter), agents).unwrap();
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), agents, None).unwrap();
 
         let tx = scheduler.event_sender();
         let mut attempt = 0u32;
