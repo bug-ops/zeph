@@ -12,7 +12,7 @@ pub use zeph_config::{
     AgentConfig, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
     ClassifiersConfig, CompressionConfig, CompressionStrategy, Config, ConfigError, ContextFormat,
     CostConfig, DaemonConfig, DebugConfig, DetectorMode, DiscordConfig, DocumentConfig, DumpFormat,
-    ExperimentConfig, ExperimentSchedule, FocusConfig, GatewayConfig, GenerationParams,
+    ExperimentConfig, ExperimentSchedule, FocusConfig, GatewayConfig, GenerationParams, GonkaNode,
     GraphConfig, HookAction, HookDef, HookMatcher, IndexConfig, LearningConfig, LlmConfig,
     LlmRoutingStrategy, LogRotation, LoggingConfig, MAX_TOKENS_CAP, McpConfig, McpOAuthConfig,
     McpServerConfig, McpTrustLevel, MemoryConfig, MemoryScope, NoteLinkingConfig,
@@ -76,6 +76,19 @@ pub trait SecretResolver {
     ) -> impl std::future::Future<Output = Result<(), ConfigError>> + Send;
 }
 
+fn log_gonka_credential_status(has_key: bool, has_address: bool) {
+    match (has_key, has_address) {
+        (true, true) => tracing::info!("gonka wallet credentials resolved from vault"),
+        (true, false) => tracing::warn!(
+            "ZEPH_GONKA_PRIVATE_KEY is set but ZEPH_GONKA_ADDRESS is missing from vault"
+        ),
+        (false, true) => tracing::warn!(
+            "ZEPH_GONKA_ADDRESS is set but ZEPH_GONKA_PRIVATE_KEY is missing from vault"
+        ),
+        (false, false) => {}
+    }
+}
+
 // TODO(critic): vault values are inserted verbatim into typed config fields.
 // Consider centralizing whitespace trimming and empty-string normalization
 // here so every consumer (qdrant client, claude, openai, etc.) sees a clean value.
@@ -90,6 +103,16 @@ impl SecretResolver for Config {
         if let Some(val) = vault.get_secret("ZEPH_GEMINI_API_KEY").await? {
             self.secrets.gemini_api_key = Some(Secret::new(val));
         }
+        if let Some(val) = vault.get_secret("ZEPH_GONKA_PRIVATE_KEY").await? {
+            self.secrets.gonka_private_key = Some(Secret::new(val));
+        }
+        if let Some(val) = vault.get_secret("ZEPH_GONKA_ADDRESS").await? {
+            self.secrets.gonka_address = Some(Secret::new(val));
+        }
+        log_gonka_credential_status(
+            self.secrets.gonka_private_key.is_some(),
+            self.secrets.gonka_address.is_some(),
+        );
         if let Some(val) = vault.get_secret("ZEPH_TELEGRAM_TOKEN").await?
             && let Some(tg) = self.telegram.as_mut()
         {
@@ -184,5 +207,42 @@ mod tests {
         if let Some(tg) = config.telegram {
             assert_eq!(tg.token.as_deref(), Some("tg-token-456"));
         }
+    }
+
+    #[tokio::test]
+    #[cfg(any(test, feature = "mock"))]
+    async fn resolve_gonka_secrets_both_present() {
+        use crate::vault::MockVaultProvider;
+
+        let vault = MockVaultProvider::new()
+            .with_secret("ZEPH_GONKA_PRIVATE_KEY", "gonka-priv-key-abc")
+            .with_secret("ZEPH_GONKA_ADDRESS", "gonka1xyzaddress");
+
+        let mut config = Config::load(std::path::Path::new("/nonexistent/config.toml")).unwrap();
+        config.resolve_secrets(&vault).await.unwrap();
+
+        assert_eq!(
+            config.secrets.gonka_private_key.as_ref().unwrap().expose(),
+            "gonka-priv-key-abc"
+        );
+        assert_eq!(
+            config.secrets.gonka_address.as_ref().unwrap().expose(),
+            "gonka1xyzaddress"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(any(test, feature = "mock"))]
+    async fn resolve_gonka_partial_only_private_key() {
+        use crate::vault::MockVaultProvider;
+
+        let vault =
+            MockVaultProvider::new().with_secret("ZEPH_GONKA_PRIVATE_KEY", "gonka-priv-key-only");
+
+        let mut config = Config::load(std::path::Path::new("/nonexistent/config.toml")).unwrap();
+        config.resolve_secrets(&vault).await.unwrap();
+
+        assert!(config.secrets.gonka_private_key.is_some());
+        assert!(config.secrets.gonka_address.is_none());
     }
 }

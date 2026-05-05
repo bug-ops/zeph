@@ -257,7 +257,8 @@ fn detection_paths(kind: ProviderKind, base: &Path) -> Vec<PathBuf> {
         ProviderKind::Compatible
         | ProviderKind::Ollama
         | ProviderKind::Candle
-        | ProviderKind::Gemini => {
+        | ProviderKind::Gemini
+        | ProviderKind::Gonka => {
             vec![base.join("AGENTS.md")]
         }
     }

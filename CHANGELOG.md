@@ -47,6 +47,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   output. A config migration step (step 43) adds the commented-out field to existing configs.
   Implements #3300.
 
+- feat(config): add `ProviderKind::Gonka` with `GonkaNode { url, name }` struct, node pool
+  validation (non-empty, http/https scheme), and `effective_gonka_chain_prefix()` helper
+  (defaults to `"gonka"`). `GonkaNode` re-exported from both `zeph-config` and `zeph-core`.
+  Exhaustive `ProviderKind` matches in `instructions.rs` and `provider_factory.rs` updated;
+  factory returns `BootstrapError` until the native transport lands. (#3607)
+
+- feat(config): add `ZEPH_GONKA_PRIVATE_KEY` and `ZEPH_GONKA_ADDRESS` vault key resolution to
+  `ResolvedSecrets`. `resolve_secrets()` emits `INFO` when both keys are present and `WARN` when
+  only one of the two is resolved, preventing silent misconfiguration. (#3608)
+
 - feat(cli): `zeph project purge` command removes all project-local state (SQLite database,
   log files, debug artifacts, trace files, audit log, and Qdrant collections) with `--dry-run`
   and `-y` flags. Includes pre-flight exclusive lock check on the SQLite database to prevent

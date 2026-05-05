@@ -104,6 +104,9 @@ pub fn build_provider_from_entry(
         ProviderKind::Candle => Err(BootstrapError::Provider(
             "candle feature is not enabled".into(),
         )),
+        ProviderKind::Gonka => Err(BootstrapError::Provider(
+            "gonka provider is not yet implemented".into(),
+        )),
     }
 }
 

@@ -349,6 +349,8 @@ pub enum ProviderKind {
     Candle,
     /// OpenAI-compatible third-party API (e.g. Groq, Together AI, LM Studio).
     Compatible,
+    /// Native Gonka blockchain provider.
+    Gonka,
 }
 
 impl ProviderKind {
@@ -371,6 +373,7 @@ impl ProviderKind {
             Self::Gemini => "gemini",
             Self::Candle => "candle",
             Self::Compatible => "compatible",
+            Self::Gonka => "gonka",
         }
     }
 }
@@ -1293,6 +1296,19 @@ impl Default for CoeConfig {
     }
 }
 
+/// A single Gonka network node endpoint.
+///
+/// Used in `[[llm.providers]]` entries with `type = "gonka"` to declare
+/// the node pool for blockchain inference routing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct GonkaNode {
+    /// HTTP(S) URL of the Gonka node (e.g. `"https://node1.gonka.ai"`).
+    pub url: String,
+    /// Optional human-readable label for `zeph gonka doctor` output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 /// Inline candle config for use inside `ProviderEntry`.
 /// Re-uses the generation params from `CandleConfig`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1419,6 +1435,14 @@ pub struct ProviderEntry {
     #[serde(default)]
     pub vision_model: Option<String>,
 
+    // --- Gonka-specific ---
+    /// Gonka network node pool. Required (non-empty) when `type = "gonka"`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gonka_nodes: Vec<GonkaNode>,
+    /// bech32 chain prefix for address encoding. Defaults to `"gonka"` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gonka_chain_prefix: Option<String>,
+
     /// Provider-specific instruction file.
     #[serde(default)]
     pub instruction_file: Option<std::path::PathBuf>,
@@ -1467,6 +1491,8 @@ impl Default for ProviderEntry {
             api_key: None,
             candle: None,
             vision_model: None,
+            gonka_nodes: Vec::new(),
+            gonka_chain_prefix: None,
             instruction_file: None,
             max_concurrent: None,
         }
@@ -1496,7 +1522,9 @@ impl ProviderEntry {
             ProviderKind::Claude => "claude-haiku-4-5-20251001".to_owned(),
             ProviderKind::OpenAi => "gpt-4o-mini".to_owned(),
             ProviderKind::Gemini => "gemini-2.0-flash".to_owned(),
-            ProviderKind::Compatible | ProviderKind::Candle => String::new(),
+            // Compatible/Candle return empty because the model is resolved elsewhere.
+            // Gonka returns empty because it is a blockchain provider, not an LLM — there is no model concept.
+            ProviderKind::Compatible | ProviderKind::Candle | ProviderKind::Gonka => String::new(),
         }
     }
 
@@ -1516,72 +1544,18 @@ impl ProviderEntry {
             ));
         }
 
-        // B1: warn on irrelevant fields.
-        match self.provider_type {
-            ProviderKind::Ollama => {
-                if self.thinking.is_some() {
-                    tracing::warn!(
-                        provider = self.effective_name(),
-                        "field `thinking` is only used by Claude providers"
-                    );
-                }
-                if self.reasoning_effort.is_some() {
-                    tracing::warn!(
-                        provider = self.effective_name(),
-                        "field `reasoning_effort` is only used by OpenAI providers"
-                    );
-                }
-                if self.thinking_level.is_some() || self.thinking_budget.is_some() {
-                    tracing::warn!(
-                        provider = self.effective_name(),
-                        "fields `thinking_level`/`thinking_budget` are only used by Gemini providers"
-                    );
-                }
+        // B3: gonka provider MUST have name and valid gonka_nodes.
+        if self.provider_type == ProviderKind::Gonka {
+            if self.name.is_none() {
+                return Err(ConfigError::Validation(
+                    "[[llm.providers]] entry with type=\"gonka\" must set `name`".into(),
+                ));
             }
-            ProviderKind::Claude => {
-                if self.reasoning_effort.is_some() {
-                    tracing::warn!(
-                        provider = self.effective_name(),
-                        "field `reasoning_effort` is only used by OpenAI providers"
-                    );
-                }
-                if self.thinking_level.is_some() || self.thinking_budget.is_some() {
-                    tracing::warn!(
-                        provider = self.effective_name(),
-                        "fields `thinking_level`/`thinking_budget` are only used by Gemini providers"
-                    );
-                }
-            }
-            ProviderKind::OpenAi => {
-                if self.thinking.is_some() {
-                    tracing::warn!(
-                        provider = self.effective_name(),
-                        "field `thinking` is only used by Claude providers"
-                    );
-                }
-                if self.thinking_level.is_some() || self.thinking_budget.is_some() {
-                    tracing::warn!(
-                        provider = self.effective_name(),
-                        "fields `thinking_level`/`thinking_budget` are only used by Gemini providers"
-                    );
-                }
-            }
-            ProviderKind::Gemini => {
-                if self.thinking.is_some() {
-                    tracing::warn!(
-                        provider = self.effective_name(),
-                        "field `thinking` is only used by Claude providers"
-                    );
-                }
-                if self.reasoning_effort.is_some() {
-                    tracing::warn!(
-                        provider = self.effective_name(),
-                        "field `reasoning_effort` is only used by OpenAI providers"
-                    );
-                }
-            }
-            _ => {}
+            self.validate_gonka_nodes()?;
         }
+
+        // B1: warn on irrelevant fields.
+        self.warn_irrelevant_fields();
 
         // W6: Candle STT-only provider (stt_model set, no model) is valid — no warning needed.
         // Warn if Ollama has stt_model set (Ollama does not support Whisper API).
@@ -1593,6 +1567,126 @@ impl ProviderEntry {
             );
         }
 
+        Ok(())
+    }
+
+    /// Resolve the effective Gonka chain prefix: explicit value or `"gonka"` default.
+    #[must_use]
+    pub fn effective_gonka_chain_prefix(&self) -> &str {
+        self.gonka_chain_prefix.as_deref().unwrap_or("gonka")
+    }
+
+    fn warn_irrelevant_fields(&self) {
+        let name = self.effective_name();
+        match self.provider_type {
+            ProviderKind::Ollama => {
+                if self.thinking.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "field `thinking` is only used by Claude providers"
+                    );
+                }
+                if self.reasoning_effort.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "field `reasoning_effort` is only used by OpenAI providers"
+                    );
+                }
+                if self.thinking_level.is_some() || self.thinking_budget.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "fields `thinking_level`/`thinking_budget` are only used by Gemini providers"
+                    );
+                }
+            }
+            ProviderKind::Claude => {
+                if self.reasoning_effort.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "field `reasoning_effort` is only used by OpenAI providers"
+                    );
+                }
+                if self.thinking_level.is_some() || self.thinking_budget.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "fields `thinking_level`/`thinking_budget` are only used by Gemini providers"
+                    );
+                }
+            }
+            ProviderKind::OpenAi => {
+                if self.thinking.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "field `thinking` is only used by Claude providers"
+                    );
+                }
+                if self.thinking_level.is_some() || self.thinking_budget.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "fields `thinking_level`/`thinking_budget` are only used by Gemini providers"
+                    );
+                }
+            }
+            ProviderKind::Gemini => {
+                if self.thinking.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "field `thinking` is only used by Claude providers"
+                    );
+                }
+                if self.reasoning_effort.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "field `reasoning_effort` is only used by OpenAI providers"
+                    );
+                }
+            }
+            ProviderKind::Gonka => {
+                if self.thinking.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "field `thinking` is only used by Claude providers"
+                    );
+                }
+                if self.reasoning_effort.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "field `reasoning_effort` is only used by OpenAI providers"
+                    );
+                }
+                if self.thinking_level.is_some() || self.thinking_budget.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "fields `thinking_level`/`thinking_budget` are only used by Gemini providers"
+                    );
+                }
+            }
+            ProviderKind::Compatible | ProviderKind::Candle => {}
+        }
+    }
+
+    fn validate_gonka_nodes(&self) -> Result<(), crate::error::ConfigError> {
+        use crate::error::ConfigError;
+        if self.gonka_nodes.is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "[[llm.providers]] entry '{}' with type=\"gonka\" must set non-empty `gonka_nodes`",
+                self.effective_name()
+            )));
+        }
+        for (i, node) in self.gonka_nodes.iter().enumerate() {
+            if node.url.is_empty() {
+                return Err(ConfigError::Validation(format!(
+                    "[[llm.providers]] entry '{}' gonka_nodes[{i}].url must not be empty",
+                    self.effective_name()
+                )));
+            }
+            if !node.url.starts_with("http://") && !node.url.starts_with("https://") {
+                return Err(ConfigError::Validation(format!(
+                    "[[llm.providers]] entry '{}' gonka_nodes[{i}].url must start with http:// or https://",
+                    self.effective_name()
+                )));
+            }
+        }
         Ok(())
     }
 }
@@ -2330,5 +2424,163 @@ alpha = 1.5
         let back: ProviderName = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, n);
         assert!(back.is_empty());
+    }
+
+    // ─── GonkaNode / ProviderKind::Gonka ─────────────────────────────────────
+
+    fn gonka_entry_with_nodes(nodes: Vec<GonkaNode>) -> ProviderEntry {
+        ProviderEntry {
+            provider_type: ProviderKind::Gonka,
+            name: Some("my-gonka".into()),
+            gonka_nodes: nodes,
+            ..Default::default()
+        }
+    }
+
+    fn valid_gonka_nodes() -> Vec<GonkaNode> {
+        vec![
+            GonkaNode {
+                url: "https://node1.gonka.ai".into(),
+                name: Some("node1".into()),
+            },
+            GonkaNode {
+                url: "https://node2.gonka.ai".into(),
+                name: Some("node2".into()),
+            },
+            GonkaNode {
+                url: "http://node3.internal".into(),
+                name: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn validate_gonka_valid() {
+        let entry = gonka_entry_with_nodes(valid_gonka_nodes());
+        assert!(entry.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_gonka_empty_nodes_errors() {
+        let entry = gonka_entry_with_nodes(vec![]);
+        let err = entry.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("gonka_nodes"),
+            "error should mention gonka_nodes: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_gonka_node_empty_url_errors() {
+        let entry = gonka_entry_with_nodes(vec![GonkaNode {
+            url: String::new(),
+            name: None,
+        }]);
+        let err = entry.validate().unwrap_err();
+        assert!(err.to_string().contains("url"), "{err}");
+    }
+
+    #[test]
+    fn validate_gonka_node_invalid_scheme_errors() {
+        let entry = gonka_entry_with_nodes(vec![GonkaNode {
+            url: "ftp://node.gonka.ai".into(),
+            name: None,
+        }]);
+        let err = entry.validate().unwrap_err();
+        assert!(err.to_string().contains("http"), "{err}");
+    }
+
+    #[test]
+    fn validate_gonka_without_name_errors() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Gonka,
+            name: None,
+            gonka_nodes: valid_gonka_nodes(),
+            ..Default::default()
+        };
+        let err = entry.validate().unwrap_err();
+        assert!(err.to_string().contains("gonka"), "{err}");
+    }
+
+    #[test]
+    fn gonka_toml_round_trip() {
+        let toml = r#"
+[llm]
+
+[[llm.providers]]
+type = "gonka"
+name = "my-gonka"
+gonka_chain_prefix = "custom-chain"
+
+[[llm.providers.gonka_nodes]]
+url = "https://node1.gonka.ai"
+name = "node1"
+
+[[llm.providers.gonka_nodes]]
+url = "https://node2.gonka.ai"
+name = "node2"
+
+[[llm.providers.gonka_nodes]]
+url = "https://node3.gonka.ai"
+"#;
+        let cfg = parse_llm(toml);
+        assert_eq!(cfg.providers.len(), 1);
+        let entry = &cfg.providers[0];
+        assert_eq!(entry.provider_type, ProviderKind::Gonka);
+        assert_eq!(entry.name.as_deref(), Some("my-gonka"));
+        let nodes = &entry.gonka_nodes;
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].url, "https://node1.gonka.ai");
+        assert_eq!(nodes[0].name.as_deref(), Some("node1"));
+        assert_eq!(nodes[2].name, None);
+        assert_eq!(entry.gonka_chain_prefix.as_deref(), Some("custom-chain"));
+    }
+
+    #[test]
+    fn gonka_default_chain_prefix() {
+        let entry = gonka_entry_with_nodes(valid_gonka_nodes());
+        assert_eq!(entry.effective_gonka_chain_prefix(), "gonka");
+    }
+
+    #[test]
+    fn gonka_explicit_chain_prefix() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Gonka,
+            name: Some("my-gonka".into()),
+            gonka_nodes: valid_gonka_nodes(),
+            gonka_chain_prefix: Some("my-chain".into()),
+            ..Default::default()
+        };
+        assert_eq!(entry.effective_gonka_chain_prefix(), "my-chain");
+    }
+
+    #[test]
+    fn effective_model_gonka_is_empty() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Gonka,
+            model: None,
+            ..Default::default()
+        };
+        assert_eq!(entry.effective_model(), "");
+    }
+
+    #[test]
+    fn existing_configs_still_parse() {
+        let toml = r#"
+[llm]
+
+[[llm.providers]]
+type = "ollama"
+model = "qwen3:8b"
+
+[[llm.providers]]
+type = "claude"
+name = "claude"
+model = "claude-sonnet-4-6"
+"#;
+        let cfg = parse_llm(toml);
+        assert_eq!(cfg.providers.len(), 2);
+        assert_eq!(cfg.providers[0].provider_type, ProviderKind::Ollama);
+        assert_eq!(cfg.providers[1].provider_type, ProviderKind::Claude);
     }
 }

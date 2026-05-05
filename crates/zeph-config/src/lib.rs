@@ -148,9 +148,9 @@ pub use notifications::NotificationsConfig;
 pub use providers::{
     BanditConfig, CacheTtl, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
     CoeConfig, ComplexityRoutingConfig, FAST_TIER_MODEL_HINTS, GeminiThinkingLevel,
-    GenerationParams, LlmConfig, LlmRoutingStrategy, MAX_TOKENS_CAP, ProviderEntry, ProviderKind,
-    ProviderName, RouterConfig, RouterStrategyConfig, SttConfig, ThinkingConfig, ThinkingEffort,
-    TierMapping, validate_pool,
+    GenerationParams, GonkaNode, LlmConfig, LlmRoutingStrategy, MAX_TOKENS_CAP, ProviderEntry,
+    ProviderKind, ProviderName, RouterConfig, RouterStrategyConfig, SttConfig, ThinkingConfig,
+    ThinkingEffort, TierMapping, validate_pool,
 };
 pub use providers::{default_stt_language, default_stt_provider};
 pub use quality::{QualityConfig, TriggerPolicy};

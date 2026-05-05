@@ -414,9 +414,16 @@ async fn check_llm_provider(
     let check_name = format!("llm.{provider_name}");
     let start = Instant::now();
 
-    // Candle: just check model cache dir readable
+    // Candle / Gonka: no base_url to probe
     if entry.provider_type == ProviderKind::Candle {
         return CheckResult::ok(&check_name, "candle (local inference)", elapsed_ms(start));
+    }
+    if entry.provider_type == ProviderKind::Gonka {
+        return CheckResult::ok(
+            &check_name,
+            "gonka (not yet implemented)",
+            elapsed_ms(start),
+        );
     }
 
     let base_url = match entry.provider_type {
@@ -441,7 +448,7 @@ async fn check_llm_provider(
             .unwrap_or("https://generativelanguage.googleapis.com")
             .to_owned(),
         ProviderKind::Compatible => entry.base_url.clone().unwrap_or_default(),
-        ProviderKind::Candle => unreachable!(),
+        ProviderKind::Candle | ProviderKind::Gonka => unreachable!(),
     };
 
     if base_url.is_empty() {
