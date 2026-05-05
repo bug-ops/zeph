@@ -268,8 +268,7 @@ mod tests {
     async fn log_does_not_block_when_channel_is_full() {
         let sqlite = SqliteStore::new(":memory:").await.unwrap();
         // capacity = 1 so the second send will be dropped
-        let logger =
-            RetrievalFailureLogger::new(sqlite.clone(), 1, 16, Duration::from_mins(1), 90);
+        let logger = RetrievalFailureLogger::new(sqlite.clone(), 1, 16, Duration::from_mins(1), 90);
         // First log fills the channel (capacity 1).
         logger.log(no_hit_record());
         // Second log must not block — try_send drops the record silently.
