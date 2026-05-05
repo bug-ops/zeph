@@ -994,6 +994,7 @@ impl OpenAiProvider {
     /// # Errors
     ///
     /// Returns [`LlmError::StructuredParse`] if schema extraction or serialisation fails.
+    #[cfg(feature = "gonka")]
     pub(crate) fn build_typed_chat_body<T>(&self, messages: &[Message]) -> Result<Vec<u8>, LlmError>
     where
         T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
