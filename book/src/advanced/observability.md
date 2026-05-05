@@ -20,7 +20,7 @@ endpoint = "http://localhost:4317"       # OTLP gRPC endpoint
 
 | Span | Attributes |
 |------|------------|
-| `llm_call` | `model` |
+| `llm.turn_call` | `model`, `provider` |
 | `tool_exec` | `tool_name` |
 
 Traces flush gracefully on shutdown. Point `endpoint` at any OTLP-compatible collector (Jaeger, Grafana Tempo, etc.).

@@ -318,7 +318,11 @@ impl<C: Channel> Agent<C> {
                 .map(|id| tc.begin_llm_request(id))
         });
 
-        let llm_span = tracing::info_span!("llm_call", model = %self.runtime.config.model_name);
+        let llm_span = tracing::info_span!(
+            "llm.turn_call",
+            model = %self.runtime.config.model_name,
+            provider = self.provider.name(),
+        );
         let result = self
             .call_llm_non_streaming(
                 llm_timeout,
@@ -905,7 +909,11 @@ impl<C: Channel> Agent<C> {
                 .map(|id| tc.begin_llm_request(id))
         });
 
-        let llm_span = tracing::info_span!("llm_call", model = %self.runtime.config.model_name);
+        let llm_span = tracing::info_span!(
+            "llm.turn_call",
+            model = %self.runtime.config.model_name,
+            provider = self.provider.name(),
+        );
         let chat_fut = tokio::time::timeout(
             llm_timeout,
             self.provider

@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- perf(tracing): rename `llm_call` span to `llm.turn_call` with `provider` field for main-turn
+  LLM call visibility; avoids naming collision with existing `llm.chat_stream` spans at the
+  provider layer (#3619).
+
 - docs(readme): reposition the project README around memory-first operation, low-resource
   deployment, multi-provider routing, and the current Gonka.ai integration path.
 
