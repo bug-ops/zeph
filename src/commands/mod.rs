@@ -13,6 +13,7 @@ pub(crate) mod ingest;
 pub(crate) mod memory;
 pub(crate) mod migrate;
 pub(crate) mod plugin;
+pub(crate) mod project;
 pub(crate) mod router;
 #[cfg(feature = "scheduler")]
 pub(crate) mod schedule;

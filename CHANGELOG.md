@@ -23,6 +23,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(cli): `zeph project purge` command removes all project-local state (SQLite database,
+  log files, debug artifacts, trace files, audit log, and Qdrant collections) with `--dry-run`
+  and `-y` flags. Includes pre-flight exclusive lock check on the SQLite database to prevent
+  purging while an agent session is active. Respects `vector_backend` config: skips Qdrant
+  when backend is `sqlite`. Deletes all 10 known Qdrant collections concurrently. (#3573)
+
 - feat(memory): `RetrievalFailureLogger` — async fire-and-forget logger for memory retrieval
   failures in `zeph-memory`. Records no-hit turns, low-confidence recalls, timeouts, and errors
   into a new `memory_retrieval_failures` SQLite table (migration 083). The write path uses a

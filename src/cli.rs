@@ -408,6 +408,28 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: zeph_bench::BenchCommand,
     },
+    /// Project-level management commands
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
+}
+
+/// Project management subcommands.
+#[derive(Subcommand)]
+pub(crate) enum ProjectCommand {
+    /// Remove all project data: memory, database, skill outcomes, and debug artifacts
+    Purge {
+        /// Path to config file (overrides default resolution)
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
+        /// Show what would be removed without deleting anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip confirmation prompt
+        #[arg(long, short)]
+        yes: bool,
+    },
 }
 
 /// ACP sub-agent client subcommands.
@@ -919,5 +941,68 @@ mod tests {
             cli.pruning_strategy,
             Some(zeph_core::config::PruningStrategy::TaskAware)
         );
+    }
+
+    #[test]
+    fn cli_parses_project_purge() {
+        use super::{Command, ProjectCommand};
+        let cli = Cli::try_parse_from(["zeph", "project", "purge"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Project {
+                command: ProjectCommand::Purge {
+                    dry_run: false,
+                    yes: false,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_project_purge_dry_run() {
+        use super::{Command, ProjectCommand};
+        let cli = Cli::try_parse_from(["zeph", "project", "purge", "--dry-run"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Project {
+                command: ProjectCommand::Purge {
+                    dry_run: true,
+                    yes: false,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_project_purge_yes() {
+        use super::{Command, ProjectCommand};
+        let cli = Cli::try_parse_from(["zeph", "project", "purge", "--yes"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Project {
+                command: ProjectCommand::Purge {
+                    dry_run: false,
+                    yes: true,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_project_purge_with_config() {
+        use super::{Command, ProjectCommand};
+        let cli = Cli::try_parse_from(["zeph", "project", "purge", "--config", "/tmp/test.toml"])
+            .unwrap();
+        if let Some(Command::Project {
+            command: ProjectCommand::Purge { config, .. },
+        }) = cli.command
+        {
+            assert_eq!(config, Some(std::path::PathBuf::from("/tmp/test.toml")));
+        } else {
+            panic!("unexpected command variant");
+        }
     }
 }
