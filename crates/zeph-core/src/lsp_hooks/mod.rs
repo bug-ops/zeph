@@ -275,6 +275,12 @@ impl LspHookRunner {
             Some(output)
         }
     }
+
+    /// Push a note directly, bypassing MCP. Only compiled in test builds.
+    #[cfg(test)]
+    pub(crate) fn push_note(&mut self, kind: &'static str, content: impl Into<String>, estimated_tokens: usize) {
+        self.pending_notes.push(LspNote { kind, content: content.into(), estimated_tokens });
+    }
 }
 
 #[cfg(test)]
