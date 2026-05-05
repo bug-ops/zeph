@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(cli): `zeph project purge` now returns a clear error message when stdin is not a terminal
+  and neither `--dry-run` nor `-y` was provided: `Aborted: stdin is not a terminal. Use --dry-run
+  to preview or -y to confirm non-interactively.` Previously the raw `IO error: not a terminal`
+  from `dialoguer` was propagated with no guidance. (#3599)
+
 - fix(lsp): LSP diagnostics context injection now works with mcpls v0.3.6+. Previously
   `fetch_diagnostics` silently returned `None` on every call because it expected a bare JSON array
   from `get_diagnostics`, but mcpls changed the response shape to `{"diagnostics": [...]}`.

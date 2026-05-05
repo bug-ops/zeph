@@ -227,7 +227,17 @@ async fn run_purge(
         let proceed = Confirm::new()
             .with_prompt("This will permanently delete all project data. Continue?")
             .default(false)
-            .interact()?;
+            .interact()
+            .map_err(|e| {
+                if e.to_string().contains("not a terminal") {
+                    anyhow::anyhow!(
+                        "Aborted: stdin is not a terminal. \
+                         Use --dry-run to preview or -y to confirm non-interactively."
+                    )
+                } else {
+                    anyhow::anyhow!(e)
+                }
+            })?;
         if !proceed {
             println!("Aborted.");
             return Ok(());
