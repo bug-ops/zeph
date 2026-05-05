@@ -3,7 +3,7 @@
 
 //! Persistent store for memory retrieval failure records.
 //!
-//! Failures are written via [`RetrievalFailureLogger`], which batches records
+//! Failures are written via [`crate::RetrievalFailureLogger`], which batches records
 //! asynchronously and inserts them in the background to avoid blocking the
 //! recall hot path.
 
@@ -49,11 +49,11 @@ pub struct RetrievalFailureRecord {
     pub failure_type: RetrievalFailureType,
     /// Name of the retrieval strategy that was attempted.
     pub retrieval_strategy: String,
-    /// The query text (truncated to 512 chars by [`RetrievalFailureLogger::log`]).
+    /// The query text (truncated to 512 chars by [`crate::RetrievalFailureLogger::log`]).
     pub query_text: String,
     /// Byte length of the original query before any truncation.
     ///
-    /// Note: `query_text` is truncated to 512 *chars* by [`RetrievalFailureLogger::log`],
+    /// Note: `query_text` is truncated to 512 *chars* by [`crate::RetrievalFailureLogger::log`],
     /// so `query_len` may exceed `query_text.len()` for multibyte inputs.
     pub query_len: usize,
     /// Top score returned, if any results were produced.
@@ -68,14 +68,14 @@ pub struct RetrievalFailureRecord {
     pub edge_types: Option<String>,
     /// Error message or timeout context for `Error`/`Timeout` variants.
     ///
-    /// Truncated to 256 chars by [`RetrievalFailureLogger::log`] to bound channel memory.
+    /// Truncated to 256 chars by [`crate::RetrievalFailureLogger::log`] to bound channel memory.
     pub error_context: Option<String>,
 }
 
 impl SqliteStore {
     /// Insert a single retrieval failure record.
     ///
-    /// Prefer [`RetrievalFailureLogger`] for hot-path inserts — this method is
+    /// Prefer [`crate::RetrievalFailureLogger`] for hot-path inserts — this method is
     /// intended for tests and one-off writes.
     ///
     /// # Errors
@@ -138,7 +138,7 @@ impl SqliteStore {
 
     /// Delete records older than `retention_days` days.
     ///
-    /// Called periodically by [`RetrievalFailureLogger`]'s background task.
+    /// Called periodically by [`crate::RetrievalFailureLogger`]'s background task.
     ///
     /// # Errors
     ///
