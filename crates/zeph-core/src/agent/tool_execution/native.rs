@@ -4413,20 +4413,8 @@ mod tests {
 
     // --- LSP hover injection path (#3595) ---
 
-    /// Regression test for #3595: LSP notes queued in `lsp_hooks.pending_notes` must be
-    /// injected as a `Role::System` message into `self.msg.messages` inside
-    /// `call_chat_with_tools`, before the LLM provider is called.
-    ///
-    /// The old guard (`last_msg_has_tool_results`) was evaluated at the top of
-    /// `process_single_native_turn` on the *next* iteration, when tool results had
-    /// already been committed to history, so it always fired and prevented injection.
-    /// The fix moves injection unconditionally into `call_chat_with_tools`.
-    #[tokio::test]
-    async fn lsp_notes_injected_before_llm_call_in_call_chat_with_tools() {
+    fn make_agent_with_lsp_note(note: &'static str) -> Agent<MockChannel> {
         use std::sync::Arc;
-        use zeph_llm::provider::Role;
-
-        // Build an agent with a mock provider that returns a single empty response.
         let mut agent = Agent::new(
             mock_provider(vec![String::new()]),
             MockChannel::new(vec![]),
@@ -4435,8 +4423,6 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-
-        // Attach an LspHookRunner with one pending hover note.
         let enforcer = zeph_mcp::PolicyEnforcer::new(vec![]);
         let manager = Arc::new(zeph_mcp::McpManager::new(vec![], vec![], enforcer));
         let mut lsp_runner = crate::lsp_hooks::LspHookRunner::new(
@@ -4447,21 +4433,29 @@ mod tests {
                 ..crate::lsp_hooks::LspConfig::default()
             },
         );
-        // Pre-queue a hover note directly (no MCP call needed in tests).
-        lsp_runner.push_note("hover", "fn foo() -> u32", 5);
-
+        lsp_runner.push_note("hover", note, 5);
         agent.services.session.lsp_hooks = Some(lsp_runner);
-
-        // A system prompt at index 0 is required by the agent message layout.
         agent
             .msg
             .messages
-            .push(zeph_llm::provider::Message::from_legacy(Role::System, "system"));
+            .push(Message::from_legacy(Role::System, "system"));
+        agent
+    }
 
-        // Invoke the new injection path.
+    /// Regression test for #3595: LSP notes queued in `lsp_hooks.pending_notes` must be
+    /// injected as a `Role::System` message into `self.msg.messages` inside
+    /// `call_chat_with_tools`, before the LLM provider is called.
+    ///
+    /// The old guard (`last_msg_has_tool_results`) was evaluated at the top of
+    /// `process_single_native_turn` on the *next* iteration, when tool results had
+    /// already been committed to history, so it always fired and prevented injection.
+    /// The fix moves injection unconditionally into `call_chat_with_tools`.
+    #[tokio::test]
+    async fn lsp_notes_injected_before_llm_call_in_call_chat_with_tools() {
+        let mut agent = make_agent_with_lsp_note("fn foo() -> u32");
+
         let _ = agent.call_chat_with_tools(&[]).await;
 
-        // The LSP note must have been injected as a System message.
         let lsp_msg = agent
             .msg
             .messages
@@ -4471,10 +4465,65 @@ mod tests {
             lsp_msg.is_some(),
             "call_chat_with_tools must inject a [lsp hover] System message before the LLM call"
         );
-        let lsp_msg = lsp_msg.unwrap();
         assert!(
-            lsp_msg.content.contains("fn foo() -> u32"),
+            lsp_msg.unwrap().content.contains("fn foo() -> u32"),
             "injected LSP message must contain the queued note content"
+        );
+    }
+
+    /// On a retry attempt the note queue is already empty (drained on the first call),
+    /// so `call_chat_with_tools` must remove the stale LSP message and not re-inject.
+    /// This verifies that notes never accumulate across retry iterations.
+    #[tokio::test]
+    async fn lsp_notes_not_duplicated_on_retry() {
+        use zeph_llm::LlmError;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        // First call → ContextLengthExceeded, second call → success.
+        let provider = AnyProvider::Mock(
+            MockProvider::with_responses(vec![String::new()])
+                .with_errors(vec![LlmError::ContextLengthExceeded]),
+        );
+        let enforcer = zeph_mcp::PolicyEnforcer::new(vec![]);
+        let manager = Arc::new(zeph_mcp::McpManager::new(vec![], vec![], enforcer));
+        let mut lsp_runner = crate::lsp_hooks::LspHookRunner::new(
+            manager,
+            crate::lsp_hooks::LspConfig {
+                enabled: true,
+                token_budget: 500,
+                ..crate::lsp_hooks::LspConfig::default()
+            },
+        );
+        lsp_runner.push_note("hover", "fn bar() -> bool", 5);
+
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.services.session.lsp_hooks = Some(lsp_runner);
+        agent
+            .msg
+            .messages
+            .push(Message::from_legacy(Role::System, "system"));
+        agent.context_manager.budget = Some(crate::context::ContextBudget::new(200_000, 0.20));
+
+        let _ = agent.call_chat_with_tools_retry(&[], 2).await;
+
+        let lsp_count = agent
+            .msg
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::System && m.content.starts_with("[lsp "))
+            .count();
+        assert_eq!(
+            lsp_count, 0,
+            "after retry the stale LSP message must be removed and not re-injected \
+            (queue was drained on first attempt)"
         );
     }
 }
