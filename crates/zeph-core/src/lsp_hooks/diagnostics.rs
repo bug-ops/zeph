@@ -55,6 +55,17 @@ pub(super) fn format_diagnostic(file_path: &str, d: &serde_json::Value) -> Strin
     format!("{safe_path}:{line} {severity_str}: {safe_message}")
 }
 
+/// Parse a diagnostics JSON response from mcpls.
+///
+/// Handles both the legacy bare-array format and the v0.3.6+ object wrapper
+/// `{"diagnostics": [...]}`. Returns `None` if the text cannot be parsed or
+/// the resolved value is not a JSON array.
+fn parse_diagnostics_json(json_text: &str) -> Option<Vec<serde_json::Value>> {
+    let parsed: serde_json::Value = serde_json::from_str(json_text).ok()?;
+    let array = parsed.get("diagnostics").unwrap_or(&parsed);
+    serde_json::from_value(array.clone()).ok()
+}
+
 /// Fetch diagnostics for `file_path` from the configured mcpls MCP server.
 ///
 /// Returns `None` on error or when there are no diagnostics meeting the filter.
@@ -98,18 +109,12 @@ pub(super) async fn fetch_diagnostics(
         .iter()
         .find_map(|c| c.as_text().map(|t| t.text.as_str()))?;
 
-    // Attempt to parse as a JSON array of diagnostic objects.
-    // Expected shape: [{ "severity": 1, "message": "...", "range": { "start": { "line": N } } }]
-    let diagnostics: Vec<serde_json::Value> = match serde_json::from_str(json_text) {
-        Ok(diagnostics) => diagnostics,
-        Err(error) => {
-            tracing::debug!(
-                path = file_path,
-                error = %error,
-                "LSP diagnostics: failed to parse response JSON"
-            );
-            return None;
-        }
+    let Some(diagnostics) = parse_diagnostics_json(json_text) else {
+        tracing::debug!(
+            path = file_path,
+            "LSP diagnostics: failed to parse response JSON"
+        );
+        return None;
     };
 
     let threshold = severity_threshold(config.diagnostics.min_severity);
@@ -277,6 +282,75 @@ mod tests {
             "call_tool args must NOT contain old 'path' key, got: {args}"
         );
         assert_eq!(calls[0].1, "get_diagnostics");
+    }
+
+    #[tokio::test]
+    async fn fetch_diagnostics_parses_object_wrapper() {
+        use zeph_memory::TokenCounter;
+
+        use crate::config::LspConfig;
+        use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+        // mcpls v0.3.6+ returns {"diagnostics": [...]} instead of a bare array.
+        let wrapped = serde_json::json!({
+            "diagnostics": [
+                { "severity": 1, "message": "type error", "range": { "start": { "line": 0 } } }
+            ]
+        })
+        .to_string();
+
+        let mock = RecordingCaller::new().with_text(&wrapped);
+        let config = LspConfig::default();
+        let tc = Arc::new(TokenCounter::default());
+        let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+
+        let result = fetch_diagnostics(&mock, &config, "src/lib.rs", &tc, &sanitizer).await;
+        assert!(
+            result.is_some(),
+            "diagnostics wrapped in {{\"diagnostics\": [...]}} must be parsed successfully"
+        );
+        let note = result.unwrap();
+        assert!(
+            note.content.contains("type error"),
+            "diagnostic message must appear in the note content"
+        );
+    }
+
+    #[test]
+    fn parse_diagnostics_json_bare_array() {
+        let json = r#"[{"severity":1,"message":"err","range":{"start":{"line":0}}}]"#;
+        let result = parse_diagnostics_json(json);
+        assert!(result.is_some(), "bare array must be parsed");
+        assert_eq!(result.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parse_diagnostics_json_object_wrapper_empty() {
+        let json = r#"{"diagnostics":[]}"#;
+        let result = parse_diagnostics_json(json);
+        assert!(
+            result.is_some(),
+            "object wrapper with empty array must return Some(vec![])"
+        );
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_diagnostics_json_object_missing_diagnostics_key() {
+        // An object without a "diagnostics" key is treated as if the value itself is the array.
+        // Since an object is not a Vec<Value>, this must return None.
+        let json = r#"{"other_key": [1, 2, 3]}"#;
+        let result = parse_diagnostics_json(json);
+        assert!(
+            result.is_none(),
+            "object without 'diagnostics' key must return None"
+        );
+    }
+
+    #[test]
+    fn parse_diagnostics_json_invalid_json() {
+        let result = parse_diagnostics_json("not json at all {{{");
+        assert!(result.is_none(), "invalid JSON must return None");
     }
 
     #[tokio::test]
