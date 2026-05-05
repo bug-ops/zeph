@@ -17,7 +17,7 @@ profiling = []
 candle = ["dep:audioadapter-buffers", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:hf-hub", "dep:tokenizers", "dep:symphonia", "dep:rubato"]
 classifiers = ["candle", "dep:hex", "dep:sha2"]
 cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
-gonka = ["dep:bech32", "dep:k256", "dep:ripemd", "dep:hex", "dep:sha2"]
+gonka = ["dep:bech32", "dep:k256", "dep:ripemd", "dep:hex", "dep:sha2", "dep:zeroize"]
 metal = ["candle", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 testing = []
 
@@ -55,6 +55,7 @@ tokio-stream.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
+zeroize = { workspace = true, optional = true }
 zeph-common.workspace = true
 zeph-config.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)

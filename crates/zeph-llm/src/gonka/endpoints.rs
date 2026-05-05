@@ -144,7 +144,7 @@ impl EndpointPool {
     /// assert_ne!(ep1.base_url, ep2.base_url);
     /// ```
     pub fn next(&self) -> &GonkaEndpoint {
-        let _span = tracing::info_span!("llm.gonka.endpoint_next").entered();
+        let _span = tracing::trace_span!("llm.gonka.endpoint_next").entered();
         let n = self.nodes.len();
         let now_ns = now_ns();
 
@@ -217,11 +217,54 @@ impl EndpointPool {
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
+
+    /// Like [`next`](Self::next) but also returns the internal node index.
+    ///
+    /// The index can be passed directly to [`mark_failed`](Self::mark_failed) so
+    /// the correct pool slot is penalised when a request fails. Using [`next`](Self::next)
+    /// alone does not expose the selected index, which makes it impossible to call
+    /// `mark_failed` correctly in a retry loop.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_llm::gonka::endpoints::{EndpointPool, GonkaEndpoint};
+    /// use std::time::Duration;
+    ///
+    /// let pool = EndpointPool::new(vec![
+    ///     GonkaEndpoint { base_url: "https://n1".into(), address: "a1".into() },
+    ///     GonkaEndpoint { base_url: "https://n2".into(), address: "a2".into() },
+    /// ]).unwrap();
+    ///
+    /// let (idx, ep) = pool.next_indexed();
+    /// assert!(idx < pool.len());
+    /// assert!(!ep.base_url.is_empty());
+    /// ```
+    pub fn next_indexed(&self) -> (usize, &GonkaEndpoint) {
+        let _span = tracing::trace_span!("llm.gonka.endpoint_next").entered();
+        let n = self.nodes.len();
+        let now_ns = now_ns();
+
+        for _ in 0..n {
+            let idx = self.cursor.fetch_add(1, Ordering::Relaxed) % n;
+            if self.failed_until[idx].load(Ordering::Relaxed) <= now_ns {
+                return (idx, &self.nodes[idx]);
+            }
+        }
+
+        let best = self
+            .failed_until
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, a)| a.load(Ordering::Relaxed))
+            .map_or(0, |(i, _)| i);
+        (best, &self.nodes[best])
+    }
 }
 
 /// Current time in unix nanoseconds, saturating to 0 on pre-epoch clocks.
 #[inline]
-fn now_ns() -> u64 {
+pub(crate) fn now_ns() -> u64 {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

@@ -8,7 +8,13 @@
 
 pub mod endpoints;
 #[cfg(feature = "gonka")]
+mod provider;
+#[cfg(feature = "gonka")]
 pub mod signer;
+#[cfg(all(test, feature = "gonka"))]
+mod tests;
 
+#[cfg(feature = "gonka")]
+pub use provider::GonkaProvider;
 #[cfg(feature = "gonka")]
 pub use signer::RequestSigner;

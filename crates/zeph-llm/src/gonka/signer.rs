@@ -29,6 +29,7 @@ use base64::Engine as _;
 use k256::ecdsa::signature::hazmat::PrehashSigner as _;
 use k256::elliptic_curve::sec1::ToEncodedPoint as _;
 use ripemd::Digest as _;
+use zeroize::Zeroizing;
 
 use crate::error::LlmError;
 
@@ -71,8 +72,9 @@ impl RequestSigner {
     /// # }
     /// ```
     pub fn from_hex(priv_hex: &str, chain_prefix: &str) -> Result<Self, LlmError> {
-        let key_bytes =
-            hex::decode(priv_hex).map_err(|e| LlmError::Other(format!("invalid hex key: {e}")))?;
+        let key_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(
+            hex::decode(priv_hex).map_err(|e| LlmError::Other(format!("invalid hex key: {e}")))?,
+        );
         let signing_key = k256::ecdsa::SigningKey::from_slice(&key_bytes)
             .map_err(|e| LlmError::Other(format!("invalid secp256k1 key: {e}")))?;
         let pubkey = k256::PublicKey::from(signing_key.verifying_key());
