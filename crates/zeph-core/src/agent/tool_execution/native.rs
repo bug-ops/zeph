@@ -2370,6 +2370,15 @@ impl<C: Channel> Agent<C> {
                     error = %e,
                     "speculative commit returned Err — result will be used as-is"
                 );
+                // Invariant: ConfirmationRequired must never reach the commit boundary —
+                // try_dispatch guards against it at dispatch time via requires_confirmation_erased.
+                #[cfg(debug_assertions)]
+                if matches!(e, zeph_tools::ToolError::ConfirmationRequired { .. }) {
+                    tracing::error!(
+                        tool = %calls[idx].tool_id,
+                        "invariant violated: committed speculative result is ConfirmationRequired"
+                    );
+                }
             }
             // M1: stamp actual dispatch time so build_tool_output_messages computes correct elapsed.
             tool_started_ats[idx] = std::time::Instant::now();
@@ -4825,6 +4834,251 @@ mod tests {
             lsp_count, 0,
             "after retry the stale LSP message must be removed and not re-injected \
             (queue was drained on first attempt)"
+        );
+    }
+
+    // ── commit_speculative_tier unit tests (issues #3652, #3653) ─────────────────────────────
+
+    use zeph_common::ToolName;
+    use zeph_config::tools::{SpeculationMode, SpeculativeConfig};
+    use zeph_llm::provider::ToolUseRequest;
+    use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
+
+    use crate::agent::speculative::SpeculationEngine;
+    use crate::agent::speculative::prediction::{Prediction, PredictionSource};
+
+    struct AlwaysOkSpecExec;
+    impl ToolExecutor for AlwaysOkSpecExec {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+
+        async fn execute_tool_call(
+            &self,
+            call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(Some(ToolOutput {
+                tool_name: call.tool_id.clone(),
+                summary: "speculative-ok".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }))
+        }
+
+        fn is_tool_speculatable(&self, _: &str) -> bool {
+            true
+        }
+    }
+
+    struct AlwaysErrSpecExec;
+    impl ToolExecutor for AlwaysErrSpecExec {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+
+        async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+            Err(ToolError::Execution(std::io::Error::other(
+                "simulated error",
+            )))
+        }
+
+        fn is_tool_speculatable(&self, _: &str) -> bool {
+            true
+        }
+    }
+
+    fn decoding_engine<E: ToolExecutor + 'static>(exec: E) -> Arc<SpeculationEngine> {
+        Arc::new(SpeculationEngine::new(
+            Arc::new(exec),
+            SpeculativeConfig {
+                mode: SpeculationMode::Decoding,
+                ..Default::default()
+            },
+        ))
+    }
+
+    fn test_tool_call(tool_id: &str) -> ToolCall {
+        ToolCall {
+            tool_id: ToolName::new(tool_id),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+        }
+    }
+
+    fn test_tool_use_request(name: &str) -> ToolUseRequest {
+        ToolUseRequest {
+            id: format!("id-{name}"),
+            name: ToolName::new(name),
+            input: serde_json::Value::Object(serde_json::Map::new()),
+        }
+    }
+
+    fn test_prediction(tool_id: &str) -> Prediction {
+        Prediction {
+            tool_id: ToolName::new(tool_id),
+            args: serde_json::Map::new(),
+            confidence: 0.9,
+            source: PredictionSource::StreamPartial,
+        }
+    }
+
+    /// engine = None → returns empty map immediately (zero-cost fast path).
+    #[tokio::test]
+    async fn commit_speculative_tier_no_engine_returns_empty() {
+        let mut agent = make_agent();
+        let calls = [test_tool_call("echo")];
+        let tool_calls = [test_tool_use_request("echo")];
+        let tool_call_ids = ["id-0".to_string()];
+        let mut tool_started_ats = [Instant::now()];
+        let before = tool_started_ats[0];
+
+        let commits = agent
+            .commit_speculative_tier(
+                &[0],
+                &calls,
+                &tool_calls,
+                &tool_call_ids,
+                &mut tool_started_ats,
+                None,
+            )
+            .await
+            .expect("commit_speculative_tier must not fail with no engine");
+
+        assert!(commits.is_empty(), "no engine → empty commit map");
+        assert_eq!(
+            tool_started_ats[0], before,
+            "tool_started_ats must not be modified when engine is None"
+        );
+    }
+
+    /// try_commit returns None for all calls (cache miss) → empty commit map.
+    #[tokio::test]
+    async fn commit_speculative_tier_cache_miss_returns_empty() {
+        let engine = decoding_engine(AlwaysOkSpecExec);
+        let mut agent = make_agent();
+        let calls = [test_tool_call("echo")];
+        let tool_calls = [test_tool_use_request("echo")];
+        let tool_call_ids = ["id-0".to_string()];
+        let mut tool_started_ats = [Instant::now()];
+
+        // Nothing dispatched into the engine — every try_commit will be a miss.
+        let commits = agent
+            .commit_speculative_tier(
+                &[0],
+                &calls,
+                &tool_calls,
+                &tool_call_ids,
+                &mut tool_started_ats,
+                Some(&engine),
+            )
+            .await
+            .expect("commit_speculative_tier must not fail on cache miss");
+
+        assert!(commits.is_empty(), "cache miss → empty commit map");
+    }
+
+    /// try_commit returns Ok(result) → index in map, tool_started_ats stamped,
+    /// ToolStartEvent { speculative: true } emitted.
+    #[tokio::test]
+    async fn commit_speculative_tier_ok_result_stamps_and_emits_event() {
+        let engine = decoding_engine(AlwaysOkSpecExec);
+        let pred = test_prediction("echo");
+        engine.try_dispatch(&pred, zeph_common::SkillTrustLevel::Trusted);
+
+        // Let the speculative task complete.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut agent = make_agent();
+        let calls = [test_tool_call("echo")];
+        let tool_calls = [test_tool_use_request("echo")];
+        let tool_call_ids = ["id-0".to_string()];
+        let before = Instant::now();
+        let mut tool_started_ats = [before];
+
+        let commits = agent
+            .commit_speculative_tier(
+                &[0],
+                &calls,
+                &tool_calls,
+                &tool_call_ids,
+                &mut tool_started_ats,
+                Some(&engine),
+            )
+            .await
+            .expect("commit_speculative_tier must not fail on cache hit");
+
+        assert!(
+            commits.contains_key(&0),
+            "committed index must be in the map"
+        );
+        assert!(
+            commits[&0].is_ok(),
+            "AlwaysOkSpecExec must produce Ok result"
+        );
+        assert!(
+            tool_started_ats[0] >= before,
+            "tool_started_ats[idx] must be stamped at or after before"
+        );
+
+        let starts = agent.channel.tool_starts.lock().unwrap();
+        assert_eq!(
+            starts.len(),
+            1,
+            "exactly one ToolStartEvent must be emitted"
+        );
+        assert!(
+            starts[0].speculative,
+            "ToolStartEvent.speculative must be true for committed speculative call"
+        );
+        assert_eq!(
+            starts[0].tool_name.as_str(),
+            "echo",
+            "ToolStartEvent.tool_name must match the tool"
+        );
+    }
+
+    /// try_commit returns Err(_) → index still in map with Err, tracing::warn fires.
+    #[tokio::test]
+    async fn commit_speculative_tier_err_result_still_in_map() {
+        let engine = decoding_engine(AlwaysErrSpecExec);
+        let pred = test_prediction("echo");
+        engine.try_dispatch(&pred, zeph_common::SkillTrustLevel::Trusted);
+
+        // Let the speculative task complete.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut agent = make_agent();
+        let calls = [test_tool_call("echo")];
+        let tool_calls = [test_tool_use_request("echo")];
+        let tool_call_ids = ["id-0".to_string()];
+        let mut tool_started_ats = [Instant::now()];
+
+        let commits = agent
+            .commit_speculative_tier(
+                &[0],
+                &calls,
+                &tool_calls,
+                &tool_call_ids,
+                &mut tool_started_ats,
+                Some(&engine),
+            )
+            .await
+            .expect("commit_speculative_tier must not fail when committed result is Err");
+
+        assert!(
+            commits.contains_key(&0),
+            "even an Err result must be in the commit map"
+        );
+        assert!(
+            commits[&0].is_err(),
+            "AlwaysErrSpecExec must produce Err result"
         );
     }
 }

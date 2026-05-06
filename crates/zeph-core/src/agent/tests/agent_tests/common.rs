@@ -26,7 +26,9 @@ pub(crate) use crate::agent::message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, d
 pub(crate) use crate::agent::{
     Agent, TOOL_OUTPUT_SUFFIX, format_tool_output, recv_optional, shutdown_signal,
 };
-pub(crate) use crate::channel::{Attachment, AttachmentKind, Channel, ChannelMessage};
+pub(crate) use crate::channel::{
+    Attachment, AttachmentKind, Channel, ChannelMessage, ToolStartEvent,
+};
 pub(crate) use crate::config::{SecurityConfig, TimeoutConfig};
 pub(crate) use crate::metrics::MetricsSnapshot;
 
@@ -90,6 +92,7 @@ pub(crate) struct MockChannel {
     pub(crate) chunks: Arc<Mutex<Vec<String>>>,
     pub(crate) confirmations: Arc<Mutex<Vec<bool>>>,
     pub(crate) statuses: Arc<Mutex<Vec<String>>>,
+    pub(crate) tool_starts: Arc<Mutex<Vec<ToolStartEvent>>>,
     pub(crate) exit_supported: bool,
 }
 
@@ -101,6 +104,7 @@ impl MockChannel {
             chunks: Arc::new(Mutex::new(Vec::new())),
             confirmations: Arc::new(Mutex::new(Vec::new())),
             statuses: Arc::new(Mutex::new(Vec::new())),
+            tool_starts: Arc::new(Mutex::new(Vec::new())),
             exit_supported: true,
         }
     }
@@ -161,6 +165,14 @@ impl Channel for MockChannel {
 
     async fn send_status(&mut self, text: &str) -> Result<(), crate::channel::ChannelError> {
         self.statuses.lock().unwrap().push(text.to_string());
+        Ok(())
+    }
+
+    async fn send_tool_start(
+        &mut self,
+        event: ToolStartEvent,
+    ) -> Result<(), crate::channel::ChannelError> {
+        self.tool_starts.lock().unwrap().push(event);
         Ok(())
     }
 
