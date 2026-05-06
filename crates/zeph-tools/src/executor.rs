@@ -1775,4 +1775,28 @@ mod tests {
             "ErasedToolExecutor trait-level default for requires_confirmation_erased must be true"
         );
     }
+
+    // ── DynExecutor::requires_confirmation delegation tests (#3650) ──────────
+
+    #[test]
+    fn dyn_executor_requires_confirmation_delegates() {
+        let inner = std::sync::Arc::new(ConfirmingExecutor);
+        let exec =
+            DynExecutor(std::sync::Arc::clone(&inner) as std::sync::Arc<dyn ErasedToolExecutor>);
+        assert!(
+            ToolExecutor::requires_confirmation(&exec, &dummy_call()),
+            "DynExecutor must delegate requires_confirmation to inner executor"
+        );
+    }
+
+    #[test]
+    fn dyn_executor_requires_confirmation_default_false() {
+        let inner = std::sync::Arc::new(StubExecutor);
+        let exec =
+            DynExecutor(std::sync::Arc::clone(&inner) as std::sync::Arc<dyn ErasedToolExecutor>);
+        assert!(
+            !ToolExecutor::requires_confirmation(&exec, &dummy_call()),
+            "DynExecutor must return false when inner executor does not require confirmation"
+        );
+    }
 }
