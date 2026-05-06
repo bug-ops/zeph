@@ -594,9 +594,7 @@ mod tests {
         ));
     }
 
-    use super::{
-        build_provider_from_entry, effective_embedding_model, stable_skill_embedding_model,
-    };
+    use super::{effective_embedding_model, stable_skill_embedding_model};
     use crate::config::{Config, ProviderKind};
     use zeph_config::providers::ProviderEntry;
 
