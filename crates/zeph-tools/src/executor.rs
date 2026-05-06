@@ -872,6 +872,10 @@ impl ToolExecutor for DynExecutor {
     fn is_tool_speculatable(&self, tool_id: &str) -> bool {
         self.0.is_tool_speculatable_erased(tool_id)
     }
+
+    fn requires_confirmation(&self, call: &ToolCall) -> bool {
+        self.0.requires_confirmation_erased(call)
+    }
 }
 
 /// Extract fenced code blocks with the given language marker from text.
