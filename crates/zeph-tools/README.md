@@ -111,6 +111,25 @@ failure_threshold = 0.7
 auto_block = true
 ```
 
+## TrajectorySentinel and ScopedToolExecutor
+
+`TrajectorySentinel` monitors the sequence of tool calls across a session and flags anomalous capability escalation patterns — for example, when a tool chain attempts to access resources outside the declared project scope. Alerts are recorded as `SecurityEvent::Quarantine` entries in the metrics ring buffer.
+
+`ScopedToolExecutor` wraps any `ToolExecutor` and enforces a declared capability scope: a set of allowed filesystem paths and network hosts. Tool calls that would access resources outside the scope are blocked before execution, preventing lateral movement even when the underlying executor has broader permissions.
+
+Configure via `[tools.scoped]`:
+
+```toml
+[tools.scoped]
+enabled        = true
+allowed_paths  = ["/home/user/project", "/tmp/zeph"]
+allowed_hosts  = ["api.openai.com", "qdrant.example.com"]
+```
+
+## Per-turn ExecutionContext
+
+`ShellExecutor` receives a `ExecutionContext` on each turn that carries the active goal ID, the current skill name, and the sub-agent identity (if running inside a sub-agent). This context is recorded in every `AuditEntry`, enabling per-goal and per-skill attribution in the audit trail.
+
 ## TAFC (Think-Augmented Function Calling)
 
 TAFC injects a reasoning step before tool selection, allowing the LLM to evaluate which tools are appropriate for the current task. Configure via `[tools.tafc]` in `config.toml`.

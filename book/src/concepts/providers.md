@@ -9,6 +9,7 @@ Zeph supports multiple LLM backends. Choose based on your needs:
 | OpenAI | Cloud | Yes | Yes | Yes | Ecosystem, GPT-4o, GPT-5 |
 | Gemini | Cloud | Yes | Yes | Yes | Google ecosystem, long context, extended thinking |
 | Compatible | Cloud | Varies | Varies | Varies | Together AI, Groq, Fireworks |
+| Gonka | Decentralized | Yes | Via compatible | Yes | Privacy, decentralized inference, cost control |
 | Candle | Local | No | No | No | Minimal footprint |
 
 Claude does not support embeddings natively. Use a multi-provider setup with `embed = true` on an Ollama or OpenAI provider entry to combine Claude chat with local embeddings. Gemini supports embeddings via the `text-embedding-004` model — set `embedding_model` in the Gemini `[[llm.providers]]` entry to enable.
@@ -39,6 +40,20 @@ ZEPH_LLM_PROVIDER=openai ZEPH_OPENAI_API_KEY=sk-... zeph
 
 ```bash
 ZEPH_LLM_PROVIDER=gemini ZEPH_GEMINI_API_KEY=AIza... zeph
+```
+
+**Gonka (native)**:
+
+```bash
+zeph vault set ZEPH_GONKA_PRIVATE_KEY <secp256k1-hex-key>
+zeph init  # select "Gonka (native)" when prompted
+```
+
+**Gonka (GonkaGate)**:
+
+```bash
+zeph vault set ZEPH_COMPATIBLE_GONKAGATE_API_KEY gp-...
+zeph init  # select "Gonka (GonkaGate)" when prompted
 ```
 
 ## Gemini
@@ -134,7 +149,7 @@ Change the `type` field in the `[[llm.providers]]` entry. All skills, memory, an
 ```toml
 [llm]
 [[llm.providers]]
-type = "claude"   # ollama, claude, openai, gemini, candle, compatible
+type = "claude"   # ollama, claude, openai, gemini, gonka, candle, compatible
 model = "claude-sonnet-4-6"
 ```
 

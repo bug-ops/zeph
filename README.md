@@ -24,7 +24,7 @@ Unlike single-session assistants, Zeph is designed to remember *why* a decision 
 | An agent that survives long projects | SQLite conversation history, semantic recall, graph memory, session digests, trajectory memory, and goal-aware compaction. |
 | Lower infrastructure cost | A default SQLite vector backend, local Ollama defaults, feature-gated bundles, and provider routing for simple vs. hard tasks. |
 | More than keyword memory | Typed graph facts, BFS recall, SYNAPSE spreading activation, MMR reranking, temporal decay, and write-quality gates. |
-| Provider freedom | Ollama, Claude, OpenAI, Gemini, Candle, any OpenAI-compatible endpoint, and a Gonka.ai path through GonkaGate. |
+| Provider freedom | Ollama, Claude, OpenAI, Gemini, Candle, any OpenAI-compatible endpoint, and Gonka.ai via GonkaGate or the native signed-transport provider. |
 | Agent-grade safety | Age-encrypted vault secrets, sandboxed tool execution, MCP injection detection, SSRF guards, PII filtering, and exfiltration checks. |
 | Daily operator ergonomics | CLI, TUI dashboard, MCP tools, plugins, skills, sub-agents, ACP for IDEs, A2A, scheduler, and JSON output modes. |
 
@@ -64,12 +64,9 @@ zeph
 
 ## Gonka.ai
 
-Zeph is being wired for Gonka.ai in two phases:
+Zeph supports Gonka.ai inference in two modes:
 
-- **GonkaGate today:** use the existing OpenAI-compatible provider path and store the `gp-...` key in the age vault as `ZEPH_COMPATIBLE_GONKAGATE_API_KEY`.
-- **Native Gonka next:** the `gonka` provider config shape and vault key resolution have landed; the signed native transport is the active follow-up.
-
-Example GonkaGate provider:
+**GonkaGate (OpenAI-compatible gateway):** store the `gp-...` key in the age vault as `ZEPH_COMPATIBLE_GONKAGATE_API_KEY` and use the `compatible` provider type:
 
 ```toml
 [[llm.providers]]
@@ -80,14 +77,21 @@ model = "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8"
 default = true
 ```
 
-Zeph resolves compatible provider secrets by name. For `name = "gonkagate"`, store the gateway key under:
+**Native Gonka provider (signed transport):** use `type = "gonka"` with node endpoints. The native provider supports chat, streaming, embeddings, and tool calls over a signed request transport. Store the key as `ZEPH_GONKA_API_KEY` in the vault and declare nodes via `--init` wizard or directly in config:
 
-```text
-ZEPH_COMPATIBLE_GONKAGATE_API_KEY
+```toml
+[[llm.providers]]
+name = "gonka"
+type = "gonka"
+model = "qwen3-235b"
+default = true
+
+[[llm.gonka_nodes]]
+url = "https://node.example.gonka.ai"
+weight = 1
 ```
 
-> [!NOTE]
-> Native `type = "gonka"` currently validates configuration but still returns "gonka provider is not yet implemented" at provider construction. Use GonkaGate until the signed node transport lands.
+Run `zeph init` and select the GonkaGate option in the wizard to configure either mode interactively.
 
 ## What Makes It Different
 
@@ -197,11 +201,11 @@ cargo build --release --features full
 
 | Area | Highlights |
 |---|---|
-| Memory | SQLite/PostgreSQL history, embedded SQLite vectors or Qdrant, graph memory, SYNAPSE, SleepGate, ReasoningBank, document RAG. |
-| Context | Goal-aware compaction, typed pages, tool-output archive, session recap, active-goal injection. |
+| Memory | SQLite/PostgreSQL history, embedded SQLite vectors or Qdrant, graph memory, SYNAPSE, SleepGate, APEX-MEM write-quality gates, MemCoT Zoom-In/Out recall views, document RAG. |
+| Context | Goal-aware compaction, TypedPage assembler pipeline, TACO output compression, tool-output archive, session recap, active-goal injection. |
 | Skills | `SKILL.md` registry, hot reload, BM25 + embedding matching, trust levels, self-learning skill improvement. |
-| Providers | Ollama, Claude, OpenAI, Gemini, OpenAI-compatible APIs, Candle local inference, adaptive routing. |
-| Tools | Shell, file, web, MCP, tool quotas, approval gates, audit trail, sandboxing, output compression. |
+| Providers | Ollama, Claude, OpenAI, Gemini, OpenAI-compatible APIs, Gonka native inference, Candle local inference, adaptive routing. |
+| Tools | Shell, file, web, MCP, tool quotas, approval gates, audit trail, sandboxing, output compression, speculative dispatch, TrajectorySentinel capability governance. |
 | Interfaces | CLI, TUI, Telegram, Discord, Slack, ACP, A2A, HTTP gateway, scheduler daemon. |
 | Code intelligence | Tree-sitter indexing, semantic repo map, LSP diagnostics and hover context through MCP. |
 | Observability | Debug dumps, JSONL mode, Prometheus metrics, OpenTelemetry traces, profiling builds. |

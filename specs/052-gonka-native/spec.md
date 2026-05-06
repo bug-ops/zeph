@@ -11,7 +11,7 @@ tags:
   - security
   - contract
 created: 2026-05-05
-status: draft
+status: implemented
 related:
   - "[[MOC-specs]]"
   - "[[001-system-invariants/spec]]"
@@ -246,7 +246,8 @@ async fn send_signed_with_retry(
 |--------|-----------|
 | `chat` | Build body via inner `OpenAiProvider`; sign; send; decode |
 | `chat_stream` | As `chat` but request SSE stream; fall back to `chat` if unsupported |
-| `chat_with_tools` | Build tools-enabled body; sign; send; decode tool call response |
+| `chat_with_tools` | Build tools-enabled body (OpenAI tools format); sign; send; decode tool call response including `tool_calls` array |
+| `chat_typed` | Typed structured output variant of `chat`; uses OpenAI response format `json_schema`; sign; send; decode typed response |
 | `embed` | Return `LlmError::Unsupported` — gonka network is text-generation-only at launch |
 | `supports_streaming` | `true` |
 | `supports_embeddings` | `false` |
@@ -255,6 +256,11 @@ async fn send_signed_with_retry(
 | `debug_request_json` | Delegate to inner `OpenAiProvider::debug_request_json` |
 | `name` | Provider name from config (e.g., `"gonka"`) |
 | `last_usage` | Parsed from `usage` field in OpenAI-format response |
+
+> [!note]
+> `chat_with_tools` and `chat_typed` were wired in PRs #3612 and #3624 respectively.
+> Both delegate body construction to the inner `OpenAiProvider` and replace only the
+> signing + transport step — the OpenAI request/response schema is reused verbatim.
 
 ---
 

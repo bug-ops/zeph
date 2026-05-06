@@ -10,7 +10,7 @@ tags:
   - providers
   - config
 created: 2026-05-05
-status: draft
+status: implemented
 related:
   - "[[MOC-specs]]"
   - "[[001-system-invariants/spec]]"

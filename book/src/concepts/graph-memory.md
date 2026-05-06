@@ -92,6 +92,30 @@ After each user message is persisted, Zeph spawns a background extraction task (
 
 Extraction runs non-blocking via `spawn_graph_extraction` — the agent loop continues without waiting for it to finish. A configurable timeout (`extraction_timeout_secs`, default: 15) prevents slow LLM calls from accumulating.
 
+### Using a Dedicated Provider for Extraction
+
+Graph extraction tasks produce JSON-structured responses that have low prompt/response cosine similarity (~0.55–0.70). When a routing quality gate is active (via `[llm.router] quality_gate`), extraction calls may be systematically rejected by the gate and rerouted through fallback providers, adding unnecessary latency.
+
+To avoid quality gate false positives, dedicate a provider to graph extraction tasks:
+
+```toml
+[[llm.providers]]
+name = "fast"
+type = "ollama"
+model = "qwen3:8b"
+
+[memory.graph]
+enabled = true
+extract_provider = "fast"        # Use the "fast" provider for extraction, bypassing quality gate
+max_entities_per_message = 10
+max_edges_per_message = 15
+```
+
+When `extract_provider` is set to a named provider, graph extraction (and downstream note linking and community summarization) use that provider without routing signals or quality gates applied. When empty (default), the system uses the agent's primary provider.
+
+> [!TIP]
+> For best results, match `extract_provider` to the provider name used by `extract_model`. If `extract_model = "gpt-4o-mini"`, use a provider entry with `type = "openai"` and `model = "gpt-4o-mini"`, then set `extract_provider` to that provider's name.
+
 ### Security
 
 Messages flagged with injection patterns are excluded from extraction. When the content sanitizer detects injection markers (`has_injection_flags = true`), `maybe_spawn_graph_extraction` returns early without queuing any work. This prevents untrusted content from poisoning the knowledge graph.

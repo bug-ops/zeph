@@ -180,7 +180,74 @@ async fn shutdown_server(&self, server_id: &str) -> Result<()> {
 }
 ```
 
-## Configuration
+## Startup Auto-Retry with Exponential Backoff (#3578)
+
+MCP server startup is unreliable in practice: a server process may crash before
+completing the `initialize` handshake, or a network MCP server may be temporarily
+unavailable at agent start time. Without retry, a single failed server blocks agent
+startup or silently reduces the tool catalog.
+
+### Retry Contract
+
+`McpManager::start_with_retry(config)` wraps `start_server()` in an exponential
+backoff loop:
+
+```
+attempt 1: immediate
+attempt 2: base_delay_ms (default 200 ms)
+attempt 3: base_delay_ms × backoff_factor (default 2.0)
+...
+attempt N: min(base_delay_ms × backoff_factor^(N-2), max_delay_ms)
+```
+
+On exhaustion (all `max_startup_retries` attempts failed):
+
+- **`critical = false` servers**: log `ERROR`, skip server, agent starts without it.
+  The missing server's tools are absent from the catalog until a `/mcp reconnect` command.
+- **`critical = true` servers**: return `Err(McpError::CriticalServerStartFailed)`,
+  aborting agent startup.
+
+### Jitter
+
+Each backoff delay is jittered by `±25%` (uniform random) to prevent thundering herds
+when multiple MCP servers restart simultaneously after a crash.
+
+### Tracing
+
+Each retry attempt emits a `tracing::warn!` with attempt number, server name, and
+error. The initial failure emits `tracing::info!` (not warn — first attempt failure is
+expected in slow-start environments).
+
+### Config
+
+```toml
+[[mcp.servers]]
+name = "local-tools"
+command = "python3 /path/to/server.py"
+stdio = "pipe"  # or "pty" for terminal emulation
+timeout_init_s = 10
+timeout_request_s = 30
+healthcheck_interval_s = 60
+critical = false                    # if true, startup failure aborts the agent
+max_startup_retries = 3             # total attempts (1 initial + N-1 retries); 0 = no retry
+startup_retry_base_delay_ms = 200   # base delay before first retry
+startup_retry_max_delay_ms = 5000   # cap on exponential backoff
+startup_retry_backoff_factor = 2.0  # multiplier applied per attempt
+
+# Environment scrubbing: keep only these vars
+allow_env_vars = ["PATH", "HOME", "RUST_LOG"]
+```
+
+### Key Invariants
+
+- Retry delay is bounded by `startup_retry_max_delay_ms` — backoff cannot grow unbounded
+- `critical = true` servers abort startup on first failure (no retry is attempted before aborting)
+  — override: set `max_startup_retries > 0` to retry even critical servers before aborting
+- NEVER silently swallow a critical server failure — `Err` must propagate to `McpManager::start_all`
+- Jitter is applied on retries only, not on the initial attempt
+- The TUI startup spinner shows per-server retry status when `max_startup_retries > 0`
+
+## Configuration (Legacy)
 
 ```toml
 [[mcp.servers]]

@@ -16,6 +16,7 @@ zeph [OPTIONS] [COMMAND]
 | `agents` | Manage sub-agent definitions — list, show, create, edit, delete (see [Sub-Agent Orchestration](../advanced/sub-agents.md#managing-definitions)) |
 | `skill` | Manage external skills — install, remove, verify, trust (see [Skill Trust Levels](../advanced/skill-trust.md)) |
 | `memory` | Export and import conversation history snapshots |
+| `project` | Project-level management — purge all local state (see below) |
 | `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](security.md#age-vault)) |
 | `router` | Inspect or reset Thompson Sampling router state (see [Adaptive Inference](../advanced/adaptive-inference.md)) |
 | `ingest` | Ingest a document or directory into semantic memory (Qdrant collection) |
@@ -143,6 +144,59 @@ zeph memory tree
 ```
 
 The snapshot format is versioned (currently v1). Import uses `INSERT OR IGNORE` — re-importing the same file is safe and skips existing records.
+
+### `zeph project`
+
+Manage project-level state and cleanup.
+
+| Subcommand | Description |
+|------------|-------------|
+| `project purge` | Remove all project-local state (database, logs, debug artifacts, Qdrant collections) with safety checks |
+
+**`zeph project purge` options:**
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--config <PATH>` | `-c` | Path to config file (defaults to standard search path) |
+| `--dry-run` | | Show what would be removed without deleting anything |
+| `--yes` | `-y` | Skip confirmation prompt (database lock check is never skipped) |
+
+**Removes:**
+
+- SQLite database file (`zeph.db`) and its siblings (`zeph.db-wal`, `zeph.db-shm`)
+- Main log file and any rotated log files
+- Scheduler daemon log and PID file
+- Debug dump artifacts directory
+- Trace files directory
+- Audit log file (if configured as a file path)
+- All 10 known Qdrant collections (when `vector_backend = "qdrant"`)
+
+**Safety:**
+
+- Pre-flight exclusive lock check on the SQLite database — aborts immediately if an agent session is running
+- Database lock check is always enforced, even with `-y`
+- Respects vector backend configuration: skips Qdrant when `vector_backend = "sqlite"`
+- Respects database configuration: skips SQLite file deletion when using PostgreSQL
+
+```bash
+# Preview what would be removed
+zeph project purge --dry-run
+
+# Remove all project state (after confirmation)
+zeph project purge
+
+# Remove without confirmation (but DB lock check still applies)
+zeph project purge -y
+
+# Use a custom config path
+zeph project purge --config ~/.zeph/custom-config.toml --yes
+```
+
+> [!WARNING]
+> `zeph project purge` is destructive. This action cannot be undone. Ensure you have backups if you need to preserve any state.
+
+> [!TIP]
+> Use `--dry-run` first to see the byte counts that would be deleted. This helps you estimate storage recovery and verify the correct state will be removed.
 
 ### `zeph agents`
 

@@ -94,6 +94,40 @@ args = ["check", "--quiet"]
 | `hooks.file_changed.handlers[].command` | `string` | — | Executable to run |
 | `hooks.file_changed.handlers[].args` | `Vec<String>` | `[]` | Arguments (env vars expanded) |
 
+## Hook Tracing and Instrumentation
+
+All hook execution is instrumented with distributed tracing. Each hook invocation generates:
+
+- `zeph.hooks.cwd_changed` span — execution of a `cwd_changed` hook
+- `zeph.hooks.file_changed` span — execution of a `file_changed` hook
+
+Spans include:
+
+| Attribute | Value |
+|-----------|-------|
+| `hook.command` | Executable name (e.g., `cargo`, `git`) |
+| `hook.args` | Full argument list |
+| `hook.duration_ms` | Execution wall-clock time |
+| `hook.exit_code` | Process exit code (if available) |
+
+Traces are exported to your configured telemetry backend (local Chrome JSON or Jaeger OTLP) and are visible in profiling tools like Perfetto. This allows you to identify slow hooks and optimize them.
+
+## Hook Propagation on Config Reload
+
+When `zeph reload-config` is called (or config changes are hot-reloaded), hooks are immediately re-parsed and re-registered. The TUI and scheduler receive hook update notifications so they can reconfigure watchers without restarting.
+
+For `file_changed` hooks:
+1. Old watchers are stopped
+2. New watch paths are parsed from the updated config
+3. Handlers are registered with the new watcher
+4. The next file modification triggers the updated hooks
+
+For `cwd_changed` hooks:
+1. The hook list is updated in memory
+2. The next working directory change fires the new hooks
+
+This enables configuration updates without restarting the agent process.
+
 ## Reactive Events
 
 Zeph fires reactive events when the environment changes beneath the agent. Events are processed synchronously before the next agent turn, ensuring hooks complete before the LLM sees the updated context.

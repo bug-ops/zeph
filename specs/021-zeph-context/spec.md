@@ -232,16 +232,76 @@ AND it returns false for results with meaningful content
 
 ---
 
-## 9. Open Questions
+## 9. TypedPage Compaction Integration (#3638)
+
+The `ContextAssembler` now includes a `TypedPageCompactor` pass that runs after the
+parallel slot-gather and before the final `PreparedContext` is returned to `zeph-core`.
+This integrates the ClawVM typed-page compaction model (see [[004-8-memory-typed-pages]])
+into the assembler pipeline.
+
+### Integration Point
+
+```
+ContextAssembler::gather()
+    │
+    ├── FuturesUnordered parallel fetch (all slots)
+    │
+    ▼
+TypedPageCompactor::compact(slots, budget)      ← NEW (feature-gated)
+    │
+    ▼
+PreparedContext
+```
+
+The `TypedPageCompactor` receives the assembled `PreparedContext` and the
+`BudgetAllocation`. For any slot that exceeds its budget allocation, the compactor
+applies the per-type minimum-fidelity constraint (from [[004-8-memory-typed-pages]])
+instead of truncating uniformly.
+
+### Page Type Dispatch
+
+Each `ContextSlot` carries a `PageType` tag set during the gather step:
+
+| Slot | PageType |
+|------|---------|
+| `semantic_recall` | `SemanticFact` |
+| `graph_facts` | `GraphFact` |
+| `summaries` | `Summary` |
+| `recent_history` | `ConversationTurn` |
+| `doc_rag` / `cross_session` | `ToolOutput` |
+
+The `TypedPageCompactor` looks up the minimum-fidelity invariant for each `PageType`
+and ensures the compacted slot satisfies it. If a slot cannot satisfy the invariant
+within the budget, it is marked `CompactionWarning` and the caller (`zeph-core`) is
+notified via a `CompactionFailureClass::MinimumFidelityViolation`.
+
+### Feature Gate
+
+TypedPage compaction is controlled by the `typed-pages` feature flag (default: off).
+When the feature is off, `TypedPageCompactor` is a no-op pass that returns the input
+slots unchanged.
+
+### Key Invariants
+
+- `TypedPageCompactor::compact()` is stateless and pure — no agent state mutated
+- Compaction runs AFTER parallel fetch completes — it cannot delay individual fetches
+- A `MinimumFidelityViolation` warning does NOT abort the turn — the slot is truncated
+  and the warning is logged at `WARN` level
+- NEVER apply `TypedPageCompactor` when `typed-pages` feature is off
+
+---
+
+## 10. Open Questions
 
 None.
 
 ---
 
-## 10. See Also
+## 11. See Also
 
 - [[constitution]] — project principles
 - [[001-system-invariants/spec]] — cross-cutting invariants
 - [[002-agent-loop/spec]] — agent loop that consumes this crate
 - [[004-memory/spec]] — memory stores queried by `ContextAssembler`
+- [[004-8-memory-typed-pages]] — ClawVM typed-page compaction (integrated into assembler pipeline)
 - [[MOC-specs]] — all specifications

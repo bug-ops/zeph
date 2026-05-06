@@ -187,6 +187,45 @@ working directory.
 
 ---
 
+## Tracing Instrumentation and reload_config Propagation (#3628)
+
+### Tracing Spans
+
+`HookRunner::fire_hooks()` now wraps each hook execution in a `tracing::info_span!`
+with the following attributes:
+
+```rust
+info_span!("hooks.fire", event = event_name, hook_count = hooks.len())
+```
+
+Each individual hook command invocation gets a child span:
+
+```rust
+info_span!("hooks.command", command = hook.command)
+```
+
+This makes hook execution visible in local Chrome traces and OTLP spans. Previously,
+hook fires were invisible in the trace.
+
+### reload_config Hook Propagation
+
+`Agent::reload_config()` — called when a `config reload` event arrives from the
+`FileChangeWatcher` or the TUI — now propagates the reloaded hooks config to the
+`HookRunner`. Before PR #3628, a live config reload updated all other subsystems but
+left `HookRunner` with the stale hooks from startup.
+
+**Fix**: `reload_config` calls `hook_runner.replace_config(new_hooks_config)` after
+validating the new config. `HookRunner::replace_config` is an atomic swap using
+`arc_swap::ArcSwap<HooksConfig>`.
+
+### Key Invariants
+
+- `HookRunner` MUST NOT cache `HooksConfig` as a plain field — it MUST use `ArcSwap` so `replace_config` is atomic and does not require a lock on the hook runner
+- After `reload_config` completes, the NEXT hook fire uses the new config — in-flight hook commands continue under the config active at dispatch
+- NEVER propagate a config that failed validation to `HookRunner`
+
+---
+
 ## Key Invariants
 
 - Hook commands execute with the blocked-command list applied — dangerous shell patterns are prevented
@@ -199,6 +238,7 @@ working directory.
 - `permission_denied` hook fires when `RuntimeLayer::before_tool` short-circuits execution; `LayerDenial.reason` is propagated to `ZEPH_DENY_REASON` (#3310)
 - `turn_complete` is added to `HooksConfig` and `HooksConfig::is_empty()` check (#3327)
 - `type = "mcp_tool"` action requires MCP manager active; must fail gracefully per `fail_closed` setting when unavailable (#3293)
+- `HookRunner` uses `ArcSwap<HooksConfig>` — live reload is atomic, no lock contention on hook dispatch
 - NEVER inject hook stdout into the agent's conversation context
 - NEVER run hooks with elevated privileges — they inherit the agent process permissions only
 - If `[hooks]` section is absent from config, all hook lists are empty and no hooks fire — zero-cost when unused

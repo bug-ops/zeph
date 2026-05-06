@@ -40,8 +40,9 @@ Spec IDs (001–044) follow a logical grouping:
 - **048**: SLM cost metrics survey and CPS metric contract
 - **049**: Agent god-object decomposition (Services aggregator + AgentRuntime newtype)
 - **050**: Security capability governance (tool scoping + trajectory sentinel + CapSeal sketch)
-- **051**: Gonka.ai Phase 1 — GonkaGate hosted gateway (CompatibleProvider, wizard, vault key)
-- **052**: Gonka.ai Phase 2 — native network transport (GonkaProvider, ECDSA signing, EndpointPool)
+- **051**: Gonka.ai Phase 1 — GonkaGate hosted gateway (CompatibleProvider, wizard, vault key) [implemented]
+- **052**: Gonka.ai Phase 2 — native network transport (GonkaProvider, ECDSA signing, EndpointPool, chat_with_tools, chat_typed) [implemented]
+- **053**: SpeculationEngine — speculative tool execution (SSE decoding path, PASTE skill activation, ToolStartEvent{speculative:true})
 
 ---
 
@@ -72,6 +73,7 @@ Spec IDs (001–044) follow a logical grouping:
 | `004-memory/004-10-memory-memmachine-retrieval.md` | MemMachine retrieval-depth-first memory: retrieval depth config, search prompt templates, query bias correction, episode preservation (#3325) | `zeph-memory` |
 | `004-memory/004-11-memory-hela-mem.md` | HeLa-Mem Hebbian learning: edge weight reinforcement, periodic consolidation, spreading activation retrieval (#3324) | `zeph-memory` |
 | `004-memory/004-12-memory-reasoning-bank.md` | ReasoningBank: self-judge + distillation pipeline, strategy embedding store, context preamble injection (#3312) | `zeph-memory`, `zeph-core` |
+| `004-memory/004-13-memory-memcot.md` | MemCoT: SemanticStateAccumulator, Zoom-In evidence localization, Zoom-Out causal expansion (#3592) | `zeph-memory` |
 | `005-skills/spec.md` | SKILL.md format, registry, matching, hot-reload, skill trust governance, two-stage matching, Wilson score confidence intervals, hub install pipeline, agent-invocable skills (`invoke_skill`) | `zeph-skills` |
 | `006-tools/spec.md` | ToolExecutor, CompositeExecutor, TAFC, schema filter, result cache, dependency graph, tool invocation phase taxonomy, native `tool_use` only; `invoke_skill`/`load_skill` utility-gate exemption | `zeph-tools` |
 | `007-channels/spec.md` | Channel trait, AnyChannel dispatch, streaming, channel feature parity | `zeph-channels` |
@@ -124,4 +126,5 @@ Spec IDs (001–044) follow a logical grouping:
 | `049-agent-decomposition/spec.md` | Agent god-object Phase 2 (#3509): split `Agent<C>` 25+ direct sub-state fields into `services: Services` (background subsystems) and `runtime: AgentRuntime` (config, lifecycle, providers, metrics, debug, instructions); pure refactor, no API change, separately borrowable; `TurnContext` boundary sketched for P2-prereq-3 | `zeph-core` |
 | `050-security-capability-governance/spec.md` | Capability scoping (`ScopedToolExecutor` + per-task-type allow-lists, #3563), `TrajectorySentinel` multi-turn risk accumulator with decay (#3570), and CapSeal/SUDP `VaultBroker::propose_operation` Phase-3 research sketch (#3569) | `zeph-tools`, `zeph-core` |
 | `051-gonka-gateway/spec.md` | Phase 1: gonka.ai inference via GonkaGate hosted gateway — zero new Rust code, `CompatibleProvider` reuse, wizard branch, vault key `ZEPH_COMPATIBLE_GONKAGATE_API_KEY` | `zeph-llm`, `zeph-config` |
-| `052-gonka-native/spec.md` | Phase 2: native gonka network transport — `GonkaProvider`, ECDSA secp256k1 signing (`RequestSigner`), `EndpointPool` round-robin fail-skip, `send_signed_with_retry`, `zeph gonka doctor` | `zeph-llm`, `zeph-config` |
+| `052-gonka-native/spec.md` | Phase 2: native gonka network transport — `GonkaProvider`, ECDSA secp256k1 signing (`RequestSigner`), `EndpointPool` round-robin fail-skip, `send_signed_with_retry`, `chat_with_tools`, `chat_typed`, `zeph gonka doctor` | `zeph-llm`, `zeph-config` |
+| `053-speculation-engine/spec.md` | `SpeculationEngine` — speculative tool execution: `PartialJsonParser` SSE decoding path, PASTE skill activation, `try_dispatch`/`try_commit`/`end_turn` API, `ToolStartEvent{speculative:true}`, `DynExecutor` confirmation delegation | `zeph-core`, `zeph-tools` |

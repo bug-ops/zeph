@@ -244,6 +244,39 @@ An empty string falls back to the agent's primary provider.
 - `compress_context` is non-cacheable (side effects on context window) — must be in the non-cacheable set
 - NEVER call `compress_context` recursively from within a compress_context execution
 
+## DynExecutor Confirmation Delegation (#3649, #3651)
+
+`DynExecutor` is the type-erased wrapper around dynamically-loaded tool executors
+(e.g., from MCP servers registered after agent startup). Before these PRs, `DynExecutor`
+implemented `requires_confirmation` with a hardcoded `false` default, meaning dynamically
+loaded tools bypassed the confirmation gate even when the underlying executor required it.
+
+### Fix
+
+`DynExecutor::requires_confirmation(&call)` now delegates to the inner executor's
+`requires_confirmation` method via the `ErasedToolExecutor` vtable:
+
+```rust
+impl ToolExecutor for DynExecutor {
+    fn requires_confirmation_erased(&self, call: &ToolCall) -> bool {
+        self.inner.requires_confirmation_erased(call)
+    }
+}
+```
+
+The `SpeculationEngine` also uses `requires_confirmation_erased` to gate speculative
+dispatch (FR-SE-005 in [[053-speculation-engine/spec]]). This fix ensures that a
+`DynExecutor`-wrapped MCP tool that requires confirmation is never speculatively
+dispatched.
+
+### Key Invariants
+
+- `DynExecutor::requires_confirmation_erased` MUST delegate to the inner executor — no hardcoded default
+- The confirmation gate applies uniformly to all executors, including dynamically loaded ones
+- NEVER special-case `DynExecutor` in the confirmation gate — it must behave identically to a statically-typed executor
+
+---
+
 ## Key Invariants
 
 - Blocklist check is unconditional — PermissionPolicy cannot bypass it

@@ -283,6 +283,47 @@ contradiction_risk_threshold = 0.7      # Flag if graph edges show conflict
 
 Quality gate operates downstream of A-MAC admission, making both gates independent and composable.
 
+### APEX-MEM: Advanced Quality Gating
+
+APEX-MEM (Adaptive Page Extraction and eXtension Memory) provides an advanced quality validation layer that runs during the memory write path. When enabled, candidate memories are validated using a multi-dimensional scoring system before being admitted into the vector store.
+
+**Key features:**
+
+- **insert_or_supersede semantics** — when a high-confidence fact contradicts an existing memory, the system promotes the newer fact and marks the older one as superseded rather than keeping both
+- **Multi-dimensional validation** — scores candidates on information density (entropy), citation quality (reference completeness), and factual confidence
+- **Fail-open design** — validation errors are logged but never block writes; the message is admitted with conservative default scores
+
+Enable APEX-MEM in `[memory.quality_gate]`:
+
+```toml
+[memory.quality_gate]
+enabled = true
+use_advanced_scoring = true            # Enable APEX-MEM multi-dimensional validation (default: false)
+information_value_threshold = 0.3      # Skip admission if similarity exceeds this
+reference_completeness_threshold = 0.5 # Require pronoun/deictic clarity
+contradiction_risk_threshold = 0.7     # Flag if graph edges show conflict
+```
+
+When `use_advanced_scoring = true`, each candidate message receives three independent scores:
+
+| Dimension | Meaning | Score Range |
+|-----------|---------|-------------|
+| **Information density** | How much unique information vs. repetition | 0.0–1.0 (higher = more useful) |
+| **Citation quality** | Whether meaning is self-contained or deictic | 0.0–1.0 (higher = clearer standalone) |
+| **Confidence** | Presence of hedging markers ("I think", "maybe", etc.) | 0.0–1.0 (higher = more confident) |
+
+The composite score is a weighted blend: `0.35 * density + 0.35 * citation + 0.30 * confidence`. Messages scoring below `information_value_threshold` are rejected.
+
+**insert_or_supersede behavior:**
+
+When a new memory contradicts an existing one (detected via graph edge conflicts), APEX-MEM evaluates both the old and new facts:
+
+1. If the new fact has higher `confidence` + `information_density`, it is inserted and the old fact is marked `superseded_by = <new_id>`
+2. If the old fact scores higher, it is retained and the new fact is silently rejected
+3. If scores are within `contradiction_margin` (default: 0.05), both are kept and a contradiction flag is set in the graph for later resolution
+
+This enables natural knowledge evolution without vector index bloat from conflicting information.
+
 ### RL-Based Admission Strategy
 
 The default `heuristic` strategy uses static weights and an optional LLM call for the `future_utility` factor. The `rl` strategy replaces the `future_utility` LLM call with a trained logistic regression model that learns from actual recall outcomes.
@@ -746,6 +787,88 @@ scene_sweep_interval_secs     = 7200   # how often the scene consolidation sweep
 
 > [!NOTE]
 > `scene_similarity_threshold` is validated to be in `[0.5, 1.0]` and `scene_batch_size` must be `>= 1`. Invalid values are rejected at startup.
+
+## MemCoT: Semantic State Accumulation
+
+MemCoT (Memory Chain-of-Thought) tracks the agent's semantic understanding state across turns via incremental entity and value updates. Instead of storing discrete messages, MemCoT accumulates fact streams that represent how the agent's model of the world evolves — capturing decisions, contradiction resolutions, and inferred conclusions.
+
+The `SemanticStateAccumulator` maintains:
+
+- **Entity snapshots** — current values for tracked entities (project status, decision state, file paths)
+- **Contradiction flags** — when the agent detects conflicting information, flags the conflict and records the resolution
+- **Decision ledger** — explicit decisions made by the user or agent (e.g., "switched from vim to neovim", "decided to use Claude instead of Ollama")
+- **Inferred states** — conclusions drawn from multiple facts (e.g., "auth module is now stable" inferred from "all tests pass + no open issues")
+
+MemCoT is complementary to traditional semantic recall: while vector search finds *similar messages*, MemCoT finds *related state transitions*. This is particularly useful for:
+
+- **Long explorations** — tracking how a codebase design evolved over 50+ turns
+- **Decision audits** — "why did we choose X?" answered by the decision ledger
+- **Contradiction resolution** — detecting when the agent's context drifts and needs correction
+
+### Zoom-In / Zoom-Out Recall Views
+
+MemCoT supports two complementary query patterns for state retrieval:
+
+**Zoom-in** — Retrieve the full derivation chain for a specific fact. Given a state like "auth module is stable", the zoom-in view returns:
+
+1. The current fact value ("auth module is stable on commit abc123")
+2. All intermediate facts that contributed to this inference ("all tests pass", "no open issues", "PR #42 merged")
+3. The contradiction resolution history if this fact superseded an earlier conflicting state
+4. The decision events that led to the conclusion (e.g., "user confirmed code review complete")
+
+The depth is bounded by `zoom_in_max_depth` to prevent returning derivation chains deeper than human working memory can follow.
+
+**Zoom-out** — Retrieve only high-level state transitions without intermediate details. Given 50 turns of development, zoom-out returns:
+
+- Aggregation level 1 (facts) — all state transitions with equal weight
+- Aggregation level 2 (decisions) — only explicit user or agent decisions (default)
+- Aggregation level 3 (milestones) — major milestone decisions (e.g., "architecture chosen", "first deploy")
+
+The aggregation level is set via `zoom_out_level`. Higher levels reduce token usage by suppressing intermediate inferences and focusing on decision points.
+
+**Configuration:**
+
+```toml
+[memory.memcot]
+enabled = true
+accumulator_provider = "fast"      # Provider for state summarization; falls back to primary
+zoom_in_max_depth = 5              # Max steps in derivation chain (>= 1)
+zoom_out_level = 2                 # Aggregation level: 1=facts, 2=decisions, 3=milestones
+```
+
+**Injection into context:**
+
+When enabled, MemCoT state snapshots are stored in SQLite with timestamps and source facts. At context assembly time, both zoom views are injected before semantic recall results:
+
+1. Zoom-in for facts matching the current query (deep causality view)
+2. Zoom-out for recent state transitions (high-level summary view)
+
+The dual-recall design allows the agent to answer both deep "why did we choose X?" questions (via zoom-in derivations) and strategic "what's changed since last session?" questions (via zoom-out aggregates).
+
+**Examples:**
+
+```
+Zoom-in query: "Why is the payment module blocked?"
+Returns: payment module is blocked (current) ← pending legal review ← GDPR compliance ← user decision to add GDPR
+(4 steps: decision → inference → inference → current)
+
+Zoom-out query: "What happened in this session?"
+Returns: (Decision) switched from SQLite to PostgreSQL; (Milestone) schema v3 deployed; (Decision) enabled read replicas
+(3 decision-level events, intermediate facts hidden)
+```
+
+## Memory Retrieval Failure Logging
+
+When a semantic memory search returns zero results or falls below the confidence threshold, Zeph optionally records this in the `memory_retrieval_failures` table. This supports the OmniMem self-improvement loop: by analyzing patterns in no-hit turns, the memory admission and recall systems can be tuned to improve coverage.
+
+Enable failure logging in `[memory]`:
+
+```toml
+[memory]
+log_retrieval_failures = true       # Record no-hit recalls for analysis
+```
+
+Logged failures include the query, timestamp, applied filters, and confidence score. A background analyzer can use these logs to detect categories of questions your memory system fails on and adjust admission strategies accordingly.
 
 ## Next Steps
 

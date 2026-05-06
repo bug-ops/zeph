@@ -86,6 +86,66 @@ embedding_model = "nomic-embed-text"      # dedicated embedding model
 embed = true
 ```
 
+## Orchestration-Tier Provider Routing
+
+Sub-agent orchestration runs several internal LLM tasks that are distinct from user-facing reasoning:
+
+- **Scheduling and aggregation** — combining multiple sub-agent outputs into a coherent result
+- **Predicate evaluation** — deciding whether a task completed successfully (true/false classifiers)
+- **Task verification** — double-checking a result before returning it to the user
+
+These tasks can often be handled by smaller/faster models without impacting overall quality. The `orchestrator_provider` field routes all three through a single dedicated provider:
+
+```toml
+[[llm.providers]]
+name = "fast"
+type = "ollama"
+model = "qwen3:1.7b"
+
+[[llm.providers]]
+name = "quality"
+type = "claude"
+model = "claude-sonnet-4-6"
+default = true
+
+[orchestration]
+orchestrator_provider = "fast"      # Use fast model for scheduling-tier LLM calls
+planner_provider = "quality"         # Use quality model for planning (stays on quality provider)
+```
+
+The resolution order is:
+
+- `LlmAggregator` (output synthesis) → `orchestrator_provider` → primary
+- `PlanVerifier` (verification check) → `verify_provider` → `orchestrator_provider` → primary
+- `PredicateEvaluator` (predicate logic) → `predicate_provider` → `orchestrator_provider` → primary
+
+When `planner_provider` is explicitly set, it is NOT overridden by `orchestrator_provider`. Planning is a complex task and always uses the quality provider.
+
+> [!WARNING]
+> Routing `LlmAggregator` through a cheap/fast model may reduce final output quality because aggregation produces user-visible text. Test thoroughly with your workload before relying on this optimization in production.
+
+## Admission Control and Concurrency Limits
+
+To prevent provider overcommit when many sub-agents are running, set `max_concurrent` per provider. This limits the number of simultaneous in-flight orchestration calls to that provider:
+
+```toml
+[[llm.providers]]
+name = "api"
+type = "openai"
+model = "gpt-4o"
+max_concurrent = 10      # Allow up to 10 concurrent sub-agent API calls
+
+[[llm.providers]]
+name = "local"
+type = "ollama"
+model = "qwen3:8b"
+max_concurrent = 4       # Ollama server has less capacity
+```
+
+The `AdmissionGate` enforces these limits at spawn time. When a provider reaches its limit, new tasks are deferred with exponential backoff until a previous task completes and frees a permit.
+
+Currently the concurrency limit is enforced (tasks are delayed), but cost budgets are warn-only: when a task completes with token usage exceeding `[orchestration] default_task_budget_cents`, a warning is logged but the task is not rejected. Hard budget enforcement is deferred pending per-task `CostTracker` scoping.
+
 ## SLM Provider Recommendations
 
 Each Zeph subsystem that calls an LLM exposes a `*_provider` config field. Matching the model size to task complexity reduces cost and latency without sacrificing quality. The table below lists the recommended model tier for each subsystem:

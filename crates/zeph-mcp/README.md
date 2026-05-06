@@ -22,6 +22,30 @@ Implements the Model Context Protocol client for Zeph, managing connections to m
 - **prompt** — MCP prompt template support
 - **error** — `McpError` error types with typed `McpErrorCode` for retry classification (`Transient`, `RateLimited`, `InvalidInput`, `AuthFailure`, `ServerError`, `NotFound`, `PolicyBlocked`)
 
+## Startup auto-retry
+
+When an MCP server fails to connect at startup, `McpManager` retries the connection with exponential backoff. The first retry fires after 1 s, doubling on each attempt up to a configurable cap, with jitter to prevent thundering-herd behaviour across multiple servers starting concurrently.
+
+Configure per-server or globally:
+
+```toml
+[mcp]
+startup_retry_max_attempts = 5
+startup_retry_initial_delay_ms = 1000
+startup_retry_max_delay_ms = 30000
+
+[[mcp.servers]]
+id = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+startup_retry_max_attempts = 3   # per-server override
+```
+
+HTTP 4xx authentication errors (`401`, `403`) are mapped to `McpError::HttpAuth` and are not retried — a permanent auth failure will not exhaust the retry budget.
+
+> [!TIP]
+> Increase `startup_retry_max_attempts` for servers that have slow cold-start times (e.g. Docker-based servers that pull images on first run).
+
 ## MCP Roots protocol
 
 The MCP client implements the `roots/list` handler, exposing configured project roots to MCP servers. Roots are declared via `[mcp.roots]` in config and passed to each server connection at initialization time. Servers that support `roots/list` can use this information to scope their file system access to the declared directories.

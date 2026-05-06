@@ -298,6 +298,232 @@ If 3 consecutive tool iterations produce identical output strings, the loop brea
 
 At the start of each iteration, the agent estimates total token usage. If usage exceeds 80% of the configured `context_budget_tokens`, the loop stops to avoid exceeding the model's context window.
 
+## Per-Turn Execution Context
+
+Each tool invocation receives a `ExecutionContext` that carries contextual information about the turn in which it is executing:
+
+```rust
+pub struct ExecutionContext {
+    pub turn_id: String,           // UUID of the current agent turn
+    pub goal_id: Option<String>,   // UUID of the active /plan goal (if any)
+    pub skill_name: Option<String>,// Name of the active skill (if matched)
+    pub timestamp_ms: u64,         // Unix timestamp of turn start
+}
+```
+
+This context is available to tool executors via `ShellExecutor::context()` and can be used to:
+
+- **Audit and tracing** — correlate tool invocations with the turn that triggered them
+- **Goal-aware behavior** — adjust tool output based on the active goal or skill
+- **Session reconstruction** — reconstruct the execution sequence from audit logs
+
+Tool executors can opt-in to receiving the context:
+
+```toml
+[tools.shell]
+enable_execution_context = true  # expose turn_id, goal_id, skill_name to hooks and auditing
+```
+
+When enabled, the context is propagated to shell command hooks (`hooks.file_changed`, `hooks.cwd_changed`) as environment variables:
+
+| Variable | Source |
+|----------|--------|
+| `ZEPH_TURN_ID` | `ExecutionContext::turn_id` |
+| `ZEPH_GOAL_ID` | `ExecutionContext::goal_id` (omitted if no active goal) |
+| `ZEPH_SKILL_NAME` | `ExecutionContext::skill_name` (omitted if no active skill) |
+
+## Goal Lifecycle and TACO Output Compression
+
+When a `/plan` goal is active, tool outputs are subject to automatic compression via TACO (Tool-Aware Context Optimization). TACO uses a goal-aware compression strategy that:
+
+1. **Preserves goal-relevant outputs** — tool results that directly address the active goal are never compressed
+2. **Compresses tangential outputs** — results from exploratory or debugging tools outside the critical path are condensed into 2-3 line summaries
+3. **Caches outputs** — compressed outputs are memoized so identical tool calls don't re-compress
+
+**Goal lifecycle:**
+
+When `/plan "Build a REST API"` is invoked:
+
+1. A `TaskGraph` is created with UUID and stored in SQLite
+2. Each tool invocation in the context of that plan gets `ExecutionContext::goal_id = <graph_id>`
+3. At context assembly time, tool outputs are scored by relevance to the goal via:
+   - Token count (smaller = more compressible)
+   - Tool type (shell outputs compressed more aggressively than file reads)
+   - Goal distance (proximity to the core task path)
+4. When the goal completes, TACO stops applying compression and returns to normal tool output display
+
+**Configuration:**
+
+```toml
+[tools.compression]
+enabled = true
+goal_aware = true              # Enable goal-aware compression (default: false)
+compression_threshold_tokens = 300  # Compress outputs larger than this (default: 300)
+preserve_shell_errors = true   # Never compress shell commands with exit_code != 0 (default: true)
+
+# Compression strategies per tool type
+[tools.compression.strategies]
+bash = "aggressive"            # Compress shell output to 2-3 lines
+read = "moderate"              # Keep file read outputs; only trim beyond 500 chars
+web_scrape = "moderate"        # Keep scrape results; summarize only if > 1000 chars
+find_path = "aggressive"       # Compress find results to "X files matching pattern"
+```
+
+When `goal_aware = true`, the compression strategy dynamically adjusts based on task relevance. A `grep` result that mentions the active goal's API function is preserved; one that mentions unrelated code is summarized.
+
+**Example:**
+
+```toml
+# Without TACO
+$ bash command: "cargo build --release"
+[output: 50 lines of compiler messages]
+
+$ read file: "src/lib.rs"
+[output: 200 lines of source code]
+
+# With TACO (goal_aware=true, active goal is "add error handling")
+$ bash command: "cargo build --release"
+[error handling additions: 3 relevant compiler messages; 47 others elided]
+
+$ read file: "src/lib.rs"
+[read src/lib.rs: 200 lines] (preserved because goal-adjacent; file reads not compressed)
+```
+
+## Capability Governance: TrajectorySentinel and ScopedToolExecutor
+
+Tool execution can be gated by external security or governance policies. Two mechanisms work together:
+
+### TrajectorySentinel
+
+`TrajectorySentinel` observes the trajectory (sequence) of tool calls across a session and blocks calls that violate a learned policy. It learns patterns from:
+
+- **Prior sessions** — tool sequences that caused errors, security violations, or policy breaches
+- **User feedback** — when the user marks a tool result as "unacceptable" or "revoke", that sequence is marked as off-limits
+- **Static allowlist** — tools listed in `[tools.governance]` are always available
+
+Enable trajectory-based blocking:
+
+```toml
+[tools.governance]
+trajectory_enabled = true
+block_risky_patterns = true    # Default: false (off unless explicitly enabled)
+blocked_sequences = [
+  ["bash", "rm", "-rf", "/"],  # Never allow a full filesystem delete
+  ["write", "config.toml", "password"],  # Never write credentials to config
+]
+```
+
+The sentinel stores successful and failed sequences in SQLite and uses them to score subsequent invocations. A tool call can be blocked if:
+
+- Its sequence matches a `blocked_sequences` entry
+- Its sequence is semantically similar to a recent error sequence (via embedding similarity)
+
+### ScopedToolExecutor
+
+`ScopedToolExecutor` wraps an inner executor and applies permission checks before delegating. It enforces:
+
+1. **Per-tool access control** — which tools can be invoked (allowlist or denylist)
+2. **Per-parameter validation** — constraints on file paths, command content, URL domains
+3. **Runtime permission escalation** — tools requiring higher trust level prompt the user before execution
+
+```toml
+[tools.scoped]
+enabled = true
+
+# Deny list: block specific tools
+denied_tools = ["delete_path", "bash"]
+
+# Allow list: only these tools are available (if set, denied_tools is ignored)
+# allowed_tools = ["read", "write", "fetch"]
+
+# Per-tool parameter constraints
+[[tools.scoped.constraints]]
+tool = "bash"
+deny_patterns = ["rm -rf", "sudo", ":(){:|:|:|:}"]  # block dangerous commands
+
+[[tools.scoped.constraints]]
+tool = "write"
+allowed_paths = ["/tmp", "/workspace"]  # only write to these directories
+```
+
+When a tool invocation violates a constraint, the agent receives an error message indicating which constraint was violated. The user can override with `/approve <tool_id>` if they trust the specific invocation.
+
+Both mechanisms complement file path sandboxing and OS-level process sandboxing — they add policy enforcement at the Zeph orchestration layer.
+
+## Per-Turn Execution Context
+
+`ShellExecutor` maintains a per-turn `ExecutionContext` that persists across iterations within a single agent turn. This context includes:
+
+- **Working directory** — set by the user or previous tool invocation; carries forward to subsequent commands
+- **Environment variable overrides** — set via `export` or shell commands
+- **Session history** — command history from previous iterations, available via shell history commands
+- **Parsed state** — extracted values from previous tool outputs (e.g., URLs, file paths, parsed JSON)
+
+The context is created at the start of each turn and discarded when the turn completes, ensuring tool outputs don't bleed into subsequent unrelated conversations.
+
+```bash
+> cd /path/to/project
+[bash] cd /path/to/project
+
+> cargo build
+[bash] cargo build  # runs in /path/to/project (context persisted)
+
+> find src -name "*.rs" | head
+[bash] find src -name "*.rs" | head  # also runs in /path/to/project
+```
+
+## Goal Lifecycle and TACO Output Compression
+
+When the agent is running toward an explicit goal (via `/plan` or `[agent] goal_text` config), tool outputs are evaluated for relevance to that goal. TACO (Token-Aware Compression Orchestration) applies goal-aware output filtering that removes off-topic information.
+
+During each tool invocation:
+
+1. **Goal relevance scoring** — TACO scores the tool output for relevance to the current goal using embedding similarity
+2. **Compression** — Off-topic sections are replaced with `[output filtered: <reason>]` placeholders
+3. **Preservation** — Output directly matching the goal or containing errors is always preserved
+
+Enable TACO by setting a goal:
+
+```bash
+> /plan Implement authentication middleware for the REST API
+```
+
+Configuration for compression thresholds:
+
+```toml
+[tools.compression]
+goal_relevance_threshold = 0.5    # Skip sections with relevance < 0.5
+preserve_errors = true            # Always keep error messages
+max_preserved_chars = 4096        # Hard limit on preserved output size
+```
+
+When no goal is active, TACO is disabled and all tool output is preserved.
+
+## TrajectorySentinel and ScopedToolExecutor
+
+To prevent tool misuse and enforce capability governance, Zeph optionally wraps executors with `TrajectorySentinel` (tracks execution patterns) and `ScopedToolExecutor` (enforces per-user scope and trust levels).
+
+`ScopedToolExecutor` ensures that:
+
+- **Per-user scope** — tools run as the configured user (e.g., `www-data` for web services), not the agent process owner
+- **Trust delegation** — sensitive tools (e.g., `rm`, `sudo`) require an elevated trust level
+- **Capability auditing** — all tool invocations are logged with user, timestamp, and scope context
+
+Enable scoped execution via `[tools.scope]`:
+
+```toml
+[tools.scope]
+enabled = true
+run_as_user = "zeph"          # Execute tools as this user (via sudo if needed)
+require_capability = false    # Require elevated permissions
+audit_all_invocations = true  # Log every tool call
+```
+
+When enabled, the executor constructs a `ToolScope` binding the user identity, permission level, and audit context. The scope is passed through all tool execution layers — file access, shell commands, and MCP tools are all aware of and respect the scope.
+
+> [!WARNING]
+> Scope enforcement requires the agent to run with sufficient privileges (typically `root` or via `sudo`) to switch user contexts. Running as an unprivileged user with `run_as_user = "other-user"` will fail with a permission error.
+
 ## Permissions
 
 The `[tools.permissions]` section defines pattern-based access control per tool. Each tool ID maps to an ordered array of rules. Rules use glob patterns matched case-insensitively against the tool input (command string for `bash`, file path for file tools). First matching rule wins; if no rule matches, the default action is `Ask`.

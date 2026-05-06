@@ -253,3 +253,176 @@ strip_orphaned_tool_results(messages: &mut Vec<Message>)
 - Removing an orphaned `tool_result` is silent (no WARN) unless `--debug-dump` is active
 - This is a correctness invariant, not a heuristic — a single orphaned `tool_result` causes a provider 400/422 error
 - NEVER send a `tool_result` whose `tool_use_id` is absent from the message list
+
+---
+
+## Goal Lifecycle (#3567)
+
+The agent tracks a per-session *goal state* that reflects whether the current user
+intent has been stated, is in progress, or has been completed. This is distinct from
+the orchestration `TaskGraph` goal (which is a planned multi-step execution) — goal
+lifecycle tracks the natural-language objective expressed by the user in conversation.
+
+### GoalState Machine
+
+```
+Idle ──(user message with goal)──► Active(goal_text)
+Active ──(agent signals completion)──► Completed(goal_text)
+Completed ──(new user message)──► Active(new_goal_text)
+Active ──(/clear or session reset)──► Idle
+```
+
+`GoalState` is stored on `LifecycleState`. The active goal text is made available
+as a template variable in the system prompt (`{current_goal}`) when configured.
+
+### Goal Completion Detection
+
+The agent detects goal completion via a lightweight heuristic:
+
+1. If the last assistant response contains a completion signal phrase (configurable
+   pattern list, e.g., "task complete", "done", "finished") and no tool calls were
+   emitted in that turn → transition `Active → Completed`
+2. If the orchestration `TaskGraph` plan completes → `Active → Completed`
+3. Explicit `/done` slash command → `Active → Completed`
+
+Completion transitions emit a `GoalCompleted` event to the channel (displayed as a
+status message, not a user-facing message).
+
+### Config
+
+```toml
+[agent.goal]
+enabled                  = true
+track_in_system_prompt   = false      # inject {current_goal} into system prompt
+completion_phrases       = ["task complete", "done", "finished", "completed"]
+```
+
+### Key Invariants
+
+- Goal lifecycle is informational — it does NOT block tool execution or LLM calls
+- NEVER surface `GoalState` to the LLM directly; it is agent-internal and operator-visible only
+- The goal text is extracted from the first user message of the conversation; subsequent messages extend or replace the active goal heuristically
+
+---
+
+## TACO Output Compression (#3591)
+
+TACO (Tool-output Automatic Compression and Offload) compresses large tool outputs
+before they are injected into the context window. This is a targeted pre-injection
+pass, distinct from the turn-level compaction that runs at the 60/90% pressure gates.
+
+### When It Fires
+
+TACO is evaluated after each tool call result is received, before the result is
+appended to `messages`:
+
+1. Measure the raw tool output token count via `tiktoken-rs`
+2. If `token_count > taco_threshold` AND the tool is in the compressible-tool set
+   → run TACO compression
+3. Compressed result replaces the raw result in `messages`
+
+### Compression Strategy
+
+TACO compression uses a fast prompt to summarize the tool output:
+
+```
+System: You are a concise tool-output summarizer. Preserve all data values,
+file paths, exit codes, and structured content. Remove verbose headers and
+repeated patterns. Target: under {target_tokens} tokens.
+Tool output:
+{raw_output}
+```
+
+The compressed result is tagged with `MessagePart::TacoCompressed` so the TUI and
+audit log can distinguish it from raw output.
+
+### Compressible Tool Set
+
+Default: `["shell", "web_scrape", "read"]`. Configurable via
+`[tools.taco] compressible_tools`. MCP tools are excluded from TACO by default
+because their structured output schema is unknown.
+
+### Config
+
+```toml
+[tools.taco]
+enabled             = false           # default off (opt-in)
+taco_threshold      = 2000            # tokens; compress outputs above this
+target_tokens       = 500             # target compressed size
+taco_provider       = ""              # [[llm.providers]] name; empty = primary
+compressible_tools  = ["shell", "web_scrape", "read"]
+```
+
+### Key Invariants
+
+- TACO fires only on output that exceeds `taco_threshold`; short outputs are passed through untouched
+- On compression failure (provider error, timeout) the **raw output is used** — TACO is best-effort
+- NEVER compress `tool_result` messages from `execute_tool_call_confirmed` (fenced-block path) — user-approved results must not be silently summarized
+- NEVER apply TACO to thinking blocks or system prompt parts
+- `taco_provider` is resolved via the provider registry at runtime; empty = primary provider
+- Compressed results carry `MessagePart::TacoCompressed` to make compression auditable
+
+---
+
+## Per-Turn ExecutionContext (#3589)
+
+`ShellExecutor` now receives a per-turn `ExecutionContext` that carries the resolved
+working directory and environment overrides for that specific turn. This replaces the
+previous model where the working directory was a global field on `ShellExecutor`.
+
+### Contents
+
+```rust
+pub struct ExecutionContext {
+    pub cwd:     PathBuf,             // resolved working directory for this turn
+    pub env:     HashMap<String, String>,  // turn-scoped env overrides (e.g., from hooks)
+    pub session: SessionId,           // for audit correlation
+}
+```
+
+### Propagation
+
+`ExecutionContext` is constructed at the start of `process_user_message()` from the
+current `LifecycleState::cwd` and any active hook-injected env vars. It is passed to
+`ShellExecutor::execute_with_context(&call, &ctx)` instead of reading from a shared
+field.
+
+### Key Invariants
+
+- The `cwd` in `ExecutionContext` reflects the working directory **as of the start of the turn** — changes made by `set_working_directory` tool calls in the current turn take effect in the NEXT turn's context
+- NEVER mutate the `ExecutionContext` during a turn — it is immutable after construction
+- The `ExecutionContext` is not serialized or persisted — it is reconstructed each turn
+
+---
+
+## Memory Retrieval Failure Logging (#3597)
+
+OmniMem self-improvement loop requires a dataset of memory retrieval failures.
+Starting from PR #3597, `OmniMem::recall()` logs retrieval failures into the
+`skill_outcomes` table (existing SQLite table used by self-learning) with
+`outcome_type = "memory_miss"`.
+
+### Logged Fields
+
+| Field | Value |
+|-------|-------|
+| `outcome_type` | `"memory_miss"` |
+| `query` | The original recall query string (truncated to 512 chars) |
+| `strategy` | Recall strategy that was attempted (e.g., `"semantic"`, `"graph"`, `"hybrid"`) |
+| `error` | Error message or "no_results" |
+| `session_id` | Current session UUID |
+| `ts` | Unix timestamp |
+
+### What Counts as a Failure
+
+- Qdrant query returns 0 results above the similarity threshold
+- Qdrant query returns an error (network, timeout)
+- Graph BFS returns 0 edges above the confidence threshold
+- Hybrid recall produces 0 non-empty results after merging
+
+### Key Invariants
+
+- Failure logging is fire-and-forget — it MUST NOT block the recall return path
+- Logged queries are truncated to 512 characters before storage — no unbounded writes
+- Failure logs are NOT surfaced to the LLM or the user; they are operator/self-improvement data only
+- `outcome_type = "memory_miss"` is a stable string — consumers (scheduler micro-benchmark) depend on it

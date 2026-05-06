@@ -5,11 +5,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
 
-LLM provider abstraction with Ollama, Claude, OpenAI, Gemini, and Candle backends.
+LLM provider abstraction with Ollama, Claude, OpenAI, Gemini, Gonka, and Candle backends.
 
 ## Overview
 
-Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, OpenAI, Google Gemini, and OpenAI-compatible endpoints. Includes an orchestrator for multi-model coordination, a router for model selection, an optional Candle backend for local inference, and an SQLite-backed response cache with blake3 key hashing and TTL expiry.
+Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, OpenAI, Google Gemini, Gonka (signed native transport), and OpenAI-compatible endpoints. Includes an orchestrator for multi-model coordination, a router for model selection, an optional Candle backend for local inference, and an SQLite-backed response cache with blake3 key hashing and TTL expiry.
 
 ## Key modules
 
@@ -21,6 +21,7 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `openai` | OpenAI backend with `with_client()` builder for shared `reqwest::Client` |
 | `gemini` | Google Gemini backend (`generateContent` + `streamGenerateContent?alt=sse`); system prompt mapped to `systemInstruction`, `assistant` role to `"model"`, consecutive same-role message merging, thinking parts surfaced as `StreamChunk::Thinking`, `functionCall` parts in SSE stream emitted as `StreamChunk::ToolUse`; configured via `[llm.gemini]` and `ZEPH_GEMINI_API_KEY` |
 | `compatible` | Generic OpenAI-compatible endpoint backend |
+| `gonka` | Gonka native inference backend — signed HTTP transport via `RequestSigner` (HMAC-based), `EndpointPool` for weighted multi-node load balancing; supports `chat`, `chat_stream`, `embed`, and `chat_with_tools` |
 | `candle_provider` | Local inference via Candle (optional feature) |
 | `orchestrator` | Multi-model coordination and fallback; `send_with_retry()` helper deduplicates retry logic |
 | `router` | Model selection and routing logic with two strategies: EMA latency tracking and Thompson Sampling (Beta distributions). `RouterProvider` dispatches to the configured strategy and records outcomes per provider. Providers stored as `Arc<[AnyProvider]>` — `clone()` on every LLM request is O(1) regardless of chain length |
@@ -136,6 +137,35 @@ feature_dim      = 8       # dimensionality of the context feature vector
 
 > [!TIP]
 > Inspect learned weights and UCB scores with `zeph router stats` (same command as Thompson Sampling) or `/router stats` in the TUI.
+
+## Gonka native provider
+
+`GonkaProvider` connects to Gonka inference nodes using a signed transport. Requests are signed per-call via `RequestSigner` using an HMAC key stored in the age vault under `ZEPH_GONKA_API_KEY`. `EndpointPool` distributes load across nodes by weight and falls back automatically when a node is unreachable.
+
+Supported operations: `chat`, `chat_stream`, `embed`, `chat_with_tools`, and `chat_typed` (structured output via JSON Schema).
+
+```toml
+[[llm.providers]]
+name = "gonka"
+type = "gonka"
+model = "qwen3-235b"
+default = true
+
+[[llm.gonka_nodes]]
+url    = "https://node.example.gonka.ai"
+weight = 1
+```
+
+Store the key in the vault:
+
+```bash
+zeph vault set ZEPH_GONKA_API_KEY <your-key>
+```
+
+Configure via the `--init` wizard by selecting the **GonkaGate / Gonka Native** option.
+
+> [!NOTE]
+> The GonkaGate path (`type = "compatible"`) is still available for access via the OpenAI-compatible gateway. Use `type = "gonka"` for the native signed-transport path with full multi-node pool support.
 
 ## SLM provider recommendations
 

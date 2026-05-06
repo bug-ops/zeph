@@ -350,6 +350,25 @@ timeout_ms = 500                    # Activation timeout to prevent runaway trav
 recall_timeout_ms = 1000            # Timeout for the full graph recall call (default: 1000)
 ```
 
+## MemCoT semantic state accumulation
+
+`SemanticStateAccumulator` tracks entity salience and relationship density across turns, maintaining a rolling cognitive thread. Two recall views are supported:
+
+- **Zoom-In** — high-granularity retrieval that surfaces entity-level details and recent edge additions from the current cognitive thread.
+- **Zoom-Out** — panoramic retrieval that activates community-level summaries and older superseded edges for historical perspective.
+
+Memory retrieval failures are logged automatically for the OmniMem self-improvement loop — the agent can learn from misses without manual instrumentation.
+
+Configure via `[memory.memcot]`:
+
+```toml
+[memory.memcot]
+enabled      = true
+thread_depth = 10      # turns kept in the cognitive thread
+zoom_in_top_k  = 5
+zoom_out_top_k = 3
+```
+
 ## Importance scoring
 
 Messages are scored at write time via `compute_importance()`. The score is stored in the `importance_score` column (default 0.5 for legacy rows). When `importance_enabled = true` on `SemanticMemory`, recall results are blended with importance scores for content-aware ranking.

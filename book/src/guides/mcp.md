@@ -82,6 +82,71 @@ Add and remove MCP servers at runtime via chat commands:
 
 After adding or removing a server, Qdrant registry syncs automatically for semantic tool matching.
 
+## MCP Server Startup and Retry
+
+When Zeph starts, it attempts to connect to all configured MCP servers in parallel. Servers that fail to start (e.g., missing binary, network timeout, or slow startup) are automatically retried with exponential backoff.
+
+**Retry behavior:**
+
+1. **Initial connection attempt** — each server gets `startup_timeout` seconds to respond (default: 30 seconds)
+2. **Failure detection** — if the server fails to initialize, auto-retry begins
+3. **Exponential backoff** — subsequent attempts wait 1s, 2s, 4s, 8s, etc. up to `max_retry_interval_secs`
+4. **Eventual availability** — servers are marked unavailable after `max_retries` attempts, but Zeph continues running without them
+5. **Runtime reconnection** — if a server was unavailable at startup but comes online later, the agent can manually reconnect via `/mcp add`
+
+**Configuration:**
+
+```toml
+[mcp]
+startup_timeout_secs = 30          # Max time to wait for server initialization (default: 30)
+max_retries = 5                    # Max reconnection attempts before giving up (default: 5)
+initial_retry_interval_secs = 1    # Starting backoff interval (default: 1)
+max_retry_interval_secs = 60       # Max backoff interval (default: 60)
+```
+
+**Example timeline:**
+
+```
+Start → stdio server fails (can't find binary)
+  → Retry 1: wait 1s, attempt 2 fails
+  → Retry 2: wait 2s, attempt 3 fails
+  → Retry 3: wait 4s, attempt 4 succeeds ✓
+
+OR
+
+Start → stdio server fails (timeout)
+  → Retry 1: wait 1s, attempt 2 fails
+  → Retry 2: wait 2s, attempt 3 fails
+  → Retry 3: wait 4s, attempt 4 fails
+  → Retry 4: wait 8s, attempt 5 fails
+  → Retry 5: wait 16s, attempt 6 fails
+  → Server marked unavailable; Zeph continues without it
+  → User can retry: /mcp add filesystem ...
+```
+
+Failed servers are logged with their error messages. Check `RUST_LOG=debug` to see detailed retry logs:
+
+```
+2025-05-06T10:30:15Z DEBUG mcp.startup: initializing server id=filesystem attempt=1
+2025-05-06T10:30:16Z WARN mcp.startup: server filesystem failed: timeout after 30s; will retry
+2025-05-06T10:30:17Z DEBUG mcp.startup: initializing server id=filesystem attempt=2 retry_interval=1s
+```
+
+**Skipping slow servers:**
+
+If a particular server is slow to start but necessary for your workflow, increase its personal timeout:
+
+```toml
+[[mcp.servers]]
+id = "slow-analyzer"
+command = "python3"
+args = ["-m", "my_mcp_server"]
+startup_timeout = 60   # give this server 60 seconds instead of 30
+```
+
+> [!TIP]
+> Exponential backoff prevents the agent startup from hanging indefinitely on flaky servers. If a server consistently fails, consider whether it's essential. If not, remove it from the config to speed up startup.
+
 ## Native Tool Integration (Claude / OpenAI)
 
 MCP tools are exposed as native `ToolDefinition`s alongside built-in tools. All providers use the same structured tool calling path.

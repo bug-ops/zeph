@@ -155,6 +155,39 @@ After each tool execution, `maybe_summarize_tool_pair()` checks whether the numb
 
 Summarization runs synchronously between tool iterations. If the LLM call fails, the error is logged and the pair is left unsummarized.
 
+## TypedPage and ClawVM Context Compaction
+
+During context compaction, Zeph produces pages of different types — tool outputs, conversation turns, memory excerpts, system context — each with distinct fidelity requirements. ClawVM (Compact Low-Alignment View Machine) classifies every compacted page into a `PageType` enum and enforces per-type `PageInvariant` traits at compaction boundaries. This ensures that critical information structures are preserved during summarization.
+
+**Page types and their invariants:**
+
+| Type | Content | Invariant |
+|------|---------|-----------|
+| `ToolOutput` | Single tool result (bash output, file read, etc.) | No orphaned ToolUse/ToolResult pairs — tool requests and responses remain linked |
+| `ConversationTurn` | User or assistant message | Multipart structure intact — text, tool calls, and reasoning blocks stay together |
+| `MemoryExcerpt` | Recalled or injected semantic memory | Citation completeness — references to facts or sources remain valid |
+| `SystemContext` | Project context (ZEPH.md) + instructions | No truncation of logical sections — guidelines remain self-contained |
+
+**How it works:**
+
+1. **Classification** — as the LLM produces a summary, each output message is tokenized and assigned a `PageType` based on its source
+2. **Validation** — before the page enters the SQLite store, `PageInvariant::validate()` is called to check fidelity constraints
+3. **Audit logging** — when invariants succeed, an audit record is appended to a bounded async sink, allowing external systems to verify enforcement
+4. **Graceful degradation** — if validation fails, the page is either rejected (strict mode) or admitted with a warning flag (permissive mode), depending on `compaction.invariant_mode`
+
+**Configuration:**
+
+```toml
+[memory.compaction]
+invariant_mode = "permissive"    # "strict" | "permissive" (default: "permissive")
+audit_enabled = true             # Log invariant checks to SQLite (default: false)
+```
+
+- `strict` — reject pages that fail invariant checks. Compaction may not produce a summary if too many pages are rejected. Use for safety-critical deployments.
+- `permissive` — admit pages with failed invariants but flag them with a warning. Ensures compaction always completes. Use for long sessions where occasional information loss is acceptable.
+
+When `audit_enabled = true`, each compaction pass writes invariant check results to the `compaction_audit` table, allowing you to detect which page types are degrading. Query this table to identify patterns where critical information is being lost during compaction.
+
 ### Summary Provider Configuration
 
 By default, tool-pair summarization uses the primary LLM provider. You can dedicate a faster or cheaper model to this task using either the structured `[llm.summary_provider]` section or the `summary_model` string shorthand.

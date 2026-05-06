@@ -110,10 +110,12 @@ Pending → Queued → Running → Completed
 
 ```toml
 [orchestration]
-planner_provider = "quality"   # references [[llm.providers]] name; empty = primary provider fallback
+planner_provider       = "quality"   # references [[llm.providers]] name; empty = primary provider fallback
+orchestrator_provider  = "quality"   # provider for the orchestrator's own LLM calls (aggregation, routing decisions)
 ```
 
-- `planner_provider: String` — provider name from `[[llm.providers]]`. Empty string means "use the agent's primary provider".
+- `planner_provider: String` — provider name for goal decomposition. Empty string means "use the agent's primary provider".
+- `orchestrator_provider: String` — provider name for `LlmAggregator` and `AgentRouter` LLM calls. Empty string means "use the agent's primary provider". If unset, defaults to `planner_provider`.
 - `planner_model` has been removed (dead field, cleaned up pre-v1.0.0). Config migration `migrate_planner_model_to_provider()` rewrites any existing `planner_model` key with a warning to use `planner_provider` instead.
 
 ### Provider selection rule
@@ -121,8 +123,8 @@ planner_provider = "quality"   # references [[llm.providers]] name; empty = prim
 Planning is a complex/expert task (goal decomposition requires reasoning about parallelism and dependencies) — route to a quality provider, not a fast/cheap one.
 
 ```
-planner_provider = "quality"  # correct: complex reasoning task
-planner_provider = "fast"     # acceptable only for simple, known-structure goals
+planner_provider      = "quality"  # correct: complex reasoning task
+orchestrator_provider = "quality"  # aggregation and routing decisions benefit from quality reasoning
 ```
 
 ### Key Invariants
@@ -133,6 +135,52 @@ planner_provider = "fast"     # acceptable only for simple, known-structure goal
 - `DagScheduler` is tick-based (not event-driven) — tick interval is configurable
 - Sub-agent results are merged by `LlmAggregator`, not concatenated — aggregation is an LLM call
 - `planner_provider` must resolve via the provider registry at runtime — never hardcode a model in `LlmPlanner`
+- `orchestrator_provider` must resolve via the provider registry at runtime; fallback to `planner_provider`, then primary
+
+---
+
+## AdmissionGate
+
+`AdmissionGate` (#3617) is a pre-planning filter that prevents low-quality, malformed, or
+policy-violating goals from reaching `LlmPlanner`. It runs synchronously before any LLM
+planning call.
+
+### Purpose
+
+Without an admission gate, `LlmPlanner` accepts any string as a goal and makes an
+expensive LLM call to decompose it. Common failure modes:
+
+1. Empty or trivially short goals produce degenerate plans
+2. Goals that include PII or injection attempts bypass VIGIL because the planner input
+   is not a tool call
+3. Extremely long goals (>8 KB) can cause planning context overflow
+
+### Checks Performed (in order)
+
+| Check | Threshold | Error |
+|-------|-----------|-------|
+| Goal length (min) | < 10 characters → reject | `OrchestrationError::GoalTooShort` |
+| Goal length (max) | > `max_goal_length` bytes → reject | `OrchestrationError::GoalTooLong` |
+| PII detection | VIGIL regex scan on goal text → warn + redact | Logged; planning proceeds with redacted goal |
+| Injection detection | `SecurityPatterns` scan → reject | `OrchestrationError::GoalInjectionDetected` |
+
+### Config
+
+```toml
+[orchestration.admission]
+enabled         = true    # default: enabled
+max_goal_length = 8192    # bytes; 0 = no limit
+pii_warn        = true    # log a warning when PII is detected in the goal
+inject_reject   = true    # reject goals that trigger injection patterns
+```
+
+### Key Invariants
+
+- `AdmissionGate::check()` runs BEFORE any LLM call — no planning cost is incurred for rejected goals
+- PII detection warns and redacts; it does not reject (goal may be valid but contain PII)
+- Injection detection rejects immediately; no planning cost is incurred
+- `enabled = false` bypasses all checks; the raw goal is forwarded to `LlmPlanner` unchanged
+- NEVER surface the rejection reason as an LLM response — surface it as a user-facing error message through the channel
 
 ---
 

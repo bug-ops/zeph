@@ -457,14 +457,58 @@ AND the head remains the head (valid_to untouched)
 
 ---
 
-## 12. Open Questions
+## 12. Implementation Notes (Post-Landing)
+
+### insert_or_supersede Unique Index Constraint (#3639)
+
+The write path for `insert_or_supersede` previously could hit a UNIQUE constraint
+violation on `uq_graph_edges_active_head` when two concurrent extraction tasks raced
+to write the same `(source_entity_id, target_entity_id, canonical_relation, edge_type)`
+tuple without the first write having completed its `valid_to` closure.
+
+**Resolution**: The supersede transaction now uses `INSERT OR REPLACE` on the
+`edge_reassertions` table for byte-identical writes (FR-015), and the main edge
+insert uses an explicit per-entity `SAVEPOINT` guard so a constraint violation from a
+concurrent writer triggers a retry-after-reload rather than propagating upward.
+The partial unique index `uq_graph_edges_active_head` remains the enforcement
+mechanism; the write path is now MVCC-safe under SQLite WAL mode.
+
+**Key invariant added**: `insert_or_supersede` MUST be retried (with exponential
+backoff, max 3 attempts) on `SQLITE_CONSTRAINT_UNIQUE` before surfacing as
+`GraphError`; the constraint violation indicates a concurrent write that already
+advanced the head.
+
+### extract_provider Bypass for QualityGate (#3615)
+
+The `quality_gate_provider` in `[memory.graph]` controls post-write scoring.
+LLM-assisted entity extraction (ontology normalization, conflict resolution) uses
+a separate `extract_provider` so the quality gate can be bypassed for the extraction
+path itself. This prevents the quality gate from gating its own scorer — the gate
+only applies to user-generated writes, not to extraction-originated edges.
+
+```toml
+[memory.graph]
+extract_provider = "fast"         # provider for entity extraction LLM calls
+quality_gate_provider = "fast"    # provider for quality gate scoring (empty = disable)
+```
+
+When `quality_gate_provider` is empty, the gate is disabled. When `extract_provider`
+is empty, it falls back to the primary provider. The two fields are independent.
+
+**Key invariant**: extraction-originated writes MUST bypass the quality gate, not
+flow through it. The quality gate applies only to writes that originate from user
+memory commands or external memory injection.
+
+---
+
+## 13. Open Questions
 
 > [!question]
 > - **Cardinality model for multi-valued predicates**: FR-008 gates conflict resolution on `cardinality = 1` predicates, but the ontology table (§5.3) currently has no explicit `cardinality` column — it is implied for known predicates and defaults to `n` (multi-valued) for unknown ones. FR-014 adds the `cardinality` field to ontology entries, but FR-008 must explicitly document how SYNAPSE distinguishes single-value predicates (e.g., `works_at`) from intrinsically multi-valued ones (e.g., `owns`) before invariant tests for conflict resolution are written. The distinction must be mechanical, not inferred from predicate name.
 
 ---
 
-## 13. See Also
+## 14. See Also
 
 - [[constitution]] — project principles
 - [[004-memory/spec]] — memory pipeline
@@ -476,21 +520,22 @@ AND the head remains the head (valid_to untouched)
 
 ---
 
-## 14. Research Backlog
+## 15. Research Backlog
 
 Research findings pending implementation review. Each entry links to the originating tracking issue and proposes a concrete integration point.
 
 ### 14.1 MemCoT — Test-Time Memory Scaling (arXiv:2604.08216)
 
 **Tracking issue**: #3564
-**Status**: Researched / pending implementation (P3)
+**Status**: Implemented (#3592) — see [[004-13-memory-memcot]] for the full sub-spec.
 
-MemCoT introduces a training-free multi-view LTM perception layer (Zoom-In for evidence localization, Zoom-Out for causal context expansion) and a task-conditioned dual short-term memory (semantic state + episodic trajectory). Benchmarked on LoCoMo: GPT-4o-mini F1 = 58.03 vs ~30 baseline.
+MemCoT introduces a training-free multi-view LTM perception layer (Zoom-In for evidence localization, Zoom-Out for causal context expansion) and a task-conditioned dual short-term memory (`SemanticStateAccumulator` and episodic trajectory). Benchmarked on LoCoMo: GPT-4o-mini F1 = 58.03 vs ~30 baseline.
 
-**Proposed Zeph integration**:
-- `SemanticStateAccumulator` in `TurnContext` (new follow-up issue filed)
-- Zoom-In retrieval pass in `ReasoningMemory::recall` before spreading activation (new follow-up issue filed)
-- Config: `memory.memcot.enabled` (default: false)
+**Implemented Zeph integration**:
+- `SemanticStateAccumulator` attached to `TurnContext` in `zeph-memory`; accumulates per-turn semantic state across the session
+- Zoom-In recall view passes a narrowed query over the APEX-MEM resolved edge set to localize evidence
+- Zoom-Out recall view expands the query to causal/contextual neighbors
+- Config: `[memory.memcot] enabled` (default: false); provider references via `memcot_provider`
 
 **Relevance to APEX-MEM**: APEX-MEM canonicalizes facts at the edge layer. MemCoT's Zoom-In retrieval and semantic-state STM operate one layer above — on top of the resolved edge set returned by SYNAPSE. The two are complementary: APEX-MEM decides which edge wins; MemCoT decides how the winning edges are presented to the reasoning model.
 

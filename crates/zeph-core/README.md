@@ -343,9 +343,34 @@ In-session commands for autonomous self-experimentation (requires `experiments` 
 > [!TIP]
 > The same CRUD operations are available interactively in the TUI agents panel — press `a` in the TUI to open the panel, then `c` (create), `e` (edit), `d` (delete), Enter (detail view).
 
+## Speculative tool dispatch
+
+`SpeculationEngine` pre-runs read-only tool calls while the LLM generates its response. Two activation paths are supported:
+
+- **SSE decoding path** — `claude_sse_to_tool_stream` emits `ToolBlockStart` at `content_block_start`; when confidence exceeds `confidence_threshold`, `try_dispatch(Trusted)` fires with a 2 s timeout.
+- **PASTE pattern path** — `run_paste_skill_activation` calls `PatternStore::predict` per active skill and dispatches candidates above threshold with per-skill trust; `observe_paste_transition` records transitions for future pattern learning.
+
+`requires_confirmation` defaults to `true` for all executors, making speculative dispatch safe-by-default. Only executors that explicitly opt out can be speculatively dispatched.
+
+Configure via `[tools.speculative]` in `config.toml`:
+
+```toml
+[tools.speculative]
+mode               = "decoding"   # "off" | "decoding" | "pattern"
+confidence_threshold = 0.8
+timeout_ms         = 2000
+```
+
+> [!NOTE]
+> The speculation engine only runs when the agent is not in `--bare` mode. Committed speculative results that carry `ToolError::ConfirmationRequired` trigger a `tracing::error!` in debug builds, making the invariant machine-checkable at zero release cost.
+
+## Goal lifecycle and TACO output compression
+
+`GoalLifecycle` tracks active goals across turns. Tool outputs for completed or stale goals are compressed by the TACO (Tool-Aware Compaction Optimization) pipeline, which archives bodies to SQLite before the LLM compaction call and injects UUID back-references into the resulting summary.
+
 ## Reactive hooks
 
-`[hooks]` in `config.toml` defines shell commands that fire on working-directory or file-change events.
+`[hooks]` in `config.toml` defines shell commands that fire on working-directory or file-change events. Hooks are now traced with `tracing` instrumentation and are propagated correctly through `reload_config` — hooks registered after a live config reload fire identically to those present at startup.
 
 ```toml
 [[hooks.cwd_changed]]

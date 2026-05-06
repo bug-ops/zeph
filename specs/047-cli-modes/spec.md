@@ -272,7 +272,68 @@ AND the summary is ≤ 512 tokens as measured by the embedding provider tokenize
 
 ---
 
-## 10. Open Questions
+## 10. `zeph project purge` Command (#3598)
+
+`zeph project purge` performs a full reset of all persisted project state for the
+current working directory. It is a destructive, operator-only command with a mandatory
+confirmation prompt.
+
+### What Is Purged
+
+| State | Location | Action |
+|-------|----------|--------|
+| Conversation history | SQLite `messages` table | Deleted for the current project path |
+| Memory embeddings | Qdrant collection for the project | Vectors deleted |
+| Graph entities and edges | SQLite `entities`, `edges` tables | Deleted for the project |
+| Tool audit log | `audit.jsonl` | Deleted |
+| Summaries and compactions | SQLite `summaries` table | Deleted for the project |
+| Plan history | SQLite `plans` table | Deleted for the project |
+| Provider preference | SQLite `channel_preferences` | Deleted for the project |
+| Code index | SQLite code-index tables | Deleted for the project |
+| Debug dumps | `.local/debug/<session>*` | Deleted if `--include-debug` is passed |
+
+Skills, vault secrets, and config files are **never** purged by this command.
+
+### Invocation
+
+```
+zeph project purge [--yes] [--include-debug] [--dry-run]
+```
+
+| Flag | Effect |
+|------|--------|
+| `--yes` / `-y` | Skip the confirmation prompt (matches global `-y` semantics) |
+| `--include-debug` | Also delete debug dumps from `.local/debug/` |
+| `--dry-run` | Print what would be purged without deleting anything |
+
+### Confirmation Prompt (default)
+
+```
+WARNING: This will permanently delete all conversation history, memory, and tool
+audit logs for project at /path/to/project. This cannot be undone.
+
+Type the project name to confirm: <project-name>
+```
+
+The user must type the project directory name (last path component) exactly to
+proceed. This prevents accidental purge from a mis-typed command.
+
+### Key Invariants
+
+- Purge is scoped to the **current project** (resolved from `cwd`). It does NOT purge
+  other projects sharing the same SQLite database.
+- Skills, vault secrets, and `config.toml` are NEVER touched.
+- Qdrant vector deletion is best-effort — if Qdrant is unavailable, the SQLite
+  embedding references are still deleted and the command succeeds.
+- `--dry-run` must not perform any write operations — read-only inspection only.
+- NEVER auto-approve the confirmation prompt in scripts without `--yes` / `-y`.
+- The audit log entry for the purge operation itself is written BEFORE the audit log
+  is deleted (so forensics can confirm when the purge occurred).
+- Exit code 0 on success; exit code 1 on user cancellation; exit code 2 on error.
+
+---
+
+## 11. Open Questions
 
 > [!question]
 > - **`/loop` count limit**: should `/loop` support a `--count N` variant that runs N
@@ -284,7 +345,7 @@ AND the summary is ≤ 512 tokens as measured by the embedding provider tokenize
 
 ---
 
-## 11. See Also
+## 12. See Also
 
 - [[constitution]] — project principles
 - [[002-agent-loop/spec]] — turn lifecycle

@@ -2,6 +2,12 @@
 
 [Gonka](https://gonka.ai) is a decentralized AI inference network built on a Cosmos-SDK chain that routes LLM requests to a peer-to-peer pool of GPU operators. Zeph supports two access paths.
 
+Gonka is particularly useful for:
+
+- **Privacy-preserving inference** — Requests are signed with your key; no account credentials stored on Gonka servers
+- **Cost control** — Direct token consumption with no markup or subscription fees
+- **Decentralization** — Work is distributed across independent GPU operators
+
 ## Path A: GonkaGate (Recommended for quick start)
 
 GonkaGate is a hosted gateway to the Gonka network with USD-denominated billing — no token staking required.
@@ -72,6 +78,93 @@ address = "gonka1..."
 ```
 
 **Pricing:** GNK token consumption per inference.
+
+## How GonkaProvider Works
+
+The native Gonka integration (Path B) uses three components working together:
+
+### RequestSigner
+
+`RequestSigner` handles request authentication using your secp256k1 private key. Every request is signed with:
+
+1. **Request serialization** — The message payload (chat parameters, tools, etc.) is serialized to JSON
+2. **Signing** — The payload is signed using secp256k1 ECDSA with your private key
+3. **Envelope** — The signature and public key are included in the request headers
+
+### EndpointPool
+
+`EndpointPool` manages multiple Gonka nodes for redundancy and load distribution:
+
+- Maintains a pool of healthy node endpoints from `[[llm.providers.gonka_nodes]]` entries
+- Performs health checks to detect unavailable nodes
+- Routes requests round-robin across available nodes
+- Falls back to alternative nodes on failure
+
+### Capabilities
+
+GonkaProvider supports all standard Zeph LLM capabilities:
+
+| Capability | Supported | Notes |
+|------------|-----------|-------|
+| Chat (single-turn) | Yes | Standard text-to-text inference |
+| Chat streaming (SSE) | Yes | Streaming tokens via Server-Sent Events |
+| Tool use (function calling) | Yes | Full tool definitions and results supported |
+| Tool streaming | Yes | Incremental tool call generation during streaming |
+| Embeddings | Yes | Vector generation for semantic memory and skill matching |
+| Vision (image input) | Via compatible models | Use base64-encoded images |
+
+## Configuration Details
+
+### Full Native Gonka Config Example
+
+```toml
+[llm]
+
+[[llm.providers]]
+type = "gonka"
+name = "gonka-mainnet"
+model = "gpt-4o"
+gonka_chain_prefix = "gonka"
+max_tokens = 4096
+
+# List of available inference nodes
+[[llm.providers.gonka_nodes]]
+url = "https://node1.gonka.ai"
+address = "gonka1acnx3cpm8cz5nqu24aql4cqx5fxqm9w4vf2hqr"
+
+[[llm.providers.gonka_nodes]]
+url = "https://node2.gonka.ai"
+address = "gonka1bcx3cpm8cz5nqu24aql4cqx5fxqm9w4vf2xyz"
+
+[[llm.providers.gonka_nodes]]
+url = "https://node3.gonka.ai"
+address = "gonka1ccx3cpm8cz5nqu24aql4cqx5fxqm9w4vf2abc"
+```
+
+### Combining Gonka with Local Embeddings
+
+If you want Gonka for chat but prefer local embeddings for cost reasons:
+
+```toml
+[[llm.providers]]
+type = "gonka"
+name = "gonka-chat"
+model = "gpt-4o"
+gonka_chain_prefix = "gonka"
+default = true          # use for chat
+
+[[llm.providers]]
+type = "ollama"
+name = "local-embed"
+embedding_model = "nomic-embed-text"
+embed = true            # use for embeddings
+
+[memory.semantic]
+embed_provider = "local-embed"
+
+[skills]
+embedding_provider = "local-embed"
+```
 
 ## Troubleshooting
 
