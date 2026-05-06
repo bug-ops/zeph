@@ -21,6 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(core): `commit_speculative_tier` now has a `#[cfg(debug_assertions)]` guard that emits
+  `tracing::error!` when a committed speculative result carries `ToolError::ConfirmationRequired`,
+  making the invariant machine-checkable in debug builds at zero release cost. (#3653)
+
 - fix(core): `ErasedToolExecutor::requires_confirmation_erased` default inverted from `false` to
   `true`, making speculative dispatch safe-by-default. Added `ToolExecutor::requires_confirmation`
   (default `false`) with a blanket impl that delegates to it; `TrustGateExecutor` overrides this to
@@ -40,6 +44,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   after INSERT), both within the same transaction. (#3635)
 
 ### Added
+
+- test(core): four focused unit tests for `Agent::commit_speculative_tier` covering all
+  result branches: engine absent (fast path), cache miss, `Ok` result with `tool_started_ats`
+  stamping and `ToolStartEvent { speculative: true }` emission, and `Err` result remaining
+  in the commit map. `MockChannel` extended with `tool_starts` field to capture tool-start
+  events in tests. (#3652)
 
 - feat(core): `SpeculationEngine` is now wired into the agent loop via `SpeculativeConfig`. When
   `[tools.speculative] mode` is set to `Decoding` or `Pattern`, the engine is instantiated at
