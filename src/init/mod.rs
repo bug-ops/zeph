@@ -1705,7 +1705,6 @@ fn print_next_steps(state: &WizardState, path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use insta;
 
     fn single_provider_state() -> WizardState {
         WizardState {
