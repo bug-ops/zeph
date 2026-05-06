@@ -3832,6 +3832,101 @@ async fn check_supersede_depth_returns_zero_for_root_edge() {
     assert_eq!(depth, 0, "root edge with no supersedes pointer has depth 0");
 }
 
+/// Regression test for #3635: superseding an edge with the same (src, tgt, `canonical_relation`,
+/// `edge_type`) must not violate `uq_graph_edges_active_head`. Previously `insert_new_edge` ran before
+/// `invalidate_prior_head`, which briefly had two active rows for the same tuple and triggered
+/// `SQLITE_CONSTRAINT_UNIQUE`.
+#[tokio::test]
+async fn insert_or_supersede_same_tuple_no_unique_index_violation() {
+    let gs = setup().await;
+    let src = gs
+        .upsert_entity("Eve", "Eve", EntityType::Person, None)
+        .await
+        .unwrap();
+    let tgt = gs
+        .upsert_entity("SameCo", "SameCo", EntityType::Organization, None)
+        .await
+        .unwrap();
+
+    let first_id = gs
+        .insert_or_supersede(
+            src,
+            tgt,
+            "works_at",
+            "works_at",
+            "Eve works at SameCo v1",
+            0.7,
+            None,
+            EdgeType::Semantic,
+            true,
+        )
+        .await
+        .unwrap();
+
+    // Second insert has same (src, tgt, canonical_relation, edge_type) but different fact —
+    // this is NOT a reassertion and must supersede the prior head without hitting the unique index.
+    let second_id = gs
+        .insert_or_supersede(
+            src,
+            tgt,
+            "works_at",
+            "works_at",
+            "Eve works at SameCo v2",
+            0.9,
+            None,
+            EdgeType::Semantic,
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(
+        first_id, second_id,
+        "supersession must create a new edge row"
+    );
+
+    // Prior head must be deactivated.
+    let prior_valid_to: Option<String> =
+        sqlx::query_scalar("SELECT valid_to FROM graph_edges WHERE id = ?")
+            .bind(first_id)
+            .fetch_one(&gs.pool)
+            .await
+            .unwrap();
+    assert!(
+        prior_valid_to.is_some(),
+        "prior head must have valid_to set after supersession"
+    );
+
+    // superseded_by must point to the new edge.
+    let prior_superseded_by: Option<i64> =
+        sqlx::query_scalar("SELECT superseded_by FROM graph_edges WHERE id = ?")
+            .bind(first_id)
+            .fetch_one(&gs.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        prior_superseded_by,
+        Some(second_id),
+        "prior head must have superseded_by = new edge id"
+    );
+
+    // Exactly one active head must remain.
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM graph_edges
+         WHERE source_entity_id = ?
+           AND target_entity_id = ?
+           AND canonical_relation = 'works_at'
+           AND valid_to IS NULL
+           AND expired_at IS NULL",
+    )
+    .bind(src)
+    .bind(tgt)
+    .fetch_one(&gs.pool)
+    .await
+    .unwrap();
+    assert_eq!(active_count, 1, "exactly one active head must remain");
+}
+
 // ── HL-F1: Edge.weight field ──────────────────────────────────────────────────
 
 #[tokio::test]

@@ -2428,6 +2428,13 @@ impl GraphStore {
             check_supersede_depth_in_tx(&mut tx, head_id).await?;
         }
 
+        // Expire the prior head BEFORE inserting the new row so that the partial unique index
+        // uq_graph_edges_active_head is not violated. SQLite enforces unique indexes at statement
+        // level, not at transaction commit, so the deactivation must precede the INSERT.
+        if let Some(head_id) = prior_head {
+            expire_prior_head(&mut tx, head_id).await?;
+        }
+
         let supersedes_val: Option<i64> = if set_supersedes { prior_head } else { None };
         let new_id = insert_new_edge(
             &mut tx,
@@ -2444,7 +2451,7 @@ impl GraphStore {
         .await?;
 
         if let Some(head_id) = prior_head {
-            invalidate_prior_head(&mut tx, head_id, new_id).await?;
+            set_superseded_by(&mut tx, head_id, new_id).await?;
             if let Some(m) = metrics {
                 m.supersedes_total
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2832,18 +2839,27 @@ async fn insert_new_edge(
     .await?)
 }
 
-/// Mark the prior head edge as superseded by `new_id`.
-async fn invalidate_prior_head(
-    tx: &mut Tx<'_>,
-    head_id: i64,
-    new_id: i64,
-) -> Result<(), MemoryError> {
+/// Deactivate the prior head by setting `valid_to` and `expired_at`, leaving `superseded_by`
+/// unset. Must be called **before** inserting the new row to avoid violating
+/// `uq_graph_edges_active_head` — the unique index is enforced at statement level, not at commit.
+async fn expire_prior_head(tx: &mut Tx<'_>, head_id: i64) -> Result<(), MemoryError> {
     zeph_db::query(sql!(
         "UPDATE graph_edges
          SET valid_to = CURRENT_TIMESTAMP,
-             expired_at = CURRENT_TIMESTAMP,
-             superseded_by = ?
+             expired_at = CURRENT_TIMESTAMP
          WHERE id = ?"
+    ))
+    .bind(head_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Back-fill `superseded_by` on the already-expired prior head after the new row has been
+/// inserted and its ID is known.
+async fn set_superseded_by(tx: &mut Tx<'_>, head_id: i64, new_id: i64) -> Result<(), MemoryError> {
+    zeph_db::query(sql!(
+        "UPDATE graph_edges SET superseded_by = ? WHERE id = ?"
     ))
     .bind(new_id)
     .bind(head_id)
