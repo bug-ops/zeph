@@ -407,6 +407,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                             .belief_revision
                             .similarity_threshold,
                         conversation_id: None,
+                        apex_mem_enabled: graph_cfg.apex_mem.enabled,
                     };
                     let pool = store.pool().clone();
                     match extract_and_store(

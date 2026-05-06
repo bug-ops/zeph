@@ -2378,6 +2378,7 @@ impl GraphStore {
     #[allow(clippy::too_many_arguments)]
     // TODO(B3): refactor into a builder or config struct to reduce argument count
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[tracing::instrument(name = "memory.graph.insert_or_supersede", skip_all)]
     pub async fn insert_or_supersede_with_metrics(
         &self,
         source_entity_id: i64,

@@ -1084,6 +1084,29 @@ max_files = 7
 # # max_activated_nodes = 50     # circuit-breaker on total activated nodes per query
 # # recall_timeout_ms = 1000     # hard timeout for the full spreading activation pass
 
+# APEX-MEM append-only write path for graph edges.
+# When enabled, edge insertion uses supersession chains instead of destructive updates.
+# Preserves full history of belief revisions. Requires [memory.graph] enabled = true.
+# [memory.graph.apex_mem]
+# enabled = false
+
+# Write quality gate — scores each memory write before persistence.
+# Rejects low-quality writes (redundant, incomplete references, contradictions).
+# Evaluated after A-MAC admission control, before SQLite/Qdrant persistence.
+# [memory.quality_gate]
+# enabled = false
+# threshold = 0.55
+# recent_window = 32
+# contradiction_grace_seconds = 300
+# information_value_weight = 0.4
+# reference_completeness_weight = 0.3
+# contradiction_weight = 0.3
+# rejection_rate_alarm_ratio = 0.35
+# quality_gate_provider = ""
+# llm_timeout_ms = 500
+# llm_weight = 0.5
+# reference_check_lang_en = true
+
 # ACON failure-driven compression guidelines
 # Learns compression rules from detected context-loss events after hard compaction.
 # Requires the `compression-guidelines` feature flag to be enabled at compile time.

@@ -297,6 +297,7 @@ impl AppBuilder {
     /// Returns [`BootstrapError`] if `SQLite` cannot be initialized or if `vector_backend = "Qdrant"`
     /// but `qdrant_ops` is `None` (invariant violation — should not happen if `AppBuilder::new`
     /// succeeded).
+    #[allow(clippy::too_many_lines)]
     pub async fn build_memory(
         &self,
         provider: &AnyProvider,
@@ -404,6 +405,12 @@ impl AppBuilder {
 
         if self.config.memory.admission.enabled {
             memory = memory.with_admission_control(self.build_admission_control());
+        }
+
+        if self.config.memory.quality_gate.enabled {
+            let gate = Arc::new(self.build_quality_gate(&memory));
+            memory = memory.with_quality_gate(gate);
+            tracing::info!("write quality gate enabled");
         }
 
         if let Some(ep) = embed_provider {
@@ -737,6 +744,50 @@ impl AppBuilder {
             "A-MAC admission control enabled"
         );
         control
+    }
+
+    fn build_quality_gate(
+        &self,
+        memory: &SemanticMemory,
+    ) -> zeph_memory::quality_gate::QualityGate {
+        let qg_cfg = &self.config.memory.quality_gate;
+        let runtime_cfg = zeph_memory::quality_gate::QualityGateConfig {
+            enabled: qg_cfg.enabled,
+            threshold: qg_cfg.threshold,
+            recent_window: qg_cfg.recent_window,
+            contradiction_grace_seconds: qg_cfg.contradiction_grace_seconds,
+            information_value_weight: qg_cfg.information_value_weight,
+            reference_completeness_weight: qg_cfg.reference_completeness_weight,
+            contradiction_weight: qg_cfg.contradiction_weight,
+            rejection_rate_alarm_ratio: qg_cfg.rejection_rate_alarm_ratio,
+            llm_timeout_ms: qg_cfg.llm_timeout_ms,
+            llm_weight: qg_cfg.llm_weight,
+            reference_check_lang_en: qg_cfg.reference_check_lang_en,
+        };
+        let mut gate = zeph_memory::quality_gate::QualityGate::new(runtime_cfg);
+
+        if let Some(ref gs) = memory.graph_store {
+            gate = gate.with_graph_store(gs.clone());
+        }
+
+        if !qg_cfg.quality_gate_provider.is_empty() {
+            match create_named_provider(qg_cfg.quality_gate_provider.as_str(), &self.config) {
+                Ok(p) => {
+                    gate = gate.with_llm_provider(p);
+                    tracing::info!(
+                        provider = %qg_cfg.quality_gate_provider,
+                        "write quality gate: LLM scoring enabled"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %qg_cfg.quality_gate_provider,
+                        "write quality gate: LLM provider resolution failed, rule-based only: {e:#}"
+                    );
+                }
+            }
+        }
+        gate
     }
 
     pub async fn build_skill_matcher(

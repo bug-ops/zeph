@@ -81,6 +81,12 @@ pub struct EntityResolver<'a> {
 }
 
 impl<'a> EntityResolver<'a> {
+    /// Returns a reference to the underlying graph store.
+    #[must_use]
+    pub fn graph_store(&self) -> &GraphStore {
+        self.store
+    }
+
     #[must_use]
     pub fn new(store: &'a GraphStore) -> Self {
         Self {

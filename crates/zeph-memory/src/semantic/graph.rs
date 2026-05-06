@@ -9,6 +9,8 @@ use std::sync::atomic::Ordering;
 use zeph_db::DbPool;
 
 pub use zeph_common::config::memory::NoteLinkingConfig;
+use zeph_common::sanitize::strip_control_chars;
+use zeph_common::text::truncate_to_bytes_ref;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 
@@ -53,6 +55,8 @@ pub struct GraphExtractionConfig {
     /// GAAMA episode linking: `conversation_id` to link extracted entities to their episode.
     /// `None` disables episode linking for this extraction pass.
     pub conversation_id: Option<i64>,
+    /// APEX-MEM: use `insert_or_supersede` instead of `resolve_edge_typed`. Default: `false`.
+    pub apex_mem_enabled: bool,
 }
 
 impl Default for GraphExtractionConfig {
@@ -73,6 +77,7 @@ impl Default for GraphExtractionConfig {
             belief_revision_enabled: false,
             belief_revision_similarity_threshold: 0.85,
             conversation_id: None,
+            apex_mem_enabled: false,
         }
     }
 }
@@ -101,6 +106,11 @@ pub struct LinkingStats {
 
 /// Qdrant collection name for entity embeddings (mirrors the constant in `resolver.rs`).
 const ENTITY_COLLECTION: &str = "zeph_graph_entities";
+
+/// Mirrors the constant from `graph/resolver/mod.rs` — used for sanitizing APEX-MEM inputs.
+const MAX_RELATION_BYTES: usize = 256;
+/// Mirrors the constant from `graph/resolver/mod.rs` — used for sanitizing APEX-MEM inputs.
+const MAX_FACT_BYTES: usize = 2048;
 
 /// Work item for a single entity during a note-linking pass.
 struct EntityWorkItem {
@@ -488,29 +498,62 @@ async fn insert_edges(
                 );
                 crate::graph::EdgeType::Semantic
             });
-        let belief_cfg =
-            config
-                .belief_revision_enabled
-                .then_some(crate::graph::BeliefRevisionConfig {
-                    similarity_threshold: config.belief_revision_similarity_threshold,
-                });
-        match resolver
-            .resolve_edge_typed(
-                src_id,
-                tgt_id,
-                &edge.relation,
-                &edge.fact,
-                0.8,
-                None,
-                edge_type,
-                belief_cfg.as_ref(),
-            )
-            .await
-        {
-            Ok(Some(_)) => edges_inserted += 1,
-            Ok(None) => {} // deduplicated
-            Err(e) => {
-                tracing::debug!("graph: skipping edge: {e:#}");
+        if config.apex_mem_enabled {
+            // APEX-MEM: append-only write path with supersession chains.
+            let relation_trimmed = edge.relation.trim();
+            let relation_display_clean = strip_control_chars(relation_trimmed);
+            let relation_display =
+                truncate_to_bytes_ref(&relation_display_clean, MAX_RELATION_BYTES).to_owned();
+            let canonical_clean = strip_control_chars(&relation_trimmed.to_lowercase());
+            let canonical_relation =
+                truncate_to_bytes_ref(&canonical_clean, MAX_RELATION_BYTES).to_owned();
+            let fact_clean = strip_control_chars(edge.fact.trim());
+            let normalized_fact = truncate_to_bytes_ref(&fact_clean, MAX_FACT_BYTES).to_owned();
+            match resolver
+                .graph_store()
+                .insert_or_supersede(
+                    src_id,
+                    tgt_id,
+                    &relation_display,
+                    &canonical_relation,
+                    &normalized_fact,
+                    0.8,
+                    None,
+                    edge_type,
+                    true,
+                )
+                .await
+            {
+                Ok(_) => edges_inserted += 1,
+                Err(e) => {
+                    tracing::debug!("graph: skipping edge (apex): {e:#}");
+                }
+            }
+        } else {
+            let belief_cfg =
+                config
+                    .belief_revision_enabled
+                    .then_some(crate::graph::BeliefRevisionConfig {
+                        similarity_threshold: config.belief_revision_similarity_threshold,
+                    });
+            match resolver
+                .resolve_edge_typed(
+                    src_id,
+                    tgt_id,
+                    &edge.relation,
+                    &edge.fact,
+                    0.8,
+                    None,
+                    edge_type,
+                    belief_cfg.as_ref(),
+                )
+                .await
+            {
+                Ok(Some(_)) => edges_inserted += 1,
+                Ok(None) => {} // deduplicated
+                Err(e) => {
+                    tracing::debug!("graph: skipping edge: {e:#}");
+                }
             }
         }
     }
@@ -997,6 +1040,74 @@ mod tests {
         assert_eq!(
             result.stats.edges_inserted, 0,
             "self-loop edge must be rejected (#2215)"
+        );
+    }
+
+    /// When `apex_mem_enabled = true`, edges must be inserted via `insert_or_supersede`
+    /// (the APEX-MEM append-only path) instead of the legacy `resolve_edge_typed` path.
+    /// Verifies that edges are still counted as inserted and that the supersession row
+    /// is created in the database.
+    #[tokio::test]
+    async fn apex_mem_path_inserts_edge_via_insert_or_supersede() {
+        let (gs, _emb) = setup().await;
+
+        let extraction_json = r#"{
+            "entities":[
+                {"name":"Alice","type":"person","summary":"a person"},
+                {"name":"Bob","type":"person","summary":"another person"}
+            ],
+            "edges":[
+                {"source":"Alice","target":"Bob","relation":"KNOWS","fact":"Alice knows Bob","edge_type":"semantic"}
+            ]
+        }"#;
+        let mock = zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+        let provider = AnyProvider::Mock(mock);
+
+        let config = GraphExtractionConfig {
+            max_entities: 10,
+            max_edges: 10,
+            extraction_timeout_secs: 10,
+            apex_mem_enabled: true,
+            ..Default::default()
+        };
+
+        let result = extract_and_store(
+            "Alice knows Bob.".to_owned(),
+            vec![],
+            provider,
+            gs.pool().clone(),
+            config,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.stats.entities_upserted, 2, "two entities expected");
+        assert_eq!(
+            result.stats.edges_inserted, 1,
+            "APEX-MEM path must insert the edge and count it (#3631)"
+        );
+
+        // Verify the edge row exists and its relation preserves display casing.
+        let alice_id = gs
+            .find_entity("alice", crate::graph::EntityType::Person)
+            .await
+            .unwrap()
+            .expect("entity 'alice' must exist")
+            .id;
+        let bob_id = gs
+            .find_entity("bob", crate::graph::EntityType::Person)
+            .await
+            .unwrap()
+            .expect("entity 'bob' must exist")
+            .id;
+        let edges = gs.edges_exact(alice_id, bob_id).await.unwrap();
+        assert_eq!(edges.len(), 1, "exactly one edge expected");
+        // canonical_relation is lowercased; relation field preserves original casing post-strip
+        assert_eq!(
+            edges[0].relation, "KNOWS",
+            "display relation must preserve original casing"
         );
     }
 }

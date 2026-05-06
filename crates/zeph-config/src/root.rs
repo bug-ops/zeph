@@ -272,6 +272,7 @@ impl Default for Config {
                 hebbian: crate::memory::HebbianConfig::default(),
                 memcot: crate::memory::MemCotConfig::default(),
                 retrieval_failures: crate::memory::RetrievalFailuresConfig::default(),
+                quality_gate: crate::memory::WriteQualityGateConfig::default(),
             },
             telegram: None,
             discord: None,

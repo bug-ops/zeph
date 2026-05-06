@@ -948,6 +948,12 @@ pub struct MemoryConfig {
     /// ```
     #[serde(default)]
     pub retrieval_failures: RetrievalFailuresConfig,
+    /// Write quality gate (#3629).
+    ///
+    /// When `quality_gate.enabled = true`, each `remember()` call is scored and low-quality
+    /// writes are rejected before persistence. Evaluated after A-MAC admission control.
+    #[serde(default)]
+    pub quality_gate: WriteQualityGateConfig,
 }
 
 fn default_retrieval_failures_low_confidence_threshold() -> f32 {
@@ -1810,10 +1816,136 @@ pub struct GraphConfig {
     /// activation runs concurrently with regular memory operations. Default: `3`.
     #[serde(default = "default_graph_pool_size")]
     pub pool_size: u32,
+    /// APEX-MEM append-only write path (#3631).
+    ///
+    /// When `apex_mem.enabled = true`, edge insertion uses `insert_or_supersede` with
+    /// supersession chains instead of the legacy destructive-update path.
+    #[serde(default)]
+    pub apex_mem: ApexMemConfig,
 }
 
 fn default_graph_pool_size() -> u32 {
     3
+}
+
+/// APEX-MEM append-only write path configuration (`[memory.graph.apex_mem]`).
+///
+/// When `enabled = true`, graph edge insertion uses `insert_or_supersede`
+/// instead of the legacy destructive-update `resolve_edge_typed`. This preserves
+/// the full supersession chain and enables conflict resolution.
+///
+/// Spec: `/specs/004-memory/004-7-memory-apex-magma.md`
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct ApexMemConfig {
+    /// Enable the APEX-MEM append-only write path. Default: `false`.
+    pub enabled: bool,
+}
+
+fn default_quality_gate_threshold() -> f32 {
+    0.55
+}
+
+fn default_quality_gate_recent_window() -> usize {
+    32
+}
+
+fn default_quality_gate_contradiction_grace_seconds() -> u64 {
+    300
+}
+
+fn default_quality_gate_information_value_weight() -> f32 {
+    0.4
+}
+
+fn default_quality_gate_reference_completeness_weight() -> f32 {
+    0.3
+}
+
+fn default_quality_gate_contradiction_weight() -> f32 {
+    0.3
+}
+
+fn default_quality_gate_rejection_rate_alarm_ratio() -> f32 {
+    0.35
+}
+
+fn default_quality_gate_llm_timeout_ms() -> u64 {
+    500
+}
+
+fn default_quality_gate_llm_weight() -> f32 {
+    0.5
+}
+
+fn default_quality_gate_reference_check_lang_en() -> bool {
+    true
+}
+
+/// Write quality gate configuration (`[memory.quality_gate]`).
+///
+/// When `enabled = true`, each `remember()` call is scored before persistence. Writes
+/// below `threshold` are rejected. Rule-based scoring is the default; LLM-assisted
+/// scoring is opt-in via `quality_gate_provider`.
+///
+/// Spec: `/specs/004-memory/004-9-memory-write-gate.md`
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WriteQualityGateConfig {
+    /// Enable the write quality gate. Default: `false`.
+    pub enabled: bool,
+    /// Combined score threshold below which writes are rejected. Default: `0.55`.
+    #[serde(default = "default_quality_gate_threshold")]
+    pub threshold: f32,
+    /// Number of recent writes compared for information-value scoring. Default: `32`.
+    #[serde(default = "default_quality_gate_recent_window")]
+    pub recent_window: usize,
+    /// Edges older than this (seconds) are stable for contradiction detection. Default: `300`.
+    #[serde(default = "default_quality_gate_contradiction_grace_seconds")]
+    pub contradiction_grace_seconds: u64,
+    /// Weight of `information_value` sub-score. Default: `0.4`.
+    #[serde(default = "default_quality_gate_information_value_weight")]
+    pub information_value_weight: f32,
+    /// Weight of `reference_completeness` sub-score. Default: `0.3`.
+    #[serde(default = "default_quality_gate_reference_completeness_weight")]
+    pub reference_completeness_weight: f32,
+    /// Weight of `contradiction` sub-score. Default: `0.3`.
+    #[serde(default = "default_quality_gate_contradiction_weight")]
+    pub contradiction_weight: f32,
+    /// Rolling rejection-rate alarm ratio. Default: `0.35`.
+    #[serde(default = "default_quality_gate_rejection_rate_alarm_ratio")]
+    pub rejection_rate_alarm_ratio: f32,
+    /// Named LLM provider for optional scoring path. Default: `""` (rule-based only).
+    #[serde(default)]
+    pub quality_gate_provider: ProviderName,
+    /// LLM timeout in milliseconds. Default: `500`.
+    #[serde(default = "default_quality_gate_llm_timeout_ms")]
+    pub llm_timeout_ms: u64,
+    /// LLM blend weight into final score. Default: `0.5`.
+    #[serde(default = "default_quality_gate_llm_weight")]
+    pub llm_weight: f32,
+    /// Enable pronoun/deictic reference checks (English only). Default: `true`.
+    #[serde(default = "default_quality_gate_reference_check_lang_en")]
+    pub reference_check_lang_en: bool,
+}
+
+impl Default for WriteQualityGateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_quality_gate_threshold(),
+            recent_window: default_quality_gate_recent_window(),
+            contradiction_grace_seconds: default_quality_gate_contradiction_grace_seconds(),
+            information_value_weight: default_quality_gate_information_value_weight(),
+            reference_completeness_weight: default_quality_gate_reference_completeness_weight(),
+            contradiction_weight: default_quality_gate_contradiction_weight(),
+            rejection_rate_alarm_ratio: default_quality_gate_rejection_rate_alarm_ratio(),
+            quality_gate_provider: ProviderName::default(),
+            llm_timeout_ms: default_quality_gate_llm_timeout_ms(),
+            llm_weight: default_quality_gate_llm_weight(),
+            reference_check_lang_en: default_quality_gate_reference_check_lang_en(),
+        }
+    }
 }
 
 impl Default for GraphConfig {
@@ -1850,6 +1982,7 @@ impl Default for GraphConfig {
             belief_revision: BeliefRevisionConfig::default(),
             rpe: RpeConfig::default(),
             pool_size: default_graph_pool_size(),
+            apex_mem: ApexMemConfig::default(),
         }
     }
 }
@@ -3109,5 +3242,79 @@ mod memcot_config_tests {
         assert_eq!(cfg.max_distills_per_session, 20);
         assert_eq!(cfg.recall_view, RecallViewConfig::ZoomIn);
         assert_eq!(cfg.zoom_out_neighbor_cap, 5);
+    }
+}
+
+#[cfg(test)]
+mod apex_mem_quality_gate_config_tests {
+    use super::*;
+
+    #[test]
+    fn apex_mem_config_default_disabled() {
+        let cfg = ApexMemConfig::default();
+        assert!(!cfg.enabled, "APEX-MEM must be disabled by default");
+    }
+
+    #[test]
+    fn apex_mem_config_serde_round_trip() {
+        let toml = "enabled = true";
+        let cfg: ApexMemConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn apex_mem_config_empty_toml_uses_defaults() {
+        let cfg: ApexMemConfig = toml::from_str("").unwrap();
+        assert!(!cfg.enabled, "empty TOML must produce default (disabled)");
+    }
+
+    #[test]
+    fn write_quality_gate_config_default_disabled() {
+        let cfg = WriteQualityGateConfig::default();
+        assert!(!cfg.enabled);
+        assert!((cfg.threshold - 0.55).abs() < f32::EPSILON);
+        assert_eq!(cfg.recent_window, 32);
+        assert_eq!(cfg.contradiction_grace_seconds, 300);
+        assert!((cfg.information_value_weight - 0.4).abs() < f32::EPSILON);
+        assert!((cfg.reference_completeness_weight - 0.3).abs() < f32::EPSILON);
+        assert!((cfg.contradiction_weight - 0.3).abs() < f32::EPSILON);
+        assert!((cfg.rejection_rate_alarm_ratio - 0.35).abs() < f32::EPSILON);
+        assert!(cfg.quality_gate_provider.is_empty());
+        assert_eq!(cfg.llm_timeout_ms, 500);
+        assert!((cfg.llm_weight - 0.5).abs() < f32::EPSILON);
+        assert!(cfg.reference_check_lang_en);
+    }
+
+    #[test]
+    fn write_quality_gate_config_serde_round_trip() {
+        let toml = r#"
+            enabled = true
+            threshold = 0.70
+            recent_window = 16
+            contradiction_grace_seconds = 600
+            information_value_weight = 0.5
+            reference_completeness_weight = 0.25
+            contradiction_weight = 0.25
+            rejection_rate_alarm_ratio = 0.50
+            quality_gate_provider = "fast"
+            llm_timeout_ms = 1000
+            llm_weight = 0.3
+            reference_check_lang_en = false
+        "#;
+        let cfg: WriteQualityGateConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.enabled);
+        assert!((cfg.threshold - 0.70).abs() < f32::EPSILON);
+        assert_eq!(cfg.recent_window, 16);
+        assert_eq!(cfg.contradiction_grace_seconds, 600);
+        assert_eq!(cfg.quality_gate_provider.as_str(), "fast");
+        assert_eq!(cfg.llm_timeout_ms, 1000);
+        assert!(!cfg.reference_check_lang_en);
+    }
+
+    #[test]
+    fn write_quality_gate_config_empty_toml_uses_defaults() {
+        let cfg: WriteQualityGateConfig = toml::from_str("").unwrap();
+        assert!(!cfg.enabled, "empty TOML must produce default (disabled)");
+        assert_eq!(cfg.recent_window, 32);
     }
 }
