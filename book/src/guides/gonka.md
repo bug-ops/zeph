@@ -75,6 +75,16 @@ address = "gonka1..."
 
 ## Troubleshooting
 
+Run the built-in diagnostic tool to check credentials and node reachability:
+
+```bash
+zeph gonka doctor
+# or for machine-readable JSON output:
+zeph gonka doctor --json
+```
+
+The doctor prints `[OK]`, `[WARN]`, or `[FAIL]` for each check: vault key resolution, signer construction, and per-node HTTP probes with latency. Exit code is 0 on success, 1 on failures.
+
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | 401 / signature error | Invalid key format or address mismatch | Verify `ZEPH_GONKA_PRIVATE_KEY` is hex-encoded secp256k1; confirm address matches key |

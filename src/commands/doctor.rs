@@ -54,7 +54,7 @@ pub(crate) struct CheckResult {
 }
 
 impl CheckResult {
-    fn ok(name: impl Into<String>, detail: impl Into<String>, elapsed_ms: u64) -> Self {
+    pub(crate) fn ok(name: impl Into<String>, detail: impl Into<String>, elapsed_ms: u64) -> Self {
         Self {
             name: name.into(),
             status: CheckStatus::Ok,
@@ -63,7 +63,11 @@ impl CheckResult {
         }
     }
 
-    fn warn(name: impl Into<String>, detail: impl Into<String>, elapsed_ms: u64) -> Self {
+    pub(crate) fn warn(
+        name: impl Into<String>,
+        detail: impl Into<String>,
+        elapsed_ms: u64,
+    ) -> Self {
         Self {
             name: name.into(),
             status: CheckStatus::Warn,
@@ -72,7 +76,11 @@ impl CheckResult {
         }
     }
 
-    fn fail(name: impl Into<String>, detail: impl Into<String>, elapsed_ms: u64) -> Self {
+    pub(crate) fn fail(
+        name: impl Into<String>,
+        detail: impl Into<String>,
+        elapsed_ms: u64,
+    ) -> Self {
         Self {
             name: name.into(),
             status: CheckStatus::Fail,
@@ -421,7 +429,7 @@ async fn check_llm_provider(
     if entry.provider_type == ProviderKind::Gonka {
         return CheckResult::ok(
             &check_name,
-            "gonka (not yet implemented)",
+            "gonka (use `zeph gonka doctor` for detailed diagnostics)",
             elapsed_ms(start),
         );
     }

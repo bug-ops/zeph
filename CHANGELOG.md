@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(cli): `zeph gonka doctor` diagnostic subcommand — checks vault key resolution, signer
+  construction, and per-node HTTP reachability with signed probes. Reports `[OK]`, `[WARN]`, or
+  `[FAIL]` per check; detects 401 clock skew via `Date` header. `--json` flag emits a structured
+  JSON envelope. Requires `gonka` feature. Also adds an `#[ignore]` live-testnet integration test
+  in `crates/zeph-llm/tests/gonka_live.rs`. (#3614)
+
 - feat(core): `SpeculationEngine.try_dispatch` wired into two activation paths. SSE decoding path:
   `claude_sse_to_tool_stream` emits `ToolBlockStart` at `content_block_start` so
   `SpeculativeStreamDrainer` can populate `tool_meta` before `InputJsonDelta` events arrive; when

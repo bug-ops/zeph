@@ -397,6 +397,12 @@ pub(crate) enum Command {
         #[arg(long, default_value = "5")]
         mcp_timeout_secs: u64,
     },
+    /// Gonka network diagnostics and credential checks
+    #[cfg(feature = "gonka")]
+    Gonka {
+        #[command(subcommand)]
+        command: GonkaCommand,
+    },
     /// Test notification channels (sends a test notification via enabled channels)
     Notify {
         #[command(subcommand)]
@@ -662,6 +668,21 @@ pub(crate) enum RouterCommand {
         /// Path to Thompson state file (default: `~/.zeph/router_thompson_state.json`)
         #[arg(long, value_name = "PATH")]
         state_path: Option<std::path::PathBuf>,
+    },
+}
+
+/// Gonka network subcommands.
+#[cfg(feature = "gonka")]
+#[derive(Subcommand)]
+pub(crate) enum GonkaCommand {
+    /// Run Gonka connectivity and credential diagnostics
+    Doctor {
+        /// Emit results as JSON (`schema_version` = 1)
+        #[arg(long)]
+        json: bool,
+        /// Timeout in seconds for node probe requests
+        #[arg(long, default_value = "10")]
+        timeout_secs: u64,
     },
 }
 
