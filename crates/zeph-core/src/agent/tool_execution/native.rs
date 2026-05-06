@@ -1996,7 +1996,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns `None` when the user cancelled (the caller must return `Ok(())`), or
     /// `Some(TierLoopData)` with the collected results on success.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn run_tier_execution_loop(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
@@ -2025,6 +2025,9 @@ impl<C: Channel> Agent<C> {
         let trivial = dag.is_trivial();
         let tiers = dag.tiers();
         let tier_count = tiers.len();
+        // Clone the Arc before the mutable borrow loop so try_commit can be called without
+        // holding a borrow on self across await points.
+        let speculation_engine = self.services.speculation_engine.clone();
         tracing::debug!(
             trivial,
             tier_count,
@@ -2073,21 +2076,39 @@ impl<C: Channel> Agent<C> {
                     .await;
             }
 
-            // Stamp execution start time and send ToolStartEvent per-tier (§3.7).
+            // Pre-scan: commit speculative handles and emit speculative ToolStartEvents.
+            let speculative_commits = self
+                .commit_speculative_tier(
+                    &tier.indices,
+                    calls,
+                    tool_calls,
+                    tool_call_ids,
+                    tool_started_ats,
+                    speculation_engine.as_ref(),
+                )
+                .await?;
+
+            // Stamp execution start time and send ToolStartEvent for non-committed calls (§3.7).
+            let non_committed_indices: Vec<usize> = tier
+                .indices
+                .iter()
+                .copied()
+                .filter(|idx| !speculative_commits.contains_key(idx))
+                .collect();
             self.stamp_and_send_tier_start(
-                &tier.indices,
+                &non_committed_indices,
                 tool_calls,
                 tool_call_ids,
                 tool_started_ats,
             )
             .await?;
 
-            // Build futures for this tier, applying all gate checks per call.
-            let tier_futs = self
+            // Build futures for non-committed calls in this tier.
+            let mut tier_futs = self
                 .build_tier_call_futures(
                     tool_calls,
                     calls,
-                    &tier.indices,
+                    &non_committed_indices,
                     &dag,
                     &failed_ids,
                     quota_blocked,
@@ -2099,6 +2120,11 @@ impl<C: Channel> Agent<C> {
                     &mut pending_system_hints,
                 )
                 .await?;
+
+            // Inject committed speculative results as ready futures.
+            for (idx, result) in speculative_commits {
+                tier_futs.push((idx, Box::pin(std::future::ready(result))));
+            }
 
             // Execute futures concurrently with cancellation and MCP elicitation drain.
             let (indices, futs): (Vec<usize>, Vec<ToolExecFut>) = tier_futs.into_iter().unzip();
@@ -2197,6 +2223,73 @@ impl<C: Channel> Agent<C> {
                 .await?;
         }
         Ok(())
+    }
+
+    /// Attempt to commit speculative handles for all calls in a tier, stamp their start times,
+    /// and emit `ToolStartEvent { speculative: true }` for each committed call.
+    ///
+    /// Returns a map from call index to the committed result. Indices present in the map must be
+    /// excluded from `stamp_and_send_tier_start` and `build_tier_call_futures` — their results are
+    /// injected directly as ready futures instead.
+    async fn commit_speculative_tier(
+        &mut self,
+        tier_indices: &[usize],
+        calls: &[ToolCall],
+        tool_calls: &[zeph_llm::provider::ToolUseRequest],
+        tool_call_ids: &[String],
+        tool_started_ats: &mut [std::time::Instant],
+        engine: Option<&std::sync::Arc<crate::agent::speculative::SpeculationEngine>>,
+    ) -> Result<
+        std::collections::HashMap<
+            usize,
+            Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+        >,
+        crate::agent::error::AgentError,
+    > {
+        let mut commits: std::collections::HashMap<
+            usize,
+            Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+        > = std::collections::HashMap::new();
+
+        let Some(engine) = engine else {
+            return Ok(commits);
+        };
+
+        for &idx in tier_indices {
+            let Some(result) = engine.try_commit(&calls[idx]).await else {
+                continue;
+            };
+            if let Err(ref e) = result {
+                tracing::warn!(
+                    tool = %calls[idx].tool_id,
+                    error = %e,
+                    "speculative commit returned Err — result will be used as-is"
+                );
+            }
+            // M1: stamp actual dispatch time so build_tool_output_messages computes correct elapsed.
+            tool_started_ats[idx] = std::time::Instant::now();
+            commits.insert(idx, result);
+        }
+
+        // Emit ToolStartEvent with speculative: true for all committed calls.
+        for &idx in tier_indices {
+            if commits.contains_key(&idx) {
+                let tc = &tool_calls[idx];
+                self.channel
+                    .send_tool_start(ToolStartEvent {
+                        tool_name: tc.name.clone(),
+                        tool_call_id: tool_call_ids[idx].clone(),
+                        params: Some(tc.input.clone()),
+                        parent_tool_use_id: self.services.session.parent_tool_use_id.clone(),
+                        started_at: tool_started_ats[idx],
+                        speculative: true,
+                        sandbox_profile: None,
+                    })
+                    .await?;
+            }
+        }
+
+        Ok(commits)
     }
 
     /// Apply the utility gate decision for a single tool call.
