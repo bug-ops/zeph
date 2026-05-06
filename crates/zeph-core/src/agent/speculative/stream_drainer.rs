@@ -222,10 +222,6 @@ mod tests {
         use zeph_config::tools::{SpeculationMode, SpeculativeConfig};
         use zeph_tools::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 
-        // Executor that records how many times is_tool_speculatable returns true.
-        let dispatch_count = Arc::new(AtomicUsize::new(0));
-        let dispatch_count_clone = Arc::clone(&dispatch_count);
-
         struct SpyExec {
             count: Arc<AtomicUsize>,
         }
@@ -244,6 +240,10 @@ mod tests {
                 true
             }
         }
+
+        // Executor that records how many times is_tool_speculatable returns true.
+        let dispatch_count = Arc::new(AtomicUsize::new(0));
+        let dispatch_count_clone = Arc::clone(&dispatch_count);
 
         let config = SpeculativeConfig {
             mode: SpeculationMode::Decoding,
@@ -390,7 +390,7 @@ mod tests {
                 assert_eq!(tool_calls[0].id, "toolu_01");
                 assert_eq!(tool_calls[0].name, "bash");
             }
-            other => panic!("expected ToolUse, got {other:?}"),
+            other @ ChatResponse::Text(_) => panic!("expected ToolUse, got {other:?}"),
         }
     }
 

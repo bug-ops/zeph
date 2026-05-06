@@ -239,7 +239,7 @@ impl AnyProvider {
         }
     }
 
-    /// Send a streaming tool-use request, returning a `ToolSseStream`.
+    /// Send a streaming tool-use request, returning a [`crate::sse::ToolSseStream`].
     ///
     /// Only `Claude` variants support native SSE tool-use streaming — all other providers
     /// return `Err(LlmError::Unavailable)` and callers should fall back to `chat_with_tools`.

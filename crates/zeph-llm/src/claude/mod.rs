@@ -881,7 +881,7 @@ impl ClaudeProvider {
             })
     }
 
-    /// Send a streaming tool-use request and return a [`ToolSseStream`].
+    /// Send a streaming tool-use request and return a [`crate::sse::ToolSseStream`].
     ///
     /// Used by `SpeculativeStreamDrainer` to intercept `InputJsonDelta` events for early
     /// speculative dispatch while assembling the final `ChatResponse` at stream end.
