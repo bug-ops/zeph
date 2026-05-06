@@ -516,3 +516,14 @@ impl Migration for MigrateProviderMaxConcurrent {
         migrate_provider_max_concurrent(toml_src)
     }
 }
+
+pub(super) struct MigrateGonkagateToGonka;
+impl Migration for MigrateGonkagateToGonka {
+    fn name(&self) -> &'static str {
+        "migrate_gonkagate_to_gonka"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        Ok(super::migrate_gonkagate_to_gonka(toml_src))
+    }
+}

@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use dialoguer::{Confirm, Input, Password, Select};
-use zeph_config::{GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
+use zeph_config::{GeminiThinkingLevel, GonkaNode, ThinkingConfig, ThinkingEffort};
 use zeph_core::config::ProviderKind;
+use zeroize::Zeroizing;
 
 use super::WizardState;
 
@@ -49,6 +50,7 @@ pub(super) fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyho
         "Gemini (API)",
         "Compatible (custom)",
         "Gonka (decentralized \u{2014} via GonkaGate)",
+        "Gonka (native \u{2014} requires GNK staking)",
     ];
     let selection = Select::new()
         .with_prompt("Select LLM provider")
@@ -210,7 +212,203 @@ pub(super) fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyho
                 state.api_key = Some(raw);
             }
         }
+        6 => {
+            step_gonka_native(state, use_age)?;
+        }
         _ => unreachable!(),
     }
     Ok(())
+}
+
+fn step_gonka_native(state: &mut WizardState, use_age: bool) -> anyhow::Result<()> {
+    if !use_age {
+        anyhow::bail!(
+            "Gonka native provider requires the age vault backend for secure key storage.\n\
+             Please re-run the wizard and select the age vault backend first."
+        );
+    }
+
+    state.provider = Some(ProviderKind::Gonka);
+
+    let hex_key = pick_hex_key()?;
+
+    // Validate hex length.
+    if hex_key.len() != 64 || !hex_key.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("Private key must be exactly 64 lowercase hex characters");
+    }
+
+    // Derive address to show the user.
+    #[cfg(feature = "gonka")]
+    let derived_address = {
+        use zeph_llm::gonka::RequestSigner;
+        let signer = RequestSigner::from_hex(&hex_key, "gonka")
+            .map_err(|e| anyhow::anyhow!("invalid private key: {e}"))?;
+        signer.address().to_owned()
+    };
+    #[cfg(not(feature = "gonka"))]
+    let derived_address = String::from("<gonka feature not compiled in>");
+
+    println!("\n  Derived address: {derived_address}");
+
+    let nodes = configure_gonka_nodes()?;
+
+    state.model = Some(
+        Input::new()
+            .with_prompt("Model name")
+            .default("gpt-4o".into())
+            .interact_text()?,
+    );
+
+    state.gonka_private_key = Some(hex_key);
+    state.gonka_address = Some(derived_address);
+    state.gonka_nodes = nodes;
+
+    Ok(())
+}
+
+fn pick_hex_key() -> anyhow::Result<Zeroizing<String>> {
+    let inferenced_available = std::process::Command::new("which")
+        .arg("inferenced")
+        .output()
+        .is_ok_and(|o| o.status.success());
+
+    if !inferenced_available {
+        println!(
+            "\n  inferenced CLI not found. Download from:\n  \
+             https://github.com/gonka-ai/gonka/releases\n"
+        );
+        println!("Alternatively, you can paste a raw hex private key (64 hex characters).");
+    }
+
+    if inferenced_available {
+        let key_names = get_inferenced_keys()?;
+        let key_name = if key_names.is_empty() {
+            let name: String = Input::new()
+                .with_prompt("New key name")
+                .default("zeph".into())
+                .interact_text()?;
+            create_inferenced_key(&name)?;
+            name
+        } else {
+            let create_new = Confirm::new()
+                .with_prompt("Create a new key?")
+                .default(false)
+                .interact()?;
+            if create_new {
+                let name: String = Input::new()
+                    .with_prompt("New key name")
+                    .default("zeph".into())
+                    .interact_text()?;
+                create_inferenced_key(&name)?;
+                name
+            } else {
+                let items: Vec<&str> = key_names.iter().map(String::as_str).collect();
+                let idx = Select::new()
+                    .with_prompt("Select existing key")
+                    .items(&items)
+                    .default(0)
+                    .interact()?;
+                key_names[idx].clone()
+            }
+        };
+        export_inferenced_key_hex(&key_name).map(Zeroizing::new)
+    } else {
+        let raw = Password::new()
+            .with_prompt("Private key hex (64 hex chars, input hidden)")
+            .interact()?;
+        Ok(Zeroizing::new(raw.trim().to_owned()))
+    }
+}
+
+fn configure_gonka_nodes() -> anyhow::Result<Vec<GonkaNode>> {
+    println!("\nConfigure Gonka nodes (press Enter to use default seed nodes):");
+    let default_seeds = vec![
+        (
+            "https://node1.gonka.ai".to_owned(),
+            "gonka1node1placeholder000000000000000000000000".to_owned(),
+        ),
+        (
+            "https://node2.gonka.ai".to_owned(),
+            "gonka1node2placeholder000000000000000000000000".to_owned(),
+        ),
+        (
+            "https://node3.gonka.ai".to_owned(),
+            "gonka1node3placeholder000000000000000000000000".to_owned(),
+        ),
+    ];
+    let use_defaults = Confirm::new()
+        .with_prompt("Use default seed nodes?")
+        .default(true)
+        .interact()?;
+
+    if use_defaults {
+        return Ok(default_seeds
+            .into_iter()
+            .map(|(url, address)| GonkaNode {
+                url,
+                address,
+                name: None,
+            })
+            .collect());
+    }
+
+    let mut nodes = Vec::new();
+    loop {
+        let url: String = Input::new()
+            .with_prompt("Node URL (leave empty to finish)")
+            .allow_empty(true)
+            .interact_text()?;
+        if url.is_empty() {
+            break;
+        }
+        let address: String = Input::new()
+            .with_prompt("Node on-chain address (bech32)")
+            .interact_text()?;
+        nodes.push(GonkaNode {
+            url,
+            address,
+            name: None,
+        });
+    }
+    if nodes.is_empty() {
+        anyhow::bail!("At least one Gonka node is required");
+    }
+    Ok(nodes)
+}
+
+fn get_inferenced_keys() -> anyhow::Result<Vec<String>> {
+    let output = std::process::Command::new("inferenced")
+        .args(["keys", "list"])
+        .output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let names: Vec<String> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_owned())
+        .collect();
+    Ok(names)
+}
+
+fn create_inferenced_key(name: &str) -> anyhow::Result<()> {
+    let status = std::process::Command::new("inferenced")
+        .args(["keys", "add", name])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("inferenced keys add failed");
+    }
+    Ok(())
+}
+
+fn export_inferenced_key_hex(name: &str) -> anyhow::Result<String> {
+    let output = std::process::Command::new("inferenced")
+        .args(["keys", "export", name, "--unarmored-hex", "--unsafe"])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("inferenced keys export failed: {stderr}");
+    }
+    let hex = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .to_lowercase();
+    Ok(hex)
 }

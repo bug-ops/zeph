@@ -3307,9 +3307,9 @@ use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAutodreamConfig, MigrateCompressionPredictorConfig, MigrateDatabaseUrl,
     MigrateEgressConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
-    MigrateGoalsConfig, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
-    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
-    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
+    MigrateGoalsConfig, MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig,
+    MigrateHooksTurnComplete, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
+    MigrateMcpMaxConnectAttempts, MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
     MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
@@ -3321,7 +3321,76 @@ use steps::{
     MigrateVigilConfig,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–44).
+/// Step 45: add an advisory comment above `GonkaGate` provider entries pointing users to
+/// the native Gonka provider option.
+///
+/// This is advisory only — no automatic conversion is performed. The comment informs
+/// users that a native Gonka provider is now available and links to migration docs.
+pub(crate) fn migrate_gonkagate_to_gonka(toml_src: &str) -> MigrationResult {
+    // Advisory-only: add a comment before GonkaGate provider entries when found.
+    const MARKER: &str = "# [migration] GonkaGate detected: consider migrating to type = \"gonka\"";
+
+    if !toml_src.contains("gonkagate") {
+        return MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: vec![],
+        };
+    }
+
+    let mut changed_count = 0;
+    let mut lines: Vec<String> = toml_src.lines().map(str::to_owned).collect();
+
+    // Walk backwards from each line containing "gonkagate" to find the nearest preceding
+    // [[llm.providers]] table header and insert the advisory comment before it.
+    // We iterate indices in reverse so that inserting at a position does not shift later targets.
+    let indices: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.contains("gonkagate"))
+        .map(|(i, _)| i)
+        .rev()
+        .collect();
+
+    for gonka_idx in indices {
+        // Find the most recent [[...]] header at or before gonka_idx.
+        let header_idx = (0..=gonka_idx)
+            .rev()
+            .find(|&i| lines[i].starts_with("[["))
+            .unwrap_or(gonka_idx);
+
+        // Skip if the comment is already present just before the header.
+        let already_marked = header_idx > 0 && lines[header_idx - 1].contains(MARKER);
+        if already_marked {
+            continue;
+        }
+
+        lines.insert(
+            header_idx,
+            format!("{MARKER} (see docs/guides/gonka-native.md)"),
+        );
+        changed_count += 1;
+    }
+
+    let output = lines.join("\n");
+    let output = if toml_src.ends_with('\n') {
+        format!("{output}\n")
+    } else {
+        output
+    };
+
+    MigrationResult {
+        output,
+        changed_count,
+        sections_changed: if changed_count > 0 {
+            vec!["llm".into()]
+        } else {
+            vec![]
+        },
+    }
+}
+
+/// Ordered registry of all sequential migration steps (steps 1–45).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -3392,6 +3461,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateOrchestratorProvider),
             // Step 44 — max_concurrent per-provider admission control hint (#3299)
             Box::new(MigrateProviderMaxConcurrent),
+            // Step 45 — advisory notice for GonkaGate → native Gonka upgrade path (#3613)
+            Box::new(MigrateGonkagateToGonka),
         ]
     });
 
@@ -3410,8 +3481,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            44,
-            "MIGRATIONS registry must contain all 44 sequential steps"
+            45,
+            "MIGRATIONS registry must contain all 45 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -4997,8 +5068,8 @@ prompt_cache_ttl = "1h"
     // ── Migration registry ────────────────────────────────────────────────────
 
     #[test]
-    fn registry_has_thirty_nine_entries() {
-        assert_eq!(MIGRATIONS.len(), 44);
+    fn registry_has_forty_five_entries() {
+        assert_eq!(MIGRATIONS.len(), 45);
     }
 
     #[test]
@@ -5037,7 +5108,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_preserves_order_matches_dispatch() {
-        // Names must follow the documented step order (steps 1–43).
+        // Names must follow the documented step order (steps 1–45).
         let expected = [
             "migrate_stt_to_provider",
             "migrate_planner_model_to_provider",
@@ -5083,6 +5154,7 @@ prompt_cache_ttl = "1h"
             "migrate_tools_compression_config",
             "migrate_orchestrator_provider",
             "migrate_provider_max_concurrent",
+            "migrate_gonkagate_to_gonka",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
@@ -5215,5 +5287,45 @@ prompt_cache_ttl = "1h"
         let result = migrate_provider_max_concurrent(src).expect("migrate");
         assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
+    }
+
+    // ── Step 45 — migrate_gonkagate_to_gonka ─────────────────────────────────
+
+    #[test]
+    fn step45_adds_advisory_comment_when_gonkagate_present() {
+        let src = "[[llm.providers]]\ntype = \"compatible\"\nname = \"gonkagate\"\n";
+        let result = migrate_gonkagate_to_gonka(src);
+        assert!(result.changed_count > 0, "must detect gonkagate entry");
+        assert!(
+            result.output.contains("[migration] GonkaGate detected"),
+            "advisory comment must be added"
+        );
+        // Comment must appear before the [[llm.providers]] table header, not inside it.
+        let comment_pos = result
+            .output
+            .find("[migration] GonkaGate detected")
+            .unwrap();
+        let header_pos = result.output.find("[[llm.providers]]").unwrap();
+        assert!(
+            comment_pos < header_pos,
+            "advisory comment must precede the [[llm.providers]] header"
+        );
+    }
+
+    #[test]
+    fn step45_noop_when_no_gonkagate() {
+        let src = "[[llm.providers]]\ntype = \"openai\"\nname = \"quality\"\n";
+        let result = migrate_gonkagate_to_gonka(src);
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn step45_does_not_double_insert_comment() {
+        let src = "[[llm.providers]]\ntype = \"compatible\"\nname = \"gonkagate\"\n";
+        let first = migrate_gonkagate_to_gonka(src);
+        let second = migrate_gonkagate_to_gonka(&first.output);
+        // Second run must not add another comment line.
+        assert_eq!(second.changed_count, 0, "idempotent on second run");
     }
 }

@@ -508,3 +508,34 @@ async fn gonka_tools_chat_typed_returns_struct() {
     assert_eq!(result.name, "London");
     assert_eq!(result.population, 9_000_000);
 }
+
+#[test]
+fn gonka_provider_clone_independence() {
+    let provider = make_provider("https://node1.gonka.ai");
+    let cloned = provider.clone();
+    // Both clones must have the same model identifier (shared via Arc<RequestSigner>).
+    assert_eq!(provider.model_identifier(), cloned.model_identifier());
+    assert!(provider.supports_streaming());
+    assert!(cloned.supports_streaming());
+    assert!(provider.supports_embeddings());
+    assert!(cloned.supports_embeddings());
+    // Usage trackers are independent after clone.
+    assert_eq!(provider.last_usage(), None);
+    assert_eq!(cloned.last_usage(), None);
+}
+
+#[test]
+fn gonka_provider_with_generation_overrides_returns_self() {
+    use crate::provider::GenerationOverrides;
+    let provider = make_provider("https://node1.gonka.ai");
+    let overrides = GenerationOverrides {
+        temperature: Some(0.5),
+        top_p: None,
+        top_k: None,
+        frequency_penalty: None,
+        presence_penalty: None,
+    };
+    let patched = provider.with_generation_overrides(overrides);
+    assert_eq!(patched.model_identifier(), "gpt-4o");
+    assert!(patched.supports_streaming());
+}

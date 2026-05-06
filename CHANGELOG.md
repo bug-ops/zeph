@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(zeph-core): wire `GonkaProvider` end-to-end as `AnyProvider::Gonka`. Adds `build_gonka_provider`
+  factory with private key resolution from vault, optional address verification (case-insensitive bech32),
+  and `EndpointPool` construction from `[[llm.providers]]` node list. `GonkaProvider` now implements
+  manual `Clone` and `with_generation_overrides` for use with the orchestrator and `/provider` switching.
+  `GonkaNode` gains a mandatory `address` field. Vault snapshot fields `gonka_private_key` /
+  `gonka_address` added to `ProviderConfigSnapshot` for runtime provider switching. (#3613)
+
+- feat(init): native Gonka provider option in `--init` wizard. Detects `inferenced` CLI, guides through
+  key selection or manual hex input, derives bech32 address, configures seed nodes, stores secrets in
+  age vault. Refuses to proceed without age vault backend. (#3613)
+
+- feat(config): migration step 45 — `migrate_gonkagate_to_gonka`. Injects an advisory comment above
+  `type = "compatible" / name = "gonkagate"` entries in existing configs, pointing to the native
+  Gonka provider. No data is modified; idempotent. (#3613)
+
 - feat(zeph-llm): add `GonkaProvider` for chat, streaming, and embeddings via signed transport.
   `GonkaProvider` uses a secp256k1-signed request loop over an `EndpointPool`, delegating OpenAI-compatible
   body construction to an inner `OpenAiProvider`. Includes `chat`, `chat_stream`, `embed`, and `embed_batch`
@@ -15,6 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `EndpointPool::next_indexed()` added to enable correct per-index mark-failed in retry loops. (#3611)
 
 - `GonkaProvider::chat_with_tools` and `chat_typed` — tool use and structured output over the Gonka signed transport (#3612)
+
+- Gonka AI integration guide covering GonkaGate and native inference paths (#3603)
 
 ### Changed
 

@@ -2532,6 +2532,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             .collect(),
         llm_request_timeout_secs: config.timeouts.llm_request_timeout_secs,
         embedding_model: config.llm.embedding_model.clone(),
+        gonka_private_key: config
+            .secrets
+            .gonka_private_key
+            .as_ref()
+            .map(|s| zeroize::Zeroizing::new(s.expose().to_owned())),
+        gonka_address: config
+            .secrets
+            .gonka_address
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
     };
     let agent = agent
         .with_extended_context(extended_context)

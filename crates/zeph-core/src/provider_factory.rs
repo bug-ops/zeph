@@ -12,9 +12,15 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
 use zeph_llm::compatible::CompatibleProvider;
 use zeph_llm::gemini::GeminiProvider;
+#[cfg(feature = "gonka")]
+use zeph_llm::gonka::endpoints::{EndpointPool, GonkaEndpoint};
+#[cfg(feature = "gonka")]
+use zeph_llm::gonka::{GonkaProvider, RequestSigner};
 use zeph_llm::http::llm_client;
 use zeph_llm::ollama::OllamaProvider;
 use zeph_llm::openai::OpenAiProvider;
+#[cfg(feature = "gonka")]
+use zeroize::Zeroizing;
 
 use crate::agent::state::ProviderConfigSnapshot;
 use crate::config::{Config, ProviderEntry, ProviderKind};
@@ -71,6 +77,11 @@ pub fn build_provider_for_switch(
         .iter()
         .map(|(k, v)| (k.clone(), Secret::new(v.as_str())))
         .collect();
+    config.secrets.gonka_private_key = snapshot
+        .gonka_private_key
+        .as_ref()
+        .map(|z| Secret::new(z.as_str()));
+    config.secrets.gonka_address = snapshot.gonka_address.as_deref().map(Secret::new);
     config.timeouts.llm_request_timeout_secs = snapshot.llm_request_timeout_secs;
     config
         .llm
@@ -104,8 +115,11 @@ pub fn build_provider_from_entry(
         ProviderKind::Candle => Err(BootstrapError::Provider(
             "candle feature is not enabled".into(),
         )),
+        #[cfg(feature = "gonka")]
+        ProviderKind::Gonka => build_gonka_provider(entry, config),
+        #[cfg(not(feature = "gonka"))]
         ProviderKind::Gonka => Err(BootstrapError::Provider(
-            "gonka provider is not yet implemented".into(),
+            "gonka feature is not enabled; rebuild with --features gonka".into(),
         )),
     }
 }
@@ -293,6 +307,82 @@ fn build_compatible_provider(
         "mcp.output_schema.forwarding_configured"
     );
     Ok(AnyProvider::Compatible(provider))
+}
+
+#[cfg(feature = "gonka")]
+fn build_gonka_provider(
+    entry: &ProviderEntry,
+    config: &Config,
+) -> Result<AnyProvider, BootstrapError> {
+    let _span = tracing::info_span!("core.provider_factory.build_gonka").entered();
+
+    let private_key_hex: Zeroizing<String> = Zeroizing::new(
+        config
+            .secrets
+            .gonka_private_key
+            .as_ref()
+            .ok_or_else(|| {
+                BootstrapError::Provider(
+                    "ZEPH_GONKA_PRIVATE_KEY not found in vault; set it with: zeph vault set ZEPH_GONKA_PRIVATE_KEY <hex>".into(),
+                )
+            })?
+            .expose()
+            .to_owned(),
+    );
+
+    let chain_prefix = entry.effective_gonka_chain_prefix().to_owned();
+    let signer = RequestSigner::from_hex(&private_key_hex, &chain_prefix)
+        .map_err(|e| BootstrapError::Provider(format!("invalid Gonka private key: {e}")))?;
+
+    if let Some(ref configured_address) = config.secrets.gonka_address {
+        let configured = configured_address.expose().to_lowercase();
+        let derived = signer.address().to_lowercase();
+        if configured != derived {
+            return Err(BootstrapError::Provider(format!(
+                "ZEPH_GONKA_ADDRESS does not match address derived from private key \
+                 (configured: {configured}, derived: {derived})"
+            )));
+        }
+    } else {
+        tracing::info!(
+            address = signer.address(),
+            "Gonka: using address derived from private key (ZEPH_GONKA_ADDRESS not set)"
+        );
+    }
+
+    if entry.gonka_nodes.is_empty() {
+        return Err(BootstrapError::Provider(
+            "Gonka provider entry must have at least one node in gonka_nodes".into(),
+        ));
+    }
+
+    let endpoints: Vec<GonkaEndpoint> = entry
+        .gonka_nodes
+        .iter()
+        .map(|n| GonkaEndpoint {
+            base_url: n.url.clone(),
+            address: n.address.clone(),
+        })
+        .collect();
+
+    let pool = EndpointPool::new(endpoints).map_err(|e| {
+        BootstrapError::Provider(format!("failed to build Gonka endpoint pool: {e}"))
+    })?;
+
+    let model = entry.model.clone().unwrap_or_else(|| "gpt-4o".to_owned());
+    let max_tokens = entry.max_tokens.unwrap_or(4096);
+    let timeout = std::time::Duration::from_secs(config.timeouts.llm_request_timeout_secs);
+
+    let provider = GonkaProvider::new(
+        std::sync::Arc::new(signer),
+        std::sync::Arc::new(pool),
+        model,
+        max_tokens,
+        entry.embedding_model.clone(),
+        timeout,
+    );
+
+    Ok(AnyProvider::Gonka(provider))
 }
 
 #[cfg(feature = "candle")]
@@ -504,9 +594,94 @@ mod tests {
         ));
     }
 
-    use super::{effective_embedding_model, stable_skill_embedding_model};
+    use super::{
+        build_provider_from_entry, effective_embedding_model, stable_skill_embedding_model,
+    };
     use crate::config::{Config, ProviderKind};
     use zeph_config::providers::ProviderEntry;
+
+    #[cfg(feature = "gonka")]
+    mod gonka_tests {
+        use super::*;
+        use zeph_common::secret::Secret;
+        use zeph_config::GonkaNode;
+        use zeph_llm::LlmProvider;
+
+        fn gonka_entry_with_nodes(nodes: Vec<GonkaNode>) -> ProviderEntry {
+            ProviderEntry {
+                provider_type: ProviderKind::Gonka,
+                name: Some("gonka".into()),
+                model: Some("gpt-4o".into()),
+                gonka_nodes: nodes,
+                ..ProviderEntry::default()
+            }
+        }
+
+        fn valid_nodes() -> Vec<GonkaNode> {
+            vec![GonkaNode {
+                url: "https://node1.gonka.ai".into(),
+                address: "gonka1w508d6qejxtdg4y5r3zarvary0c5xw7k2gsyg6".into(),
+                name: Some("node1".into()),
+            }]
+        }
+
+        const VALID_PRIV_KEY: &str =
+            "0000000000000000000000000000000000000000000000000000000000000001";
+
+        #[test]
+        fn build_gonka_provider_missing_key_returns_error() {
+            let entry = gonka_entry_with_nodes(valid_nodes());
+            let config = Config::default();
+            let result = build_provider_from_entry(&entry, &config);
+            assert!(result.is_err());
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("ZEPH_GONKA_PRIVATE_KEY"),
+                "error must mention missing key: {msg}"
+            );
+        }
+
+        #[test]
+        fn build_gonka_provider_empty_nodes_returns_error() {
+            let entry = gonka_entry_with_nodes(vec![]);
+            let mut config = Config::default();
+            config.secrets.gonka_private_key = Some(Secret::new(VALID_PRIV_KEY));
+            let result = build_provider_from_entry(&entry, &config);
+            assert!(result.is_err());
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("gonka_nodes") || msg.contains("node"),
+                "error must mention empty nodes: {msg}"
+            );
+        }
+
+        #[test]
+        fn build_gonka_provider_address_mismatch_returns_error() {
+            let entry = gonka_entry_with_nodes(valid_nodes());
+            let mut config = Config::default();
+            config.secrets.gonka_private_key = Some(Secret::new(VALID_PRIV_KEY));
+            config.secrets.gonka_address =
+                Some(Secret::new("gonka1wrongaddress000000000000000000000000000"));
+            let result = build_provider_from_entry(&entry, &config);
+            assert!(result.is_err());
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("does not match"),
+                "error must mention address mismatch: {msg}"
+            );
+        }
+
+        #[test]
+        fn build_gonka_provider_happy_path() {
+            let entry = gonka_entry_with_nodes(valid_nodes());
+            let mut config = Config::default();
+            config.secrets.gonka_private_key = Some(Secret::new(VALID_PRIV_KEY));
+            let result = build_provider_from_entry(&entry, &config);
+            assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
+            let provider = result.unwrap();
+            assert_eq!(provider.name(), "gonka");
+        }
+    }
 
     fn make_provider_entry(
         embed: bool,

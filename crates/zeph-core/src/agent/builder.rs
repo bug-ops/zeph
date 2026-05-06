@@ -2497,6 +2497,8 @@ mod tests {
             compatible_api_keys: std::collections::HashMap::new(),
             llm_request_timeout_secs: 30,
             embedding_model: String::new(),
+            gonka_private_key: None,
+            gonka_address: None,
         };
         let agent = make_agent()
             .with_shutdown(rx)

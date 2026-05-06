@@ -30,6 +30,8 @@ use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
 use crate::compatible::CompatibleProvider;
 use crate::gemini::GeminiProvider;
+#[cfg(feature = "gonka")]
+use crate::gonka::GonkaProvider;
 #[cfg(any(test, feature = "testing"))]
 use crate::mock::MockProvider;
 use crate::ollama::OllamaProvider;
@@ -58,6 +60,8 @@ macro_rules! delegate_provider {
             AnyProvider::Compatible($p) => $expr,
             AnyProvider::Router($p) => $expr,
             AnyProvider::Triage($p) => $expr,
+            #[cfg(feature = "gonka")]
+            AnyProvider::Gonka($p) => $expr,
             #[cfg(any(test, feature = "testing"))]
             AnyProvider::Mock($p) => $expr,
         }
@@ -84,6 +88,11 @@ pub enum AnyProvider {
     Router(Box<RouterProvider>),
     /// Complexity triage router: pre-classifies each request and delegates to the appropriate tier.
     Triage(Box<TriageRouter>),
+    /// Gonka native inference provider — routes signed requests through the Gonka network.
+    ///
+    /// Only available when the `gonka` feature is enabled.
+    #[cfg(feature = "gonka")]
+    Gonka(GonkaProvider),
     /// A mock provider for use in tests and benchmarks.
     ///
     /// Only available with the `testing` feature or in `#[cfg(test)]` contexts.
@@ -180,6 +189,9 @@ impl AnyProvider {
                 .unwrap_or_default()),
             #[cfg(feature = "candle")]
             AnyProvider::Candle(_) => Ok(vec![]),
+            // Gonka nodes have no model discovery API.
+            #[cfg(feature = "gonka")]
+            AnyProvider::Gonka(_) => Ok(vec![]),
             #[cfg(any(test, feature = "testing"))]
             AnyProvider::Mock(p) => Ok(p.models.clone()),
         }
@@ -220,6 +232,9 @@ impl AnyProvider {
             Self::Router(r) => r.last_selected_provider_kind(),
             // Triage has no post-call provider tracking; treat as unpriced.
             Self::Triage(_) => "local",
+            // Gonka is a metered network — treat as cloud for cost tracking.
+            #[cfg(feature = "gonka")]
+            Self::Gonka(_) => "cloud",
             _ => "cloud",
         }
     }
@@ -276,6 +291,8 @@ impl AnyProvider {
                 tracing::warn!("generation overrides not supported for Candle provider");
                 Self::Candle(p)
             }
+            #[cfg(feature = "gonka")]
+            Self::Gonka(p) => Self::Gonka(p.with_generation_overrides(overrides)),
             Self::Router(_) | Self::Triage(_) => {
                 tracing::warn!("generation overrides not supported for this provider variant");
                 self
@@ -329,6 +346,10 @@ impl AnyProvider {
             Self::Ollama(_) => {}
             #[cfg(feature = "candle")]
             Self::Candle(_) => {}
+            #[cfg(feature = "gonka")]
+            Self::Gonka(p) => {
+                p.set_status_tx(tx);
+            }
             #[cfg(any(test, feature = "testing"))]
             Self::Mock(_) => {}
         }
@@ -782,6 +803,53 @@ mod tests {
             "embed".into(),
         ));
         assert!(provider.supports_vision());
+    }
+
+    #[cfg(feature = "gonka")]
+    fn make_gonka() -> AnyProvider {
+        use crate::gonka::endpoints::{EndpointPool, GonkaEndpoint};
+        use crate::gonka::{GonkaProvider, RequestSigner};
+        use std::sync::Arc;
+        let signer = Arc::new(
+            RequestSigner::from_hex(
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                "gonka",
+            )
+            .unwrap(),
+        );
+        let pool = Arc::new(
+            EndpointPool::new(vec![GonkaEndpoint {
+                base_url: "https://node1.example.com".into(),
+                address: "gonka1w508d6qejxtdg4y5r3zarvary0c5xw7k2gsyg6".into(),
+            }])
+            .unwrap(),
+        );
+        AnyProvider::Gonka(GonkaProvider::new(
+            signer,
+            pool,
+            "gpt-4o",
+            4096,
+            None,
+            std::time::Duration::from_secs(30),
+        ))
+    }
+
+    #[cfg(feature = "gonka")]
+    #[test]
+    fn any_gonka_name() {
+        assert_eq!(make_gonka().name(), "gonka");
+    }
+
+    #[cfg(feature = "gonka")]
+    #[test]
+    fn any_gonka_supports_streaming() {
+        assert!(make_gonka().supports_streaming());
+    }
+
+    #[cfg(feature = "gonka")]
+    #[test]
+    fn any_gonka_provider_kind_str() {
+        assert_eq!(make_gonka().provider_kind_str(), "cloud");
     }
 
     #[test]

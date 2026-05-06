@@ -1,0 +1,20 @@
+---
+source: src/init/mod.rs
+expression: toml_str
+---
+type = "gonka"
+model = "gpt-4o"
+embedding_model = "text-embedding-3-small"
+embed = false
+default = false
+server_compaction = false
+enable_extended_context = false
+
+[[gonka_nodes]]
+url = "https://node1.gonka.ai"
+address = "gonka1node1placeholder000000000000000000000000"
+
+[[gonka_nodes]]
+url = "https://node2.gonka.ai"
+address = "gonka1node2placeholder000000000000000000000000"
+name = "backup"

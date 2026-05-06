@@ -246,7 +246,7 @@ task-metrics = ["zeph-core/task-metrics"]
 # Database backend selection — mutually exclusive. Default includes sqlite.
 # NOTE: --all-features activates both, triggering compile_error! in zeph-db.
 # Use --features full or --features full,postgres instead.
-gonka = ["zeph-llm/gonka"]
+gonka = ["zeph-llm/gonka", "zeph-core/gonka"]
 index = ["zeph-core/index"]
 sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite"]
 postgres = ["zeph-db/postgres", "zeph-memory/postgres"]
@@ -291,6 +291,7 @@ pprof = { workspace = true, optional = true, features = ["prost-codec"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 uuid = { workspace = true, optional = true, features = ["v4"] }
+zeroize.workspace = true
 zeph-a2a = { workspace = true, optional = true }
 zeph-acp = { workspace = true, optional = true }
 zeph-channels.workspace = true

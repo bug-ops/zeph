@@ -16,7 +16,7 @@ use crate::error::LlmError;
 use crate::gonka::endpoints::{EndpointPool, now_ns};
 use crate::gonka::signer::RequestSigner;
 use crate::openai::OpenAiProvider;
-use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, ToolDefinition};
+use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 use crate::sse::openai_sse_to_stream;
 use crate::usage::UsageTracker;
 
@@ -100,6 +100,8 @@ pub struct GonkaProvider {
     /// Embedding model name, separate from the chat model stored in `inner`.
     embedding_model: Option<String>,
     usage: UsageTracker,
+    /// Optional TUI status sender; when set, key lifecycle events are forwarded.
+    pub(crate) status_tx: Option<StatusTx>,
 }
 
 impl std::fmt::Debug for GonkaProvider {
@@ -109,6 +111,21 @@ impl std::fmt::Debug for GonkaProvider {
             .field("embedding_model", &self.embedding_model)
             .field("timeout", &self.timeout)
             .finish_non_exhaustive()
+    }
+}
+
+impl Clone for GonkaProvider {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            signer: Arc::clone(&self.signer),
+            pool: Arc::clone(&self.pool),
+            client: self.client.clone(),
+            timeout: self.timeout,
+            embedding_model: self.embedding_model.clone(),
+            usage: UsageTracker::default(),
+            status_tx: self.status_tx.clone(),
+        }
     }
 }
 
@@ -177,7 +194,13 @@ impl GonkaProvider {
             timeout,
             embedding_model,
             usage: UsageTracker::default(),
+            status_tx: None,
         }
+    }
+
+    /// Set the TUI status sender; when set, key lifecycle events are forwarded to the TUI.
+    pub fn set_status_tx(&mut self, tx: StatusTx) {
+        self.status_tx = Some(tx);
     }
 
     /// Sign `body_bytes` and send a POST to `{endpoint}{path}`, retrying across pool nodes.
@@ -200,6 +223,9 @@ impl GonkaProvider {
             let url = format!("{}{path}", endpoint.base_url);
 
             tracing::debug!(endpoint = %endpoint.base_url, "gonka POST {url}");
+            if let Some(ref tx) = self.status_tx {
+                let _ = tx.send(format!("Gonka: signing request to {}", endpoint.base_url));
+            }
 
             // Fresh timestamp on every attempt — non-replayable signatures.
             let timestamp_ns = u128::from(now_ns());
@@ -250,6 +276,18 @@ impl GonkaProvider {
         }
 
         Err(last_err.unwrap_or(LlmError::Unavailable))
+    }
+
+    /// Return a clone of this provider with generation parameter overrides applied.
+    ///
+    /// Delegates to the inner [`OpenAiProvider`] which carries the generation parameters.
+    #[must_use]
+    pub fn with_generation_overrides(
+        mut self,
+        overrides: crate::provider::GenerationOverrides,
+    ) -> Self {
+        self.inner = self.inner.with_generation_overrides(overrides);
+        self
     }
 
     fn store_usage(&self, usage: &OpenAiUsage) {

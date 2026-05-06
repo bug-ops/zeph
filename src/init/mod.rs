@@ -12,6 +12,7 @@ use zeph_core::config::{
     TriggerPolicy, VaultConfig,
 };
 use zeph_subagent::def::{MemoryScope, PermissionMode};
+use zeroize::Zeroizing;
 
 pub(super) mod agents;
 pub(super) mod llm;
@@ -237,6 +238,10 @@ pub(crate) struct WizardState {
     // Trajectory risk sentinel (spec 050)
     pub(crate) trajectory_critical_at: f32,
     pub(crate) trajectory_auto_recover: u32,
+    // Gonka native provider (#3613)
+    pub(crate) gonka_private_key: Option<Zeroizing<String>>,
+    pub(crate) gonka_address: Option<String>,
+    pub(crate) gonka_nodes: Vec<zeph_config::GonkaNode>,
 }
 
 impl Default for WizardState {
@@ -404,6 +409,9 @@ impl Default for WizardState {
             prometheus_enabled: false,
             trajectory_critical_at: 10.0,
             trajectory_auto_recover: 16,
+            gonka_private_key: None,
+            gonka_address: None,
+            gonka_nodes: Vec::new(),
         }
     }
 }
@@ -626,6 +634,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             enable_extended_context: state.enable_extended_context,
             thinking_level: state.gemini_thinking_level,
             vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
+            gonka_nodes: state.gonka_nodes.clone(),
             ..ProviderEntry::default()
         }]
     };
@@ -1626,6 +1635,12 @@ fn print_secrets_instructions(state: &WizardState) {
         use_age,
     );
 
+    // Gonka native provider: private key and address are stored in vault (never in config file).
+    if state.provider == Some(ProviderKind::Gonka) && state.gonka_private_key.is_some() {
+        secrets.push("ZEPH_GONKA_PRIVATE_KEY".into());
+        secrets.push("ZEPH_GONKA_ADDRESS".into());
+    }
+
     let include_telegram = use_age && matches!(state.channel, ChannelChoice::Telegram)
         || state.telegram_token.is_some();
     if include_telegram {
@@ -1690,6 +1705,7 @@ fn print_next_steps(state: &WizardState, path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta;
 
     fn single_provider_state() -> WizardState {
         WizardState {
@@ -2478,5 +2494,44 @@ mod tests {
             false,
         );
         assert_eq!(secrets, vec!["ZEPH_COMPATIBLE_GONKAGATE_API_KEY"]);
+    }
+
+    #[test]
+    fn build_config_gonka_provider_snapshot() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Gonka),
+            model: Some("gpt-4o".into()),
+            embedding_model: Some("text-embedding-3-small".into()),
+            vault_backend: "age".into(),
+            gonka_nodes: vec![
+                zeph_config::GonkaNode {
+                    url: "https://node1.gonka.ai".into(),
+                    address: "gonka1node1placeholder000000000000000000000000".into(),
+                    name: None,
+                },
+                zeph_config::GonkaNode {
+                    url: "https://node2.gonka.ai".into(),
+                    address: "gonka1node2placeholder000000000000000000000000".into(),
+                    name: Some("backup".into()),
+                },
+            ],
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        let providers = &config.llm.providers;
+        assert_eq!(providers.len(), 1);
+        let p = &providers[0];
+        assert_eq!(p.provider_type, ProviderKind::Gonka);
+        assert_eq!(p.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(p.gonka_nodes.len(), 2);
+        assert_eq!(p.gonka_nodes[0].url, "https://node1.gonka.ai");
+        assert_eq!(
+            p.gonka_nodes[0].address,
+            "gonka1node1placeholder000000000000000000000000"
+        );
+        assert_eq!(p.gonka_nodes[1].name.as_deref(), Some("backup"));
+        // Snapshot the serialized TOML shape for regression detection.
+        let toml_str = toml::to_string_pretty(p).expect("serialize provider entry");
+        insta::assert_snapshot!("gonka_provider_entry_toml", toml_str);
     }
 }

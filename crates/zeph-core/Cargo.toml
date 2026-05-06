@@ -20,6 +20,7 @@ task-metrics = ["dep:cpu-time", "dep:metrics", "zeph-common/task-metrics"]
 default = ["sqlite"]
 candle = ["zeph-llm/candle"]
 classifiers = ["zeph-llm/classifiers", "zeph-sanitizer/classifiers"]
+gonka = ["zeph-llm/gonka"]
 cuda = ["zeph-llm/cuda"]
 env-vault = ["zeph-vault/env-vault"]
 metal = ["zeph-llm/metal"]
@@ -64,6 +65,7 @@ cpu-time = { workspace = true, optional = true }
 metrics = { workspace = true, optional = true }
 tree-sitter.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
+zeroize.workspace = true
 zeph-agent-context.workspace = true
 zeph-agent-feedback.workspace = true
 zeph-agent-persistence.workspace = true

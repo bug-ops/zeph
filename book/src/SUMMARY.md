@@ -31,6 +31,7 @@
 # Guides
 
 - [Use a Cloud Provider](guides/cloud-provider.md)
+- [Gonka Provider](guides/gonka.md)
 - [Configuration Recipes](guides/config-recipes.md)
 - [Run via Telegram](guides/telegram.md)
 - [Add Custom Skills](guides/custom-skills.md)

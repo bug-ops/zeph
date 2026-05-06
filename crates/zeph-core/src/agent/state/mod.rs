@@ -56,6 +56,7 @@ use zeph_sanitizer::quarantine::QuarantinedSummarizer;
 use zeph_skills::matcher::SkillMatcherBackend;
 use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::SkillEvent;
+use zeroize::Zeroizing;
 
 use super::message_queue::QueuedMessage;
 
@@ -486,6 +487,8 @@ pub struct ProviderConfigSnapshot {
     pub compatible_api_keys: std::collections::HashMap<String, String>,
     pub llm_request_timeout_secs: u64,
     pub embedding_model: String,
+    pub gonka_private_key: Option<Zeroizing<String>>,
+    pub gonka_address: Option<String>,
 }
 
 /// Groups provider-related state: alternate providers, runtime switching, and compaction flags.

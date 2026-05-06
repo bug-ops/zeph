@@ -376,6 +376,8 @@ mod tests {
             compatible_api_keys: HashMap::default(),
             llm_request_timeout_secs: 30,
             embedding_model: "nomic-embed-text".to_owned(),
+            gonka_private_key: None,
+            gonka_address: None,
         }
     }
 
@@ -510,6 +512,8 @@ mod tests {
             compatible_api_keys: HashMap::default(),
             llm_request_timeout_secs: 60,
             embedding_model: "nomic-embed-text".to_owned(),
+            gonka_private_key: None,
+            gonka_address: None,
         };
         assert_eq!(snap.claude_api_key.as_deref(), Some("key-claude"));
         assert_eq!(snap.openai_api_key.as_deref(), Some("key-openai"));

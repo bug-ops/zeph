@@ -1304,6 +1304,11 @@ impl Default for CoeConfig {
 pub struct GonkaNode {
     /// HTTP(S) URL of the Gonka node (e.g. `"https://node1.gonka.ai"`).
     pub url: String,
+    /// On-chain bech32 address of this node (e.g. `"gonka1w508d6qejxtdg4y5r3zarvary0c5xw7k2gsyg6"`).
+    ///
+    /// Required for signature construction: every signed request binds to the target node's
+    /// on-chain address, making signatures non-replayable across different nodes.
+    pub address: String,
     /// Optional human-readable label for `zeph gonka doctor` output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -2441,14 +2446,17 @@ alpha = 1.5
         vec![
             GonkaNode {
                 url: "https://node1.gonka.ai".into(),
+                address: "gonka1w508d6qejxtdg4y5r3zarvary0c5xw7k2gsyg6".into(),
                 name: Some("node1".into()),
             },
             GonkaNode {
                 url: "https://node2.gonka.ai".into(),
+                address: "gonka14h0ycu78h88wzldxc7e79vhw5xsde0n85evmum".into(),
                 name: Some("node2".into()),
             },
             GonkaNode {
                 url: "http://node3.internal".into(),
+                address: "gonka1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqg".into(),
                 name: None,
             },
         ]
@@ -2474,6 +2482,7 @@ alpha = 1.5
     fn validate_gonka_node_empty_url_errors() {
         let entry = gonka_entry_with_nodes(vec![GonkaNode {
             url: String::new(),
+            address: "gonka1test".into(),
             name: None,
         }]);
         let err = entry.validate().unwrap_err();
@@ -2484,6 +2493,7 @@ alpha = 1.5
     fn validate_gonka_node_invalid_scheme_errors() {
         let entry = gonka_entry_with_nodes(vec![GonkaNode {
             url: "ftp://node.gonka.ai".into(),
+            address: "gonka1test".into(),
             name: None,
         }]);
         let err = entry.validate().unwrap_err();
@@ -2514,14 +2524,17 @@ gonka_chain_prefix = "custom-chain"
 
 [[llm.providers.gonka_nodes]]
 url = "https://node1.gonka.ai"
+address = "gonka1w508d6qejxtdg4y5r3zarvary0c5xw7k2gsyg6"
 name = "node1"
 
 [[llm.providers.gonka_nodes]]
 url = "https://node2.gonka.ai"
+address = "gonka14h0ycu78h88wzldxc7e79vhw5xsde0n85evmum"
 name = "node2"
 
 [[llm.providers.gonka_nodes]]
 url = "https://node3.gonka.ai"
+address = "gonka1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqg"
 "#;
         let cfg = parse_llm(toml);
         assert_eq!(cfg.providers.len(), 1);
@@ -2531,6 +2544,10 @@ url = "https://node3.gonka.ai"
         let nodes = &entry.gonka_nodes;
         assert_eq!(nodes.len(), 3);
         assert_eq!(nodes[0].url, "https://node1.gonka.ai");
+        assert_eq!(
+            nodes[0].address,
+            "gonka1w508d6qejxtdg4y5r3zarvary0c5xw7k2gsyg6"
+        );
         assert_eq!(nodes[0].name.as_deref(), Some("node1"));
         assert_eq!(nodes[2].name, None);
         assert_eq!(entry.gonka_chain_prefix.as_deref(), Some("custom-chain"));
