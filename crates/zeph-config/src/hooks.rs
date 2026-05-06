@@ -235,7 +235,7 @@ fail_closed = false
         assert!(cfg.permission_denied.is_empty());
     }
 
-    /// Exercises the full testing.toml hooks pattern: cwd_changed + file_changed + permission_denied
+    /// Exercises the full testing.toml hooks pattern: `cwd_changed` + `file_changed` + `permission_denied`
     /// all in one TOML document, in the order they appear in testing.toml. Prevents regression of
     /// issue #3625 where hooks appeared empty despite correct TOML config.
     #[test]
