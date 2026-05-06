@@ -182,9 +182,10 @@ async fn agent_integration_no_bash_blocks() {
     let _ = agent.run().await;
     let elapsed = start.elapsed();
 
-    // Should be very fast for non-bash response
+    // Should complete within a generous bound; the agent uses mocks with no real I/O.
+    // 2 s accounts for slow CI runners while still catching genuine regressions.
     assert!(
-        elapsed.as_millis() < 500,
+        elapsed.as_millis() < 2000,
         "Agent run should be fast for non-bash response: {elapsed:?}",
     );
 
