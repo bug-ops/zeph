@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(memory): `ApexMemConfig` under `[memory.graph.apex_mem]` in zeph-config. When `enabled = true`,
+  `SemanticMemory::remember()` routes graph writes through `insert_or_supersede_with_metrics()` instead
+  of the legacy destructive-update path, activating the APEX-MEM append-only write path with conflict
+  resolution and supersede chain tracking. Input sanitization (`strip_control_chars` +
+  `truncate_to_bytes_ref`) is applied before each write; `relation` preserves original casing while
+  `canonical_relation` is lowercased. Disabled by default. (#3631)
+
+- feat(memory): `WriteQualityGateConfig` under `[memory.quality_gate]` in zeph-config, mirroring all
+  fields from `zeph-memory::quality_gate::QualityGateConfig`. When `enabled = true`, bootstrap wires
+  `SemanticMemory::with_quality_gate()` after `attach_graph_stores()`, activating write quality
+  filtering on all `remember()` calls. Disabled by default. (#3629)
+
 - feat(zeph-core): wire `GonkaProvider` end-to-end as `AnyProvider::Gonka`. Adds `build_gonka_provider`
   factory with private key resolution from vault, optional address verification (case-insensitive bech32),
   and `EndpointPool` construction from `[[llm.providers]]` node list. `GonkaProvider` now implements
