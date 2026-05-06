@@ -795,6 +795,12 @@ impl<C: Channel> Agent<C> {
         };
         self.tool_executor.set_effective_trust(effective_trust);
 
+        // PASTE: rebuild tool→skill mapping and fire speculative dispatches (#3642).
+        // Runs only when mode is Pattern or Both and PatternStore is initialized.
+        // Gated before health_map to minimize latency on the hot path when disabled.
+        self.run_paste_skill_activation(&active_skills, &trust_map)
+            .await;
+
         // Build health_map: skill_name -> (posterior_mean, total_uses) for XML attributes.
         let health_map: std::collections::HashMap<String, (f64, u32)> = if let Some(memory) =
             &self.services.memory.persistence.memory
@@ -1195,6 +1201,91 @@ fn html_escape_goal(text: &str) -> String {
         }
     }
     out
+}
+
+// ── PASTE skill-activation speculation ────────────────────────────────────────
+
+impl<C: Channel> Agent<C> {
+    /// Rebuild the tool→skill mapping, then fire PASTE speculative dispatches for each
+    /// active skill whose pattern predictions exceed the confidence threshold (#3642).
+    ///
+    /// No-op when `pattern_store` is `None` (mode is not `Pattern` or `Both`).
+    /// All failures are non-fatal: errors log at `debug` and the agent loop continues.
+    #[tracing::instrument(name = "core.context.paste_activation", skip_all, fields(active_skills = active_skills.len()))]
+    async fn run_paste_skill_activation(
+        &mut self,
+        active_skills: &[zeph_skills::loader::Skill],
+        trust_map: &std::collections::HashMap<String, zeph_common::SkillTrustLevel>,
+    ) {
+        use zeph_config::tools::SpeculationMode;
+
+        let Some(ref store) = self.services.tool_state.pattern_store.clone() else {
+            return;
+        };
+
+        // Rebuild tool→skill mapping: tool_name → (skill_name, skill_dir_path as hash surrogate).
+        // Using skill_dir as a stable fingerprint avoids synchronous filesystem I/O on the hot path.
+        self.services.tool_state.tool_to_skill.clear();
+        for skill in active_skills {
+            let skill_hash = skill.meta.skill_dir.to_string_lossy().into_owned();
+            for tool_name in &skill.meta.allowed_tools {
+                self.services
+                    .tool_state
+                    .tool_to_skill
+                    .entry(tool_name.clone())
+                    .or_insert_with(|| (skill.meta.name.clone(), skill_hash.clone()));
+            }
+        }
+
+        // Reset per-turn last_tool tracking.
+        self.services.tool_state.last_tool_per_skill.clear();
+
+        // Fire speculative dispatches only when engine is active in Pattern or Both mode.
+        let Some(ref engine) = self.services.speculation_engine.clone() else {
+            return;
+        };
+
+        if !matches!(
+            engine.mode(),
+            SpeculationMode::Pattern | SpeculationMode::Both
+        ) {
+            return;
+        }
+
+        let threshold = engine.confidence_threshold();
+
+        for skill in active_skills {
+            let skill_name = &skill.meta.name;
+            let skill_hash = skill.meta.skill_dir.to_string_lossy();
+            let skill_trust = trust_map
+                .get(skill_name.as_str())
+                .copied()
+                .unwrap_or(zeph_common::SkillTrustLevel::Trusted);
+
+            let predictions = match tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                store.predict(skill_name, &skill_hash, None, 3),
+            )
+            .await
+            {
+                Ok(Ok(preds)) => preds,
+                Ok(Err(e)) => {
+                    tracing::debug!(skill = %skill_name, "PASTE predict error: {e}");
+                    continue;
+                }
+                Err(_) => {
+                    tracing::debug!(skill = %skill_name, "PASTE predict timeout");
+                    continue;
+                }
+            };
+
+            for pred in &predictions {
+                if pred.confidence >= threshold {
+                    engine.try_dispatch(pred, skill_trust);
+                }
+            }
+        }
+    }
 }
 
 // ── Test-only integration bridges ─────────────────────────────────────────────

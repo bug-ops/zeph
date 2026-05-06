@@ -230,6 +230,10 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
         self.inner.is_tool_retryable(tool_id)
     }
 
+    fn is_tool_speculatable(&self, tool_id: &str) -> bool {
+        self.inner.is_tool_speculatable(tool_id)
+    }
+
     fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
         self.effective_trust
             .store(trust_to_u8(level), Ordering::Relaxed);

@@ -32,6 +32,7 @@ pub mod cache;
 pub mod partial_json;
 pub mod paste;
 pub mod prediction;
+pub mod stream_drainer;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -177,6 +178,12 @@ impl SpeculationEngine {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.config.mode != SpeculationMode::Off
+    }
+
+    /// Minimum confidence score `[0.0, 1.0]` required to dispatch a speculative task.
+    #[must_use]
+    pub fn confidence_threshold(&self) -> f32 {
+        self.config.confidence_threshold
     }
 
     /// Try to dispatch `prediction` speculatively.

@@ -239,6 +239,25 @@ impl AnyProvider {
         }
     }
 
+    /// Send a streaming tool-use request, returning a `ToolSseStream`.
+    ///
+    /// Only `Claude` variants support native SSE tool-use streaming — all other providers
+    /// return `Err(LlmError::Unavailable)` and callers should fall back to `chat_with_tools`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider does not support tool streaming or the HTTP request fails.
+    pub async fn chat_with_tools_stream(
+        &self,
+        messages: &[crate::provider::Message],
+        tools: &[crate::provider::ToolDefinition],
+    ) -> Result<crate::sse::ToolSseStream, crate::LlmError> {
+        match self {
+            AnyProvider::Claude(p) => p.chat_with_tools_stream(messages, tools).await,
+            _ => Err(crate::LlmError::Unavailable),
+        }
+    }
+
     /// Record a quality outcome for reputation-based routing (RAPS).
     ///
     /// Delegates to [`RouterProvider::record_quality_outcome`] when the inner provider is a

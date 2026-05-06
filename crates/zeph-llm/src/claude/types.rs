@@ -533,6 +533,8 @@ pub(super) struct ToolRequestBody<'a> {
     pub system: Option<Vec<SystemContentBlock>>,
     pub messages: &'a [StructuredApiMessage],
     pub tools: &'a [serde_json::Value],
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingParam>,
     #[serde(skip_serializing_if = "Option::is_none")]

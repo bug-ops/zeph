@@ -351,6 +351,10 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
     fn is_tool_retryable(&self, tool_id: &str) -> bool {
         self.inner.is_tool_retryable(tool_id)
     }
+
+    fn is_tool_speculatable(&self, tool_id: &str) -> bool {
+        self.inner.is_tool_speculatable(tool_id)
+    }
 }
 
 fn truncate_params(params: &serde_json::Map<String, serde_json::Value>) -> String {

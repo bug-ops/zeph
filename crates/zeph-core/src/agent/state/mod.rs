@@ -665,6 +665,16 @@ pub(crate) struct ToolState {
     pub(crate) completed_tool_ids: HashSet<String>,
     /// Current tool loop iteration index within the active user turn.
     pub(crate) current_tool_iteration: usize,
+    /// PASTE pattern store for tool invocation history and prediction (#3642).
+    ///
+    /// `Some` only when `config.tools.speculative.mode` is `Pattern` or `Both`.
+    pub(crate) pattern_store: Option<Arc<crate::agent::speculative::paste::PatternStore>>,
+    /// Per-turn mapping from tool name to `(skill_name, skill_hash)`, populated at skill
+    /// activation and used by `observe()` to attribute tool completions to their owning skill.
+    pub(crate) tool_to_skill: HashMap<String, (String, String)>,
+    /// Last tool executed per skill in the current turn, keyed by skill name.
+    /// Used as `prev_tool` for PASTE pattern transition recording.
+    pub(crate) last_tool_per_skill: HashMap<String, String>,
 }
 
 /// Groups per-session I/O and policy state.

@@ -109,8 +109,18 @@ impl PartialJsonParser {
     /// Append `delta` and re-scan the buffer.
     ///
     /// Returns the current [`PrefixState`]. May be called repeatedly; each call
-    /// replaces the previous result.
+    /// replaces the previous result. Returns [`PrefixState::Malformed`] when the
+    /// accumulated buffer would exceed 512 KiB (protection against oversized inputs).
     pub fn push(&mut self, delta: &str) -> PrefixState {
+        const MAX_TOOL_INPUT_BYTES: usize = 512 * 1024;
+        if self.buf.len() + delta.len() > MAX_TOOL_INPUT_BYTES {
+            tracing::warn!(
+                buf_len = self.buf.len(),
+                delta_len = delta.len(),
+                "PartialJsonParser: tool input exceeded 512 KiB cap; treating as malformed"
+            );
+            return PrefixState::Malformed;
+        }
         self.buf.push_str(delta);
         self.scan()
     }

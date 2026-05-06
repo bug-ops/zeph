@@ -2421,6 +2421,27 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent
     };
 
+    // Wire PASTE PatternStore when mode is Pattern or Both and memory is available.
+    // Initialized here (after SpeculationEngine) so the pool reference is always fresh.
+    let agent = {
+        use zeph_config::tools::SpeculationMode;
+        let needs_paste = matches!(
+            config.tools.speculative.mode,
+            SpeculationMode::Pattern | SpeculationMode::Both
+        ) && !exec_mode.bare;
+        if needs_paste {
+            let pool = memory.sqlite().pool().clone();
+            let half_life_days = config.tools.speculative.pattern.half_life_days;
+            let store = std::sync::Arc::new(
+                zeph_core::agent::speculative::paste::PatternStore::new(pool, half_life_days),
+            );
+            tracing::info!("speculation: PASTE PatternStore wired");
+            agent.with_pattern_store(Some(store))
+        } else {
+            agent
+        }
+    };
+
     // Wire debug dump: CLI flag takes priority over [debug] config section.
     // --dump-format CLI override takes priority over config.debug.format.
     let effective_format = cli.dump_format.unwrap_or(config.debug.format);

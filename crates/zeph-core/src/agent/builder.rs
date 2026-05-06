@@ -2203,6 +2203,21 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Wire the PASTE [`PatternStore`] for tool invocation pattern learning (#3642).
+    ///
+    /// Must only be called when `config.tools.speculative.mode` is `Pattern` or `Both`
+    /// and a `SQLite` pool is available. Passing `None` is a no-op (PASTE disabled).
+    ///
+    /// [`PatternStore`]: crate::agent::speculative::paste::PatternStore
+    #[must_use]
+    pub fn with_pattern_store(
+        mut self,
+        store: Option<std::sync::Arc<crate::agent::speculative::paste::PatternStore>>,
+    ) -> Self {
+        self.services.tool_state.pattern_store = store;
+        self
+    }
+
     /// Returns a clone of the tool executor [`Arc`] for external wiring (e.g. `SpeculationEngine`).
     ///
     /// Always call this **after** all [`Self::add_tool_executor`] invocations to ensure the

@@ -914,27 +914,11 @@ impl<C: Channel> Agent<C> {
             model = %self.runtime.config.model_name,
             provider = self.provider.name(),
         );
-        let chat_fut = tokio::time::timeout(
-            llm_timeout,
-            self.provider
-                .chat_with_tools(&self.msg.messages, tool_defs)
-                .instrument(llm_span),
-        );
-        let timeout_result = tokio::select! {
-            r = chat_fut => r,
-            () = self.runtime.lifecycle.cancel_token.cancelled() => {
-                tracing::info!("chat_with_tools cancelled by user");
-                self.update_metrics(|m| m.cancellations += 1);
-                self.channel.send("[Cancelled]").await?;
-                return Ok(None);
-            }
-        };
-        let result = if let Ok(result) = timeout_result {
-            result?
-        } else {
-            self.channel
-                .send("LLM request timed out. Please try again.")
-                .await?;
+
+        let Some(result) = self
+            .dispatch_chat_with_tools(tool_defs, llm_timeout, llm_span)
+            .await?
+        else {
             return Ok(None);
         };
 
@@ -962,6 +946,127 @@ impl<C: Channel> Agent<C> {
         self.run_after_chat_layers(&result).await;
 
         Ok(Some(result))
+    }
+
+    /// Route the LLM call through the speculative SSE path or the normal blocking path.
+    ///
+    /// When `SpeculationMode` is `Decoding` or `Both`, attempts the streaming tool path and
+    /// falls back to non-streaming if the provider does not support it or the stream fails.
+    async fn dispatch_chat_with_tools(
+        &mut self,
+        tool_defs: &[ToolDefinition],
+        llm_timeout: std::time::Duration,
+        llm_span: tracing::Span,
+    ) -> Result<Option<ChatResponse>, crate::agent::error::AgentError> {
+        let use_speculative_stream = self.services.speculation_engine.as_ref().is_some_and(|e| {
+            matches!(
+                e.mode(),
+                zeph_config::tools::SpeculationMode::Decoding
+                    | zeph_config::tools::SpeculationMode::Both
+            )
+        });
+
+        if use_speculative_stream
+            && let Ok(stream) = self
+                .provider
+                .chat_with_tools_stream(&self.msg.messages, tool_defs)
+                .await
+        {
+            let engine = std::sync::Arc::clone(self.services.speculation_engine.as_ref().unwrap());
+            let threshold = engine.confidence_threshold();
+            let drainer = crate::agent::speculative::stream_drainer::SpeculativeStreamDrainer::new(
+                stream, engine, threshold,
+            );
+            let drain_fut = tokio::time::timeout(llm_timeout, drainer.drive().instrument(llm_span));
+            let timeout_result = tokio::select! {
+                r = drain_fut => r,
+                () = self.runtime.lifecycle.cancel_token.cancelled() => {
+                    tracing::info!("chat_with_tools (streaming) cancelled by user");
+                    self.update_metrics(|m| m.cancellations += 1);
+                    self.channel.send("[Cancelled]").await?;
+                    return Ok(None);
+                }
+            };
+            return match timeout_result {
+                Ok(Ok(resp)) => Ok(Some(resp)),
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "speculative SSE stream failed, falling back");
+                    self.call_non_streaming(tool_defs, llm_timeout).await
+                }
+                Err(_) => {
+                    self.channel
+                        .send("LLM request timed out. Please try again.")
+                        .await?;
+                    Ok(None)
+                }
+            };
+        }
+        // Provider does not support tool streaming or speculative mode is off — normal path.
+        self.call_non_streaming_with_span(tool_defs, llm_timeout, llm_span)
+            .await
+    }
+
+    async fn call_non_streaming(
+        &mut self,
+        tool_defs: &[ToolDefinition],
+        llm_timeout: std::time::Duration,
+    ) -> Result<Option<ChatResponse>, crate::agent::error::AgentError> {
+        let chat_fut = tokio::time::timeout(
+            llm_timeout,
+            self.provider.chat_with_tools(&self.msg.messages, tool_defs),
+        );
+        let timeout_result = tokio::select! {
+            r = chat_fut => r,
+            () = self.runtime.lifecycle.cancel_token.cancelled() => {
+                tracing::info!("chat_with_tools cancelled by user");
+                self.update_metrics(|m| m.cancellations += 1);
+                self.channel.send("[Cancelled]").await?;
+                return Ok(None);
+            }
+        };
+        match timeout_result {
+            Ok(Ok(r)) => Ok(Some(r)),
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => {
+                self.channel
+                    .send("LLM request timed out. Please try again.")
+                    .await?;
+                Ok(None)
+            }
+        }
+    }
+
+    async fn call_non_streaming_with_span(
+        &mut self,
+        tool_defs: &[ToolDefinition],
+        llm_timeout: std::time::Duration,
+        llm_span: tracing::Span,
+    ) -> Result<Option<ChatResponse>, crate::agent::error::AgentError> {
+        let chat_fut = tokio::time::timeout(
+            llm_timeout,
+            self.provider
+                .chat_with_tools(&self.msg.messages, tool_defs)
+                .instrument(llm_span),
+        );
+        let timeout_result = tokio::select! {
+            r = chat_fut => r,
+            () = self.runtime.lifecycle.cancel_token.cancelled() => {
+                tracing::info!("chat_with_tools cancelled by user");
+                self.update_metrics(|m| m.cancellations += 1);
+                self.channel.send("[Cancelled]").await?;
+                return Ok(None);
+            }
+        };
+        match timeout_result {
+            Ok(Ok(r)) => Ok(Some(r)),
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => {
+                self.channel
+                    .send("LLM request timed out. Please try again.")
+                    .await?;
+                Ok(None)
+            }
+        }
     }
 
     /// Prepare and dump the request debug payload, returning the dump ID for the response dump.
@@ -2638,29 +2743,52 @@ impl<C: Channel> Agent<C> {
                 continue;
             }
 
-            let sem = std::sync::Arc::clone(semaphore);
-            let executor = std::sync::Arc::clone(&self.tool_executor);
-            let call = call.clone();
-            let tool_name = tc.name.clone();
-            let tool_id = tc.id.clone();
-            let fut = async move {
-                let _permit = sem.acquire().await.map_err(|_| {
-                    zeph_tools::ToolError::Execution(std::io::Error::other(
-                        "semaphore closed during tool execution",
-                    ))
-                })?;
-                executor
-                    .execute_tool_call_erased(&call)
-                    .instrument(tracing::info_span!(
-                        "tool_exec",
-                        tool_name = %tool_name,
-                        idx = %tool_id
-                    ))
-                    .await
-            };
-            tier_futs.push((idx, Box::pin(fut)));
+            // Speculative try_commit (#3641): reuse a pre-executed result when available.
+            // Uses the LLM-assigned `tool_use_id` (tc.id) for result routing (critic H3).
+            // TODO(#3645): add circuit-breaker check when implemented.
+            if let Some(engine) = self.services.speculation_engine.as_ref()
+                && let Some(result) =
+                    crate::agent::speculative::stream_drainer::try_commit_with_timeout(engine, call)
+                        .await
+            {
+                tracing::debug!(tool = %tc.name, llm_id = %tc.id, "speculative try_commit hit");
+                tier_futs.push((idx, Box::pin(std::future::ready(result))));
+                continue;
+            }
+
+            tier_futs.push(self.make_exec_future(idx, tc, call, semaphore));
         }
         Ok(tier_futs)
+    }
+
+    fn make_exec_future(
+        &self,
+        idx: usize,
+        tc: &zeph_llm::provider::ToolUseRequest,
+        call: &ToolCall,
+        semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    ) -> (usize, ToolExecFut) {
+        let sem = std::sync::Arc::clone(semaphore);
+        let executor = std::sync::Arc::clone(&self.tool_executor);
+        let call = call.clone();
+        let tool_name = tc.name.clone();
+        let tool_id = tc.id.clone();
+        let fut = async move {
+            let _permit = sem.acquire().await.map_err(|_| {
+                zeph_tools::ToolError::Execution(std::io::Error::other(
+                    "semaphore closed during tool execution",
+                ))
+            })?;
+            executor
+                .execute_tool_call_erased(&call)
+                .instrument(tracing::info_span!(
+                    "tool_exec",
+                    tool_name = %tool_name,
+                    idx = %tool_id
+                ))
+                .await
+        };
+        (idx, Box::pin(fut))
     }
 
     /// Poll tier futures concurrently with cancellation and MCP elicitation drain.
@@ -3445,6 +3573,10 @@ impl<C: Channel> Agent<C> {
             &llm_content,
         );
 
+        // PASTE: record tool transition for pattern learning (#3642).
+        self.observe_paste_transition(tc, started_at, tool_succeeded, vigil_blocked)
+            .await;
+
         result_parts.push(MessagePart::ToolResult {
             tool_use_id: tc.id.clone(),
             content: llm_content,
@@ -3813,6 +3945,74 @@ impl<C: Channel> Agent<C> {
         self.persist_message(Role::User, &user_msg.content, &user_msg.parts, false)
             .await;
         self.push_message(user_msg);
+    }
+
+    /// Record a PASTE pattern transition after a tool call completes (#3642).
+    ///
+    /// Resolves the owning skill via the `tool_to_skill` map built at skill activation,
+    /// then calls [`PatternStore::observe`] with the previous tool name and the outcome.
+    /// All errors and timeouts are silently ignored — PASTE failures must never block the agent.
+    #[tracing::instrument(name = "core.tool.observe_paste", skip_all, fields(tool = %tc.name))]
+    async fn observe_paste_transition(
+        &mut self,
+        tc: &zeph_llm::provider::ToolUseRequest,
+        started_at: &std::time::Instant,
+        tool_succeeded: bool,
+        vigil_blocked: bool,
+    ) {
+        let Some(ref store) = self.services.tool_state.pattern_store.clone() else {
+            return;
+        };
+
+        let tool_name = tc.name.as_str();
+
+        let Some((skill_name, skill_hash)) = self
+            .services
+            .tool_state
+            .tool_to_skill
+            .get(tool_name)
+            .cloned()
+        else {
+            return;
+        };
+
+        let prev_tool = self
+            .services
+            .tool_state
+            .last_tool_per_skill
+            .get(&skill_name)
+            .cloned();
+
+        let outcome = if tool_succeeded && !vigil_blocked {
+            crate::agent::speculative::paste::ToolOutcome::Success
+        } else {
+            crate::agent::speculative::paste::ToolOutcome::Failure
+        };
+
+        let latency_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+        let args_json = serde_json::to_string(&tc.input).unwrap_or_default();
+
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            store.observe(
+                &skill_name,
+                &skill_hash,
+                prev_tool.as_deref(),
+                tool_name,
+                &args_json,
+                outcome,
+                latency_ms,
+            ),
+        )
+        .await;
+
+        // Update last_tool_per_skill for this skill so the next tool in the same turn
+        // uses the correct prev_tool value.
+        self.services
+            .tool_state
+            .last_tool_per_skill
+            .insert(skill_name, tool_name.to_owned());
     }
 }
 

@@ -95,7 +95,7 @@ pub mod provider_dyn;
 pub(crate) mod retry;
 pub mod router;
 pub(crate) mod schema;
-pub(crate) mod sse;
+pub mod sse;
 pub mod stt;
 #[cfg(test)]
 pub mod testing;

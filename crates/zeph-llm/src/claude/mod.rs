@@ -84,6 +84,7 @@ const MODELS_WITH_EXTENDED_CACHE_TTL: &[&str] =
 const MAX_RETRIES: u32 = 3;
 
 use self::types::MIN_MAX_TOKENS_WITH_THINKING;
+use crate::sse::claude_sse_to_tool_stream;
 
 /// [`LlmProvider`] backend for the Anthropic Claude API.
 ///
@@ -880,6 +881,99 @@ impl ClaudeProvider {
             })
     }
 
+    /// Send a streaming tool-use request and return a [`ToolSseStream`].
+    ///
+    /// Used by `SpeculativeStreamDrainer` to intercept `InputJsonDelta` events for early
+    /// speculative dispatch while assembling the final `ChatResponse` at stream end.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or the API returns a non-2xx status.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.claude.tools_stream",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
+    pub async fn chat_with_tools_stream(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<crate::sse::ToolSseStream, LlmError> {
+        let (system, mut chat_messages) =
+            split_messages_structured(messages, self.cache_user_messages, self.prompt_cache_ttl);
+        let api_tools = self.get_or_build_api_tools(tools);
+
+        let (thinking_param, mut temperature, effort) = self.build_thinking_param();
+        if thinking_param.is_none()
+            && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
+        {
+            temperature = Some(t);
+        }
+        let output_config = effort.map(|e| OutputConfig { effort: e });
+        let system_blocks =
+            system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
+        Self::cap_block_cache_controls(1, system_blocks.as_deref(), Some(&mut chat_messages));
+        let beta = self.beta_header(!tools.is_empty());
+        let body = ToolRequestBody {
+            model: &self.model,
+            max_tokens: self.max_tokens,
+            system: system_blocks,
+            messages: &chat_messages,
+            tools: &api_tools,
+            stream: true,
+            thinking: thinking_param,
+            output_config,
+            temperature,
+            context_management: self.context_management(),
+        };
+
+        let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
+            let mut req = self
+                .client
+                .post(API_URL)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION);
+            if let Some(ref b) = beta {
+                req = req.header("anthropic-beta", b);
+            }
+            req.header("content-type", "application/json")
+                .json(&body)
+                .send()
+        })
+        .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.map_err(LlmError::Http)?;
+            if Self::is_compact_beta_rejection(status, &text) {
+                self.server_compaction_rejected
+                    .store(true, Ordering::Relaxed);
+                tracing::warn!(
+                    "compact-2026-01-12 beta header rejected by Claude API (tool stream); \
+                    disabling server-side compaction for this session."
+                );
+                return Err(LlmError::BetaHeaderRejected {
+                    header: ANTHROPIC_BETA_COMPACT.into(),
+                });
+            }
+            tracing::error!("Claude API error {status}: {text}");
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && crate::error::body_is_context_length_error(&text)
+            {
+                return Err(LlmError::ContextLengthExceeded);
+            }
+            return Err(LlmError::ApiError {
+                provider: "claude".into(),
+                status: status.as_u16(),
+            });
+        }
+
+        Ok(claude_sse_to_tool_stream(response))
+    }
+
     async fn send_stream_request(
         &self,
         messages: &[Message],
@@ -1163,6 +1257,7 @@ impl LlmProvider for ClaudeProvider {
                 system: system_blocks,
                 messages: &chat_messages,
                 tools: &api_tools,
+                stream: false,
                 thinking: thinking_param,
                 output_config,
                 temperature,
@@ -1240,6 +1335,7 @@ impl LlmProvider for ClaudeProvider {
             system: system_blocks,
             messages: &chat_messages,
             tools: &api_tools,
+            stream: false,
             thinking: thinking_param,
             output_config,
             temperature,

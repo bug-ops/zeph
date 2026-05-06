@@ -81,6 +81,10 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
     fn is_tool_retryable(&self, tool_id: &str) -> bool {
         self.first.is_tool_retryable(tool_id) || self.second.is_tool_retryable(tool_id)
     }
+
+    fn is_tool_speculatable(&self, tool_id: &str) -> bool {
+        self.first.is_tool_speculatable(tool_id) || self.second.is_tool_speculatable(tool_id)
+    }
 }
 
 #[cfg(test)]

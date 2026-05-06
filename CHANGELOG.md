@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(core): `SpeculationEngine.try_dispatch` wired into two activation paths. SSE decoding path:
+  `claude_sse_to_tool_stream` emits `ToolBlockStart` at `content_block_start` so
+  `SpeculativeStreamDrainer` can populate `tool_meta` before `InputJsonDelta` events arrive; when
+  confidence exceeds `confidence_threshold`, `try_dispatch(Trusted)` fires with a 2 s timeout.
+  `AnyProvider` exposes `chat_with_tools_stream` with a streaming fallback. PASTE pattern path:
+  `run_paste_skill_activation` calls `PatternStore::predict` per active skill and dispatches
+  candidates above threshold with per-skill trust; `observe_paste_transition` records transitions
+  for future pattern learning. `is_tool_speculatable` is now propagated through
+  `CompositeExecutor`, `PolicyGateExecutor`, and `TrustGateExecutor`. `PartialJsonParser::push`
+  rejects inputs exceeding 512 KB. (#3641, #3642)
+
 ### Fixed
 
 - fix(core): `ErasedToolExecutor::requires_confirmation_erased` default inverted from `false` to
