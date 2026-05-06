@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(memory): `insert_or_supersede_with_metrics` no longer violates `uq_graph_edges_active_head`.
+  SQLite enforces unique indexes at statement level; the prior fix inserted the new row before
+  deactivating the old head. Split `invalidate_prior_head` into `expire_prior_head` (sets
+  `valid_to`/`expired_at` before INSERT) and `set_superseded_by` (back-fills `superseded_by`
+  after INSERT), both within the same transaction. (#3635)
+
 ### Added
 
 - feat(memory): `ApexMemConfig` under `[memory.graph.apex_mem]` in zeph-config. When `enabled = true`,
