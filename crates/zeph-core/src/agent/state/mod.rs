@@ -646,6 +646,8 @@ pub(crate) struct CompressionState {
     >,
     /// Hash of the last user message when subgoal extraction was scheduled.
     pub(crate) subgoal_user_msg_hash: Option<u64>,
+    /// Shared typed-page state (#3630). `None` when `typed_pages.enabled = false`.
+    pub(crate) typed_pages_state: Option<Arc<zeph_context::typed_page::TypedPagesState>>,
 }
 
 /// Groups runtime tool filtering, dependency tracking, and iteration bookkeeping.

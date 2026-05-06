@@ -11,8 +11,14 @@
 //! The caller (scheduling module) is responsible for deciding *when* to compact.
 //! This module handles: archive → partition → summarize → probe → drain → reinsert → persist.
 
+use std::sync::Arc;
+
 use zeph_context::slot::cap_summary;
-use zeph_llm::provider::{Message, MessageMetadata, Role};
+use zeph_context::typed_page::{
+    BatchAssertions, CompactedPageRecord, PageOrigin, PageType, TypedPage, TypedPagesState,
+    classify_with_role, detect_schema_hint,
+};
+use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
 use crate::compaction::SubgoalState;
 use crate::error::ContextError;
@@ -34,6 +40,7 @@ use crate::state::{CompactionOutcome, ContextSummarizationView, ProbeOutcome};
 /// # Errors
 ///
 /// Returns [`ContextError`] if LLM summarization fails.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn compact_context(
     summ: &mut ContextSummarizationView<'_>,
     max_summary_tokens: Option<usize>,
@@ -58,11 +65,25 @@ pub(crate) async fn compact_context(
         return Ok(CompactionOutcome::NoChange);
     }
 
-    let (pinned, active_subgoal, to_compact) = partition_messages_for_compaction(summ, compact_end);
+    let (pinned, active_subgoal, mut to_compact) =
+        partition_messages_for_compaction(summ, compact_end);
 
     if to_compact.is_empty() {
         return Ok(CompactionOutcome::NoChange);
     }
+
+    // Step 2.5: classify to_compact messages into TypedPages.
+    let typed_pages_state = summ.typed_pages.clone();
+    let (typed_pages_vec, batch_assertions) = if let Some(ref state) = typed_pages_state {
+        let _span = tracing::info_span!(
+            "context.typed_page.classify_batch",
+            message_count = to_compact.len()
+        )
+        .entered();
+        classify_to_compact_batch(&to_compact, state)
+    } else {
+        (Vec::new(), BatchAssertions::default())
+    };
 
     // Step 3: archive tool outputs before summarization (Memex #2432).
     // Extract the archive pointer before .await so no &summ crosses the await boundary.
@@ -73,10 +94,37 @@ pub(crate) async fn compact_context(
         Vec::new()
     };
 
+    // Step 3.5: in active enforcement mode, pointer-replace SystemContext pages.
+    let is_active = typed_pages_state.as_ref().is_some_and(|s| s.is_active);
+    if is_active {
+        let span = tracing::info_span!(
+            "context.typed_page.pointer_replace",
+            replaced_count = tracing::field::Empty
+        )
+        .entered();
+        pointer_replace_system_pages(&mut to_compact, &typed_pages_vec, &span);
+    }
+
     // Step 4: LLM summarization.
+    // In active mode, if every message in to_compact was pointer-replaced (all-SystemContext
+    // batch), skip the LLM call: the stubs carry no semantic content the LLM can summarize,
+    // and sending only `[system-ptr:…]` lines would produce a meaningless injected summary.
+    let all_stubs = is_active
+        && !typed_pages_vec.is_empty()
+        && typed_pages_vec
+            .iter()
+            .all(|p| p.page_type == PageType::SystemContext);
+
     // Extract deps and guidelines from summ synchronously before .await so no reference to
     // summ (which contains !Sync fields) is held across the await boundary.
-    let summary = {
+    let summary = if all_stubs {
+        let n = typed_pages_vec.len();
+        tracing::debug!(
+            n,
+            "all-SystemContext batch in active mode — skipping LLM, using synthetic summary"
+        );
+        format!("[system context — {n} blocks pointer-replaced]")
+    } else {
         let deps = summ.summarization_deps.clone();
         let guidelines = summ
             .compression_guidelines
@@ -91,6 +139,25 @@ pub(crate) async fn compact_context(
         let outcome = probe.validate(&to_compact, &summary).await;
         if outcome == ProbeOutcome::HardFail {
             return Ok(CompactionOutcome::ProbeRejected);
+        }
+    }
+
+    // Step 5.5: batch assertions (observational, never blocks compaction).
+    if !typed_pages_vec.is_empty() {
+        let span = tracing::info_span!(
+            "context.typed_page.batch_assertions",
+            tool_names_checked = batch_assertions.tool_names_in_batch.len(),
+            violations = tracing::field::Empty
+        )
+        .entered();
+        let violations = batch_assertions.check(&summary);
+        if !violations.is_empty() {
+            tracing::warn!(
+                violation_count = violations.len(),
+                ?violations,
+                "typed-page batch assertions failed (observational, compaction proceeds)"
+            );
+            span.record("violations", violations.len());
         }
     }
 
@@ -131,6 +198,24 @@ pub(crate) async fn compact_context(
     } else {
         (false, None)
     };
+
+    // Step 7.5: emit audit records for classified pages (non-blocking).
+    if !typed_pages_vec.is_empty()
+        && let Some(state) = typed_pages_state.as_ref()
+        && let Some(ref sink) = state.audit_sink
+    {
+        let span = tracing::info_span!(
+            "context.typed_page.audit_emit",
+            records_sent = tracing::field::Empty,
+            dropped = tracing::field::Empty
+        )
+        .entered();
+        let dropped_before = sink.dropped_count();
+        emit_audit_records(sink, &typed_pages_vec, &summary);
+        let dropped_after = sink.dropped_count();
+        span.record("records_sent", typed_pages_vec.len());
+        span.record("dropped", dropped_after.saturating_sub(dropped_before));
+    }
 
     if persist_failed {
         Ok(CompactionOutcome::CompactedWithPersistError { qdrant_future })
@@ -300,6 +385,246 @@ pub(crate) fn adjust_compact_end_for_tool_pairs(messages: &[Message], mut raw: u
         }
     }
     raw
+}
+
+// ── Typed-page helpers ────────────────────────────────────────────────────────
+
+/// Classify all messages in `to_compact` and build `BatchAssertions`.
+///
+/// Returns `(Vec<TypedPage>, BatchAssertions)`. Index `i` in the returned vec
+/// corresponds to `to_compact[i]`.
+fn classify_to_compact_batch(
+    to_compact: &[Message],
+    _state: &TypedPagesState,
+) -> (Vec<TypedPage>, BatchAssertions) {
+    let mut pages = Vec::with_capacity(to_compact.len());
+    let mut tool_names: Vec<String> = Vec::new();
+    let mut excerpt_labels: Vec<String> = Vec::new();
+    let mut has_memory_excerpt = false;
+
+    for (i, msg) in to_compact.iter().enumerate() {
+        let is_system = matches!(msg.role, Role::System);
+        let body = msg.content.as_str();
+        let page_type = classify_with_role(body, is_system);
+
+        let origin = derive_origin(msg, i, page_type);
+        let schema_hint = if page_type == PageType::ToolOutput {
+            Some(detect_schema_hint(body, false))
+        } else {
+            None
+        };
+        let tokens = u32::try_from((body.len() / 4).min(u32::MAX as usize)).unwrap_or(u32::MAX);
+
+        // Collect batch assertion inputs.
+        match page_type {
+            PageType::ToolOutput => {
+                if let PageOrigin::ToolPair { ref tool_name } = origin
+                    && !tool_name.is_empty()
+                {
+                    tool_names.push(tool_name.clone());
+                }
+            }
+            PageType::MemoryExcerpt => {
+                has_memory_excerpt = true;
+                if let PageOrigin::Excerpt { ref source_label } = origin
+                    && !source_label.is_empty()
+                {
+                    excerpt_labels.push(source_label.clone());
+                }
+            }
+            PageType::SystemContext | PageType::ConversationTurn => {}
+        }
+
+        pages.push(TypedPage::new(
+            page_type,
+            origin,
+            tokens,
+            Arc::from(body),
+            schema_hint,
+        ));
+    }
+
+    let assertions = BatchAssertions {
+        tool_names_in_batch: tool_names,
+        has_memory_excerpt,
+        excerpt_labels,
+    };
+    (pages, assertions)
+}
+
+/// Derive [`PageOrigin`] for a message given its pre-computed [`PageType`].
+///
+/// For `ToolOutput`, prefers `MessagePart::ToolOutput.tool_name` (authoritative)
+/// over content-prefix heuristics.
+fn derive_origin(msg: &Message, index: usize, page_type: PageType) -> PageOrigin {
+    match page_type {
+        PageType::ToolOutput => {
+            // Authoritative: structured part carries the tool name.
+            let tool_name = extract_tool_name_from_parts(&msg.parts)
+                // Heuristic fallback: content prefix.
+                .or_else(|| extract_tool_name_from_content(&msg.content))
+                .unwrap_or_default();
+            PageOrigin::ToolPair { tool_name }
+        }
+        PageType::MemoryExcerpt => {
+            let source_label = extract_source_label_from_content(&msg.content);
+            PageOrigin::Excerpt { source_label }
+        }
+        PageType::SystemContext => {
+            let key = extract_system_key_from_content(&msg.content)
+                .unwrap_or_else(|| format!("msg_{index}"));
+            PageOrigin::System { key }
+        }
+        PageType::ConversationTurn => PageOrigin::Turn {
+            message_id: index.to_string(),
+        },
+    }
+}
+
+/// Extract tool name from `MessagePart::ToolOutput` (primary, authoritative).
+fn extract_tool_name_from_parts(parts: &[MessagePart]) -> Option<String> {
+    for part in parts {
+        match part {
+            MessagePart::ToolOutput { tool_name, .. } => {
+                return Some(tool_name.to_string());
+            }
+            MessagePart::ToolUse { name, .. } => {
+                return Some(name.clone());
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Extract tool name from content prefix (heuristic fallback).
+///
+/// Recognises `[tool:name]` and `[tool_output] <name>` patterns.
+/// Returns `None` if content does not match or first word looks like metadata
+/// (e.g. `exit_code`, `exit_status`, `status`).
+fn extract_tool_name_from_content(content: &str) -> Option<String> {
+    // Avoid misclassifying raw output fields as tool names.
+    const METADATA_WORDS: &[&str] = &["exit_code", "exit_status", "exit:", "status:", "rc:"];
+
+    let trimmed = content.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("[tool:")
+        && let Some(end) = rest.find(']')
+    {
+        return Some(rest[..end].to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("[tool_output] ") {
+        let first_word = rest.split_whitespace().next().unwrap_or("");
+        let looks_like_metadata = METADATA_WORDS
+            .iter()
+            .any(|m| first_word == *m || first_word.starts_with(m.trim_end_matches(':')));
+        if !first_word.is_empty() && !looks_like_metadata {
+            return Some(first_word.to_string());
+        }
+    }
+    None
+}
+
+/// Extract source label from memory-excerpt content prefix.
+fn extract_source_label_from_content(content: &str) -> String {
+    let trimmed = content.trim_start();
+    if trimmed.starts_with("[cross-session context]") {
+        return "cross_session".into();
+    }
+    if trimmed.starts_with("[semantic recall]") {
+        return "semantic_recall".into();
+    }
+    if trimmed.starts_with("[known facts]") {
+        return "graph_facts".into();
+    }
+    if trimmed.starts_with("[conversation summaries]") {
+        return "summaries".into();
+    }
+    if trimmed.starts_with("[past corrections]") {
+        return "corrections".into();
+    }
+    if trimmed.starts_with("## Relevant documents") {
+        return "document_rag".into();
+    }
+    "unknown".into()
+}
+
+/// Extract a logical key from a system-context content prefix.
+fn extract_system_key_from_content(content: &str) -> Option<String> {
+    const KNOWN: &[(&str, &str)] = &[
+        ("[Persona context]", "persona"),
+        ("[Past experience]", "past_experience"),
+        ("[Memory summary]", "memory_summary"),
+        ("[system", "system"),
+        ("[skill", "skill"),
+        ("[persona", "persona"),
+        ("[digest", "digest"),
+        ("[compression", "compression"),
+    ];
+    let trimmed = content.trim_start();
+    for (prefix, key) in KNOWN {
+        if trimmed.starts_with(prefix) {
+            return Some((*key).to_string());
+        }
+    }
+    None
+}
+
+/// In `active` enforcement mode, replace `SystemContext` pages in `to_compact` with pointer stubs.
+///
+/// The original message content is replaced with `[system-ptr:{page_id}]` so the LLM never
+/// paraphrases system instructions.
+fn pointer_replace_system_pages(
+    to_compact: &mut [Message],
+    typed_pages: &[TypedPage],
+    span: &tracing::span::EnteredSpan,
+) {
+    use zeph_context::typed_page::SYSTEM_POINTER_PREFIX;
+
+    let mut replaced = 0usize;
+    for (msg, page) in to_compact.iter_mut().zip(typed_pages.iter()) {
+        if page.page_type == PageType::SystemContext {
+            msg.content = format!("{SYSTEM_POINTER_PREFIX}{}]", page.page_id.0);
+            replaced += 1;
+        }
+    }
+    span.record("replaced_count", replaced);
+    if replaced > 0 {
+        tracing::debug!(
+            replaced,
+            "pointer-replaced SystemContext pages before LLM compaction"
+        );
+    }
+}
+
+/// Emit audit records for all classified pages to the sink (non-blocking `try_send`).
+fn emit_audit_records(
+    sink: &zeph_context::typed_page::CompactionAuditSink,
+    typed_pages: &[TypedPage],
+    summary: &str,
+) {
+    let ts = chrono::Utc::now().to_rfc3339();
+    let turn_id = "batch".to_string();
+    let compacted_tokens =
+        u32::try_from((summary.len() / 4).min(u32::MAX as usize)).unwrap_or(u32::MAX);
+
+    for page in typed_pages {
+        let record = CompactedPageRecord {
+            ts: ts.clone(),
+            turn_id: turn_id.clone(),
+            page_id: page.page_id.0.clone(),
+            page_type: page.page_type,
+            origin: page.origin.clone(),
+            original_tokens: page.tokens,
+            compacted_tokens,
+            fidelity_level: "batch_summary_v1".to_string(),
+            invariant_version: 1,
+            provider_name: "batch".to_string(),
+            violations: vec![],
+            classification_fallback: matches!(page.page_type, PageType::ConversationTurn)
+                && !page.body.starts_with('['),
+        };
+        sink.send(record);
+    }
 }
 
 #[cfg(test)]

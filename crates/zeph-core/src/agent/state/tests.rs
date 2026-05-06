@@ -272,6 +272,7 @@ fn compression_state_construction() {
         subgoal_registry: zeph_agent_context::SubgoalRegistry::default(),
         pending_subgoal: None,
         subgoal_user_msg_hash: None,
+        typed_pages_state: None,
     };
     assert!(state.current_task_goal.is_none());
     assert!(state.task_goal_user_msg_hash.is_none());

@@ -141,7 +141,8 @@ pub use memory::{
     MemCotConfig, MemoryConfig, MicrocompactConfig, NoteLinkingConfig, PersonaConfig,
     PruningStrategy, ReasoningConfig, RecallViewConfig, RetrievalConfig, RetrievalFailuresConfig,
     RpeConfig, SemanticConfig, SessionsConfig, SidequestConfig, StoreRoutingConfig,
-    StoreRoutingStrategy, TierConfig, TrajectoryConfig, TreeConfig, VectorBackend,
+    StoreRoutingStrategy, TierConfig, TrajectoryConfig, TreeConfig, TypedPagesConfig,
+    TypedPagesEnforcement, VectorBackend,
 };
 pub use metrics::MetricsConfig;
 pub use notifications::NotificationsConfig;

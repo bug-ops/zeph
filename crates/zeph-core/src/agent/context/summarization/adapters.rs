@@ -390,34 +390,37 @@ impl CompactionPersistence for AgentPersistence {
 
 // ── CompactionAdapters bundle ─────────────────────────────────────────────────
 
-/// Bundle of all four compaction adapters for `Agent<C>`.
+/// Bundle of all compaction adapters for `Agent<C>`.
 ///
 /// Constructed once from `&mut Agent<C>` in the `compact_context` shim, then wired
 /// into the [`zeph_agent_context::state::ContextSummarizationView`] via [`Self::populate`].
-/// This collapses four separate adapter constructions into one shim statement.
+/// This collapses adapter constructions into one shim statement.
 pub(in crate::agent) struct CompactionAdapters {
     probe: AgentProbe,
     archive: AgentArchive,
     persistence: AgentPersistence,
     metrics: MetricsCollectorCallback,
+    typed_pages: Option<std::sync::Arc<zeph_context::typed_page::TypedPagesState>>,
 }
 
 impl CompactionAdapters {
-    /// Build all four adapters from the agent. Only reads fields — does not retain a borrow.
+    /// Build all adapters from the agent. Only reads fields — does not retain a borrow.
     pub(in crate::agent) fn new<C: Channel>(agent: &Agent<C>) -> Self {
         let probe = AgentProbe::new(agent);
         let archive = AgentArchive::new(agent);
         let persistence = AgentPersistence::new(agent);
         let metrics = MetricsCollectorCallback::new(agent.runtime.metrics.metrics_tx.clone());
+        let typed_pages = agent.services.compression.typed_pages_state.clone();
         Self {
             probe,
             archive,
             persistence,
             metrics,
+            typed_pages,
         }
     }
 
-    /// Wire all four adapters into `summ` in a single call.
+    /// Wire all adapters into `summ` in a single call.
     ///
     /// The shim calls this immediately after `summarization_view()` and
     /// `with_compression_guidelines`.
@@ -429,5 +432,6 @@ impl CompactionAdapters {
         summ.archive = Some(&self.archive);
         summ.persistence = Some(&self.persistence);
         summ.metrics = Some(&self.metrics);
+        summ.typed_pages.clone_from(&self.typed_pages);
     }
 }

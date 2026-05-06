@@ -116,6 +116,7 @@ impl<C: Channel> Agent<C> {
             archive: None,
             persistence: None,
             metrics: None,
+            typed_pages: None,
         }
     }
 

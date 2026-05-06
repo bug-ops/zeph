@@ -20,6 +20,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SemanticMemory::with_quality_gate()` after `attach_graph_stores()`, activating write quality
   filtering on all `remember()` calls. Disabled by default. (#3629)
 
+- feat(zeph-context, zeph-config, zeph-agent-context, zeph-core): integrate `TypedPage` compaction
+  into the context summarization pipeline. Adds `[memory.compression.typed_pages]` config section
+  (`enabled`, `enforcement`, `audit_sink`, `flush_timeout_ms`). When enabled, each message in the
+  compaction batch is classified with `classify()` before summarization; in `active` mode,
+  `SystemContext` pages are pointer-replaced before the LLM call. A `BatchAssertions` check verifies
+  tool coverage in the resulting summary. Audit records are emitted via an async channel to a file or
+  in-memory sink with a oneshot-rendezvous flush guarantee. Feature is disabled by default (`enabled =
+  false`), zero-cost when off. Fixes panic on `audit_channel_capacity = 0` and UTF-8 boundary panic
+  in body truncation. (#3630)
+
 - feat(zeph-core): wire `GonkaProvider` end-to-end as `AnyProvider::Gonka`. Adds `build_gonka_provider`
   factory with private key resolution from vault, optional address verification (case-insensitive bech32),
   and `EndpointPool` construction from `[[llm.providers]]` node list. `GonkaProvider` now implements

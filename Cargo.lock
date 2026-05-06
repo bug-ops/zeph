@@ -10155,6 +10155,7 @@ dependencies = [
  "zeph-channels",
  "zeph-common",
  "zeph-config",
+ "zeph-context",
  "zeph-core",
  "zeph-db",
  "zeph-experiments",

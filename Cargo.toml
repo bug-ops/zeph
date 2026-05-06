@@ -297,6 +297,7 @@ zeph-acp = { workspace = true, optional = true }
 zeph-channels.workspace = true
 zeph-common.workspace = true
 zeph-config.workspace = true
+zeph-context.workspace = true
 zeph-core.workspace = true
 zeph-gateway = { workspace = true, optional = true }
 zeph-index.workspace = true

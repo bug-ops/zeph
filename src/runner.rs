@@ -118,6 +118,75 @@ fn check_legacy_artifact_paths(config: &Config) {
     }
 }
 
+/// Build [`zeph_context::typed_page::TypedPagesState`] from config, or return `None` when disabled.
+///
+/// Opens the audit sink (async) before the synchronous agent builder chain so that
+/// [`zeph_context::typed_page::CompactionAuditSink::open`] can be awaited here.
+///
+/// # Security
+///
+/// `config.memory.compression.typed_pages.audit_path` is **operator-only trusted input** — it is
+/// read from the agent's configuration file, which already requires file-system write access.
+/// No canonicalization or prefix-check is performed because the threat model does not include
+/// less-privileged config editing. Do not propagate this path from end-user input.
+async fn build_typed_pages_state(
+    config: &Config,
+) -> Option<std::sync::Arc<zeph_context::typed_page::TypedPagesState>> {
+    use zeph_config::TypedPagesEnforcement;
+    use zeph_context::typed_page::{CompactionAuditSink, InvariantRegistry, TypedPagesState};
+
+    let tp_cfg = &config.memory.compression.typed_pages;
+    if !tp_cfg.enabled {
+        return None;
+    }
+
+    let audit_sink = if tp_cfg.audit_path.is_empty() {
+        // Derive a default audit path from the SQLite parent directory.
+        let default_path = std::path::Path::new(&config.memory.sqlite_path)
+            .parent()
+            .map(|p| p.join("audit").join("compaction.jsonl"));
+
+        if let Some(path) = default_path {
+            match CompactionAuditSink::open(&path, tp_cfg.audit_channel_capacity).await {
+                Ok(sink) => {
+                    tracing::info!(
+                        path = %path.display(),
+                        "typed-pages audit sink opened (default path)"
+                    );
+                    Some(sink)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "typed-pages audit sink could not be opened at default path, audit disabled: {e:#}"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        let path = std::path::PathBuf::from(&tp_cfg.audit_path);
+        match CompactionAuditSink::open(&path, tp_cfg.audit_channel_capacity).await {
+            Ok(sink) => {
+                tracing::info!(path = %path.display(), "typed-pages audit sink opened");
+                Some(sink)
+            }
+            Err(e) => {
+                tracing::warn!("typed-pages audit sink could not be opened, audit disabled: {e:#}");
+                None
+            }
+        }
+    };
+
+    let is_active = tp_cfg.enforcement == TypedPagesEnforcement::Active;
+    Some(std::sync::Arc::new(TypedPagesState {
+        registry: InvariantRegistry::default(),
+        audit_sink,
+        is_active,
+    }))
+}
+
 /// Merge on-disk logging config with the optional CLI `--log-file` override.
 ///
 /// Priority: CLI flag > config file > built-in defaults.
@@ -1787,6 +1856,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "gateway")]
     let channel = crate::gateway_spawn::GatewayChannel::new(channel, gateway_input_rx);
 
+    // Build TypedPagesState if enabled (#3630). Done before the builder chain because
+    // CompactionAuditSink::open is async.
+    let typed_pages_state = build_typed_pages_state(config).await;
+
     let agent = Agent::new_with_registry_arc(
         provider.clone(),
         embedding_provider.clone(),
@@ -1819,6 +1892,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.summarization_threshold,
     )
     .with_compression(config.memory.compression.clone())
+    .with_typed_pages_state(typed_pages_state)
     .with_routing(config.memory.store_routing.clone())
     .with_shutdown(shutdown_rx.clone())
     .with_config_reload(config_path, config_reload_rx)

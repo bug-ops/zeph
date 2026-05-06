@@ -1532,6 +1532,72 @@ pub struct CompressionConfig {
     /// Must sum to 1.0 with `high_density_budget`. Default: `0.3`.
     #[serde(default = "default_low_density_budget")]
     pub low_density_budget: f32,
+    /// Typed-page classification and batch-level assertion checking (#3630).
+    #[serde(default)]
+    pub typed_pages: TypedPagesConfig,
+}
+
+/// Configuration for typed-page compaction invariants (#3630).
+///
+/// Controls classification, batch-level assertion checking, and audit logging.
+/// All behavior is disabled by default; set `enabled = true` to activate.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.compression.typed_pages]
+/// enabled = true
+/// enforcement = "active"
+/// audit_path = ""
+/// audit_channel_capacity = 256
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
+pub struct TypedPagesConfig {
+    /// Enable typed-page classification and batch-level assertion checking.
+    /// Default: `false`.
+    pub enabled: bool,
+    /// Enforcement mode:
+    ///
+    /// - `observe`: classify and emit audit records only; no behavioral change.
+    /// - `active`: classify + `SystemContext` pointer-replace + batch assertions + audit.
+    ///
+    /// Default: `"observe"`.
+    pub enforcement: TypedPagesEnforcement,
+    /// Path for JSONL audit log. Empty string resolves to `{data_dir}/audit/compaction.jsonl`.
+    /// Default: `""`.
+    ///
+    /// # Security
+    ///
+    /// This field is **operator-only trusted input** read from the agent's configuration file.
+    /// Write access to the config file implies file-system write access, so no additional
+    /// canonicalization is enforced here. Do not expose this field to end-users or untrusted
+    /// configuration sources.
+    pub audit_path: String,
+    /// Bounded channel capacity for the async audit writer. Default: `256`.
+    pub audit_channel_capacity: usize,
+}
+
+impl Default for TypedPagesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            enforcement: TypedPagesEnforcement::Observe,
+            audit_path: String::new(),
+            audit_channel_capacity: 256,
+        }
+    }
+}
+
+/// Enforcement mode for typed-page compaction (#3630).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TypedPagesEnforcement {
+    /// Classify and audit only. Zero behavioral change relative to the untyped path.
+    #[default]
+    Observe,
+    /// Classify + pointer-replace `SystemContext` pages + batch assertions + audit.
+    Active,
 }
 
 fn default_sidequest_interval_turns() -> u32 {

@@ -28,6 +28,7 @@ use zeph_config::{
 use zeph_context::input::CorrectionConfig;
 use zeph_context::manager::ContextManager;
 use zeph_context::summarization::SummarizationDeps;
+use zeph_context::typed_page::TypedPagesState;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::Message;
 use zeph_memory::semantic::SemanticMemory;
@@ -326,6 +327,12 @@ pub struct ContextSummarizationView<'a> {
     /// `compaction_hard_count`, `tool_output_prunes`, and the four probe-outcome counters.
     /// Closes #3527.
     pub metrics: Option<&'a dyn MetricsCallback>,
+
+    /// Shared typed-page state for invariant-aware compaction (#3630).
+    ///
+    /// `None` when `[memory.compression.typed_pages] enabled = false`.
+    /// Populated by `CompactionAdapters::populate` in `zeph-core`.
+    pub typed_pages: Option<Arc<TypedPagesState>>,
 }
 
 impl ContextSummarizationView<'_> {

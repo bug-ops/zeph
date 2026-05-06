@@ -21,6 +21,7 @@
 //! assembler falls back to the legacy untyped path without behaviour change.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -687,8 +688,12 @@ fn classify_with_role_inner(body: &str, is_system_role: bool) -> PageType {
         return PageType::SystemContext;
     }
 
+    let mut prefix_end = body.len().min(80);
+    while !body.is_char_boundary(prefix_end) {
+        prefix_end -= 1;
+    }
     tracing::warn!(
-        body_prefix = &body[..body.len().min(80)],
+        body_prefix = &body[..prefix_end],
         "typed-page classification fallback to ConversationTurn"
     );
     PageType::ConversationTurn
@@ -758,6 +763,123 @@ pub struct CompactedPageRecord {
     pub classification_fallback: bool,
 }
 
+// ── Batch assertions ──────────────────────────────────────────────────────────
+
+/// A failed batch-level compaction assertion.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchViolation {
+    /// Short label for the assertion that failed.
+    pub assertion: String,
+    /// Human-readable explanation.
+    pub detail: String,
+}
+
+/// Batch-level compaction assertions for typed-page enforcement.
+///
+/// Unlike per-page [`PageInvariant`] which checks one page against its compacted form,
+/// batch assertions verify aggregate properties of the entire summary against the set
+/// of classified pages that were sent to the LLM.
+///
+/// Violations are observational — they never block compaction. They are logged and
+/// emitted to the audit trail.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_context::typed_page::BatchAssertions;
+///
+/// let assertions = BatchAssertions {
+///     tool_names_in_batch: vec!["shell".to_string()],
+///     has_memory_excerpt: false,
+///     excerpt_labels: vec![],
+/// };
+/// // Summary that mentions the tool — all assertions pass.
+/// let violations = assertions.check("shell ran and exited 0");
+/// assert!(violations.is_empty());
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct BatchAssertions {
+    /// Tool names collected from `ToolOutput` pages in the batch.
+    pub tool_names_in_batch: Vec<String>,
+    /// Whether any `MemoryExcerpt` pages were in the batch.
+    pub has_memory_excerpt: bool,
+    /// Source labels from `MemoryExcerpt` pages.
+    pub excerpt_labels: Vec<String>,
+}
+
+impl BatchAssertions {
+    /// Check the summary against batch-level assertions.
+    ///
+    /// Returns a list of assertion failures (empty = all pass). Failures are never fatal.
+    #[must_use]
+    pub fn check(&self, summary: &str) -> Vec<BatchViolation> {
+        let mut violations = Vec::new();
+
+        // At least one tool name from the batch must appear in the summary.
+        if !self.tool_names_in_batch.is_empty() {
+            let any_tool_mentioned = self
+                .tool_names_in_batch
+                .iter()
+                .any(|name| !name.is_empty() && summary.contains(name.as_str()));
+            if !any_tool_mentioned {
+                violations.push(BatchViolation {
+                    assertion: "tool_coverage".into(),
+                    detail: format!(
+                        "summary mentions none of the {} tool(s) in batch: {:?}",
+                        self.tool_names_in_batch.len(),
+                        self.tool_names_in_batch
+                    ),
+                });
+            }
+        }
+
+        // If memory excerpts were present, at least one source label should appear.
+        if self.has_memory_excerpt && !self.excerpt_labels.is_empty() {
+            let any_label_mentioned = self
+                .excerpt_labels
+                .iter()
+                .any(|label| !label.is_empty() && summary.contains(label.as_str()));
+            if !any_label_mentioned {
+                violations.push(BatchViolation {
+                    assertion: "excerpt_label_coverage".into(),
+                    detail: format!(
+                        "summary mentions none of the memory excerpt labels: {:?}",
+                        self.excerpt_labels
+                    ),
+                });
+            }
+        }
+
+        violations
+    }
+}
+
+// ── TypedPagesState ───────────────────────────────────────────────────────────
+
+/// Shared runtime state for typed-page compaction, created once at agent startup.
+///
+/// Bundles the invariant registry and optional audit sink so they can be shared
+/// via `Arc` across compaction calls without per-call allocation.
+pub struct TypedPagesState {
+    /// Invariant registry shared across all compaction calls.
+    pub registry: InvariantRegistry,
+    /// Optional JSONL audit sink. `None` when audit is disabled.
+    pub audit_sink: Option<CompactionAuditSink>,
+    /// Whether enforcement is `Active` (pointer-replace `SystemContext` + batch assertions).
+    /// `false` = `Observe` mode (classify and audit only, no behavioral change).
+    pub is_active: bool,
+}
+
+// ── Audit command ─────────────────────────────────────────────────────────────
+
+/// Internal command sent through the audit sink channel.
+enum AuditCommand {
+    /// Write a compaction record.
+    Record(CompactedPageRecord),
+    /// Flush all preceding records and signal completion via the oneshot.
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
+
 // ── Audit sink ────────────────────────────────────────────────────────────────
 
 /// Async bounded-mpsc audit sink for compaction records.
@@ -768,9 +890,10 @@ pub struct CompactedPageRecord {
 ///
 /// # Invariant
 ///
-/// The sink MUST be flushed (all pending records written) before the compacted
-/// context is passed to the LLM. Callers use [`CompactionAuditSink::flush`] to
-/// ensure this.
+/// [`CompactionAuditSink::flush`] sends a rendezvous sentinel through the channel
+/// and awaits the writer task's confirmation with a 100 ms timeout. Records accepted
+/// into the channel before `flush` is called are guaranteed to be written before the
+/// flush responder fires.
 ///
 /// # Examples
 ///
@@ -786,7 +909,7 @@ pub struct CompactedPageRecord {
 /// ```
 #[derive(Debug, Clone)]
 pub struct CompactionAuditSink {
-    tx: tokio::sync::mpsc::Sender<CompactedPageRecord>,
+    tx: tokio::sync::mpsc::Sender<AuditCommand>,
     drop_counter: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -811,22 +934,28 @@ impl CompactionAuditSink {
             .open(path)
             .await?;
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<CompactedPageRecord>(capacity);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<AuditCommand>(capacity.max(1));
         let drop_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let drop_counter_bg = drop_counter.clone();
 
         tokio::spawn(async move {
             let mut writer = tokio::io::BufWriter::new(file);
-            while let Some(record) = rx.recv().await {
-                match serde_json::to_string(&record) {
-                    Ok(mut line) => {
-                        line.push('\n');
-                        if let Err(e) = writer.write_all(line.as_bytes()).await {
-                            tracing::error!("compaction audit write failed: {e:#}");
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    AuditCommand::Record(record) => match serde_json::to_string(&record) {
+                        Ok(mut line) => {
+                            line.push('\n');
+                            if let Err(e) = writer.write_all(line.as_bytes()).await {
+                                tracing::error!("compaction audit write failed: {e:#}");
+                            }
                         }
-                    }
-                    Err(e) => {
-                        tracing::error!("compaction audit serialization failed: {e:#}");
+                        Err(e) => {
+                            tracing::error!("compaction audit serialization failed: {e:#}");
+                        }
+                    },
+                    AuditCommand::Flush(responder) => {
+                        let _ = writer.flush().await;
+                        let _ = responder.send(());
                     }
                 }
             }
@@ -846,7 +975,7 @@ impl CompactionAuditSink {
     ///
     /// If the channel is full the record is dropped and the drop counter is incremented.
     pub fn send(&self, record: CompactedPageRecord) {
-        match self.tx.try_send(record) {
+        match self.tx.try_send(AuditCommand::Record(record)) {
             Ok(()) => {}
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 let prev = self
@@ -863,22 +992,16 @@ impl CompactionAuditSink {
         }
     }
 
-    /// Flush all pending records by sending a sentinel and waiting for the writer task
-    /// to drain. This uses a one-shot pair through the same channel ordering.
+    /// Flush all pending records with bounded 100 ms timeout.
     ///
-    /// The implementation closes a clone's sender so the channel drains; callers that
-    /// need precise "before-LLM" semantics should call this before constructing the
-    /// LLM request.
-    ///
-    /// # Note
-    ///
-    /// In the current bounded-mpsc design, `flush` is a best-effort operation: records
-    /// already accepted into the channel will be written, but there is no synchronous
-    /// confirmation from the writer task. The audit invariant is therefore **best-effort**,
-    /// not strict. A future revision may use a rendezvous channel for strict flush.
+    /// Sends a `Flush` sentinel through the same channel as records, so ordering is
+    /// preserved — the writer task responds only after all preceding records are written.
+    /// If the writer task does not respond within 100 ms, the flush times out silently.
     pub async fn flush(&self) {
-        // Yield to the tokio runtime to let the writer task drain the channel.
-        tokio::task::yield_now().await;
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        if self.tx.send(AuditCommand::Flush(tx)).await.is_ok() {
+            let _ = tokio::time::timeout(Duration::from_millis(100), rx).await;
+        }
     }
 
     /// Number of records dropped due to a full channel.
@@ -1456,5 +1579,32 @@ mod tests {
                 .iter()
                 .any(|v| v.missing_field == "structural_key")
         );
+    }
+
+    // ── Regression: F1 — capacity=0 must not panic ────────────────────────────
+
+    #[tokio::test]
+    async fn audit_sink_capacity_zero_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cap0.jsonl");
+        // capacity=0 used to panic in tokio::sync::mpsc::channel(0); must clamp to 1.
+        let sink = CompactionAuditSink::open(&path, 0).await.unwrap();
+        sink.flush().await;
+    }
+
+    // ── Regression: F3 — non-ASCII body must not panic on prefix slice ────────
+
+    #[test]
+    fn classify_with_role_non_ascii_body_does_not_panic() {
+        // CJK and emoji span multiple bytes; a naive &body[..80] would panic at a
+        // mid-character byte boundary. classify_with_role must not panic for any input.
+        let cjk = "你好世界".repeat(20); // 80+ bytes, 4 bytes each
+        let emoji = "🦀".repeat(30); // 120+ bytes, 4 bytes each
+        let mixed = "abc🦀中文".repeat(15);
+
+        // None of these must panic:
+        let _ = classify_with_role(&cjk, false);
+        let _ = classify_with_role(&emoji, false);
+        let _ = classify_with_role(&mixed, false);
     }
 }

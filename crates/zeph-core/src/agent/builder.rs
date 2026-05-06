@@ -993,6 +993,19 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach the typed-page runtime state for invariant-aware compaction (#3630).
+    ///
+    /// Call this after `with_compression` when `config.memory.compression.typed_pages.enabled`
+    /// is `true`. When `None`, typed-page classification is disabled.
+    #[must_use]
+    pub fn with_typed_pages_state(
+        mut self,
+        state: Option<std::sync::Arc<zeph_context::typed_page::TypedPagesState>>,
+    ) -> Self {
+        self.services.compression.typed_pages_state = state;
+        self
+    }
+
     /// Set the memory store routing config (heuristic vs. embedding-based).
     #[must_use]
     pub fn with_routing(mut self, routing: StoreRoutingConfig) -> Self {
@@ -2214,6 +2227,7 @@ mod tests {
             focus_scorer_provider: zeph_config::ProviderName::default(),
             high_density_budget: 0.7,
             low_density_budget: 0.3,
+            typed_pages: zeph_config::TypedPagesConfig::default(),
         };
         let agent = make_agent().with_compression(compression);
         assert!(
