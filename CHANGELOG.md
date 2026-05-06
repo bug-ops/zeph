@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(core): `ErasedToolExecutor::requires_confirmation_erased` default inverted from `false` to
+  `true`, making speculative dispatch safe-by-default. Added `ToolExecutor::requires_confirmation`
+  (default `false`) with a blanket impl that delegates to it; `TrustGateExecutor` overrides this to
+  mirror its trust-check policy. All existing direct `ErasedToolExecutor` implementors updated to
+  explicitly return `false` where appropriate. (#3644)
+
+- fix(core): `SpeculationEngine` sweeper task was never aborted on `Drop` in the no-supervisor
+  branch due to `std::mem::forget` discarding the `JoinHandle` and the `AbortHandle` being
+  immediately dropped. Replaced the dummy `TaskHandle` approach with a `SweepHandle` enum that
+  stores either a `TaskHandle` (supervisor path) or a raw `JoinHandle<()>` (no-supervisor path),
+  with `abort(self)` called in `Drop`. (#3645)
+
 - fix(memory): `insert_or_supersede_with_metrics` no longer violates `uq_graph_edges_active_head`.
   SQLite enforces unique indexes at statement level; the prior fix inserted the new row before
   deactivating the old head. Split `invalidate_prior_head` into `expire_prior_head` (sets

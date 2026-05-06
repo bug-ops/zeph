@@ -234,6 +234,27 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
         self.effective_trust
             .store(trust_to_u8(level), Ordering::Relaxed);
     }
+
+    /// Returns `true` when the current policy would require confirmation for `call`.
+    ///
+    /// Mirrors the decision in [`execute_tool_call`](Self::execute_tool_call) without
+    /// executing the tool. The speculative engine calls this to skip dispatch for tools
+    /// that require user approval.
+    fn requires_confirmation(&self, call: &crate::executor::ToolCall) -> bool {
+        let input = call
+            .params
+            .get("command")
+            .or_else(|| call.params.get("file_path"))
+            .or_else(|| call.params.get("query"))
+            .or_else(|| call.params.get("url"))
+            .or_else(|| call.params.get("uri"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        matches!(
+            self.check_trust(call.tool_id.as_str(), input),
+            Err(ToolError::ConfirmationRequired { .. })
+        )
+    }
 }
 
 #[cfg(test)]

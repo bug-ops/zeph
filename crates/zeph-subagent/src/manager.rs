@@ -1490,6 +1490,10 @@ mod tests {
         fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
             false
         }
+
+        fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+            false
+        }
     }
 
     fn mock_provider(responses: Vec<&str>) -> AnyProvider {
@@ -1928,6 +1932,10 @@ mod tests {
             }
 
             fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+                false
+            }
+
+            fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
                 false
             }
         }
@@ -3203,6 +3211,10 @@ mod tests {
             fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
                 false
             }
+
+            fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+                false
+            }
         }
 
         // MockProvider with tool_use: records call count for chat_with_tools.
@@ -3290,6 +3302,10 @@ mod tests {
             }
 
             fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+                false
+            }
+
+            fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
                 false
             }
         }

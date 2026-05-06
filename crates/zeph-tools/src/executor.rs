@@ -673,6 +673,17 @@ pub trait ToolExecutor: Send + Sync {
     fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
         false
     }
+
+    /// Return `true` when `call` would require user confirmation before execution.
+    ///
+    /// This is a pure metadata/policy query — implementations must **not** execute the tool.
+    /// Used by the speculative engine to gate dispatch without causing double side-effects.
+    ///
+    /// Default: `false`. Executors that enforce a confirmation policy (e.g. `TrustGateExecutor`)
+    /// must override this to reflect their actual policy without executing the tool.
+    fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+        false
+    }
 }
 
 /// Object-safe erased version of [`ToolExecutor`] using boxed futures.
@@ -733,10 +744,11 @@ pub trait ErasedToolExecutor: Send + Sync {
     /// This is a pure metadata/policy query — implementations must **not** execute the tool.
     /// Used by the speculative engine to gate dispatch without causing double side-effects.
     ///
-    /// Default: `false` (no confirmation required). Override in executors that enforce a
-    /// confirmation policy (e.g. `TrustGateExecutor`).
+    /// Default: `true` (confirmation required). Implementors that want to allow speculative
+    /// dispatch must explicitly return `false`. The blanket impl for `T: ToolExecutor`
+    /// delegates to [`ToolExecutor::requires_confirmation`].
     fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
-        false
+        true
     }
 }
 
@@ -791,6 +803,10 @@ impl<T: ToolExecutor> ErasedToolExecutor for T {
 
     fn is_tool_speculatable_erased(&self, tool_id: &str) -> bool {
         ToolExecutor::is_tool_speculatable(self, tool_id)
+    }
+
+    fn requires_confirmation_erased(&self, call: &ToolCall) -> bool {
+        ToolExecutor::requires_confirmation(self, call)
     }
 }
 
@@ -1647,5 +1663,112 @@ mod tests {
         };
         // Shell exit errors are not attributable to LLM output quality.
         assert!(!err.category().is_quality_failure());
+    }
+
+    // ── requires_confirmation / requires_confirmation_erased tests (#3644) ───
+
+    /// Stub implementing only `ToolExecutor` without overriding `requires_confirmation`.
+    struct StubExecutor;
+    impl ToolExecutor for StubExecutor {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+    }
+
+    /// Stub that always signals confirmation is required via `ToolExecutor::requires_confirmation`.
+    struct ConfirmingExecutor;
+    impl ToolExecutor for ConfirmingExecutor {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+            true
+        }
+    }
+
+    fn dummy_call() -> ToolCall {
+        ToolCall {
+            tool_id: ToolName::new("test"),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+        }
+    }
+
+    #[test]
+    fn requires_confirmation_default_is_false_on_tool_executor() {
+        let exec = StubExecutor;
+        assert!(
+            !exec.requires_confirmation(&dummy_call()),
+            "ToolExecutor default requires_confirmation must be false"
+        );
+    }
+
+    #[test]
+    fn requires_confirmation_erased_delegates_to_tool_executor_default() {
+        // blanket impl routes erased → ToolExecutor::requires_confirmation (= false)
+        let exec = StubExecutor;
+        assert!(
+            !ErasedToolExecutor::requires_confirmation_erased(&exec, &dummy_call()),
+            "requires_confirmation_erased via blanket impl must return false for stub executor"
+        );
+    }
+
+    #[test]
+    fn requires_confirmation_erased_delegates_override() {
+        // ConfirmingExecutor overrides requires_confirmation → true;
+        // blanket impl must propagate this.
+        let exec = ConfirmingExecutor;
+        assert!(
+            ErasedToolExecutor::requires_confirmation_erased(&exec, &dummy_call()),
+            "requires_confirmation_erased must return true when ToolExecutor override returns true"
+        );
+    }
+
+    #[test]
+    fn requires_confirmation_erased_default_on_erased_trait_is_true() {
+        // ErasedToolExecutor's own default (trait method body) returns true.
+        // We construct a DynExecutor wrapping ConfirmingExecutor and verify via the erased path.
+        // (We cannot instantiate ErasedToolExecutor directly without a concrete type.)
+        // Instead verify via a type that only implements ErasedToolExecutor manually:
+        struct ManualErased;
+        impl ErasedToolExecutor for ManualErased {
+            fn execute_erased<'a>(
+                &'a self,
+                _response: &'a str,
+            ) -> std::pin::Pin<
+                Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+            fn execute_confirmed_erased<'a>(
+                &'a self,
+                _response: &'a str,
+            ) -> std::pin::Pin<
+                Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+            fn tool_definitions_erased(&self) -> Vec<crate::registry::ToolDef> {
+                vec![]
+            }
+            fn execute_tool_call_erased<'a>(
+                &'a self,
+                _call: &'a ToolCall,
+            ) -> std::pin::Pin<
+                Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+            fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+                false
+            }
+            // requires_confirmation_erased NOT overridden → trait default returns true
+        }
+        let exec = ManualErased;
+        assert!(
+            exec.requires_confirmation_erased(&dummy_call()),
+            "ErasedToolExecutor trait-level default for requires_confirmation_erased must be true"
+        );
     }
 }

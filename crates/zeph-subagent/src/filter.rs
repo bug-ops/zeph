@@ -189,6 +189,10 @@ impl ErasedToolExecutor for FilteredToolExecutor {
     fn is_tool_retryable_erased(&self, tool_id: &str) -> bool {
         self.inner.is_tool_retryable_erased(tool_id)
     }
+
+    fn requires_confirmation_erased(&self, call: &ToolCall) -> bool {
+        self.inner.requires_confirmation_erased(call)
+    }
 }
 
 // ── Plan mode executor ────────────────────────────────────────────────────────
@@ -255,6 +259,10 @@ impl ErasedToolExecutor for PlanModeExecutor {
     }
 
     fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+        false
+    }
+
+    fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
         false
     }
 }
@@ -445,6 +453,10 @@ mod tests {
         fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
             false
         }
+
+        fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+            false
+        }
     }
 
     fn fenced_stub_box(tag: &'static str) -> Arc<dyn ErasedToolExecutor> {
@@ -513,6 +525,10 @@ mod tests {
         }
 
         fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+            false
+        }
+
+        fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
             false
         }
     }
