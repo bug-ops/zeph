@@ -4929,7 +4929,7 @@ mod tests {
         }
     }
 
-    /// engine = None → returns empty map immediately (zero-cost fast path).
+    /// `engine = None` → returns empty map immediately (zero-cost fast path).
     #[tokio::test]
     async fn commit_speculative_tier_no_engine_returns_empty() {
         let mut agent = make_agent();
@@ -4958,7 +4958,7 @@ mod tests {
         );
     }
 
-    /// try_commit returns None for all calls (cache miss) → empty commit map.
+    /// `try_commit` returns `None` for all calls (cache miss) → empty commit map.
     #[tokio::test]
     async fn commit_speculative_tier_cache_miss_returns_empty() {
         let engine = decoding_engine(AlwaysOkSpecExec);
@@ -4984,8 +4984,8 @@ mod tests {
         assert!(commits.is_empty(), "cache miss → empty commit map");
     }
 
-    /// try_commit returns Ok(result) → index in map, tool_started_ats stamped,
-    /// ToolStartEvent { speculative: true } emitted.
+    /// `try_commit` returns `Ok(result)` → index in map, `tool_started_ats` stamped,
+    /// `ToolStartEvent { speculative: true }` emitted.
     #[tokio::test]
     async fn commit_speculative_tier_ok_result_stamps_and_emits_event() {
         let engine = decoding_engine(AlwaysOkSpecExec);
@@ -5044,7 +5044,7 @@ mod tests {
         );
     }
 
-    /// try_commit returns Err(_) → index still in map with Err, tracing::warn fires.
+    /// `try_commit` returns `Err(_)` → index still in map with `Err`, `tracing::warn` fires.
     #[tokio::test]
     async fn commit_speculative_tier_err_result_still_in_map() {
         let engine = decoding_engine(AlwaysErrSpecExec);
