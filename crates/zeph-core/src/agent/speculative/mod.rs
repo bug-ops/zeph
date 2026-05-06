@@ -28,8 +28,6 @@
 //! - Per-handle TTL (default 30 s) is enforced by a background sweeper that shares
 //!   the same cache instance (C2: no separate empty cache in the sweeper).
 
-#![allow(dead_code)]
-
 pub mod cache;
 pub mod partial_json;
 pub mod paste;
@@ -308,9 +306,7 @@ impl SpeculationEngine {
     /// Cancel all in-flight handles at turn boundary and return metrics snapshot.
     pub fn end_turn(&self) -> SpeculativeMetrics {
         self.cache.cancel_all();
-        let m = self.metrics.lock().clone();
-        *self.metrics.lock() = SpeculativeMetrics::default();
-        m
+        std::mem::take(&mut *self.metrics.lock())
     }
 
     /// Snapshot current metrics without resetting.
@@ -429,6 +425,66 @@ mod tests {
         assert!(
             engine.cache.is_empty(),
             "cancel_for must remove handle from cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn end_turn_cancels_handles_and_resets_metrics() {
+        let exec: Arc<dyn ErasedToolExecutor> = Arc::new(AlwaysOkExecutor);
+        let config = SpeculativeConfig {
+            mode: SpeculationMode::Decoding,
+            ..Default::default()
+        };
+        let engine = SpeculationEngine::new(exec, config);
+
+        let pred = Prediction {
+            tool_id: zeph_common::ToolName::new("test"),
+            args: serde_json::Map::new(),
+            confidence: 0.9,
+            source: prediction::PredictionSource::StreamPartial,
+        };
+
+        engine.try_dispatch(&pred, SkillTrustLevel::Trusted);
+        assert!(
+            !engine.cache.is_empty(),
+            "precondition: handle must be in cache before end_turn"
+        );
+
+        let _metrics = engine.end_turn();
+        assert!(
+            engine.cache.is_empty(),
+            "end_turn must cancel all in-flight handles"
+        );
+
+        // After end_turn, metrics are reset to zero.
+        let snapshot = engine.metrics_snapshot();
+        assert_eq!(snapshot.committed, 0, "metrics must reset after end_turn");
+        assert_eq!(snapshot.cancelled, 0, "metrics must reset after end_turn");
+    }
+
+    #[tokio::test]
+    async fn is_active_reflects_mode() {
+        let exec: Arc<dyn ErasedToolExecutor> = Arc::new(AlwaysOkExecutor);
+
+        let engine_off = SpeculationEngine::new(
+            Arc::clone(&exec),
+            SpeculativeConfig {
+                mode: SpeculationMode::Off,
+                ..Default::default()
+            },
+        );
+        assert!(!engine_off.is_active(), "mode=Off means is_active()=false");
+
+        let engine_on = SpeculationEngine::new(
+            exec,
+            SpeculativeConfig {
+                mode: SpeculationMode::Decoding,
+                ..Default::default()
+            },
+        );
+        assert!(
+            engine_on.is_active(),
+            "mode=Decoding means is_active()=true"
         );
     }
 }

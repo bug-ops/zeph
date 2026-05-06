@@ -286,6 +286,7 @@ impl<C: Channel> Agent<C> {
             proactive_explorer: None,
             promotion_engine: None,
             taco_compressor: None,
+            speculation_engine: None,
         };
 
         let runtime = AgentRuntime {
@@ -1430,6 +1431,18 @@ impl<C: Channel> Agent<C> {
         self.flush_turn_timings();
         // Clear per-turn intent (FR-008): must not persist across turns.
         self.services.session.current_turn_intent = None;
+        // Cancel all in-flight speculative handles at turn boundary.
+        if let Some(ref engine) = self.services.speculation_engine {
+            let metrics = engine.end_turn();
+            if metrics.committed > 0 || metrics.cancelled > 0 {
+                tracing::debug!(
+                    committed = metrics.committed,
+                    cancelled = metrics.cancelled,
+                    wasted_ms = metrics.wasted_ms,
+                    "speculation: turn boundary metrics"
+                );
+            }
+        }
     }
 
     #[cfg_attr(

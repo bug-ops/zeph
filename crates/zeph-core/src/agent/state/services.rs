@@ -56,4 +56,10 @@ pub(crate) struct Services {
     ///
     /// `Some` when `config.tools.compression.enabled = true` and a DB pool is available.
     pub(crate) taco_compressor: Option<std::sync::Arc<zeph_tools::RuleBasedCompressor>>,
+
+    /// Speculative tool execution engine (#3636).
+    ///
+    /// `Some` when `config.tools.speculative.mode != Off` and not in bare mode.
+    pub(crate) speculation_engine:
+        Option<std::sync::Arc<crate::agent::speculative::SpeculationEngine>>,
 }

@@ -2190,6 +2190,29 @@ impl<C: Channel> Agent<C> {
         self.services.goal_accounting = accounting;
         self
     }
+
+    /// Wire the [`crate::agent::speculative::SpeculationEngine`] for speculative tool dispatch.
+    ///
+    /// Set to `None` when `[tools.speculative] mode = "off"` or in bare mode.
+    #[must_use]
+    pub fn with_speculation_engine(
+        mut self,
+        engine: Option<std::sync::Arc<crate::agent::speculative::SpeculationEngine>>,
+    ) -> Self {
+        self.services.speculation_engine = engine;
+        self
+    }
+
+    /// Returns a clone of the tool executor [`Arc`] for external wiring (e.g. `SpeculationEngine`).
+    ///
+    /// Always call this **after** all [`Self::add_tool_executor`] invocations to ensure the
+    /// returned Arc includes the fully composed tool chain.
+    #[must_use]
+    pub fn tool_executor_arc(
+        &self,
+    ) -> std::sync::Arc<dyn zeph_tools::executor::ErasedToolExecutor> {
+        std::sync::Arc::clone(&self.tool_executor)
+    }
 }
 
 #[cfg(test)]
@@ -2605,6 +2628,64 @@ mod tests {
                 "cache_enabled must equal semantic_cache_enabled when false"
             );
         }
+    }
+
+    #[test]
+    fn default_speculation_engine_is_none() {
+        let agent = make_agent();
+        assert!(
+            agent.services.speculation_engine.is_none(),
+            "speculation_engine must default to None"
+        );
+    }
+
+    #[test]
+    fn with_speculation_engine_none_keeps_none() {
+        let agent = make_agent().with_speculation_engine(None);
+        assert!(
+            agent.services.speculation_engine.is_none(),
+            "with_speculation_engine(None) must leave field as None"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_speculation_engine_some_wires_engine() {
+        use crate::agent::speculative::{SpeculationEngine, SpeculationMode, SpeculativeConfig};
+
+        let exec = Arc::new(MockToolExecutor::no_tools());
+        let config = SpeculativeConfig {
+            mode: SpeculationMode::Decoding,
+            ..Default::default()
+        };
+        let engine = Arc::new(SpeculationEngine::new(exec, config));
+        let agent = make_agent().with_speculation_engine(Some(Arc::clone(&engine)));
+        assert!(
+            agent.services.speculation_engine.is_some(),
+            "with_speculation_engine(Some(...)) must wire the engine"
+        );
+        assert!(
+            Arc::ptr_eq(agent.services.speculation_engine.as_ref().unwrap(), &engine),
+            "stored Arc must be the same instance"
+        );
+    }
+
+    #[test]
+    fn tool_executor_arc_returns_same_arc() {
+        let executor = MockToolExecutor::no_tools();
+        let agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            executor,
+        );
+        let arc1 = agent.tool_executor_arc();
+        let arc2 = agent.tool_executor_arc();
+        assert!(
+            Arc::ptr_eq(&arc1, &arc2),
+            "tool_executor_arc must return clones of the same inner Arc"
+        );
     }
 
     /// Verify that `with_managed_skills_dir` registers the hub dir so that

@@ -2398,6 +2398,29 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
     };
 
+    // Wire SpeculationEngine after all add_tool_executor calls so the captured executor Arc
+    // includes the fully composed tool chain (search + scheduler + any future executors).
+    // Gated on mode != Off and !bare to avoid background sweeper tasks in minimal sessions.
+    let agent = if config.tools.speculative.mode != zeph_config::tools::SpeculationMode::Off
+        && !exec_mode.bare
+    {
+        let spec_executor = agent.tool_executor_arc();
+        let engine = std::sync::Arc::new(
+            zeph_core::agent::speculative::SpeculationEngine::new_with_supervisor(
+                spec_executor,
+                config.tools.speculative.clone(),
+                Some(std::sync::Arc::clone(&supervisor)),
+            ),
+        );
+        tracing::info!(
+            mode = ?config.tools.speculative.mode,
+            "speculation: enabled, SpeculationEngine wired"
+        );
+        agent.with_speculation_engine(Some(engine))
+    } else {
+        agent
+    };
+
     // Wire debug dump: CLI flag takes priority over [debug] config section.
     // --dump-format CLI override takes priority over config.debug.format.
     let effective_format = cli.dump_format.unwrap_or(config.debug.format);

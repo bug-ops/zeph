@@ -16,6 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(core): `SpeculationEngine` is now wired into the agent loop via `SpeculativeConfig`. When
+  `[tools.speculative] mode` is set to `Decoding` or `Pattern`, the engine is instantiated at
+  startup (gated on `!bare` mode), turn-boundary metrics are logged, and the
+  `#![allow(dead_code)]` guard is removed from `crates/zeph-core/src/agent/speculative/`. (#3636)
+
 - feat(memory): `ApexMemConfig` under `[memory.graph.apex_mem]` in zeph-config. When `enabled = true`,
   `SemanticMemory::remember()` routes graph writes through `insert_or_supersede_with_metrics()` instead
   of the legacy destructive-update path, activating the APEX-MEM append-only write path with conflict
