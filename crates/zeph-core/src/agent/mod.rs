@@ -649,6 +649,7 @@ impl<C: Channel> Agent<C> {
     /// 7. **Skill state** — Self-learning engine saves evolved skill definitions
     ///
     /// Call this before dropping the agent to ensure no data loss.
+    #[tracing::instrument(name = "core.agent.shutdown", skip_all, level = "debug")]
     pub async fn shutdown(&mut self) {
         let _ = self.channel.send_status("Shutting down...").await;
 
@@ -810,6 +811,7 @@ impl<C: Channel> Agent<C> {
     /// # Errors
     ///
     /// Returns an error if the channel, LLM provider, or tool execution encounters a fatal error.
+    #[tracing::instrument(name = "core.agent.run", skip_all, level = "debug", err)]
     #[allow(clippy::too_many_lines)] // run loop is inherently large; each branch is independent
     pub async fn run(&mut self) -> Result<(), error::AgentError>
     where
@@ -1180,6 +1182,7 @@ impl<C: Channel> Agent<C> {
     /// # Errors
     ///
     /// Propagates channel receive errors.
+    #[tracing::instrument(name = "core.agent.next_event", skip_all, level = "debug", err)]
     async fn next_event(&mut self) -> Result<Option<LoopEvent>, error::AgentError> {
         let event = tokio::select! {
             result = self.channel.recv() => {
@@ -1443,9 +1446,12 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "agent.turn", skip_all, fields(turn_id))
+    #[tracing::instrument(
+        name = "core.agent.process_user_message",
+        skip_all,
+        level = "debug",
+        fields(turn_id),
+        err
     )]
     async fn process_user_message(
         &mut self,
@@ -1478,6 +1484,12 @@ impl<C: Channel> Agent<C> {
         result
     }
 
+    #[tracing::instrument(
+        name = "core.agent.process_user_message_inner",
+        skip_all,
+        level = "debug",
+        err
+    )]
     async fn process_user_message_inner(
         &mut self,
         turn: &mut turn::Turn,
@@ -1822,9 +1834,11 @@ impl<C: Channel> Agent<C> {
     }
 
     // Returns true if the input was blocked and the caller should return Ok(()) immediately.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "agent.security_prescreen", skip_all)
+    #[tracing::instrument(
+        name = "core.agent.pre_process_security",
+        skip_all,
+        level = "debug",
+        err
     )]
     async fn pre_process_security(&mut self, trimmed: &str) -> Result<bool, error::AgentError> {
         // Guardrail: LLM-based prompt injection pre-screening at the user input boundary.
@@ -1937,9 +1951,10 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "agent.prepare_context", skip_all)
+    #[tracing::instrument(
+        name = "core.agent.advance_context_lifecycle",
+        skip_all,
+        level = "debug"
     )]
     async fn advance_context_lifecycle(&mut self, text: &str, trimmed: &str) {
         // Reset per-message pruning cache at the start of each turn (#2298).
@@ -2779,10 +2794,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "skill.hot_reload", skip_all)
-    )]
+    #[tracing::instrument(name = "core.agent.reload_skills", skip_all, level = "debug")]
     async fn reload_skills(&mut self) {
         let old_fp = self.services.skill.fingerprint();
         let reload_paths = if let Some(ref supplier) = self.services.skill.plugin_dirs_supplier {

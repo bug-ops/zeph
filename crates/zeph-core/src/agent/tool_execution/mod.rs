@@ -1,16 +1,70 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod layer_hooks;
+mod llm_dispatch;
+mod metrics_compact;
 mod native;
 mod sanitize;
+mod tier_loop;
 mod tool_call_dag;
+mod tool_result;
 
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role, ToolDefinition};
+use zeph_tools::executor::ToolCall;
 
 use super::Agent;
 use crate::channel::Channel;
 use crate::redact::redact_secrets;
 use zeph_skills::loader::Skill;
+
+type ToolExecFut = futures::future::BoxFuture<
+    'static,
+    Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+>;
+
+/// Output produced by the tier execution loop (Phase 1).
+///
+/// `None` signals that the loop was cancelled by the user; `Some` carries the
+/// collected tool results and deferred data that the results phase needs.
+type TierLoopOutput = Option<TierLoopData>;
+
+struct TierLoopData {
+    tool_results: Vec<Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>>,
+    pending_focus_checkpoint: Option<zeph_llm::provider::Message>,
+    pending_system_hints: Vec<String>,
+}
+
+/// Per-call computed context produced by `Agent::prepare_tool_dispatch`.
+///
+/// Bundles the gating results (pre-exec block, utility action, repeat/quota/cache checks)
+/// alongside the canonical call list so the tier execution loop has a single, coherent view.
+struct ToolDispatchContext {
+    calls: Vec<ToolCall>,
+    tool_call_ids: Vec<String>,
+    tool_started_ats: Vec<std::time::Instant>,
+    pre_exec_blocked: Vec<bool>,
+    utility_actions: Vec<zeph_tools::UtilityAction>,
+    quota_blocked: bool,
+    args_hashes: Vec<u64>,
+    repeat_blocked: Vec<bool>,
+    cache_hits: Vec<Option<zeph_tools::ToolOutput>>,
+}
+
+/// Output of `Agent::classify_tool_result`: all fields derived from the raw `ToolResult`.
+///
+/// Returned by value so `process_one_tool_result` can unpack it without borrow issues.
+struct ToolResultClassification {
+    output: String,
+    is_error: bool,
+    diff: Option<zeph_tools::DiffData>,
+    inline_stats: Option<String>,
+    kept_lines: Option<Vec<usize>>,
+    locations: Option<Vec<String>>,
+    anomaly_outcome: AnomalyOutcome,
+    is_quality_failure: bool,
+    tool_err_category: Option<zeph_tools::error_taxonomy::ToolErrorCategory>,
+}
 
 enum AnomalyOutcome {
     Success,
@@ -869,6 +923,18 @@ impl<C: Channel> Agent<C> {
 
         (body_after, Some(outcome))
     }
+}
+
+/// Truncate `s` to at most `max_bytes` bytes, preserving valid UTF-8 boundaries.
+fn truncate_utf8(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_owned();
+    }
+    let mut end = max_bytes;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_owned()
 }
 
 #[cfg(test)]

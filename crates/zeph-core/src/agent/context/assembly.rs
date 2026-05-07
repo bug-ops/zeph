@@ -214,6 +214,12 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns an error if [`create_conversation`](zeph_memory::store::SqliteStore::create_conversation)
     /// fails. In that case no agent state is modified.
+    #[tracing::instrument(
+        name = "core.context.reset_conversation",
+        skip_all,
+        level = "debug",
+        err
+    )]
     pub(in crate::agent) async fn reset_conversation(
         &mut self,
         keep_plan: bool,
@@ -334,6 +340,7 @@ impl<C: Channel> Agent<C> {
     /// Delegates to [`zeph_agent_context::ContextService::prepare_context`] and then
     /// applies the returned [`ContextDelta`] (injects code context via
     /// [`Self::inject_code_context`] which stays on `Agent<C>` per scope decision).
+    #[tracing::instrument(name = "core.context.prepare_context", skip_all, level = "debug", err)]
     #[allow(clippy::too_many_lines)] // view construction: all fields are required by ContextAssemblyView; splitting would reduce readability
     pub(in crate::agent) async fn prepare_context(
         &mut self,
@@ -453,6 +460,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Delegate skill disambiguation to [`ContextService::disambiguate_skills`].
+    #[tracing::instrument(name = "core.context.disambiguate_skills", skip_all, level = "debug")]
     pub(super) async fn disambiguate_skills(
         &self,
         query: &str,
@@ -465,6 +473,7 @@ impl<C: Channel> Agent<C> {
             .await
     }
 
+    #[tracing::instrument(name = "core.context.rebuild_system_prompt", skip_all, level = "debug")]
     #[allow(clippy::too_many_lines)] // system prompt assembly: skills + tools + knowledge sections, tightly coupled formatting
     pub(in crate::agent) async fn rebuild_system_prompt(&mut self, query: &str) {
         let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
@@ -1153,6 +1162,7 @@ impl<C: Channel> Agent<C> {
     /// 3. A goal with status `Active` exists in the database.
     ///
     /// No empty XML is emitted. The block always appears after `<!-- cache:volatile -->`.
+    #[tracing::instrument(name = "core.context.inject_active_goal", skip_all, level = "debug")]
     pub(in crate::agent) async fn inject_active_goal(&mut self, prompt: &mut String) {
         if !self.runtime.config.goals.enabled
             || !self.runtime.config.goals.inject_into_system_prompt
@@ -1307,6 +1317,12 @@ impl<C: Channel> Agent<C> {
         svc.remove_correction_messages(&mut self.message_window_view());
     }
 
+    #[tracing::instrument(
+        name = "core.context.inject_semantic_recall",
+        skip_all,
+        level = "debug",
+        err
+    )]
     pub(in crate::agent) async fn inject_semantic_recall(
         &mut self,
         query: &str,
@@ -1345,6 +1361,12 @@ impl<C: Channel> Agent<C> {
         svc.remove_cross_session_messages(&mut self.message_window_view());
     }
 
+    #[tracing::instrument(
+        name = "core.context.inject_cross_session",
+        skip_all,
+        level = "debug",
+        err
+    )]
     pub(in crate::agent) async fn inject_cross_session_context(
         &mut self,
         query: &str,
@@ -1374,6 +1396,7 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
+    #[tracing::instrument(name = "core.context.inject_summaries", skip_all, level = "debug", err)]
     pub(in crate::agent) async fn inject_summaries(
         &mut self,
         token_budget: usize,

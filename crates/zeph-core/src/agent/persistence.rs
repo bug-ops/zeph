@@ -26,6 +26,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Does not panic. The internal `unwrap_or(0)` conversions are on fallible `i64 → usize`
     /// casts that saturate to zero on overflow; they cannot panic.
+    #[tracing::instrument(name = "core.persist.load_history", skip_all, level = "debug", err)]
     pub async fn load_history(&mut self) -> Result<(), super::error::AgentError> {
         let (Some(memory), Some(cid)) = (
             self.services.memory.persistence.memory.as_ref(),
@@ -111,10 +112,7 @@ impl<C: Channel> Agent<C> {
     /// `has_injection_flags` controls whether Qdrant embedding is skipped for this message.
     /// When `true` and `guard_memory_writes` is enabled, only `SQLite` is written — the message
     /// is saved for conversation continuity but will not pollute semantic search (M2, D2).
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "agent.persist_message", skip_all)
-    )]
+    #[tracing::instrument(name = "core.persist.persist_message", skip_all, level = "debug")]
     pub(crate) async fn persist_message(
         &mut self,
         role: Role,
@@ -307,6 +305,11 @@ impl<C: Channel> Agent<C> {
     ///
     /// Guards (enabled check, injection/tool-result skip) stay on the foreground path.
     /// The RPE check and actual extraction run in background (S2: no `send_status`).
+    #[tracing::instrument(
+        name = "core.persist.enqueue_graph_extraction",
+        skip_all,
+        level = "debug"
+    )]
     async fn enqueue_graph_extraction_task(
         &mut self,
         content: &str,
