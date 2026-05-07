@@ -342,6 +342,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Non-blocking: returns immediately with a list of `(task_id, result)` pairs
     /// for agents that have finished. Each completed agent is removed from the manager.
+    #[tracing::instrument(name = "core.agent.poll_subagents", skip_all, level = "debug")]
     pub async fn poll_subagents(&mut self) -> Vec<(String, String)> {
         let Some(mgr) = &mut self.services.orchestration.subagent_manager else {
             return vec![];
@@ -1242,6 +1243,7 @@ impl<C: Channel> Agent<C> {
         Ok(Some(event))
     }
 
+    #[tracing::instrument(name = "core.agent.resolve_message", skip_all, level = "debug")]
     async fn resolve_message(
         &self,
         msg: crate::channel::ChannelMessage,
