@@ -159,13 +159,21 @@ struct CollectStatusSink(Arc<Mutex<Vec<String>>>);
 impl CollectStatusSink {
     /// Drain and return all collected status messages.
     fn take(&self) -> Vec<String> {
-        std::mem::take(&mut self.0.lock().unwrap())
+        std::mem::take(
+            &mut self
+                .0
+                .lock()
+                .expect("invariant: CollectStatusSink mutex is not poisoned"),
+        )
     }
 }
 
 impl zeph_agent_context::StatusSink for CollectStatusSink {
     fn send_status(&self, msg: &str) -> impl std::future::Future<Output = ()> + Send + '_ {
-        self.0.lock().unwrap().push(msg.to_owned());
+        self.0
+            .lock()
+            .expect("invariant: CollectStatusSink mutex is not poisoned")
+            .push(msg.to_owned());
         std::future::ready(())
     }
 }

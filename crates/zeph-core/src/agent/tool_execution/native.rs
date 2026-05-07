@@ -972,7 +972,10 @@ impl<C: Channel> Agent<C> {
                 .chat_with_tools_stream(&self.msg.messages, tool_defs)
                 .await
         {
-            let engine = std::sync::Arc::clone(self.services.speculation_engine.as_ref().unwrap());
+            let engine =
+                std::sync::Arc::clone(self.services.speculation_engine.as_ref().expect(
+                    "invariant: speculation_engine is Some (checked via is_some_and on L961)",
+                ));
             let threshold = engine.confidence_threshold();
             let drainer = crate::agent::speculative::stream_drainer::SpeculativeStreamDrainer::new(
                 stream, engine, threshold,

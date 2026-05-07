@@ -971,7 +971,10 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             self.services.goal_accounting = Some(accounting);
         }
 
-        let accounting = self.services.goal_accounting.clone().unwrap();
+        let accounting =
+            self.services.goal_accounting.clone().expect(
+                "invariant: goal_accounting is always Some at this point (initialized above)",
+            );
         let max_chars = self.runtime.config.goals.max_text_chars;
         let default_budget = self.runtime.config.goals.default_token_budget;
 
