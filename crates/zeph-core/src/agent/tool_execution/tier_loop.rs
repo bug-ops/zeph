@@ -7,12 +7,14 @@ use zeph_llm::provider::{Message, MessagePart, Role};
 use zeph_tools::ExecutionContext;
 use zeph_tools::executor::ToolCall;
 
+use zeph_llm::provider::ToolDefinition;
+
 use super::{
-    TierLoopData, TierLoopOutput, ToolDispatchContext, ToolExecFut, retry_backoff_ms,
-    strip_tafc_fields, tool_args_hash,
+    CacheCheckResult, TierLoopData, TierLoopOutput, ToolDispatchContext, ToolExecFut,
+    retry_backoff_ms, strip_tafc_fields, tool_args_hash,
 };
 use crate::agent::Agent;
-use crate::channel::{Channel, ToolStartEvent};
+use crate::channel::{Channel, StopHint, ToolStartEvent};
 
 impl<C: Channel> Agent<C> {
     #[tracing::instrument(
@@ -1840,4 +1842,303 @@ fn skipped_output(
 
 fn ready_fut(idx: usize, out: zeph_tools::ToolOutput) -> (usize, ToolExecFut) {
     (idx, Box::pin(std::future::ready(Ok(Some(out)))))
+}
+
+impl<C: Channel> Agent<C> {
+    #[tracing::instrument(name = "core.tool.native_loop", skip_all, level = "debug", err)]
+    pub(super) async fn process_response_native_tools(
+        &mut self,
+    ) -> Result<(), crate::agent::error::AgentError> {
+        self.tool_orchestrator.clear_doom_history();
+        self.tool_orchestrator.clear_recent_tool_calls();
+        self.tool_orchestrator.clear_utility_state();
+
+        // `mut` required when context-compression is enabled to inject focus tool definitions.
+        let tafc = &self.tool_orchestrator.tafc;
+        let mut tool_defs: Vec<ToolDefinition> = self
+            .tool_executor
+            .tool_definitions_erased()
+            .iter()
+            .map(|def| super::tool_def_to_definition_with_tafc(def, tafc))
+            .collect();
+
+        // Inject focus tool definitions when the feature is enabled and configured (#1850).
+        if self.services.focus.config.enabled {
+            tool_defs.extend(crate::agent::focus::focus_tool_definitions());
+        }
+
+        // Inject compress_context tool — always available when context-compression is enabled (#2218).
+        tool_defs.push(crate::agent::focus::compress_context_tool_definition());
+
+        // Pre-compute the full tool set for iterations 1+ before filtering.
+        let all_tool_defs = tool_defs.clone();
+
+        // Iteration 0: apply dynamic tool schema filter (#2020) if cached IDs are available.
+        if let Some(ref filtered_ids) = self.services.tool_state.cached_filtered_tool_ids {
+            tool_defs.retain(|d| filtered_ids.contains(d.name.as_str()));
+            tracing::debug!(
+                filtered = tool_defs.len(),
+                total = all_tool_defs.len(),
+                "tool schema filter: iteration 0 using filtered tool set"
+            );
+        }
+
+        tracing::debug!(
+            tool_count = tool_defs.len(),
+            tools = ?tool_defs.iter().map(|t| &t.name).collect::<Vec<_>>(),
+            "native tool_use: collected tool definitions"
+        );
+
+        let query_embedding = match self.check_response_cache().await? {
+            CacheCheckResult::Hit(cached) => {
+                self.persist_message(Role::Assistant, &cached, &[], false)
+                    .await;
+                self.msg
+                    .messages
+                    .push(Message::from_legacy(Role::Assistant, cached.as_str()));
+                if cached.contains(zeph_llm::provider::MAX_TOKENS_TRUNCATION_MARKER) {
+                    let _ = self.channel.send_stop_hint(StopHint::MaxTokens).await;
+                }
+                self.channel.flush_chunks().await?;
+                return Ok(());
+            }
+            CacheCheckResult::Miss { query_embedding } => query_embedding,
+        };
+
+        for iteration in 0..self.tool_orchestrator.max_iterations {
+            if *self.runtime.lifecycle.shutdown.borrow() {
+                tracing::info!("native tool loop interrupted by shutdown");
+                break;
+            }
+            if self.runtime.lifecycle.cancel_token.is_cancelled() {
+                tracing::info!("native tool loop cancelled by user");
+                break;
+            }
+            // Iteration 0 uses filtered tool_defs (schema filter + dependency gates).
+            // Iterations 1+ expand to the full set but still apply hard dependency gates
+            // so tools with unmet `requires` cannot re-enter through the expansion path (#2024).
+            let defs_for_iter: Vec<ToolDefinition>;
+            let defs_for_turn: &[ToolDefinition] = if iteration == 0 {
+                &tool_defs
+            } else {
+                defs_for_iter = build_gated_defs_for_iteration(
+                    iteration,
+                    &all_tool_defs,
+                    &self.services.tool_state,
+                );
+                &defs_for_iter
+            };
+            // None = continue loop, Some(()) = return Ok, Err = propagate
+            if self
+                .process_single_native_turn(defs_for_turn, iteration, query_embedding.clone())
+                .await?
+                .is_some()
+            {
+                return Ok(());
+            }
+            if self.check_doom_loop(iteration).await? {
+                break;
+            }
+        }
+
+        let _ = self.channel.send_stop_hint(StopHint::MaxTurnRequests).await;
+        self.channel.flush_chunks().await?;
+        Ok(())
+    }
+
+    /// Returns `true` if a doom loop was detected and the caller should break.
+    async fn check_doom_loop(
+        &mut self,
+        iteration: usize,
+    ) -> Result<bool, crate::agent::error::AgentError> {
+        if let Some(last_msg) = self.msg.messages.last() {
+            let hash = zeph_agent_tools::doom_loop_hash(&last_msg.content);
+            tracing::debug!(
+                iteration,
+                hash,
+                content_len = last_msg.content.len(),
+                content_preview = &last_msg.content[..last_msg.content.len().min(120)],
+                "doom-loop hash recorded"
+            );
+            self.tool_orchestrator.push_doom_hash(hash);
+            if self.tool_orchestrator.is_doom_loop() {
+                tracing::warn!(
+                    iteration,
+                    hash,
+                    content_len = last_msg.content.len(),
+                    content_preview = &last_msg.content[..last_msg.content.len().min(200)],
+                    "doom-loop detected: {} consecutive identical outputs",
+                    crate::agent::DOOM_LOOP_WINDOW
+                );
+                self.channel
+                    .send("Stopping: detected repeated identical tool outputs.")
+                    .await?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Execute one turn of the native tool loop. Returns `Ok(Some(()))` when the LLM produced
+    /// a terminal text response (caller should return `Ok(())`), `Ok(None)` to continue the
+    /// loop, or `Err` on a hard error.
+    #[tracing::instrument(
+        name = "core.tool.single_turn",
+        skip_all,
+        level = "debug",
+        fields(iteration),
+        err
+    )]
+    async fn process_single_native_turn(
+        &mut self,
+        tool_defs: &[ToolDefinition],
+        iteration: usize,
+        query_embedding: Option<Vec<f32>>,
+    ) -> Result<Option<()>, crate::agent::error::AgentError> {
+        // Track iteration for BudgetHint injection (#2267).
+        self.services.tool_state.current_tool_iteration = iteration;
+        self.channel.send_typing().await?;
+
+        if let Some(ref budget) = self.context_manager.budget {
+            let used =
+                usize::try_from(self.runtime.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
+            let threshold = budget.max_tokens() * 4 / 5;
+            if used >= threshold {
+                tracing::warn!(
+                    iteration,
+                    used,
+                    threshold,
+                    "stopping tool loop: context budget nearing limit"
+                );
+                self.channel
+                    .send("Stopping: context window is nearly full.")
+                    .await?;
+                return Ok(Some(()));
+            }
+        }
+
+        // Show triage status indicator before inference when triage routing is active.
+        if matches!(self.provider, zeph_llm::any::AnyProvider::Triage(_)) {
+            let _ = self.channel.send_status("Evaluating complexity...").await;
+        } else {
+            let _ = self.channel.send_status("thinking...").await;
+        }
+        let chat_result = self.call_chat_with_tools_retry(tool_defs, 2).await?;
+        let _ = self.channel.send_status("").await;
+
+        let Some(chat_result) = chat_result else {
+            tracing::debug!("chat_with_tools returned None (timeout)");
+            return Ok(Some(()));
+        };
+
+        tracing::debug!(iteration, ?chat_result, "native tool loop iteration");
+
+        if let zeph_llm::provider::ChatResponse::Text(text) = &chat_result {
+            // RV-1: response verification before delivery.
+            if self.run_response_verification(text) {
+                let _ = self
+                    .channel
+                    .send("[security] Response blocked by injection detection.")
+                    .await;
+                self.channel.flush_chunks().await?;
+                return Ok(Some(()));
+            }
+            let cleaned = self.scan_output_and_warn(text);
+            if !cleaned.is_empty() {
+                let display = self.maybe_redact(&cleaned);
+                self.channel.send(&display).await?;
+            }
+            self.store_response_in_cache(&cleaned, query_embedding)
+                .await;
+            self.persist_message(Role::Assistant, &cleaned, &[], false)
+                .await;
+            self.msg
+                .messages
+                .push(Message::from_legacy(Role::Assistant, cleaned.as_str()));
+            // Detect context loss after compaction and log failure pair if found.
+            self.maybe_log_compression_failure(&cleaned).await;
+            if cleaned.contains(zeph_llm::provider::MAX_TOKENS_TRUNCATION_MARKER) {
+                let _ = self.channel.send_stop_hint(StopHint::MaxTokens).await;
+            }
+            return Ok(Some(()));
+        }
+
+        let zeph_llm::provider::ChatResponse::ToolUse {
+            text,
+            tool_calls,
+            thinking_blocks,
+        } = chat_result
+        else {
+            unreachable!();
+        };
+        self.preserve_thinking_blocks(thinking_blocks);
+        self.handle_native_tool_calls(text.as_deref(), &tool_calls)
+            .await?;
+
+        // Summarize before pruning; apply deferred summaries after pruning.
+        self.maybe_summarize_tool_pair().await;
+        let keep_recent = 2 * self.services.memory.persistence.tool_call_cutoff + 2;
+        self.prune_stale_tool_outputs(keep_recent);
+        self.maybe_apply_deferred_summaries();
+        self.flush_deferred_summaries().await;
+        // Mid-iteration soft compaction: fires after summarization so fresh results are
+        // either summarized or protected before pruning. Does not touch turn counters,
+        // cooldown, or trigger Hard tier (no LLM call during tool loop).
+        self.maybe_soft_compact_mid_iteration();
+        self.flush_deferred_summaries().await;
+
+        Ok(None)
+    }
+}
+
+/// Build the tool definition slice for iterations 1+ of the native tool loop.
+///
+/// Applies hard dependency-gate filtering when a dependency graph is configured, ensuring tools
+/// with unmet `requires` cannot re-enter through the expansion path after iteration 0 (#2024).
+///
+/// Returns the allowed set as an owned `Vec`; the caller holds a reference into it.
+/// When no dependency graph is present the full `all_tool_defs` slice is returned as-is (cloned).
+fn build_gated_defs_for_iteration(
+    iteration: usize,
+    all_tool_defs: &[ToolDefinition],
+    tool_state: &crate::agent::state::ToolState,
+) -> Vec<ToolDefinition> {
+    let Some(ref dep_graph) = tool_state.dependency_graph else {
+        return all_tool_defs.to_vec();
+    };
+    if dep_graph.is_empty() {
+        return all_tool_defs.to_vec();
+    }
+
+    let names: Vec<&str> = all_tool_defs.iter().map(|d| d.name.as_str()).collect();
+    let allowed = dep_graph.filter_tool_names(
+        &names,
+        &tool_state.completed_tool_ids,
+        &tool_state.dependency_always_on,
+    );
+    let allowed_set: std::collections::HashSet<&str> = allowed.into_iter().collect();
+
+    // Deadlock fallback: if all non-always-on tools would be blocked, use the full set.
+    let non_ao_allowed = allowed_set
+        .iter()
+        .filter(|n| !tool_state.dependency_always_on.contains(**n))
+        .count();
+    let non_ao_total = all_tool_defs
+        .iter()
+        .filter(|d| !tool_state.dependency_always_on.contains(d.name.as_str()))
+        .count();
+    if non_ao_allowed == 0 && non_ao_total > 0 {
+        tracing::warn!(
+            iteration,
+            "tool dependency graph: all non-always-on tools gated on iter 1+; \
+             disabling hard gates for this iteration"
+        );
+        return all_tool_defs.to_vec();
+    }
+
+    all_tool_defs
+        .iter()
+        .filter(|d| allowed_set.contains(d.name.as_str()))
+        .cloned()
+        .collect()
 }
