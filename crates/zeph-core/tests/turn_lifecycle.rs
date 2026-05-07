@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Integration tests await full agent sessions; future size reflects real agent state.
 #![allow(clippy::large_futures)]
+// Raised from 128: #[instrument] chain on the agent call stack deepens async state machines.
+#![recursion_limit = "256"]
 
 //! Integration tests for the agent turn lifecycle.
 //!
