@@ -332,16 +332,16 @@ The supervisor tracks per-class counters in `ClassMetrics`:
 
 Metrics are snapshottable via `metrics_snapshot()` for logging and TUI display.
 
-### 6.2 CPU/Wall-Time Metrics (task-metrics feature)
+### 6.2 CPU/Wall-Time Metrics
 
-When the `task-metrics` feature is enabled (included in `full`), `spawn_blocking` wraps each task with `cpu-time::ThreadTime` + `Instant` measurements and emits:
+`spawn_blocking` wraps each task with `cpu-time::ThreadTime` + `Instant` measurements and emits:
 
 - `metrics::histogram!("zeph.task.cpu_time_ms")` — CPU time per blocking task
 - `metrics::histogram!("zeph.task.wall_time_ms")` — wall time per blocking task
 
 Both histogram values are also recorded as tracing span fields `task.cpu_time_ms` and `task.wall_time_ms`, visible in Jaeger and tokio-console.
 
-Zero overhead when the feature is disabled (`#[inline]` identity fn, no deps linked).
+Note: the former `task-metrics` feature flag was consolidated as always-on in v0.20.x — task metrics are now unconditional.
 
 ### 6.3 TUI Task Registry Panel
 
@@ -492,7 +492,7 @@ The following systems are **explicitly excluded** from the supervisor's purview:
 - [x] 7 bootstrap memory loops migrated to supervisor (PR #2960)
 - [x] `TelegramChannel`, `A2aServer`, background indexer migrated (PR #2961)
 - [x] TUI `/tasks` panel shows live task registry (PR #2962)
-- [x] CPU/wall-time metrics via `task-metrics` feature (PR #2963)
+- [x] CPU/wall-time metrics via `task-metrics` (now always-on, consolidated v0.20.x; PR #2963)
 - [x] `BlockingSpawner` trait in `zeph-common` breaks `zeph-core → zeph-index` cycle (PR #2978)
 - [x] Blocking semaphore (capacity 8) prevents OS thread pool saturation (PR #3009)
 - [x] Task names are `Arc<str>` — no `Box::leak` per indexed file (PR #3005)

@@ -85,7 +85,7 @@ Eliminate the structural bottleneck where every method on `Agent<C>` must take `
 | 25 | `focus` | `focus::FocusState` | `pub(super)` | 32 |
 | 26 | `sidequest` | `sidequest::SidequestState` | `pub(super)` | 27 |
 | 27 | `tool_state` | `ToolState` | `pub(super)` | 21 |
-| 28 | `quality` (cfg `self-check`) | `Option<Arc<SelfCheckPipeline>>` | `pub(super)` | (services group) |
+| 28 | `quality` | `Option<Arc<SelfCheckPipeline>>` | `pub(super)` | (services group) |
 | 29 | `proactive_explorer` | `Option<Arc<ProactiveExplorer>>` | `pub(super)` | (services group) |
 | 30 | `promotion_engine` | `Option<Arc<PromotionEngine>>` | `pub(super)` | (services group) |
 
@@ -146,7 +146,6 @@ pub(crate) struct Services {
     pub(crate) session: SessionState,
 
     // Optional pipelines — moved here as services
-    #[cfg(feature = "self-check")]
     pub(crate) quality: Option<std::sync::Arc<crate::quality::SelfCheckPipeline>>,
     pub(crate) proactive_explorer: Option<std::sync::Arc<zeph_skills::proactive::ProactiveExplorer>>,
     pub(crate) promotion_engine:
@@ -266,7 +265,6 @@ let services = Services {
     sidequest: sidequest::SidequestState::default(),
     tool_state: ToolState::default(),
     session: SessionState::new(),
-    #[cfg(feature = "self-check")]
     quality: None,
     proactive_explorer: None,
     promotion_engine: None,
@@ -370,7 +368,7 @@ Each row is one ast-grep / rust-analyzer rename invocation. Counts are `self.<fi
 | `self.experiments` | `self.services.experiments` | 10 | Step 2 |
 | `self.feedback` | `self.services.feedback` | 8 | Step 2 |
 | `self.learning_engine` | `self.services.learning_engine` | (keep — moves under services) | Step 2 |
-| `self.quality` (cfg) | `self.services.quality` | (small) | Step 2 |
+| `self.quality` | `self.services.quality` | (small) | Step 2 |
 | `self.proactive_explorer` | `self.services.proactive_explorer` | (small) | Step 2 |
 | `self.promotion_engine` | `self.services.promotion_engine` | (small) | Step 2 |
 | `self.lifecycle` | `self.runtime.lifecycle` | 94 | Step 3 |
@@ -499,7 +497,7 @@ Additional invariants:
 - [ ] `Agent<C>` has exactly nine direct fields (or eight on builds without `tool_executor` cfg variations — none today).
 - [ ] No field on `Agent<C>` is `pub`.
 - [ ] `Services` and `AgentRuntime` are `pub(crate)` structs in `state/services.rs` and `state/runtime.rs`.
-- [ ] `Services` has all 14 fields enumerated above (15 with optional `quality`, `proactive_explorer`, `promotion_engine`; 17 total when `self-check` feature is enabled).
+- [ ] `Services` has all 14 fields enumerated above (15 with optional `quality`, `proactive_explorer`, `promotion_engine`).
 - [ ] `AgentRuntime` has the six fields enumerated above.
 - [ ] `RuntimeConfig` is reachable as `self.runtime.config`.
 - [ ] No use of `self.<old-field>` survives anywhere under `crates/` (verify with `ast-grep --pattern 'self.memory_state'` etc., expect zero matches).

@@ -13,23 +13,20 @@ description = "Core agent loop, configuration, context builder, metrics, and vau
 readme = "README.md"
 
 [features]
-profiling = ["dep:tracing-subscriber"]
-profiling-alloc = ["profiling"]
-sysinfo = ["dep:sysinfo"]
-task-metrics = ["dep:cpu-time", "dep:metrics", "zeph-common/task-metrics"]
 default = ["sqlite"]
 candle = ["zeph-llm/candle"]
 classifiers = ["zeph-llm/classifiers", "zeph-sanitizer/classifiers"]
-gonka = ["zeph-llm/gonka"]
 cuda = ["zeph-llm/cuda"]
-env-vault = ["zeph-vault/env-vault"]
+gonka = ["zeph-llm/gonka"]
+index = ["zeph-agent-context/index"]
 metal = ["zeph-llm/metal"]
 mock = ["zeph-vault/mock"]
 postgres = ["zeph-db/postgres"]
+profiling = ["dep:tracing-subscriber"]
+profiling-alloc = ["profiling"]
 scheduler  = []
-index = ["zeph-agent-context/index"]
-self-check = ["zeph-agent-context/self-check"]
 sqlite = ["zeph-db/sqlite"]
+sysinfo = ["dep:sysinfo"]
 
 [dependencies]
 base64.workspace = true
@@ -61,8 +58,8 @@ toml_edit.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["parking_lot", "registry"], optional = true }
 sysinfo = { workspace = true, optional = true }
-cpu-time = { workspace = true, optional = true }
-metrics = { workspace = true, optional = true }
+cpu-time.workspace = true
+metrics.workspace = true
 tree-sitter.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 zeroize.workspace = true

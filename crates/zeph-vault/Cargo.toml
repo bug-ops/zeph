@@ -14,7 +14,6 @@ readme = "README.md"
 
 [features]
 default = []
-env-vault = []
 mock = []
 
 [dependencies]

@@ -31,11 +31,7 @@ zeph-sanitizer.workspace = true
 zeph-skills.workspace = true
 
 [features]
-# `default = []` — opt-in only. Both features must be enabled explicitly.
 default = []
-# Gates the retrieved-memory mirror types and the `quality` field on view structs.
-# Forward this feature to `zeph-context` when needed.
-self-check = []
 # Enables `zeph-index` integration via `IndexAccess` in context assembly views.
 index = ["dep:zeph-index"]
 

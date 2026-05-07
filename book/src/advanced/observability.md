@@ -93,18 +93,18 @@ Zeph uses a `TaskSupervisor` to manage background tasks (embedding, memory conso
 
 ### Enabling Task Metrics
 
-Enable the optional `task-metrics` feature (included in `full`):
+Task metrics compile unconditionally — no feature flag needed. Build normally:
 
 ```bash
-cargo build --release --features task-metrics
+cargo build --release
 ```
 
-When enabled, each supervised task records:
+Each supervised task records:
 
 - **Wall-time**: elapsed time from spawn to completion
 - **CPU-time**: actual CPU cycles spent (OS-level thread time measurement)
 
-Zero overhead when disabled — the feature gate compiles out the measurement code.
+Note: the `task-metrics` feature flag was consolidated as always-on in v0.20.x.
 
 ### Viewing Task Metrics
 

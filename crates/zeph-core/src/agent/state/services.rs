@@ -39,7 +39,6 @@ pub(crate) struct Services {
     pub(crate) goal_accounting: Option<std::sync::Arc<crate::goal::GoalAccounting>>,
 
     /// MARCH self-check pipeline, built at startup and rebuilt on provider swap.
-    #[cfg(feature = "self-check")]
     pub(crate) quality: Option<std::sync::Arc<crate::quality::SelfCheckPipeline>>,
     /// Proactive world-knowledge explorer (#3320).
     ///

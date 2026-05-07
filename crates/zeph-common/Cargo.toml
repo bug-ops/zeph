@@ -13,7 +13,6 @@ description = "Shared utility functions and security primitives for Zeph crates"
 readme = "README.md"
 
 [features]
-task-metrics = ["dep:cpu-time", "dep:metrics"]
 treesitter = [
     "dep:tree-sitter",
     "dep:tree-sitter-go",
@@ -25,8 +24,8 @@ treesitter = [
 
 [dependencies]
 blake3.workspace = true
-cpu-time = { workspace = true, optional = true }
-metrics = { workspace = true, optional = true }
+cpu-time.workspace = true
+metrics.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true

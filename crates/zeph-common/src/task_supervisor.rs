@@ -253,13 +253,10 @@ pub enum TaskStatus {
 /// | Field | tokio-console | Jaeger / OTLP | TUI | `metrics` histogram |
 /// |-------|--------------|--------------|-----|---------------------|
 /// | `name` | span name | span name | task list | label `"task"` |
-/// | `task.wall_time_ms` | — | span field (`task-metrics`) | — | `zeph.task.wall_time_ms` |
-/// | `task.cpu_time_ms` | — | span field (`task-metrics`) | — | `zeph.task.cpu_time_ms` |
+/// | `task.wall_time_ms` | — | span field | — | `zeph.task.wall_time_ms` |
+/// | `task.cpu_time_ms` | — | span field | — | `zeph.task.cpu_time_ms` |
 /// | `status` | — | — | task list | — |
 /// | `restart_count` | — | — | task list | — |
-///
-/// The `task.wall_time_ms` and `task.cpu_time_ms` fields are only populated when
-/// the crate is compiled with the `task-metrics` feature.
 pub struct TaskSnapshot {
     /// Task name.
     pub name: Arc<str>,
@@ -511,15 +508,12 @@ impl TaskSupervisor {
         R: Send + 'static,
     {
         let (tx, rx) = oneshot::channel::<Result<R, BlockingError>>();
-        #[cfg(feature = "task-metrics")]
         let span = tracing::info_span!(
             "supervised_blocking_task",
             task.name = %name,
             task.wall_time_ms = tracing::field::Empty,
             task.cpu_time_ms = tracing::field::Empty,
         );
-        #[cfg(not(feature = "task-metrics"))]
-        let span = tracing::info_span!("supervised_blocking_task", task.name = %name);
 
         let semaphore = Arc::clone(&self.inner.blocking_semaphore);
         let inner = Arc::clone(&self.inner);
@@ -1042,11 +1036,7 @@ impl TaskSupervisor {
 
 // ── Task metrics helpers ──────────────────────────────────────────────────────
 
-/// Run `f` and record wall-time and CPU-time metrics when `task-metrics` is enabled.
-///
-/// When the feature is disabled this is a zero-overhead identity wrapper —
-/// no `cpu-time` or `metrics` crates are linked.
-#[cfg(feature = "task-metrics")]
+/// Run `f` and record wall-time and CPU-time metrics via `metrics` crate.
 #[inline]
 fn measure_blocking<F, R>(name: &str, f: F) -> R
 where
@@ -1063,18 +1053,6 @@ where
     tracing::Span::current().record("task.wall_time_ms", wall_ms);
     tracing::Span::current().record("task.cpu_time_ms", cpu_ms);
     result
-}
-
-/// Identity wrapper when `task-metrics` feature is disabled.
-///
-/// Compiles to a direct call to `f()` with no overhead.
-#[cfg(not(feature = "task-metrics"))]
-#[inline]
-fn measure_blocking<F, R>(_name: &str, f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    f()
 }
 
 // ── BlockingSpawner impl ──────────────────────────────────────────────────────
@@ -1691,13 +1669,11 @@ mod tests {
         handle.await.expect("task should complete");
     }
 
-    /// Verify that `measure_blocking` emits wall-time and CPU-time histograms when
-    /// the `task-metrics` feature is enabled.
+    /// Verify that `measure_blocking` emits wall-time and CPU-time histograms.
     ///
     /// `measure_blocking` calls `metrics::histogram!` on the current thread.
     /// We test it directly using a `DebuggingRecorder` installed as the thread-local
     /// recorder via `metrics::with_local_recorder`.
-    #[cfg(feature = "task-metrics")]
     #[test]
     fn test_measure_blocking_emits_metrics() {
         use metrics_util::debugging::DebuggingRecorder;

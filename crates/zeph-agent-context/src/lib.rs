@@ -25,14 +25,11 @@
 //!
 //! # Features
 //!
-//! - `self-check` — gates retrieved-memory mirror types for the MARCH self-check pipeline.
 //! - `index` — enables `zeph-index` integration via the `IndexAccess` trait.
 
 pub mod compaction;
 pub mod error;
 pub mod helpers;
-#[cfg(feature = "self-check")]
-#[cfg_attr(docsrs, doc(cfg(feature = "self-check")))]
 pub mod retrieved;
 pub mod service;
 pub mod state;
@@ -53,6 +50,4 @@ pub use state::{
     ToolOutputArchive, TrustGate,
 };
 
-#[cfg(feature = "self-check")]
-#[cfg_attr(docsrs, doc(cfg(feature = "self-check")))]
 pub use retrieved::{RetrievedContext, collect_retrieved_context};

@@ -195,7 +195,7 @@ description = "Lightweight AI agent with hybrid inference, skills-first architec
 readme = "README.md"
 
 [features]
-default = ["scheduler", "sqlite", "task-metrics", "self-check", "env-vault"]
+default = ["scheduler", "sqlite"]
 
 # === Use-case bundles ===
 desktop = ["tui"]
@@ -203,11 +203,9 @@ ide     = ["acp", "acp-http"]
 server  = ["gateway", "a2a", "otel", "prometheus"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "task-metrics", "sandbox", "self-check", "gonka", "testing"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "sandbox", "gonka", "sqlite", "testing"]
 testing = ["zeph-llm/testing"]
-env-vault  = ["zeph-core/env-vault"]
 sandbox    = ["zeph-tools/sandbox"]
-self-check = ["zeph-core/self-check"]
 bench      = ["dep:zeph-bench"]
 
 # === Individual feature flags ===
@@ -242,7 +240,6 @@ profiling = [
 ]
 profiling-alloc = ["profiling", "zeph-core/profiling-alloc"]
 profiling-pyroscope = ["profiling", "otel", "dep:pprof"]
-task-metrics = ["zeph-core/task-metrics"]
 # Database backend selection — mutually exclusive. Default includes sqlite.
 # NOTE: --all-features activates both, triggering compile_error! in zeph-db.
 # Use --features full or --features full,postgres instead.

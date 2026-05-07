@@ -78,7 +78,6 @@ async fn resolve_vault_secrets(
                 }
             }
         }
-        #[cfg(feature = "env-vault")]
         "env" => Box::new(zeph_core::vault::EnvVaultProvider),
         _ => {
             let start = Instant::now();

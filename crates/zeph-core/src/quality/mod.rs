@@ -4,7 +4,7 @@
 //! MARCH self-check quality pipeline.
 //!
 //! Provides post-response factual consistency checking via a two-stage
-//! Proposer → Checker pipeline. Enabled by the `self-check` feature flag.
+//! Proposer → Checker pipeline.
 //!
 //! See [`pipeline::SelfCheckPipeline`] for the entry point.
 

@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- build: add `profiling` and `sandbox` to default Cargo features — tracing spans are compiled by
+  default for diagnostics; macOS Seatbelt / Linux Landlock sandbox is available without
+  `--features sandbox` (still runtime-disabled unless `tools.sandbox.enabled = true`)
+- build: consolidate `self-check`, `env-vault`, and `task-metrics` as always-on — these were pure
+  behavioral markers with no optional deps, violating the feature flag decision rule (spec 029 §2)
+
+### Fixed
+
+- docs(specs): update spec 001 §9 and spec 029 §3.1/§4/§5.3 to reflect actual default feature set
+  (was documenting `default = ["scheduler", "sqlite"]` since v0.18 while reality had 5 features
+  since v0.20)
+
 ## [0.20.2] - 2026-05-06
 
 ### Added

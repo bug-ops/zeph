@@ -84,7 +84,6 @@ pub mod notifications;
 pub mod pipeline;
 pub mod project;
 pub mod provider_factory;
-#[cfg(feature = "self-check")]
 pub mod quality;
 pub mod redact;
 #[cfg(feature = "sysinfo")]
@@ -137,15 +136,13 @@ pub mod vault {
         default_vault_dir,
     };
 
-    /// Environment-variable backed vault provider, available only when the
-    /// `env-vault` feature is enabled.
+    /// Environment-variable backed vault provider.
     ///
     /// # Security
     ///
     /// This provider reads secrets from process environment variables and is
-    /// intended **exclusively for development and testing**. Never enable this
-    /// feature in production builds. Use [`AgeVaultProvider`] instead.
-    #[cfg(feature = "env-vault")]
+    /// intended **exclusively for development and testing**. Never use in
+    /// production builds. Use [`AgeVaultProvider`] instead.
     pub use zeph_vault::EnvVaultProvider;
 
     #[cfg(any(test, feature = "mock"))]

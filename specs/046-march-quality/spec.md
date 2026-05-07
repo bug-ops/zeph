@@ -255,7 +255,7 @@ pub enum SkipReason {
 - Claude-backed Checker disables `cache_control` via `with_prompt_cache_disabled()`
 - JSON parser retries exactly once before returning `ParseError`
 - Truncation uses `floor_char_boundary(4096)` — never truncates at a non-char boundary
-- All MARCH paths are gated behind the `self-check` compile-time feature flag
+- All MARCH paths compile unconditionally; activation is controlled by `[quality].self_check = true` at runtime
 
 ### Ask First
 - Enabling gate mode (blocking response delivery on check failure)

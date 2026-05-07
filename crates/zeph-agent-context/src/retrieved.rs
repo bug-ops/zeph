@@ -7,8 +7,6 @@
 //! (recall, graph facts, cross-session, summaries) for one turn.
 //! [`collect_retrieved_context`] walks the turn's message list and populates
 //! the four buckets without allocating beyond the [`Vec`]s themselves.
-#![cfg_attr(docsrs, doc(cfg(feature = "self-check")))]
-
 use zeph_llm::provider::{Message, MessagePart, Role};
 
 use crate::helpers::{CROSS_SESSION_PREFIX, GRAPH_FACTS_PREFIX, RECALL_PREFIX, SUMMARY_PREFIX};

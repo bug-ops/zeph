@@ -171,14 +171,15 @@ See `.local/specs/022-config-simplification/spec.md` for the full schema and exa
 
 Feature flags (`Cargo.toml [features]`):
 
-- `default = []` — nothing is enabled by default; explicit bundles required
+- `default` includes features required for the standard CLI experience: database backend (`sqlite`), scheduler, task metrics, profiling instrumentation, and OS-level sandbox availability. See spec 029 §3.1 for the canonical list.
+- Default features must satisfy two criteria: (a) the feature gates a real optional dependency (not a pure behavioral marker), and (b) the feature has `Tested` status in coverage-status.md with no open P0/P1 issues.
 - **Always-on** (compiled in without feature flags): openai, compatible, orchestrator, router, self-learning, qdrant, vault-age, mcp
 - New optional crates: `dep:zeph-<name>` in the feature definition — never unconditionally import
 - Optional features that extend the TUI: use `zeph-tui?/feature-name` (conditional propagation)
 - Bundles (`desktop`, `ide`, `server`, `full`) are the only way to enable groups of features
 - CI MUST use `--features full` for lint and test runs — partial feature builds do not count
 
-**NEVER**: enable optional features by default; never skip `--features full` in pre-merge checks.
+**NEVER**: add a pure behavioral marker to `default` (must gate real optional deps per spec 029 §2); never skip `--features full` in pre-merge checks.
 
 ## 10. Concurrency & Safety Contract
 
@@ -271,7 +272,7 @@ Every new feature MUST be wired at all applicable integration points:
 
 ### Always (without asking)
 - Preserve all trait method signatures exactly
-- Keep `default = []` in `[features]`
+- Only add features to `default` that gate real optional deps AND have `Tested` coverage status (per spec 029 §2 + §3.1)
 - Maintain `kind` discriminator in `MessagePart` serde
 - Enforce `max_active_skills` limit in skill injection
 - Run blocklist check before permission policy in shell executor

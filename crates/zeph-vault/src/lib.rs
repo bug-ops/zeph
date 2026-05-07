@@ -59,7 +59,6 @@
 
 mod age;
 mod arc;
-#[cfg(any(test, feature = "env-vault"))]
 mod env;
 #[cfg(any(test, feature = "mock"))]
 mod mock;
@@ -74,7 +73,6 @@ pub use zeph_common::secret::{Secret, VaultError};
 
 pub use age::{AgeVaultError, AgeVaultProvider};
 pub use arc::ArcAgeVaultProvider;
-#[cfg(any(test, feature = "env-vault"))]
 pub use env::EnvVaultProvider;
 #[cfg(any(test, feature = "mock"))]
 pub use mock::MockVaultProvider;
@@ -83,7 +81,7 @@ pub use mock::MockVaultProvider;
 ///
 /// Implement this trait to integrate a custom secret store (e.g. `HashiCorp` Vault, `AWS` Secrets
 /// Manager, `1Password`). The crate ships implementations out of the box:
-/// [`AgeVaultProvider`], [`ArcAgeVaultProvider`], and (with `env-vault` feature) `EnvVaultProvider`.
+/// [`AgeVaultProvider`], [`ArcAgeVaultProvider`], and [`EnvVaultProvider`].
 ///
 /// # Implementing
 ///

@@ -86,13 +86,13 @@ let window = MessageWindowView {
 
 | Feature | Default | Description |
 |---|---|---|
-| `self-check` | off | Retrieved-memory mirror types for the MARCH self-check pipeline |
 | `index` | off | `zeph-index` integration via `IndexAccess` in assembly views |
 
-Both features must be enabled explicitly. `zeph-core` enables them where needed.
+The `self-check` feature was consolidated as always-on in v0.20.x — retrieved-memory mirror types
+compile unconditionally. Only `index` remains optional.
 
 ```toml
-zeph-agent-context = { version = "0.20", workspace = true, features = ["self-check", "index"] }
+zeph-agent-context = { version = "0.20", workspace = true, features = ["index"] }
 ```
 
 ## License

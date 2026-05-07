@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **TaskSupervisor observability** — CPU and wall-time metrics for supervised tasks, visible in Jaeger traces and tokio-console. Optional `task-metrics` feature (included in `full`). See [Observability & Cost](advanced/observability.md#task-supervisor-metrics).
+- **TaskSupervisor observability** — CPU and wall-time metrics for supervised tasks, visible in Jaeger traces and tokio-console. See [Observability & Cost](advanced/observability.md#task-supervisor-metrics). (The `task-metrics` feature flag was consolidated as always-on in v0.20.x — no feature flag required.)
 - **TUI task registry panel** — new `/tasks` command displays live table of all supervised tasks (name, state, uptime, restart count). See [TUI Dashboard](advanced/tui.md#command-palette).
 - **Per-chunk code indexing supervision** — `CodeIndexer` now integrates with `TaskSupervisor` for fine-grained visibility of concurrent embedding tasks. Each chunk operation is registered as a separate task (`chunk_file_{N}`) in the supervisor registry.
 - **Bootstrap TaskSupervisor migration** — 7 memory background loops (eviction, tier promotion, consolidation, forgetting, compression, tree consolidation) migrated to `TaskSupervisor` with restart policies.

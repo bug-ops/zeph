@@ -2716,7 +2716,6 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent.with_acp_subagent_spawn_fn(spawn_fn)
     };
 
-    #[cfg(feature = "self-check")]
     let agent = {
         let pipeline = if config.quality.self_check {
             zeph_core::quality::SelfCheckPipeline::build(

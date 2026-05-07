@@ -38,7 +38,6 @@ mod persistence;
 mod plan;
 mod policy_commands;
 mod provider_cmd;
-#[cfg(feature = "self-check")]
 mod quality_hook;
 pub(crate) mod rate_limiter;
 #[cfg(feature = "scheduler")]
@@ -281,7 +280,6 @@ impl<C: Channel> Agent<C> {
             sidequest: sidequest::SidequestState::default(),
             tool_state: ToolState::default(),
             goal_accounting: None,
-            #[cfg(feature = "self-check")]
             quality: None,
             proactive_explorer: None,
             promotion_engine: None,
@@ -1606,7 +1604,6 @@ impl<C: Channel> Agent<C> {
         tracing::debug!("turn timing: process_response done");
 
         // MARCH self-check hook: runs after every successful response, including cache-hit path.
-        #[cfg(feature = "self-check")]
         if let Some(pipeline) = self.services.quality.clone() {
             self.run_self_check_for_turn(pipeline, turn.id().0).await;
         }

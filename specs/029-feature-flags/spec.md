@@ -63,13 +63,23 @@ A feature flag is **not** justified when:
 ### 3.1 Default Features
 
 ```toml
-default = ["scheduler", "sqlite"]
+default = ["scheduler", "sqlite", "profiling", "sandbox"]
 ```
 
 | Flag | Justification |
 |---|---|
 | `scheduler` | Pulls in `dep:zeph-scheduler`, `dep:cron`, `dep:schemars`, `dep:chrono` |
 | `sqlite` | Mutually exclusive with `postgres`; selects the SQLite backend in `zeph-db` |
+| `profiling` | Pulls in `dep:tracing-chrome`, `dep:chrono`, `dep:uuid`, `dep:sysinfo`; enables diagnostic tracing spans. Zero overhead when not actively tracing. |
+| `sandbox` | Pulls in `dep:landlock`, `dep:seccompiler` on Linux; macOS Seatbelt compiles unconditionally. Runtime-disabled by default (`tools.sandbox.enabled = false`). |
+
+**Removed from default (consolidated as always-on per §3.3):**
+
+| Former default flag | Reason for removal |
+|---|---|
+| `self-check` | Pure behavioral marker — no optional deps. Consolidated per §2 Decision Rule. |
+| `env-vault` | Pure behavioral marker — no optional deps. Consolidated per §2 Decision Rule. |
+| `task-metrics` | Pure behavioral marker — no optional deps. Consolidated per §2 Decision Rule. |
 
 ### 3.2 Individual Optional Flags
 
@@ -108,6 +118,9 @@ As of v0.18.0, they were consolidated into always-on capabilities per the Decisi
 | Bundled SKILL.md files | `bundled-skills` | Consolidated before v0.18.0 |
 | Speech-to-text support | `stt` | Consolidated before v0.18.0 |
 | ACP unstable capabilities | `acp-unstable` | Consolidated before v0.18.0 |
+| MARCH self-check pipeline | `self-check` | Consolidated v0.20.x |
+| Environment variable vault fallback | `env-vault` | Consolidated v0.20.x |
+| Per-task CPU/wall-time metrics | `task-metrics` | Consolidated v0.20.x |
 
 **Why**: Each flag gated only behavioral code with no optional crate dependencies — they violated
 the Decision Rule (§2). All these subsystems are active by default and cannot be disabled at build time;
@@ -130,7 +143,7 @@ Bundles are the **only** mechanism for enabling groups of features. Do not instr
 
 Bundle invariants:
 - `full` must activate every flag that is safe to combine (excluding `metal`, `cuda`, `postgres` — platform/exclusive).
-- `default` must remain minimal: only `scheduler` and `sqlite`.
+- `default` must remain minimal: only features that gate real optional deps AND have `Tested` coverage status. See §3.1 for the current list.
 - CI MUST run with `--features full` for lint and tests. Partial-feature builds do not count as pre-merge validation.
 - `--all-features` is **not a supported build mode**: `sqlite` and `postgres` are mutually exclusive and `--all-features` triggers a `compile_error!`.
 
@@ -142,7 +155,7 @@ Bundle invariants:
 
 2. **Flags only for real optional deps or platform exclusives.** The gated content must be a crate or a transitive dependency that would otherwise link unconditionally.
 
-3. **`default = []` is forbidden.** The workspace default must remain `["scheduler", "sqlite"]`. Changing this is a breaking config change.
+3. **`default` is not empty.** The workspace default must include at minimum `scheduler` and `sqlite`. Additional features may be added if they satisfy both criteria: (a) gate real optional deps per §2 Decision Rule, and (b) have `Tested` coverage status with no open P0/P1 issues. Changing default features is a minor semver change documented in CHANGELOG.
 
 4. **Bundles are immutable consumer surfaces.** A bundle name (`desktop`, `ide`, `server`, `chat`, `ml`, `full`) may not be removed. Its contents may only grow, not shrink (adding flags to a bundle is non-breaking; removing is breaking).
 
@@ -185,7 +198,7 @@ Before opening a PR that adds a new feature flag:
 ## Agent Boundaries
 
 ### Always (without asking)
-- Keep `default = ["scheduler", "sqlite"]`
+- Default features must satisfy §2 Decision Rule AND `Tested` coverage — verify both before adding
 - Run `--features full` for all pre-merge checks
 - Use `dep:` prefix for all optional crate dependencies
 - Remove `#[cfg(feature = "...")]` gates for deleted flags
@@ -193,7 +206,7 @@ Before opening a PR that adds a new feature flag:
 ### Ask First
 - Adding a new feature flag (must justify via §2 decision rule)
 - Adding a flag to or removing one from a bundle
-- Changing `default` features
+- Adding or removing a feature from `default` (must justify via §2 + coverage check)
 - Renaming an existing flag
 
 ### Never

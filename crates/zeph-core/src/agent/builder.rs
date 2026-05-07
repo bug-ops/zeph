@@ -2096,8 +2096,6 @@ impl<C: Channel> Agent<C> {
     /// response and appends a flag marker to the channel output if assertions are contradicted
     /// or unsupported by retrieved evidence.
     ///
-    /// Calling this method without the `self-check` feature compiled in is a no-op.
-    ///
     /// # Examples
     ///
     /// ```no_run
@@ -2109,7 +2107,6 @@ impl<C: Channel> Agent<C> {
     /// // agent_builder.with_quality_pipeline(Some(pipeline));
     /// ```
     #[must_use]
-    #[cfg(feature = "self-check")]
     pub fn with_quality_pipeline(
         mut self,
         pipeline: Option<std::sync::Arc<crate::quality::SelfCheckPipeline>>,
