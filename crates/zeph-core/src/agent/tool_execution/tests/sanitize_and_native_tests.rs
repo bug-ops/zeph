@@ -532,6 +532,7 @@ async fn scan_output_exfiltration_block_emits_security_event() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[allow(clippy::large_futures)]
 async fn native_tool_use_response_cache_hit_skips_llm_call() {
     use crate::agent::agent_tests::*;
     use std::sync::Arc;
@@ -595,6 +596,7 @@ async fn native_tool_use_response_cache_hit_skips_llm_call() {
 }
 
 #[tokio::test]
+#[allow(clippy::large_futures)]
 async fn native_tool_use_cache_stores_only_text_responses() {
     use crate::agent::agent_tests::*;
     use std::sync::Arc;
