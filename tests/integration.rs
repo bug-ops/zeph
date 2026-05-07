@@ -2,6 +2,8 @@
 #![allow(unsafe_code)]
 // Integration tests await full agent sessions; the future size reflects real agent state.
 #![allow(clippy::large_futures)]
+// Raised from 128: #[instrument] chain on the agent call stack deepens async state machines.
+#![recursion_limit = "256"]
 
 use std::collections::VecDeque;
 use std::path::Path;
