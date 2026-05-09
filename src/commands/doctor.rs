@@ -412,6 +412,7 @@ async fn check_sqlite(config: &zeph_core::config::Config, timeout_secs: u64) -> 
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn check_llm_provider(
     entry: &zeph_core::config::ProviderEntry,
     timeout_secs: u64,
@@ -457,6 +458,10 @@ async fn check_llm_provider(
             .to_owned(),
         ProviderKind::Compatible => entry.base_url.clone().unwrap_or_default(),
         ProviderKind::Candle | ProviderKind::Gonka => unreachable!(),
+        ProviderKind::Cocoon => entry
+            .cocoon_client_url
+            .clone()
+            .unwrap_or_else(|| "http://localhost:10000".to_owned()),
     };
 
     if base_url.is_empty() {

@@ -109,6 +109,9 @@ impl SecretResolver for Config {
         if let Some(val) = vault.get_secret("ZEPH_GONKA_ADDRESS").await? {
             self.secrets.gonka_address = Some(Secret::new(val));
         }
+        if let Some(val) = vault.get_secret("ZEPH_COCOON_ACCESS_HASH").await? {
+            self.secrets.cocoon_access_hash = Some(Secret::new(val));
+        }
         log_gonka_credential_status(
             self.secrets.gonka_private_key.is_some(),
             self.secrets.gonka_address.is_some(),

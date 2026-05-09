@@ -2548,6 +2548,7 @@ mod tests {
             embedding_model: String::new(),
             gonka_private_key: None,
             gonka_address: None,
+            cocoon_access_hash: None,
         };
         let agent = make_agent()
             .with_shutdown(rx)

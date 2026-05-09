@@ -10,6 +10,8 @@
 
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
+#[cfg(feature = "cocoon")]
+use zeph_llm::cocoon::{CocoonClient, CocoonProvider};
 use zeph_llm::compatible::CompatibleProvider;
 use zeph_llm::gemini::GeminiProvider;
 #[cfg(feature = "gonka")]
@@ -82,6 +84,7 @@ pub fn build_provider_for_switch(
         .as_ref()
         .map(|z| Secret::new(z.as_str()));
     config.secrets.gonka_address = snapshot.gonka_address.as_deref().map(Secret::new);
+    config.secrets.cocoon_access_hash = snapshot.cocoon_access_hash.as_deref().map(Secret::new);
     config.timeouts.llm_request_timeout_secs = snapshot.llm_request_timeout_secs;
     config
         .llm
@@ -120,6 +123,12 @@ pub fn build_provider_from_entry(
         #[cfg(not(feature = "gonka"))]
         ProviderKind::Gonka => Err(BootstrapError::Provider(
             "gonka feature is not enabled; rebuild with --features gonka".into(),
+        )),
+        #[cfg(feature = "cocoon")]
+        ProviderKind::Cocoon => build_cocoon_provider(entry, config),
+        #[cfg(not(feature = "cocoon"))]
+        ProviderKind::Cocoon => Err(BootstrapError::Provider(
+            "cocoon feature is not enabled; rebuild with --features cocoon".into(),
         )),
     }
 }
@@ -383,6 +392,93 @@ fn build_gonka_provider(
     );
 
     Ok(AnyProvider::Gonka(provider))
+}
+
+#[cfg(feature = "cocoon")]
+fn build_cocoon_provider(
+    entry: &ProviderEntry,
+    config: &Config,
+) -> Result<AnyProvider, BootstrapError> {
+    let _span = tracing::info_span!("core.provider_factory.build_cocoon").entered();
+
+    let base_url = entry
+        .cocoon_client_url
+        .as_deref()
+        .unwrap_or("http://localhost:10000");
+
+    // Validate URL at construction time (MINOR-3): warn if not localhost.
+    if !base_url.starts_with("http://localhost")
+        && !base_url.starts_with("http://127.0.0.1")
+        && !base_url.starts_with("http://[::1]")
+        && !base_url.starts_with("https://localhost")
+        && !base_url.starts_with("https://127.0.0.1")
+        && !base_url.starts_with("https://[::1]")
+    {
+        tracing::warn!(
+            url = base_url,
+            "cocoon_client_url points to a non-localhost host; \
+             ensure this is intentional (expected sidecar on localhost)"
+        );
+    }
+
+    let access_hash = if entry
+        .cocoon_access_hash
+        .as_ref()
+        .is_some_and(|s| !s.is_empty())
+    {
+        let hash = config
+            .secrets
+            .cocoon_access_hash
+            .as_ref()
+            .ok_or_else(|| {
+                BootstrapError::Provider(
+                    "ZEPH_COCOON_ACCESS_HASH not found in vault; set it with: \
+                     zeph vault set ZEPH_COCOON_ACCESS_HASH <hash>"
+                        .into(),
+                )
+            })?
+            .expose()
+            .to_owned();
+        Some(hash)
+    } else {
+        None
+    };
+
+    let timeout = std::time::Duration::from_secs(config.timeouts.llm_request_timeout_secs);
+    let client = std::sync::Arc::new(CocoonClient::new(base_url, access_hash, timeout));
+
+    if entry.cocoon_health_check {
+        let client_clone = std::sync::Arc::clone(&client);
+        // Fire-and-forget: intentional. The health check is advisory-only; a failure
+        // does not block provider construction.
+        drop(tokio::spawn(async move {
+            match client_clone.health_check().await {
+                Ok(h) => {
+                    tracing::info!(
+                        proxy_connected = h.proxy_connected,
+                        worker_count = h.worker_count,
+                        "cocoon sidecar health check passed"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "cocoon sidecar health check failed; \
+                         inference requests will return LlmError::Unavailable until the sidecar is running"
+                    );
+                }
+            }
+        }));
+    }
+
+    let model = entry
+        .model
+        .clone()
+        .unwrap_or_else(|| "Qwen/Qwen3-0.6B".to_owned());
+    let max_tokens = entry.max_tokens.unwrap_or(4096);
+    let provider = CocoonProvider::new(model, max_tokens, entry.embedding_model.clone(), client);
+
+    Ok(AnyProvider::Cocoon(provider))
 }
 
 #[cfg(feature = "candle")]

@@ -489,6 +489,7 @@ pub struct ProviderConfigSnapshot {
     pub embedding_model: String,
     pub gonka_private_key: Option<Zeroizing<String>>,
     pub gonka_address: Option<String>,
+    pub cocoon_access_hash: Option<String>,
 }
 
 /// Groups provider-related state: alternate providers, runtime switching, and compaction flags.

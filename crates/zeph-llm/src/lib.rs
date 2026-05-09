@@ -74,6 +74,8 @@ pub mod candle_provider;
 pub mod candle_whisper;
 pub mod classifier;
 pub mod claude;
+#[cfg(feature = "cocoon")]
+pub mod cocoon;
 pub mod compatible;
 #[cfg(feature = "candle")]
 pub(crate) mod device;

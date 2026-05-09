@@ -43,6 +43,7 @@ Spec IDs (001–044) follow a logical grouping:
 - **051**: Gonka.ai Phase 1 — GonkaGate hosted gateway (CompatibleProvider, wizard, vault key) [implemented]
 - **052**: Gonka.ai Phase 2 — native network transport (GonkaProvider, ECDSA signing, EndpointPool, chat_with_tools, chat_typed) [implemented]
 - **053**: SpeculationEngine — speculative tool execution (SSE decoding path, PASTE skill activation, ToolStartEvent{speculative:true})
+- **055**: Cocoon distributed compute integration — CocoonProvider, CocoonClient, `zeph cocoon doctor`, TUI palette entries, vault key ZEPH_COCOON_ACCESS_HASH
 
 ---
 
@@ -128,3 +129,4 @@ Spec IDs (001–044) follow a logical grouping:
 | `051-gonka-gateway/spec.md` | Phase 1: gonka.ai inference via GonkaGate hosted gateway — zero new Rust code, `CompatibleProvider` reuse, wizard branch, vault key `ZEPH_COMPATIBLE_GONKAGATE_API_KEY` | `zeph-llm`, `zeph-config` |
 | `052-gonka-native/spec.md` | Phase 2: native gonka network transport — `GonkaProvider`, ECDSA secp256k1 signing (`RequestSigner`), `EndpointPool` round-robin fail-skip, `send_signed_with_retry`, `chat_with_tools`, `chat_typed`, `zeph gonka doctor` | `zeph-llm`, `zeph-config` |
 | `053-speculation-engine/spec.md` | `SpeculationEngine` — speculative tool execution: `PartialJsonParser` SSE decoding path, PASTE skill activation, `try_dispatch`/`try_commit`/`end_turn` API, `ToolStartEvent{speculative:true}`, `DynExecutor` confirmation delegation | `zeph-core`, `zeph-tools` |
+| `055-cocoon/spec.md` | Cocoon distributed compute integration — `CocoonProvider`, `CocoonClient`, health check via `/stats`, model listing via `/v1/models`, `zeph cocoon doctor` (6 checks), `--init` wizard branch, TUI `/cocoon status` + `/cocoon models`, vault key `ZEPH_COCOON_ACCESS_HASH`; all RA-TLS/TON handled by C++ sidecar | `zeph-llm`, `zeph-config` |

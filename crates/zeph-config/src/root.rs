@@ -148,6 +148,8 @@ pub struct ResolvedSecrets {
     pub gonka_private_key: Option<Secret>,
     /// Gonka wallet address for node identity verification.
     pub gonka_address: Option<Secret>,
+    /// Cocoon sidecar access hash resolved from the vault key `ZEPH_COCOON_ACCESS_HASH`.
+    pub cocoon_access_hash: Option<Secret>,
     /// Arbitrary skill secrets resolved from `ZEPH_SECRET_*` vault keys.
     /// Key is the lowercased name after stripping the prefix (e.g. `github_token`).
     pub custom: HashMap<String, Secret>,

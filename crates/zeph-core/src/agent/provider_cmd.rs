@@ -378,6 +378,7 @@ mod tests {
             embedding_model: "nomic-embed-text".to_owned(),
             gonka_private_key: None,
             gonka_address: None,
+            cocoon_access_hash: None,
         }
     }
 
@@ -514,6 +515,7 @@ mod tests {
             embedding_model: "nomic-embed-text".to_owned(),
             gonka_private_key: None,
             gonka_address: None,
+            cocoon_access_hash: None,
         };
         assert_eq!(snap.claude_api_key.as_deref(), Some("key-claude"));
         assert_eq!(snap.openai_api_key.as_deref(), Some("key-openai"));

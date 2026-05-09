@@ -28,6 +28,8 @@
 #[cfg(feature = "candle")]
 use crate::candle_provider::CandleProvider;
 use crate::claude::ClaudeProvider;
+#[cfg(feature = "cocoon")]
+use crate::cocoon::CocoonProvider;
 use crate::compatible::CompatibleProvider;
 use crate::gemini::GeminiProvider;
 #[cfg(feature = "gonka")]
@@ -62,6 +64,8 @@ macro_rules! delegate_provider {
             AnyProvider::Triage($p) => $expr,
             #[cfg(feature = "gonka")]
             AnyProvider::Gonka($p) => $expr,
+            #[cfg(feature = "cocoon")]
+            AnyProvider::Cocoon($p) => $expr,
             #[cfg(any(test, feature = "testing"))]
             AnyProvider::Mock($p) => $expr,
         }
@@ -93,6 +97,11 @@ pub enum AnyProvider {
     /// Only available when the `gonka` feature is enabled.
     #[cfg(feature = "gonka")]
     Gonka(GonkaProvider),
+    /// Cocoon confidential compute provider — routes requests through the TEE sidecar.
+    ///
+    /// Only available when the `cocoon` feature is enabled.
+    #[cfg(feature = "cocoon")]
+    Cocoon(CocoonProvider),
     /// A mock provider for use in tests and benchmarks.
     ///
     /// Only available with the `testing` feature or in `#[cfg(test)]` contexts.
@@ -192,6 +201,9 @@ impl AnyProvider {
             // Gonka nodes have no model discovery API.
             #[cfg(feature = "gonka")]
             AnyProvider::Gonka(_) => Ok(vec![]),
+            // Cocoon model discovery is done via CocoonClient::list_models(), not LlmProvider.
+            #[cfg(feature = "cocoon")]
+            AnyProvider::Cocoon(_) => Ok(vec![]),
             #[cfg(any(test, feature = "testing"))]
             AnyProvider::Mock(p) => Ok(p.models.clone()),
         }
@@ -235,6 +247,9 @@ impl AnyProvider {
             // Gonka is a metered network — treat as cloud for cost tracking.
             #[cfg(feature = "gonka")]
             Self::Gonka(_) => "cloud",
+            // Cocoon is a metered TEE network — treat as cloud for cost tracking.
+            #[cfg(feature = "cocoon")]
+            Self::Cocoon(_) => "cloud",
             _ => "cloud",
         }
     }
@@ -312,6 +327,8 @@ impl AnyProvider {
             }
             #[cfg(feature = "gonka")]
             Self::Gonka(p) => Self::Gonka(p.with_generation_overrides(overrides)),
+            #[cfg(feature = "cocoon")]
+            Self::Cocoon(p) => Self::Cocoon(p.with_generation_overrides(overrides)),
             Self::Router(_) | Self::Triage(_) => {
                 tracing::warn!("generation overrides not supported for this provider variant");
                 self
@@ -367,6 +384,10 @@ impl AnyProvider {
             Self::Candle(_) => {}
             #[cfg(feature = "gonka")]
             Self::Gonka(p) => {
+                p.set_status_tx(tx);
+            }
+            #[cfg(feature = "cocoon")]
+            Self::Cocoon(p) => {
                 p.set_status_tx(tx);
             }
             #[cfg(any(test, feature = "testing"))]
@@ -869,6 +890,36 @@ mod tests {
     #[test]
     fn any_gonka_provider_kind_str() {
         assert_eq!(make_gonka().provider_kind_str(), "cloud");
+    }
+
+    #[cfg(feature = "cocoon")]
+    fn make_cocoon() -> AnyProvider {
+        use crate::cocoon::{CocoonClient, CocoonProvider};
+        use std::sync::Arc;
+        let client = Arc::new(CocoonClient::new(
+            "http://localhost:10000",
+            None,
+            std::time::Duration::from_secs(5),
+        ));
+        AnyProvider::Cocoon(CocoonProvider::new("Qwen/Qwen3-0.6B", 4096, None, client))
+    }
+
+    #[cfg(feature = "cocoon")]
+    #[test]
+    fn any_cocoon_name() {
+        assert_eq!(make_cocoon().name(), "cocoon");
+    }
+
+    #[cfg(feature = "cocoon")]
+    #[test]
+    fn any_cocoon_supports_streaming() {
+        assert!(make_cocoon().supports_streaming());
+    }
+
+    #[cfg(feature = "cocoon")]
+    #[test]
+    fn any_cocoon_provider_kind_str() {
+        assert_eq!(make_cocoon().provider_kind_str(), "cloud");
     }
 
     #[test]

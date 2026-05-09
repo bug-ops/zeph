@@ -2669,6 +2669,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             .gonka_address
             .as_ref()
             .map(|s| s.expose().to_owned()),
+        cocoon_access_hash: config
+            .secrets
+            .cocoon_access_hash
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
     };
     let agent = agent
         .with_extended_context(extended_context)

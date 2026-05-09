@@ -351,6 +351,8 @@ pub enum ProviderKind {
     Compatible,
     /// Native Gonka blockchain provider.
     Gonka,
+    /// Cocoon confidential compute network via localhost sidecar.
+    Cocoon,
 }
 
 impl ProviderKind {
@@ -374,6 +376,7 @@ impl ProviderKind {
             Self::Candle => "candle",
             Self::Compatible => "compatible",
             Self::Gonka => "gonka",
+            Self::Cocoon => "cocoon",
         }
     }
 }
@@ -1178,6 +1181,11 @@ fn default_true() -> bool {
     true
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
 /// Tier-to-provider name mapping for complexity routing.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TierMapping {
@@ -1448,6 +1456,18 @@ pub struct ProviderEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gonka_chain_prefix: Option<String>,
 
+    // --- Cocoon-specific ---
+    /// Cocoon sidecar HTTP URL. Defaults to `"http://localhost:10000"` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cocoon_client_url: Option<String>,
+    /// Sentinel field for access hash. Leave empty in config; actual value
+    /// is resolved from the age vault as `ZEPH_COCOON_ACCESS_HASH`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cocoon_access_hash: Option<String>,
+    /// Whether to perform a health check against `/stats` at provider construction time.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub cocoon_health_check: bool,
+
     /// Provider-specific instruction file.
     #[serde(default)]
     pub instruction_file: Option<std::path::PathBuf>,
@@ -1498,6 +1518,9 @@ impl Default for ProviderEntry {
             vision_model: None,
             gonka_nodes: Vec::new(),
             gonka_chain_prefix: None,
+            cocoon_client_url: None,
+            cocoon_access_hash: None,
+            cocoon_health_check: true,
             instruction_file: None,
             max_concurrent: None,
         }
@@ -1530,6 +1553,7 @@ impl ProviderEntry {
             // Compatible/Candle return empty because the model is resolved elsewhere.
             // Gonka returns empty because it is a blockchain provider, not an LLM — there is no model concept.
             ProviderKind::Compatible | ProviderKind::Candle | ProviderKind::Gonka => String::new(),
+            ProviderKind::Cocoon => "Qwen/Qwen3-0.6B".to_owned(),
         }
     }
 
@@ -1557,6 +1581,15 @@ impl ProviderEntry {
                 ));
             }
             self.validate_gonka_nodes()?;
+        }
+
+        // B4: cocoon provider MUST have a name.
+        if self.provider_type == ProviderKind::Cocoon
+            && self.name.as_ref().is_none_or(String::is_empty)
+        {
+            return Err(ConfigError::Validation(
+                "[[llm.providers]] entry with type=\"cocoon\" must set `name`".into(),
+            ));
         }
 
         // B1: warn on irrelevant fields.
@@ -1667,6 +1700,14 @@ impl ProviderEntry {
                 }
             }
             ProviderKind::Compatible | ProviderKind::Candle => {}
+            ProviderKind::Cocoon => {
+                if self.base_url.is_some() {
+                    tracing::warn!(
+                        provider = name,
+                        "field `base_url` is ignored for cocoon providers; use `cocoon_client_url` instead"
+                    );
+                }
+            }
         }
     }
 
