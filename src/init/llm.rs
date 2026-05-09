@@ -51,6 +51,7 @@ pub(super) fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyho
         "Compatible (custom)",
         "Gonka (decentralized \u{2014} via GonkaGate)",
         "Gonka (native \u{2014} requires GNK staking)",
+        "Cocoon (decentralized TEE inference via TON \u{2014} requires local sidecar)",
     ];
     let selection = Select::new()
         .with_prompt("Select LLM provider")
@@ -215,6 +216,9 @@ pub(super) fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyho
         6 => {
             step_gonka_native(state, use_age)?;
         }
+        7 => {
+            step_cocoon(state, use_age)?;
+        }
         _ => unreachable!(),
     }
     Ok(())
@@ -262,6 +266,92 @@ fn step_gonka_native(state: &mut WizardState, use_age: bool) -> anyhow::Result<(
     state.gonka_private_key = Some(hex_key);
     state.gonka_address = Some(derived_address);
     state.gonka_nodes = nodes;
+
+    Ok(())
+}
+
+fn probe_cocoon_reachable(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let host = parsed.host_str().unwrap_or("localhost");
+    // Only probe localhost targets — the Cocoon sidecar is always local.
+    if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+        return false;
+    }
+    let port = parsed.port().unwrap_or(10000);
+    let addr_str = format!("{host}:{port}");
+    let socket_addr = match std::net::ToSocketAddrs::to_socket_addrs(addr_str.as_str()) {
+        Ok(mut addrs) => match addrs.next() {
+            Some(a) => a,
+            None => return false,
+        },
+        Err(_) => return false,
+    };
+    std::net::TcpStream::connect_timeout(&socket_addr, std::time::Duration::from_secs(3)).is_ok()
+}
+
+fn step_cocoon(state: &mut WizardState, use_age: bool) -> anyhow::Result<()> {
+    state.provider = Some(ProviderKind::Cocoon);
+
+    let sidecar_url: String = Input::new()
+        .with_prompt("Cocoon sidecar URL")
+        .default("http://localhost:10000".into())
+        .validate_with(|input: &String| -> Result<(), String> {
+            match url::Url::parse(input) {
+                Ok(u) if u.scheme() == "http" || u.scheme() == "https" => Ok(()),
+                Ok(u) => Err(format!(
+                    "scheme must be http or https, got '{}'",
+                    u.scheme()
+                )),
+                Err(e) => Err(format!("invalid URL: {e}")),
+            }
+        })
+        .interact_text()?;
+
+    // Informational note when port is absent (sidecar default is 10000, HTTP default is 80).
+    if url::Url::parse(&sidecar_url).is_ok_and(|u| u.port().is_none()) {
+        println!("  Note: no port specified; Cocoon sidecar typically runs on port 10000");
+    }
+
+    if probe_cocoon_reachable(&sidecar_url) {
+        println!("  Sidecar at {sidecar_url} is reachable.");
+    } else {
+        println!(
+            "  Warning: sidecar at {sidecar_url} is not reachable. \
+             You can still configure the provider and start the sidecar later."
+        );
+    }
+
+    state.cocoon_client_url = Some(sidecar_url);
+
+    let model: String = Input::new()
+        .with_prompt("Default model")
+        .default("Qwen/Qwen3-0.6B".into())
+        .validate_with(|input: &String| -> Result<(), String> {
+            if input.trim().is_empty() {
+                Err("model name must not be empty".into())
+            } else {
+                Ok(())
+            }
+        })
+        .interact_text()?;
+    state.model = Some(model);
+
+    let wants_access_hash = use_age
+        && Confirm::new()
+            .with_prompt("Do you have an access hash for this Cocoon network?")
+            .default(false)
+            .interact()?;
+
+    if wants_access_hash {
+        println!(
+            "  Access hash will not be stored in config. After setup, run:\n  \
+             zeph vault set ZEPH_COCOON_ACCESS_HASH <your-hash>\n  \
+             Then set cocoon_access_hash = \"\" in config to enable vault lookup."
+        );
+    }
+    state.cocoon_wants_access_hash = wants_access_hash;
 
     Ok(())
 }

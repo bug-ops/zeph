@@ -242,6 +242,11 @@ pub(crate) struct WizardState {
     pub(crate) gonka_private_key: Option<Zeroizing<String>>,
     pub(crate) gonka_address: Option<String>,
     pub(crate) gonka_nodes: Vec<zeph_config::GonkaNode>,
+    // Cocoon provider (#3671)
+    /// Sidecar URL provided by the wizard (e.g. `http://localhost:10000`).
+    pub(crate) cocoon_client_url: Option<String>,
+    /// `true` when the user confirmed they have an access hash stored in the vault.
+    pub(crate) cocoon_wants_access_hash: bool,
 }
 
 impl Default for WizardState {
@@ -412,6 +417,8 @@ impl Default for WizardState {
             gonka_private_key: None,
             gonka_address: None,
             gonka_nodes: Vec::new(),
+            cocoon_client_url: None,
+            cocoon_wants_access_hash: false,
         }
     }
 }
@@ -635,6 +642,12 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             thinking_level: state.gemini_thinking_level,
             vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
             gonka_nodes: state.gonka_nodes.clone(),
+            cocoon_client_url: state.cocoon_client_url.clone(),
+            cocoon_access_hash: if state.cocoon_wants_access_hash {
+                Some(String::new()) // empty sentinel: resolve from vault
+            } else {
+                None
+            },
             ..ProviderEntry::default()
         }]
     };
@@ -1641,6 +1654,11 @@ fn print_secrets_instructions(state: &WizardState) {
         secrets.push("ZEPH_GONKA_ADDRESS".into());
     }
 
+    // Cocoon provider: access hash is stored in vault (never in config file).
+    if state.provider == Some(ProviderKind::Cocoon) && state.cocoon_wants_access_hash {
+        secrets.push("ZEPH_COCOON_ACCESS_HASH".into());
+    }
+
     let include_telegram = use_age && matches!(state.channel, ChannelChoice::Telegram)
         || state.telegram_token.is_some();
     if include_telegram {
@@ -2532,5 +2550,56 @@ mod tests {
         // Snapshot the serialized TOML shape for regression detection.
         let toml_str = toml::to_string_pretty(p).expect("serialize provider entry");
         insta::assert_snapshot!("gonka_provider_entry_toml", toml_str);
+    }
+
+    // ── Cocoon wizard state → build_config ───────────────────────────────────
+
+    #[test]
+    fn build_config_cocoon_provider() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Cocoon),
+            model: Some("Qwen/Qwen3-0.6B".into()),
+            cocoon_client_url: Some("http://localhost:10000".into()),
+            cocoon_wants_access_hash: false,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        let p = &config.llm.providers[0];
+        assert_eq!(p.provider_type, ProviderKind::Cocoon);
+        assert_eq!(p.model.as_deref(), Some("Qwen/Qwen3-0.6B"));
+        assert_eq!(
+            p.cocoon_client_url.as_deref(),
+            Some("http://localhost:10000")
+        );
+        assert!(p.cocoon_access_hash.is_none());
+    }
+
+    #[test]
+    fn build_config_cocoon_access_hash_sentinel() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Cocoon),
+            model: Some("Qwen/Qwen3-0.6B".into()),
+            cocoon_client_url: Some("http://localhost:10000".into()),
+            cocoon_wants_access_hash: true,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        let p = &config.llm.providers[0];
+        // Sentinel: Some("") signals "use vault".
+        assert_eq!(p.cocoon_access_hash.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn build_config_cocoon_no_access_hash() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Cocoon),
+            model: Some("Qwen/Qwen3-0.6B".into()),
+            cocoon_client_url: Some("http://localhost:10000".into()),
+            cocoon_wants_access_hash: false,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        let p = &config.llm.providers[0];
+        assert!(p.cocoon_access_hash.is_none());
     }
 }

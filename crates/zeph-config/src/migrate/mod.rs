@@ -3305,20 +3305,20 @@ pub trait Migration: Send + Sync {
 mod steps;
 use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
-    MigrateAutodreamConfig, MigrateCompressionPredictorConfig, MigrateDatabaseUrl,
-    MigrateEgressConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
-    MigrateGoalsConfig, MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig,
-    MigrateHooksTurnComplete, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
-    MigrateMcpMaxConnectAttempts, MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
-    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
-    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
-    MigrateOrchestratorProvider, MigrateOtelFilter, MigratePlannerModelToProvider,
-    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
-    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionProviderPersistence,
-    MigrateSessionRecapConfig, MigrateShellTransactional, MigrateSttToProvider,
-    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
-    MigrateVigilConfig,
+    MigrateAutodreamConfig, MigrateCocoonProviderNotice, MigrateCompressionPredictorConfig,
+    MigrateDatabaseUrl, MigrateEgressConfig, MigrateFocusAutoConsolidateMinWindow,
+    MigrateForgettingConfig, MigrateGoalsConfig, MigrateGonkagateToGonka,
+    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateMagicDocsConfig,
+    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpTrustLevels,
+    MigrateMemoryGraph, MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation,
+    MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig, MigrateMemoryReasoning,
+    MigrateMemoryReasoningJudge, MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias,
+    MigrateMicrocompactConfig, MigrateOrchestrationPersistence, MigrateOrchestratorProvider,
+    MigrateOtelFilter, MigratePlannerModelToProvider, MigrateProviderMaxConcurrent,
+    MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter,
+    MigrateSchedulerDaemon, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
+    MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
+    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateVigilConfig,
 };
 
 /// Step 45: add an advisory comment above `GonkaGate` provider entries pointing users to
@@ -3390,7 +3390,23 @@ pub(crate) fn migrate_gonkagate_to_gonka(toml_src: &str) -> MigrationResult {
     }
 }
 
-/// Ordered registry of all sequential migration steps (steps 1–45).
+/// Advisory-only no-op step for Cocoon provider introduction.
+///
+/// Returns the input unchanged. Exists so the migration registry stays sequential
+/// and `--migrate-config` informs users that Cocoon is now available.
+///
+/// # Errors
+///
+/// This function never returns an error.
+pub fn migrate_cocoon_provider_notice(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    Ok(MigrationResult {
+        output: toml_src.to_owned(),
+        changed_count: 0,
+        sections_changed: vec![],
+    })
+}
+
+/// Ordered registry of all sequential migration steps (steps 1–46).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -3463,6 +3479,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateProviderMaxConcurrent),
             // Step 45 — advisory notice for GonkaGate → native Gonka upgrade path (#3613)
             Box::new(MigrateGonkagateToGonka),
+            // Step 46 — advisory notice for Cocoon decentralized inference provider (#3671)
+            Box::new(MigrateCocoonProviderNotice),
         ]
     });
 
@@ -3481,8 +3499,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            45,
-            "MIGRATIONS registry must contain all 45 sequential steps"
+            46,
+            "MIGRATIONS registry must contain all 46 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -5068,8 +5086,8 @@ prompt_cache_ttl = "1h"
     // ── Migration registry ────────────────────────────────────────────────────
 
     #[test]
-    fn registry_has_forty_five_entries() {
-        assert_eq!(MIGRATIONS.len(), 45);
+    fn registry_has_forty_six_entries() {
+        assert_eq!(MIGRATIONS.len(), 46);
     }
 
     #[test]
@@ -5155,6 +5173,7 @@ prompt_cache_ttl = "1h"
             "migrate_orchestrator_provider",
             "migrate_provider_max_concurrent",
             "migrate_gonkagate_to_gonka",
+            "migrate_cocoon_provider_notice",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
@@ -5327,5 +5346,32 @@ prompt_cache_ttl = "1h"
         let second = migrate_gonkagate_to_gonka(&first.output);
         // Second run must not add another comment line.
         assert_eq!(second.changed_count, 0, "idempotent on second run");
+    }
+
+    // ── Step 46 — Cocoon provider notice ──────────────────────────────────────
+
+    #[test]
+    fn migrate_cocoon_noop_empty_config() {
+        let src = "";
+        let result = migrate_cocoon_provider_notice(src).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_cocoon_noop_existing_config() {
+        let src = "[agent]\nname = \"zeph\"\n\n[[llm.providers]]\ntype = \"ollama\"\n";
+        let result = migrate_cocoon_provider_notice(src).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_cocoon_idempotent() {
+        let src = "[[llm.providers]]\ntype = \"cocoon\"\nname = \"tee\"\n";
+        let first = migrate_cocoon_provider_notice(src).unwrap();
+        let second = migrate_cocoon_provider_notice(&first.output).unwrap();
+        assert_eq!(second.output, first.output);
+        assert_eq!(second.changed_count, 0);
     }
 }

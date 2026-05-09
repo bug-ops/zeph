@@ -4,7 +4,9 @@
 //! Migration step wrapper structs — one per sequential migration in [`super::MIGRATIONS`].
 //!
 //! Steps 1–35 are pre-existing; steps 36–38 were added for the stable-defaults flip;
-//! step 39 adds optional Qdrant API key; step 40 adds MCP `max_connect_attempts`.
+//! step 39 adds optional Qdrant API key; step 40 adds MCP `max_connect_attempts`;
+//! steps 41–45 add goal lifecycle, TACO compression, orchestrator provider, per-provider
+//! admission control, and `GonkaGate` advisory notice; step 46 is an advisory notice for Cocoon.
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -13,19 +15,19 @@
 use super::{
     MigrateError, Migration, MigrationResult, migrate_acp_subagents_config,
     migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry, migrate_autodream_config,
-    migrate_compression_predictor_config, migrate_database_url, migrate_egress_config,
-    migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
-    migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
-    migrate_magic_docs_config, migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts,
-    migrate_mcp_trust_levels, migrate_memory_graph_config, migrate_memory_hebbian_config,
-    migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
-    migrate_memory_persona_config, migrate_memory_reasoning_config,
-    migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
-    migrate_memory_retrieval_query_bias, migrate_microcompact_config,
-    migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
-    migrate_otel_filter, migrate_planner_model_to_provider, migrate_provider_max_concurrent,
-    migrate_qdrant_api_key, migrate_quality_config, migrate_sandbox_config,
-    migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
+    migrate_cocoon_provider_notice, migrate_compression_predictor_config, migrate_database_url,
+    migrate_egress_config, migrate_focus_auto_consolidate_min_window, migrate_forgetting_config,
+    migrate_goals_config, migrate_hooks_permission_denied_config,
+    migrate_hooks_turn_complete_config, migrate_magic_docs_config, migrate_mcp_elicitation_config,
+    migrate_mcp_max_connect_attempts, migrate_mcp_trust_levels, migrate_memory_graph_config,
+    migrate_memory_hebbian_config, migrate_memory_hebbian_consolidation_config,
+    migrate_memory_hebbian_spread_config, migrate_memory_persona_config,
+    migrate_memory_reasoning_config, migrate_memory_reasoning_judge_config,
+    migrate_memory_retrieval_config, migrate_memory_retrieval_query_bias,
+    migrate_microcompact_config, migrate_orchestration_orchestrator_provider,
+    migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
+    migrate_provider_max_concurrent, migrate_qdrant_api_key, migrate_quality_config,
+    migrate_sandbox_config, migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
     migrate_session_provider_persistence, migrate_session_recap_config,
     migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
     migrate_telemetry_config, migrate_tools_compression_config, migrate_vigil_config,
@@ -525,5 +527,16 @@ impl Migration for MigrateGonkagateToGonka {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         Ok(super::migrate_gonkagate_to_gonka(toml_src))
+    }
+}
+
+pub(super) struct MigrateCocoonProviderNotice;
+impl Migration for MigrateCocoonProviderNotice {
+    fn name(&self) -> &'static str {
+        "migrate_cocoon_provider_notice"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_cocoon_provider_notice(toml_src)
     }
 }

@@ -1592,6 +1592,36 @@ impl ProviderEntry {
             ));
         }
 
+        // B5: cocoon URL must be valid http/https; cocoon model must not be empty.
+        if self.provider_type == ProviderKind::Cocoon {
+            let name = self.effective_name();
+            if let Some(ref url_str) = self.cocoon_client_url {
+                match url::Url::parse(url_str) {
+                    Err(_) => {
+                        return Err(ConfigError::Validation(format!(
+                            "[[llm.providers]] entry '{name}': cocoon_client_url \
+                             '{url_str}' is not a valid URL; expected format: \
+                             http://localhost:10000"
+                        )));
+                    }
+                    Ok(u) if u.scheme() != "http" && u.scheme() != "https" => {
+                        return Err(ConfigError::Validation(format!(
+                            "[[llm.providers]] entry '{name}': cocoon_client_url \
+                             scheme must be http or https, got '{}'",
+                            u.scheme()
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+            if self.model.as_deref().is_some_and(|m| m.trim().is_empty()) {
+                return Err(ConfigError::Validation(format!(
+                    "[[llm.providers]] entry '{name}': model must not be empty \
+                     for cocoon provider"
+                )));
+            }
+        }
+
         // B1: warn on irrelevant fields.
         self.warn_irrelevant_fields();
 
@@ -2640,5 +2670,86 @@ model = "claude-sonnet-4-6"
         assert_eq!(cfg.providers.len(), 2);
         assert_eq!(cfg.providers[0].provider_type, ProviderKind::Ollama);
         assert_eq!(cfg.providers[1].provider_type, ProviderKind::Claude);
+    }
+
+    // ── ProviderEntry::validate — Cocoon URL and model validation ─────────────
+
+    fn cocoon_entry(url: Option<&str>, model: Option<&str>) -> ProviderEntry {
+        ProviderEntry {
+            provider_type: ProviderKind::Cocoon,
+            name: Some("cocoon".into()),
+            cocoon_client_url: url.map(str::to_owned),
+            model: model.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_cocoon_url_validation_accepts_http() {
+        assert!(
+            cocoon_entry(Some("http://localhost:10000"), Some("Qwen/Qwen3-0.6B"))
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_cocoon_url_validation_accepts_https() {
+        assert!(
+            cocoon_entry(Some("https://example.com:10000"), Some("Qwen/Qwen3-0.6B"))
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_cocoon_url_validation_rejects_non_http_scheme() {
+        let err = cocoon_entry(Some("ftp://server"), Some("Qwen/Qwen3-0.6B"))
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("ftp"),
+            "error should mention the bad scheme: {err}"
+        );
+    }
+
+    #[test]
+    fn test_cocoon_url_validation_rejects_invalid_url() {
+        let err = cocoon_entry(Some("not-a-url"), Some("Qwen/Qwen3-0.6B"))
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not-a-url"),
+            "error should mention the bad value: {err}"
+        );
+    }
+
+    #[test]
+    fn test_cocoon_url_none_passes() {
+        assert!(
+            cocoon_entry(None, Some("Qwen/Qwen3-0.6B"))
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_cocoon_model_empty_rejected() {
+        let err = cocoon_entry(Some("http://localhost:10000"), Some(""))
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("empty"),
+            "error should mention 'empty': {err}"
+        );
+    }
+
+    #[test]
+    fn test_cocoon_model_none_passes() {
+        assert!(
+            cocoon_entry(Some("http://localhost:10000"), None)
+                .validate()
+                .is_ok()
+        );
     }
 }

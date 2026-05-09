@@ -394,6 +394,15 @@ fn build_gonka_provider(
     Ok(AnyProvider::Gonka(provider))
 }
 
+/// Build a [`CocoonProvider`] from a `[[llm.providers]]` entry.
+///
+/// Resolves the access hash from the age vault when `cocoon_access_hash` is `Some(_)` in the
+/// entry. If the vault key is absent an explicit, actionable error is returned.
+///
+/// # Errors
+///
+/// Returns [`BootstrapError::Provider`] when the vault key `ZEPH_COCOON_ACCESS_HASH` is
+/// expected (field is `Some`) but not present in the resolved secrets.
 #[cfg(feature = "cocoon")]
 fn build_cocoon_provider(
     entry: &ProviderEntry,
@@ -421,11 +430,19 @@ fn build_cocoon_provider(
         );
     }
 
-    let access_hash = if entry
+    if entry
         .cocoon_access_hash
-        .as_ref()
-        .is_some_and(|s| !s.is_empty())
+        .as_deref()
+        .is_some_and(|v| !v.is_empty())
     {
+        tracing::warn!(
+            "cocoon_access_hash in config file appears to contain a raw value; \
+             this field should be empty — the actual hash must be stored in the vault: \
+             zeph vault set ZEPH_COCOON_ACCESS_HASH <hash>"
+        );
+    }
+
+    let access_hash = if entry.cocoon_access_hash.is_some() {
         let hash = config
             .secrets
             .cocoon_access_hash
@@ -690,7 +707,7 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "gonka")]
+    #[cfg(any(feature = "gonka", feature = "cocoon"))]
     use super::build_provider_from_entry;
     use super::{effective_embedding_model, stable_skill_embedding_model};
     use crate::config::{Config, ProviderKind};
@@ -838,5 +855,52 @@ mod tests {
             stable_skill_embedding_model(&config),
             effective_embedding_model(&config)
         );
+    }
+
+    #[cfg(feature = "cocoon")]
+    mod cocoon_tests {
+        use super::*;
+
+        fn cocoon_entry(access_hash: Option<&str>) -> ProviderEntry {
+            ProviderEntry {
+                provider_type: ProviderKind::Cocoon,
+                name: Some("cocoon".into()),
+                model: Some("Qwen/Qwen3-0.6B".into()),
+                cocoon_client_url: Some("http://localhost:10000".into()),
+                cocoon_access_hash: access_hash.map(str::to_owned),
+                cocoon_health_check: false,
+                ..ProviderEntry::default()
+            }
+        }
+
+        /// `cocoon_access_hash = Some("")` sentinel with no vault key must return an error.
+        #[test]
+        fn cocoon_access_hash_gate_vault_miss_errors() {
+            let entry = cocoon_entry(Some(""));
+            let config = Config::default(); // secrets.cocoon_access_hash = None
+            let result = build_provider_from_entry(&entry, &config);
+            assert!(
+                result.is_err(),
+                "expected error when vault key is absent but sentinel is set"
+            );
+            let err_str = result.unwrap_err().to_string();
+            assert!(
+                err_str.contains("ZEPH_COCOON_ACCESS_HASH"),
+                "error should mention the vault key: {err_str}"
+            );
+        }
+
+        /// `cocoon_access_hash = None` must succeed without touching the vault (health check off).
+        #[test]
+        fn cocoon_no_access_hash_gate_succeeds_without_vault() {
+            let entry = cocoon_entry(None);
+            let config = Config::default();
+            let result = build_provider_from_entry(&entry, &config);
+            assert!(
+                result.is_ok(),
+                "expected success when no access hash requested: {:?}",
+                result.err()
+            );
+        }
     }
 }

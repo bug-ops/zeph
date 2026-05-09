@@ -351,7 +351,7 @@ impl LlmProvider for CocoonProvider {
 | Proxy connected | `/stats` JSON | `proxy_connected: true` |
 | Workers available | `/stats` JSON | `worker_count > 0` |
 | Model listed | `GET /v1/models` | Configured model ID appears in response |
-| Vault key | age vault | `ZEPH_COCOON_ACCESS_HASH` present (checked only if `cocoon_access_hash` is non-empty in config) |
+| Vault key | age vault | `ZEPH_COCOON_ACCESS_HASH` present (checked only if `cocoon_access_hash` is **present** in config, i.e. `Some(_)`) |
 
 Exit code: 0 if all applicable checks pass, 1 otherwise.
 
