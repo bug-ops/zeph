@@ -1202,7 +1202,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     #[cfg(feature = "tui")]
-    let is_cli = matches!(channel, AppChannel::Standard(AnyChannel::Cli(_)));
+    let is_cli = matches!(&channel, AppChannel::Standard(c) if matches!(c.as_ref(), AnyChannel::Cli(_)));
     #[cfg(not(feature = "tui"))]
     let is_cli = matches!(channel, AnyChannel::Cli(_));
     if let Some(ref sink) = json_sink {
@@ -1219,7 +1219,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "tui")]
     let active_channel_name: String = match &channel {
         AppChannel::Tui(_) => "tui",
-        AppChannel::Standard(c) => match c {
+        AppChannel::Standard(c) => match c.as_ref() {
             AnyChannel::Cli(_) => "cli",
             AnyChannel::JsonCli(_) => "cli-json",
             AnyChannel::Telegram(_) => "telegram",
@@ -1246,7 +1246,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // CLI/TUI channels use the default (allow-all) allowlist.
     #[cfg(feature = "tui")]
     let channel_skills_config: zeph_core::config::ChannelSkillsConfig = match &channel {
-        AppChannel::Standard(AnyChannel::Telegram(_)) => app
+        AppChannel::Standard(c) if matches!(c.as_ref(), AnyChannel::Telegram(_)) => app
             .config()
             .telegram
             .as_ref()
@@ -1254,7 +1254,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 c.skills.clone()
             }),
         #[cfg(feature = "discord")]
-        AppChannel::Standard(AnyChannel::Discord(_)) => app
+        AppChannel::Standard(c) if matches!(c.as_ref(), AnyChannel::Discord(_)) => app
             .config()
             .discord
             .as_ref()
@@ -1262,7 +1262,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 c.skills.clone()
             }),
         #[cfg(feature = "slack")]
-        AppChannel::Standard(AnyChannel::Slack(_)) => app
+        AppChannel::Standard(c) if matches!(c.as_ref(), AnyChannel::Slack(_)) => app
             .config()
             .slack
             .as_ref()

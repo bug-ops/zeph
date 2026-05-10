@@ -27,7 +27,7 @@ pub(crate) type CliHistory = (Vec<String>, Box<dyn Fn(&str) + Send>);
 #[cfg(feature = "tui")]
 #[derive(Debug)]
 pub(crate) enum AppChannel {
-    Standard(AnyChannel),
+    Standard(Box<AnyChannel>),
     Tui(TuiChannel),
 }
 
@@ -222,7 +222,7 @@ pub(crate) async fn create_channel_with_tui(
         return Ok((AppChannel::Tui(channel), Some(handle), None));
     }
     let (channel, sink) = create_channel_inner(config, history, exec_mode).await?;
-    Ok((AppChannel::Standard(channel), None, sink))
+    Ok((AppChannel::Standard(Box::new(channel)), None, sink))
 }
 
 #[cfg(test)]
@@ -240,7 +240,7 @@ mod tests {
     use zeph_core::channel::{Channel, StopHint, ToolStartEvent};
 
     fn make_app_channel() -> AppChannel {
-        AppChannel::Standard(AnyChannel::Cli(CliChannel::new()))
+        AppChannel::Standard(Box::new(AnyChannel::Cli(CliChannel::new())))
     }
 
     #[tokio::test]
