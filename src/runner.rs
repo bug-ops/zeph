@@ -2117,8 +2117,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.llm.semantic_cache_enabled,
         crate::bootstrap::effective_embedding_model(config),
     );
-    let agent =
-        agent_setup::apply_cost_tracker(agent, config.cost.enabled, config.cost.max_daily_cents);
+    let agent = agent_setup::apply_cost_tracker(agent, config);
     let agent = agent_setup::apply_summary_provider(agent, summary_provider);
     let probe_provider = app.build_probe_provider();
     let agent = if let Some(pp) = probe_provider {
@@ -2543,6 +2542,22 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                     tracing::error!(
                         provider = stt_entry.effective_name(),
                         "STT provider is type candle but the `candle` feature is not enabled; \
+                         STT disabled"
+                    );
+                    agent
+                }
+                #[cfg(feature = "cocoon")]
+                zeph_core::config::ProviderKind::Cocoon => agent_setup::apply_cocoon_stt(
+                    agent,
+                    stt_entry,
+                    language,
+                    config.timeouts.llm_request_timeout_secs,
+                ),
+                #[cfg(not(feature = "cocoon"))]
+                zeph_core::config::ProviderKind::Cocoon => {
+                    tracing::error!(
+                        provider = stt_entry.effective_name(),
+                        "STT provider is type cocoon but the `cocoon` feature is not enabled; \
                          STT disabled"
                     );
                     agent

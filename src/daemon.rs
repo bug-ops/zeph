@@ -660,13 +660,7 @@ pub(crate) async fn run_daemon(
         agent
     };
 
-    let agent = if config.cost.enabled {
-        let tracker =
-            zeph_core::cost::CostTracker::new(true, f64::from(config.cost.max_daily_cents));
-        agent.with_cost_tracker(tracker)
-    } else {
-        agent
-    };
+    let agent = agent_setup::apply_cost_tracker(agent, config);
 
     let agent = if config.tools.anomaly.enabled {
         agent.with_anomaly_detector(zeph_tools::AnomalyDetector::new(

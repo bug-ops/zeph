@@ -28,8 +28,10 @@
 
 mod client;
 mod provider;
+mod stt;
 #[cfg(test)]
 mod tests;
 
 pub use client::{CocoonClient, CocoonHealth};
 pub use provider::CocoonProvider;
+pub use stt::CocoonSttProvider;

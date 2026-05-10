@@ -148,7 +148,7 @@ pub use metrics::MetricsConfig;
 pub use notifications::NotificationsConfig;
 pub use providers::{
     BanditConfig, CacheTtl, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
-    CoeConfig, ComplexityRoutingConfig, FAST_TIER_MODEL_HINTS, GeminiThinkingLevel,
+    CocoonPricing, CoeConfig, ComplexityRoutingConfig, FAST_TIER_MODEL_HINTS, GeminiThinkingLevel,
     GenerationParams, GonkaNode, LlmConfig, LlmRoutingStrategy, MAX_TOKENS_CAP, ProviderEntry,
     ProviderKind, ProviderName, RouterConfig, RouterStrategyConfig, SttConfig, ThinkingConfig,
     ThinkingEffort, TierMapping, validate_pool,

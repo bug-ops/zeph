@@ -1367,6 +1367,27 @@ impl Default for CandleInlineConfig {
     }
 }
 
+/// Per-1K-token pricing for a Cocoon provider, in cents.
+///
+/// Cocoon model names (e.g. `Qwen/Qwen3-0.6B`) are not in the built-in pricing table.
+/// When this struct is present in a provider entry, its values are registered with
+/// [`CostTracker`] at startup so that token costs are tracked accurately.
+///
+/// Reasoning tokens (when the model uses chain-of-thought) are folded into
+/// `completion_tokens` by the Cocoon sidecar and counted at the completion price.
+///
+/// [`CostTracker`]: zeph_core::cost::CostTracker
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct CocoonPricing {
+    /// Prompt (input) token price in cents per 1K tokens.
+    #[serde(default)]
+    pub prompt_cents_per_1k: f64,
+    /// Completion (output) token price in cents per 1K tokens.
+    /// Reasoning tokens are counted here since the sidecar folds them into completion tokens.
+    #[serde(default)]
+    pub completion_cents_per_1k: f64,
+}
+
 /// Unified provider entry: one struct replaces `CloudLlmConfig`, `OpenAiConfig`,
 /// `GeminiConfig`, `OllamaConfig`, `CompatibleConfig`, and `OrchestratorProviderConfig`.
 ///
@@ -1467,6 +1488,20 @@ pub struct ProviderEntry {
     /// Whether to perform a health check against `/stats` at provider construction time.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub cocoon_health_check: bool,
+    /// Manual per-1K-token pricing for this Cocoon provider.
+    ///
+    /// Cocoon model names (e.g. `Qwen/Qwen3-0.6B`) are not in the built-in pricing table.
+    /// When this section is present, the values are registered with `CostTracker` at startup
+    /// so that token costs are tracked accurately.
+    ///
+    /// Example TOML:
+    /// ```toml
+    /// [llm.providers.cocoon_pricing]
+    /// prompt_cents_per_1k = 0.01
+    /// completion_cents_per_1k = 0.03
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cocoon_pricing: Option<CocoonPricing>,
 
     /// Provider-specific instruction file.
     #[serde(default)]
@@ -1521,6 +1556,7 @@ impl Default for ProviderEntry {
             cocoon_client_url: None,
             cocoon_access_hash: None,
             cocoon_health_check: true,
+            cocoon_pricing: None,
             instruction_file: None,
             max_concurrent: None,
         }
@@ -1604,6 +1640,13 @@ impl ProviderEntry {
                              http://localhost:10000"
                         )));
                     }
+                    Ok(u) if !matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "::1")) => {
+                        return Err(ConfigError::Validation(format!(
+                            "[[llm.providers]] entry '{name}': cocoon_client_url host must be \
+                             localhost or 127.0.0.1, got '{}'",
+                            u.host_str().unwrap_or("<none>")
+                        )));
+                    }
                     Ok(u) if u.scheme() != "http" && u.scheme() != "https" => {
                         return Err(ConfigError::Validation(format!(
                             "[[llm.providers]] entry '{name}': cocoon_client_url \
@@ -1619,6 +1662,21 @@ impl ProviderEntry {
                     "[[llm.providers]] entry '{name}': model must not be empty \
                      for cocoon provider"
                 )));
+            }
+            if let Some(ref p) = self.cocoon_pricing {
+                if !p.prompt_cents_per_1k.is_finite() || p.prompt_cents_per_1k < 0.0 {
+                    return Err(ConfigError::Validation(format!(
+                        "[[llm.providers]] entry '{name}': cocoon_pricing.prompt_cents_per_1k \
+                         must be a finite non-negative number"
+                    )));
+                }
+                if !p.completion_cents_per_1k.is_finite() || p.completion_cents_per_1k < 0.0 {
+                    return Err(ConfigError::Validation(format!(
+                        "[[llm.providers]] entry '{name}': \
+                         cocoon_pricing.completion_cents_per_1k \
+                         must be a finite non-negative number"
+                    )));
+                }
             }
         }
 
@@ -2694,17 +2752,28 @@ model = "claude-sonnet-4-6"
     }
 
     #[test]
-    fn test_cocoon_url_validation_accepts_https() {
+    fn test_cocoon_url_validation_accepts_https_localhost() {
         assert!(
-            cocoon_entry(Some("https://example.com:10000"), Some("Qwen/Qwen3-0.6B"))
+            cocoon_entry(Some("https://localhost:10000"), Some("Qwen/Qwen3-0.6B"))
                 .validate()
                 .is_ok()
         );
     }
 
     #[test]
+    fn test_cocoon_url_validation_rejects_non_localhost() {
+        let err = cocoon_entry(Some("http://192.168.1.10:10000"), Some("Qwen/Qwen3-0.6B"))
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("localhost"),
+            "error should mention localhost restriction: {err}"
+        );
+    }
+
+    #[test]
     fn test_cocoon_url_validation_rejects_non_http_scheme() {
-        let err = cocoon_entry(Some("ftp://server"), Some("Qwen/Qwen3-0.6B"))
+        let err = cocoon_entry(Some("ftp://localhost"), Some("Qwen/Qwen3-0.6B"))
             .validate()
             .unwrap_err();
         assert!(
@@ -2751,5 +2820,35 @@ model = "claude-sonnet-4-6"
                 .validate()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn validate_cocoon_pricing_negative_prompt_errors() {
+        let mut e = cocoon_entry(Some("http://localhost:10000"), Some("Qwen/Qwen3-0.6B"));
+        e.cocoon_pricing = Some(CocoonPricing {
+            prompt_cents_per_1k: -1.0,
+            completion_cents_per_1k: 0.03,
+        });
+        assert!(e.validate().is_err());
+    }
+
+    #[test]
+    fn validate_cocoon_pricing_negative_completion_errors() {
+        let mut e = cocoon_entry(Some("http://localhost:10000"), Some("Qwen/Qwen3-0.6B"));
+        e.cocoon_pricing = Some(CocoonPricing {
+            prompt_cents_per_1k: 0.01,
+            completion_cents_per_1k: -0.5,
+        });
+        assert!(e.validate().is_err());
+    }
+
+    #[test]
+    fn validate_cocoon_pricing_valid_passes() {
+        let mut e = cocoon_entry(Some("http://localhost:10000"), Some("Qwen/Qwen3-0.6B"));
+        e.cocoon_pricing = Some(CocoonPricing {
+            prompt_cents_per_1k: 0.01,
+            completion_cents_per_1k: 0.03,
+        });
+        assert!(e.validate().is_ok());
     }
 }

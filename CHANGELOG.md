@@ -23,10 +23,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ScopedToolExecutor` and `PolicyGateExecutor`. Fail-open by default, bounded by
   `max_probes_per_turn` and `probe_timeout_ms`. Enabled via `[security.shadow_sentinel]`
   (opt-in, default off). Extends spec 050. Closes #3705.
-
-### Fixed
-
-- fix(tui): consecutive `Tool` messages with the same groupable `ToolKind` are now folded into a
+- feat(llm/cocoon): add `CocoonSttProvider` implementing `SpeechToText` via the sidecar's
+  `/v1/audio/transcriptions` endpoint (OpenAI Whisper wire format). Configure by setting
+  `stt_model` on a `[[llm.providers]]` entry with `type = "cocoon"`. Closes #3678.
+- feat(config): add `CocoonPricing` struct and `cocoon_pricing` field on `ProviderEntry` for
+  per-1K-token pricing (prompt + completion cents). Cocoon model names are not in the built-in
+  pricing table; this allows accurate cost tracking for any Cocoon model. Closes #3679.
+- feat(cost): `apply_cost_tracker` now accepts `&Config` and registers Cocoon provider pricing
+  with `CostTracker` at startup. Both runner and daemon code paths use the unified helper.
+- feat(llm/cocoon): add `CocoonClient::post_multipart` for multipart form POST (used by STT).
+- feat(tui): consecutive `Tool` messages with the same groupable `ToolKind` are now folded into a
   single visual cell via a grouping pre-pass in `collect_message_lines_from`. Groups display as
   `● Explored N files` / `● Ran N commands` with a collapsible sub-list of primary args (capped
   at 8 in Inline density, unlimited in Block, hidden in Compact). Groups break on role change,

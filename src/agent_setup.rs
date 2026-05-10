@@ -685,13 +685,29 @@ pub(crate) fn apply_response_cache<C: Channel>(
 
 pub(crate) fn apply_cost_tracker<C: Channel>(
     agent: Agent<C>,
-    enabled: bool,
-    max_daily_cents: u32,
+    config: &zeph_core::config::Config,
 ) -> Agent<C> {
-    if !enabled {
+    if !config.cost.enabled {
         return agent;
     }
-    agent.with_cost_tracker(CostTracker::new(true, f64::from(max_daily_cents)))
+    let mut tracker = CostTracker::new(true, f64::from(config.cost.max_daily_cents));
+    for entry in &config.llm.providers {
+        if entry.provider_type == zeph_config::ProviderKind::Cocoon
+            && let (Some(pricing), Some(model)) = (&entry.cocoon_pricing, &entry.model)
+        {
+            tracker = tracker.with_pricing(
+                model,
+                zeph_core::cost::ModelPricing {
+                    prompt_cents_per_1k: pricing.prompt_cents_per_1k,
+                    completion_cents_per_1k: pricing.completion_cents_per_1k,
+                    // Cocoon sidecar does not charge separately for cached tokens
+                    cache_read_cents_per_1k: 0.0,
+                    cache_write_cents_per_1k: 0.0,
+                },
+            );
+        }
+    }
+    agent.with_cost_tracker(tracker)
 }
 
 pub(crate) fn apply_summary_provider<C: Channel>(
@@ -1298,6 +1314,36 @@ pub(crate) fn apply_whisper_stt<C: Channel>(
     agent.with_stt(Box::new(whisper))
 }
 
+/// Apply Cocoon STT to the agent.
+///
+/// Constructs a [`CocoonClient`] from `entry`'s `cocoon_client_url` and `cocoon_access_hash`
+/// fields, then wires up a [`CocoonSttProvider`] using the LLM timeout so that large audio
+/// files are not cut off by a short health-check timeout.
+///
+/// [`CocoonClient`]: zeph_llm::cocoon::CocoonClient
+/// [`CocoonSttProvider`]: zeph_llm::cocoon::CocoonSttProvider
+#[cfg(feature = "cocoon")]
+pub(crate) fn apply_cocoon_stt<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    entry: &zeph_core::config::ProviderEntry,
+    language: &str,
+    llm_timeout_secs: u64,
+) -> zeph_core::agent::Agent<C> {
+    let model = entry.stt_model.as_deref().unwrap_or("whisper-1");
+    let base_url = entry
+        .cocoon_client_url
+        .as_deref()
+        .unwrap_or("http://localhost:10000");
+    let client = std::sync::Arc::new(zeph_llm::cocoon::CocoonClient::new(
+        base_url,
+        entry.cocoon_access_hash.clone(),
+        std::time::Duration::from_secs(llm_timeout_secs),
+    ));
+    let stt = zeph_llm::cocoon::CocoonSttProvider::new(model, client).with_language(language);
+    tracing::info!(model, base_url, "STT enabled via Cocoon sidecar");
+    agent.with_stt(Box::new(stt))
+}
+
 /// Apply MCP tool pruning (LLM-based) configuration to the agent.
 ///
 /// Converts `ToolPruningConfig` into `PruningParams` and optionally resolves a dedicated
@@ -1568,14 +1614,37 @@ mod tests {
     #[tokio::test]
     async fn apply_cost_tracker_disabled_returns_agent_unchanged() {
         let agent = make_agent();
-        let result = apply_cost_tracker(agent, false, 100);
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.cost.enabled = false;
+        let result = apply_cost_tracker(agent, &config);
         drop(result);
     }
 
     #[tokio::test]
     async fn apply_cost_tracker_enabled_attaches_tracker() {
         let agent = make_agent();
-        let result = apply_cost_tracker(agent, true, 500);
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.cost.enabled = true;
+        config.cost.max_daily_cents = 500;
+        let result = apply_cost_tracker(agent, &config);
+        drop(result);
+    }
+
+    #[tokio::test]
+    async fn apply_cost_tracker_registers_cocoon_pricing() {
+        let agent = make_agent();
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.cost.enabled = true;
+        config.cost.max_daily_cents = 100;
+        let mut entry = zeph_config::ProviderEntry::default();
+        entry.provider_type = zeph_config::ProviderKind::Cocoon;
+        entry.model = Some("Qwen/Qwen3-0.6B".into());
+        entry.cocoon_pricing = Some(zeph_config::CocoonPricing {
+            prompt_cents_per_1k: 0.01,
+            completion_cents_per_1k: 0.03,
+        });
+        config.llm.providers = vec![entry];
+        let result = apply_cost_tracker(agent, &config);
         drop(result);
     }
 

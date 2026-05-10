@@ -159,6 +159,36 @@ impl CocoonClient {
         .await
     }
 
+    /// POST a multipart form to `{base_url}{path}`.
+    ///
+    /// Used for audio transcription (`/v1/audio/transcriptions`). Attaches
+    /// `X-Access-Hash` header when `access_hash` is `Some`. The request is
+    /// bounded by the same LLM timeout configured at construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::Unavailable`] on connection failure or timeout.
+    pub async fn post_multipart(
+        &self,
+        path: &str,
+        form: reqwest::multipart::Form,
+    ) -> Result<reqwest::Response, LlmError> {
+        let span = tracing::info_span!("llm.cocoon.request", path);
+        async {
+            let url = format!("{}{path}", self.base_url);
+            let mut req = self.client.post(&url).multipart(form);
+            if let Some(ref hash) = self.access_hash {
+                req = req.header("X-Access-Hash", hash.as_str());
+            }
+            req.send().await.map_err(|e| {
+                tracing::warn!(error = %e, "cocoon multipart HTTP error");
+                LlmError::Unavailable
+            })
+        }
+        .instrument(span)
+        .await
+    }
+
     /// POST `body` to `{base_url}{path}`.
     ///
     /// Attaches `X-Access-Hash` header when `access_hash` is `Some`.
