@@ -5,7 +5,7 @@
 //!
 //! [`CocoonSttProvider`] implements [`SpeechToText`] by forwarding audio via
 //! multipart POST to the sidecar's `/v1/audio/transcriptions` endpoint.
-//! The sidecar accepts the standard OpenAI Whisper wire format.
+//! The sidecar accepts the standard `OpenAI` Whisper wire format.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -18,7 +18,7 @@ use crate::stt::{SpeechToText, Transcription};
 /// STT provider that routes audio through the Cocoon sidecar.
 ///
 /// Uses the same `CocoonClient` transport as the LLM provider — the sidecar
-/// exposes `/v1/audio/transcriptions` in the OpenAI Whisper format.
+/// exposes `/v1/audio/transcriptions` in the `OpenAI` Whisper format.
 ///
 /// # Examples
 ///
