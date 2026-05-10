@@ -154,6 +154,8 @@ pub enum AgentEvent {
         tool_name: zeph_common::ToolName,
         /// The primary command or argument string shown in the status bar.
         command: String,
+        /// Opaque tool call ID used to correlate streaming chunks with this call.
+        tool_call_id: String,
     },
     /// An incremental output chunk from a long-running tool (e.g. streaming shell output).
     ToolOutputChunk {
@@ -163,6 +165,8 @@ pub enum AgentEvent {
         command: String,
         /// The chunk text to append.
         chunk: String,
+        /// Opaque tool call ID matching the corresponding [`AgentEvent::ToolStart`].
+        tool_call_id: String,
     },
     /// Final tool output, replacing any in-progress chunks for this call.
     ToolOutput {
@@ -180,6 +184,8 @@ pub enum AgentEvent {
         filter_stats: Option<String>,
         /// Indices of lines retained by the filter.
         kept_lines: Option<Vec<usize>>,
+        /// Opaque tool call ID matching the corresponding [`AgentEvent::ToolStart`].
+        tool_call_id: String,
     },
     /// The agent requests a boolean confirmation from the user.
     ConfirmRequest {

@@ -115,24 +115,47 @@ impl App {
                     if text.is_empty() { None } else { Some(text) };
                 self.auto_scroll();
             }
-            AgentEvent::ToolStart { tool_name, command } => {
+            AgentEvent::ToolStart {
+                tool_name,
+                command,
+                tool_call_id,
+            } => {
                 self.sessions.current_mut().status_label = None;
                 self.sessions.current_mut().messages.push(
                     ChatMessage::new(MessageRole::Tool, format!("$ {command}\n"))
                         .streaming()
-                        .with_tool(tool_name),
+                        .with_tool(tool_name)
+                        .with_tool_call_id(tool_call_id),
                 );
                 self.trim_messages();
                 self.auto_scroll();
             }
-            AgentEvent::ToolOutputChunk { chunk, .. } => {
-                if let Some(pos) = self
-                    .sessions
-                    .current_mut()
-                    .messages
-                    .iter()
-                    .rposition(|m| m.role == MessageRole::Tool && m.streaming)
-                {
+            AgentEvent::ToolOutputChunk {
+                chunk,
+                tool_call_id,
+                ..
+            } => {
+                let pos = if tool_call_id.is_empty() {
+                    // Legacy path: no tool_call_id, fall back to rposition.
+                    self.sessions
+                        .current()
+                        .messages
+                        .iter()
+                        .rposition(|m| m.role == MessageRole::Tool && m.streaming)
+                } else {
+                    let found =
+                        self.sessions.current().messages.iter().rposition(|m| {
+                            m.tool_call_id.as_deref() == Some(tool_call_id.as_str())
+                        });
+                    if found.is_none() {
+                        tracing::warn!(
+                            %tool_call_id,
+                            "ToolOutputChunk: no message with matching tool_call_id — dropping chunk"
+                        );
+                    }
+                    found
+                };
+                if let Some(pos) = pos {
                     self.sessions.current_mut().messages[pos]
                         .content
                         .push_str(&chunk);
@@ -146,9 +169,17 @@ impl App {
                 diff,
                 filter_stats,
                 kept_lines,
+                tool_call_id,
                 ..
             } => {
-                self.handle_tool_output_event(tool_name, output, diff, filter_stats, kept_lines);
+                self.handle_tool_output_event(
+                    tool_name,
+                    output,
+                    diff,
+                    filter_stats,
+                    kept_lines,
+                    &tool_call_id,
+                );
             }
             AgentEvent::ConfirmRequest {
                 prompt,
@@ -212,6 +243,7 @@ impl App {
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
         kept_lines: Option<Vec<usize>>,
+        tool_call_id: &str,
     ) {
         debug!(
             %tool_name,
@@ -220,13 +252,30 @@ impl App {
             output_len = output.len(),
             "TUI ToolOutput event received"
         );
-        if let Some(pos) = self
-            .sessions
-            .current_mut()
-            .messages
-            .iter()
-            .rposition(|m| m.role == MessageRole::Tool && m.streaming)
-        {
+        // Locate the streaming tool message: prefer id-based lookup, fall back to rposition
+        // for legacy paths where tool_call_id is empty.
+        let pos = if tool_call_id.is_empty() {
+            self.sessions
+                .current()
+                .messages
+                .iter()
+                .rposition(|m| m.role == MessageRole::Tool && m.streaming)
+        } else {
+            let found = self
+                .sessions
+                .current()
+                .messages
+                .iter()
+                .rposition(|m| m.tool_call_id.as_deref() == Some(tool_call_id));
+            if found.is_none() {
+                tracing::warn!(
+                    tool_call_id,
+                    "ToolOutput: no message with matching tool_call_id — skipping finalization"
+                );
+            }
+            found
+        };
+        if let Some(pos) = pos {
             // Finalize existing streaming tool message (shell or native path with ToolStart).
             // Replace content after the header line ("$ cmd\n") with the canonical body_display
             // from ToolOutputEvent. Streaming chunks (Path B) may already occupy that space;

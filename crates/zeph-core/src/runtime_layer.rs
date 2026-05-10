@@ -190,6 +190,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = layer.before_tool(&ctx, &call).await;
         assert!(result.is_none());
@@ -413,6 +415,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result: Result<Option<ToolOutput>, ToolError> = Ok(None);
 
@@ -449,6 +453,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result: Result<Option<ToolOutput>, zeph_tools::ToolError> = Ok(None);
         layer.after_tool(&ctx, &call, &result).await;

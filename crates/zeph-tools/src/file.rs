@@ -1031,6 +1031,8 @@ mod tests {
             params: make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.tool_name, "read");

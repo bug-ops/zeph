@@ -625,6 +625,8 @@ impl<C: Channel> Agent<C> {
                     params,
                     caller_id: None,
                     context: task_ctx.clone(),
+
+                    tool_call_id: String::new(),
                 })
             })
             .collect();

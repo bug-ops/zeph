@@ -296,6 +296,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         }
     }
 
@@ -307,6 +309,8 @@ mod tests {
             params,
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         }
     }
 
@@ -542,6 +546,8 @@ mod tests {
             params,
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = gate.execute_tool_call(&call).await;
         assert!(

@@ -76,6 +76,7 @@ async fn execute_simple_command() {
         None,
         &[],
         None,
+        "",
     )
     .await;
     assert!(result.contains("hello"));
@@ -93,6 +94,7 @@ async fn execute_stderr_output() {
         None,
         &[],
         None,
+        "",
     )
     .await;
     assert!(result.contains("[stderr]"));
@@ -111,6 +113,7 @@ async fn execute_stdout_and_stderr_combined() {
         None,
         &[],
         None,
+        "",
     )
     .await;
     assert!(result.contains("out"));
@@ -124,8 +127,17 @@ async fn execute_stdout_and_stderr_combined() {
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
 async fn execute_empty_output() {
-    let (envelope, result) =
-        execute_bash("true", Duration::from_secs(30), None, None, None, &[], None).await;
+    let (envelope, result) = execute_bash(
+        "true",
+        Duration::from_secs(30),
+        None,
+        None,
+        None,
+        &[],
+        None,
+        "",
+    )
+    .await;
     assert_eq!(result, "(no output)");
     assert_eq!(envelope.exit_code, 0);
 }
@@ -943,6 +955,7 @@ async fn execute_bash_injects_extra_env() {
         Some(&env),
         &[],
         None,
+        "",
     )
     .await;
     assert_eq!(envelope.exit_code, 0);
@@ -976,8 +989,17 @@ async fn shell_executor_set_skill_env_injects_vars() {
 #[cfg(unix)]
 #[tokio::test]
 async fn execute_bash_error_handling() {
-    let (envelope, result) =
-        execute_bash("false", Duration::from_secs(5), None, None, None, &[], None).await;
+    let (envelope, result) = execute_bash(
+        "false",
+        Duration::from_secs(5),
+        None,
+        None,
+        None,
+        &[],
+        None,
+        "",
+    )
+    .await;
     assert_eq!(result, "(no output)");
     assert_eq!(envelope.exit_code, 1);
 }
@@ -993,6 +1015,7 @@ async fn execute_bash_command_not_found() {
         None,
         &[],
         None,
+        "",
     )
     .await;
     assert!(result.contains("[stderr]") || result.contains("[error]"));
@@ -1143,6 +1166,7 @@ async fn cancel_token_kills_child_process() {
         None,
         &[],
         None,
+        "",
     )
     .await;
     assert_eq!(envelope.exit_code, 130);
@@ -1160,6 +1184,7 @@ async fn cancel_token_none_does_not_cancel() {
         None,
         &[],
         None,
+        "",
     )
     .await;
     assert_eq!(envelope.exit_code, 0);
@@ -1186,6 +1211,7 @@ async fn cancel_kills_child_process_group() {
         None,
         &[],
         None,
+        "",
     )
     .await;
     assert_eq!(envelope.exit_code, 130);
@@ -1224,6 +1250,8 @@ async fn execute_tool_call_valid_command() {
             .collect(),
         caller_id: None,
         context: None,
+
+        tool_call_id: String::new(),
     };
     let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
     assert!(result.summary.contains("hi"));
@@ -1237,6 +1265,8 @@ async fn execute_tool_call_missing_command_returns_invalid_params() {
         params: serde_json::Map::new(),
         caller_id: None,
         context: None,
+
+        tool_call_id: String::new(),
     };
     let result = executor.execute_tool_call(&call).await;
     assert!(matches!(result, Err(ToolError::InvalidParams { .. })));
@@ -1252,6 +1282,8 @@ async fn execute_tool_call_empty_command_returns_none() {
             .collect(),
         caller_id: None,
         context: None,
+
+        tool_call_id: String::new(),
     };
     let result = executor.execute_tool_call(&call).await.unwrap();
     assert!(result.is_none());
@@ -1678,6 +1710,7 @@ async fn env_blocklist_strips_sensitive_vars() {
         None,
         &blocklist,
         None,
+        "",
     )
     .await;
     unsafe { std::env::remove_var("ZEPH_SECRET_TEST_VAR") };
@@ -1701,6 +1734,7 @@ async fn env_blocklist_preserves_safe_vars() {
         None,
         &blocklist,
         None,
+        "",
     )
     .await;
     assert_eq!(envelope.exit_code, 0);
@@ -1725,6 +1759,7 @@ async fn env_blocklist_extra_env_still_injected() {
         Some(&extra),
         &blocklist,
         None,
+        "",
     )
     .await;
     assert_eq!(envelope.exit_code, 0);
@@ -1751,6 +1786,7 @@ async fn env_blocklist_multiple_prefixes() {
         None,
         &blocklist,
         None,
+        "",
     )
     .await;
     unsafe {
@@ -1781,6 +1817,7 @@ async fn empty_env_blocklist_passes_all_vars() {
         None,
         &[],
         None,
+        "",
     )
     .await;
     unsafe { std::env::remove_var("ZEPH_EMPTY_BLOCKLIST_TEST") };
@@ -2332,6 +2369,7 @@ async fn shell_output_envelope_separates_streams() {
         None,
         &[],
         None,
+        "",
     )
     .await;
     assert!(
@@ -2392,6 +2430,7 @@ async fn shell_output_envelope_nonzero_exit_code() {
         None,
         &[],
         None,
+        "",
     )
     .await;
     assert_eq!(
@@ -2548,6 +2587,8 @@ async fn execute_tool_call_with_background_true() {
         .collect(),
         caller_id: None,
         context: None,
+
+        tool_call_id: String::new(),
     };
     let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
     assert!(
@@ -3094,6 +3135,8 @@ mod resolve_context {
             },
             caller_id: None,
             context: Some(ctx),
+
+            tool_call_id: String::new(),
         };
         let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(
@@ -3125,6 +3168,8 @@ mod resolve_context {
             },
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
         let expected = std::env::current_dir().unwrap();

@@ -1955,6 +1955,7 @@ mod tests {
             diff: Some(diff),
             filter_stats: None,
             kept_lines: None,
+            tool_call_id: String::new(),
         });
 
         assert_eq!(app.messages().len(), 1);
@@ -1975,6 +1976,7 @@ mod tests {
             diff: None,
             filter_stats: None,
             kept_lines: None,
+            tool_call_id: String::new(),
         });
 
         // No prior ToolStart and no diff/filter_stats: nothing to display.
@@ -3276,6 +3278,7 @@ mod tests {
         app.handle_agent_event(AgentEvent::ToolStart {
             tool_name: "bash".into(),
             command: "ls -la".into(),
+            tool_call_id: String::new(),
         });
         // Path C: ToolOutput arrives with no prior chunks.
         app.handle_agent_event(AgentEvent::ToolOutput {
@@ -3286,6 +3289,7 @@ mod tests {
             diff: None,
             filter_stats: None,
             kept_lines: None,
+            tool_call_id: String::new(),
         });
 
         assert_eq!(app.messages().len(), 1);
@@ -3301,12 +3305,14 @@ mod tests {
         app.handle_agent_event(AgentEvent::ToolStart {
             tool_name: "bash".into(),
             command: "echo hello".into(),
+            tool_call_id: String::new(),
         });
         // Path B: streaming chunks arrive.
         app.handle_agent_event(AgentEvent::ToolOutputChunk {
             tool_name: "bash".into(),
             command: "echo hello".into(),
             chunk: "hello\n".into(),
+            tool_call_id: String::new(),
         });
         // Path C: ToolOutput with canonical body_display (same content as chunks).
         app.handle_agent_event(AgentEvent::ToolOutput {
@@ -3317,6 +3323,7 @@ mod tests {
             diff: None,
             filter_stats: None,
             kept_lines: None,
+            tool_call_id: String::new(),
         });
 
         assert_eq!(app.messages().len(), 1);

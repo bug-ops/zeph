@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(tui): parallel tool call output no longer gets cross-contaminated in the TUI. `tool_call_id`
+  is now threaded from `ToolCall` through `ShellExecutor` → `ToolEvent::OutputChunk` →
+  `tui_bridge` → `AgentEvent::ToolOutputChunk/ToolStart/ToolOutput`. The TUI uses id-based
+  lookup when `tool_call_id` is non-empty; on miss it drops the chunk with a `warn!` log
+  instead of falling back to the last streaming message (which was the source of the bug).
+  The legacy empty-id path retains the old `rposition` fallback for backwards compatibility.
+  Closes #3688. (#3692)
+
 - fix(cli): `zeph cocoon doctor` now reports `[FAIL]` for `cocoon_client_url` with an invalid scheme
   (e.g. `ftp://`). `check_config_present` previously returned `[OK]` without calling
   `entry.validate()`, silently accepting any URL scheme. The fix adds a `validate()` guard that

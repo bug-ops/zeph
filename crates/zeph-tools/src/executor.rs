@@ -41,6 +41,7 @@ pub struct DiffData {
 ///     },
 ///     caller_id: Some("user-42".to_owned()),
 ///     context: Some(ExecutionContext::new().with_name("repo")),
+///     tool_call_id: String::new(),
 /// };
 /// assert_eq!(call.tool_id, "bash");
 /// ```
@@ -56,6 +57,9 @@ pub struct ToolCall {
     /// Per-turn execution environment. `None` means use the executor default (process CWD
     /// and inherited env), which is identical to the behaviour before this field existed.
     pub context: Option<crate::ExecutionContext>,
+    /// Opaque tool call ID used to correlate [`ToolEvent::OutputChunk`] events with
+    /// their originating tool call in the TUI. Empty when not set by the agent loop.
+    pub tool_call_id: String,
 }
 
 /// Cumulative filter statistics for a single tool execution.
@@ -305,6 +309,9 @@ pub enum ToolEvent {
         tool_name: ToolName,
         command: String,
         chunk: String,
+        /// Opaque tool call ID matching the corresponding [`ToolEvent::Started`] event.
+        /// Empty string when the executor does not have access to the call ID.
+        tool_call_id: String,
     },
     /// The tool finished. Contains the full output and optional filter/diff data.
     Completed {
@@ -1216,6 +1223,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -1361,6 +1370,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -1696,6 +1707,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         }
     }
 

@@ -109,6 +109,8 @@ mod tests {
                 .clone(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("## Instructions"));
@@ -128,6 +130,8 @@ mod tests {
                 .clone(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("skill not found"));
@@ -154,6 +158,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -174,6 +180,8 @@ mod tests {
                 .clone(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("truncated"));
@@ -193,6 +201,8 @@ mod tests {
                 .clone(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("skill not found"));
@@ -228,6 +238,8 @@ mod tests {
                             .clone(),
                         caller_id: None,
                         context: None,
+
+                        tool_call_id: String::new(),
                     };
                     ex.execute_tool_call(&call).await
                 })
@@ -254,6 +266,8 @@ mod tests {
                 .clone(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("skill not found"));
@@ -270,6 +284,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());

@@ -127,6 +127,8 @@ mod tests {
             params,
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         }
     }
 
@@ -156,6 +158,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());

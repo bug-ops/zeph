@@ -462,10 +462,12 @@ pub(crate) async fn forward_tool_events_to_tui(
                 tool_name,
                 command,
                 chunk,
+                tool_call_id,
             } => zeph_tui::AgentEvent::ToolOutputChunk {
                 tool_name,
                 command,
                 chunk: zeph_tools::strip_ansi(&chunk),
+                tool_call_id,
             },
             zeph_tools::ToolEvent::Rollback {
                 restored_count,

@@ -489,6 +489,8 @@ async fn handle_tool_step(
                     params,
                     caller_id: None,
                     context: None,
+
+                    tool_call_id: String::new(),
                 };
                 let tool_start = Instant::now();
                 let (content, is_error) = match executor.execute_tool_call_erased(&call).await {

@@ -147,6 +147,7 @@ impl ExtractMode {
 ///     },
 ///     caller_id: None,
 ///     context: None,
+///     tool_call_id: String::new(),
 /// };
 /// let _ = executor.execute_tool_call(&call).await;
 /// # }
@@ -2146,6 +2147,8 @@ mod tests {
             },
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -2167,6 +2170,8 @@ mod tests {
             },
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -2188,6 +2193,8 @@ mod tests {
             },
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -2202,6 +2209,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.unwrap().is_none());
@@ -2431,6 +2440,8 @@ mod tests {
             },
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -2544,6 +2555,8 @@ mod tests {
             },
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(matches!(result, Err(ToolError::Blocked { .. })));
@@ -2574,6 +2587,8 @@ mod tests {
             },
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         // Must not panic even without an audit logger
         let result = executor.execute_tool_call(&call).await;

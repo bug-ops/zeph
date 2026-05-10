@@ -106,6 +106,10 @@ pub struct ChatMessage {
     /// from a paste. `Some(n)` (n >= 2) enables collapsible display in the
     /// chat renderer; `None` means normal display.
     pub paste_line_count: Option<usize>,
+    /// Opaque tool call ID. `Some` for [`MessageRole::Tool`] messages; `None` otherwise.
+    /// Used to route [`crate::event::AgentEvent::ToolOutputChunk`] to the correct message
+    /// when multiple tools execute concurrently.
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
@@ -131,6 +135,7 @@ impl ChatMessage {
             kept_lines: None,
             timestamp: format_local_time(),
             paste_line_count: None,
+            tool_call_id: None,
         }
     }
 
@@ -167,6 +172,26 @@ impl ChatMessage {
     #[must_use]
     pub fn with_tool(mut self, name: zeph_common::ToolName) -> Self {
         self.tool_name = Some(name);
+        self
+    }
+
+    /// Set the tool call ID for this message.
+    ///
+    /// Used to correlate streaming [`crate::event::AgentEvent::ToolOutputChunk`] events
+    /// with their originating tool call when multiple tools execute concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::{ChatMessage, MessageRole};
+    ///
+    /// let msg = ChatMessage::new(MessageRole::Tool, "")
+    ///     .with_tool_call_id("tc-1".to_string());
+    /// assert_eq!(msg.tool_call_id.as_deref(), Some("tc-1"));
+    /// ```
+    #[must_use]
+    pub fn with_tool_call_id(mut self, id: String) -> Self {
+        self.tool_call_id = Some(id);
         self
     }
 }

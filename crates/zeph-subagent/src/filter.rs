@@ -550,6 +550,8 @@ mod tests {
             params: serde_json::Map::default(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -566,6 +568,8 @@ mod tests {
             params: serde_json::Map::default(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err());
@@ -582,6 +586,8 @@ mod tests {
             params: serde_json::Map::default(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err());
@@ -595,6 +601,8 @@ mod tests {
             params: serde_json::Map::default(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -670,6 +678,8 @@ mod tests {
             params: serde_json::Map::default(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -802,6 +812,8 @@ mod tests {
             params: serde_json::Map::default(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(
@@ -822,6 +834,8 @@ mod tests {
             params: serde_json::Map::default(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_ok(), "non-disallowed tool must be allowed");
@@ -897,6 +911,8 @@ mod tests {
             params: serde_json::Map::default(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err(), "plan mode must block all tool execution");

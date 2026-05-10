@@ -394,6 +394,8 @@ fn clear_utility_state_resets_per_turn_redundancy_tracking() {
         params: serde_json::Map::new(),
         caller_id: None,
         context: None,
+
+        tool_call_id: String::new(),
     };
     let ctx = UtilityContext {
         tool_calls_this_turn: 0,
@@ -724,6 +726,8 @@ fn test_tool_call(tool_id: &str) -> ToolCall {
         params: serde_json::Map::new(),
         caller_id: None,
         context: None,
+
+        tool_call_id: String::new(),
     }
 }
 

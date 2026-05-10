@@ -233,6 +233,7 @@ impl Channel for TuiChannel {
         let _ = self.agent_event_tx.try_send(AgentEvent::ToolStart {
             tool_name: event.tool_name,
             command,
+            tool_call_id: event.tool_call_id,
         });
         Ok(())
     }
@@ -254,6 +255,7 @@ impl Channel for TuiChannel {
             diff: event.diff,
             filter_stats: event.filter_stats,
             kept_lines: event.kept_lines,
+            tool_call_id: event.tool_call_id,
         };
         match tokio::time::timeout(
             std::time::Duration::from_millis(100),
@@ -504,7 +506,7 @@ mod tests {
         .unwrap();
         let evt = agent_rx.recv().await.unwrap();
         assert!(
-            matches!(evt, AgentEvent::ToolStart { ref tool_name, ref command }
+            matches!(evt, AgentEvent::ToolStart { ref tool_name, ref command, .. }
                 if tool_name == "bash" && command == "ls -la"),
             "expected ToolStart with command from params"
         );
@@ -527,7 +529,7 @@ mod tests {
         .unwrap();
         let evt = agent_rx.recv().await.unwrap();
         assert!(
-            matches!(evt, AgentEvent::ToolStart { ref tool_name, ref command }
+            matches!(evt, AgentEvent::ToolStart { ref tool_name, ref command, .. }
                 if tool_name == "memory_search" && command == "memory_search"),
             "expected ToolStart with tool_name as fallback command"
         );

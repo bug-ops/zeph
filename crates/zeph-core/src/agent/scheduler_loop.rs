@@ -663,6 +663,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                             },
                             caller_id: None,
                             context: None,
+
+                            tool_call_id: String::new(),
                         };
                         let output = loop {
                             tokio::select! {

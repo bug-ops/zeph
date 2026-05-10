@@ -637,6 +637,7 @@ impl ShellExecutor {
             block,
             self.timeout,
             self.tool_event_tx.as_ref(),
+            "",
             self.cancel_token.as_ref(),
             resolved,
             sandbox_pair,
@@ -717,6 +718,7 @@ impl ShellExecutor {
         command: &str,
         skip_confirm: bool,
         resolved: &ResolvedContext,
+        tool_call_id: &str,
     ) -> Result<Option<ToolOutput>, ToolError> {
         self.check_permissions(command, skip_confirm).await?;
         self.validate_sandbox_with_cwd(command, &resolved.cwd)?;
@@ -747,6 +749,7 @@ impl ShellExecutor {
             command,
             self.timeout,
             self.tool_event_tx.as_ref(),
+            tool_call_id,
             self.cancel_token.as_ref(),
             resolved,
             sandbox_pair,
@@ -1507,7 +1510,7 @@ impl ToolExecutor for ShellExecutor {
             }));
         }
 
-        self.execute_block_with_context(command, false, &resolved)
+        self.execute_block_with_context(command, false, &resolved, &call.tool_call_id)
             .await
     }
 
@@ -1791,6 +1794,7 @@ async fn run_background_task(
         deadline,
         Some(&abort),
         tool_event_tx.as_ref(),
+        "",
         &mut line_rx,
         &mut combined,
         &mut stdout_buf,
@@ -1922,6 +1926,7 @@ async fn run_background_task_with_env(
         deadline,
         Some(&abort),
         tool_event_tx.as_ref(),
+        "",
         &mut line_rx,
         &mut combined,
         &mut stdout_buf,
@@ -2430,7 +2435,7 @@ pub struct ShellOutputEnvelope {
 }
 
 // Used only in cfg(test) blocks; dead_code analysis does not see test imports.
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_arguments)]
 async fn execute_bash(
     code: &str,
     timeout: Duration,
@@ -2439,6 +2444,7 @@ async fn execute_bash(
     extra_env: Option<&std::collections::HashMap<String, String>>,
     env_blocklist: &[String],
     sandbox: Option<(&dyn Sandbox, &SandboxPolicy)>,
+    tool_call_id: &str,
 ) -> (ShellOutputEnvelope, String) {
     use std::process::Stdio;
 
@@ -2470,6 +2476,7 @@ async fn execute_bash(
         deadline,
         cancel_token,
         event_tx,
+        tool_call_id,
         &mut line_rx,
         &mut combined,
         &mut stdout_buf,
@@ -2551,6 +2558,7 @@ async fn execute_bash_with_context(
     code: &str,
     timeout: Duration,
     event_tx: Option<&ToolEventTx>,
+    tool_call_id: &str,
     cancel_token: Option<&CancellationToken>,
     resolved: &ResolvedContext,
     sandbox: Option<(&dyn Sandbox, &SandboxPolicy)>,
@@ -2585,6 +2593,7 @@ async fn execute_bash_with_context(
         deadline,
         cancel_token,
         event_tx,
+        tool_call_id,
         &mut line_rx,
         &mut combined,
         &mut stdout_buf,
@@ -2703,6 +2712,7 @@ async fn run_bash_stream(
     deadline: tokio::time::Instant,
     cancel_token: Option<&CancellationToken>,
     event_tx: Option<&ToolEventTx>,
+    tool_call_id: &str,
     line_rx: &mut tokio::sync::mpsc::Receiver<(bool, String)>,
     combined: &mut String,
     stdout_buf: &mut String,
@@ -2725,6 +2735,7 @@ async fn run_bash_stream(
                                 tool_name: ToolName::new("bash"),
                                 command: code.to_owned(),
                                 chunk: interleaved.clone(),
+                                tool_call_id: tool_call_id.to_owned(),
                             });
                         }
                         combined.push_str(&interleaved);

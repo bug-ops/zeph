@@ -270,6 +270,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = composite.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.summary, "file_handler");
@@ -283,6 +285,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = composite.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.summary, "shell_handler");
@@ -296,6 +300,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = composite.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());

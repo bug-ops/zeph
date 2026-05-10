@@ -215,6 +215,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = mock.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -229,6 +231,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = mock.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -245,6 +249,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         let result = mock.execute_tool_call(&call).await;
         assert!(result.is_err());
@@ -261,6 +267,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
         mock.execute_tool_call(&call).await.unwrap();
 
@@ -280,6 +288,8 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
+
+            tool_call_id: String::new(),
         };
 
         // First call succeeds.
