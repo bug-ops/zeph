@@ -272,6 +272,7 @@ mod tests {
             fact: fact.to_owned(),
             temporal_hint: None,
             edge_type: "semantic".to_owned(),
+            confidence: None,
         }
     }
 

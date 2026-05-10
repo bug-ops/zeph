@@ -39,6 +39,10 @@ temporal_hint like \"replaced X\" or \"since January 2026\".
   - \"causal\": cause-effect chains (caused, triggered, resulted_in, led_to, prevented)
   - \"entity\": identity/structural relationships (is_a, part_of, instance_of, alias_of, replaces)
   Default to \"semantic\" if the relationship type is uncertain.
+11. Each edge must include a \"confidence\" field: a float in [0.0, 1.0] reflecting how \
+certain you are that this relationship was explicitly stated or strongly implied by the text. \
+Use 1.0 only for direct verbatim statements. Use 0.5–0.8 for clear implications. \
+Use 0.3–0.5 for weak inferences. Omit or use null if you cannot assign a meaningful score.
 11. Do not extract entities from greetings, filler, or meta-conversation (\"hi\", \"thanks\", \"ok\").
 12. Do not extract personal identifiable information as entity names: email addresses, \
 phone numbers, physical addresses, SSNs, or API keys. Use generic references instead.
@@ -51,7 +55,7 @@ Output JSON schema:
     {\"name\": \"string\", \"type\": \"person|project|tool|language|organization|concept\", \"summary\": \"optional string\"}
   ],
   \"edges\": [
-    {\"source\": \"entity name\", \"target\": \"entity name\", \"relation\": \"verb phrase\", \"fact\": \"human-readable sentence\", \"temporal_hint\": \"optional string\", \"edge_type\": \"semantic|temporal|causal|entity\"}
+    {\"source\": \"entity name\", \"target\": \"entity name\", \"relation\": \"verb phrase\", \"fact\": \"human-readable sentence\", \"temporal_hint\": \"optional string\", \"edge_type\": \"semantic|temporal|causal|entity\", \"confidence\": 0.0}
   ]
 }";
 
@@ -83,6 +87,14 @@ pub struct ExtractedEdge {
     /// MAGMA edge type classification. Defaults to "semantic" when omitted by the LLM.
     #[serde(default = "default_semantic")]
     pub edge_type: String,
+    /// Extractor confidence in the relationship, in `[0.0, 1.0]`.
+    ///
+    /// Assigned by the LLM during extraction. `None` means the LLM omitted the field;
+    /// callers should treat `None` as `1.0` (direct statement, commit immediately).
+    /// Values below `BeliefMemConfig::promote_threshold` route the edge to
+    /// `BeliefStore` for evidence accumulation instead of immediate commit.
+    #[serde(default)]
+    pub confidence: Option<f32>,
 }
 
 pub struct GraphExtractor {
@@ -186,6 +198,7 @@ mod tests {
             fact: fact.into(),
             temporal_hint: temporal_hint.map(Into::into),
             edge_type: "semantic".into(),
+            confidence: None,
         }
     }
 
@@ -252,6 +265,7 @@ mod tests {
                     fact: "A caused B".into(),
                     temporal_hint: None,
                     edge_type: "causal".into(),
+                    confidence: Some(0.9),
                 },
                 ExtractedEdge {
                     source: "B".into(),
@@ -260,6 +274,7 @@ mod tests {
                     fact: "B preceded_by C".into(),
                     temporal_hint: None,
                     edge_type: "temporal".into(),
+                    confidence: None,
                 },
             ],
         };

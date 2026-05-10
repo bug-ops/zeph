@@ -5,6 +5,7 @@ pub mod store;
 pub mod types;
 
 pub mod activation;
+pub mod belief;
 pub mod belief_revision;
 pub mod community;
 pub mod conflict;
@@ -27,6 +28,7 @@ pub use activation::{
     ActivatedFact, ActivatedNode, HelaFact, HelaSpreadParams, SpreadingActivation,
     SpreadingActivationParams, hela_spreading_recall,
 };
+pub use belief::{BeliefMemConfig, BeliefStore, PendingBelief, noisy_or, time_decayed_prob};
 pub use belief_revision::{BeliefRevisionConfig, find_superseded_edges};
 pub use community::{
     GraphEvictionStats, assign_to_community, cleanup_stale_entity_embeddings, detect_communities,

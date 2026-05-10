@@ -82,6 +82,7 @@ pub mod schema_filter;
 pub mod scope;
 pub mod scrape;
 pub mod search_code;
+pub mod shadow_probe;
 pub mod shell;
 pub mod tool_filter;
 pub mod trust_gate;
@@ -141,6 +142,7 @@ pub use scrape::WebScrapeExecutor;
 pub use search_code::{
     LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,
 };
+pub use shadow_probe::{ProbeGate, ProbeOutcome, ShadowProbeExecutor};
 pub use shell::background::{BackgroundCompletion, BackgroundRunSnapshot, RunId};
 pub use shell::{
     DEFAULT_BLOCKED_COMMANDS, SHELL_INTERPRETERS, ShellExecutor, ShellOutputEnvelope,

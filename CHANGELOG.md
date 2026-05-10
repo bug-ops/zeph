@@ -8,7 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- feat(tui): consecutive `Tool` messages with the same groupable `ToolKind` are now folded into a
+- feat(memory): add BeliefMem probabilistic edge layer to APEX-MEM (`zeph-memory`). New
+  `pending_beliefs` + `belief_evidence` SQLite tables (migration 084) store candidate facts with
+  probability weights before commitment. Evidence accumulates via Noisy-OR with optional temporal
+  decay (`belief_decay_rate`). Beliefs are promoted to committed APEX-MEM edges when
+  `max(prob) >= promote_threshold` (default 0.85). Uncertainty-preserving retrieval returns
+  top-K candidates when no committed edge exists. Enabled via `[memory.graph.belief_mem]`
+  (opt-in, default off). Extends spec 004-7. Closes #3706.
+- feat(security): add ShadowSentinel Phase 2 to Security Capability Governance (`zeph-core`,
+  `zeph-tools`). New `safety_shadow_events` SQLite table (migration 085) provides a persistent,
+  cross-session full-trajectory safety stream. `SafetyProbe` trait backed by `LlmSafetyProbe`
+  issues pre-execution LLM probes before high-risk tool categories (shell, file write,
+  exfil-capable MCP). `ShadowProbeExecutor` wraps the tool executor chain between
+  `ScopedToolExecutor` and `PolicyGateExecutor`. Fail-open by default, bounded by
+  `max_probes_per_turn` and `probe_timeout_ms`. Enabled via `[security.shadow_sentinel]`
+  (opt-in, default off). Extends spec 050. Closes #3705.
+
+### Fixed
+
+- fix(tui): consecutive `Tool` messages with the same groupable `ToolKind` are now folded into a
   single visual cell via a grouping pre-pass in `collect_message_lines_from`. Groups display as
   `● Explored N files` / `● Ran N commands` with a collapsible sub-list of primary args (capped
   at 8 in Inline density, unlimited in Block, hidden in Compact). Groups break on role change,

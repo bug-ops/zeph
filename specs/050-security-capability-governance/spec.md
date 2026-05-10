@@ -12,7 +12,7 @@ tags:
   - governance
   - contract
 created: 2026-05-04
-revised: 2026-05-04
+revised: 2026-05-10
 status: draft
 related:
   - "[[001-system-invariants/spec]]"
@@ -714,3 +714,123 @@ are not rediscovered as bugs:
   --no-deps -p zeph-tools -p zeph-core` clean.
 - CapSeal section is intentionally code-free; Phase 3 work will live
   behind a new spec (proposed: `010-7-capseal-vault-broker.md`).
+
+---
+
+## Phase 2: ShadowSentinel SafetyProbe (implemented 2026-05-10)
+
+### Overview
+
+Phase 2 adds a persistent LLM-backed pre-execution safety probe that fires **before**
+`PolicyGateExecutor` for high-risk tool calls. It is defence-in-depth, not a primary
+gate. `PolicyGateExecutor` + `TrajectorySentinel` continue to operate regardless of
+probe verdict.
+
+### Wiring position
+
+```
+ScopedToolExecutor → ShadowProbeExecutor → PolicyGateExecutor → ...
+```
+
+`ShadowProbeExecutor` (in `zeph-tools`) wraps the inner executor and calls a `ProbeGate`
+for every structured tool call (`execute_tool_call` / `execute_tool_call_confirmed`).
+The legacy fenced-block path (`execute`) bypasses the probe — no structured tool id is
+available there.
+
+### New components
+
+| Component | Crate | File |
+|-----------|-------|------|
+| `ShadowSentinel` | `zeph-core` | `agent/shadow_sentinel.rs` |
+| `ShadowEventStore` | `zeph-core` | `agent/shadow_sentinel.rs` |
+| `SafetyProbe` trait | `zeph-core` | `agent/shadow_sentinel.rs` |
+| `LlmSafetyProbe` | `zeph-core` | `agent/shadow_sentinel.rs` |
+| `ProbeGate` trait | `zeph-tools` | `shadow_probe.rs` |
+| `ShadowProbeExecutor<T>` | `zeph-tools` | `shadow_probe.rs` |
+| Migration | `zeph-db` | `migrations/sqlite/085_safety_shadow_events.sql` |
+| Config | `zeph-config` | `security.rs` (`ShadowSentinelConfig`) |
+
+### Functional requirements
+
+**FR-SS-001**: `ShadowSentinel` classifies every tool call into
+`ToolRiskCategory::{Shell, FileWrite, ExfilCapable, Low}` using fast-path
+built-in name matching and then glob matching against `probe_patterns`.
+
+**FR-SS-002**: For `Shell`, `FileWrite`, `ExfilCapable` categories, `ShadowSentinel`
+assembles a probe context from the last `max_context_events` shadow events and invokes
+`SafetyProbe::evaluate`. For `Low`, it returns `ProbeVerdict::Skip` immediately.
+
+**FR-SS-003**: `max_probes_per_turn` enforces a per-turn probe budget. Calls exceeding
+the budget return `ProbeVerdict::Skip` (not Deny). The counter uses `AtomicU32` so all
+methods take `&self`, enabling concurrent tool dispatch without a `Mutex`.
+
+**FR-SS-004**: The probe runs inside `tokio::time::timeout(probe_timeout_ms)`. On
+timeout or LLM error, the outcome is governed by `deny_on_timeout`:
+- `false` (default) → `ProbeVerdict::Allow` (fail-open)
+- `true` → `ProbeVerdict::Deny`
+
+**FR-SS-005**: Every tool call and every probe result is persisted to
+`safety_shadow_events` via fire-and-forget `tokio::spawn`. Persistence failures are
+logged as warnings and never block the tool path.
+
+**FR-SS-006**: `advance_turn()` resets the per-turn probe counter. Must be called once
+per turn before any tool dispatches.
+
+**FR-SS-007**: `ShadowProbeExecutor` maps `ProbeOutcome::Deny` to
+`ToolError::SafetyDenied { reason }`. User confirmation does not bypass the probe
+(`execute_tool_call_confirmed` also applies the probe).
+
+**FR-SS-008**: `ShadowProbeExecutor::is_tool_speculatable` always returns `false`.
+Probe latency and trajectory-state dependency make speculative execution unsafe.
+
+### Invariants
+
+**I-SS-1 (LLM isolation)**: The probe prompt MUST NEVER include the `TrajectorySentinel`
+score, risk level string, or any `RiskAlert` data. Exposing these would allow prompt
+injection attacks that craft tool outputs to manipulate perceived risk.
+
+**I-SS-2 (fail-open default)**: `deny_on_timeout = false` is the correct default.
+Failing closed would allow a DoS: slow LLM context + short timeout → every high-risk
+tool blocked. Operators who need fail-closed must opt in explicitly.
+
+**I-SS-3 (defence-in-depth)**: `ShadowSentinel` is NOT a primary gate. Its denial adds
+defence-in-depth but `PolicyGateExecutor` must independently enforce policy even when
+the probe is disabled or skipped.
+
+**I-SS-4 (no reverse dependency)**: `ProbeGate` is declared in `zeph-tools`, not in
+`zeph-core`, to avoid a reverse crate dependency. The agent builder wires in a concrete
+`Arc<ShadowSentinel>` at construction time.
+
+### Threat model
+
+| Threat | Mitigation |
+|--------|-----------|
+| Prompt injection via tool output | Probe context is trajectory summary, not raw tool output |
+| DoS via slow probe | `deny_on_timeout = false`; budget via `max_probes_per_turn` |
+| Probe manipulation via internal score leakage | I-SS-1 prohibits TrajectorySentinel data in prompt |
+| Parallel tool dispatch race | `AtomicU32` counter; `&self` throughout |
+| Probe failure cascades to tool path | fire-and-forget persistence; fail-open timeout |
+
+### Configuration (`[security.shadow_sentinel]`)
+
+```toml
+[security.shadow_sentinel]
+enabled = true
+probe_provider = "fast"          # [[llm.providers]] name; empty = main provider
+max_context_events = 50
+probe_timeout_ms = 2000
+max_probes_per_turn = 3
+probe_patterns = ["builtin:shell*", "builtin:write", "builtin:edit", "mcp:*/file_*", "builtin:exec*"]
+deny_on_timeout = false
+```
+
+### Acceptance criteria
+
+- `ShadowProbeExecutor`: Allow/Skip → delegate to inner; Deny → `ToolError::SafetyDenied`.
+- Legacy `execute()` path always bypasses the probe.
+- `is_tool_speculatable` returns `false` for all tool ids.
+- `ShadowSentinel::classify_tool`: `builtin:shell/bash` → `Shell`; `builtin:write/edit` → `FileWrite`; unmatched → `Low`.
+- `advance_turn()` resets `probes_this_turn` to 0.
+- `parse_verdict`: `{"verdict":"allow"}` → Allow; `{"verdict":"deny","reason":"..."}` → Deny; unparseable → Allow (fail-open).
+- All unit tests pass. clippy `-D warnings` clean. fmt check passes.
+- `085_safety_shadow_events.sql` migration applies cleanly; all 3 indexes created.

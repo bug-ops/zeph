@@ -164,7 +164,7 @@ pub use sanitizer::{
 pub use sanitizer::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
 pub use security::{
     CapabilityScopesConfig, PatternStrictness, ScannerConfig, ScopeConfig, SecurityConfig,
-    TimeoutConfig, TrajectorySentinelConfig, TrustConfig,
+    ShadowSentinelConfig, TimeoutConfig, TrajectorySentinelConfig, TrustConfig,
 };
 pub use session::{RecapConfig, SessionConfig};
 pub use subagent::{

@@ -49,6 +49,7 @@ mod scheduler_loop;
 mod scope_commands;
 pub mod session_config;
 mod session_digest;
+pub mod shadow_sentinel;
 pub(crate) mod sidequest;
 mod skill_management;
 pub mod slash_commands;

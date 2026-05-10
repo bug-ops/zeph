@@ -429,6 +429,17 @@ pub enum ToolError {
         /// Active task type at dispatch time, if any.
         task_type: Option<String>,
     },
+
+    /// Tool call blocked by `ShadowProbeExecutor` after the LLM safety probe returned Deny.
+    ///
+    /// Emitted before any tool side-effect runs. The probe evaluated the full trajectory
+    /// context and determined the call is unsafe. Reason is LLM-generated; shown to the
+    /// agent loop as the tool result so the model can adapt.
+    #[error("tool call denied by safety probe: {reason}")]
+    SafetyDenied {
+        /// Human-readable explanation from the LLM safety probe.
+        reason: String,
+    },
 }
 
 impl ToolError {
@@ -451,7 +462,7 @@ impl ToolError {
             Self::Execution(io_err) => classify_io_error(io_err),
             Self::Shell { category, .. } => *category,
             Self::SnapshotFailed { .. } => ToolErrorCategory::PermanentFailure,
-            Self::OutOfScope { .. } => ToolErrorCategory::PolicyBlocked,
+            Self::OutOfScope { .. } | Self::SafetyDenied { .. } => ToolErrorCategory::PolicyBlocked,
         }
     }
 

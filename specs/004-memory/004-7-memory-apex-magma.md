@@ -566,3 +566,79 @@ OCR-Memory renders agent trajectories as annotated images and uses a locate-and-
 - Unblocked when `zeph-llm` gains a VLM provider
 
 **Relevance to APEX-MEM**: low. OCR-Memory targets the episodic-trajectory store, not the semantic graph. APEX-MEM's append-only log is orthogonal — it could feed transcript frames into a visual encoder, but this requires a VLM provider that does not exist in `zeph-llm` today.
+
+---
+
+## §16 BeliefMem: Pre-Commitment Probabilistic Edge Layer
+
+**Tracking issue**: #3706
+**Status**: Implemented (PR pending)
+**Module**: `crates/zeph-memory/src/graph/belief.rs`
+
+### 16.1 Overview
+
+BeliefMem is a staging area for candidate facts that lack sufficient confidence for immediate commitment to the APEX-MEM committed edge store. The extractor assigns a `confidence` score (0.0–1.0) to each extracted edge; edges below the promotion threshold enter `pending_beliefs` for evidence accumulation via the Noisy-OR rule.
+
+**Relationship to APEX-MEM conflict resolution:**
+- APEX-MEM conflict resolution operates **post-commitment**: it resolves competing committed heads via `insert_or_supersede`.
+- BeliefMem operates **pre-commitment**: it accumulates evidence before the first commit.
+- Promotion from BeliefMem → APEX-MEM uses the standard `insert_or_supersede` path.
+
+### 16.2 Schema
+
+Two tables in `zeph-db/migrations/sqlite/084_pending_beliefs.sql`:
+
+- **`pending_beliefs`**: one row per `(source_entity_id, canonical_relation, target_entity_id, edge_type)` candidate. `prob` accumulates via Noisy-OR. `promoted_at` is set when the belief crosses the threshold.
+- **`belief_evidence`**: append-only audit log of each Noisy-OR update, recording `prior_prob`, `evidence_prob`, `posterior_prob`.
+
+### 16.3 Noisy-OR Accumulation
+
+```
+P_new = 1 - (1 - P_existing_decayed) × (1 - P_evidence)
+```
+
+Where `P_existing_decayed = P_existing × exp(-λ × days_since_update)` and λ = `belief_decay_rate` (default 0.01). Setting `belief_decay_rate = 0.0` disables temporal decay.
+
+Both functions are pure and exported from `zeph_memory::graph::belief`:
+- `noisy_or(p_existing, p_new) -> f32`
+- `time_decayed_prob(prob, days, decay_rate) -> f32`
+
+### 16.4 ExtractedEdge Confidence Field
+
+`ExtractedEdge` in `extractor.rs` now carries an optional `confidence: Option<f32>` field populated by the LLM during extraction. Callers should treat `None` as `1.0` (direct statement, commit immediately via existing path).
+
+### 16.5 Configuration (`[memory.graph.belief_mem]`)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Opt-in; disabled by default |
+| `min_entry_prob` | f32 | `0.3` | Minimum confidence to enter staging |
+| `promote_threshold` | f32 | `0.85` | Threshold for promotion to committed edge |
+| `max_candidates_per_group` | usize | `10` | Eviction cap per `(source, canonical_relation)` |
+| `retrieval_top_k` | usize | `3` | Candidates returned in fallback recall |
+| `belief_decay_rate` | f32 | `0.01` | λ for temporal decay; 0.0 = no decay |
+
+### 16.6 Key Invariants
+
+- `prob` is monotonically non-decreasing for an active (non-promoted) belief (decay happens only when new evidence arrives, not passively).
+- Promotion is one-way: once `promoted_at` is set, a belief never re-enters pending.
+- Retrieval from `pending_beliefs` is a **fallback only**: used when no committed edge exists for the queried `(source, canonical_relation)` pair; always annotated with `is_uncertain: true`.
+- Pending beliefs are **never** returned in default recall paths.
+- `noisy_or` guarantees `prob ∈ (0, 1)` given inputs in `(0, 1)`.
+
+### 16.7 NEVER
+
+- NEVER query `pending_beliefs` when a committed edge exists.
+- NEVER promote a belief to `graph_edges` directly from `BeliefStore`; always call `GraphStore::insert_or_supersede` first, then `BeliefStore::mark_promoted`.
+- NEVER allow `prob` to reach exactly 0.0 or 1.0 (the schema CHECK constraint prevents this).
+
+### 16.8 Acceptance Criteria
+
+- [ ] `pending_beliefs` and `belief_evidence` tables created by migration 084.
+- [ ] `BeliefStore::record_evidence` applies temporal decay + Noisy-OR and returns `Some(PendingBelief)` when `prob >= promote_threshold`.
+- [ ] `BeliefStore::retrieve_candidates` returns beliefs ordered by `prob DESC` with correct `top_k`.
+- [ ] `BeliefStore::mark_promoted` sets `promoted_at` and `promoted_edge_id`.
+- [ ] `BeliefStore::evict_stale` deletes rows exceeding `max_candidates_per_group`.
+- [ ] `ExtractedEdge::confidence` is populated by the LLM extraction prompt.
+- [ ] All pure functions (`noisy_or`, `time_decayed_prob`) have passing unit tests.
+- [ ] `cargo build -p zeph-memory` and `cargo clippy -p zeph-memory -- -D warnings` pass.

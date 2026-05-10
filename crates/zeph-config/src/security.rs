@@ -308,6 +308,92 @@ impl TrajectorySentinelConfig {
     }
 }
 
+// ── ShadowSentinel ──────────────────────────────────────────────────────────
+
+fn default_shadow_max_context_events() -> usize {
+    50
+}
+fn default_shadow_probe_timeout_ms() -> u64 {
+    2000
+}
+fn default_shadow_max_probes_per_turn() -> usize {
+    3
+}
+fn default_shadow_probe_patterns() -> Vec<String> {
+    vec![
+        "builtin:shell".to_owned(),
+        "builtin:write".to_owned(),
+        "builtin:edit".to_owned(),
+        "mcp:*/file_*".to_owned(),
+        "mcp:*/exec_*".to_owned(),
+    ]
+}
+
+/// Configuration for the `ShadowSentinel` subsystem, nested under `[security.shadow_sentinel]`.
+///
+/// `ShadowSentinel` is a defence-in-depth layer (Phase 2 of spec 050) that persists safety
+/// events across sessions and runs an LLM probe before high-risk tool execution. It is NOT
+/// the primary security gate — `PolicyGateExecutor` and `TrajectorySentinel` remain the
+/// primary enforcement mechanisms and are unaffected by probe timeouts.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [security.shadow_sentinel]
+/// enabled = true
+/// probe_provider = "fast"
+/// probe_timeout_ms = 2000
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ShadowSentinelConfig {
+    /// Whether the feature is enabled. Default: `false` (opt-in).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Provider name (from `[[llm.providers]]`) used for the safety probe LLM call.
+    ///
+    /// Empty string means use the main/default provider. A fast, cheap provider
+    /// (e.g. `gpt-4o-mini`) is strongly recommended to minimise turn latency.
+    #[serde(default)]
+    pub probe_provider: String,
+    /// Maximum number of trajectory events to include in the probe context. Default: 50.
+    #[serde(default = "default_shadow_max_context_events")]
+    pub max_context_events: usize,
+    /// Timeout for the probe LLM call in milliseconds. Default: 2000.
+    #[serde(default = "default_shadow_probe_timeout_ms")]
+    pub probe_timeout_ms: u64,
+    /// Maximum probe calls per turn to cap LLM costs. Default: 3.
+    #[serde(default = "default_shadow_max_probes_per_turn")]
+    pub max_probes_per_turn: usize,
+    /// Glob patterns over fully-qualified tool ids that trigger the safety probe.
+    ///
+    /// Default covers shell execution, file writes, and MCP file/exec tools.
+    #[serde(default = "default_shadow_probe_patterns")]
+    pub probe_patterns: Vec<String>,
+    /// When `true`, a probe timeout or LLM error causes the tool call to be denied.
+    /// When `false` (default), a probe failure causes the call to be allowed (fail-open).
+    ///
+    /// Fail-open is the correct default because:
+    /// - `ShadowSentinel` is defence-in-depth, not the primary gate.
+    /// - Failing closed on probe timeout would allow a `DoS` (slow context → disabled tools).
+    /// - `PolicyGateExecutor` + `TrajectorySentinel` continue to enforce policy regardless.
+    #[serde(default)]
+    pub deny_on_timeout: bool,
+}
+
+impl Default for ShadowSentinelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            probe_provider: String::new(),
+            max_context_events: default_shadow_max_context_events(),
+            probe_timeout_ms: default_shadow_probe_timeout_ms(),
+            max_probes_per_turn: default_shadow_max_probes_per_turn(),
+            probe_patterns: default_shadow_probe_patterns(),
+            deny_on_timeout: false,
+        }
+    }
+}
+
 // ── Capability Scopes ────────────────────────────────────────────────────────
 
 /// Strictness mode for glob pattern matching against the tool registry.
@@ -458,6 +544,13 @@ pub struct SecurityConfig {
     /// When empty, scoping is a no-op (full tool set surfaced to LLM).
     #[serde(default)]
     pub capability_scopes: CapabilityScopesConfig,
+    /// `ShadowSentinel` Phase 2: persistent safety event stream + LLM pre-execution probe.
+    ///
+    /// Disabled by default. When enabled, high-risk tool calls are probed by an LLM
+    /// before execution. `ShadowSentinel` is defence-in-depth only — `PolicyGateExecutor`
+    /// and `TrajectorySentinel` remain the primary enforcement mechanisms.
+    #[serde(default)]
+    pub shadow_sentinel: ShadowSentinelConfig,
 }
 
 impl Default for SecurityConfig {
@@ -477,6 +570,7 @@ impl Default for SecurityConfig {
             vigil: VigilConfig::default(),
             trajectory: TrajectorySentinelConfig::default(),
             capability_scopes: CapabilityScopesConfig::default(),
+            shadow_sentinel: ShadowSentinelConfig::default(),
         }
     }
 }

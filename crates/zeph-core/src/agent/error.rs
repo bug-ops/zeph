@@ -109,6 +109,10 @@ pub enum AgentError {
     /// Context assembly or index retrieval failed.
     #[error("context error: {0}")]
     ContextError(String),
+
+    /// A database operation in the agent subsystem failed.
+    #[error("database error: {0}")]
+    Db(String),
 }
 
 impl AgentError {
