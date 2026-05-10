@@ -88,6 +88,27 @@ default = true
 
 Run `zeph init` to configure either network interactively through the setup wizard.
 
+## Messenger as Agent Infrastructure
+
+Most agents treat messaging apps as a thin input channel — user sends text, agent replies. Zeph's Telegram integration flips that model: the messenger becomes a coordination layer where agents serve public audiences, accept tasks from orchestrators, and talk to other bots.
+
+**Guest Mode** removes the assumption that every user is a registered Telegram account. A transparent local proxy intercepts guest queries from the Bot API and routes them to the agent without opening a second `getUpdates` connection (no 409 conflicts). The agent responds via `answerGuestQuery` — one call, no extra infra. This makes it practical to deploy public-facing agents that handle anonymous or unauthenticated requests.
+
+**Bot-to-Bot communication** lets Zeph register as a managed bot and accept tasks from other bots in a controlled chain. Consecutive bot replies are tracked per-chat, depth is capped at `max_bot_chain_depth`, and each inbound bot is validated against an allowlist — so the agent participates in multi-agent pipelines without becoming a relay for arbitrary bots.
+
+**Configurable streaming interval** (`stream_interval_ms`, default 3 s, minimum 500 ms) fixes a silent data-loss bug in the original hardcoded delay: responses that completed within a single interval window were discarded before Telegram saw them. Now the agent flushes on completion regardless of the timer.
+
+```toml
+[telegram]
+guest_mode        = true
+bot_to_bot        = true
+allowed_bots      = ["orchestrator_bot", "scheduler_bot"]
+max_bot_chain_depth = 3
+stream_interval_ms  = 1500
+```
+
+See the [Telegram guide](https://bug-ops.github.io/zeph/guides/telegram.html) for full configuration and Bot API 10.0 details.
+
 ## What Makes It Different
 
 ### Memory is the product
