@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(security): wire `ShadowProbeExecutor` into the agent executor chain (`src/runner.rs`).
+  `ShadowSentinel` is now instantiated when `security.shadow_sentinel.enabled = true` and
+  inserted between `ScopedToolExecutor` and `PolicyGateExecutor` as required by spec 050 §Phase 2.
+  Adds `ShadowSentinelProbeGateAdapter` bridge to avoid circular crate dependency. Wires
+  `sentinel.advance_turn()` into `begin_turn()`. Closes #3739.
+
 ### Added
 
 - feat(memory): add BeliefMem probabilistic edge layer to APEX-MEM (`zeph-memory`). New

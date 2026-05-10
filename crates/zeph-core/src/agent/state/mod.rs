@@ -355,6 +355,12 @@ pub(crate) struct SecurityState {
     /// `PolicyGateExecutor` and `ScopedToolExecutor` push signal codes here.
     /// `begin_turn()` drains this queue into `trajectory.record()`.
     pub(crate) trajectory_signal_queue: zeph_tools::RiskSignalQueue,
+    /// Persistent safety stream + LLM pre-execution probe (spec 050 Phase 2).
+    ///
+    /// `None` when `security.shadow_sentinel.enabled = false` (default).
+    /// When `Some`, `begin_turn()` calls `advance_turn()` to reset the per-turn probe counter.
+    pub(crate) shadow_sentinel:
+        Option<std::sync::Arc<crate::agent::shadow_sentinel::ShadowSentinel>>,
 }
 
 /// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).

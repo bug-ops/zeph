@@ -840,6 +840,24 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn check_tool_call_returns_skip_when_disabled() {
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: false,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let sentinel = make_test_sentinel(config).await;
+        let args = serde_json::Value::Object(serde_json::Map::new());
+        let verdict = sentinel
+            .check_tool_call("builtin:shell", &args, 1, "calm")
+            .await;
+        assert_eq!(
+            verdict,
+            ProbeVerdict::Skip,
+            "disabled sentinel must always return Skip without calling the probe"
+        );
+    }
+
     // Build a minimal ShadowSentinel with a no-op probe for unit tests.
     //
     // Opens an in-memory SQLite pool. Store methods are never called in these unit

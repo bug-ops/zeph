@@ -1405,6 +1405,10 @@ impl<C: Channel> Agent<C> {
                 async move { logger.log(&entry).await },
             );
         }
+        // Spec 050 Phase 2: reset per-turn probe counter before any tool dispatch.
+        if let Some(ref sentinel) = self.services.security.shadow_sentinel {
+            sentinel.advance_turn();
+        }
         // Publish updated risk level to the shared slot so PolicyGateExecutor can read it.
         let risk_level = self.services.security.trajectory.current_risk();
         *self.services.security.trajectory_risk_slot.write() = u8::from(risk_level);

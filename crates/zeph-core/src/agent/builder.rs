@@ -766,6 +766,20 @@ impl<C: Channel> Agent<C> {
         (self, slot, queue)
     }
 
+    /// Attach a `ShadowSentinel` for persistent safety stream + LLM pre-execution probing
+    /// (spec 050 Phase 2).
+    ///
+    /// When attached, `begin_turn()` calls `sentinel.advance_turn()` to reset the per-turn
+    /// probe counter before any tool dispatch.
+    #[must_use]
+    pub fn with_shadow_sentinel(
+        mut self,
+        sentinel: std::sync::Arc<crate::agent::shadow_sentinel::ShadowSentinel>,
+    ) -> Self {
+        self.services.security.shadow_sentinel = Some(sentinel);
+        self
+    }
+
     /// Attach a temporal causal IPI analyzer.
     ///
     /// When `Some`, the native tool dispatch loop runs pre/post behavioral probes.
@@ -2747,5 +2761,49 @@ mod tests {
             "builder must register hub_dir so forged .bundled is overridden and skill is flagged"
         );
         assert_eq!(findings[0].0, "hub-evil");
+    }
+
+    #[tokio::test]
+    async fn with_shadow_sentinel_sets_field() {
+        use crate::agent::shadow_sentinel::{
+            SafetyProbe, ShadowEvent, ShadowEventStore, ShadowSentinel,
+        };
+
+        struct NoopProbe;
+        impl SafetyProbe for NoopProbe {
+            fn evaluate<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a serde_json::Value,
+                _: &'a [ShadowEvent],
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = crate::agent::shadow_sentinel::ProbeVerdict>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async { crate::agent::shadow_sentinel::ProbeVerdict::Allow })
+            }
+        }
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory SQLite");
+        let store = ShadowEventStore::new(pool);
+        let config = zeph_config::ShadowSentinelConfig::default();
+        let sentinel = std::sync::Arc::new(ShadowSentinel::new(
+            store,
+            Box::new(NoopProbe),
+            config,
+            "builder-test",
+        ));
+
+        let agent = make_agent().with_shadow_sentinel(std::sync::Arc::clone(&sentinel));
+        assert!(
+            agent.services.security.shadow_sentinel.is_some(),
+            "shadow_sentinel must be populated after with_shadow_sentinel()"
+        );
     }
 }

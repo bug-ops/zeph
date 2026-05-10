@@ -88,6 +88,40 @@ impl zeph_tools::PolicyLlmClient for AdversarialPolicyLlmAdapter {
     }
 }
 
+/// Adapts `ShadowSentinel` (from `zeph-core`) to the `ProbeGate` trait (from `zeph-tools`).
+///
+/// Placed in the binary crate to avoid a circular dependency: `zeph-tools` cannot depend on
+/// `zeph-core`, and `zeph-core` cannot depend on `zeph-tools`. The adapter maps
+/// `ProbeVerdict` (zeph-core) to `ProbeOutcome` (zeph-tools) — the types are isomorphic.
+struct ShadowSentinelProbeGateAdapter {
+    sentinel: std::sync::Arc<zeph_core::agent::shadow_sentinel::ShadowSentinel>,
+}
+
+impl zeph_tools::ProbeGate for ShadowSentinelProbeGateAdapter {
+    fn probe<'a>(
+        &'a self,
+        qualified_tool_id: &'a str,
+        args: &'a serde_json::Value,
+        turn_number: u64,
+        risk_level: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = zeph_tools::ProbeOutcome> + Send + 'a>>
+    {
+        Box::pin(async move {
+            use zeph_core::agent::shadow_sentinel::ProbeVerdict;
+            use zeph_tools::ProbeOutcome;
+            match self
+                .sentinel
+                .check_tool_call(qualified_tool_id, args, turn_number, risk_level)
+                .await
+            {
+                ProbeVerdict::Allow => ProbeOutcome::Allow,
+                ProbeVerdict::Deny { reason } => ProbeOutcome::Deny { reason },
+                ProbeVerdict::Skip => ProbeOutcome::Skip,
+            }
+        })
+    }
+}
+
 /// Warn at startup if legacy artifact paths exist but new `.zeph/`-based paths do not.
 ///
 /// This fires only when the config is using the new defaults, so users with explicit
@@ -1745,6 +1779,62 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
     };
+    // Spec 050 Phase 2: wrap with ShadowProbeExecutor when shadow_sentinel.enabled = true.
+    // Wiring order: ScopedToolExecutor → ShadowProbeExecutor → PolicyGateExecutor → ...
+    let (tool_executor, shadow_sentinel_arc) = {
+        let sentinel_cfg = &config.security.shadow_sentinel;
+        if sentinel_cfg.enabled {
+            let pool = memory.sqlite().pool().clone();
+            let probe_provider = if sentinel_cfg.probe_provider.is_empty() {
+                provider.clone()
+            } else {
+                match crate::bootstrap::create_named_provider(&sentinel_cfg.probe_provider, config)
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = %sentinel_cfg.probe_provider,
+                            error = %e,
+                            "shadow_sentinel probe provider resolution failed, using primary"
+                        );
+                        provider.clone()
+                    }
+                }
+            };
+            let llm_probe = zeph_core::agent::shadow_sentinel::LlmSafetyProbe::new(
+                std::sync::Arc::new(probe_provider),
+                sentinel_cfg.probe_timeout_ms,
+                sentinel_cfg.deny_on_timeout,
+            );
+            let store = zeph_core::agent::shadow_sentinel::ShadowEventStore::new(pool);
+            let sentinel =
+                std::sync::Arc::new(zeph_core::agent::shadow_sentinel::ShadowSentinel::new(
+                    store,
+                    Box::new(llm_probe),
+                    sentinel_cfg.clone(),
+                    conversation_id.0.to_string(),
+                ));
+            let turn_number = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let risk_level = std::sync::Arc::new(parking_lot::RwLock::new("calm".to_owned()));
+            let probe_gate: std::sync::Arc<dyn zeph_tools::ProbeGate> =
+                std::sync::Arc::new(ShadowSentinelProbeGateAdapter {
+                    sentinel: std::sync::Arc::clone(&sentinel),
+                });
+            let shadow_exec = zeph_tools::ShadowProbeExecutor::new(
+                tool_executor,
+                probe_gate,
+                turn_number,
+                risk_level,
+            );
+            tracing::info!("security.shadow_sentinel: ShadowProbeExecutor wired");
+            (
+                zeph_tools::DynExecutor(std::sync::Arc::new(shadow_exec)),
+                Some(sentinel),
+            )
+        } else {
+            (tool_executor, None)
+        }
+    };
     let mcp_tools = tool_setup.mcp_tools;
     let mcp_outcomes = tool_setup.mcp_outcomes;
     // Register MCP tool IDs so TrustGateExecutor can block ALL MCP tools for
@@ -2019,6 +2109,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .with_signal_queue(trajectory_signal_queue)
         .with_trajectory_config(config.security.trajectory.clone())
         .0;
+    // Spec 050 Phase 2: wire ShadowSentinel into agent so begin_turn() calls advance_turn().
+    let agent = if let Some(sentinel) = shadow_sentinel_arc {
+        agent.with_shadow_sentinel(sentinel)
+    } else {
+        agent
+    };
 
     // Load provider-specific and explicit instruction files.
     // base_dir is the process CWD at startup — the most natural project root for local tools.
@@ -3616,5 +3712,118 @@ mod tests {
         let mode =
             crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
         assert!(mode.bare, "bare flag must set execution mode");
+    }
+
+    // --- ShadowSentinelProbeGateAdapter ---
+
+    async fn make_adapter_sentinel(
+        verdict: zeph_core::agent::shadow_sentinel::ProbeVerdict,
+    ) -> ShadowSentinelProbeGateAdapter {
+        use zeph_core::agent::shadow_sentinel::{
+            ProbeVerdict, SafetyProbe, ShadowEvent, ShadowEventStore, ShadowSentinel,
+        };
+
+        struct FixedProbe(ProbeVerdict);
+        impl SafetyProbe for FixedProbe {
+            fn evaluate<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a serde_json::Value,
+                _: &'a [ShadowEvent],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>
+            {
+                let v = self.0.clone();
+                Box::pin(async move { v })
+            }
+        }
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory SQLite");
+        let store = ShadowEventStore::new(pool);
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let sentinel = std::sync::Arc::new(ShadowSentinel::new(
+            store,
+            Box::new(FixedProbe(verdict)),
+            config,
+            "test",
+        ));
+        ShadowSentinelProbeGateAdapter { sentinel }
+    }
+
+    #[tokio::test]
+    async fn probe_gate_adapter_maps_allow_to_allow() {
+        use zeph_core::agent::shadow_sentinel::ProbeVerdict;
+        use zeph_tools::{ProbeGate, ProbeOutcome};
+
+        let adapter = make_adapter_sentinel(ProbeVerdict::Allow).await;
+        let args = serde_json::Value::Object(serde_json::Map::new());
+        let outcome = adapter.probe("builtin:shell", &args, 1, "calm").await;
+        assert_eq!(outcome, ProbeOutcome::Allow);
+    }
+
+    #[tokio::test]
+    async fn probe_gate_adapter_maps_deny_to_deny() {
+        use zeph_core::agent::shadow_sentinel::ProbeVerdict;
+        use zeph_tools::{ProbeGate, ProbeOutcome};
+
+        let adapter = make_adapter_sentinel(ProbeVerdict::Deny {
+            reason: "risky pattern".to_owned(),
+        })
+        .await;
+        let args = serde_json::Value::Object(serde_json::Map::new());
+        let outcome = adapter.probe("builtin:shell", &args, 1, "elevated").await;
+        assert_eq!(
+            outcome,
+            ProbeOutcome::Deny {
+                reason: "risky pattern".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_gate_adapter_maps_skip_when_disabled() {
+        use zeph_core::agent::shadow_sentinel::{
+            ProbeVerdict, SafetyProbe, ShadowEvent, ShadowEventStore, ShadowSentinel,
+        };
+        use zeph_tools::{ProbeGate, ProbeOutcome};
+
+        struct PanicProbe;
+        impl SafetyProbe for PanicProbe {
+            fn evaluate<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a serde_json::Value,
+                _: &'a [ShadowEvent],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>
+            {
+                Box::pin(async { panic!("probe must not be called when disabled") })
+            }
+        }
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory SQLite");
+        let store = ShadowEventStore::new(pool);
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let sentinel = std::sync::Arc::new(ShadowSentinel::new(
+            store,
+            Box::new(PanicProbe),
+            config,
+            "test",
+        ));
+        let adapter = ShadowSentinelProbeGateAdapter { sentinel };
+
+        let args = serde_json::Value::Object(serde_json::Map::new());
+        let outcome = adapter.probe("builtin:shell", &args, 1, "calm").await;
+        assert_eq!(outcome, ProbeOutcome::Skip);
     }
 }
