@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use throbber_widgets_tui::{BRAILLE_SIX, Throbber, WhichUse};
+use throbber_widgets_tui::BRAILLE_SIX;
 
 use crate::app::{App, MessageRole, RenderCache, RenderCacheKey, content_hash};
 use crate::highlight::SYNTAX_HIGHLIGHTER;
@@ -130,6 +130,8 @@ fn collect_message_lines_from(
         lines.push(Line::default());
     }
 
+    let mut prev_role: Option<MessageRole> = None;
+
     for (idx, msg) in messages.iter().enumerate() {
         let accent = match msg.role {
             MessageRole::User => theme.user_message,
@@ -138,9 +140,25 @@ fn collect_message_lines_from(
             MessageRole::System => theme.system_message,
         };
 
-        if idx > 0 {
+        // Emit a turn separator when the role changes (or at the very first message).
+        let role_changed = prev_role != Some(msg.role);
+        if role_changed {
+            if idx > 0 {
+                lines.push(Line::default());
+            }
+            let role_label = match msg.role {
+                MessageRole::User => "You",
+                MessageRole::Assistant => "Agent",
+                MessageRole::Tool => "Tool",
+                MessageRole::System => "System",
+            };
+            let sep_text = format!("── {} {} ──", msg.timestamp, role_label);
+            lines.push(Line::from(Span::styled(sep_text, theme.turn_separator)));
+        } else if idx > 0 {
             lines.push(Line::default());
         }
+
+        prev_role = Some(msg.role);
 
         let cache_key = RenderCacheKey {
             content_hash: content_hash(&msg.content),
@@ -177,62 +195,24 @@ fn collect_message_lines_from(
 
         all_md_links.extend(msg_md_links);
 
-        let time_str = &msg.timestamp;
-        for (i, mut line) in msg_lines.into_iter().enumerate() {
-            if msg.role == MessageRole::User {
+        let is_user = msg.role == MessageRole::User;
+        let user_bg = theme.user_message_bg;
+
+        for mut line in msg_lines {
+            if is_user {
                 line.spans.insert(0, Span::styled("\u{258e} ", accent));
+                // Apply background tint to all spans in user message lines.
+                for span in &mut line.spans {
+                    span.style = span.style.bg(user_bg);
+                }
             } else {
                 line.spans.insert(0, Span::raw("  "));
-            }
-            if i == 0 {
-                let content_width: usize =
-                    line.spans.iter().map(|s| s.content.chars().count()).sum();
-                let pad = wrap_width
-                    .saturating_sub(content_width)
-                    .saturating_sub(time_str.len());
-                if pad > 0 {
-                    line.spans.push(Span::raw(" ".repeat(pad)));
-                    line.spans
-                        .push(Span::styled(time_str.clone(), theme.system_message));
-                }
             }
             lines.push(line);
         }
     }
 
     (lines, all_md_links)
-}
-
-pub fn render_activity(app: &mut App, frame: &mut Frame, area: Rect) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
-    let theme = Theme::default();
-
-    // Primary status label (tool running, status update, etc.).
-    if let Some(label) = app.status_label() {
-        let label = format!(" {label}");
-        let throbber = Throbber::default()
-            .label(label)
-            .style(theme.assistant_message)
-            .throbber_style(theme.highlight)
-            .throbber_set(BRAILLE_SIX)
-            .use_type(WhichUse::Spin);
-        frame.render_stateful_widget(throbber, area, app.throbber_state_mut());
-        return;
-    }
-
-    // Fallback: show active TaskSupervisor tasks with a braille spinner.
-    if let Some(task_label) = app.supervisor_activity_label() {
-        let label = format!(" {task_label}");
-        let throbber = Throbber::default()
-            .label(label)
-            .style(theme.assistant_message)
-            .throbber_style(theme.highlight)
-            .throbber_set(BRAILLE_SIX)
-            .use_type(WhichUse::Spin);
-        frame.render_stateful_widget(throbber, area, app.throbber_state_mut());
-    }
 }
 
 fn render_message_lines(
@@ -1328,6 +1308,53 @@ mod tests {
         assert!(
             !text.contains("more lines"),
             "no hint when expanded: {text}"
+        );
+    }
+
+    fn make_chat_msg(role: crate::app::MessageRole, content: &str) -> crate::app::ChatMessage {
+        let mut msg = crate::app::ChatMessage::new(role, content);
+        msg.timestamp = "14:30".to_owned();
+        msg
+    }
+
+    #[test]
+    fn turn_separator_emitted_on_role_change() {
+        let theme = Theme::default();
+        let messages = vec![
+            make_chat_msg(crate::app::MessageRole::User, "Hello"),
+            make_chat_msg(crate::app::MessageRole::Assistant, "Hi"),
+        ];
+        let mut cache = crate::app::RenderCache::default();
+        let (lines, _) = collect_message_lines_from(
+            &messages, None, &mut cache, 80, 76, &theme, false, false, false, 0,
+        );
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            all_text.contains("── "),
+            "turn separator must be present; got: {all_text:?}"
+        );
+    }
+
+    #[test]
+    fn user_message_bg_tint_applied() {
+        use ratatui::style::Color;
+        let theme = Theme::default();
+        let messages = vec![make_chat_msg(crate::app::MessageRole::User, "Hello world")];
+        let mut cache = crate::app::RenderCache::default();
+        let (lines, _) = collect_message_lines_from(
+            &messages, None, &mut cache, 80, 76, &theme, false, false, false, 0,
+        );
+        let has_bg = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.style.bg == Some(Color::Rgb(20, 25, 35)));
+        assert!(
+            has_bg,
+            "at least one span must have user_message_bg applied"
         );
     }
 }

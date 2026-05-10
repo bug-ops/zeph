@@ -3,14 +3,22 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use throbber_widgets_tui::BRAILLE_SIX;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, InputMode};
 use crate::theme::Theme;
 
-pub fn render(app: &App, frame: &mut Frame, area: Rect) {
+pub fn render(
+    app: &App,
+    frame: &mut Frame,
+    area: Rect,
+    busy: bool,
+    activity_label: Option<&str>,
+    spinner_idx: u8,
+) {
     let theme = Theme::default();
 
     let title = match app.input_mode() {
@@ -30,6 +38,18 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
 
     if app.editing_queued() {
         block = block.title_bottom(Span::styled(" [editing queued] ", theme.highlight));
+    }
+
+    if busy {
+        let sym_idx = usize::from(spinner_idx) % BRAILLE_SIX.symbols.len();
+        let symbol = BRAILLE_SIX.symbols[sym_idx];
+        let spinner_span = if let Some(label) = activity_label {
+            Span::styled(format!(" {symbol} {label} "), theme.highlight)
+        } else {
+            Span::styled(format!(" {symbol} "), theme.highlight)
+        };
+        let hint_span = Span::styled("Esc to interrupt ", theme.system_message);
+        block = block.title_bottom(Line::from(vec![spinner_span, hint_span]));
     }
 
     let visible_lines = area.height.saturating_sub(2);
@@ -110,7 +130,7 @@ mod tests {
     fn input_insert_mode() {
         let app = make_app();
         let output = render_to_string(40, 5, |frame, area| {
-            super::render(&app, frame, area);
+            super::render(&app, frame, area, false, None, 0);
         });
         assert_snapshot!(output);
     }
@@ -125,8 +145,53 @@ mod tests {
             ),
         ));
         let output = render_to_string(40, 5, |frame, area| {
-            super::render(&app, frame, area);
+            super::render(&app, frame, area, false, None, 0);
         });
         assert_snapshot!(output);
+    }
+
+    #[test]
+    fn input_busy_shows_spinner() {
+        let app = make_app();
+        let output = render_to_string(60, 5, |frame, area| {
+            super::render(&app, frame, area, true, Some("Thinking..."), 0);
+        });
+        assert!(
+            output.contains("Esc to interrupt"),
+            "spinner hint must appear when busy"
+        );
+    }
+
+    #[test]
+    fn input_idle_width_80() {
+        let app = make_app();
+        let output = render_to_string(80, 5, |frame, area| {
+            super::render(&app, frame, area, false, None, 0);
+        });
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn input_busy_width_40() {
+        let app = make_app();
+        let output = render_to_string(40, 5, |frame, area| {
+            super::render(&app, frame, area, true, Some("Thinking..."), 0);
+        });
+        assert!(
+            output.contains("Esc to interrupt"),
+            "spinner hint must appear on narrow terminal"
+        );
+    }
+
+    #[test]
+    fn input_busy_width_80() {
+        let app = make_app();
+        let output = render_to_string(80, 5, |frame, area| {
+            super::render(&app, frame, area, true, Some("Thinking..."), 0);
+        });
+        assert!(
+            output.contains("Esc to interrupt"),
+            "spinner hint must appear on wide terminal"
+        );
     }
 }

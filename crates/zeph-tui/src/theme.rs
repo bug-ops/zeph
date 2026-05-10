@@ -91,6 +91,10 @@ pub struct Theme {
     pub diff_header: Style,
     pub link: Style,
     pub table_border: Style,
+    /// Background tint applied to user message lines.
+    pub user_message_bg: Color,
+    /// Style for turn-separator lines between role changes.
+    pub turn_separator: Style,
 }
 
 impl Default for Theme {
@@ -137,6 +141,10 @@ impl Default for Theme {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::UNDERLINED),
             table_border: Style::default().fg(Color::DarkGray),
+            user_message_bg: Color::Rgb(20, 25, 35),
+            turn_separator: Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
         }
     }
 }

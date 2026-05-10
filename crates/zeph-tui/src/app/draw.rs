@@ -26,8 +26,19 @@ impl App {
                 self.sessions.current().scroll_offset.min(max_scroll);
         }
         self.draw_side_panel(frame, &layout);
-        widgets::chat::render_activity(self, frame, layout.activity);
-        widgets::input::render(self, frame, layout.input);
+        let spinner_idx = self.throbber_state().index().cast_unsigned();
+        let busy = self.is_agent_busy();
+        let activity_label = self.status_label().map(str::to_owned);
+        let supervisor_label = self.supervisor_activity_label();
+        let effective_label = activity_label.or(supervisor_label);
+        widgets::input::render(
+            self,
+            frame,
+            layout.input,
+            busy,
+            effective_label.as_deref(),
+            spinner_idx,
+        );
         widgets::status::render(self, &self.metrics, frame, layout.status);
 
         if let Some(state) = &self.file_picker_state {

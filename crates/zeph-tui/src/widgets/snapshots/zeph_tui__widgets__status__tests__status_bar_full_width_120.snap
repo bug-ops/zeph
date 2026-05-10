@@ -1,0 +1,6 @@
+---
+source: crates/zeph-tui/src/widgets/status.rs
+assertion_line: 782
+expression: output
+---
+ [Insert] | claude-sonnet-4-6 | ctx:8% | ? for help | Skills: 1 active / 3 loaded | Tokens: 12.5k | API: 7 | 5m 00s

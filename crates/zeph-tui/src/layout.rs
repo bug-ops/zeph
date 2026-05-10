@@ -58,8 +58,6 @@ pub struct AppLayout {
     pub resources: Rect,
     /// Sub-agents mini-panel within the side column.
     pub subagents: Rect,
-    /// Single-row activity / status-spinner bar.
-    pub activity: Rect,
     /// Multi-row text input box.
     pub input: Rect,
     /// Single-row bottom status bar (metrics, keybinding hints).
@@ -96,7 +94,6 @@ impl AppLayout {
             .constraints([
                 Constraint::Length(1),
                 Constraint::Min(10),
-                Constraint::Length(1),
                 Constraint::Length(input_height),
                 Constraint::Length(1),
             ])
@@ -111,9 +108,8 @@ impl AppLayout {
                 memory: Rect::default(),
                 resources: Rect::default(),
                 subagents: Rect::default(),
-                activity: outer[2],
-                input: outer[3],
-                status: outer[4],
+                input: outer[2],
+                status: outer[3],
             };
         }
 
@@ -140,9 +136,8 @@ impl AppLayout {
             memory: side_split[1],
             resources: side_split[2],
             subagents: side_split[3],
-            activity: outer[2],
-            input: outer[3],
-            status: outer[4],
+            input: outer[2],
+            status: outer[3],
         }
     }
 }
@@ -307,7 +302,6 @@ mod tests {
 
                 assert_within_bounds(layout.header, area);
                 assert_within_bounds(layout.chat, area);
-                assert_within_bounds(layout.activity, area);
                 assert_within_bounds(layout.input, area);
                 assert_within_bounds(layout.status, area);
 
