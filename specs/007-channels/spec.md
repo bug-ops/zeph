@@ -15,6 +15,8 @@ related:
   - "[[MOC-specs]]"
   - "[[001-system-invariants/spec#1. Channel Contract]]"
   - "[[011-tui/spec]]"
+  - "[[007-channels/007-1-telegram-guest-mode]]"
+  - "[[007-channels/007-2-telegram-bot-to-bot]]"
 ---
 
 # Spec: Multi-Channel I/O
@@ -91,6 +93,38 @@ pub enum AnyChannel {
 4. `send_tool_start(event)` — notify channel that tool execution begins
 5. `send_tool_output(event)` — deliver tool result to channel
 
+## Telegram Streaming Interval
+
+Issue #3727. `crates/zeph-channels/src/telegram.rs`, `crates/zeph-config/src/telegram.rs`.
+
+Zeph batches LLM streaming chunks and sends them as `editMessageText` calls on a
+configurable interval. The interval controls how frequently the Telegram client
+sees partial responses.
+
+### Config
+
+```toml
+[telegram]
+# Interval between streaming edits in milliseconds. Default: 3000.
+# Bot API 10.0 improved client-side rendering may allow shorter values.
+stream_interval_ms = 3000
+```
+
+### Behavior
+
+- `TelegramChannel::should_send_update()` compares elapsed time since the last
+  edit against `stream_interval_ms` loaded from `TelegramConfig`.
+- Default (`3000`) preserves pre-10.0 behavior exactly.
+- Lower values increase API call frequency; operators must stay within Telegram
+  rate limits (currently 20 edits/minute per chat).
+
+### Key Invariants
+
+- Default of 3000 ms MUST be preserved when the field is absent from config
+- `stream_interval_ms` applies to regular message streaming only; guest mode
+  uses single-shot `answerGuestQuery` regardless of this setting (see
+  [[007-channels/007-1-telegram-guest-mode]])
+
 ## Key Invariants
 
 - Channel is always owned by the Agent — never shared via `Arc`
@@ -150,3 +184,17 @@ Discord channel registers slash commands (`/reset`, `/skills`, `/agent`) at star
 - `send_thinking_chunk` must be forwarded even if the channel renders it as a no-op — the event must reach the channel impl
 - NEVER add a new `Channel` trait method without updating `AnyChannel`, `AppChannel`, and all channel implementations
 - Behavioral differences between channels (e.g. Telegram batching) are acceptable — method dropping is not
+
+---
+
+## Telegram Bot API 10.0 Extensions
+
+Sub-specs for Telegram Bot API 10.0 features live in this directory:
+
+| Spec | Feature | Issue |
+|------|---------|-------|
+| [[007-channels/007-1-telegram-guest-mode]] | Guest Mode — `answerGuestQuery`, `guest_message` update handling, access control | #3729 |
+| [[007-channels/007-2-telegram-bot-to-bot]] | Bot-to-Bot communication — `setManagedBotAccessSettings`, loop prevention, `allowed_bots` | #3730 |
+
+The `stream_interval_ms` config field (issue #3727) is documented in the
+[Telegram Streaming Interval](#telegram-streaming-interval) section above.
