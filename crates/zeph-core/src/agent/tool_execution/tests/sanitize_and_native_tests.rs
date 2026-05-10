@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#![allow(clippy::large_futures)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};

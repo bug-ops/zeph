@@ -616,8 +616,10 @@ mod tests {
         check_proxy_connected(health_opt.as_ref(), &mut results);
         check_workers_available(health_opt.as_ref(), &mut results);
 
-        let mut entry = zeph_config::ProviderEntry::default();
-        entry.model = Some("Qwen/Qwen3-0.6B".into());
+        let entry = zeph_config::ProviderEntry {
+            model: Some("Qwen/Qwen3-0.6B".into()),
+            ..zeph_config::ProviderEntry::default()
+        };
         check_model_listed(&client, &entry, health_opt.as_ref(), &mut results).await;
 
         for check in &results {
