@@ -4,8 +4,8 @@
 //! Cocoon confidential compute integration: sidecar HTTP client and LLM provider.
 //!
 //! [`CocoonClient`] communicates with the Cocoon C++ sidecar on `localhost`.
-//! [`CocoonProvider`] implements [`LlmProvider`] by delegating body construction
-//! to an inner [`OpenAiProvider`] and routing requests through [`CocoonClient`].
+//! [`CocoonProvider`] implements [`crate::provider::LlmProvider`] by delegating body construction
+//! to an inner [`crate::openai::OpenAiProvider`] and routing requests through [`CocoonClient`].
 //!
 //! All RA-TLS attestation, proxy selection, and TON payments are handled
 //! transparently by the sidecar. Zeph never connects to the proxy or TEE workers

@@ -1371,12 +1371,10 @@ impl Default for CandleInlineConfig {
 ///
 /// Cocoon model names (e.g. `Qwen/Qwen3-0.6B`) are not in the built-in pricing table.
 /// When this struct is present in a provider entry, its values are registered with
-/// [`CostTracker`] at startup so that token costs are tracked accurately.
+/// `CostTracker` at startup so that token costs are tracked accurately.
 ///
 /// Reasoning tokens (when the model uses chain-of-thought) are folded into
 /// `completion_tokens` by the Cocoon sidecar and counted at the completion price.
-///
-/// [`CostTracker`]: zeph_core::cost::CostTracker
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct CocoonPricing {
     /// Prompt (input) token price in cents per 1K tokens.
