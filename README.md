@@ -25,7 +25,7 @@ Unlike single-session assistants, Zeph is designed to remember *why* a decision 
 | An agent that survives long projects | SQLite conversation history, semantic recall, graph memory, session digests, trajectory memory, and goal-aware compaction. |
 | Lower infrastructure cost | A default SQLite vector backend, local Ollama defaults, feature-gated bundles, and provider routing for simple vs. hard tasks. |
 | More than keyword memory | Typed graph facts, BFS recall, SYNAPSE spreading activation, MMR reranking, temporal decay, and write-quality gates. |
-| Provider freedom | Ollama, Claude, OpenAI, Gemini, Candle, any OpenAI-compatible endpoint, and Gonka.ai via GonkaGate or the native signed-transport provider. |
+| Provider freedom | Ollama, Claude, OpenAI, Gemini, Candle, any OpenAI-compatible endpoint, and distributed inference networks (Gonka, Cocoon TEE) for cost-sensitive or privacy-sensitive workloads. |
 | Agent-grade safety | Age-encrypted vault secrets, sandboxed tool execution, MCP injection detection, SSRF guards, PII filtering, and exfiltration checks. |
 | Daily operator ergonomics | CLI, TUI dashboard, MCP tools, plugins, skills, sub-agents, ACP for IDEs, A2A, scheduler, and JSON output modes. |
 
@@ -63,36 +63,30 @@ zeph init
 zeph
 ```
 
-## Gonka.ai
+## Distributed Inference
 
-Zeph supports Gonka.ai inference in two modes:
+Long-running agents are the worst-case workload for centralized API providers: thousands of calls per session, rate limits that pause mid-task, and costs that compound across every tool loop, memory retrieval, and sub-agent spawn.
 
-**GonkaGate (OpenAI-compatible gateway):** store the `gp-...` key in the age vault as `ZEPH_COMPATIBLE_GONKAGATE_API_KEY` and use the `compatible` provider type:
+Distributed inference networks change the economics. Compute is supplied by independent nodes rather than a single data center — which means no shared rate ceiling, no single vendor dependency, and in hardware-attested networks, provable isolation of your prompts from the node operator.
 
-```toml
-[[llm.providers]]
-name = "gonkagate"
-type = "compatible"
-base_url = "https://api.gonkagate.com/v1"
-model = "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8"
-default = true
-```
+Zeph treats distributed networks as first-class providers alongside Ollama and cloud APIs, participating in the same adaptive routing — you can send cheap extraction and embedding work to a distributed node while reserving TEE-isolated compute for steps that touch sensitive context.
 
-**Native Gonka provider (signed transport):** use `type = "gonka"` with node endpoints. The native provider supports chat, streaming, embeddings, and tool calls over a signed request transport. Store the key as `ZEPH_GONKA_API_KEY` in the vault and declare nodes via `--init` wizard or directly in config:
+| Network | Provider type | Characteristic |
+|---|---|---|
+| [Gonka](https://bug-ops.github.io/zeph/guides/gonka.html) | `gonka` / `compatible` | High-capacity distributed nodes, signed transport, OpenAI-compatible gateway |
+| [Cocoon](https://bug-ops.github.io/zeph/guides/cocoon.html) | `cocoon` | Hardware TEE isolation — node operators cannot read prompts or weights |
+
+Both plug into the standard provider declaration:
 
 ```toml
 [[llm.providers]]
-name = "gonka"
-type = "gonka"
+name = "distributed"
+type = "gonka"   # or "cocoon", or "compatible" for gateway mode
 model = "qwen3-235b"
 default = true
-
-[[llm.gonka_nodes]]
-url = "https://node.example.gonka.ai"
-weight = 1
 ```
 
-Run `zeph init` and select the GonkaGate option in the wizard to configure either mode interactively.
+Run `zeph init` to configure either network interactively through the setup wizard.
 
 ## What Makes It Different
 
