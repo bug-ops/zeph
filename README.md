@@ -26,7 +26,7 @@ Unlike single-session assistants, Zeph is designed to remember *why* a decision 
 | Lower infrastructure cost | A default SQLite vector backend, local [Ollama](https://ollama.ai) defaults, [feature-gated bundles](https://bug-ops.github.io/zeph/reference/feature-flags.html), and [provider routing](https://bug-ops.github.io/zeph/advanced/adaptive-inference.html) for simple vs. hard tasks. |
 | More than keyword memory | Typed graph facts, BFS recall, SYNAPSE spreading activation, MMR reranking, temporal decay, and write-quality gates. See [graph memory concepts](https://bug-ops.github.io/zeph/concepts/graph-memory.html). |
 | Provider freedom | [Ollama](https://ollama.ai), Claude, OpenAI, Gemini, [Candle](https://bug-ops.github.io/zeph/advanced/candle.html), any OpenAI-compatible endpoint, and distributed inference networks ([Gonka](https://bug-ops.github.io/zeph/guides/gonka.html), [Cocoon TEE](https://bug-ops.github.io/zeph/guides/cocoon.html)) for cost-sensitive or privacy-sensitive workloads. |
-| Agent-grade safety | [Age-encrypted](https://age-encryption.org) vault secrets, [sandboxed tool execution](https://bug-ops.github.io/zeph/reference/security/file-sandbox.html), [MCP injection detection](https://bug-ops.github.io/zeph/reference/security/mcp.html), SSRF guards, PII filtering, and exfiltration checks. |
+| Agent-grade safety | [Age-encrypted](https://github.com/FiloSottile/age) vault secrets, [sandboxed tool execution](https://bug-ops.github.io/zeph/reference/security/file-sandbox.html), [MCP injection detection](https://bug-ops.github.io/zeph/reference/security/mcp.html), SSRF guards, PII filtering, and exfiltration checks. |
 | Daily operator ergonomics | CLI, [TUI](https://bug-ops.github.io/zeph/advanced/tui.html) dashboard, [MCP](https://bug-ops.github.io/zeph/guides/mcp.html) tools, plugins, [skills](https://bug-ops.github.io/zeph/concepts/skills.html), [sub-agents](https://bug-ops.github.io/zeph/advanced/sub-agents.html), [ACP](https://bug-ops.github.io/zeph/advanced/acp.html) for IDEs, [A2A](https://bug-ops.github.io/zeph/advanced/a2a.html), [scheduler](https://bug-ops.github.io/zeph/concepts/scheduler.html), and JSON output modes. |
 
 ## Quick Start
@@ -168,7 +168,7 @@ Use local models for extraction, embeddings, routing, and summarization. Keep ex
 
 ### Tools without loose secrets
 
-Secrets live in the Zeph [age](https://age-encryption.org) vault, not in `.env` files or shell profiles. Tool execution goes through trust gates, command filters, [sandboxing](https://bug-ops.github.io/zeph/reference/security/file-sandbox.html), audit logs, and redaction paths. [MCP](https://bug-ops.github.io/zeph/guides/mcp.html) tools are discovered and exposed without dropping the [injection and authorization checks](https://bug-ops.github.io/zeph/reference/security/mcp.html).
+Secrets live in the Zeph [age](https://github.com/FiloSottile/age) vault, not in `.env` files or shell profiles. Tool execution goes through trust gates, command filters, [sandboxing](https://bug-ops.github.io/zeph/reference/security/file-sandbox.html), audit logs, and redaction paths. [MCP](https://bug-ops.github.io/zeph/guides/mcp.html) tools are discovered and exposed without dropping the [injection and authorization checks](https://bug-ops.github.io/zeph/reference/security/mcp.html).
 
 ## Demo
 
