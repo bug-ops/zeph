@@ -17,7 +17,87 @@ use zeph_common::memory::{
     MemSessionSummary, MemSummary, MemTrajectoryEntry, MemTreeNode, RecallView,
 };
 use zeph_memory::semantic::SemanticMemory;
-use zeph_memory::{ConversationId, RecallView as MemRecallView};
+use zeph_memory::{ConversationId, RecallView as MemRecallView, RecalledFact};
+
+fn map_persona_fact(r: zeph_memory::PersonaFactRow) -> MemPersonaFact {
+    MemPersonaFact {
+        category: r.category,
+        content: r.content,
+    }
+}
+
+fn map_trajectory_entry(r: zeph_memory::TrajectoryEntryRow) -> MemTrajectoryEntry {
+    MemTrajectoryEntry {
+        intent: r.intent,
+        outcome: r.outcome,
+        confidence: r.confidence,
+    }
+}
+
+fn map_tree_node(r: zeph_memory::MemoryTreeRow) -> MemTreeNode {
+    MemTreeNode { content: r.content }
+}
+
+fn map_summary(r: zeph_memory::semantic::Summary) -> MemSummary {
+    MemSummary {
+        first_message_id: r.first_message_id.map(|m| m.0),
+        last_message_id: r.last_message_id.map(|m| m.0),
+        content: r.content,
+    }
+}
+
+fn map_reasoning_strategy(s: zeph_memory::ReasoningStrategy) -> MemReasoningStrategy {
+    MemReasoningStrategy {
+        id: s.id,
+        outcome: s.outcome.as_str().to_owned(),
+        summary: s.summary,
+    }
+}
+
+fn map_correction(c: zeph_memory::UserCorrectionRow) -> MemCorrection {
+    MemCorrection {
+        correction_text: c.correction_text,
+    }
+}
+
+fn map_recalled_message(r: zeph_memory::RecalledMessage) -> MemRecalledMessage {
+    use zeph_llm::provider::Role;
+    let role = match r.message.role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::System => "system",
+    }
+    .to_owned();
+    MemRecalledMessage {
+        role,
+        content: r.message.content,
+        score: r.score,
+    }
+}
+
+fn map_graph_fact(rf: RecalledFact) -> MemGraphFact {
+    MemGraphFact {
+        fact: rf.fact.fact,
+        confidence: rf.fact.confidence,
+        activation_score: rf.activation_score,
+        neighbors: rf
+            .neighbors
+            .into_iter()
+            .map(|n| MemGraphNeighbor {
+                fact: n.fact,
+                confidence: n.confidence,
+            })
+            .collect(),
+        provenance_snippet: rf.provenance_snippet,
+    }
+}
+
+fn map_session_summary(r: zeph_memory::semantic::SessionSummaryResult) -> MemSessionSummary {
+    MemSessionSummary {
+        summary_text: r.summary_text,
+        score: r.score,
+    }
+}
 
 /// Adapter that implements [`ContextMemoryBackend`] by delegating to [`SemanticMemory`].
 pub struct SemanticMemoryBackend {
@@ -49,13 +129,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .load_persona_facts(min_confidence)
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            Ok(rows
-                .into_iter()
-                .map(|r| MemPersonaFact {
-                    category: r.category,
-                    content: r.content,
-                })
-                .collect())
+            Ok(rows.into_iter().map(map_persona_fact).collect())
         })
     }
 
@@ -71,14 +145,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .load_trajectory_entries(tier, top_k)
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            Ok(rows
-                .into_iter()
-                .map(|r| MemTrajectoryEntry {
-                    intent: r.intent,
-                    outcome: r.outcome,
-                    confidence: r.confidence,
-                })
-                .collect())
+            Ok(rows.into_iter().map(map_trajectory_entry).collect())
         })
     }
 
@@ -90,10 +157,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .load_tree_level(level.into(), top_k)
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            Ok(rows
-                .into_iter()
-                .map(|r| MemTreeNode { content: r.content })
-                .collect())
+            Ok(rows.into_iter().map(map_tree_node).collect())
         })
     }
 
@@ -105,14 +169,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .load_summaries(cid)
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            Ok(rows
-                .into_iter()
-                .map(|r| MemSummary {
-                    first_message_id: r.first_message_id.map(|m| m.0),
-                    last_message_id: r.last_message_id.map(|m| m.0),
-                    content: r.content,
-                })
-                .collect())
+            Ok(rows.into_iter().map(map_summary).collect())
         })
     }
 
@@ -127,14 +184,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .retrieve_reasoning_strategies(query, top_k)
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            Ok(strategies
-                .into_iter()
-                .map(|s| MemReasoningStrategy {
-                    id: s.id,
-                    outcome: s.outcome.as_str().to_owned(),
-                    summary: s.summary,
-                })
-                .collect())
+            Ok(strategies.into_iter().map(map_reasoning_strategy).collect())
         })
     }
 
@@ -162,12 +212,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .retrieve_similar_corrections(query, limit, min_score)
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            Ok(corrections
-                .into_iter()
-                .map(|c| MemCorrection {
-                    correction_text: c.correction_text,
-                })
-                .collect())
+            Ok(corrections.into_iter().map(map_correction).collect())
         })
     }
 
@@ -189,23 +234,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
             };
-            Ok(recalled
-                .into_iter()
-                .map(|r| {
-                    use zeph_llm::provider::Role;
-                    let role = match r.message.role {
-                        Role::User => "user",
-                        Role::Assistant => "assistant",
-                        Role::System => "system",
-                    }
-                    .to_owned();
-                    MemRecalledMessage {
-                        role,
-                        content: r.message.content,
-                        score: r.score,
-                    }
-                })
-                .collect())
+            Ok(recalled.into_iter().map(map_recalled_message).collect())
         })
     }
 
@@ -260,23 +289,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 )
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            Ok(recalled
-                .into_iter()
-                .map(|rf| MemGraphFact {
-                    fact: rf.fact.fact,
-                    confidence: rf.fact.confidence,
-                    activation_score: rf.activation_score,
-                    neighbors: rf
-                        .neighbors
-                        .into_iter()
-                        .map(|n| MemGraphNeighbor {
-                            fact: n.fact,
-                            confidence: n.confidence,
-                        })
-                        .collect(),
-                    provenance_snippet: rf.provenance_snippet,
-                })
-                .collect())
+            Ok(recalled.into_iter().map(map_graph_fact).collect())
         })
     }
 
@@ -293,13 +306,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .search_session_summaries(query, limit, cid)
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            Ok(results
-                .into_iter()
-                .map(|r| MemSessionSummary {
-                    summary_text: r.summary_text,
-                    score: r.score,
-                })
-                .collect())
+            Ok(results.into_iter().map(map_session_summary).collect())
         })
     }
 
@@ -396,5 +403,333 @@ pub fn build_memory_router(
                 manager.routing.confidence_threshold,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zeph_llm::provider::{Message, Role};
+    use zeph_memory::graph::types::{EdgeType, GraphFact};
+    use zeph_memory::semantic::{SessionSummaryResult, Summary};
+    use zeph_memory::types::{ConversationId, MessageId};
+    use zeph_memory::{
+        MemoryTreeRow, Outcome, PersonaFactRow, ReasoningStrategy, RecalledFact, RecalledMessage,
+        TrajectoryEntryRow, UserCorrectionRow,
+    };
+
+    use super::*;
+
+    fn make_persona_row() -> PersonaFactRow {
+        PersonaFactRow {
+            id: 1,
+            category: "preference".to_owned(),
+            content: "prefers short answers".to_owned(),
+            confidence: 0.9,
+            evidence_count: 3,
+            source_conversation_id: None,
+            supersedes_id: None,
+            created_at: "2026-01-01".to_owned(),
+            updated_at: "2026-01-02".to_owned(),
+        }
+    }
+
+    fn make_trajectory_row() -> TrajectoryEntryRow {
+        TrajectoryEntryRow {
+            id: 1,
+            conversation_id: Some(42),
+            turn_index: 5,
+            kind: "procedural".to_owned(),
+            intent: "read a file".to_owned(),
+            outcome: "file read successfully".to_owned(),
+            tools_used: "read_file".to_owned(),
+            confidence: 0.85,
+            created_at: "2026-01-01".to_owned(),
+            updated_at: "2026-01-01".to_owned(),
+        }
+    }
+
+    fn make_tree_row() -> MemoryTreeRow {
+        MemoryTreeRow {
+            id: 1,
+            level: 0,
+            parent_id: None,
+            content: "node content here".to_owned(),
+            source_ids: "1,2,3".to_owned(),
+            token_count: 10,
+            consolidated_at: None,
+            created_at: "2026-01-01".to_owned(),
+        }
+    }
+
+    fn make_summary() -> Summary {
+        Summary {
+            id: 1,
+            conversation_id: ConversationId(10),
+            content: "summary of the conversation".to_owned(),
+            first_message_id: Some(MessageId(5)),
+            last_message_id: Some(MessageId(20)),
+            token_estimate: 100,
+        }
+    }
+
+    fn make_reasoning_strategy() -> ReasoningStrategy {
+        ReasoningStrategy {
+            id: "strat-uuid-1".to_owned(),
+            summary: "break the problem into parts".to_owned(),
+            outcome: Outcome::Success,
+            task_hint: "code refactoring task".to_owned(),
+            created_at: 1_700_000_000,
+            last_used_at: 1_700_000_100,
+            use_count: 3,
+            embedded_at: Some(1_700_000_050),
+        }
+    }
+
+    fn make_correction_row() -> UserCorrectionRow {
+        UserCorrectionRow {
+            id: 1,
+            session_id: Some(7),
+            original_output: "wrong output".to_owned(),
+            correction_text: "use bullet points".to_owned(),
+            skill_name: Some("formatting".to_owned()),
+            correction_kind: "explicit_rejection".to_owned(),
+            created_at: "2026-01-01".to_owned(),
+        }
+    }
+
+    fn make_recalled_message(role: Role) -> RecalledMessage {
+        RecalledMessage {
+            message: Message {
+                role,
+                content: "hello world".to_owned(),
+                ..Default::default()
+            },
+            score: 0.75,
+        }
+    }
+
+    fn make_graph_fact() -> GraphFact {
+        GraphFact {
+            entity_name: "Rust".to_owned(),
+            relation: "uses".to_owned(),
+            target_name: "LLVM".to_owned(),
+            fact: "Rust uses LLVM".to_owned(),
+            entity_match_score: 0.9,
+            hop_distance: 0,
+            confidence: 0.95,
+            valid_from: None,
+            edge_type: EdgeType::Semantic,
+            retrieval_count: 1,
+            edge_id: Some(10),
+        }
+    }
+
+    fn make_recalled_fact() -> RecalledFact {
+        RecalledFact::from_graph_fact(make_graph_fact())
+    }
+
+    fn make_session_summary() -> SessionSummaryResult {
+        SessionSummaryResult {
+            summary_text: "yesterday's session about Rust".to_owned(),
+            score: 0.88,
+            conversation_id: ConversationId(99),
+        }
+    }
+
+    // ── map_persona_fact ──────────────────────────────────────────────────────
+
+    #[test]
+    fn persona_fact_maps_fields() {
+        let row = make_persona_row();
+        let dto = map_persona_fact(row);
+        assert_eq!(dto.category, "preference");
+        assert_eq!(dto.content, "prefers short answers");
+    }
+
+    // ── map_trajectory_entry ──────────────────────────────────────────────────
+
+    #[test]
+    fn trajectory_entry_maps_fields() {
+        let row = make_trajectory_row();
+        let dto = map_trajectory_entry(row);
+        assert_eq!(dto.intent, "read a file");
+        assert_eq!(dto.outcome, "file read successfully");
+        assert!((dto.confidence - 0.85).abs() < f64::EPSILON);
+    }
+
+    // ── map_tree_node ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn tree_node_maps_content() {
+        let row = make_tree_row();
+        let dto = map_tree_node(row);
+        assert_eq!(dto.content, "node content here");
+    }
+
+    // ── map_summary ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn summary_maps_all_fields() {
+        let s = make_summary();
+        let dto = map_summary(s);
+        assert_eq!(dto.first_message_id, Some(5));
+        assert_eq!(dto.last_message_id, Some(20));
+        assert_eq!(dto.content, "summary of the conversation");
+    }
+
+    #[test]
+    fn summary_none_message_ids_stay_none() {
+        let s = Summary {
+            id: 2,
+            conversation_id: ConversationId(1),
+            content: "shutdown summary".to_owned(),
+            first_message_id: None,
+            last_message_id: None,
+            token_estimate: 50,
+        };
+        let dto = map_summary(s);
+        assert!(dto.first_message_id.is_none());
+        assert!(dto.last_message_id.is_none());
+    }
+
+    // ── map_reasoning_strategy ────────────────────────────────────────────────
+
+    #[test]
+    fn reasoning_strategy_maps_success_outcome() {
+        let s = make_reasoning_strategy();
+        let dto = map_reasoning_strategy(s);
+        assert_eq!(dto.id, "strat-uuid-1");
+        assert_eq!(dto.outcome, "success");
+        assert_eq!(dto.summary, "break the problem into parts");
+    }
+
+    #[test]
+    fn reasoning_strategy_maps_failure_outcome() {
+        let mut s = make_reasoning_strategy();
+        s.outcome = Outcome::Failure;
+        let dto = map_reasoning_strategy(s);
+        assert_eq!(dto.outcome, "failure");
+    }
+
+    // ── map_correction ────────────────────────────────────────────────────────
+
+    #[test]
+    fn correction_maps_text() {
+        let row = make_correction_row();
+        let dto = map_correction(row);
+        assert_eq!(dto.correction_text, "use bullet points");
+    }
+
+    // ── map_recalled_message ──────────────────────────────────────────────────
+
+    #[test]
+    fn recalled_message_maps_user_role() {
+        let rm = make_recalled_message(Role::User);
+        let dto = map_recalled_message(rm);
+        assert_eq!(dto.role, "user");
+        assert_eq!(dto.content, "hello world");
+        assert!((dto.score - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn recalled_message_maps_assistant_role() {
+        let rm = make_recalled_message(Role::Assistant);
+        let dto = map_recalled_message(rm);
+        assert_eq!(dto.role, "assistant");
+        assert!((dto.score - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn recalled_message_maps_system_role() {
+        let rm = make_recalled_message(Role::System);
+        let dto = map_recalled_message(rm);
+        assert_eq!(dto.role, "system");
+        assert!((dto.score - 0.75).abs() < f32::EPSILON);
+    }
+
+    // ── map_graph_fact ────────────────────────────────────────────────────────
+
+    #[test]
+    fn graph_fact_maps_basic_fields() {
+        let rf = make_recalled_fact();
+        let dto = map_graph_fact(rf);
+        assert_eq!(dto.fact, "Rust uses LLVM");
+        assert!((dto.confidence - 0.95).abs() < f32::EPSILON);
+        assert!(dto.activation_score.is_none());
+        assert!(dto.neighbors.is_empty());
+        assert!(dto.provenance_snippet.is_none());
+    }
+
+    #[test]
+    fn graph_fact_maps_activation_score() {
+        let mut rf = make_recalled_fact();
+        rf.activation_score = Some(0.82);
+        let dto = map_graph_fact(rf);
+        assert_eq!(dto.activation_score, Some(0.82));
+    }
+
+    #[test]
+    fn graph_fact_maps_neighbors() {
+        let mut rf = make_recalled_fact();
+        rf.neighbors.push(GraphFact {
+            entity_name: "LLVM".to_owned(),
+            relation: "supports".to_owned(),
+            target_name: "WebAssembly".to_owned(),
+            fact: "LLVM supports WebAssembly".to_owned(),
+            entity_match_score: 0.5,
+            hop_distance: 1,
+            confidence: 0.8,
+            valid_from: None,
+            edge_type: EdgeType::Semantic,
+            retrieval_count: 0,
+            edge_id: None,
+        });
+        let dto = map_graph_fact(rf);
+        assert_eq!(dto.neighbors.len(), 1);
+        assert_eq!(dto.neighbors[0].fact, "LLVM supports WebAssembly");
+        assert!((dto.neighbors[0].confidence - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn graph_fact_maps_provenance_snippet() {
+        let mut rf = make_recalled_fact();
+        rf.provenance_snippet = Some("Rust compiler snippet".to_owned());
+        let dto = map_graph_fact(rf);
+        assert_eq!(
+            dto.provenance_snippet.as_deref(),
+            Some("Rust compiler snippet")
+        );
+    }
+
+    // ── map_session_summary ───────────────────────────────────────────────────
+
+    #[test]
+    fn session_summary_maps_fields() {
+        let r = make_session_summary();
+        let dto = map_session_summary(r);
+        assert_eq!(dto.summary_text, "yesterday's session about Rust");
+        assert!((dto.score - 0.88).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn session_summary_score_zero() {
+        let r = SessionSummaryResult {
+            summary_text: "empty session".to_owned(),
+            score: 0.0,
+            conversation_id: ConversationId(1),
+        };
+        let dto = map_session_summary(r);
+        assert_eq!(dto.score, 0.0);
+    }
+
+    #[test]
+    fn session_summary_score_one() {
+        let r = SessionSummaryResult {
+            summary_text: "perfect match".to_owned(),
+            score: 1.0,
+            conversation_id: ConversationId(1),
+        };
+        let dto = map_session_summary(r);
+        assert_eq!(dto.score, 1.0);
     }
 }

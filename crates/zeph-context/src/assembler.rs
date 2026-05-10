@@ -512,7 +512,10 @@ pub(crate) async fn fetch_graph_facts(
 
         // Append ZoomIn provenance snippet if present.
         if let Some(ref snippet) = rf.provenance_snippet {
-            let snip_line = format!("  [source: {snippet}]\n");
+            let snip_line = format!(
+                "  [source: {}]\n",
+                snippet.replace(['\n', '\r', '<', '>'], " ")
+            );
             let snip_tokens = tc.count_tokens(&snip_line);
             if tokens_so_far + snip_tokens <= budget_tokens {
                 body.push_str(&snip_line);
@@ -1267,5 +1270,1099 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_none());
+    }
+
+    // ── MockMemoryBackend ─────────────────────────────────────────────────────
+
+    use std::sync::{Arc, Mutex};
+    use zeph_common::memory::{
+        ContextMemoryBackend, GraphRecallParams, MemCorrection, MemDocumentChunk, MemGraphFact,
+        MemPersonaFact, MemReasoningStrategy, MemRecalledMessage, MemSessionSummary, MemSummary,
+        MemTrajectoryEntry, MemTreeNode,
+    };
+
+    /// Known method names accepted by [`MockMemoryBackend::fail_on`].
+    const KNOWN_FAIL_ON: &[&str] = &[
+        "load_persona_facts",
+        "load_trajectory_entries",
+        "load_tree_nodes",
+        "load_summaries",
+        "retrieve_reasoning_strategies",
+        "mark_reasoning_used",
+        "retrieve_corrections",
+        "recall",
+        "recall_graph_facts",
+        "search_session_summaries",
+        "search_document_collection",
+    ];
+
+    #[derive(Default)]
+    struct MockMemoryBackend {
+        persona_facts: Vec<MemPersonaFact>,
+        trajectory_entries: Vec<MemTrajectoryEntry>,
+        tree_nodes: Vec<MemTreeNode>,
+        summaries: Vec<MemSummary>,
+        reasoning_strategies: Vec<MemReasoningStrategy>,
+        corrections: Vec<MemCorrection>,
+        recalled: Vec<MemRecalledMessage>,
+        graph_facts: Vec<MemGraphFact>,
+        session_summaries: Vec<MemSessionSummary>,
+        document_chunks: Vec<MemDocumentChunk>,
+        /// When `Some("method_name")`, that method returns `Err(...)`.
+        fail_on: Option<&'static str>,
+        /// Tracks IDs passed to `mark_reasoning_used`.
+        marked_ids: Mutex<Vec<String>>,
+    }
+
+    impl MockMemoryBackend {
+        fn with_fail_on(method: &'static str) -> Self {
+            debug_assert!(
+                KNOWN_FAIL_ON.contains(&method),
+                "unknown fail_on method name: {method}"
+            );
+            Self {
+                fail_on: Some(method),
+                ..Default::default()
+            }
+        }
+
+        fn fail_err(method: &str) -> Box<dyn std::error::Error + Send + Sync> {
+            format!("mock error in {method}").into()
+        }
+    }
+
+    impl ContextMemoryBackend for MockMemoryBackend {
+        fn load_persona_facts<'a>(
+            &'a self,
+            _min_confidence: f64,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<MemPersonaFact>,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            let result = if self.fail_on == Some("load_persona_facts") {
+                Err(Self::fail_err("load_persona_facts"))
+            } else {
+                Ok(self.persona_facts.clone())
+            };
+            Box::pin(async move { result })
+        }
+
+        fn load_trajectory_entries<'a>(
+            &'a self,
+            _tier: Option<&'a str>,
+            _top_k: usize,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<MemTrajectoryEntry>,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            let result = if self.fail_on == Some("load_trajectory_entries") {
+                Err(Self::fail_err("load_trajectory_entries"))
+            } else {
+                Ok(self.trajectory_entries.clone())
+            };
+            Box::pin(async move { result })
+        }
+
+        fn load_tree_nodes<'a>(
+            &'a self,
+            _level: u32,
+            _top_k: usize,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Vec<MemTreeNode>, Box<dyn std::error::Error + Send + Sync>>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            let result = if self.fail_on == Some("load_tree_nodes") {
+                Err(Self::fail_err("load_tree_nodes"))
+            } else {
+                Ok(self.tree_nodes.clone())
+            };
+            Box::pin(async move { result })
+        }
+
+        fn load_summaries<'a>(
+            &'a self,
+            _conversation_id: i64,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Vec<MemSummary>, Box<dyn std::error::Error + Send + Sync>>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            let result = if self.fail_on == Some("load_summaries") {
+                Err(Self::fail_err("load_summaries"))
+            } else {
+                Ok(self.summaries.clone())
+            };
+            Box::pin(async move { result })
+        }
+
+        fn retrieve_reasoning_strategies<'a>(
+            &'a self,
+            _query: &'a str,
+            _top_k: usize,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<MemReasoningStrategy>,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            let result = if self.fail_on == Some("retrieve_reasoning_strategies") {
+                Err(Self::fail_err("retrieve_reasoning_strategies"))
+            } else {
+                Ok(self.reasoning_strategies.clone())
+            };
+            Box::pin(async move { result })
+        }
+
+        fn mark_reasoning_used<'a>(
+            &'a self,
+            ids: &'a [String],
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            if self.fail_on == Some("mark_reasoning_used") {
+                return Box::pin(async move { Err(Self::fail_err("mark_reasoning_used")) });
+            }
+            let mut guard = self.marked_ids.lock().expect("marked_ids poisoned");
+            guard.extend_from_slice(ids);
+            Box::pin(async move { Ok(()) })
+        }
+
+        fn retrieve_corrections<'a>(
+            &'a self,
+            _query: &'a str,
+            _limit: usize,
+            _min_score: f32,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<MemCorrection>,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            let result = if self.fail_on == Some("retrieve_corrections") {
+                Err(Self::fail_err("retrieve_corrections"))
+            } else {
+                Ok(self.corrections.clone())
+            };
+            Box::pin(async move { result })
+        }
+
+        fn recall<'a>(
+            &'a self,
+            _query: &'a str,
+            _limit: usize,
+            _router: Option<&'a dyn zeph_common::memory::AsyncMemoryRouter>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<MemRecalledMessage>,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            let result = if self.fail_on == Some("recall") {
+                Err(Self::fail_err("recall"))
+            } else {
+                Ok(self.recalled.clone())
+            };
+            Box::pin(async move { result })
+        }
+
+        fn recall_graph_facts<'a>(
+            &'a self,
+            _query: &'a str,
+            _params: GraphRecallParams<'a>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<MemGraphFact>,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            let result = if self.fail_on == Some("recall_graph_facts") {
+                Err(Self::fail_err("recall_graph_facts"))
+            } else {
+                Ok(self.graph_facts.clone())
+            };
+            Box::pin(async move { result })
+        }
+
+        fn search_session_summaries<'a>(
+            &'a self,
+            _query: &'a str,
+            _limit: usize,
+            _current_conversation_id: Option<i64>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<MemSessionSummary>,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            let result = if self.fail_on == Some("search_session_summaries") {
+                Err(Self::fail_err("search_session_summaries"))
+            } else {
+                Ok(self.session_summaries.clone())
+            };
+            Box::pin(async move { result })
+        }
+
+        fn search_document_collection<'a>(
+            &'a self,
+            _collection: &'a str,
+            _query: &'a str,
+            _top_k: usize,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<MemDocumentChunk>,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            let result = if self.fail_on == Some("search_document_collection") {
+                Err(Self::fail_err("search_document_collection"))
+            } else {
+                Ok(self.document_chunks.clone())
+            };
+            Box::pin(async move { result })
+        }
+    }
+
+    fn mock_view(mock: MockMemoryBackend) -> ContextMemoryView {
+        let mut v = empty_view();
+        v.memory = Some(Arc::new(mock));
+        v
+    }
+
+    // ── fetch_graph_facts (happy path) ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_graph_facts_returns_message_when_memory_present() {
+        let mock = MockMemoryBackend {
+            graph_facts: vec![zeph_common::memory::MemGraphFact {
+                fact: "Rust is fast".to_string(),
+                confidence: 0.9,
+                activation_score: None,
+                neighbors: vec![],
+                provenance_snippet: None,
+            }],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.graph_config.enabled = true;
+        // recall_timeout_ms must be non-zero or it gets clamped to 100ms
+        view.graph_config.spreading_activation.recall_timeout_ms = 5000;
+        let tc = NaiveTokenCounter;
+        let result = fetch_graph_facts(&view, "test", 1000, &tc).await.unwrap();
+        assert!(result.is_some(), "expected Some message");
+        let msg = result.unwrap();
+        assert!(
+            msg.content.contains("Rust is fast"),
+            "expected fact text in output, got: {}",
+            msg.content
+        );
+        assert!(
+            msg.content.starts_with(GRAPH_FACTS_PREFIX),
+            "expected GRAPH_FACTS_PREFIX"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_graph_facts_swallows_error_and_returns_none() {
+        let mock = MockMemoryBackend::with_fail_on("recall_graph_facts");
+        let mut view = mock_view(mock);
+        view.graph_config.enabled = true;
+        view.graph_config.spreading_activation.recall_timeout_ms = 5000;
+        let tc = NaiveTokenCounter;
+        // B1: fetch_graph_facts swallows errors via tracing::warn! and returns Ok(None)
+        let result = fetch_graph_facts(&view, "test", 1000, &tc).await.unwrap();
+        assert!(
+            result.is_none(),
+            "expected None when recall_graph_facts errors"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_graph_facts_returns_none_when_facts_empty() {
+        let mock = MockMemoryBackend::default(); // empty graph_facts
+        let mut view = mock_view(mock);
+        view.graph_config.enabled = true;
+        view.graph_config.spreading_activation.recall_timeout_ms = 5000;
+        let tc = NaiveTokenCounter;
+        let result = fetch_graph_facts(&view, "test", 1000, &tc).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    // ── fetch_persona_facts ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_persona_facts_returns_message_when_persona_enabled() {
+        let mock = MockMemoryBackend {
+            persona_facts: vec![MemPersonaFact {
+                category: "preference".to_string(),
+                content: "prefers concise answers".to_string(),
+            }],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.persona_config.enabled = true;
+        view.persona_config.context_budget_tokens = 1000;
+        let tc = NaiveTokenCounter;
+        let result = fetch_persona_facts(&view, 1000, &tc).await.unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert!(msg.content.contains("preference"));
+        assert!(msg.content.contains("prefers concise answers"));
+        assert!(msg.content.starts_with(crate::slot::PERSONA_PREFIX));
+    }
+
+    #[tokio::test]
+    async fn fetch_persona_facts_propagates_error() {
+        let mock = MockMemoryBackend::with_fail_on("load_persona_facts");
+        let mut view = mock_view(mock);
+        view.persona_config.enabled = true;
+        let tc = NaiveTokenCounter;
+        let result = fetch_persona_facts(&view, 1000, &tc).await;
+        assert!(
+            result.is_err(),
+            "expected Err from load_persona_facts failure"
+        );
+    }
+
+    // ── fetch_trajectory_hints ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_trajectory_hints_returns_message_when_trajectory_enabled() {
+        let mock = MockMemoryBackend {
+            trajectory_entries: vec![MemTrajectoryEntry {
+                intent: "summarize code".to_string(),
+                outcome: "produced concise summary".to_string(),
+                confidence: 0.9,
+            }],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.trajectory_config.enabled = true;
+        view.trajectory_config.context_budget_tokens = 1000;
+        view.trajectory_config.min_confidence = 0.5;
+        let tc = NaiveTokenCounter;
+        let result = fetch_trajectory_hints(&view, 1000, &tc).await.unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert!(msg.content.contains("summarize code"));
+        assert!(msg.content.starts_with(crate::slot::TRAJECTORY_PREFIX));
+    }
+
+    #[tokio::test]
+    async fn fetch_trajectory_hints_passes_tier_filter() {
+        // I1: confidence filtering — entry below min_confidence must be excluded,
+        // entry above must be present. Verifies the .filter(|e| e.confidence >= min_conf) branch.
+        let mock = MockMemoryBackend {
+            trajectory_entries: vec![
+                MemTrajectoryEntry {
+                    intent: "debug async code".to_string(),
+                    outcome: "fixed deadlock".to_string(),
+                    confidence: 0.85,
+                },
+                MemTrajectoryEntry {
+                    intent: "low confidence task".to_string(),
+                    outcome: "irrelevant".to_string(),
+                    confidence: 0.3,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.trajectory_config.enabled = true;
+        view.trajectory_config.context_budget_tokens = 1000;
+        view.trajectory_config.min_confidence = 0.5;
+        let tc = NaiveTokenCounter;
+        let result = fetch_trajectory_hints(&view, 1000, &tc).await.unwrap();
+        assert!(result.is_some(), "expected Some message");
+        let msg = result.unwrap();
+        assert!(
+            msg.content.contains("debug async code"),
+            "high-confidence entry must be included"
+        );
+        assert!(
+            !msg.content.contains("low confidence task"),
+            "entry below min_confidence must be filtered out"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_trajectory_hints_propagates_error() {
+        let mock = MockMemoryBackend::with_fail_on("load_trajectory_entries");
+        let mut view = mock_view(mock);
+        view.trajectory_config.enabled = true;
+        let tc = NaiveTokenCounter;
+        let result = fetch_trajectory_hints(&view, 1000, &tc).await;
+        assert!(result.is_err());
+    }
+
+    // ── fetch_tree_memory ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_tree_memory_returns_message_when_tree_enabled() {
+        let mock = MockMemoryBackend {
+            tree_nodes: vec![MemTreeNode {
+                content: "Topic: async Rust patterns".to_string(),
+            }],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.tree_config.enabled = true;
+        view.tree_config.context_budget_tokens = 1000;
+        let tc = NaiveTokenCounter;
+        let result = fetch_tree_memory(&view, 1000, &tc).await.unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert!(msg.content.contains("async Rust patterns"));
+        assert!(msg.content.starts_with(crate::slot::TREE_MEMORY_PREFIX));
+    }
+
+    #[tokio::test]
+    async fn fetch_tree_memory_propagates_error() {
+        let mock = MockMemoryBackend::with_fail_on("load_tree_nodes");
+        let mut view = mock_view(mock);
+        view.tree_config.enabled = true;
+        let tc = NaiveTokenCounter;
+        let result = fetch_tree_memory(&view, 1000, &tc).await;
+        assert!(result.is_err());
+    }
+
+    // ── fetch_corrections ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_corrections_returns_message_when_corrections_present() {
+        let mock = MockMemoryBackend {
+            corrections: vec![MemCorrection {
+                correction_text: "use snake_case not camelCase".to_string(),
+            }],
+            ..Default::default()
+        };
+        let view = mock_view(mock);
+        let result = fetch_corrections(&view, "query", 10, 0.5, |s| s.into())
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert!(msg.content.contains("snake_case"));
+        assert!(msg.content.starts_with(CORRECTIONS_PREFIX));
+    }
+
+    #[tokio::test]
+    async fn fetch_corrections_swallows_error_returns_none() {
+        // fetch_corrections uses unwrap_or_default() so retrieve_corrections errors
+        // are swallowed: error → empty vec → None. This documents the production behavior.
+        let mock = MockMemoryBackend::with_fail_on("retrieve_corrections");
+        let view = mock_view(mock);
+        let result = fetch_corrections(&view, "query", 10, 0.5, |s| s.into())
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    // ── fetch_semantic_recall ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_semantic_recall_returns_message_with_content() {
+        let mock = MockMemoryBackend {
+            recalled: vec![
+                MemRecalledMessage {
+                    role: "user".to_string(),
+                    content: "how does tokio work".to_string(),
+                    score: 0.95,
+                },
+                MemRecalledMessage {
+                    role: "assistant".to_string(),
+                    content: "tokio is an async runtime".to_string(),
+                    score: 0.88,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.recall_limit = 10;
+        let tc = NaiveTokenCounter;
+        let (msg, score) = fetch_semantic_recall(&view, "tokio", 1000, &tc, None)
+            .await
+            .unwrap();
+        assert!(msg.is_some(), "expected Some message");
+        // I4: verify score equals first message's score
+        assert_eq!(score, Some(0.95f32));
+        let msg = msg.unwrap();
+        // content is in parts.Recall so check parts
+        let has_recall_part = msg.parts.iter().any(|p| {
+            if let zeph_llm::provider::MessagePart::Recall { text } = p {
+                text.contains("how does tokio work")
+            } else {
+                false
+            }
+        });
+        assert!(has_recall_part, "expected recalled content in Recall part");
+    }
+
+    #[tokio::test]
+    async fn fetch_semantic_recall_returns_none_when_recalled_empty() {
+        let mock = MockMemoryBackend::default();
+        let mut view = mock_view(mock);
+        view.recall_limit = 10;
+        let tc = NaiveTokenCounter;
+        let (msg, score) = fetch_semantic_recall(&view, "query", 1000, &tc, None)
+            .await
+            .unwrap();
+        assert!(msg.is_none());
+        assert!(score.is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_semantic_recall_propagates_error() {
+        let mock = MockMemoryBackend::with_fail_on("recall");
+        let mut view = mock_view(mock);
+        view.recall_limit = 10;
+        let tc = NaiveTokenCounter;
+        let result = fetch_semantic_recall(&view, "query", 1000, &tc, None).await;
+        assert!(result.is_err());
+    }
+
+    // ── fetch_document_rag ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_document_rag_returns_message_when_rag_enabled() {
+        let mock = MockMemoryBackend {
+            document_chunks: vec![MemDocumentChunk {
+                text: "Rust ownership rules prevent data races".to_string(),
+            }],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.document_config.rag_enabled = true;
+        let tc = NaiveTokenCounter;
+        let result = fetch_document_rag(&view, "ownership", 1000, &tc)
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert!(msg.content.contains("ownership rules"));
+        assert!(msg.content.starts_with(DOCUMENT_RAG_PREFIX));
+    }
+
+    #[tokio::test]
+    async fn fetch_document_rag_propagates_error() {
+        let mock = MockMemoryBackend::with_fail_on("search_document_collection");
+        let mut view = mock_view(mock);
+        view.document_config.rag_enabled = true;
+        let tc = NaiveTokenCounter;
+        let result = fetch_document_rag(&view, "query", 1000, &tc).await;
+        assert!(result.is_err());
+    }
+
+    // ── fetch_summaries ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_summaries_returns_message_when_summaries_present() {
+        let mock = MockMemoryBackend {
+            summaries: vec![MemSummary {
+                first_message_id: Some(1),
+                last_message_id: Some(5),
+                content: "User asked about async Rust".to_string(),
+            }],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.conversation_id = Some(42);
+        let tc = NaiveTokenCounter;
+        let result = fetch_summaries(&view, 1000, &tc).await.unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        let has_summary_part = msg.parts.iter().any(|p| {
+            if let zeph_llm::provider::MessagePart::Summary { text } = p {
+                text.contains("Messages 1-5") && text.contains("async Rust")
+            } else {
+                false
+            }
+        });
+        assert!(
+            has_summary_part,
+            "expected Summary part with messages range"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_summaries_returns_none_without_conversation_id() {
+        let mock = MockMemoryBackend {
+            summaries: vec![MemSummary {
+                first_message_id: Some(1),
+                last_message_id: Some(5),
+                content: "some content".to_string(),
+            }],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.conversation_id = None; // no conversation_id → must return None
+        let tc = NaiveTokenCounter;
+        let result = fetch_summaries(&view, 1000, &tc).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_summaries_propagates_error() {
+        let mock = MockMemoryBackend::with_fail_on("load_summaries");
+        let mut view = mock_view(mock);
+        view.conversation_id = Some(42);
+        let tc = NaiveTokenCounter;
+        let result = fetch_summaries(&view, 1000, &tc).await;
+        assert!(result.is_err());
+    }
+
+    // ── fetch_cross_session ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_cross_session_returns_message_when_results_present() {
+        let mock = MockMemoryBackend {
+            session_summaries: vec![MemSessionSummary {
+                summary_text: "Previous session: debugging tokio deadlock".to_string(),
+                score: 0.9,
+            }],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.conversation_id = Some(1);
+        view.cross_session_score_threshold = 0.5;
+        let tc = NaiveTokenCounter;
+        let result = fetch_cross_session(&view, "async", 1000, &tc)
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        let has_cross_session_part = msg.parts.iter().any(|p| {
+            if let zeph_llm::provider::MessagePart::CrossSession { text } = p {
+                text.contains("tokio deadlock")
+            } else {
+                false
+            }
+        });
+        assert!(has_cross_session_part);
+    }
+
+    #[tokio::test]
+    async fn fetch_cross_session_propagates_error() {
+        let mock = MockMemoryBackend::with_fail_on("search_session_summaries");
+        let mut view = mock_view(mock);
+        view.conversation_id = Some(1);
+        let tc = NaiveTokenCounter;
+        let result = fetch_cross_session(&view, "query", 1000, &tc).await;
+        assert!(result.is_err());
+    }
+
+    // ── fetch_reasoning_strategies (happy path + mark_used) ──────────────────
+
+    #[tokio::test]
+    async fn fetch_reasoning_strategies_returns_message_and_marks_used() {
+        let mock = Arc::new(MockMemoryBackend {
+            reasoning_strategies: vec![
+                MemReasoningStrategy {
+                    id: "strat-1".to_string(),
+                    outcome: "success".to_string(),
+                    summary: "break the problem into small steps".to_string(),
+                },
+                MemReasoningStrategy {
+                    id: "strat-2".to_string(),
+                    outcome: "success".to_string(),
+                    summary: "use tracing spans for debugging".to_string(),
+                },
+            ],
+            ..Default::default()
+        });
+        let marked_ids = Arc::clone(&mock);
+        let mut view = empty_view();
+        view.memory = Some(mock);
+        view.reasoning_config.enabled = true;
+        view.reasoning_config.context_budget_tokens = 1000;
+        let tc = NaiveTokenCounter;
+        let result = fetch_reasoning_strategies(&view, "debug", 1000, 5, &tc)
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert!(msg.content.starts_with(crate::slot::REASONING_PREFIX));
+        assert!(msg.content.contains("break the problem"));
+
+        // B2: yield to let the spawned tokio::spawn task complete before asserting marked_ids.
+        // Two yields are sufficient under the default single-threaded #[tokio::test] runtime.
+        // If the flavor changes to multi_thread, replace with a short sleep or JoinHandle tracking.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let ids = marked_ids.marked_ids.lock().expect("marked_ids poisoned");
+        assert!(
+            ids.contains(&"strat-1".to_string()),
+            "expected strat-1 marked"
+        );
+        assert!(
+            ids.contains(&"strat-2".to_string()),
+            "expected strat-2 marked"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_reasoning_strategies_propagates_error() {
+        let mock = MockMemoryBackend::with_fail_on("retrieve_reasoning_strategies");
+        let mut view = mock_view(mock);
+        view.reasoning_config.enabled = true;
+        let tc = NaiveTokenCounter;
+        let result = fetch_reasoning_strategies(&view, "query", 1000, 3, &tc).await;
+        assert!(result.is_err());
+    }
+
+    // ── edge cases ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_semantic_recall_skips_skipped_and_stopped_messages() {
+        let mock = MockMemoryBackend {
+            recalled: vec![
+                MemRecalledMessage {
+                    role: "user".to_string(),
+                    content: "[skipped] some content".to_string(),
+                    score: 0.95,
+                },
+                MemRecalledMessage {
+                    role: "user".to_string(),
+                    content: "[stopped] other content".to_string(),
+                    score: 0.90,
+                },
+                MemRecalledMessage {
+                    role: "user".to_string(),
+                    content: "valid content to recall".to_string(),
+                    score: 0.85,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.recall_limit = 10;
+        let tc = NaiveTokenCounter;
+        let (msg, _) = fetch_semantic_recall(&view, "query", 1000, &tc, None)
+            .await
+            .unwrap();
+        assert!(msg.is_some());
+        let msg = msg.unwrap();
+        let full_text = msg.parts.iter().find_map(|p| {
+            if let zeph_llm::provider::MessagePart::Recall { text } = p {
+                Some(text.clone())
+            } else {
+                None
+            }
+        });
+        let text = full_text.unwrap_or_default();
+        assert!(
+            !text.contains("[skipped]"),
+            "skipped messages must be excluded"
+        );
+        assert!(
+            !text.contains("[stopped]"),
+            "stopped messages must be excluded"
+        );
+        assert!(
+            text.contains("valid content to recall"),
+            "valid messages must be included"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_cross_session_filters_below_threshold() {
+        let mock = MockMemoryBackend {
+            session_summaries: vec![
+                MemSessionSummary {
+                    summary_text: "high relevance session".to_string(),
+                    score: 0.9,
+                },
+                MemSessionSummary {
+                    summary_text: "low relevance session".to_string(),
+                    score: 0.2,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.conversation_id = Some(1);
+        view.cross_session_score_threshold = 0.5;
+        let tc = NaiveTokenCounter;
+        let result = fetch_cross_session(&view, "query", 1000, &tc)
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        let text = msg
+            .parts
+            .iter()
+            .find_map(|p| {
+                if let zeph_llm::provider::MessagePart::CrossSession { text } = p {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        assert!(
+            text.contains("high relevance"),
+            "high score must be included"
+        );
+        assert!(
+            !text.contains("low relevance"),
+            "low score must be filtered out"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_document_rag_skips_empty_chunks() {
+        let mock = MockMemoryBackend {
+            document_chunks: vec![
+                MemDocumentChunk {
+                    text: String::new(),
+                }, // empty — must be skipped
+                MemDocumentChunk {
+                    text: "real content here".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.document_config.rag_enabled = true;
+        let tc = NaiveTokenCounter;
+        let result = fetch_document_rag(&view, "query", 1000, &tc).await.unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert!(msg.content.contains("real content here"));
+        // empty chunk text should not produce an empty line before prefix
+        assert!(!msg.content.contains("\n\n\n"));
+    }
+
+    #[tokio::test]
+    async fn fetch_graph_facts_sanitizes_injection_payloads() {
+        // I3: newlines and angle brackets are replaced with spaces
+        let mock = MockMemoryBackend {
+            graph_facts: vec![zeph_common::memory::MemGraphFact {
+                fact: "fact with <script>alert(1)</script> and\nnewline".to_string(),
+                confidence: 0.8,
+                activation_score: None,
+                neighbors: vec![],
+                provenance_snippet: None,
+            }],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.graph_config.enabled = true;
+        view.graph_config.spreading_activation.recall_timeout_ms = 5000;
+        let tc = NaiveTokenCounter;
+        let result = fetch_graph_facts(&view, "test", 1000, &tc).await.unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert!(
+            !msg.content.contains('<'),
+            "angle brackets must be sanitized"
+        );
+        // The formatter adds trailing \n to each line, but embedded \n in fact text is replaced
+        // with spaces. Verify no double-newline sequences exist (would indicate unsanitized \n).
+        assert!(
+            !msg.content.contains("\n\n"),
+            "embedded newlines must be sanitized, no double-newline sequences expected"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_reasoning_strategies_sanitizes_injection_payloads() {
+        // I3: newlines and angle brackets are replaced with spaces in strategy summaries
+        let mock = MockMemoryBackend {
+            reasoning_strategies: vec![MemReasoningStrategy {
+                id: "s1".to_string(),
+                outcome: "success".to_string(),
+                summary: "strategy with <b>bold</b> and\nnewline".to_string(),
+            }],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.reasoning_config.enabled = true;
+        let tc = NaiveTokenCounter;
+        let result = fetch_reasoning_strategies(&view, "query", 1000, 3, &tc)
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert!(
+            !msg.content.contains('<'),
+            "angle brackets must be sanitized in strategy summaries"
+        );
+    }
+
+    // ── budget truncation (CR-1) ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_persona_facts_truncates_at_budget() {
+        let tc = NaiveTokenCounter;
+        // Tight budget: fits prefix + exactly 1 fact line, second must be omitted.
+        let first_line = "[pref] brief\n";
+        let budget = tc.count_tokens(crate::slot::PERSONA_PREFIX) + tc.count_tokens(first_line);
+        let mock = MockMemoryBackend {
+            persona_facts: vec![
+                MemPersonaFact {
+                    category: "pref".to_string(),
+                    content: "brief".to_string(),
+                },
+                MemPersonaFact {
+                    category: "lang".to_string(),
+                    content: "english".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.persona_config.enabled = true;
+        let result = fetch_persona_facts(&view, budget, &tc).await.unwrap();
+        let msg = result.unwrap();
+        assert!(msg.content.contains("brief"), "first fact must be included");
+        assert!(
+            !msg.content.contains("english"),
+            "second fact must be truncated by budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_semantic_recall_truncates_at_budget() {
+        let tc = NaiveTokenCounter;
+        // Tight budget: fits prefix + exactly 1 recall entry, second must be omitted.
+        let first_entry = "- [user] first message\n";
+        let budget = tc.count_tokens(RECALL_PREFIX) + tc.count_tokens(first_entry);
+        let mock = MockMemoryBackend {
+            recalled: vec![
+                MemRecalledMessage {
+                    role: "user".to_string(),
+                    content: "first message".to_string(),
+                    score: 0.95,
+                },
+                MemRecalledMessage {
+                    role: "user".to_string(),
+                    content: "second message that should be truncated".to_string(),
+                    score: 0.80,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.recall_limit = 10;
+        let (msg, _) = fetch_semantic_recall(&view, "query", budget, &tc, None)
+            .await
+            .unwrap();
+        assert!(msg.is_some());
+        let text = msg
+            .unwrap()
+            .parts
+            .iter()
+            .find_map(|p| {
+                if let zeph_llm::provider::MessagePart::Recall { text } = p {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        assert!(
+            text.contains("first message"),
+            "first entry must be included"
+        );
+        assert!(
+            !text.contains("second message"),
+            "second entry must be truncated by budget"
+        );
+    }
+
+    // ── provenance_snippet sanitization (CR-2 test) ───────────────────────────
+
+    #[tokio::test]
+    async fn fetch_graph_facts_sanitizes_provenance_snippet() {
+        use zeph_common::memory::MemGraphNeighbor;
+        let mock = MockMemoryBackend {
+            graph_facts: vec![zeph_common::memory::MemGraphFact {
+                fact: "safe fact".to_string(),
+                confidence: 0.9,
+                activation_score: None,
+                neighbors: vec![MemGraphNeighbor {
+                    fact: "neighbor".to_string(),
+                    confidence: 0.7,
+                }],
+                provenance_snippet: Some("source with <injection>\nand newline".to_string()),
+            }],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.graph_config.enabled = true;
+        view.graph_config.spreading_activation.recall_timeout_ms = 5000;
+        let tc = NaiveTokenCounter;
+        let result = fetch_graph_facts(&view, "test", 1000, &tc).await.unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert!(
+            !msg.content.contains('<'),
+            "angle brackets in provenance_snippet must be sanitized"
+        );
+        assert!(
+            !msg.content.contains("\n\n"),
+            "newlines in provenance_snippet must be sanitized"
+        );
+        assert!(
+            msg.content.contains("[source:"),
+            "provenance snippet must be rendered"
+        );
     }
 }
