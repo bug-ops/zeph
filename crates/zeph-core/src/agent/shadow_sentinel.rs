@@ -811,9 +811,11 @@ mod tests {
 
     #[tokio::test]
     async fn check_tool_call_skips_after_budget_exhausted() {
-        let mut config = zeph_config::ShadowSentinelConfig::default();
-        config.enabled = true;
-        config.max_probes_per_turn = 2;
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            max_probes_per_turn: 2,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
         let sentinel = make_test_sentinel(config).await;
 
         // First two calls should not be skipped (noop probe returns Allow).
