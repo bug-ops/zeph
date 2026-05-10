@@ -343,7 +343,7 @@ mod tests {
         app
     }
 
-    /// Push a streaming Tool message with a specific tool_call_id directly onto the session.
+    /// Push a streaming Tool message with a specific `tool_call_id` directly onto the session.
     fn push_tool_msg(app: &mut App, id: &str) {
         let msg = ChatMessage::new(MessageRole::Tool, format!("$ cmd_{id}\n"))
             .streaming()
