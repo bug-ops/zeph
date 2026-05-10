@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(tui): consecutive `Tool` messages with the same groupable `ToolKind` are now folded into a
+  single visual cell via a grouping pre-pass in `collect_message_lines_from`. Groups display as
+  `● Explored N files` / `● Ran N commands` with a collapsible sub-list of primary args (capped
+  at 8 in Inline density, unlimited in Block, hidden in Compact). Groups break on role change,
+  streaming tool, or different `ToolKind`. Closes #3719. (#3724)
+
 ### Fixed
 
 - fix(tui): parallel tool call output no longer gets cross-contaminated in the TUI. `tool_call_id`
