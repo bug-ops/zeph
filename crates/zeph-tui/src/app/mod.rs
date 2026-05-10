@@ -667,9 +667,8 @@ impl App {
 
     /// Return a truncated label for active `TaskSupervisor` tasks, or `None` when idle.
     ///
-    /// Used by [`crate::widgets::chat::render_activity`] to show a braille spinner with
-    /// the name of the first active (Running/Restarting) task when no other status
-    /// is being displayed.
+    /// Used by the input widget to show a braille spinner with the name of the first
+    /// active (Running/Restarting) task when no other status is being displayed.
     #[must_use]
     pub fn supervisor_activity_label(&self) -> Option<String> {
         self.task_supervisor.as_ref()?;
