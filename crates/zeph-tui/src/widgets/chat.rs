@@ -13,7 +13,7 @@ use crate::app::{App, MessageRole, RenderCache, RenderCacheKey, content_hash};
 use crate::highlight::SYNTAX_HIGHLIGHTER;
 use crate::hyperlink;
 use crate::theme::{SyntaxTheme, Theme};
-use crate::widgets::tool_view::{ToolDensity, ToolStatus};
+use crate::widgets::tool_view::{ToolDensity, ToolKind, ToolStatus};
 
 /// A markdown link extracted during rendering: visible display text and target URL.
 #[derive(Clone, Debug)]
@@ -106,7 +106,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     max_scroll
 }
 
-#[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 fn collect_message_lines_from(
     messages: &[crate::app::ChatMessage],
     truncation_info: Option<&str>,
@@ -132,87 +132,138 @@ fn collect_message_lines_from(
     }
 
     let mut prev_role: Option<MessageRole> = None;
+    let groups = group_messages(messages);
 
-    for (idx, msg) in messages.iter().enumerate() {
-        let accent = match msg.role {
-            MessageRole::User => theme.user_message,
-            MessageRole::Assistant => theme.assistant_accent,
-            MessageRole::Tool => theme.tool_accent,
-            MessageRole::System => theme.system_message,
-        };
+    for (group_pos, group) in groups.iter().enumerate() {
+        match group {
+            MessageGroup::Single { idx, msg } => {
+                let accent = match msg.role {
+                    MessageRole::User => theme.user_message,
+                    MessageRole::Assistant => theme.assistant_accent,
+                    MessageRole::Tool => theme.tool_accent,
+                    MessageRole::System => theme.system_message,
+                };
 
-        // Emit a turn separator when the role changes (or at the very first message).
-        let role_changed = prev_role != Some(msg.role);
-        if role_changed {
-            if idx > 0 {
-                lines.push(Line::default());
-            }
-            let role_label = match msg.role {
-                MessageRole::User => "You",
-                MessageRole::Assistant => "Agent",
-                MessageRole::Tool => "Tool",
-                MessageRole::System => "System",
-            };
-            let sep_text = format!("── {} {} ──", msg.timestamp, role_label);
-            lines.push(Line::from(Span::styled(sep_text, theme.turn_separator)));
-        } else if idx > 0 {
-            lines.push(Line::default());
-        }
+                let role_changed = prev_role != Some(msg.role);
+                if role_changed {
+                    if group_pos > 0 {
+                        lines.push(Line::default());
+                    }
+                    let role_label = match msg.role {
+                        MessageRole::User => "You",
+                        MessageRole::Assistant => "Agent",
+                        MessageRole::Tool => "Tool",
+                        MessageRole::System => "System",
+                    };
+                    let sep_text = format!("── {} {} ──", msg.timestamp, role_label);
+                    lines.push(Line::from(Span::styled(sep_text, theme.turn_separator)));
+                } else if group_pos > 0 {
+                    lines.push(Line::default());
+                }
 
-        prev_role = Some(msg.role);
+                prev_role = Some(msg.role);
 
-        let cache_key = RenderCacheKey {
-            content_hash: content_hash(&msg.content),
-            terminal_width,
-            tool_expanded,
-            tool_density,
-            show_labels,
-        };
-
-        // All messages (including streaming) use the render cache. For streaming
-        // messages the cache key includes content_hash, so a new chunk causes a
-        // cache miss and triggers re-render; unchanged content reuses the cached
-        // result, eliminating redundant pulldown-cmark + tree-sitter work every frame.
-        //
-        // Note: tool messages with streaming=true use throbber_idx for the braille
-        // spinner. Between content chunks the spinner freezes, but tool output
-        // typically arrives in one batch, making this trade-off acceptable.
-        let (msg_lines, msg_md_links) =
-            if let Some((cached_lines, cached_links)) = cache.get(idx, &cache_key) {
-                (cached_lines.to_vec(), cached_links.to_vec())
-            } else {
-                let (rendered, extracted) = render_message_lines(
-                    msg,
+                let cache_key = RenderCacheKey {
+                    content_hash: content_hash(&msg.content),
+                    terminal_width,
                     tool_expanded,
                     tool_density,
-                    throbber_idx,
-                    theme,
-                    wrap_width,
                     show_labels,
-                );
-                cache.put(idx, cache_key, rendered.clone(), extracted.clone());
-                (rendered, extracted)
-            };
+                };
 
-        all_md_links.extend(msg_md_links);
+                // All messages (including streaming) use the render cache. For streaming
+                // messages the cache key includes content_hash, so a new chunk causes a
+                // cache miss and triggers re-render; unchanged content reuses the cached
+                // result, eliminating redundant pulldown-cmark + tree-sitter work every frame.
+                //
+                // Note: tool messages with streaming=true use throbber_idx for the braille
+                // spinner. Between content chunks the spinner freezes, but tool output
+                // typically arrives in one batch, making this trade-off acceptable.
+                let (msg_lines, msg_md_links) =
+                    if let Some((cached_lines, cached_links)) = cache.get(*idx, &cache_key) {
+                        (cached_lines.to_vec(), cached_links.to_vec())
+                    } else {
+                        let (rendered, extracted) = render_message_lines(
+                            msg,
+                            tool_expanded,
+                            tool_density,
+                            throbber_idx,
+                            theme,
+                            wrap_width,
+                            show_labels,
+                        );
+                        cache.put(*idx, cache_key, rendered.clone(), extracted.clone());
+                        (rendered, extracted)
+                    };
 
-        let is_user = msg.role == MessageRole::User;
-        let user_bg = theme.user_message_bg;
+                all_md_links.extend(msg_md_links);
 
-        for mut line in msg_lines {
-            if is_user {
-                line.spans.insert(0, Span::styled("\u{258e} ", accent));
-                // Apply background tint to all spans in user message lines.
-                for span in &mut line.spans {
-                    span.style = span.style.bg(user_bg);
+                let is_user = msg.role == MessageRole::User;
+                let user_bg = theme.user_message_bg;
+
+                for mut line in msg_lines {
+                    if is_user {
+                        line.spans.insert(0, Span::styled("\u{258e} ", accent));
+                        for span in &mut line.spans {
+                            span.style = span.style.bg(user_bg);
+                        }
+                    } else {
+                        line.spans.insert(0, Span::raw("  "));
+                    }
+                    lines.push(line);
                 }
-            } else {
-                line.spans.insert(0, Span::raw("  "));
             }
-            lines.push(line);
+            MessageGroup::Grouped {
+                kind,
+                start_idx,
+                members,
+            } => {
+                let role_changed = prev_role != Some(MessageRole::Tool);
+                if role_changed {
+                    if group_pos > 0 {
+                        lines.push(Line::default());
+                    }
+                    // invariant: group_messages guarantees len >= 2
+                    let first_ts = &members[0].timestamp;
+                    let sep_text = format!("── {first_ts} Tool ──");
+                    lines.push(Line::from(Span::styled(sep_text, theme.turn_separator)));
+                } else if group_pos > 0 {
+                    lines.push(Line::default());
+                }
+
+                prev_role = Some(MessageRole::Tool);
+
+                // XOR hash seeded with group size to prevent cancellation when two
+                // members have identical content (a ^ a == 0 collapses without seed).
+                let group_hash = members.iter().fold(members.len() as u64, |acc, m| {
+                    acc ^ content_hash(&m.content)
+                });
+                let cache_key = RenderCacheKey {
+                    content_hash: group_hash,
+                    terminal_width,
+                    tool_expanded,
+                    tool_density,
+                    show_labels,
+                };
+
+                let group_lines: Vec<Line<'static>> = if let Some((cached_lines, _)) =
+                    cache.get(*start_idx, &cache_key)
+                {
+                    cached_lines.to_vec()
+                } else {
+                    let rendered =
+                        render_grouped_tool_cell(*kind, members, tool_density, theme, wrap_width);
+                    cache.put(*start_idx, cache_key, rendered.clone(), Vec::new());
+                    rendered
+                };
+
+                for mut line in group_lines {
+                    line.spans.insert(0, Span::raw("  "));
+                    lines.push(line);
+                }
+            }
         }
     }
-
     (lines, all_md_links)
 }
 
@@ -384,6 +435,165 @@ fn render_scrollbar(
 
 /// Number of lines shown in a collapsed paste block before the expand hint.
 const PASTE_COLLAPSED_LINES: usize = 3;
+
+/// Maximum sub-list entries shown per group in Inline density.
+const GROUP_INLINE_CAP: usize = 8;
+
+/// A contiguous run of groupable tool messages folded into one visual cell,
+/// or a single message rendered individually.
+enum MessageGroup<'a> {
+    /// A single message rendered normally.
+    Single {
+        idx: usize,
+        msg: &'a crate::app::ChatMessage,
+    },
+    /// Two or more consecutive groupable tool messages of the same kind.
+    Grouped {
+        kind: ToolKind,
+        /// Index of the first member, used as the cache slot.
+        ///
+        /// Orphaned cache slots at indices `start_idx+1` … `start_idx+members.len()-1`
+        /// are expected and harmless — their `content_hash` XOR won't match after
+        /// the next `RenderCache::shift`, so they evict naturally.
+        start_idx: usize,
+        members: Vec<&'a crate::app::ChatMessage>,
+    },
+}
+
+/// Build a flat list of `MessageGroup` from a message slice in one linear pass.
+fn group_messages(messages: &[crate::app::ChatMessage]) -> Vec<MessageGroup<'_>> {
+    let mut groups = Vec::new();
+    let mut i = 0;
+    while i < messages.len() {
+        let msg = &messages[i];
+        if msg.role != MessageRole::Tool || msg.streaming {
+            groups.push(MessageGroup::Single { idx: i, msg });
+            i += 1;
+            continue;
+        }
+        // tool_name: None maps to ToolKind::Other which is not groupable —
+        // intentionally keeping nameless tool messages as individual cells.
+        let kind = ToolKind::classify(
+            msg.tool_name
+                .as_ref()
+                .map_or("tool", zeph_common::ToolName::as_str),
+        );
+        if !kind.is_groupable() {
+            groups.push(MessageGroup::Single { idx: i, msg });
+            i += 1;
+            continue;
+        }
+        let start_idx = i;
+        let mut members: Vec<&crate::app::ChatMessage> = vec![msg];
+        i += 1;
+        while i < messages.len() {
+            let next = &messages[i];
+            if next.role != MessageRole::Tool || next.streaming {
+                break;
+            }
+            let next_kind = ToolKind::classify(
+                next.tool_name
+                    .as_ref()
+                    .map_or("tool", zeph_common::ToolName::as_str),
+            );
+            if next_kind != kind {
+                break;
+            }
+            members.push(next);
+            i += 1;
+        }
+        if members.len() == 1 {
+            groups.push(MessageGroup::Single {
+                idx: start_idx,
+                msg: members[0],
+            });
+        } else {
+            groups.push(MessageGroup::Grouped {
+                kind,
+                start_idx,
+                members,
+            });
+        }
+    }
+    groups
+}
+
+/// Extract the primary argument string from a tool message for sub-list display.
+fn extract_primary_arg(msg: &crate::app::ChatMessage, kind: ToolKind) -> String {
+    let first_line = msg.content.lines().next().unwrap_or("");
+    match kind {
+        ToolKind::Run => first_line
+            .strip_prefix("$ ")
+            .unwrap_or(first_line)
+            .to_string(),
+        _ => first_line.to_string(),
+    }
+}
+
+/// Render a grouped tool cell — summary line + optional sub-list of primary args.
+fn render_grouped_tool_cell(
+    kind: ToolKind,
+    members: &[&crate::app::ChatMessage],
+    tool_density: ToolDensity,
+    theme: &Theme,
+    wrap_width: usize,
+) -> Vec<Line<'static>> {
+    debug_assert!(
+        members.len() >= 2,
+        "render_grouped_tool_cell requires at least 2 members"
+    );
+    let n = members.len();
+    let any_failure = members.iter().any(|m| m.success == Some(false));
+    let bullet_style = if any_failure {
+        theme.tool_failure
+    } else {
+        theme.tool_success
+    };
+    let bullet = "\u{25cf} "; // ●
+
+    let (verb, noun_singular, noun_plural) = match kind {
+        ToolKind::Explore => ("Explored", "file", "files"),
+        ToolKind::Run => ("Ran", "command", "commands"),
+        ToolKind::Web => ("Fetched", "page", "pages"),
+        ToolKind::Mcp => ("Called", "tool", "tools"),
+        _ => ("Processed", "item", "items"),
+    };
+    let noun = if n == 1 { noun_singular } else { noun_plural };
+    let summary_text = format!("{verb} {n} {noun}");
+
+    let summary_spans: Vec<Span<'static>> = vec![
+        Span::styled(bullet.to_string(), bullet_style),
+        Span::styled(summary_text, bullet_style),
+    ];
+
+    let mut lines = wrap_spans(summary_spans, wrap_width);
+
+    if tool_density == ToolDensity::Compact {
+        return lines;
+    }
+
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let cap = if tool_density == ToolDensity::Inline {
+        GROUP_INLINE_CAP
+    } else {
+        members.len()
+    };
+    let visible = members.iter().take(cap);
+    for m in visible {
+        let arg = extract_primary_arg(m, kind);
+        let span_text = format!("  {arg}");
+        lines.extend(wrap_spans(vec![Span::styled(span_text, dim)], wrap_width));
+    }
+    if members.len() > cap {
+        let remaining = members.len() - cap;
+        lines.extend(wrap_spans(
+            vec![Span::styled(format!("  ... and {remaining} more"), dim)],
+            wrap_width,
+        ));
+    }
+
+    lines
+}
 
 /// Head lines shown in Inline density before the ellipsis.
 const TOOL_OUTPUT_HEAD: usize = 2;
@@ -1604,5 +1814,267 @@ mod tests {
         );
         // Just verify it doesn't panic and renders the header
         assert!(!lines.is_empty(), "header line must be rendered");
+    }
+
+    // ── grouping pre-pass tests ──────────────────────────────────────────────
+
+    fn make_read_msg(path: &str) -> crate::app::ChatMessage {
+        let mut msg = crate::app::ChatMessage::new(
+            crate::app::MessageRole::Tool,
+            format!("{path}\nfile content"),
+        );
+        msg.tool_name = Some("read_file".into());
+        msg.success = Some(true);
+        msg.timestamp = "10:00".to_owned();
+        msg
+    }
+
+    fn make_shell_msg(cmd: &str) -> crate::app::ChatMessage {
+        let mut msg =
+            crate::app::ChatMessage::new(crate::app::MessageRole::Tool, format!("$ {cmd}\noutput"));
+        msg.tool_name = Some("bash".into());
+        msg.success = Some(true);
+        msg.timestamp = "10:00".to_owned();
+        msg
+    }
+
+    fn make_streaming_read_msg(path: &str) -> crate::app::ChatMessage {
+        let mut msg = make_read_msg(path);
+        msg.streaming = true;
+        msg
+    }
+
+    fn make_write_msg(path: &str) -> crate::app::ChatMessage {
+        let mut msg =
+            crate::app::ChatMessage::new(crate::app::MessageRole::Tool, format!("{path}\ncontent"));
+        msg.tool_name = Some("write_file".into());
+        msg.success = Some(true);
+        msg.timestamp = "10:00".to_owned();
+        msg
+    }
+
+    #[test]
+    fn group_messages_folds_five_reads() {
+        let msgs: Vec<_> = (0..5)
+            .map(|i| make_read_msg(&format!("src/f{i}.rs")))
+            .collect();
+        let groups = group_messages(&msgs);
+        assert_eq!(
+            groups.len(),
+            1,
+            "five read_file msgs must fold into one group"
+        );
+        match &groups[0] {
+            MessageGroup::Grouped {
+                kind,
+                members,
+                start_idx,
+            } => {
+                assert_eq!(*kind, ToolKind::Explore);
+                assert_eq!(members.len(), 5);
+                assert_eq!(*start_idx, 0);
+            }
+            MessageGroup::Single { .. } => panic!("expected Grouped"),
+        }
+    }
+
+    #[test]
+    fn group_messages_shell_between_reads_breaks_group() {
+        let msgs = vec![
+            make_read_msg("a.rs"),
+            make_read_msg("b.rs"),
+            make_shell_msg("ls"),
+            make_read_msg("c.rs"),
+        ];
+        let groups = group_messages(&msgs);
+        // [Grouped(read×2), Single(shell), Single(read)]
+        assert_eq!(groups.len(), 3);
+        match &groups[0] {
+            MessageGroup::Grouped { kind, members, .. } => {
+                assert_eq!(*kind, ToolKind::Explore);
+                assert_eq!(members.len(), 2);
+            }
+            MessageGroup::Single { .. } => panic!("expected Grouped at index 0"),
+        }
+        assert!(matches!(groups[1], MessageGroup::Single { .. }));
+        assert!(matches!(groups[2], MessageGroup::Single { .. }));
+    }
+
+    #[test]
+    fn group_messages_streaming_breaks_group() {
+        let msgs = vec![
+            make_read_msg("a.rs"),
+            make_streaming_read_msg("b.rs"),
+            make_read_msg("c.rs"),
+        ];
+        let groups = group_messages(&msgs);
+        // streaming msg can't be grouped → [Single, Single, Single]
+        assert_eq!(groups.len(), 3);
+        assert!(
+            groups
+                .iter()
+                .all(|g| matches!(g, MessageGroup::Single { .. }))
+        );
+    }
+
+    #[test]
+    fn group_messages_single_not_grouped() {
+        let msgs = vec![make_read_msg("only.rs")];
+        let groups = group_messages(&msgs);
+        assert_eq!(groups.len(), 1);
+        assert!(matches!(groups[0], MessageGroup::Single { .. }));
+    }
+
+    #[test]
+    fn group_messages_non_groupable_stays_single() {
+        let msgs = vec![
+            make_write_msg("a.rs"),
+            make_write_msg("b.rs"),
+            make_write_msg("c.rs"),
+        ];
+        let groups = group_messages(&msgs);
+        assert_eq!(groups.len(), 3, "write_file is Edit — not groupable");
+        assert!(
+            groups
+                .iter()
+                .all(|g| matches!(g, MessageGroup::Single { .. }))
+        );
+    }
+
+    #[test]
+    fn group_messages_empty_slice() {
+        let groups = group_messages(&[]);
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn group_messages_group_at_end_of_slice() {
+        let msgs = vec![
+            make_chat_msg(crate::app::MessageRole::User, "hello"),
+            make_read_msg("x.rs"),
+            make_read_msg("y.rs"),
+        ];
+        let groups = group_messages(&msgs);
+        assert_eq!(groups.len(), 2);
+        assert!(matches!(groups[0], MessageGroup::Single { .. }));
+        match &groups[1] {
+            MessageGroup::Grouped { kind, members, .. } => {
+                assert_eq!(*kind, ToolKind::Explore);
+                assert_eq!(members.len(), 2);
+            }
+            MessageGroup::Single { .. } => panic!("expected Grouped at index 1"),
+        }
+    }
+
+    #[test]
+    fn render_grouped_cell_explore_summary() {
+        let theme = Theme::default();
+        let msgs: Vec<_> = (0..5)
+            .map(|i| make_read_msg(&format!("src/f{i}.rs")))
+            .collect();
+        let refs: Vec<&crate::app::ChatMessage> = msgs.iter().collect();
+        let lines =
+            render_grouped_tool_cell(ToolKind::Explore, &refs, ToolDensity::Inline, &theme, 200);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("Explored"), "summary must say Explored");
+        assert!(text.contains('5'), "summary must include count 5");
+        assert!(text.contains("files"), "summary must say files");
+    }
+
+    #[test]
+    fn render_grouped_cell_run_summary() {
+        let theme = Theme::default();
+        let msgs: Vec<_> = (0..3).map(|i| make_shell_msg(&format!("cmd{i}"))).collect();
+        let refs: Vec<&crate::app::ChatMessage> = msgs.iter().collect();
+        let lines =
+            render_grouped_tool_cell(ToolKind::Run, &refs, ToolDensity::Inline, &theme, 200);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("Ran"), "summary must say Ran");
+        assert!(text.contains('3'), "summary must include count 3");
+        assert!(text.contains("commands"), "summary must say commands");
+    }
+
+    #[test]
+    fn render_grouped_cell_compact_no_sublist() {
+        let theme = Theme::default();
+        let msgs: Vec<_> = (0..3).map(|i| make_read_msg(&format!("f{i}.rs"))).collect();
+        let refs: Vec<&crate::app::ChatMessage> = msgs.iter().collect();
+        let lines =
+            render_grouped_tool_cell(ToolKind::Explore, &refs, ToolDensity::Compact, &theme, 200);
+        // Compact: summary only, no sub-list items
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("Explored"), "compact: summary present");
+        assert!(!text.contains("f0.rs"), "compact: no sub-list items");
+    }
+
+    #[test]
+    fn render_grouped_cell_inline_caps_at_8() {
+        let theme = Theme::default();
+        let msgs: Vec<_> = (0..10)
+            .map(|i| make_read_msg(&format!("f{i}.rs")))
+            .collect();
+        let refs: Vec<&crate::app::ChatMessage> = msgs.iter().collect();
+        let lines =
+            render_grouped_tool_cell(ToolKind::Explore, &refs, ToolDensity::Inline, &theme, 200);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(text.contains("f0.rs"), "inline: first item visible");
+        assert!(text.contains("f7.rs"), "inline: 8th item visible");
+        assert!(
+            !text.contains("f8.rs"),
+            "inline: 9th item hidden beyond cap"
+        );
+        assert!(text.contains("more"), "inline: overflow hint shown");
+    }
+
+    #[test]
+    fn collect_message_lines_groups_reads_end_to_end() {
+        let theme = Theme::default();
+        let messages: Vec<_> = (0..5)
+            .map(|i| make_read_msg(&format!("src/f{i}.rs")))
+            .collect();
+        let mut cache = crate::app::RenderCache::default();
+        let (lines, _) = collect_message_lines_from(
+            &messages,
+            None,
+            &mut cache,
+            80,
+            76,
+            &theme,
+            false,
+            ToolDensity::Inline,
+            false,
+            0,
+        );
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            text.contains("Explored"),
+            "5 read_file calls must render as grouped 'Explored N files'; got: {text:?}"
+        );
+        assert!(text.contains('5'), "group must mention count 5");
     }
 }
