@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(cli): `zeph cocoon doctor` now reports `[FAIL]` for `cocoon_client_url` with an invalid scheme
+  (e.g. `ftp://`). `check_config_present` previously returned `[OK]` without calling
+  `entry.validate()`, silently accepting any URL scheme. The fix adds a `validate()` guard that
+  pushes a `CheckResult::fail` with the scheme error and returns early. (#3694)
+
 ### Added
 
 - feat(llm): Cocoon live integration tests — 6 `#[ignore]`-gated tests covering `health_check`,

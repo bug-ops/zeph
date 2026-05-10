@@ -58,6 +58,14 @@ fn check_config_present(
         .cloned();
 
     if let Some(e) = entry {
+        if let Err(err) = e.validate() {
+            results.push(CheckResult::fail(
+                "cocoon.config",
+                err.to_string(),
+                elapsed_ms(start),
+            ));
+            return None;
+        }
         let url = e
             .cocoon_client_url
             .as_deref()
@@ -549,6 +557,49 @@ mod tests {
             elapsed_ms: 5,
         };
         assert!(!report.has_failures());
+    }
+
+    fn write_cocoon_config(dir: &tempfile::TempDir, url: &str) -> std::path::PathBuf {
+        use zeph_config::{ProviderEntry, ProviderKind};
+
+        let mut config = zeph_core::config::Config::default();
+        config.llm.providers.push(ProviderEntry {
+            provider_type: ProviderKind::Cocoon,
+            name: Some("test".into()),
+            cocoon_client_url: Some(url.to_owned()),
+            ..ProviderEntry::default()
+        });
+        let toml = toml::to_string_pretty(&config).expect("serialize");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, toml).unwrap();
+        path
+    }
+
+    #[test]
+    fn check_config_present_rejects_ftp_scheme() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_cocoon_config(&dir, "ftp://localhost:10000");
+        let mut results = Vec::new();
+        let outcome = check_config_present(&config_path, &mut results);
+        assert!(outcome.is_none(), "ftp:// URL must not return Some");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, CheckStatus::Fail);
+        assert!(
+            results[0].detail.contains("ftp"),
+            "error must mention the bad scheme, got: {}",
+            results[0].detail
+        );
+    }
+
+    #[test]
+    fn check_config_present_accepts_http_scheme() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_cocoon_config(&dir, "http://localhost:10000");
+        let mut results = Vec::new();
+        let outcome = check_config_present(&config_path, &mut results);
+        assert!(outcome.is_some(), "http:// URL must return Some");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, CheckStatus::Ok);
     }
 
     #[cfg(feature = "cocoon")]
