@@ -403,6 +403,12 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: GonkaCommand,
     },
+    /// Cocoon sidecar diagnostics
+    #[cfg(feature = "cocoon")]
+    Cocoon {
+        #[command(subcommand)]
+        command: CocoonCommand,
+    },
     /// Test notification channels (sends a test notification via enabled channels)
     Notify {
         #[command(subcommand)]
@@ -682,6 +688,21 @@ pub(crate) enum GonkaCommand {
         json: bool,
         /// Timeout in seconds for node probe requests
         #[arg(long, default_value = "10")]
+        timeout_secs: u64,
+    },
+}
+
+/// Cocoon sidecar subcommands.
+#[cfg(feature = "cocoon")]
+#[derive(Subcommand)]
+pub(crate) enum CocoonCommand {
+    /// Run Cocoon sidecar connectivity and configuration diagnostics
+    Doctor {
+        /// Emit results as JSON (`schema_version` = 1)
+        #[arg(long)]
+        json: bool,
+        /// Timeout in seconds for HTTP checks (default 5)
+        #[arg(long, default_value = "5")]
         timeout_secs: u64,
     },
 }

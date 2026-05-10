@@ -7,6 +7,8 @@ pub(crate) mod agents;
 #[cfg(feature = "bench")]
 pub(crate) mod bench;
 pub(crate) mod classifiers;
+#[cfg(feature = "cocoon")]
+pub(crate) mod cocoon;
 pub(crate) mod db;
 pub(crate) mod doctor;
 #[cfg(feature = "gonka")]

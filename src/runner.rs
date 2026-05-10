@@ -567,6 +567,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 crate::commands::gonka::run_gonka_doctor(&config_path, json, timeout_secs).await?;
             std::process::exit(exit_code);
         }
+        #[cfg(feature = "cocoon")]
+        Some(Command::Cocoon {
+            command: crate::cli::CocoonCommand::Doctor { json, timeout_secs },
+        }) => {
+            let config_path = resolve_config_path(cli.config.as_deref());
+            let exit_code =
+                crate::commands::cocoon::run_cocoon_doctor(&config_path, json, timeout_secs)
+                    .await?;
+            std::process::exit(exit_code);
+        }
         Some(Command::Notify {
             command: crate::cli::NotifyCommand::Test,
         }) => {

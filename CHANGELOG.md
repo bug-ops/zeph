@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(cli): `zeph cocoon doctor [--json] [--timeout-secs N]` diagnostic subcommand for Cocoon
+  sidecar connectivity checks. Runs 6 ordered checks: config entry presence, sidecar HTTP
+  reachability (`GET /stats`), proxy connection, worker count, model listing, and vault key
+  resolution. Downstream checks gracefully skip (WARN) when the sidecar is unreachable. `--json`
+  emits a structured JSON envelope with `schema_version: 1`. Requires `cocoon` feature. (#3672)
+
 ### Changed
 
 - build: add `profiling` and `sandbox` to default Cargo features — tracing spans are compiled by
