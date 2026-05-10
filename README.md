@@ -96,15 +96,22 @@ Most agents treat messaging apps as a thin input channel — user sends text, ag
 
 **Bot-to-Bot communication** lets Zeph register as a managed bot and accept tasks from other bots in a controlled chain. Consecutive bot replies are tracked per-chat, depth is capped at `max_bot_chain_depth`, and each inbound bot is validated against an allowlist — so the agent participates in multi-agent pipelines without becoming a relay for arbitrary bots.
 
+**Voice input via Cocoon STT.** The Telegram adapter detects voice and audio messages, downloads the file, and passes it to the configured speech-to-text provider. With `type = "cocoon"` and `stt_model` set, transcription runs inside a hardware TEE — audio bytes never leave the isolated enclave unencrypted. This makes voice-driven agentic workflows practical for sensitive use cases: a voice note becomes a task, without the audio touching a third-party transcription API.
+
 **Configurable streaming interval** (`stream_interval_ms`, default 3 s, minimum 500 ms) fixes a silent data-loss bug in the original hardcoded delay: responses that completed within a single interval window were discarded before Telegram saw them. Now the agent flushes on completion regardless of the timer.
 
 ```toml
 [telegram]
-guest_mode        = true
-bot_to_bot        = true
-allowed_bots      = ["orchestrator_bot", "scheduler_bot"]
+guest_mode          = true
+bot_to_bot          = true
+allowed_bots        = ["orchestrator_bot", "scheduler_bot"]
 max_bot_chain_depth = 3
 stream_interval_ms  = 1500
+
+[[llm.providers]]
+name      = "stt"
+type      = "cocoon"
+stt_model = "whisper-large-v3"   # transcribes Telegram voice messages inside TEE
 ```
 
 See the [Telegram guide](https://bug-ops.github.io/zeph/guides/telegram.html) for full configuration and Bot API 10.0 details.
