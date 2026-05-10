@@ -108,7 +108,7 @@ pub(crate) async fn run_tui_remote(
     let reader = EventReader::new(event_tx, Duration::from_millis(100));
     std::thread::spawn(move || reader.run());
 
-    let mut tui_app = App::new(user_tx, agent_rx);
+    let mut tui_app = App::new(user_tx, agent_rx).with_tool_density(config.tui.tool_density);
     tui_app.set_show_source_labels(config.tui.show_source_labels);
 
     zeph_tui::run_tui(tui_app, event_rx).await?;

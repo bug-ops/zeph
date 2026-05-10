@@ -95,6 +95,10 @@ pub struct Theme {
     pub user_message_bg: Color,
     /// Style for turn-separator lines between role changes.
     pub turn_separator: Style,
+    /// Style for the bullet of a successfully completed tool call (green).
+    pub tool_success: Style,
+    /// Style for the bullet of a failed tool call (red).
+    pub tool_failure: Style,
 }
 
 impl Default for Theme {
@@ -145,6 +149,8 @@ impl Default for Theme {
             turn_separator: Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
+            tool_success: Style::default().fg(Color::Green),
+            tool_failure: Style::default().fg(Color::Red),
         }
     }
 }

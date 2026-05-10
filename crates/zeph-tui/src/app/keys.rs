@@ -793,7 +793,7 @@ impl App {
                 self.sessions.current_mut().render_cache.clear();
             }
             KeyCode::Char('c') => {
-                self.compact_tools = !self.compact_tools;
+                self.tool_density = self.tool_density.cycle();
                 self.sessions.current_mut().render_cache.clear();
             }
             KeyCode::Tab => {

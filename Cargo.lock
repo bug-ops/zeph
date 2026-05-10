@@ -11139,6 +11139,7 @@ dependencies = [
  "tree-sitter-toml-ng",
  "unicode-width",
  "zeph-common",
+ "zeph-config",
  "zeph-core",
  "zeph-subagent",
 ]

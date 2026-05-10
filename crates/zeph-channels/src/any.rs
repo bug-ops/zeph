@@ -139,8 +139,12 @@ impl Channel for AnyChannel {
         dispatch_channel!(self, send_queue_count, count)
     }
 
-    async fn send_diff(&mut self, diff: zeph_core::DiffData) -> Result<(), ChannelError> {
-        dispatch_channel!(self, send_diff, diff)
+    async fn send_diff(
+        &mut self,
+        diff: zeph_core::DiffData,
+        tool_call_id: &str,
+    ) -> Result<(), ChannelError> {
+        dispatch_channel!(self, send_diff, diff, tool_call_id)
     }
 
     async fn send_tool_output(&mut self, event: ToolOutputEvent) -> Result<(), ChannelError> {
@@ -305,11 +309,14 @@ mod tests {
         // 11. send_usage
         ch.send_usage(10, 5, 8192).await.unwrap();
         // 12. send_diff
-        ch.send_diff(zeph_core::DiffData {
-            file_path: String::new(),
-            old_content: String::new(),
-            new_content: String::new(),
-        })
+        ch.send_diff(
+            zeph_core::DiffData {
+                file_path: String::new(),
+                old_content: String::new(),
+                new_content: String::new(),
+            },
+            "test-call-id",
+        )
         .await
         .unwrap();
         // 13. send_tool_start

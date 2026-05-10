@@ -71,7 +71,8 @@ pub(crate) fn start_tui_early(
         .take()
         .expect("agent_rx already taken by start_tui_early");
     let mut tui_app = zeph_tui::App::new(tui_handle.user_tx.clone(), agent_rx)
-        .with_command_tx(tui_handle.command_tx.clone());
+        .with_command_tx(tui_handle.command_tx.clone())
+        .with_tool_density(config.tui.tool_density);
     tui_app.set_show_source_labels(config.tui.show_source_labels);
 
     let agent_tx = tui_handle.agent_tx.clone();
@@ -162,6 +163,7 @@ fn spawn_tui_thread(
     command_tx: tokio::sync::mpsc::Sender<zeph_tui::TuiCommand>,
     cancel_signal: std::sync::Arc<tokio::sync::Notify>,
     show_source_labels: bool,
+    tool_density: zeph_config::ToolDensity,
     metrics_rx: Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
     task_supervisor: Option<zeph_common::task_supervisor::TaskSupervisor>,
     index_progress_rx: Option<tokio::sync::watch::Receiver<zeph_index::IndexProgress>>,
@@ -173,7 +175,8 @@ fn spawn_tui_thread(
 
     let mut tui_app = zeph_tui::App::new(user_tx, agent_rx)
         .with_cancel_signal(cancel_signal)
-        .with_command_tx(command_tx);
+        .with_command_tx(command_tx)
+        .with_tool_density(tool_density);
     tui_app.set_show_source_labels(show_source_labels);
 
     if let Some(rx) = metrics_rx {
@@ -277,6 +280,7 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
             command_tx,
             agent.cancel_signal(),
             params.config.tui.show_source_labels,
+            params.config.tui.tool_density,
             params.metrics_rx.take(),
             params.task_supervisor.take(),
             params.index_progress_rx.take(),

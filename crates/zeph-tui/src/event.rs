@@ -147,7 +147,7 @@ pub enum AgentEvent {
         tool_name: zeph_common::ToolName,
         /// The primary command or argument string shown in the status bar.
         command: String,
-        /// Opaque tool call ID used to correlate streaming chunks with this call.
+        /// Opaque tool-call identifier for correlating subsequent events.
         tool_call_id: String,
     },
     /// An incremental output chunk from a long-running tool (e.g. streaming shell output).
@@ -158,7 +158,7 @@ pub enum AgentEvent {
         command: String,
         /// The chunk text to append.
         chunk: String,
-        /// Opaque tool call ID matching the corresponding [`AgentEvent::ToolStart`].
+        /// Opaque tool-call identifier for id-based message lookup.
         tool_call_id: String,
     },
     /// Final tool output, replacing any in-progress chunks for this call.
@@ -177,7 +177,7 @@ pub enum AgentEvent {
         filter_stats: Option<String>,
         /// Indices of lines retained by the filter.
         kept_lines: Option<Vec<usize>>,
-        /// Opaque tool call ID matching the corresponding [`AgentEvent::ToolStart`].
+        /// Opaque tool-call identifier for id-based message lookup.
         tool_call_id: String,
     },
     /// The agent requests a boolean confirmation from the user.
@@ -197,7 +197,12 @@ pub enum AgentEvent {
     /// Updated count of messages queued for the agent (shown in the input bar).
     QueueCount(usize),
     /// A diff is ready for immediate display in the diff panel.
-    DiffReady(zeph_core::DiffData),
+    DiffReady {
+        /// The diff payload to attach to the corresponding tool message.
+        diff: zeph_core::DiffData,
+        /// Identifies which tool call produced this diff.
+        tool_call_id: String,
+    },
     /// Result from a slash-command dispatched to the agent.
     CommandResult {
         /// The slash-command identifier that produced this result.

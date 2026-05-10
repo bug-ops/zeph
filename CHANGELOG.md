@@ -15,6 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   instead of falling back to the last streaming message (which was the source of the bug).
   The legacy empty-id path retains the old `rposition` fallback for backwards compatibility.
   Closes #3688. (#3708)
+- fix(tui): `handle_diff_ready` now correlates diffs to tool messages by `tool_call_id` instead of
+  a position-based `.rev().find()` scan, preventing diffs from attaching to the wrong message when
+  multiple tool calls are in flight. `AgentEvent::DiffReady` is now a struct variant carrying
+  `tool_call_id: String`. `ToolOutputChunk` lookup similarly uses id-based matching with a fallback
+  to the last streaming Tool message for shell tools whose `ToolEvent::OutputChunk` lacks an id.
+  `Channel::send_diff` gains a `tool_call_id: &str` parameter. (#3711)
 
 - fix(cli): `zeph cocoon doctor` now reports `[FAIL]` for `cocoon_client_url` with an invalid scheme
   (e.g. `ftp://`). `check_config_present` previously returned `[OK]` without calling
@@ -33,6 +39,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SSH_TTY`, `SSH_CONNECTION`, `SSH_CLIENT`. `Ctrl+O` and `/copy` slash command copy the last
   assistant message to clipboard. `clipboard` feature flag (default-on) gates the arboard
   dependency for headless builds. Closes #3685. (#3685)
+
+- feat(tui): Two-tier tool rendering and `ToolDensity` config — replaces the boolean
+  `compact_tools` toggle with a three-state `ToolDensity` enum (`compact` / `inline` / `block`)
+  that cycles with the `c` key. `inline` (default) renders a head (2 lines) + ellipsis
+  (`... N hidden …`) + tail (2 lines) for outputs longer than 6 lines. `compact` shows a single
+  summary line; `block` shows full output. Tool messages display coloured success/failure bullets
+  (green `●` / red `●`); streaming messages show the braille spinner. `ToolKind` classifies tools
+  into Run / Explore / Edit / Web / Mcp / Other; consecutive Run and Explore calls are eligible for
+  future grouping. `tool_density` is configurable in the `[tui]` config section. (#3686)
 
 - feat(llm): Cocoon live integration tests — 6 `#[ignore]`-gated tests covering `health_check`,
   `list_models`, `chat_round_trip`, `chat_stream`, `chat_with_tools`, and `doctor` checks.

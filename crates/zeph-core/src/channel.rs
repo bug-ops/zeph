@@ -317,12 +317,16 @@ pub trait Channel: Send {
 
     /// Send diff data for a tool result. No-op by default (TUI overrides).
     ///
+    /// `tool_call_id` identifies which tool call produced the diff so it can
+    /// be attached to the correct `ChatMessage`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
     fn send_diff(
         &mut self,
         _diff: crate::DiffData,
+        _tool_call_id: &str,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }

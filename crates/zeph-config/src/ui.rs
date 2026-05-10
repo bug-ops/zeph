@@ -239,6 +239,57 @@ impl<'de> serde::Deserialize<'de> for AdditionalDir {
     }
 }
 
+/// Controls how much detail is shown for tool-call messages in the chat view.
+///
+/// Cycled with the `c` key at runtime; persisted in `[tui].tool_density`.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_config::ToolDensity;
+///
+/// let d = ToolDensity::default();
+/// assert_eq!(d, ToolDensity::Inline);
+/// assert_eq!(d.cycle(), ToolDensity::Block);
+/// assert_eq!(ToolDensity::Block.cycle(), ToolDensity::Compact);
+/// assert_eq!(ToolDensity::Compact.cycle(), ToolDensity::Inline);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolDensity {
+    /// Single-line summary only (tool name + line count, no output body).
+    Compact,
+    /// Command line + head/tail-truncated output (default).
+    #[default]
+    Inline,
+    /// Full output body without truncation.
+    Block,
+}
+
+impl ToolDensity {
+    /// Advance to the next density level, wrapping around.
+    ///
+    /// `Compact` → `Inline` → `Block` → `Compact`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_config::ToolDensity;
+    ///
+    /// assert_eq!(ToolDensity::Compact.cycle(), ToolDensity::Inline);
+    /// assert_eq!(ToolDensity::Inline.cycle(), ToolDensity::Block);
+    /// assert_eq!(ToolDensity::Block.cycle(), ToolDensity::Compact);
+    /// ```
+    #[must_use]
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Compact => Self::Inline,
+            Self::Inline => Self::Block,
+            Self::Block => Self::Compact,
+        }
+    }
+}
+
 /// TUI (terminal user interface) configuration, nested under `[tui]` in TOML.
 ///
 /// # Example (TOML)
@@ -246,6 +297,7 @@ impl<'de> serde::Deserialize<'de> for AdditionalDir {
 /// ```toml
 /// [tui]
 /// show_source_labels = true
+/// tool_density = "inline"
 /// ```
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 pub struct TuiConfig {
@@ -253,6 +305,12 @@ pub struct TuiConfig {
     /// Default: `false`.
     #[serde(default)]
     pub show_source_labels: bool,
+    /// Default tool-output density applied at startup.
+    ///
+    /// Runtime changes via the `c` key are not persisted back to config.
+    /// Default: `inline`.
+    #[serde(default)]
+    pub tool_density: ToolDensity,
 }
 
 /// ACP server transport mode.

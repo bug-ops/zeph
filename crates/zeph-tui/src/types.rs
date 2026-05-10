@@ -106,10 +106,14 @@ pub struct ChatMessage {
     /// from a paste. `Some(n)` (n >= 2) enables collapsible display in the
     /// chat renderer; `None` means normal display.
     pub paste_line_count: Option<usize>,
-    /// Opaque tool call ID. `Some` for [`MessageRole::Tool`] messages; `None` otherwise.
-    /// Used to route [`crate::event::AgentEvent::ToolOutputChunk`] to the correct message
-    /// when multiple tools execute concurrently.
+    /// Opaque tool-call identifier forwarded from the agent loop.
+    ///
+    /// Used to correlate `DiffReady` and `ToolOutputChunk` events with the
+    /// correct `ChatMessage` when multiple tools run concurrently.
     pub tool_call_id: Option<String>,
+    /// Whether the tool call succeeded. `None` while streaming, `Some(true)` on
+    /// success, `Some(false)` on error.
+    pub success: Option<bool>,
 }
 
 impl ChatMessage {
@@ -136,6 +140,7 @@ impl ChatMessage {
             timestamp: format_local_time(),
             paste_line_count: None,
             tool_call_id: None,
+            success: None,
         }
     }
 
@@ -175,10 +180,10 @@ impl ChatMessage {
         self
     }
 
-    /// Set the tool call ID for this message.
+    /// Attach a `tool_call_id` for id-based event correlation.
     ///
-    /// Used to correlate streaming [`crate::event::AgentEvent::ToolOutputChunk`] events
-    /// with their originating tool call when multiple tools execute concurrently.
+    /// Used to correlate streaming [`crate::event::AgentEvent::ToolOutputChunk`] and
+    /// `DiffReady` events with the originating tool call when multiple tools execute concurrently.
     ///
     /// # Examples
     ///
@@ -186,8 +191,8 @@ impl ChatMessage {
     /// use zeph_tui::{ChatMessage, MessageRole};
     ///
     /// let msg = ChatMessage::new(MessageRole::Tool, "")
-    ///     .with_tool_call_id("tc-1".to_string());
-    /// assert_eq!(msg.tool_call_id.as_deref(), Some("tc-1"));
+    ///     .with_tool_call_id("call-abc-123".to_owned());
+    /// assert_eq!(msg.tool_call_id.as_deref(), Some("call-abc-123"));
     /// ```
     #[must_use]
     pub fn with_tool_call_id(mut self, id: String) -> Self {

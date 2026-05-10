@@ -21,3 +21,4 @@ pub mod splash;
 pub mod status;
 pub mod subagents;
 pub mod task_registry;
+pub mod tool_view;

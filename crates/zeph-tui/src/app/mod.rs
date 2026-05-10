@@ -19,6 +19,7 @@ use crate::metrics::MetricsSnapshot;
 use crate::session::SessionRegistry;
 use crate::widgets::command_palette::CommandPaletteState;
 use crate::widgets::slash_autocomplete::SlashAutocompleteState;
+use crate::widgets::tool_view::ToolDensity;
 
 pub use crate::render_cache::{RenderCache, RenderCacheEntry, RenderCacheKey, content_hash};
 pub use crate::types::{ChatMessage, InputMode, MessageRole};
@@ -371,7 +372,7 @@ pub struct App {
     metrics_rx: Option<watch::Receiver<MetricsSnapshot>>,
     active_panel: Panel,
     tool_expanded: bool,
-    compact_tools: bool,
+    tool_density: ToolDensity,
     show_source_labels: bool,
     throbber_state: throbber_widgets_tui::ThrobberState,
     confirm_state: Option<ConfirmState>,
@@ -442,7 +443,7 @@ impl App {
             metrics_rx: None,
             active_panel: Panel::Chat,
             tool_expanded: false,
-            compact_tools: false,
+            tool_density: ToolDensity::default(),
             show_source_labels: false,
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             confirm_state: None,
@@ -624,6 +625,28 @@ impl App {
     #[must_use]
     pub fn with_command_tx(mut self, tx: mpsc::Sender<TuiCommand>) -> Self {
         self.command_tx = Some(tx);
+        self
+    }
+
+    /// Set the initial tool-output density from a loaded `TuiConfig`.
+    ///
+    /// Applied once at startup; runtime changes via the `c` key override this
+    /// but are not persisted back to config.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    /// use zeph_config::ToolDensity;
+    ///
+    /// let (tx, _rx) = mpsc::channel(1);
+    /// let (_atx, arx) = mpsc::channel(1);
+    /// let _app = App::new(tx, arx).with_tool_density(ToolDensity::Compact);
+    /// ```
+    #[must_use]
+    pub fn with_tool_density(mut self, density: ToolDensity) -> Self {
+        self.tool_density = density;
         self
     }
 
@@ -988,10 +1011,10 @@ impl App {
         self.sessions.current().paste_state.as_ref()
     }
 
-    /// Return `true` when tool blocks use compact single-line rendering.
+    /// Return the current tool-output density level.
     #[must_use]
-    pub fn compact_tools(&self) -> bool {
-        self.compact_tools
+    pub fn tool_density(&self) -> ToolDensity {
+        self.tool_density
     }
 
     /// Return `true` when source-label badges are shown on assistant messages.
@@ -1986,7 +2009,7 @@ mod tests {
             diff: Some(diff),
             filter_stats: None,
             kept_lines: None,
-            tool_call_id: String::new(),
+            tool_call_id: "call-1".into(),
         });
 
         assert_eq!(app.messages().len(), 1);
@@ -2007,7 +2030,7 @@ mod tests {
             diff: None,
             filter_stats: None,
             kept_lines: None,
-            tool_call_id: String::new(),
+            tool_call_id: "call-2".into(),
         });
 
         // No prior ToolStart and no diff/filter_stats: nothing to display.
@@ -2547,7 +2570,7 @@ mod tests {
                 content_hash,
                 terminal_width: width,
                 tool_expanded: false,
-                compact_tools: false,
+                tool_density: zeph_config::ToolDensity::Inline,
                 show_labels: false,
             }
         }
@@ -3309,7 +3332,7 @@ mod tests {
         app.handle_agent_event(AgentEvent::ToolStart {
             tool_name: "bash".into(),
             command: "ls -la".into(),
-            tool_call_id: String::new(),
+            tool_call_id: "call-a".into(),
         });
         // Path C: ToolOutput arrives with no prior chunks.
         app.handle_agent_event(AgentEvent::ToolOutput {
@@ -3320,7 +3343,7 @@ mod tests {
             diff: None,
             filter_stats: None,
             kept_lines: None,
-            tool_call_id: String::new(),
+            tool_call_id: "call-a".into(),
         });
 
         assert_eq!(app.messages().len(), 1);
@@ -3336,14 +3359,14 @@ mod tests {
         app.handle_agent_event(AgentEvent::ToolStart {
             tool_name: "bash".into(),
             command: "echo hello".into(),
-            tool_call_id: String::new(),
+            tool_call_id: "call-b".into(),
         });
         // Path B: streaming chunks arrive.
         app.handle_agent_event(AgentEvent::ToolOutputChunk {
             tool_name: "bash".into(),
             command: "echo hello".into(),
             chunk: "hello\n".into(),
-            tool_call_id: String::new(),
+            tool_call_id: "call-b".into(),
         });
         // Path C: ToolOutput with canonical body_display (same content as chunks).
         app.handle_agent_event(AgentEvent::ToolOutput {
@@ -3354,7 +3377,7 @@ mod tests {
             diff: None,
             filter_stats: None,
             kept_lines: None,
-            tool_call_id: String::new(),
+            tool_call_id: "call-b".into(),
         });
 
         assert_eq!(app.messages().len(), 1);

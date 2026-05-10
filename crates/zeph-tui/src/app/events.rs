@@ -125,7 +125,8 @@ impl App {
                 ..
             } => {
                 let pos = if tool_call_id.is_empty() {
-                    // Legacy path: no tool_call_id, fall back to rposition.
+                    // Shell tool chunks arrive without a tool_call_id; fall back to the last
+                    // streaming Tool message (there is at most one active at a time).
                     self.sessions
                         .current()
                         .messages
@@ -158,6 +159,7 @@ impl App {
                 diff,
                 filter_stats,
                 kept_lines,
+                success,
                 tool_call_id,
                 ..
             } => {
@@ -167,7 +169,8 @@ impl App {
                     diff,
                     filter_stats,
                     kept_lines,
-                    &tool_call_id,
+                    success,
+                    tool_call_id,
                 );
             }
             AgentEvent::ConfirmRequest {
@@ -193,7 +196,9 @@ impl App {
                 self.queued_count = count;
                 self.pending_count = count;
             }
-            AgentEvent::DiffReady(diff) => self.handle_diff_ready(diff),
+            AgentEvent::DiffReady { diff, tool_call_id } => {
+                self.handle_diff_ready(diff, &tool_call_id);
+            }
             AgentEvent::CommandResult { output, .. } => {
                 self.command_palette = None;
                 self.sessions
@@ -212,19 +217,22 @@ impl App {
         }
     }
 
-    fn handle_diff_ready(&mut self, diff: zeph_core::DiffData) {
+    fn handle_diff_ready(&mut self, diff: zeph_core::DiffData, tool_call_id: &str) {
         if let Some(msg) = self
             .sessions
             .current_mut()
             .messages
             .iter_mut()
             .rev()
-            .find(|m| m.role == MessageRole::Tool)
+            .find(|m| {
+                m.role == MessageRole::Tool && m.tool_call_id.as_deref() == Some(tool_call_id)
+            })
         {
             msg.diff_data = Some(diff);
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_tool_output_event(
         &mut self,
         tool_name: zeph_common::ToolName,
@@ -232,7 +240,8 @@ impl App {
         diff: Option<zeph_core::DiffData>,
         filter_stats: Option<String>,
         kept_lines: Option<Vec<usize>>,
-        tool_call_id: &str,
+        success: bool,
+        tool_call_id: String,
     ) {
         debug!(
             %tool_name,
@@ -241,8 +250,8 @@ impl App {
             output_len = output.len(),
             "TUI ToolOutput event received"
         );
-        // Locate the streaming tool message: prefer id-based lookup, fall back to rposition
-        // for legacy paths where tool_call_id is empty.
+        // Try id-based lookup first; fall back to streaming-flag lookup for
+        // cases where ToolStart was not emitted (legacy path, empty tool_call_id).
         let pos = if tool_call_id.is_empty() {
             self.sessions
                 .current()
@@ -255,15 +264,27 @@ impl App {
                 .current()
                 .messages
                 .iter()
-                .rposition(|m| m.tool_call_id.as_deref() == Some(tool_call_id));
+                .rposition(|m| {
+                    m.role == MessageRole::Tool
+                        && m.streaming
+                        && m.tool_call_id.as_deref() == Some(tool_call_id.as_str())
+                })
+                .or_else(|| {
+                    self.sessions
+                        .current()
+                        .messages
+                        .iter()
+                        .rposition(|m| m.role == MessageRole::Tool && m.streaming)
+                });
             if found.is_none() {
                 tracing::warn!(
-                    tool_call_id,
-                    "ToolOutput: no message with matching tool_call_id — skipping finalization"
+                    tool_call_id = %tool_call_id,
+                    "ToolOutput: no streaming Tool message found — skipping finalization"
                 );
             }
             found
         };
+
         if let Some(pos) = pos {
             // Finalize existing streaming tool message (shell or native path with ToolStart).
             // Replace content after the header line ("$ cmd\n") with the canonical body_display
@@ -285,14 +306,18 @@ impl App {
             self.sessions.current_mut().messages[pos].diff_data = diff;
             self.sessions.current_mut().messages[pos].filter_stats = filter_stats;
             self.sessions.current_mut().messages[pos].kept_lines = kept_lines;
+            self.sessions.current_mut().messages[pos].success = Some(success);
             self.sessions.current_mut().render_cache.invalidate(pos);
         } else if diff.is_some() || filter_stats.is_some() || kept_lines.is_some() {
             // No prior ToolStart: create the message now (legacy fallback).
             debug!("creating new Tool message with diff (no prior ToolStart)");
-            let mut msg = ChatMessage::new(MessageRole::Tool, output).with_tool(tool_name);
+            let mut msg = ChatMessage::new(MessageRole::Tool, output)
+                .with_tool(tool_name)
+                .with_tool_call_id(tool_call_id);
             msg.diff_data = diff;
             msg.filter_stats = filter_stats;
             msg.kept_lines = kept_lines;
+            msg.success = Some(success);
             self.sessions.current_mut().messages.push(msg);
             self.trim_messages();
         } else if let Some(msg) = self
@@ -318,16 +343,18 @@ impl App {
 mod tests {
     use tokio::sync::mpsc;
 
+    use crate::app::App;
     use crate::event::AgentEvent;
-    use crate::types::MessageRole;
-
-    use super::super::{App, ChatMessage};
+    use crate::types::{ChatMessage, MessageRole};
+    use zeph_core::DiffData;
 
     fn make_app() -> App {
-        let (user_tx, user_rx) = mpsc::channel(16);
-        let (_, agent_rx) = mpsc::channel(16);
+        let (user_tx, agent_rx) = {
+            let (utx, _urx) = mpsc::channel(8);
+            let (_atx, arx) = mpsc::channel(8);
+            (utx, arx)
+        };
         let mut app = App::new(user_tx, agent_rx);
-        let _ = user_rx;
         app.sessions.current_mut().messages.clear();
         app
     }
@@ -338,6 +365,20 @@ mod tests {
             .streaming()
             .with_tool_call_id(id.to_owned());
         app.sessions.current_mut().messages.push(msg);
+    }
+
+    fn tool_msg(id: &str) -> ChatMessage {
+        ChatMessage::new(MessageRole::Tool, "$ cmd\n".to_owned())
+            .with_tool("bash".into())
+            .with_tool_call_id(id.to_owned())
+    }
+
+    fn diff() -> DiffData {
+        DiffData {
+            file_path: "a.rs".into(),
+            old_content: "old".into(),
+            new_content: "new".into(),
+        }
     }
 
     #[test]
@@ -415,5 +456,91 @@ mod tests {
         // t2 must still be streaming and unchanged.
         assert!(msgs[1].streaming);
         assert_eq!(msgs[1].content, "$ cmd_t2\n");
+    }
+
+    #[test]
+    fn diff_ready_attaches_to_matching_id() {
+        let mut app = make_app();
+        app.sessions.current_mut().messages.push(tool_msg("call-1"));
+        app.sessions.current_mut().messages.push(tool_msg("call-2"));
+
+        app.handle_agent_event(AgentEvent::DiffReady {
+            diff: diff(),
+            tool_call_id: "call-2".into(),
+        });
+
+        assert!(app.sessions.current().messages[0].diff_data.is_none());
+        assert!(app.sessions.current().messages[1].diff_data.is_some());
+    }
+
+    #[test]
+    fn diff_ready_mismatched_id_does_not_attach() {
+        let mut app = make_app();
+        app.sessions.current_mut().messages.push(tool_msg("call-1"));
+
+        app.handle_agent_event(AgentEvent::DiffReady {
+            diff: diff(),
+            tool_call_id: "call-99".into(),
+        });
+
+        assert!(app.sessions.current().messages[0].diff_data.is_none());
+    }
+
+    #[test]
+    fn diff_ready_empty_id_does_not_attach() {
+        let mut app = make_app();
+        app.sessions.current_mut().messages.push(tool_msg("call-1"));
+
+        app.handle_agent_event(AgentEvent::DiffReady {
+            diff: diff(),
+            tool_call_id: String::new(),
+        });
+
+        assert!(app.sessions.current().messages[0].diff_data.is_none());
+    }
+
+    #[test]
+    fn diff_ready_two_concurrent_attach_to_correct_messages() {
+        let mut app = make_app();
+        app.sessions.current_mut().messages.push(tool_msg("call-A"));
+        app.sessions.current_mut().messages.push(tool_msg("call-B"));
+        app.sessions.current_mut().messages.push(tool_msg("call-C"));
+
+        let diff_a = DiffData {
+            file_path: "a.rs".into(),
+            old_content: "old_a".into(),
+            new_content: "new_a".into(),
+        };
+        let diff_b = DiffData {
+            file_path: "b.rs".into(),
+            old_content: "old_b".into(),
+            new_content: "new_b".into(),
+        };
+
+        // Deliver out of order: B first, then A
+        app.handle_agent_event(AgentEvent::DiffReady {
+            diff: diff_b,
+            tool_call_id: "call-B".into(),
+        });
+        app.handle_agent_event(AgentEvent::DiffReady {
+            diff: diff_a,
+            tool_call_id: "call-A".into(),
+        });
+
+        let msgs = &app.sessions.current().messages;
+        assert_eq!(
+            msgs[0].diff_data.as_ref().map(|d| d.file_path.as_str()),
+            Some("a.rs"),
+            "call-A diff must attach to message 0"
+        );
+        assert_eq!(
+            msgs[1].diff_data.as_ref().map(|d| d.file_path.as_str()),
+            Some("b.rs"),
+            "call-B diff must attach to message 1"
+        );
+        assert!(
+            msgs[2].diff_data.is_none(),
+            "call-C must remain without diff"
+        );
     }
 }

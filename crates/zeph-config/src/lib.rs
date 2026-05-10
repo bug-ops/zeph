@@ -175,7 +175,7 @@ pub use telemetry::{TelemetryBackend, TelemetryConfig};
 pub use tools::ToolCompressionConfig;
 pub use ui::{
     AcpAuthMethod, AcpConfig, AcpLspConfig, AcpSubagentsConfig, AcpTransport, AdditionalDir,
-    AdditionalDirError, SubagentPresetConfig, TuiConfig,
+    AdditionalDirError, SubagentPresetConfig, ToolDensity, TuiConfig,
 };
 pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 pub use vigil::VigilConfig;

@@ -188,7 +188,11 @@ impl Channel for JsonCliChannel {
         Ok(())
     }
 
-    async fn send_diff(&mut self, _diff: DiffData) -> Result<(), ChannelError> {
+    async fn send_diff(
+        &mut self,
+        _diff: DiffData,
+        _tool_call_id: &str,
+    ) -> Result<(), ChannelError> {
         // v1: diffs are not emitted as JSON events.
         Ok(())
     }

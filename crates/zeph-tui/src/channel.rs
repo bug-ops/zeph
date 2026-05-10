@@ -198,13 +198,20 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
-    async fn send_diff(&mut self, diff: zeph_core::DiffData) -> Result<(), ChannelError> {
+    async fn send_diff(
+        &mut self,
+        diff: zeph_core::DiffData,
+        tool_call_id: &str,
+    ) -> Result<(), ChannelError> {
         // Substantive user-facing content: bounded send so the diff is displayed unless
         // the TUI is severely stalled (>100ms). On timeout, drop silently; on channel
         // close, propagate the error.
         match tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            self.agent_event_tx.send(AgentEvent::DiffReady(diff)),
+            self.agent_event_tx.send(AgentEvent::DiffReady {
+                diff,
+                tool_call_id: tool_call_id.to_owned(),
+            }),
         )
         .await
         {

@@ -13,6 +13,7 @@ use crate::app::{App, MessageRole, RenderCache, RenderCacheKey, content_hash};
 use crate::highlight::SYNTAX_HIGHLIGHTER;
 use crate::hyperlink;
 use crate::theme::{SyntaxTheme, Theme};
+use crate::widgets::tool_view::{ToolDensity, ToolStatus};
 
 /// A markdown link extracted during rendering: visible display text and target URL.
 #[derive(Clone, Debug)]
@@ -49,7 +50,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
         wrap_width,
         &theme,
         app.tool_expanded(),
-        app.compact_tools(),
+        app.tool_density(),
         app.show_source_labels(),
         usize::try_from(
             app.throbber_state()
@@ -114,7 +115,7 @@ fn collect_message_lines_from(
     wrap_width: usize,
     theme: &Theme,
     tool_expanded: bool,
-    compact_tools: bool,
+    tool_density: ToolDensity,
     show_labels: bool,
     throbber_idx: usize,
 ) -> (Vec<Line<'static>>, Vec<MdLink>) {
@@ -164,7 +165,7 @@ fn collect_message_lines_from(
             content_hash: content_hash(&msg.content),
             terminal_width,
             tool_expanded,
-            compact_tools,
+            tool_density,
             show_labels,
         };
 
@@ -183,7 +184,7 @@ fn collect_message_lines_from(
                 let (rendered, extracted) = render_message_lines(
                     msg,
                     tool_expanded,
-                    compact_tools,
+                    tool_density,
                     throbber_idx,
                     theme,
                     wrap_width,
@@ -218,7 +219,7 @@ fn collect_message_lines_from(
 fn render_message_lines(
     msg: &crate::app::ChatMessage,
     tool_expanded: bool,
-    compact_tools: bool,
+    tool_density: ToolDensity,
     throbber_idx: usize,
     theme: &Theme,
     wrap_width: usize,
@@ -229,7 +230,7 @@ fn render_message_lines(
         render_tool_message(
             msg,
             tool_expanded,
-            compact_tools,
+            tool_density,
             throbber_idx,
             theme,
             wrap_width,
@@ -381,17 +382,19 @@ fn render_scrollbar(
     }
 }
 
-const TOOL_OUTPUT_COLLAPSED_LINES: usize = 3;
-
 /// Number of lines shown in a collapsed paste block before the expand hint.
-/// Mirrors `TOOL_OUTPUT_COLLAPSED_LINES` for visual consistency.
 const PASTE_COLLAPSED_LINES: usize = 3;
+
+/// Head lines shown in Inline density before the ellipsis.
+const TOOL_OUTPUT_HEAD: usize = 2;
+/// Tail lines shown in Inline density after the ellipsis.
+const TOOL_OUTPUT_TAIL: usize = 2;
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
 fn render_tool_message(
     msg: &crate::app::ChatMessage,
     tool_expanded: bool,
-    compact_tools: bool,
+    tool_density: ToolDensity,
     throbber_idx: usize,
     theme: &Theme,
     wrap_width: usize,
@@ -406,11 +409,14 @@ fn render_tool_message(
     let cmd_line = content_lines.first().copied().unwrap_or("");
     let dim = Style::default().add_modifier(Modifier::DIM);
 
-    let status_span = if msg.streaming {
-        let symbol = BRAILLE_SIX.symbols[throbber_idx];
-        Span::styled(format!("{symbol} "), theme.streaming_cursor)
-    } else {
-        Span::styled("\u{2714} ", dim)
+    let status = ToolStatus::from_streaming_and_success(msg.streaming, msg.success);
+    let status_span = match status {
+        ToolStatus::Running => {
+            let symbol = BRAILLE_SIX.symbols[throbber_idx];
+            Span::styled(format!("{symbol} "), theme.streaming_cursor)
+        }
+        ToolStatus::Success => Span::styled("\u{25cf} ", theme.tool_success),
+        ToolStatus::Failure => Span::styled("\u{25cf} ", theme.tool_failure),
     };
     let cmd_spans: Vec<Span<'static>> = vec![
         status_span,
@@ -420,105 +426,125 @@ fn render_tool_message(
     lines.extend(wrap_spans(cmd_spans, wrap_width));
     let indent = "  ";
 
-    // Diff rendering for write/edit tools
+    // Diff rendering for write/edit tools (always shown unless Compact without expand)
     if let Some(ref diff_data) = msg.diff_data {
-        let diff_lines = super::diff::compute_diff(&diff_data.old_content, &diff_data.new_content);
-        let rendered = super::diff::render_diff_lines(&diff_lines, &diff_data.file_path, theme);
-        let mut wrapped: Vec<Line<'static>> = Vec::new();
-        for line in rendered {
-            let mut prefixed_spans = vec![Span::styled(indent.to_string(), Style::default())];
-            prefixed_spans.extend(line.spans);
-            wrapped.push(Line::from(prefixed_spans));
-        }
-        let total_visual = wrapped.len();
-        let show_all = tool_expanded || total_visual <= TOOL_OUTPUT_COLLAPSED_LINES;
-        if show_all {
-            lines.extend(wrapped);
-        } else {
-            lines.extend(wrapped.into_iter().take(TOOL_OUTPUT_COLLAPSED_LINES));
-            let remaining = total_visual - TOOL_OUTPUT_COLLAPSED_LINES;
-            let dim = Style::default().add_modifier(Modifier::DIM);
+        if tool_density == ToolDensity::Compact && !tool_expanded {
+            // Compact: show a one-liner summary for diffs too
+            let diff_lines_count = diff_data.new_content.lines().count();
+            let noun = if diff_lines_count == 1 {
+                "line"
+            } else {
+                "lines"
+            };
             lines.push(Line::from(Span::styled(
-                format!(
-                    "{indent}... ({remaining} hidden, {total_visual} total, press 'e' to expand)"
-                ),
+                format!("{indent}-- diff ({diff_lines_count} {noun})"),
                 dim,
             )));
+        } else {
+            let diff_lines =
+                super::diff::compute_diff(&diff_data.old_content, &diff_data.new_content);
+            let rendered = super::diff::render_diff_lines(&diff_lines, &diff_data.file_path, theme);
+            let mut wrapped: Vec<Line<'static>> = Vec::new();
+            for line in rendered {
+                let mut prefixed_spans = vec![Span::styled(indent.to_string(), Style::default())];
+                prefixed_spans.extend(line.spans);
+                wrapped.push(Line::from(prefixed_spans));
+            }
+            let total_visual = wrapped.len();
+            let threshold = TOOL_OUTPUT_HEAD + TOOL_OUTPUT_TAIL + 2;
+            let show_all =
+                tool_expanded || tool_density == ToolDensity::Block || total_visual <= threshold;
+            if show_all {
+                lines.extend(wrapped);
+            } else {
+                let head = wrapped[..TOOL_OUTPUT_HEAD].to_vec();
+                let tail = wrapped[total_visual - TOOL_OUTPUT_TAIL..].to_vec();
+                let hidden = total_visual - TOOL_OUTPUT_HEAD - TOOL_OUTPUT_TAIL;
+                lines.extend(head);
+                lines.push(Line::from(Span::styled(
+                    format!("{indent}... ({hidden} lines hidden, press 'e' to expand)"),
+                    dim,
+                )));
+                lines.extend(tail);
+            }
         }
         return;
     }
 
-    // Output lines (everything after the command)
+    // Output lines (everything after the command header)
     if content_lines.len() > 1 {
-        if compact_tools {
-            let line_count = content_lines.len() - 1;
+        let output_lines = &content_lines[1..];
+
+        if tool_density == ToolDensity::Compact && !tool_expanded {
+            let line_count = output_lines.len();
             let noun = if line_count == 1 { "line" } else { "lines" };
-            let summary = format!("{indent}-- {line_count} {noun}");
             lines.push(Line::from(Span::styled(
-                summary,
-                Style::default().add_modifier(Modifier::DIM),
+                format!("{indent}-- {line_count} {noun}"),
+                dim,
+            )));
+            return;
+        }
+
+        let has_diagnostics = tool_expanded
+            && msg.kept_lines.is_some()
+            && !msg.kept_lines.as_ref().unwrap().is_empty();
+
+        let mut wrapped: Vec<Line<'static>> = Vec::new();
+        if has_diagnostics {
+            let kept_set: std::collections::HashSet<usize> =
+                msg.kept_lines.as_ref().unwrap().iter().copied().collect();
+            for (raw_idx, line) in output_lines.iter().enumerate() {
+                let is_kept = kept_set.contains(&raw_idx);
+                let line_style = if is_kept {
+                    theme.code_block
+                } else {
+                    theme.code_block.add_modifier(Modifier::DIM)
+                };
+                let spans = vec![
+                    Span::styled(indent.to_string(), Style::default()),
+                    Span::styled((*line).to_string(), line_style),
+                ];
+                wrapped.extend(wrap_spans(spans, wrap_width));
+            }
+            lines.extend(wrapped);
+            let legend_style = Style::default()
+                .fg(ratatui::style::Color::Indexed(243))
+                .add_modifier(Modifier::ITALIC);
+            lines.push(Line::from(Span::styled(
+                format!("{indent}[filter diagnostics: highlighted = kept, dim = filtered out]"),
+                legend_style,
             )));
         } else {
-            let output_lines = &content_lines[1..];
-            let has_diagnostics = tool_expanded
-                && msg.kept_lines.is_some()
-                && !msg.kept_lines.as_ref().unwrap().is_empty();
+            for line in output_lines {
+                let spans = vec![
+                    Span::styled(indent.to_string(), Style::default()),
+                    Span::styled((*line).to_string(), theme.code_block),
+                ];
+                wrapped.extend(wrap_spans(spans, wrap_width));
+            }
 
-            let mut wrapped: Vec<Line<'static>> = Vec::new();
-            if has_diagnostics {
-                let kept_set: std::collections::HashSet<usize> =
-                    msg.kept_lines.as_ref().unwrap().iter().copied().collect();
-                for (raw_idx, line) in output_lines.iter().enumerate() {
-                    let is_kept = kept_set.contains(&raw_idx);
-                    let line_style = if is_kept {
-                        theme.code_block
-                    } else {
-                        theme.code_block.add_modifier(Modifier::DIM)
-                    };
-                    let spans = vec![
-                        Span::styled(indent.to_string(), Style::default()),
-                        Span::styled((*line).to_string(), line_style),
-                    ];
-                    wrapped.extend(wrap_spans(spans, wrap_width));
-                }
+            let total_visual = wrapped.len();
+            let threshold = TOOL_OUTPUT_HEAD + TOOL_OUTPUT_TAIL + 2;
+            let show_all =
+                tool_expanded || tool_density == ToolDensity::Block || total_visual <= threshold;
+
+            if show_all {
                 lines.extend(wrapped);
-                let legend_style = Style::default()
-                    .fg(ratatui::style::Color::Indexed(243))
-                    .add_modifier(Modifier::ITALIC);
-                lines.push(Line::from(Span::styled(
-                    format!("{indent}[filter diagnostics: highlighted = kept, dim = filtered out]"),
-                    legend_style,
-                )));
             } else {
-                for line in output_lines {
-                    let spans = vec![
-                        Span::styled(indent.to_string(), Style::default()),
-                        Span::styled((*line).to_string(), theme.code_block),
-                    ];
-                    wrapped.extend(wrap_spans(spans, wrap_width));
+                let head = wrapped[..TOOL_OUTPUT_HEAD].to_vec();
+                let tail = wrapped[total_visual - TOOL_OUTPUT_TAIL..].to_vec();
+                let hidden = total_visual - TOOL_OUTPUT_HEAD - TOOL_OUTPUT_TAIL;
+                let stats_style = Style::default().fg(ratatui::style::Color::Indexed(243));
+                lines.extend(head);
+                let mut ellipsis_spans = vec![Span::styled(
+                    format!("{indent}... ({hidden} lines hidden, press 'e' to expand)"),
+                    dim,
+                )];
+                if let Some(ref stats) = msg.filter_stats {
+                    ellipsis_spans.push(Span::styled(format!(" | {stats}"), stats_style));
                 }
-
-                let total_visual = wrapped.len();
-                let show_all = tool_expanded || total_visual <= TOOL_OUTPUT_COLLAPSED_LINES;
-
-                if show_all {
-                    lines.extend(wrapped);
-                } else {
-                    lines.extend(wrapped.into_iter().take(TOOL_OUTPUT_COLLAPSED_LINES));
-                    let remaining = total_visual - TOOL_OUTPUT_COLLAPSED_LINES;
-                    let dim = Style::default().add_modifier(Modifier::DIM);
-                    let stats_style = Style::default().fg(ratatui::style::Color::Indexed(243));
-                    let mut spans = vec![Span::styled(
-                        format!(
-                            "{indent}... ({remaining} hidden, {total_visual} total, press 'e' to expand)"
-                        ),
-                        dim,
-                    )];
-                    if let Some(ref stats) = msg.filter_stats {
-                        spans.push(Span::styled(format!(" | {stats}"), stats_style));
-                    }
-                    lines.push(Line::from(spans));
-                }
+                lines.push(Line::from(ellipsis_spans));
+                lines.extend(tail);
             }
         }
     }
@@ -1317,6 +1343,14 @@ mod tests {
         msg
     }
 
+    fn make_tool_msg(content: &str) -> crate::app::ChatMessage {
+        let mut msg =
+            crate::app::ChatMessage::new(crate::app::MessageRole::Tool, content.to_owned());
+        msg.tool_name = Some("bash".into());
+        msg.success = Some(true);
+        msg
+    }
+
     #[test]
     fn turn_separator_emitted_on_role_change() {
         let theme = Theme::default();
@@ -1326,7 +1360,7 @@ mod tests {
         ];
         let mut cache = crate::app::RenderCache::default();
         let (lines, _) = collect_message_lines_from(
-            &messages, None, &mut cache, 80, 76, &theme, false, false, false, 0,
+            &messages, None, &mut cache, 80, 76, &theme, false, ToolDensity::Inline, false, 0,
         );
         let all_text: String = lines
             .iter()
@@ -1340,13 +1374,40 @@ mod tests {
     }
 
     #[test]
+    fn tool_density_compact_shows_summary_only() {
+        let theme = Theme::default();
+        // "$ cmd\n" header + 10 output lines
+        let content =
+            "$ cmd\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10";
+        let msg = make_tool_msg(content);
+        let mut lines = Vec::new();
+        render_tool_message(
+            &msg,
+            false,
+            ToolDensity::Compact,
+            0,
+            &theme,
+            200,
+            false,
+            &mut lines,
+        );
+        let text = lines_text(&lines);
+        // Compact: only the header + one-liner count, no output lines
+        assert!(text.contains("10 lines"), "compact must show line count");
+        assert!(
+            !text.contains("line1"),
+            "compact must not show output content"
+        );
+    }
+
+    #[test]
     fn user_message_bg_tint_applied() {
         use ratatui::style::Color;
         let theme = Theme::default();
         let messages = vec![make_chat_msg(crate::app::MessageRole::User, "Hello world")];
         let mut cache = crate::app::RenderCache::default();
         let (lines, _) = collect_message_lines_from(
-            &messages, None, &mut cache, 80, 76, &theme, false, false, false, 0,
+            &messages, None, &mut cache, 80, 76, &theme, false, ToolDensity::Inline, false, 0,
         );
         let has_bg = lines
             .iter()
@@ -1356,5 +1417,174 @@ mod tests {
             has_bg,
             "at least one span must have user_message_bg applied"
         );
+    }
+
+    #[test]
+    fn tool_density_block_shows_all_lines() {
+        let theme = Theme::default();
+        let content = "$ cmd\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8";
+        let msg = make_tool_msg(content);
+        let mut lines = Vec::new();
+        render_tool_message(
+            &msg,
+            false,
+            ToolDensity::Block,
+            0,
+            &theme,
+            200,
+            false,
+            &mut lines,
+        );
+        let text = lines_text(&lines);
+        assert!(text.contains("line8"), "block must show all output lines");
+        assert!(!text.contains("hidden"), "block must not show ellipsis");
+    }
+
+    #[test]
+    fn tool_density_inline_truncates_long_output() {
+        let theme = Theme::default();
+        // 10 output lines — threshold is HEAD+TAIL+2=6, so truncation fires
+        let content = "$ cmd\nL1\nL2\nL3\nL4\nL5\nL6\nL7\nL8\nL9\nL10";
+        let msg = make_tool_msg(content);
+        let mut lines = Vec::new();
+        render_tool_message(
+            &msg,
+            false,
+            ToolDensity::Inline,
+            0,
+            &theme,
+            200,
+            false,
+            &mut lines,
+        );
+        let text = lines_text(&lines);
+        assert!(text.contains("L1"), "inline: head line 1 must be visible");
+        assert!(text.contains("L2"), "inline: head line 2 must be visible");
+        assert!(
+            text.contains("hidden"),
+            "inline: ellipsis must appear for long output"
+        );
+        assert!(text.contains("L9"), "inline: tail line must be visible");
+        assert!(
+            text.contains("L10"),
+            "inline: last tail line must be visible"
+        );
+        assert!(!text.contains("L3"), "inline: middle lines must be hidden");
+    }
+
+    #[test]
+    fn tool_density_inline_short_output_shows_all() {
+        let theme = Theme::default();
+        // 4 output lines — below threshold, show all
+        let content = "$ cmd\nA\nB\nC\nD";
+        let msg = make_tool_msg(content);
+        let mut lines = Vec::new();
+        render_tool_message(
+            &msg,
+            false,
+            ToolDensity::Inline,
+            0,
+            &theme,
+            200,
+            false,
+            &mut lines,
+        );
+        let text = lines_text(&lines);
+        assert!(text.contains('D'), "short output: all lines visible");
+        assert!(!text.contains("hidden"), "short output: no ellipsis");
+    }
+
+    #[test]
+    fn tool_density_inline_at_threshold_no_ellipsis() {
+        // 6 output lines = HEAD(2) + TAIL(2) + 2 = threshold; show_all must be true
+        let theme = Theme::default();
+        let content = "$ cmd\nL1\nL2\nL3\nL4\nL5\nL6";
+        let msg = make_tool_msg(content);
+        let mut lines = Vec::new();
+        render_tool_message(
+            &msg,
+            false,
+            ToolDensity::Inline,
+            0,
+            &theme,
+            200,
+            false,
+            &mut lines,
+        );
+        let text = lines_text(&lines);
+        assert!(text.contains("L6"), "all lines visible at threshold");
+        assert!(!text.contains("hidden"), "no ellipsis exactly at threshold");
+    }
+
+    #[test]
+    fn tool_density_inline_one_over_threshold_shows_ellipsis() {
+        // 7 output lines > threshold(6): ellipsis fires, 3 hidden
+        let theme = Theme::default();
+        let content = "$ cmd\nL1\nL2\nL3\nL4\nL5\nL6\nL7";
+        let msg = make_tool_msg(content);
+        let mut lines = Vec::new();
+        render_tool_message(
+            &msg,
+            false,
+            ToolDensity::Inline,
+            0,
+            &theme,
+            200,
+            false,
+            &mut lines,
+        );
+        let text = lines_text(&lines);
+        assert!(text.contains("L1"), "head line 1 visible");
+        assert!(text.contains("L2"), "head line 2 visible");
+        assert!(text.contains("L6"), "tail line 6 visible");
+        assert!(text.contains("L7"), "tail line 7 visible");
+        assert!(
+            text.contains("hidden"),
+            "ellipsis present for 7-line output"
+        );
+        assert!(text.contains('3'), "3 lines hidden");
+        assert!(!text.contains("L3"), "middle line L3 hidden");
+    }
+
+    #[test]
+    fn tool_density_inline_one_output_line_no_ellipsis() {
+        let theme = Theme::default();
+        let content = "$ cmd\nonly line";
+        let msg = make_tool_msg(content);
+        let mut lines = Vec::new();
+        render_tool_message(
+            &msg,
+            false,
+            ToolDensity::Inline,
+            0,
+            &theme,
+            200,
+            false,
+            &mut lines,
+        );
+        let text = lines_text(&lines);
+        assert!(text.contains("only line"), "single line visible");
+        assert!(!text.contains("hidden"), "no ellipsis for 1-line output");
+    }
+
+    #[test]
+    fn tool_density_inline_no_output_no_panic() {
+        // Header only ("$ cmd\n" with no following lines) — must not panic
+        let theme = Theme::default();
+        let content = "$ cmd\n";
+        let msg = make_tool_msg(content);
+        let mut lines = Vec::new();
+        render_tool_message(
+            &msg,
+            false,
+            ToolDensity::Inline,
+            0,
+            &theme,
+            200,
+            false,
+            &mut lines,
+        );
+        // Just verify it doesn't panic and renders the header
+        assert!(!lines.is_empty(), "header line must be rendered");
     }
 }
