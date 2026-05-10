@@ -1840,7 +1840,7 @@ mod tests {
             .unwrap();
         assert!(msg.is_some(), "expected Some message");
         // I4: verify score equals first message's score
-        assert_eq!(score, Some(0.95f32));
+        assert!(score.is_some_and(|s| (s - 0.95_f32).abs() < f32::EPSILON));
         let msg = msg.unwrap();
         // content is in parts.Recall so check parts
         let has_recall_part = msg.parts.iter().any(|p| {

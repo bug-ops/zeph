@@ -665,7 +665,10 @@ mod tests {
         let mut rf = make_recalled_fact();
         rf.activation_score = Some(0.82);
         let dto = map_graph_fact(rf);
-        assert_eq!(dto.activation_score, Some(0.82));
+        assert!(
+            dto.activation_score
+                .is_some_and(|s| (s - 0.82_f32).abs() < f32::EPSILON)
+        );
     }
 
     #[test]
@@ -719,7 +722,7 @@ mod tests {
             conversation_id: ConversationId(1),
         };
         let dto = map_session_summary(r);
-        assert_eq!(dto.score, 0.0);
+        assert!(dto.score.abs() < f32::EPSILON);
     }
 
     #[test]
@@ -730,6 +733,6 @@ mod tests {
             conversation_id: ConversationId(1),
         };
         let dto = map_session_summary(r);
-        assert_eq!(dto.score, 1.0);
+        assert!((dto.score - 1.0_f32).abs() < f32::EPSILON);
     }
 }
