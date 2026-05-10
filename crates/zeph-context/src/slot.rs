@@ -70,19 +70,22 @@ pub const TREE_MEMORY_PREFIX: &str = "[Memory summary]\n";
 /// Messages larger than `oversized` tokens each get their own chunk. All other
 /// messages are greedily packed. Callers that need at least one chunk will always
 /// receive one (empty `Vec<Message>` wrapped in a single chunk).
+///
+/// `count_message_tokens` is a caller-supplied function that returns the token count
+/// for a single message. This avoids a direct dependency on `zeph-memory::TokenCounter`.
 #[must_use]
 pub fn chunk_messages(
     messages: &[Message],
     budget: usize,
     oversized: usize,
-    tc: &zeph_memory::TokenCounter,
+    count_message_tokens: impl Fn(&Message) -> usize,
 ) -> Vec<Vec<Message>> {
     let mut chunks: Vec<Vec<Message>> = Vec::new();
     let mut current: Vec<Message> = Vec::new();
     let mut current_tokens = 0usize;
 
     for msg in messages {
-        let msg_tokens = tc.count_message_tokens(msg);
+        let msg_tokens = count_message_tokens(msg);
 
         if msg_tokens >= oversized {
             if !current.is_empty() {

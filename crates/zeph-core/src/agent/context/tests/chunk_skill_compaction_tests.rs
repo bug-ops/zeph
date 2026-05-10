@@ -53,7 +53,9 @@ async fn create_memory_with_summaries(
 fn chunk_messages_empty_input_returns_single_empty_chunk() {
     let tc = zeph_memory::TokenCounter::new();
     let messages: &[Message] = &[];
-    let chunks = chunk_messages(messages, 4096, 2048, &tc);
+    let chunks = chunk_messages(messages, 4096, 2048, |m: &Message| {
+        tc.count_tokens(&m.content)
+    });
     assert_eq!(chunks.len(), 1);
     assert!(chunks[0].is_empty());
 }
@@ -69,7 +71,9 @@ fn chunk_messages_single_oversized_message_gets_own_chunk() {
         parts: vec![],
         metadata: MessageMetadata::default(),
     }];
-    let chunks = chunk_messages(&messages, 4096, 2048, &tc);
+    let chunks = chunk_messages(&messages, 4096, 2048, |m: &Message| {
+        tc.count_tokens(&m.content)
+    });
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0][0].content, oversized_content);
 }
@@ -101,7 +105,9 @@ fn chunk_messages_splits_at_budget_boundary() {
         },
     ];
     // budget = 2000 tokens: first two fit, third overflows → 2 chunks
-    let chunks = chunk_messages(&messages, 2000, 4096, &tc);
+    let chunks = chunk_messages(&messages, 2000, 4096, |m: &Message| {
+        tc.count_tokens(&m.content)
+    });
     assert!(chunks.len() >= 2, "expected split into multiple chunks");
 }
 

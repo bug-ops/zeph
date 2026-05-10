@@ -455,9 +455,16 @@ impl ContextService {
                 &[]
             };
 
+        let memory_backend: Option<std::sync::Arc<dyn zeph_common::memory::ContextMemoryBackend>> =
+            view.memory.clone().map(
+                |m| -> std::sync::Arc<dyn zeph_common::memory::ContextMemoryBackend> {
+                    std::sync::Arc::new(crate::memory_backend::SemanticMemoryBackend::new(m))
+                },
+            );
+
         let memory_view = zeph_context::input::ContextMemoryView {
-            memory: view.memory.clone(),
-            conversation_id: view.conversation_id,
+            memory: memory_backend,
+            conversation_id: view.conversation_id.map(|c| c.0),
             recall_limit: view.recall_limit,
             cross_session_score_threshold: view.cross_session_score_threshold,
             context_strategy: view.context_strategy,
@@ -478,10 +485,12 @@ impl ContextService {
         #[cfg(not(feature = "index"))]
         let index_access: Option<&dyn zeph_context::input::IndexAccess> = None;
 
+        let router = crate::memory_backend::build_memory_router(view.context_manager);
+
         let input = zeph_context::input::ContextAssemblyInput {
             memory: &memory_view,
             context_manager: view.context_manager,
-            token_counter: &view.token_counter,
+            token_counter: &*view.token_counter,
             skills_prompt: view.last_skills_prompt,
             index: index_access,
             correction_config: view.correction_config,
@@ -490,6 +499,7 @@ impl ContextService {
             query,
             scrub: view.scrub,
             active_levels,
+            router,
         };
 
         let prepared = zeph_context::assembler::ContextAssembler::gather(&input).await?;

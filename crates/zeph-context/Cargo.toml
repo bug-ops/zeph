@@ -23,10 +23,9 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true
 tracing.workspace = true
-zeph-common.workspace = true
+zeph-common = { workspace = true, features = ["jsonschema"] }
 zeph-config.workspace = true
 zeph-llm.workspace = true
-zeph-memory.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

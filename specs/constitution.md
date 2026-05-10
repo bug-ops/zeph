@@ -24,8 +24,7 @@ related:
 - Cargo workspace (Edition 2024, resolver 3): 29 crates (including `zeph-common`, `zeph-commands`, `zeph-context`), root binary `zeph`
 - `zeph-core` orchestrates all crates. Crate dependencies must follow the layered DAG:
   - **Layer 0** (foundation, no zeph-* deps): `zeph-llm`, `zeph-a2a`, `zeph-gateway`, `zeph-scheduler`, `zeph-common`, `zeph-config`, `zeph-vault`, `zeph-db`, `zeph-commands`
-  - **Layer 1** (depends on Layer 0): `zeph-memory` (→ llm, config, common, db), `zeph-tools` (→ common, config, db), `zeph-context` (→ llm, config, common, memory*), `zeph-agent-feedback` (→ common, llm)
-    - **Note:** `zeph-context` has a `*`-marked dep on `zeph-memory`; both are Layer 1. This is a known same-layer violation tracked in #3665, to be resolved by moving shared interface types into `zeph-common` (Layer 0). Until resolved, this edge is permitted as a documented exception.
+  - **Layer 1** (depends on Layer 0): `zeph-memory` (→ llm, config, common, db), `zeph-tools` (→ common, config, db), `zeph-context` (→ llm, config, common), `zeph-agent-feedback` (→ common, llm)
   - **Layer 2** (depends on Layers 0–1): `zeph-skills` (→ llm, memory, tools, common, config), `zeph-mcp` (→ llm, memory, tools, common, db, config), `zeph-sanitizer` (→ llm, memory, tools, config, common), `zeph-index` (→ llm, memory, tools, db, common), `zeph-plugins` (→ skills, tools, common, config), `zeph-subagent` (→ skills, tools, llm, common, config), `zeph-agent-persistence` (→ context, memory, llm, config, common), `zeph-agent-context` (→ skills, sanitizer, context, memory, llm, common, config)
   - **Layer 3** (depends on Layers 0–2): `zeph-orchestration` (→ sanitizer, subagent, memory, llm, db, common, config), `zeph-agent-tools` (→ orchestration, mcp, sanitizer, skills, agent-persistence, context, llm, tools, common, config)
   - **Layer 4** (orchestrator): `zeph-core` (→ all Layer 0–3 crates)

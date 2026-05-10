@@ -10,63 +10,9 @@ use crate::types::MessageId;
 
 /// MAGMA edge type: the semantic category of a relationship between two entities.
 ///
-/// Four orthogonal relation categories from the MAGMA multi-graph architecture:
-/// - `Semantic`: conceptual relationships (`uses`, `knows`, `prefers`, `depends_on`, `works_on`)
-/// - `Temporal`: time-ordered events (`preceded_by`, `followed_by`, `happened_during`)
-/// - `Causal`: cause-effect chains (`caused`, `triggered`, `resulted_in`, `led_to`)
-/// - `Entity`: identity/structural (`is_a`, `part_of`, `instance_of`, `alias_of`)
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum EdgeType {
-    #[default]
-    Semantic,
-    Temporal,
-    Causal,
-    Entity,
-}
-
-impl EdgeType {
-    /// Return the canonical lowercase string for this edge type.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zeph_memory::EdgeType;
-    ///
-    /// assert_eq!(EdgeType::Causal.as_str(), "causal");
-    /// ```
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Semantic => "semantic",
-            Self::Temporal => "temporal",
-            Self::Causal => "causal",
-            Self::Entity => "entity",
-        }
-    }
-}
-
-impl fmt::Display for EdgeType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for EdgeType {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "semantic" => Ok(Self::Semantic),
-            "temporal" => Ok(Self::Temporal),
-            "causal" => Ok(Self::Causal),
-            "entity" => Ok(Self::Entity),
-            other => Err(format!("unknown edge type: {other}")),
-        }
-    }
-}
+/// Re-exported from `zeph-common::memory` to allow `zeph-context` to use this type
+/// without a direct dependency on `zeph-memory`.
+pub use zeph_common::memory::EdgeType;
 
 /// Domain category of a graph entity.
 ///

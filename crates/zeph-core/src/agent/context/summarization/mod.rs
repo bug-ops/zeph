@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
+use zeph_common::memory::AnchoredSummary;
 #[cfg(test)]
 use zeph_llm::provider::{Message, MessagePart, Role};
-use zeph_memory::AnchoredSummary;
 
 use super::super::Agent;
 use crate::channel::Channel;
@@ -27,10 +27,15 @@ impl<C: Channel> Agent<C> {
                     });
                 cb
             });
+        let token_counter_adapter: std::sync::Arc<
+            dyn zeph_context::summarization::MessageTokenCounter,
+        > = std::sync::Arc::new(
+            zeph_agent_context::memory_backend::TokenCounterAdapter::new(token_counter),
+        );
         SummarizationDeps {
             provider: self.summary_or_primary_provider().clone(),
             llm_timeout: std::time::Duration::from_secs(self.runtime.config.timeouts.llm_seconds),
-            token_counter,
+            token_counter: token_counter_adapter,
             structured_summaries: self.services.memory.compaction.structured_summaries,
             on_anchored_summary,
         }

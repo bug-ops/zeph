@@ -265,49 +265,6 @@ impl ContextManager {
         CompactionTier::None
     }
 
-    /// Build a memory router from the current routing configuration.
-    ///
-    /// Returns a `Box<dyn AsyncMemoryRouter>` so callers can use `route_async()` for LLM-based
-    /// classification. `HeuristicRouter` implements `AsyncMemoryRouter` via a blanket impl that
-    /// delegates to the sync `route_with_confidence`.
-    pub fn build_router(&self) -> Box<dyn zeph_memory::AsyncMemoryRouter + Send + Sync> {
-        use zeph_config::StoreRoutingStrategy;
-        if !self.routing.enabled {
-            return Box::new(zeph_memory::HeuristicRouter);
-        }
-        let fallback = zeph_memory::router::parse_route_str(
-            &self.routing.fallback_route,
-            zeph_memory::MemoryRoute::Hybrid,
-        );
-        match self.routing.strategy {
-            StoreRoutingStrategy::Heuristic => Box::new(zeph_memory::HeuristicRouter),
-            StoreRoutingStrategy::Llm => {
-                let Some(provider) = self.store_routing_provider.clone() else {
-                    tracing::warn!(
-                        "store_routing: strategy=llm but no provider resolved; \
-                         falling back to heuristic"
-                    );
-                    return Box::new(zeph_memory::HeuristicRouter);
-                };
-                Box::new(zeph_memory::LlmRouter::new(provider, fallback))
-            }
-            StoreRoutingStrategy::Hybrid => {
-                let Some(provider) = self.store_routing_provider.clone() else {
-                    tracing::warn!(
-                        "store_routing: strategy=hybrid but no provider resolved; \
-                         falling back to heuristic"
-                    );
-                    return Box::new(zeph_memory::HeuristicRouter);
-                };
-                Box::new(zeph_memory::HybridRouter::new(
-                    provider,
-                    fallback,
-                    self.routing.confidence_threshold,
-                ))
-            }
-        }
-    }
-
     /// Check if proactive compression should fire for the current turn.
     ///
     /// Returns `Some((threshold_tokens, max_summary_tokens))` when proactive compression

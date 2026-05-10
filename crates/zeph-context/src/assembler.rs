@@ -19,9 +19,8 @@ use std::pin::Pin;
 use futures::StreamExt as _;
 use futures::stream::FuturesUnordered;
 
+use zeph_common::memory::{AsyncMemoryRouter, CompressionLevel, GraphRecallParams, TokenCounting};
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
-use zeph_memory::TokenCounter;
-use zeph_memory::compression::CompressionLevel;
 
 use crate::error::ContextError;
 use crate::input::ContextAssemblyInput;
@@ -156,11 +155,11 @@ fn correction_params(cfg: Option<&crate::input::CorrectionConfig>) -> (usize, f3
 #[allow(clippy::too_many_arguments)]
 fn schedule_context_fetchers<'r>(
     memory: &'r crate::input::ContextMemoryView,
-    tc: &'r zeph_memory::TokenCounter,
+    tc: &'r dyn TokenCounting,
     query: &'r str,
     scrub: fn(&str) -> std::borrow::Cow<'_, str>,
     index: Option<&'r dyn crate::input::IndexAccess>,
-    router_ref: &'r dyn zeph_memory::AsyncMemoryRouter,
+    router_ref: &'r dyn AsyncMemoryRouter,
     summaries_budget: usize,
     cross_session_budget: usize,
     semantic_recall_budget: usize,
@@ -335,8 +334,7 @@ impl ContextAssembler {
 
         let (recall_limit, min_sim) = correction_params(input.correction_config.as_ref());
 
-        let router = input.context_manager.build_router();
-        let router_ref: &dyn zeph_memory::AsyncMemoryRouter = router.as_ref();
+        let router_ref: &dyn AsyncMemoryRouter = input.router.as_ref();
 
         tracing::debug!(
             active_sources = alloc.active_sources(),
@@ -393,8 +391,10 @@ pub(crate) async fn fetch_graph_facts(
     memory: &ContextMemoryView,
     query: &str,
     budget_tokens: usize,
-    tc: &TokenCounter,
+    tc: &dyn TokenCounting,
 ) -> Result<Option<Message>, ContextError> {
+    use zeph_common::memory::{RecallView, SpreadingActivationParams, classify_graph_subgraph};
+
     if budget_tokens == 0 || !memory.graph_config.enabled {
         return Ok(None);
     }
@@ -421,17 +421,16 @@ pub(crate) async fn fetch_graph_facts(
         query
     };
 
-    let edge_types = zeph_memory::classify_graph_subgraph(effective_query);
+    let edge_types = classify_graph_subgraph(effective_query);
 
-    // Map config-level RecallView to the memory-crate enum.
     let view = match memory.memcot_config.recall_view {
-        zeph_config::RecallViewConfig::Head => zeph_memory::RecallView::Head,
-        zeph_config::RecallViewConfig::ZoomIn => zeph_memory::RecallView::ZoomIn,
-        zeph_config::RecallViewConfig::ZoomOut => zeph_memory::RecallView::ZoomOut,
+        zeph_config::RecallViewConfig::Head => RecallView::Head,
+        zeph_config::RecallViewConfig::ZoomIn => RecallView::ZoomIn,
+        zeph_config::RecallViewConfig::ZoomOut => RecallView::ZoomOut,
     };
 
     let sa_params = if sa_config.enabled {
-        Some(zeph_memory::graph::SpreadingActivationParams {
+        Some(SpreadingActivationParams {
             decay_lambda: sa_config.decay_lambda,
             max_hops: sa_config.max_hops,
             activation_threshold: sa_config.activation_threshold,
@@ -446,15 +445,17 @@ pub(crate) async fn fetch_graph_facts(
     };
 
     let timeout_ms = effective_recall_timeout_ms(sa_config.recall_timeout_ms);
-    let recall_fut = mem.recall_graph_view(
+    let recall_fut = mem.recall_graph_facts(
         effective_query,
-        recall_limit,
-        view,
-        memory.memcot_config.zoom_out_neighbor_cap,
-        memory.graph_config.max_hops,
-        temporal_decay_rate,
-        &edge_types,
-        sa_params,
+        GraphRecallParams {
+            limit: recall_limit,
+            view,
+            zoom_out_neighbor_cap: memory.memcot_config.zoom_out_neighbor_cap,
+            max_hops: memory.graph_config.max_hops,
+            temporal_decay_rate,
+            edge_types: &edge_types,
+            spreading_activation: sa_params,
+        },
     );
     let recalled = match tokio::time::timeout(
         std::time::Duration::from_millis(timeout_ms),
@@ -481,14 +482,14 @@ pub(crate) async fn fetch_graph_facts(
     let mut tokens_so_far = tc.count_tokens(&body);
 
     for rf in &recalled {
-        let fact_text = rf.fact.fact.replace(['\n', '\r', '<', '>'], " ");
+        let fact_text = rf.fact.replace(['\n', '\r', '<', '>'], " ");
         let line = if let Some(score) = rf.activation_score {
             format!(
                 "- {} (confidence: {:.2}, activation: {:.2})\n",
-                fact_text, rf.fact.confidence, score
+                fact_text, rf.confidence, score
             )
         } else {
-            format!("- {} (confidence: {:.2})\n", fact_text, rf.fact.confidence)
+            format!("- {} (confidence: {:.2})\n", fact_text, rf.confidence)
         };
         let line_tokens = tc.count_tokens(&line);
         if tokens_so_far + line_tokens > budget_tokens {
@@ -530,7 +531,7 @@ pub(crate) async fn fetch_graph_facts(
 pub(crate) async fn fetch_persona_facts(
     memory: &ContextMemoryView,
     budget_tokens: usize,
-    tc: &TokenCounter,
+    tc: &dyn TokenCounting,
 ) -> Result<Option<Message>, ContextError> {
     if budget_tokens == 0 || !memory.persona_config.enabled {
         return Ok(None);
@@ -540,7 +541,10 @@ pub(crate) async fn fetch_persona_facts(
     };
 
     let min_confidence = memory.persona_config.min_confidence;
-    let facts = mem.sqlite().load_persona_facts(min_confidence).await?;
+    let facts = mem
+        .load_persona_facts(min_confidence)
+        .await
+        .map_err(ContextError::Memory)?;
 
     if facts.is_empty() {
         return Ok(None);
@@ -569,7 +573,7 @@ pub(crate) async fn fetch_persona_facts(
 pub(crate) async fn fetch_trajectory_hints(
     memory: &ContextMemoryView,
     budget_tokens: usize,
-    tc: &TokenCounter,
+    tc: &dyn TokenCounting,
 ) -> Result<Option<Message>, ContextError> {
     if budget_tokens == 0 || !memory.trajectory_config.enabled {
         return Ok(None);
@@ -580,10 +584,13 @@ pub(crate) async fn fetch_trajectory_hints(
 
     let top_k = memory.trajectory_config.recall_top_k;
     let min_conf = memory.trajectory_config.min_confidence;
+    // Load procedural trajectory entries via the backend abstraction.
+    // The "procedural" filter maps to the same tier used by the original
+    // sqlite().load_trajectory_entries(Some("procedural"), top_k) call.
     let entries = mem
-        .sqlite()
         .load_trajectory_entries(Some("procedural"), top_k)
-        .await?;
+        .await
+        .map_err(ContextError::Memory)?;
 
     if entries.is_empty() {
         return Ok(None);
@@ -616,7 +623,7 @@ pub(crate) async fn fetch_trajectory_hints(
 pub(crate) async fn fetch_tree_memory(
     memory: &ContextMemoryView,
     budget_tokens: usize,
-    tc: &TokenCounter,
+    tc: &dyn TokenCounting,
 ) -> Result<Option<Message>, ContextError> {
     if budget_tokens == 0 || !memory.tree_config.enabled {
         return Ok(None);
@@ -626,7 +633,10 @@ pub(crate) async fn fetch_tree_memory(
     };
 
     let top_k = memory.tree_config.recall_top_k;
-    let nodes = mem.sqlite().load_tree_level(1, top_k).await?;
+    let nodes = mem
+        .load_tree_nodes(1, top_k)
+        .await
+        .map_err(ContextError::Memory)?;
 
     if nodes.is_empty() {
         return Ok(None);
@@ -657,7 +667,7 @@ pub(crate) async fn fetch_reasoning_strategies(
     query: &str,
     budget_tokens: usize,
     top_k: usize,
-    tc: &TokenCounter,
+    tc: &dyn TokenCounting,
 ) -> Result<Option<Message>, ContextError> {
     // S1: enforce the ≤500-token spec cap documented in ReasoningConfig.
     let budget_tokens = budget_tokens.min(500);
@@ -685,7 +695,7 @@ pub(crate) async fn fetch_reasoning_strategies(
         // S-Med1: sanitize distilled summaries to prevent stored injection payloads
         // from reaching the system prompt (mirrors fetch_graph_facts scrub pattern).
         let safe_summary = s.summary.replace(['\n', '\r', '<', '>'], " ");
-        let line = format!("- [{}] {}\n", s.outcome.as_str(), safe_summary);
+        let line = format!("- [{}] {}\n", s.outcome, safe_summary);
         let line_tokens = tc.count_tokens(&line);
         if tokens_so_far + line_tokens > budget_tokens {
             break;
@@ -701,10 +711,10 @@ pub(crate) async fn fetch_reasoning_strategies(
 
     // C4 split: mark_used only for strategies that made it past budget truncation.
     // P2-1: fire-and-forget — mark_used does not need to block the context build path.
-    if let Some(ref reasoning) = mem.reasoning {
-        let reasoning = reasoning.clone();
+    if !injected_ids.is_empty() {
+        let mem_clone = mem.clone();
         tokio::spawn(async move {
-            if let Err(e) = reasoning.mark_used(&injected_ids).await {
+            if let Err(e) = mem_clone.mark_reasoning_used(&injected_ids).await {
                 tracing::warn!(error = %e, "reasoning: mark_used failed");
             }
         });
@@ -724,7 +734,7 @@ pub(crate) async fn fetch_corrections(
         return Ok(None);
     };
     let corrections = mem
-        .retrieve_similar_corrections(query, limit, min_score)
+        .retrieve_corrections(query, limit, min_score)
         .await
         .unwrap_or_default();
     if corrections.is_empty() {
@@ -743,8 +753,8 @@ pub(crate) async fn fetch_semantic_recall(
     memory: &ContextMemoryView,
     query: &str,
     token_budget: usize,
-    tc: &TokenCounter,
-    router: Option<&dyn zeph_memory::AsyncMemoryRouter>,
+    tc: &dyn TokenCounting,
+    router: Option<&dyn AsyncMemoryRouter>,
 ) -> Result<(Option<Message>, Option<f32>), ContextError> {
     let Some(ref mem) = memory.memory else {
         return Ok((None, None));
@@ -753,12 +763,10 @@ pub(crate) async fn fetch_semantic_recall(
         return Ok((None, None));
     }
 
-    let recalled = if let Some(r) = router {
-        mem.recall_routed_async(query, memory.recall_limit, None, r)
-            .await?
-    } else {
-        mem.recall(query, memory.recall_limit, None).await?
-    };
+    let recalled = mem
+        .recall(query, memory.recall_limit, router)
+        .await
+        .map_err(ContextError::Memory)?;
     if recalled.is_empty() {
         return Ok((None, None));
     }
@@ -770,17 +778,10 @@ pub(crate) async fn fetch_semantic_recall(
     let mut tokens_used = tc.count_tokens(&recall_text);
 
     for item in &recalled {
-        if item.message.content.starts_with("[skipped]")
-            || item.message.content.starts_with("[stopped]")
-        {
+        if item.content.starts_with("[skipped]") || item.content.starts_with("[stopped]") {
             continue;
         }
-        let role_label = match item.message.role {
-            Role::User => "user",
-            Role::Assistant => "assistant",
-            Role::System => "system",
-        };
-        let entry = format!("- [{}] {}\n", role_label, item.message.content);
+        let entry = format!("- [{}] {}\n", item.role, item.content);
         let entry_tokens = tc.count_tokens(&entry);
         if tokens_used + entry_tokens > token_budget {
             break;
@@ -806,7 +807,7 @@ pub(crate) async fn fetch_document_rag(
     memory: &ContextMemoryView,
     query: &str,
     token_budget: usize,
-    tc: &TokenCounter,
+    tc: &dyn TokenCounting,
 ) -> Result<Option<Message>, ContextError> {
     if !memory.document_config.rag_enabled || token_budget == 0 {
         return Ok(None);
@@ -817,26 +818,22 @@ pub(crate) async fn fetch_document_rag(
 
     let collection = &memory.document_config.collection;
     let top_k = memory.document_config.top_k;
-    let points = mem
+    let chunks = mem
         .search_document_collection(collection, query, top_k)
-        .await?;
-    if points.is_empty() {
+        .await
+        .map_err(ContextError::Memory)?;
+    if chunks.is_empty() {
         return Ok(None);
     }
 
     let mut text = String::from(DOCUMENT_RAG_PREFIX);
     let mut tokens_used = tc.count_tokens(&text);
 
-    for point in &points {
-        let chunk = point
-            .payload
-            .get("text")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if chunk.is_empty() {
+    for chunk in &chunks {
+        if chunk.text.is_empty() {
             continue;
         }
-        let entry = format!("{chunk}\n");
+        let entry = format!("{}\n", chunk.text);
         let cost = tc.count_tokens(&entry);
         if tokens_used + cost > token_budget {
             break;
@@ -860,7 +857,7 @@ pub(crate) async fn fetch_document_rag(
 pub(crate) async fn fetch_summaries(
     memory: &ContextMemoryView,
     token_budget: usize,
-    tc: &TokenCounter,
+    tc: &dyn TokenCounting,
 ) -> Result<Option<Message>, ContextError> {
     let (Some(mem), Some(cid)) = (&memory.memory, memory.conversation_id) else {
         return Ok(None);
@@ -869,7 +866,10 @@ pub(crate) async fn fetch_summaries(
         return Ok(None);
     }
 
-    let summaries = mem.load_summaries(cid).await?;
+    let summaries = mem
+        .load_summaries(cid)
+        .await
+        .map_err(ContextError::Memory)?;
     if summaries.is_empty() {
         return Ok(None);
     }
@@ -878,8 +878,8 @@ pub(crate) async fn fetch_summaries(
     let mut tokens_used = tc.count_tokens(&summary_text);
 
     for summary in summaries.iter().rev() {
-        let first = summary.first_message_id.map_or(0, |m| m.0);
-        let last = summary.last_message_id.map_or(0, |m| m.0);
+        let first = summary.first_message_id.unwrap_or(0);
+        let last = summary.last_message_id.unwrap_or(0);
         let entry = format!("- Messages {first}-{last}: {}\n", summary.content);
         let cost = tc.count_tokens(&entry);
         if tokens_used + cost > token_budget {
@@ -903,7 +903,7 @@ pub(crate) async fn fetch_cross_session(
     memory: &ContextMemoryView,
     query: &str,
     token_budget: usize,
-    tc: &TokenCounter,
+    tc: &dyn TokenCounting,
 ) -> Result<Option<Message>, ContextError> {
     let (Some(mem), Some(cid)) = (&memory.memory, memory.conversation_id) else {
         return Ok(None);
@@ -915,7 +915,8 @@ pub(crate) async fn fetch_cross_session(
     let threshold = memory.cross_session_score_threshold;
     let results: Vec<_> = mem
         .search_session_summaries(query, 5, Some(cid))
-        .await?
+        .await
+        .map_err(ContextError::Memory)?
         .into_iter()
         .filter(|r| r.score >= threshold)
         .collect();
@@ -1003,12 +1004,21 @@ pub fn memory_first_keep_tail(messages: &[Message], history_start: usize) -> usi
 mod tests {
     use super::*;
     use crate::input::ContextMemoryView;
+    use zeph_common::memory::CompressionLevel;
     use zeph_config::{
         ContextStrategy, DocumentConfig, GraphConfig, PersonaConfig, ReasoningConfig,
         TrajectoryConfig, TreeConfig,
     };
-    use zeph_memory::TokenCounter;
-    use zeph_memory::compression::CompressionLevel;
+
+    struct NaiveTokenCounter;
+    impl zeph_common::memory::TokenCounting for NaiveTokenCounter {
+        fn count_tokens(&self, text: &str) -> usize {
+            text.split_whitespace().count()
+        }
+        fn count_tool_schema_tokens(&self, schema: &serde_json::Value) -> usize {
+            schema.to_string().split_whitespace().count()
+        }
+    }
 
     fn empty_view() -> ContextMemoryView {
         ContextMemoryView {
@@ -1035,7 +1045,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_graph_facts_returns_none_when_memory_is_none() {
         let view = empty_view();
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_graph_facts(&view, "test", 1000, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1044,7 +1054,7 @@ mod tests {
     async fn fetch_graph_facts_returns_none_when_budget_zero() {
         let mut view = empty_view();
         view.graph_config.enabled = true;
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_graph_facts(&view, "test", 0, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1053,7 +1063,7 @@ mod tests {
     async fn fetch_graph_facts_returns_none_when_graph_disabled() {
         let mut view = empty_view();
         view.graph_config.enabled = false;
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_graph_facts(&view, "test", 1000, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1063,7 +1073,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_persona_facts_returns_none_when_memory_is_none() {
         let view = empty_view();
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_persona_facts(&view, 1000, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1072,7 +1082,7 @@ mod tests {
     async fn fetch_persona_facts_returns_none_when_budget_zero() {
         let mut view = empty_view();
         view.persona_config.enabled = true;
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_persona_facts(&view, 0, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1082,7 +1092,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_trajectory_hints_returns_none_when_memory_is_none() {
         let view = empty_view();
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_trajectory_hints(&view, 1000, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1091,7 +1101,7 @@ mod tests {
     async fn fetch_trajectory_hints_returns_none_when_budget_zero() {
         let mut view = empty_view();
         view.trajectory_config.enabled = true;
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_trajectory_hints(&view, 0, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1101,7 +1111,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_tree_memory_returns_none_when_memory_is_none() {
         let view = empty_view();
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_tree_memory(&view, 1000, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1110,7 +1120,7 @@ mod tests {
     async fn fetch_tree_memory_returns_none_when_budget_zero() {
         let mut view = empty_view();
         view.tree_config.enabled = true;
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_tree_memory(&view, 0, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1131,7 +1141,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_semantic_recall_returns_none_when_memory_is_none() {
         let view = empty_view();
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_semantic_recall(&view, "test", 1000, &tc, None)
             .await
             .unwrap();
@@ -1141,7 +1151,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_semantic_recall_returns_none_when_budget_zero() {
         let view = empty_view();
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_semantic_recall(&view, "test", 0, &tc, None)
             .await
             .unwrap();
@@ -1154,7 +1164,7 @@ mod tests {
     async fn fetch_document_rag_returns_none_when_memory_is_none() {
         let mut view = empty_view();
         view.document_config.rag_enabled = true;
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_document_rag(&view, "test", 1000, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1162,7 +1172,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_document_rag_returns_none_when_rag_disabled() {
         let view = empty_view();
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_document_rag(&view, "test", 1000, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1172,7 +1182,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_summaries_returns_none_when_memory_is_none() {
         let view = empty_view();
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_summaries(&view, 1000, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1182,7 +1192,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_cross_session_returns_none_when_memory_is_none() {
         let view = empty_view();
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_cross_session(&view, "test", 1000, &tc).await.unwrap();
         assert!(result.is_none());
     }
@@ -1241,7 +1251,7 @@ mod tests {
     async fn fetch_reasoning_strategies_returns_none_when_memory_is_none() {
         let mut view = empty_view();
         view.reasoning_config.enabled = true;
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_reasoning_strategies(&view, "query", 1000, 3, &tc)
             .await
             .unwrap();
@@ -1252,7 +1262,7 @@ mod tests {
     async fn fetch_reasoning_strategies_returns_none_when_budget_zero() {
         let mut view = empty_view();
         view.reasoning_config.enabled = true;
-        let tc = TokenCounter::new();
+        let tc = NaiveTokenCounter;
         let result = fetch_reasoning_strategies(&view, "query", 0, 3, &tc)
             .await
             .unwrap();

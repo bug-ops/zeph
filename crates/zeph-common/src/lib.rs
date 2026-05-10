@@ -14,6 +14,7 @@ pub mod error_taxonomy;
 pub mod fs_secure;
 pub mod hash;
 pub mod math;
+pub mod memory;
 pub mod net;
 pub mod patterns;
 pub mod policy;

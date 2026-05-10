@@ -9,42 +9,7 @@
 use crate::graph::types::GraphFact;
 use crate::types::MessageId;
 
-/// Enrichment level for view-aware graph recall.
-///
-/// Controls whether and how graph facts are enriched after the base retrieval step
-/// (BFS or spreading activation). For `Head`, the function is byte-identical to
-/// the legacy `recall_graph` / `recall_graph_activated` paths.
-///
-/// TODO(F3): add a per-call override so callers can request a different view than
-/// the one configured in `MemCotConfig::recall_view`.
-///
-/// # Examples
-///
-/// ```
-/// use zeph_memory::RecallView;
-///
-/// assert_eq!(RecallView::default(), RecallView::Head);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RecallView {
-    /// Standard retrieval — no enrichment beyond what the base method provides.
-    ///
-    /// When `sa_params = None` AND `view = Head`, the output is byte-identical to
-    /// calling `recall_graph` directly.
-    #[default]
-    Head,
-    /// Retrieval + source-message provenance.
-    ///
-    /// Each returned fact is enriched with the `MessageId` and a ≤200-char snippet
-    /// from the message that originally created the edge.
-    ZoomIn,
-    /// Retrieval + 1-hop neighbor expansion.
-    ///
-    /// For each returned fact, up to `neighbor_cap` additional 1-hop neighbor facts
-    /// are appended. Neighbors are deduped against the head set using the canonical
-    /// `(source_name, relation, target_name, edge_type)` tuple.
-    ZoomOut,
-}
+pub use zeph_common::memory::RecallView;
 
 /// A graph fact returned by the view-aware recall path.
 ///

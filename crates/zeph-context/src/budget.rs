@@ -8,7 +8,7 @@
 //! [`BudgetAllocation`] is the result of one budget split and is consumed by
 //! [`crate::assembler::ContextAssembler`].
 
-use zeph_memory::TokenCounter;
+use zeph_common::memory::TokenCounting;
 
 /// Per-slot token budget produced by [`ContextBudget::allocate`].
 ///
@@ -111,12 +111,19 @@ impl ContextBudget {
     ///
     /// # Examples
     ///
+    /// # Examples
+    ///
     /// ```no_run
     /// use zeph_context::budget::ContextBudget;
-    /// use zeph_memory::TokenCounter;
     ///
+    /// // Any type implementing `zeph_common::memory::TokenCounting` can be used.
+    /// # struct Tc;
+    /// # impl zeph_common::memory::TokenCounting for Tc {
+    /// #     fn count_tokens(&self, t: &str) -> usize { t.split_whitespace().count() }
+    /// #     fn count_tool_schema_tokens(&self, v: &serde_json::Value) -> usize { v.to_string().len() }
+    /// # }
     /// let budget = ContextBudget::new(128_000, 0.15);
-    /// let tc = TokenCounter::new();
+    /// let tc = Tc;
     /// let alloc = budget.allocate("system prompt", "skills prompt", &tc, false);
     /// assert!(alloc.recent_history > 0);
     /// ```
@@ -125,7 +132,7 @@ impl ContextBudget {
         &self,
         system_prompt: &str,
         skills_prompt: &str,
-        tc: &TokenCounter,
+        tc: &dyn TokenCounting,
         graph_enabled: bool,
     ) -> BudgetAllocation {
         self.allocate_with_opts(system_prompt, skills_prompt, tc, graph_enabled, 0, false)
@@ -148,7 +155,7 @@ impl ContextBudget {
         &self,
         system_prompt: &str,
         skills_prompt: &str,
-        tc: &TokenCounter,
+        tc: &dyn TokenCounting,
         graph_enabled: bool,
         digest_tokens: usize,
         memory_first: bool,
@@ -244,6 +251,16 @@ mod tests {
 
     use super::*;
 
+    struct NaiveTc;
+    impl TokenCounting for NaiveTc {
+        fn count_tokens(&self, text: &str) -> usize {
+            text.split_whitespace().count()
+        }
+        fn count_tool_schema_tokens(&self, schema: &serde_json::Value) -> usize {
+            schema.to_string().split_whitespace().count()
+        }
+    }
+
     #[test]
     fn context_budget_max_tokens_accessor() {
         let budget = ContextBudget::new(1000, 0.2);
@@ -253,7 +270,7 @@ mod tests {
     #[test]
     fn budget_allocation_basic() {
         let budget = ContextBudget::new(1000, 0.20);
-        let tc = TokenCounter::new();
+        let tc = NaiveTc;
         let alloc = budget.allocate("system prompt", "skills prompt", &tc, false);
         assert_eq!(alloc.response_reserve, 200);
         assert!(alloc.system_prompt > 0);
@@ -265,7 +282,7 @@ mod tests {
 
     #[test]
     fn budget_allocation_zero_disables() {
-        let tc = TokenCounter::new();
+        let tc = NaiveTc;
         let budget = ContextBudget::new(0, 0.20);
         let alloc = budget.allocate("test", "test", &tc, false);
         assert_eq!(alloc.system_prompt, 0);
@@ -276,7 +293,7 @@ mod tests {
 
     #[test]
     fn budget_allocation_graph_disabled_no_graph_facts() {
-        let tc = TokenCounter::new();
+        let tc = NaiveTc;
         let budget = ContextBudget::new(10_000, 0.20);
         let alloc = budget.allocate("", "", &tc, false);
         assert_eq!(alloc.graph_facts, 0);
@@ -286,7 +303,7 @@ mod tests {
 
     #[test]
     fn budget_allocation_graph_enabled_allocates_4_percent() {
-        let tc = TokenCounter::new();
+        let tc = NaiveTc;
         let budget = ContextBudget::new(10_000, 0.20).with_graph_enabled(true);
         let alloc = budget.allocate("", "", &tc, true);
         assert!(alloc.graph_facts > 0);
@@ -296,7 +313,7 @@ mod tests {
 
     #[test]
     fn budget_allocation_memory_first_zeroes_history() {
-        let tc = TokenCounter::new();
+        let tc = NaiveTc;
         let budget = ContextBudget::new(10_000, 0.20);
         let alloc = budget.allocate_with_opts("", "", &tc, false, 0, true);
         assert_eq!(alloc.recent_history, 0);

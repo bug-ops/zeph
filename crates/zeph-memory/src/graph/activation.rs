@@ -44,21 +44,7 @@ pub struct ActivatedFact {
     pub activation_score: f32,
 }
 
-/// Parameters for spreading activation. Mirrors `SpreadingActivationConfig` but lives
-/// in `zeph-memory` so the crate does not depend on `zeph-config`.
-#[derive(Debug, Clone)]
-pub struct SpreadingActivationParams {
-    pub decay_lambda: f32,
-    pub max_hops: u32,
-    pub activation_threshold: f32,
-    pub inhibition_threshold: f32,
-    pub max_activated_nodes: usize,
-    pub temporal_decay_rate: f64,
-    /// Weight of structural score in hybrid seed ranking. Range: [0.0, 1.0]. Default: 0.4.
-    pub seed_structural_weight: f32,
-    /// Maximum seeds per community ID. 0 = unlimited. Default: 3.
-    pub seed_community_cap: usize,
-}
+pub use zeph_common::memory::SpreadingActivationParams;
 
 // ── HL-F5: HeLa-Mem spreading activation (#3346) ─────────────────────────────
 

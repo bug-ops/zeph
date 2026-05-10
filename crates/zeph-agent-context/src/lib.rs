@@ -30,6 +30,7 @@
 pub mod compaction;
 pub mod error;
 pub mod helpers;
+pub mod memory_backend;
 pub mod retrieved;
 pub mod service;
 pub mod state;

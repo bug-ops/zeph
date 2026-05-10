@@ -21,56 +21,10 @@
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::graph::EdgeType;
-
-/// Classification of which memory backend(s) to query.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryRoute {
-    /// Full-text search only (`SQLite` FTS5). Fast, good for keyword/exact queries.
-    Keyword,
-    /// Vector search only (Qdrant). Good for semantic/conceptual queries.
-    Semantic,
-    /// Both backends, results merged by reciprocal rank fusion.
-    Hybrid,
-    /// Graph-based retrieval via BFS traversal. Good for relationship queries.
-    /// When the `graph-memory` feature is disabled, callers treat this as `Hybrid`.
-    Graph,
-    /// FTS5 search with a timestamp-range filter. Used for temporal/episodic queries
-    /// ("what did we discuss yesterday", "last week's conversation about Rust").
-    ///
-    /// Known trade-off (MVP): skips vector search entirely for speed. Semantically similar
-    /// but lexically different messages may be missed. Use `Hybrid` route when semantic
-    /// precision matters more than temporal filtering.
-    Episodic,
-}
-
-/// Routing decision with confidence and optional LLM reasoning.
-#[derive(Debug, Clone)]
-pub struct RoutingDecision {
-    pub route: MemoryRoute,
-    /// Confidence in `[0, 1]`. `1.0` = certain, `0.5` = ambiguous.
-    pub confidence: f32,
-    /// Only populated when an LLM classifier was used.
-    pub reasoning: Option<String>,
-}
-
-/// Decides which memory backend(s) to query for a given input.
-pub trait MemoryRouter: Send + Sync {
-    /// Route a query to the appropriate backend(s).
-    fn route(&self, query: &str) -> MemoryRoute;
-
-    /// Route with a confidence signal. Default implementation wraps `route()` with confidence 1.0.
-    ///
-    /// Override this in routers that can express ambiguity (e.g. `HeuristicRouter`)
-    /// so that `HybridRouter` can escalate uncertain decisions to LLM.
-    fn route_with_confidence(&self, query: &str) -> RoutingDecision {
-        RoutingDecision {
-            route: self.route(query),
-            confidence: 1.0,
-            reasoning: None,
-        }
-    }
-}
+pub use zeph_common::memory::{
+    AsyncMemoryRouter, CAUSAL_MARKERS, ENTITY_MARKERS, MemoryRoute, MemoryRouter, RoutingDecision,
+    TEMPORAL_MARKERS, WORD_BOUNDARY_TEMPORAL, classify_graph_subgraph, parse_route_str,
+};
 
 /// Resolved datetime boundaries for a temporal query.
 ///
@@ -125,98 +79,6 @@ const TEMPORAL_PATTERNS: &[&str] = &[
     "few hours ago",
     "earlier today",
 ];
-
-/// Single-word temporal tokens that require word-boundary checking.
-/// These are NOT in `TEMPORAL_PATTERNS` to avoid substring false positives.
-const WORD_BOUNDARY_TEMPORAL: &[&str] = &["ago"];
-
-/// MAGMA causal edge markers.
-///
-/// Shared between [`HeuristicRouter`] and [`classify_graph_subgraph`] to prevent
-/// pattern-list drift between the two classifiers (critic suggestion).
-pub(crate) const CAUSAL_MARKERS: &[&str] = &[
-    "why",
-    "because",
-    "caused",
-    "cause",
-    "reason",
-    "result",
-    "led to",
-    "consequence",
-    "trigger",
-    "effect",
-    "blame",
-    "fault",
-];
-
-/// MAGMA temporal edge markers for subgraph classification.
-///
-/// Shared between [`HeuristicRouter`] and [`classify_graph_subgraph`].
-/// Note: these are distinct from `TEMPORAL_PATTERNS` (which drive `Episodic` routing).
-/// `TEMPORAL_MARKERS` detect edges whose *semantics* are temporal (sequencing/ordering),
-/// while `TEMPORAL_PATTERNS` detect queries that ask about *when* events occurred.
-pub(crate) const TEMPORAL_MARKERS: &[&str] = &[
-    "before", "after", "first", "then", "timeline", "sequence", "preceded", "followed", "started",
-    "ended", "during", "prior",
-];
-
-/// MAGMA entity/structural markers.
-pub(crate) const ENTITY_MARKERS: &[&str] = &[
-    "is a",
-    "type of",
-    "kind of",
-    "part of",
-    "instance",
-    "same as",
-    "alias",
-    "subtype",
-    "subclass",
-    "belongs to",
-];
-
-/// Classify a query into the MAGMA edge types to use for subgraph-scoped BFS retrieval.
-///
-/// Pure heuristic, zero latency — no LLM call. Returns a prioritised list of [`EdgeType`]s.
-///
-/// Rules (checked in order):
-/// 1. Causal markers → include `Causal`
-/// 2. Temporal markers → include `Temporal`
-/// 3. Entity/structural markers → include `Entity`
-/// 4. `Semantic` is always included as fallback to guarantee recall >= current untyped BFS.
-///
-/// Multiple markers may match, producing a union of detected types.
-///
-/// # Example
-///
-/// ```
-/// # use zeph_memory::router::classify_graph_subgraph;
-/// # use zeph_memory::EdgeType;
-/// let types = classify_graph_subgraph("why did X happen");
-/// assert!(types.contains(&EdgeType::Causal));
-/// assert!(types.contains(&EdgeType::Semantic));
-/// ```
-#[must_use]
-pub fn classify_graph_subgraph(query: &str) -> Vec<EdgeType> {
-    let lower = query.to_ascii_lowercase();
-    let mut types: Vec<EdgeType> = Vec::new();
-
-    if CAUSAL_MARKERS.iter().any(|m| lower.contains(m)) {
-        types.push(EdgeType::Causal);
-    }
-    if TEMPORAL_MARKERS.iter().any(|m| lower.contains(m)) {
-        types.push(EdgeType::Temporal);
-    }
-    if ENTITY_MARKERS.iter().any(|m| lower.contains(m)) {
-        types.push(EdgeType::Entity);
-    }
-
-    // Semantic is always included as fallback — recall cannot be worse than untyped BFS.
-    if !types.contains(&EdgeType::Semantic) {
-        types.push(EdgeType::Semantic);
-    }
-
-    types
-}
 
 /// Heuristic-based memory router.
 ///
@@ -730,28 +592,6 @@ impl LlmRouter {
     }
 }
 
-/// Parse a route name string into a [`MemoryRoute`], falling back to `fallback` on unknown values.
-///
-/// # Examples
-///
-/// ```
-/// use zeph_memory::router::{parse_route_str, MemoryRoute};
-///
-/// assert_eq!(parse_route_str("semantic", MemoryRoute::Hybrid), MemoryRoute::Semantic);
-/// assert_eq!(parse_route_str("unknown", MemoryRoute::Hybrid), MemoryRoute::Hybrid);
-/// ```
-#[must_use]
-pub fn parse_route_str(s: &str, fallback: MemoryRoute) -> MemoryRoute {
-    match s {
-        "keyword" => MemoryRoute::Keyword,
-        "semantic" => MemoryRoute::Semantic,
-        "hybrid" => MemoryRoute::Hybrid,
-        "graph" => MemoryRoute::Graph,
-        "episodic" => MemoryRoute::Episodic,
-        _ => fallback,
-    }
-}
-
 impl MemoryRouter for LlmRouter {
     fn route(&self, query: &str) -> MemoryRoute {
         // Sync path: LLM is not available without an async executor.
@@ -764,14 +604,6 @@ impl MemoryRouter for LlmRouter {
         // When called synchronously (e.g. in tests), fall back to heuristic.
         HeuristicRouter.route_with_confidence(query)
     }
-}
-
-/// Async extension for LLM-capable routers.
-pub trait AsyncMemoryRouter: MemoryRouter {
-    fn route_async<'a>(
-        &'a self,
-        query: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = RoutingDecision> + Send + 'a>>;
 }
 
 impl AsyncMemoryRouter for LlmRouter {

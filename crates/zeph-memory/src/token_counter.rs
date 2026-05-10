@@ -210,6 +210,16 @@ impl Default for TokenCounter {
     }
 }
 
+impl zeph_common::memory::TokenCounting for TokenCounter {
+    fn count_tokens(&self, text: &str) -> usize {
+        self.count_tokens(text)
+    }
+
+    fn count_tool_schema_tokens(&self, schema: &serde_json::Value) -> usize {
+        self.count_tool_schema_tokens(schema)
+    }
+}
+
 fn hash_text(text: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     text.hash(&mut hasher);

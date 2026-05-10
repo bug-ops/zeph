@@ -16,10 +16,19 @@ use std::time::Duration;
 
 use futures::StreamExt as _;
 use zeph_common::OVERFLOW_NOTICE_PREFIX;
+use zeph_common::memory::AnchoredSummary;
 use zeph_llm::LlmProvider as _;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
-use zeph_memory::{AnchoredSummary, TokenCounter};
+
+/// Token counting for individual messages, used by the summarization chunker.
+///
+/// Implemented by `zeph-memory::TokenCounter` in `zeph-core`. Defined here so
+/// `zeph-context` does not need a direct dependency on `zeph-memory`.
+pub trait MessageTokenCounter: Send + Sync {
+    /// Return the token count for the given message, accounting for all parts.
+    fn count_message_tokens(&self, msg: &Message) -> usize;
+}
 
 /// Explicit LLM dependencies for async summarization, avoiding coupling to `Agent<C>`.
 ///
@@ -32,7 +41,7 @@ pub struct SummarizationDeps {
     /// Timeout applied to each individual LLM call.
     pub llm_timeout: Duration,
     /// Token counter for chunking message slices.
-    pub token_counter: Arc<TokenCounter>,
+    pub token_counter: Arc<dyn MessageTokenCounter>,
     /// Whether to attempt structured `AnchoredSummary` output before prose.
     pub structured_summaries: bool,
     /// Optional callback invoked with the `AnchoredSummary` result and a `fallback` flag.
@@ -137,11 +146,12 @@ pub async fn summarize_with_llm(
     const CHUNK_TOKEN_BUDGET: usize = 4096;
     const OVERSIZED_THRESHOLD: usize = CHUNK_TOKEN_BUDGET / 2;
 
+    let tc = Arc::clone(&deps.token_counter);
     let chunks = crate::slot::chunk_messages(
         messages,
         CHUNK_TOKEN_BUDGET,
         OVERSIZED_THRESHOLD,
-        &deps.token_counter,
+        move |msg| tc.count_message_tokens(msg),
     );
 
     if chunks.len() <= 1 {

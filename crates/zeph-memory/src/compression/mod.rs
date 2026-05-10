@@ -28,34 +28,7 @@
 pub mod promotion;
 
 pub use promotion::{PromotionCandidate, PromotionConfig, PromotionEngine, PromotionInput};
-
-/// The three abstraction levels in the compression spectrum.
-///
-/// Higher variants are cheaper to retrieve (fewer tokens) but represent a higher
-/// abstraction over raw episodic experience.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum CompressionLevel {
-    /// Raw episodic messages — full fidelity, high token cost.
-    Episodic,
-    /// Abstracted procedural knowledge (how-to, tool patterns).
-    Procedural,
-    /// Stable declarative facts and reference material.
-    Declarative,
-}
-
-impl CompressionLevel {
-    /// A relative token-cost factor for budgeting purposes.
-    ///
-    /// `Episodic = 1.0` (baseline), `Procedural = 0.6`, `Declarative = 0.3`.
-    #[must_use]
-    pub fn cost_factor(self) -> f32 {
-        match self {
-            Self::Episodic => 1.0,
-            Self::Procedural => 0.6,
-            Self::Declarative => 0.3,
-        }
-    }
-}
+pub use zeph_common::memory::CompressionLevel;
 
 /// Token-budget-aware tier selector for context assembly.
 ///

@@ -44,7 +44,8 @@ zeph-llm.workspace = true
 
 [features]
 profiling = []
-default = ["sqlite"]
+default = ["sqlite", "jsonschema"]
+jsonschema = ["zeph-common/jsonschema"]
 pdf = ["dep:pdf-extract"]
 sqlite = ["zeph-db/sqlite"]
 postgres = ["zeph-db/postgres"]

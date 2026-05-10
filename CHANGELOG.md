@@ -106,6 +106,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- refactor(common,context): resolve `zeph-context → zeph-memory` same-layer violation (#3665).
+  Extracted interface types (`MemoryRoute`, `RoutingDecision`, `MemoryRouter`, `AsyncMemoryRouter`,
+  `RecallView`, `CompressionLevel`, `AnchoredSummary`, `SpreadingActivationParams`, `EdgeType`,
+  `GraphRecallParams`, `TokenCounting`, `ContextMemoryBackend`) to `zeph-common::memory`.
+  Added `SemanticMemoryBackend` adapter and `build_memory_router()` in `zeph-agent-context`.
+  `zeph-context` no longer imports `zeph-memory`. Exception note removed from `specs/constitution.md`.
+
 - build: add `profiling` and `sandbox` to default Cargo features — tracing spans are compiled by
   default for diagnostics; macOS Seatbelt / Linux Landlock sandbox is available without
   `--features sandbox` (still runtime-disabled unless `tools.sandbox.enabled = true`)

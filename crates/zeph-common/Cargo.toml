@@ -13,6 +13,7 @@ description = "Shared utility functions and security primitives for Zeph crates"
 readme = "README.md"
 
 [features]
+jsonschema = ["dep:schemars"]
 treesitter = [
     "dep:tree-sitter",
     "dep:tree-sitter-go",
@@ -27,6 +28,7 @@ blake3.workspace = true
 cpu-time.workspace = true
 metrics.workspace = true
 parking_lot.workspace = true
+schemars = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 thiserror.workspace = true

@@ -11,12 +11,10 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use zeph_common::memory::{CompressionLevel, ContextMemoryBackend};
 use zeph_config::{
     DocumentConfig, GraphConfig, PersonaConfig, ReasoningConfig, TrajectoryConfig, TreeConfig,
 };
-use zeph_memory::compression::CompressionLevel;
-use zeph_memory::semantic::SemanticMemory;
-use zeph_memory::{ConversationId, TokenCounter};
 
 use crate::manager::ContextManager;
 
@@ -31,7 +29,7 @@ pub struct ContextAssemblyInput<'a> {
     /// Context lifecycle state machine.
     pub context_manager: &'a ContextManager,
     /// Token counter for budget enforcement.
-    pub token_counter: &'a TokenCounter,
+    pub token_counter: &'a dyn zeph_common::memory::TokenCounting,
     /// Text of the skills prompt injected in the last turn (used for budget calculation).
     pub skills_prompt: &'a str,
     /// Index RAG accessor. `None` when code-index is disabled.
@@ -47,7 +45,7 @@ pub struct ContextAssemblyInput<'a> {
     /// Content scrubber for PII removal. Passed as a function pointer to avoid a dependency
     /// on `zeph-core`'s redact module.
     pub scrub: fn(&str) -> Cow<'_, str>,
-    /// Compression tiers active for this turn, derived from [`zeph_memory::compression::RetrievalPolicy`].
+    /// Compression tiers active for this turn, derived from the retrieval policy.
     ///
     /// The assembler skips fetchers whose tier is not present in this slice.
     /// An empty slice means "no tier filtering" — all fetchers run subject to their own budget
@@ -58,6 +56,9 @@ pub struct ContextAssemblyInput<'a> {
     /// A caller computing this from a config-driven policy must guarantee non-empty intent or
     /// accept that an empty slice disables tier-based filtering entirely.
     pub active_levels: &'a [CompressionLevel],
+    /// Pre-built memory router for this turn. Built by `zeph-core` via `build_memory_router()`
+    /// and passed in to avoid a `zeph-memory` dependency inside `zeph-context`.
+    pub router: Box<dyn zeph_common::memory::AsyncMemoryRouter + Send + Sync>,
 }
 
 /// Configuration extracted from `LearningEngine` needed by correction recall.
@@ -82,9 +83,9 @@ pub struct CorrectionConfig {
 pub struct ContextMemoryView {
     // ── persistence fields ────────────────────────────────────────────────────
     /// Semantic memory backend. `None` when memory is disabled.
-    pub memory: Option<Arc<SemanticMemory>>,
-    /// Active conversation ID. `None` before the first message is persisted.
-    pub conversation_id: Option<ConversationId>,
+    pub memory: Option<Arc<dyn ContextMemoryBackend>>,
+    /// Active conversation ID (`conversations.id` raw value). `None` before the first message is persisted.
+    pub conversation_id: Option<i64>,
     /// Maximum number of semantic recall hits injected per turn.
     pub recall_limit: usize,
     /// Minimum semantic similarity score for cross-session recall (0.0–1.0).

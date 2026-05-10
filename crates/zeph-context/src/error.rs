@@ -14,7 +14,7 @@ use thiserror::Error;
 pub enum ContextError {
     /// A memory subsystem operation failed.
     #[error("memory error: {0}")]
-    Memory(#[from] zeph_memory::MemoryError),
+    Memory(Box<dyn std::error::Error + Send + Sync + 'static>),
 
     /// An unexpected error occurred during context assembly.
     #[error("context assembly error: {0}")]

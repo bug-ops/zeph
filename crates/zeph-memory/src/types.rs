@@ -77,6 +77,12 @@ impl std::str::FromStr for MemoryTier {
 #[sqlx(transparent)]
 pub struct ConversationId(pub i64);
 
+impl std::fmt::Display for ConversationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Strongly typed wrapper for message row IDs.
 ///
 /// Wraps the `SQLite` `messages.id` integer primary key to prevent confusion
@@ -112,12 +118,6 @@ pub struct MessageId(pub i64);
 pub struct MemSceneId(pub i64);
 
 impl std::fmt::Display for MemSceneId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::fmt::Display for ConversationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
