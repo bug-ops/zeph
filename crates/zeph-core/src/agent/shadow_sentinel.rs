@@ -496,12 +496,18 @@ impl ShadowSentinel {
         if qualified_tool_id == "builtin:shell"
             || qualified_tool_id == "builtin:bash"
             || qualified_tool_id.starts_with("builtin:shell")
+            || qualified_tool_id == "bash"
+            || qualified_tool_id == "shell"
+            || qualified_tool_id == "sh"
         {
             return ToolRiskCategory::Shell;
         }
         if qualified_tool_id == "builtin:write"
             || qualified_tool_id == "builtin:edit"
             || qualified_tool_id == "builtin:delete"
+            || qualified_tool_id == "write"
+            || qualified_tool_id == "edit"
+            || qualified_tool_id == "delete"
         {
             return ToolRiskCategory::FileWrite;
         }
@@ -760,6 +766,27 @@ mod tests {
         assert_eq!(
             sentinel.classify_tool("builtin:search"),
             ToolRiskCategory::Low
+        );
+    }
+
+    #[tokio::test]
+    async fn classify_bare_shell_names_are_shell_risk() {
+        let config = zeph_config::ShadowSentinelConfig::default();
+        let sentinel = make_test_sentinel(config).await;
+        assert_eq!(sentinel.classify_tool("bash"), ToolRiskCategory::Shell);
+        assert_eq!(sentinel.classify_tool("shell"), ToolRiskCategory::Shell);
+        assert_eq!(sentinel.classify_tool("sh"), ToolRiskCategory::Shell);
+    }
+
+    #[tokio::test]
+    async fn classify_bare_file_write_names_are_file_write_risk() {
+        let config = zeph_config::ShadowSentinelConfig::default();
+        let sentinel = make_test_sentinel(config).await;
+        assert_eq!(sentinel.classify_tool("write"), ToolRiskCategory::FileWrite);
+        assert_eq!(sentinel.classify_tool("edit"), ToolRiskCategory::FileWrite);
+        assert_eq!(
+            sentinel.classify_tool("delete"),
+            ToolRiskCategory::FileWrite
         );
     }
 
