@@ -1202,7 +1202,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     #[cfg(feature = "tui")]
-    let is_cli = matches!(&channel, AppChannel::Standard(c) if matches!(c.as_ref(), AnyChannel::Cli(_)));
+    let is_cli =
+        matches!(&channel, AppChannel::Standard(c) if matches!(c.as_ref(), AnyChannel::Cli(_)));
     #[cfg(not(feature = "tui"))]
     let is_cli = matches!(channel, AnyChannel::Cli(_));
     if let Some(ref sink) = json_sink {
