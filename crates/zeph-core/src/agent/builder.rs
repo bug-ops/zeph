@@ -1407,6 +1407,18 @@ impl<C: Channel> Agent<C> {
             .turn_complete
             .clone_from(&config.turn_complete);
 
+        self.services
+            .session
+            .hooks_config
+            .pre_tool_use
+            .clone_from(&config.pre_tool_use);
+
+        self.services
+            .session
+            .hooks_config
+            .post_tool_use
+            .clone_from(&config.post_tool_use);
+
         if let Some(ref fc) = config.file_changed {
             self.services
                 .session

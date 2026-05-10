@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::subagent::HookDef;
+use crate::subagent::{HookDef, HookMatcher};
 
 fn default_debounce_ms() -> u64 {
     500
@@ -69,6 +69,36 @@ pub struct HooksConfig {
     /// - `ZEPH_TURN_LLM_REQUESTS`  — number of completed LLM round-trips this turn.
     #[serde(default)]
     pub turn_complete: Vec<HookDef>,
+    /// Hooks fired before each tool execution, matched by tool name pattern.
+    ///
+    /// Uses pipe-separated pattern matching (same as subagent hooks). Hooks fire
+    /// before the `RuntimeLayer::before_tool` permission check — they observe every
+    /// attempted tool call, including calls that will be subsequently blocked.
+    ///
+    /// Hook serialization within a tier: hooks for tools in the same dependency tier
+    /// are dispatched sequentially (one tool's hooks complete before the next tool's
+    /// hooks start). Hooks for tools in different tiers may overlap.
+    ///
+    /// Hooks are fail-open: errors are logged but do not block tool execution.
+    ///
+    /// Environment variables set for `Command` hooks:
+    /// - `ZEPH_TOOL_NAME`      — name of the tool being invoked.
+    /// - `ZEPH_TOOL_ARGS_JSON` — JSON-serialized tool arguments (truncated at 64 KiB).
+    /// - `ZEPH_SESSION_ID`     — current conversation identifier, omitted when unavailable.
+    #[serde(default)]
+    pub pre_tool_use: Vec<HookMatcher>,
+    /// Hooks fired after each tool execution completes, matched by tool name pattern.
+    ///
+    /// Fires after the tool result is available. Same pattern matching and
+    /// fail-open semantics as `pre_tool_use`.
+    ///
+    /// Environment variables set for `Command` hooks:
+    /// - `ZEPH_TOOL_NAME`        — name of the tool that was invoked.
+    /// - `ZEPH_TOOL_ARGS_JSON`   — JSON-serialized tool arguments (truncated at 64 KiB).
+    /// - `ZEPH_SESSION_ID`       — current conversation identifier, omitted when unavailable.
+    /// - `ZEPH_TOOL_DURATION_MS` — wall-clock execution time in milliseconds.
+    #[serde(default)]
+    pub post_tool_use: Vec<HookMatcher>,
 }
 
 impl HooksConfig {
@@ -87,6 +117,8 @@ impl HooksConfig {
             && self.file_changed.is_none()
             && self.permission_denied.is_empty()
             && self.turn_complete.is_empty()
+            && self.pre_tool_use.is_empty()
+            && self.post_tool_use.is_empty()
     }
 }
 
@@ -183,6 +215,8 @@ severity = "high"
             file_changed: None,
             permission_denied: Vec::new(),
             turn_complete: Vec::new(),
+            pre_tool_use: Vec::new(),
+            post_tool_use: Vec::new(),
         };
         assert!(!cfg.is_empty());
     }
@@ -194,6 +228,8 @@ severity = "high"
             file_changed: None,
             permission_denied: vec![cmd_hook("echo denied")],
             turn_complete: Vec::new(),
+            pre_tool_use: Vec::new(),
+            post_tool_use: Vec::new(),
         };
         assert!(!cfg.is_empty());
     }
@@ -205,6 +241,8 @@ severity = "high"
             file_changed: None,
             permission_denied: Vec::new(),
             turn_complete: vec![cmd_hook("notify-send Zeph done")],
+            pre_tool_use: Vec::new(),
+            post_tool_use: Vec::new(),
         };
         assert!(!cfg.is_empty());
     }
@@ -216,6 +254,8 @@ severity = "high"
             file_changed: None,
             permission_denied: Vec::new(),
             turn_complete: Vec::new(),
+            pre_tool_use: Vec::new(),
+            post_tool_use: Vec::new(),
         };
         assert!(cfg.is_empty());
     }
@@ -233,6 +273,51 @@ fail_closed = false
         assert_eq!(cfg.turn_complete.len(), 1);
         assert!(cfg.cwd_changed.is_empty());
         assert!(cfg.permission_denied.is_empty());
+    }
+
+    #[test]
+    fn hooks_config_not_empty_with_pre_tool_use() {
+        use crate::subagent::HookMatcher;
+        let cfg = HooksConfig {
+            cwd_changed: Vec::new(),
+            file_changed: None,
+            permission_denied: Vec::new(),
+            turn_complete: Vec::new(),
+            pre_tool_use: vec![HookMatcher {
+                matcher: "Edit|Write".to_owned(),
+                hooks: vec![cmd_hook("echo pre")],
+            }],
+            post_tool_use: Vec::new(),
+        };
+        assert!(!cfg.is_empty());
+    }
+
+    #[test]
+    fn hooks_config_parses_pre_and_post_tool_use_from_toml() {
+        let toml = r#"
+[[pre_tool_use]]
+matcher = "Edit|Write"
+[[pre_tool_use.hooks]]
+type = "command"
+command = "echo pre $ZEPH_TOOL_NAME"
+timeout_secs = 5
+fail_closed = false
+
+[[post_tool_use]]
+matcher = "Shell"
+[[post_tool_use.hooks]]
+type = "command"
+command = "echo post $ZEPH_TOOL_DURATION_MS"
+timeout_secs = 5
+fail_closed = false
+"#;
+        let cfg: HooksConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.pre_tool_use.len(), 1);
+        assert_eq!(cfg.pre_tool_use[0].matcher, "Edit|Write");
+        assert_eq!(cfg.pre_tool_use[0].hooks.len(), 1);
+        assert_eq!(cfg.post_tool_use.len(), 1);
+        assert_eq!(cfg.post_tool_use[0].matcher, "Shell");
+        assert!(!cfg.is_empty());
     }
 
     /// Exercises the full testing.toml hooks pattern: `cwd_changed` + `file_changed` + `permission_denied`

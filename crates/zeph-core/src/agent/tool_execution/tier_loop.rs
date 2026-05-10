@@ -16,6 +16,43 @@ use super::{
 use crate::agent::Agent;
 use crate::channel::{Channel, StopHint, ToolStartEvent};
 
+/// Maximum byte length of `ZEPH_TOOL_ARGS_JSON`. OS `ARG_MAX` is ~1 MB on macOS and ~2 MB on
+/// Linux; staying well below that avoids `E2BIG` when spawning hook processes.
+const TOOL_ARGS_JSON_LIMIT: usize = 64 * 1024;
+
+/// Build the base env map for `pre_tool_use` / `post_tool_use` hook dispatch.
+///
+/// `ZEPH_TOOL_ARGS_JSON` is truncated to [`TOOL_ARGS_JSON_LIMIT`] bytes when the serialized
+/// argument object would exceed the OS `ARG_MAX` limit.
+fn make_tool_hook_env(
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+    session_id: Option<&str>,
+) -> std::collections::HashMap<String, String> {
+    let mut env = std::collections::HashMap::new();
+    env.insert("ZEPH_TOOL_NAME".to_owned(), tool_name.to_owned());
+
+    let raw = serde_json::to_string(tool_input).unwrap_or_default();
+    let args_json = if raw.len() > TOOL_ARGS_JSON_LIMIT {
+        tracing::warn!(
+            tool = tool_name,
+            len = raw.len(),
+            limit = TOOL_ARGS_JSON_LIMIT,
+            "ZEPH_TOOL_ARGS_JSON truncated for hook dispatch"
+        );
+        let limit = raw.floor_char_boundary(TOOL_ARGS_JSON_LIMIT);
+        format!("{}…", &raw[..limit])
+    } else {
+        raw
+    };
+    env.insert("ZEPH_TOOL_ARGS_JSON".to_owned(), args_json);
+
+    if let Some(sid) = session_id {
+        env.insert("ZEPH_SESSION_ID".to_owned(), sid.to_owned());
+    }
+    env
+}
+
 impl<C: Channel> Agent<C> {
     #[tracing::instrument(
         name = "core.tool.run_post_dispatch_phases",
@@ -927,6 +964,7 @@ impl<C: Channel> Agent<C> {
                 calls,
                 cache_hits,
                 args_hashes,
+                tool_started_ats,
                 &mut failed_ids,
                 &mut tool_results,
             )
@@ -1316,7 +1354,7 @@ impl<C: Channel> Agent<C> {
         fields(tier_size = tier_indices.len()),
         err
     )]
-    #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
+    #[allow(clippy::too_many_arguments, clippy::ptr_arg, clippy::too_many_lines)]
     async fn build_tier_call_futures(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
@@ -1410,6 +1448,37 @@ impl<C: Channel> Agent<C> {
                     skipped_output(tc.name.clone(), exceeded.to_error_message()),
                 ));
                 continue;
+            }
+
+            // Fire PreToolUse hooks before the RuntimeLayer permission check (fail-open).
+            let pre_hooks = self.services.session.hooks_config.pre_tool_use.clone();
+            if !pre_hooks.is_empty() {
+                let matched: Vec<&zeph_config::HookDef> =
+                    zeph_subagent::matching_hooks(&pre_hooks, tc.name.as_str());
+                if !matched.is_empty() {
+                    let _span =
+                        tracing::info_span!("core.hooks.pre_tool_use", tool = %tc.name).entered();
+                    let conv_id_str = self
+                        .services
+                        .memory
+                        .persistence
+                        .conversation_id
+                        .map(|id| id.0.to_string());
+                    let env =
+                        make_tool_hook_env(tc.name.as_str(), &tc.input, conv_id_str.as_deref());
+                    let owned: Vec<zeph_config::HookDef> = matched.into_iter().cloned().collect();
+                    let dispatch = self.mcp_dispatch();
+                    let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
+                        .as_ref()
+                        .map(|d| d as &dyn zeph_subagent::McpDispatch);
+                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&owned, &env, mcp).await {
+                        tracing::warn!(
+                            error = %e,
+                            tool = %tc.name,
+                            "PreToolUse hook failed"
+                        );
+                    }
+                }
             }
 
             if let Some(fut) = self.run_before_tool_hooks(idx, tc, call).await {
@@ -1514,6 +1583,7 @@ impl<C: Channel> Agent<C> {
         calls: &[ToolCall],
         cache_hits: &[Option<zeph_tools::ToolOutput>],
         args_hashes: &[u64],
+        tool_started_ats: &[std::time::Instant],
         failed_ids: &mut std::collections::HashSet<String>,
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
     ) {
@@ -1568,6 +1638,45 @@ impl<C: Channel> Agent<C> {
                             .await;
                     if hook_result.is_err() {
                         tracing::warn!("RuntimeLayer::after_tool panicked, continuing");
+                    }
+                }
+            }
+
+            // Fire PostToolUse hooks after the tool result is available (fail-open).
+            let post_hooks = self.services.session.hooks_config.post_tool_use.clone();
+            if !post_hooks.is_empty() {
+                let matched: Vec<&zeph_config::HookDef> =
+                    zeph_subagent::matching_hooks(&post_hooks, tool_calls[idx].name.as_str());
+                if !matched.is_empty() {
+                    let _span = tracing::info_span!(
+                        "core.hooks.post_tool_use",
+                        tool = %tool_calls[idx].name
+                    )
+                    .entered();
+                    let conv_id_str = self
+                        .services
+                        .memory
+                        .persistence
+                        .conversation_id
+                        .map(|id| id.0.to_string());
+                    let mut env = make_tool_hook_env(
+                        tool_calls[idx].name.as_str(),
+                        &tool_calls[idx].input,
+                        conv_id_str.as_deref(),
+                    );
+                    let duration_ms = tool_started_ats[idx].elapsed().as_millis();
+                    env.insert("ZEPH_TOOL_DURATION_MS".to_owned(), duration_ms.to_string());
+                    let owned: Vec<zeph_config::HookDef> = matched.into_iter().cloned().collect();
+                    let dispatch = self.mcp_dispatch();
+                    let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
+                        .as_ref()
+                        .map(|d| d as &dyn zeph_subagent::McpDispatch);
+                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&owned, &env, mcp).await {
+                        tracing::warn!(
+                            error = %e,
+                            tool = %tool_calls[idx].name,
+                            "PostToolUse hook failed"
+                        );
                     }
                 }
             }
@@ -2144,4 +2253,75 @@ fn build_gated_defs_for_iteration(
         .filter(|d| allowed_set.contains(d.name.as_str()))
         .cloned()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json_val(s: &str) -> serde_json::Value {
+        serde_json::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn make_tool_hook_env_sets_tool_name() {
+        let env = make_tool_hook_env("Edit", &serde_json::Value::Null, None);
+        assert_eq!(env.get("ZEPH_TOOL_NAME").map(String::as_str), Some("Edit"));
+    }
+
+    #[test]
+    fn make_tool_hook_env_sets_args_json_for_small_payload() {
+        let input = json_val(r#"{"path": "/tmp/foo.txt"}"#);
+        let env = make_tool_hook_env("Write", &input, None);
+        let args = env
+            .get("ZEPH_TOOL_ARGS_JSON")
+            .expect("ZEPH_TOOL_ARGS_JSON missing");
+        let parsed: serde_json::Value = serde_json::from_str(args).unwrap();
+        assert_eq!(parsed["path"], "/tmp/foo.txt");
+    }
+
+    #[test]
+    fn make_tool_hook_env_truncates_large_payload_safely() {
+        // Build a JSON string > 64 KiB with a multi-byte char near the boundary.
+        let mut big = String::from(r#"{"data":""#);
+        // Fill mostly with ASCII, then add a 3-byte char (€ = 0xE2 0x82 0xAC) right at boundary.
+        // We want the char boundary to fall inside the limit so truncation must round down.
+        while big.len() < TOOL_ARGS_JSON_LIMIT - 3 {
+            big.push('a');
+        }
+        big.push('€'); // 3 bytes — may straddle the limit
+        while big.len() < TOOL_ARGS_JSON_LIMIT + 100 {
+            big.push('b');
+        }
+        big.push_str(r#""}"#);
+        let input: serde_json::Value = serde_json::from_str(&big).unwrap_or_default();
+        // Must not panic and must end with the ellipsis character.
+        let env = make_tool_hook_env("Shell", &input, None);
+        let args = env
+            .get("ZEPH_TOOL_ARGS_JSON")
+            .expect("ZEPH_TOOL_ARGS_JSON missing");
+        assert!(
+            args.ends_with('…'),
+            "truncated value should end with ellipsis"
+        );
+        assert!(
+            args.is_char_boundary(args.len()),
+            "truncation must land on char boundary"
+        );
+    }
+
+    #[test]
+    fn make_tool_hook_env_sets_session_id_when_present() {
+        let env = make_tool_hook_env("Read", &serde_json::Value::Null, Some("sess-42"));
+        assert_eq!(
+            env.get("ZEPH_SESSION_ID").map(String::as_str),
+            Some("sess-42")
+        );
+    }
+
+    #[test]
+    fn make_tool_hook_env_omits_session_id_when_none() {
+        let env = make_tool_hook_env("Read", &serde_json::Value::Null, None);
+        assert!(!env.contains_key("ZEPH_SESSION_ID"));
+    }
 }

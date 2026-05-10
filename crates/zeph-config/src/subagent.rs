@@ -159,8 +159,13 @@ pub struct HookDef {
     /// Maximum seconds to wait for the hook before timing out. Default: 30.
     #[serde(default = "default_hook_timeout")]
     pub timeout_secs: u64,
-    /// When `true`, a non-zero exit code or timeout causes the calling operation to fail.
-    /// When `false` (default), errors are logged but execution continues.
+    /// When `true`, a non-zero exit code or timeout aborts the remaining hooks in the same
+    /// sequence (no further hooks in the list run). When `false` (default), errors are logged
+    /// and the next hook in the sequence continues.
+    ///
+    /// Note: in `pre_tool_use` and `post_tool_use` contexts this field controls hook-chain
+    /// execution only — it does **not** block the tool call itself. Hook dispatch is always
+    /// fail-open at the agent level; the tool executes regardless of hook outcomes.
     #[serde(default)]
     pub fail_closed: bool,
 }

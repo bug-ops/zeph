@@ -37,6 +37,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(hooks): `PreToolUse` and `PostToolUse` hook events for the main agent and subagent paths.
+  New `[[hooks.pre_tool_use]]` and `[[hooks.post_tool_use]]` config sections accept
+  `HookMatcher` entries (pipe-separated tool name patterns). Hooks fire with env vars:
+  `ZEPH_TOOL_NAME`, `ZEPH_TOOL_ARGS_JSON` (truncated at 64 KiB via `floor_char_boundary` to
+  avoid `E2BIG` and UTF-8 panic), `ZEPH_SESSION_ID` (main agent only; omitted in subagent),
+  and `ZEPH_TOOL_DURATION_MS` (post hooks only). PreToolUse fires before the `RuntimeLayer`
+  permission check (observers see all attempted calls). Hook dispatch is fail-open at the agent
+  level; `fail_closed` in a `HookDef` aborts the hook-chain sequence only. Closes #3698.
+
 - feat(tui): native terminal text selection without Shift modifier. `EnableMouseCapture` replaced
   with alternate-scroll mode (`\x1b[?1007h`/`\x1b[?1007l`) so the terminal translates scroll-wheel
   events into arrow keys. Chat scrolling is preserved; `AppEvent::MouseScroll` removed from the

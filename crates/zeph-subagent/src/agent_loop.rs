@@ -26,15 +26,35 @@ enum SecretRequestOutcome {
     Cancelled,
 }
 
+/// Maximum byte length of `ZEPH_TOOL_ARGS_JSON` to avoid `E2BIG` when spawning hook processes.
+const TOOL_ARGS_JSON_LIMIT: usize = 64 * 1024;
+
 fn make_hook_env(
     task_id: &str,
     agent_name: &str,
     tool_name: &str,
+    tool_input: &serde_json::Value,
 ) -> std::collections::HashMap<String, String> {
     let mut env = std::collections::HashMap::new();
     env.insert("ZEPH_AGENT_ID".to_owned(), task_id.to_owned());
     env.insert("ZEPH_AGENT_NAME".to_owned(), agent_name.to_owned());
     env.insert("ZEPH_TOOL_NAME".to_owned(), tool_name.to_owned());
+
+    let raw = serde_json::to_string(tool_input).unwrap_or_default();
+    let args_json = if raw.len() > TOOL_ARGS_JSON_LIMIT {
+        tracing::warn!(
+            tool = tool_name,
+            len = raw.len(),
+            limit = TOOL_ARGS_JSON_LIMIT,
+            "ZEPH_TOOL_ARGS_JSON truncated for hook dispatch"
+        );
+        let limit = raw.floor_char_boundary(TOOL_ARGS_JSON_LIMIT);
+        format!("{}…", &raw[..limit])
+    } else {
+        raw
+    };
+    env.insert("ZEPH_TOOL_ARGS_JSON".to_owned(), args_json);
+
     env
 }
 
@@ -466,11 +486,10 @@ async fn handle_tool_step(
 
             let mut result_parts: Vec<MessagePart> = Vec::new();
             for tc in &tool_calls {
-                let mut hook_env = make_hook_env(task_id, agent_name, tc.name.as_str());
-
                 let pre_hooks: Vec<&HookDef> =
                     matching_hooks(&hooks.pre_tool_use, tc.name.as_str());
                 if !pre_hooks.is_empty() {
+                    let hook_env = make_hook_env(task_id, agent_name, tc.name.as_str(), &tc.input);
                     let pre_owned: Vec<HookDef> = pre_hooks.into_iter().cloned().collect();
                     // MCP dispatch is not available in the subagent execution path.
                     if let Err(e) = fire_hooks(&pre_owned, &hook_env, None).await {
@@ -514,12 +533,14 @@ async fn handle_tool_step(
                     is_error,
                 });
 
-                hook_env.insert("ZEPH_TOOL_DURATION_MS".to_owned(), duration_ms.to_string());
-
                 if !hooks.post_tool_use.is_empty() {
                     let post_hooks: Vec<&HookDef> =
                         matching_hooks(&hooks.post_tool_use, tc.name.as_str());
                     if !post_hooks.is_empty() {
+                        let mut hook_env =
+                            make_hook_env(task_id, agent_name, tc.name.as_str(), &tc.input);
+                        hook_env
+                            .insert("ZEPH_TOOL_DURATION_MS".to_owned(), duration_ms.to_string());
                         let post_owned: Vec<HookDef> = post_hooks.into_iter().cloned().collect();
                         // MCP dispatch is not available in the subagent execution path.
                         if let Err(e) = fire_hooks(&post_owned, &hook_env, None).await {
@@ -627,4 +648,39 @@ pub(super) async fn run_agent_loop(
     });
 
     Ok(last_result)
+}
+
+#[cfg(test)]
+mod make_hook_env_tests {
+    use super::*;
+
+    #[test]
+    fn sets_agent_id_and_name() {
+        let env = make_hook_env("task-1", "bot", "Edit", &serde_json::Value::Null);
+        assert_eq!(env.get("ZEPH_AGENT_ID").map(String::as_str), Some("task-1"));
+        assert_eq!(env.get("ZEPH_AGENT_NAME").map(String::as_str), Some("bot"));
+    }
+
+    #[test]
+    fn truncation_lands_on_char_boundary() {
+        let mut big = String::from(r#"{"d":""#);
+        while big.len() < TOOL_ARGS_JSON_LIMIT - 3 {
+            big.push('a');
+        }
+        big.push('€'); // 3-byte UTF-8 char that may straddle the boundary
+        while big.len() < TOOL_ARGS_JSON_LIMIT + 50 {
+            big.push('b');
+        }
+        big.push_str(r#""}"#);
+        let input: serde_json::Value = serde_json::from_str(&big).unwrap_or_default();
+        let env = make_hook_env("Shell", "bot", "Shell", &input);
+        let args = env
+            .get("ZEPH_TOOL_ARGS_JSON")
+            .expect("ZEPH_TOOL_ARGS_JSON missing");
+        assert!(
+            args.ends_with('…'),
+            "truncated value should end with ellipsis"
+        );
+        assert!(args.is_char_boundary(args.len()));
+    }
 }

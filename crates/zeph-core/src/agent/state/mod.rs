@@ -722,6 +722,10 @@ pub(crate) struct HooksConfigSnapshot {
     /// `Notifier::should_fire` gate when a notifier is configured; fires on every completion
     /// when no notifier is present.
     pub(crate) turn_complete: Vec<zeph_config::HookDef>,
+    /// Hooks fired before each tool execution, matched by tool name pattern.
+    pub(crate) pre_tool_use: Vec<zeph_config::HookMatcher>,
+    /// Hooks fired after each tool execution completes, matched by tool name pattern.
+    pub(crate) post_tool_use: Vec<zeph_config::HookMatcher>,
 }
 
 // Groups message buffering and image staging state.
