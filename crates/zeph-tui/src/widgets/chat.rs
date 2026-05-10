@@ -1360,7 +1360,16 @@ mod tests {
         ];
         let mut cache = crate::app::RenderCache::default();
         let (lines, _) = collect_message_lines_from(
-            &messages, None, &mut cache, 80, 76, &theme, false, ToolDensity::Inline, false, 0,
+            &messages,
+            None,
+            &mut cache,
+            80,
+            76,
+            &theme,
+            false,
+            ToolDensity::Inline,
+            false,
+            0,
         );
         let all_text: String = lines
             .iter()
@@ -1407,7 +1416,16 @@ mod tests {
         let messages = vec![make_chat_msg(crate::app::MessageRole::User, "Hello world")];
         let mut cache = crate::app::RenderCache::default();
         let (lines, _) = collect_message_lines_from(
-            &messages, None, &mut cache, 80, 76, &theme, false, ToolDensity::Inline, false, 0,
+            &messages,
+            None,
+            &mut cache,
+            80,
+            76,
+            &theme,
+            false,
+            ToolDensity::Inline,
+            false,
+            0,
         );
         let has_bg = lines
             .iter()

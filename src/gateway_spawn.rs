@@ -96,8 +96,9 @@ impl<C: zeph_core::channel::Channel> zeph_core::channel::Channel for GatewayChan
     async fn send_diff(
         &mut self,
         diff: zeph_core::DiffData,
+        tool_call_id: &str,
     ) -> Result<(), zeph_core::channel::ChannelError> {
-        self.inner.send_diff(diff).await
+        self.inner.send_diff(diff, tool_call_id).await
     }
 
     async fn send_tool_start(
