@@ -20,6 +20,7 @@ age = { version = "0.11.3", default-features = false }
 agent-client-protocol = "0.11.1"
 agent-client-protocol-tokio = "0.11.1"
 anyhow = "1.0.102"
+arboard = "3.6.1"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
 axum = "0.8.9"

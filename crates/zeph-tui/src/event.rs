@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, MouseEventKind};
+use crossterm::event::{self, Event as CrosstermEvent, KeyEvent};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 use zeph_core::metrics::MetricsSnapshot;
@@ -75,11 +75,6 @@ impl EventSource for CrosstermEventSource {
             match event::read() {
                 Ok(CrosstermEvent::Key(key)) => Some(AppEvent::Key(key)),
                 Ok(CrosstermEvent::Resize(w, h)) => Some(AppEvent::Resize(w, h)),
-                Ok(CrosstermEvent::Mouse(mouse)) => match mouse.kind {
-                    MouseEventKind::ScrollUp => Some(AppEvent::MouseScroll(1)),
-                    MouseEventKind::ScrollDown => Some(AppEvent::MouseScroll(-1)),
-                    _ => Some(AppEvent::Tick),
-                },
                 Ok(CrosstermEvent::Paste(text)) => Some(AppEvent::Paste(text)),
                 _ => Some(AppEvent::Tick),
             }
@@ -111,8 +106,6 @@ pub enum AppEvent {
     Tick,
     /// The terminal was resized to the given `(columns, rows)`.
     Resize(u16, u16),
-    /// Mouse wheel scroll: `+1` = up, `-1` = down.
-    MouseScroll(i8),
     /// An event forwarded from the agent event channel.
     Agent(AgentEvent),
     /// Text pasted via bracketed paste mode.
@@ -317,15 +310,6 @@ mod tests {
         let s = format!("{e:?}");
         assert!(s.contains("ConfirmRequest"));
         assert!(s.contains("delete?"));
-    }
-
-    #[test]
-    fn app_event_mouse_scroll_variant() {
-        let scroll_up = AppEvent::MouseScroll(1);
-        assert!(matches!(scroll_up, AppEvent::MouseScroll(1)));
-
-        let scroll_down = AppEvent::MouseScroll(-1);
-        assert!(matches!(scroll_down, AppEvent::MouseScroll(-1)));
     }
 
     #[test]

@@ -402,6 +402,8 @@ pub struct App {
     /// Avoids acquiring `TaskSupervisor`'s inner mutex inside the draw closure, which
     /// can block the render loop when the reap driver holds the lock concurrently.
     cached_task_snapshots: Vec<zeph_common::task_supervisor::TaskSnapshot>,
+    /// Clipboard handle for `/copy` and `Ctrl+O` (#3685).
+    pub(crate) clipboard: crate::clipboard::ClipboardHandle,
 }
 
 impl App {
@@ -463,6 +465,7 @@ impl App {
             task_supervisor: None,
             show_task_panel: false,
             cached_task_snapshots: Vec::new(),
+            clipboard: crate::clipboard::ClipboardHandle::new(),
         }
     }
 
@@ -1787,47 +1790,76 @@ mod tests {
     }
 
     #[test]
-    fn mouse_scroll_up() {
+    fn scroll_up_via_key() {
         let (mut app, _rx, _tx) = make_app();
+        app.sessions.current_mut().input_mode = InputMode::Normal;
         assert_eq!(app.scroll_offset(), 0);
-        app.handle_event(AppEvent::MouseScroll(1));
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(app.scroll_offset(), 1);
-        app.handle_event(AppEvent::MouseScroll(1));
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(app.scroll_offset(), 2);
     }
 
     #[test]
-    fn mouse_scroll_down() {
+    fn scroll_down_via_key() {
         let (mut app, _rx, _tx) = make_app();
+        app.sessions.current_mut().input_mode = InputMode::Normal;
         app.sessions.current_mut().scroll_offset = 5;
-        app.handle_event(AppEvent::MouseScroll(-1));
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(app.scroll_offset(), 4);
-        app.handle_event(AppEvent::MouseScroll(-1));
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(app.scroll_offset(), 3);
     }
 
     #[test]
-    fn mouse_scroll_down_saturates_at_zero() {
+    fn scroll_down_saturates_at_zero() {
         let (mut app, _rx, _tx) = make_app();
+        app.sessions.current_mut().input_mode = InputMode::Normal;
         app.sessions.current_mut().scroll_offset = 1;
-        app.handle_event(AppEvent::MouseScroll(-1));
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(app.scroll_offset(), 0);
-        app.handle_event(AppEvent::MouseScroll(-1));
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(app.scroll_offset(), 0);
     }
 
     #[test]
-    fn mouse_scroll_during_confirm_blocked() {
+    fn scroll_during_confirm_blocked() {
         let (mut app, _rx, _tx) = make_app();
+        app.sessions.current_mut().input_mode = InputMode::Normal;
         let (tx, _oneshot_rx) = tokio::sync::oneshot::channel();
         app.confirm_state = Some(ConfirmState {
             prompt: "test?".into(),
             response_tx: Some(tx),
         });
         app.sessions.current_mut().scroll_offset = 5;
-        app.handle_event(AppEvent::MouseScroll(1));
+        // The confirm dialog intercepts all key events before the normal key handler.
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(app.scroll_offset(), 5);
-        app.handle_event(AppEvent::MouseScroll(-1));
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(app.scroll_offset(), 5);
     }
 

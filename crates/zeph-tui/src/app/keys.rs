@@ -154,6 +154,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // large match over all TuiCommand variants
     pub(super) fn execute_command(&mut self, cmd: TuiCommand) {
         match cmd {
             TuiCommand::SkillList => self.push_system_message(self.format_skill_list()),
@@ -240,6 +241,20 @@ impl App {
             TuiCommand::CocoonModels => {
                 self.push_system_message("Querying Cocoon models...".to_owned());
                 let _ = self.user_input_tx.try_send("/cocoon models".to_owned());
+            }
+            TuiCommand::CopyLastAssistant => {
+                if let Some(text) = self.last_assistant_content() {
+                    match self.clipboard.copy(&text) {
+                        Ok(()) => self.push_system_message(
+                            "Last assistant message copied to clipboard".to_owned(),
+                        ),
+                        Err(e) => {
+                            self.push_system_message(format!("Copy failed: {e}"));
+                        }
+                    }
+                } else {
+                    self.push_system_message("No assistant message to copy.".to_owned());
+                }
             }
             cmd => self.execute_plan_graph_command(cmd),
         }
@@ -463,6 +478,7 @@ impl App {
                     command: rest.join(" "),
                 })
             }
+            [cmd] if cmd.eq_ignore_ascii_case("/copy") => Some(TuiCommand::CopyLastAssistant),
             _ => None,
         }
     }
@@ -659,6 +675,18 @@ impl App {
         self.sessions.current_mut().scroll_offset = 0;
     }
 
+    /// Return the content of the last assistant message in the current session,
+    /// or `None` if no assistant message exists yet.
+    fn last_assistant_content(&self) -> Option<String> {
+        self.sessions
+            .current()
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Assistant)
+            .map(|m| m.content.clone())
+    }
+
     /// Returns true if there are security events within the last 60 seconds.
     #[must_use]
     pub fn has_recent_security_events(&self) -> bool {
@@ -798,6 +826,9 @@ impl App {
                 {
                     self.subagent_sidebar.list_state.select(Some(0));
                 }
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.execute_command(TuiCommand::CopyLastAssistant);
             }
             _ => {}
         }
@@ -1045,6 +1076,9 @@ impl App {
             }
             KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let _ = self.user_input_tx.try_send("/clear-queue".to_owned());
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.execute_command(TuiCommand::CopyLastAssistant);
             }
             KeyCode::Char('@') => {
                 self.open_file_picker();
@@ -1313,5 +1347,77 @@ impl App {
         // Non-blocking send; capacity 32 — silent drop if agent loop is saturated.
         // Message is visible in chat but not processed; acceptable for interactive TUI.
         let _ = self.user_input_tx.try_send(text);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::event::AgentEvent;
+    use crate::types::MessageRole;
+
+    fn make_app() -> (App, mpsc::Receiver<String>, mpsc::Sender<AgentEvent>) {
+        let (user_tx, user_rx) = mpsc::channel(16);
+        let (agent_tx, agent_rx) = mpsc::channel(16);
+        let mut app = App::new(user_tx, agent_rx);
+        app.sessions.current_mut().messages.clear();
+        (app, user_rx, agent_tx)
+    }
+
+    #[test]
+    fn last_assistant_content_returns_none_when_empty() {
+        let (app, _rx, _tx) = make_app();
+        assert_eq!(app.last_assistant_content(), None);
+    }
+
+    #[test]
+    fn last_assistant_content_returns_none_when_only_user_messages() {
+        let (mut app, _rx, _tx) = make_app();
+        app.sessions
+            .current_mut()
+            .messages
+            .push(ChatMessage::new(MessageRole::User, "hello"));
+        assert_eq!(app.last_assistant_content(), None);
+    }
+
+    #[test]
+    fn last_assistant_content_returns_latest() {
+        let (mut app, _rx, _tx) = make_app();
+        app.sessions
+            .current_mut()
+            .messages
+            .push(ChatMessage::new(MessageRole::Assistant, "first"));
+        app.sessions
+            .current_mut()
+            .messages
+            .push(ChatMessage::new(MessageRole::User, "follow-up"));
+        app.sessions
+            .current_mut()
+            .messages
+            .push(ChatMessage::new(MessageRole::Assistant, "second"));
+        assert_eq!(app.last_assistant_content(), Some("second".to_owned()));
+    }
+
+    #[test]
+    fn slash_copy_parses_to_copy_last_assistant() {
+        assert_eq!(
+            App::parse_session_slash("/copy"),
+            Some(TuiCommand::CopyLastAssistant)
+        );
+    }
+
+    #[test]
+    fn slash_copy_case_insensitive() {
+        assert_eq!(
+            App::parse_session_slash("/COPY"),
+            Some(TuiCommand::CopyLastAssistant)
+        );
+    }
+
+    #[test]
+    fn slash_unknown_returns_none() {
+        assert_eq!(App::parse_session_slash("/unknown"), None);
     }
 }

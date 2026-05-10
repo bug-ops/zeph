@@ -23,6 +23,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(tui): native terminal text selection without Shift modifier. `EnableMouseCapture` replaced
+  with alternate-scroll mode (`\x1b[?1007h`/`\x1b[?1007l`) so the terminal translates scroll-wheel
+  events into arrow keys. Chat scrolling is preserved; `AppEvent::MouseScroll` removed from the
+  event model. Panic hook updated to emit `DisableAlternateScroll` on crash. Closes #3685. (#3685)
+
+- feat(tui): clipboard shortcuts for copying assistant replies. New `clipboard` module with
+  `ClipboardHandle` backed by arboard (local) with OSC 52 fallback (SSH/tmux). SSH detected via
+  `SSH_TTY`, `SSH_CONNECTION`, `SSH_CLIENT`. `Ctrl+O` and `/copy` slash command copy the last
+  assistant message to clipboard. `clipboard` feature flag (default-on) gates the arboard
+  dependency for headless builds. Closes #3685. (#3685)
+
 - feat(llm): Cocoon live integration tests — 6 `#[ignore]`-gated tests covering `health_check`,
   `list_models`, `chat_round_trip`, `chat_stream`, `chat_with_tools`, and `doctor` checks.
   Tests require `COCOON_TEST_URL` env var and skip gracefully without it; `#[ignore]` attributes

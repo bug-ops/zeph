@@ -117,6 +117,8 @@ pub enum TuiCommand {
     // Cocoon sidecar inspection (#3673)
     CocoonStatus,
     CocoonModels,
+    // Clipboard (#3685)
+    CopyLastAssistant,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -698,6 +700,16 @@ fn build_cocoon_commands() -> Vec<CommandEntry> {
     ]
 }
 
+fn build_clipboard_commands() -> Vec<CommandEntry> {
+    vec![CommandEntry {
+        id: "clipboard:copy",
+        label: "Copy last assistant reply to clipboard (/copy)",
+        category: "clipboard",
+        shortcut: Some("Ctrl+O"),
+        command: TuiCommand::CopyLastAssistant,
+    }]
+}
+
 fn build_extra_commands() -> Vec<CommandEntry> {
     let mut cmds = build_infra_commands();
     cmds.extend(build_agent_plan_commands());
@@ -741,6 +753,7 @@ fn build_extra_commands() -> Vec<CommandEntry> {
     });
     #[cfg(feature = "cocoon")]
     cmds.extend(build_cocoon_commands());
+    cmds.extend(build_clipboard_commands());
     cmds
 }
 
@@ -847,7 +860,8 @@ mod tests {
         // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status
         // + 1 forgetting-sweep + 3 acp + 1 sandbox:status (#3294) = 43
         // + 2 cocoon (#3673) when feature = "cocoon"
-        let expected = 43 + if cfg!(feature = "cocoon") { 2 } else { 0 };
+        // + 1 clipboard:copy (#3685)
+        let expected = 44 + if cfg!(feature = "cocoon") { 2 } else { 0 };
         assert_eq!(extra_command_registry().len(), expected);
     }
 
@@ -984,5 +998,22 @@ mod tests {
         assert!(results.iter().any(|e| e.id == "experiment:status"));
         assert!(results.iter().any(|e| e.id == "experiment:report"));
         assert!(results.iter().any(|e| e.id == "experiment:best"));
+    }
+
+    #[test]
+    fn filter_clipboard_returns_copy_entry() {
+        let results = filter_commands("copy");
+        assert!(
+            results.iter().any(|e| e.id == "clipboard:copy"),
+            "clipboard:copy must appear when searching 'copy'"
+        );
+    }
+
+    #[test]
+    fn clipboard_copy_command_is_copy_last_assistant() {
+        let all = filter_commands("");
+        let entry = all.iter().find(|e| e.id == "clipboard:copy").unwrap();
+        assert_eq!(entry.command, TuiCommand::CopyLastAssistant);
+        assert_eq!(entry.shortcut, Some("Ctrl+O"));
     }
 }

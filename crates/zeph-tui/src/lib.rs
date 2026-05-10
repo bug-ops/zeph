@@ -39,6 +39,7 @@
 
 pub mod app;
 pub mod channel;
+pub mod clipboard;
 pub mod command;
 pub mod error;
 pub mod event;
@@ -106,9 +107,11 @@ pub async fn run_tui(mut app: App, mut event_rx: mpsc::Receiver<AppEvent>) -> Re
         let _ = crossterm::execute!(
             io::stdout(),
             crossterm::terminal::LeaveAlternateScreen,
-            crossterm::event::DisableMouseCapture,
             crossterm::event::DisableBracketedPaste,
         );
+        // Disable alternate-scroll mode; write directly to stderr to avoid
+        // interfering with the already-corrupted stdout alternate screen.
+        let _ = std::io::Write::write_all(&mut io::stderr(), b"\x1b[?1007l");
         original_hook(info);
     }));
 
@@ -204,13 +207,45 @@ async fn tui_loop(
     Ok(())
 }
 
+/// Enables alternate-scroll mode (`\x1b[?1007h`).
+///
+/// In this mode the terminal forwards scroll-wheel events as `Up`/`Down` arrow
+/// key sequences instead of mouse events, allowing native text selection without
+/// holding Shift.
+struct EnableAlternateScroll;
+
+impl crossterm::Command for EnableAlternateScroll {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        f.write_str("\x1b[?1007h")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Disables alternate-scroll mode (`\x1b[?1007l`).
+struct DisableAlternateScroll;
+
+impl crossterm::Command for DisableAlternateScroll {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        f.write_str("\x1b[?1007l")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn init_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>, TuiError> {
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     crossterm::execute!(
         stdout,
         crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
+        EnableAlternateScroll,
         crossterm::event::EnableBracketedPaste,
     )?;
     let backend = CrosstermBackend::new(stdout);
@@ -222,7 +257,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
     crossterm::execute!(
         terminal.backend_mut(),
         crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture,
+        DisableAlternateScroll,
         crossterm::event::DisableBracketedPaste,
     )?;
     terminal.show_cursor()?;
@@ -259,5 +294,21 @@ mod tests {
         // If poll_metrics panics or the metrics watch channel is broken the test fails.
         // Verify the snapshot is accessible after polling.
         let _: &MetricsSnapshot = &app.metrics;
+    }
+
+    #[test]
+    fn alternate_scroll_enable_ansi() {
+        use crossterm::Command as _;
+        let mut buf = String::new();
+        super::EnableAlternateScroll.write_ansi(&mut buf).unwrap();
+        assert_eq!(buf, "\x1b[?1007h");
+    }
+
+    #[test]
+    fn alternate_scroll_disable_ansi() {
+        use crossterm::Command as _;
+        let mut buf = String::new();
+        super::DisableAlternateScroll.write_ansi(&mut buf).unwrap();
+        assert_eq!(buf, "\x1b[?1007l");
     }
 }

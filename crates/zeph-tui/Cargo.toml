@@ -39,6 +39,8 @@ serde_json.workspace = true
 zeph-common.workspace = true
 zeph-core.workspace = true
 zeph-subagent.workspace = true
+base64.workspace = true
+arboard = { workspace = true, optional = true }
 
 [dev-dependencies]
 expectrl.workspace = true
@@ -49,7 +51,8 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util.workspace = true
 
 [features]
-default = []
+default = ["clipboard"]
+clipboard = ["dep:arboard"]
 cocoon = []
 
 [lints]

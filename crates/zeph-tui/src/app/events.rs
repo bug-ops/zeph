@@ -20,17 +20,6 @@ impl App {
             AppEvent::Resize(_, _) => {
                 self.sessions.current_mut().render_cache.clear();
             }
-            AppEvent::MouseScroll(delta) => {
-                if self.confirm_state.is_none() {
-                    if delta > 0 {
-                        self.sessions.current_mut().scroll_offset =
-                            self.sessions.current().scroll_offset.saturating_add(1);
-                    } else {
-                        self.sessions.current_mut().scroll_offset =
-                            self.sessions.current().scroll_offset.saturating_sub(1);
-                    }
-                }
-            }
             AppEvent::Agent(agent_event) => self.handle_agent_event(agent_event),
             AppEvent::Paste(text) => self.handle_paste(&text),
         }
