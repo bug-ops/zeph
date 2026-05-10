@@ -95,6 +95,7 @@ async fn create_channel_telegram_without_token() {
         token: None,
         allowed_users: vec![],
         skills: zeph_core::config::ChannelSkillsConfig::default(),
+        stream_interval_ms: 3000,
     });
     let channel = create_channel(&config).await.unwrap();
     assert!(matches!(channel, AnyChannel::Cli(_)));
@@ -124,6 +125,7 @@ async fn create_channel_telegram_with_token() {
         token: Some("test_token".to_string()),
         allowed_users: vec!["testuser".to_string()],
         skills: zeph_core::config::ChannelSkillsConfig::default(),
+        stream_interval_ms: 3000,
     });
     let channel = create_channel(&config).await.unwrap();
     assert!(matches!(channel, AnyChannel::Telegram(_)));
@@ -171,6 +173,7 @@ async fn create_channel_telegram_with_empty_allowed_users_errors() {
         token: Some("test_token2".to_string()),
         allowed_users: vec![],
         skills: zeph_core::config::ChannelSkillsConfig::default(),
+        stream_interval_ms: 3000,
     });
     let result = create_channel(&config).await;
     assert!(result.is_err());

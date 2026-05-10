@@ -41,6 +41,7 @@ pub mod markdown;
 #[cfg(feature = "slack")]
 pub mod slack;
 pub mod telegram;
+pub mod telegram_api_ext;
 
 pub use any::AnyChannel;
 pub use cli::CliChannel;

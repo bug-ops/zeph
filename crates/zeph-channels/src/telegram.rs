@@ -24,6 +24,7 @@
 use std::time::{Duration, Instant};
 
 use crate::markdown::markdown_to_telegram;
+use crate::telegram_api_ext::TelegramApiClient;
 use teloxide::prelude::*;
 use teloxide::types::{BotCommand, ChatAction, MessageId, ParseMode};
 use tokio::sync::mpsc;
@@ -75,6 +76,7 @@ const MAX_IMAGE_BYTES: u32 = 20 * 1024 * 1024;
 /// let token = std::env::var("TELEGRAM_BOT_TOKEN").unwrap();
 /// let allowed = vec!["my_username".to_string()];
 /// let channel = TelegramChannel::new(token, allowed)
+///     .with_stream_interval(std::time::Duration::from_millis(2000))
 ///     .start()
 ///     .expect("failed to start telegram bot");
 /// ```
@@ -90,6 +92,10 @@ pub struct TelegramChannel {
     accumulated: String,
     last_edit: Option<Instant>,
     message_id: Option<MessageId>,
+    /// Minimum interval between streaming message edits. Defaults to 3 seconds.
+    stream_interval: Duration,
+    /// Raw Bot API 10.0 client for methods not yet covered by teloxide.
+    api_ext: TelegramApiClient,
     /// Optional supervisor used to register the Telegram listener task in the
     /// workspace-wide task registry with automatic restart on panic.
     supervisor: Option<TaskSupervisor>,
@@ -101,6 +107,7 @@ impl std::fmt::Debug for TelegramChannel {
             .field("chat_id", &self.chat_id)
             .field("allowed_users", &self.allowed_users)
             .field("accumulated_len", &self.accumulated.len())
+            .field("stream_interval_ms", &self.stream_interval.as_millis())
             .field("supervisor", &self.supervisor.is_some())
             .finish_non_exhaustive()
     }
@@ -125,10 +132,15 @@ impl TelegramChannel {
     /// * `allowed_users` — Telegram usernames (without `@`) that are permitted
     ///   to interact with the bot.  Must not be empty when [`start`] is called.
     ///
+    /// Use [`with_stream_interval`] to change the default 3-second streaming edit interval.
+    ///
     /// [`start`]: TelegramChannel::start
+    /// [`with_stream_interval`]: TelegramChannel::with_stream_interval
     #[must_use]
-    pub fn new(token: String, allowed_users: Vec<String>) -> Self {
-        let bot = Bot::new(token);
+    pub fn new(token: impl Into<String>, allowed_users: Vec<String>) -> Self {
+        let token = token.into();
+        let bot = Bot::new(&token);
+        let api_ext = TelegramApiClient::new(&token);
         let (_, rx) = mpsc::channel(64);
         Self {
             bot,
@@ -138,8 +150,38 @@ impl TelegramChannel {
             accumulated: String::new(),
             last_edit: None,
             message_id: None,
+            stream_interval: Duration::from_secs(3),
+            api_ext,
             supervisor: None,
         }
+    }
+
+    /// Set the minimum interval between streaming message edits.
+    ///
+    /// Values below 500 ms are clamped to 500 ms with a warning to prevent
+    /// triggering Telegram's rate limits (30 edits/second per chat).
+    ///
+    /// Default: 3000 ms.
+    #[must_use]
+    pub fn with_stream_interval(mut self, interval: Duration) -> Self {
+        const MIN_INTERVAL: Duration = Duration::from_millis(500);
+        if interval < MIN_INTERVAL {
+            tracing::warn!(
+                requested_ms = interval.as_millis(),
+                clamped_ms = MIN_INTERVAL.as_millis(),
+                "stream_interval_ms is below the minimum safe value; clamping to 500ms to avoid Telegram rate limits"
+            );
+            self.stream_interval = MIN_INTERVAL;
+        } else {
+            self.stream_interval = interval;
+        }
+        self
+    }
+
+    /// Access the raw Bot API 10.0 client for methods not covered by teloxide.
+    #[must_use]
+    pub fn api_ext(&self) -> &TelegramApiClient {
+        &self.api_ext
     }
 
     /// Attach a [`TaskSupervisor`] so the Telegram listener task is registered
@@ -247,6 +289,8 @@ impl TelegramChannel {
             accumulated: String::new(),
             last_edit: None,
             message_id: None,
+            stream_interval: Duration::from_secs(3),
+            api_ext: TelegramApiClient::new("test_token"),
             supervisor: None,
         };
         (channel, tx)
@@ -264,7 +308,7 @@ impl TelegramChannel {
     fn should_send_update(&self) -> bool {
         match self.last_edit {
             None => true,
-            Some(last) => last.elapsed() > Duration::from_secs(3),
+            Some(last) => last.elapsed() > self.stream_interval,
         }
     }
 
@@ -676,8 +720,10 @@ impl Channel for TelegramChannel {
             self.accumulated.len()
         );
 
-        // Final update with complete message
-        if self.message_id.is_some() {
+        // Send if there is unsent accumulated text OR an existing message to finalize.
+        // The `message_id.is_some()` guard alone would silently discard text that arrived
+        // before the first interval elapsed (so `send_or_edit` was never called).
+        if self.message_id.is_some() || !self.accumulated.is_empty() {
             self.send_or_edit().await?;
         }
 
@@ -960,6 +1006,8 @@ mod tests {
             accumulated: String::new(),
             last_edit: None,
             message_id: None,
+            stream_interval: Duration::from_secs(3),
+            api_ext: TelegramApiClient::with_base_url(server.uri()),
             supervisor: None,
         };
         (channel, tx)
@@ -1028,6 +1076,39 @@ mod tests {
                 .unwrap(),
         );
         assert!(!channel.should_send_update());
+    }
+
+    #[test]
+    fn with_stream_interval_custom_interval_respected() {
+        let mut channel = TelegramChannel::new("test_token".to_string(), Vec::new())
+            .with_stream_interval(Duration::from_millis(2000));
+        // 1500ms elapsed < 2000ms interval — should NOT send
+        channel.last_edit = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(1500))
+                .unwrap(),
+        );
+        assert!(!channel.should_send_update());
+        // 2500ms elapsed > 2000ms interval — should send
+        channel.last_edit = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(2500))
+                .unwrap(),
+        );
+        assert!(channel.should_send_update());
+    }
+
+    #[test]
+    fn with_stream_interval_clamps_below_500ms() {
+        let channel = TelegramChannel::new("test_token".to_string(), Vec::new())
+            .with_stream_interval(Duration::from_millis(100));
+        assert_eq!(channel.stream_interval, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn with_stream_interval_default_is_3s() {
+        let channel = TelegramChannel::new("test_token", Vec::new());
+        assert_eq!(channel.stream_interval, Duration::from_secs(3));
     }
 
     #[test]
@@ -1111,17 +1192,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flush_chunks_clears_state_when_no_message_id() {
+    async fn flush_chunks_clears_state_when_no_accumulated_and_no_message_id() {
         let (mut channel, _tx) = TelegramChannel::new_test(vec![]);
-        channel.accumulated = "some text".to_string();
+        // accumulated is empty and message_id is None — no API call expected.
         channel.last_edit = Some(Instant::now());
-        // message_id is None, so flush_chunks does not call send_or_edit.
 
         channel.flush_chunks().await.unwrap();
 
         assert!(channel.accumulated.is_empty());
         assert!(channel.last_edit.is_none());
         assert!(channel.message_id.is_none());
+    }
+
+    // flush_chunks() must send accumulated text even when message_id is None.
+    // Regression test for the data-loss bug where a short streaming response
+    // (entire reply arrives before stream_interval elapses) was silently discarded.
+    #[tokio::test]
+    async fn flush_chunks_sends_when_accumulated_but_message_id_is_none() {
+        let server = MockServer::start().await;
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+
+        // Suppress the periodic send by setting last_edit to now (interval not elapsed).
+        channel.last_edit = Some(Instant::now());
+        channel.accumulated = "short reply".to_string();
+        // message_id is None — the periodic path never fired.
+
+        channel.flush_chunks().await.unwrap();
+
+        // The mock server must have received exactly one sendMessage call.
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            !requests.is_empty(),
+            "flush_chunks must send accumulated text even when message_id is None"
+        );
+        assert!(channel.accumulated.is_empty());
     }
 
     // ---------------------------------------------------------------------------

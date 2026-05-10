@@ -275,6 +275,10 @@ fn default_oauth_client_name() -> String {
     "Zeph".into()
 }
 
+fn default_stream_interval_ms() -> u64 {
+    3000
+}
+
 /// Telegram channel configuration, nested under `[telegram]` in TOML.
 ///
 /// When present, Zeph connects to Telegram as a bot using the provided token.
@@ -285,6 +289,7 @@ fn default_oauth_client_name() -> String {
 /// ```toml
 /// [telegram]
 /// allowed_users = ["myusername"]
+/// stream_interval_ms = 3000
 /// ```
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TelegramConfig {
@@ -296,6 +301,13 @@ pub struct TelegramConfig {
     /// Skill allowlist for this channel.
     #[serde(default)]
     pub skills: ChannelSkillsConfig,
+    /// Minimum interval in milliseconds between streaming message edits.
+    ///
+    /// Defaults to 3000 ms (3 seconds) to stay within Telegram's rate limits.
+    /// Values below 500 ms are clamped to 500 ms with a warning; the Telegram
+    /// Bot API enforces a hard limit of ~30 edits/second per chat.
+    #[serde(default = "default_stream_interval_ms")]
+    pub stream_interval_ms: u64,
 }
 
 impl std::fmt::Debug for TelegramConfig {
@@ -304,6 +316,7 @@ impl std::fmt::Debug for TelegramConfig {
             .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
             .field("allowed_users", &self.allowed_users)
             .field("skills", &self.skills)
+            .field("stream_interval_ms", &self.stream_interval_ms)
             .finish()
     }
 }

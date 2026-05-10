@@ -180,11 +180,12 @@ pub(crate) async fn create_channel_inner(
     }
 
     if let Some(token) = config.telegram.as_ref().and_then(|t| t.token.clone()) {
-        let allowed = config
-            .telegram
-            .as_ref()
-            .map_or_else(Vec::new, |t| t.allowed_users.clone());
-        let tg = TelegramChannel::new(token, allowed).start()?;
+        let tg_cfg = config.telegram.as_ref().unwrap();
+        let allowed = tg_cfg.allowed_users.clone();
+        let stream_interval = std::time::Duration::from_millis(tg_cfg.stream_interval_ms);
+        let tg = TelegramChannel::new(token, allowed)
+            .with_stream_interval(stream_interval)
+            .start()?;
         tracing::info!("running in Telegram mode");
         return Ok((AnyChannel::Telegram(tg), None));
     }

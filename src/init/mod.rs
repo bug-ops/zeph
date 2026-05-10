@@ -47,6 +47,7 @@ pub(crate) struct WizardState {
     pub(crate) channel: ChannelChoice,
     pub(crate) telegram_token: Option<String>,
     pub(crate) telegram_users: Vec<String>,
+    pub(crate) telegram_stream_interval_ms: u64,
     pub(crate) discord_token: Option<String>,
     pub(crate) discord_app_id: Option<String>,
     pub(crate) slack_bot_token: Option<String>,
@@ -269,6 +270,7 @@ impl Default for WizardState {
             channel: ChannelChoice::default(),
             telegram_token: None,
             telegram_users: Vec::new(),
+            telegram_stream_interval_ms: 3000,
             discord_token: None,
             discord_app_id: None,
             slack_bot_token: None,
@@ -525,6 +527,13 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
                 .collect();
+            let interval_ms: u64 = Input::new()
+                .with_prompt(
+                    "Streaming edit interval in ms (rate-limit safe: >=2000, minimum enforced: 500)",
+                )
+                .default(3000u64)
+                .interact_text()?;
+            state.telegram_stream_interval_ms = interval_ms;
         }
         2 => {
             state.channel = ChannelChoice::Discord;
@@ -796,6 +805,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 token: None,
                 allowed_users: state.telegram_users.clone(),
                 skills: ChannelSkillsConfig::default(),
+                stream_interval_ms: state.telegram_stream_interval_ms,
             });
         }
         ChannelChoice::Discord => {

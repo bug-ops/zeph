@@ -85,6 +85,7 @@ mod tests {
                 token: Some("tok".into()),
                 allowed_users: vec![],
                 skills: ChannelSkillsConfig::default(),
+                stream_interval_ms: 3000,
             }),
             ..Default::default()
         };
