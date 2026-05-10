@@ -420,7 +420,7 @@ mod tests {
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn ok_body(result: serde_json::Value) -> serde_json::Value {
+    fn ok_body(result: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({ "ok": true, "result": result })
     }
 
@@ -485,7 +485,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path_regex(".*/answerGuestQuery$"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
+                ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::json!({
                     "message_id": 123,
                     "chat_id": 456
                 }))),
@@ -508,7 +508,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path_regex(".*/answerGuestQuery$"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
+                ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::json!({
                     "message_id": 1,
                     "chat_id": 2
                 }))),
@@ -554,7 +554,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path_regex(".*/getManagedBotAccessSettings$"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
+                ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::json!({
                     "allow_private_chats": true,
                     "allow_group_chats": false,
                     "allow_channel_posts": true
@@ -595,7 +595,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path_regex(".*/setManagedBotAccessSettings$"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(ok_body(serde_json::Value::Bool(true))),
+                ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::Value::Bool(true))),
             )
             .mount(&server)
             .await;
@@ -643,7 +643,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path_regex(".*/deleteMessageReaction$"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(ok_body(serde_json::Value::Bool(true))),
+                ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::Value::Bool(true))),
             )
             .mount(&server)
             .await;
@@ -684,7 +684,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path_regex(".*/deleteAllMessageReactions$"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(ok_body(serde_json::Value::Bool(true))),
+                ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::Value::Bool(true))),
             )
             .mount(&server)
             .await;

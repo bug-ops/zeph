@@ -1081,7 +1081,7 @@ mod tests {
     #[test]
     fn with_stream_interval_custom_interval_respected() {
         let mut channel = TelegramChannel::new("test_token".to_string(), Vec::new())
-            .with_stream_interval(Duration::from_millis(2000));
+            .with_stream_interval(Duration::from_secs(2));
         // 1500ms elapsed < 2000ms interval — should NOT send
         channel.last_edit = Some(
             Instant::now()
