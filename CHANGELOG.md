@@ -40,6 +40,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(hooks): `pre_tool_use` hooks now fire for tool calls intercepted by the utility gate;
+  previously the hook block was skipped because `check_call_gates` returned early with `continue`.
+  Closes #3738.
 - fix(tui): parallel tool call output no longer gets cross-contaminated in the TUI. `tool_call_id`
   is now threaded from `ToolCall` through `ShellExecutor` → `ToolEvent::OutputChunk` →
   `tui_bridge` → `AgentEvent::ToolOutputChunk/ToolStart/ToolOutput`. The TUI uses id-based

@@ -1393,6 +1393,40 @@ impl<C: Channel> Agent<C> {
                 continue;
             }
 
+            // Fire PreToolUse hooks before any gate check so the hook always observes the
+            // LLM's tool request, even when a gate (utility, quota, dep, repeat) intercepts it.
+            // Focus/compress tools are excluded by the early `continue` above — they are
+            // synthetic internal tools that must never surface to the hook system.
+            let pre_hooks = self.services.session.hooks_config.pre_tool_use.clone();
+            if !pre_hooks.is_empty() {
+                let matched: Vec<&zeph_config::HookDef> =
+                    zeph_subagent::matching_hooks(&pre_hooks, tc.name.as_str());
+                if !matched.is_empty() {
+                    let _span =
+                        tracing::info_span!("core.hooks.pre_tool_use", tool = %tc.name).entered();
+                    let conv_id_str = self
+                        .services
+                        .memory
+                        .persistence
+                        .conversation_id
+                        .map(|id| id.0.to_string());
+                    let env =
+                        make_tool_hook_env(tc.name.as_str(), &tc.input, conv_id_str.as_deref());
+                    let owned: Vec<zeph_config::HookDef> = matched.into_iter().cloned().collect();
+                    let dispatch = self.mcp_dispatch();
+                    let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
+                        .as_ref()
+                        .map(|d| d as &dyn zeph_subagent::McpDispatch);
+                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&owned, &env, mcp).await {
+                        tracing::warn!(
+                            error = %e,
+                            tool = %tc.name,
+                            "PreToolUse hook failed"
+                        );
+                    }
+                }
+            }
+
             // Check static gates: dep failure, quota, pre-exec block, utility gate, repeat.
             let has_failed_dep = dag
                 .string_values_for(idx)
@@ -1448,37 +1482,6 @@ impl<C: Channel> Agent<C> {
                     skipped_output(tc.name.clone(), exceeded.to_error_message()),
                 ));
                 continue;
-            }
-
-            // Fire PreToolUse hooks before the RuntimeLayer permission check (fail-open).
-            let pre_hooks = self.services.session.hooks_config.pre_tool_use.clone();
-            if !pre_hooks.is_empty() {
-                let matched: Vec<&zeph_config::HookDef> =
-                    zeph_subagent::matching_hooks(&pre_hooks, tc.name.as_str());
-                if !matched.is_empty() {
-                    let _span =
-                        tracing::info_span!("core.hooks.pre_tool_use", tool = %tc.name).entered();
-                    let conv_id_str = self
-                        .services
-                        .memory
-                        .persistence
-                        .conversation_id
-                        .map(|id| id.0.to_string());
-                    let env =
-                        make_tool_hook_env(tc.name.as_str(), &tc.input, conv_id_str.as_deref());
-                    let owned: Vec<zeph_config::HookDef> = matched.into_iter().cloned().collect();
-                    let dispatch = self.mcp_dispatch();
-                    let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
-                        .as_ref()
-                        .map(|d| d as &dyn zeph_subagent::McpDispatch);
-                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&owned, &env, mcp).await {
-                        tracing::warn!(
-                            error = %e,
-                            tool = %tc.name,
-                            "PreToolUse hook failed"
-                        );
-                    }
-                }
             }
 
             if let Some(fut) = self.run_before_tool_hooks(idx, tc, call).await {
@@ -2323,5 +2326,40 @@ mod tests {
     fn make_tool_hook_env_omits_session_id_when_none() {
         let env = make_tool_hook_env("Read", &serde_json::Value::Null, None);
         assert!(!env.contains_key("ZEPH_SESSION_ID"));
+    }
+
+    // Regression guard for issue #3738: pre_tool_use hooks must fire for tools that are
+    // intercepted by the utility gate (Retrieve / Verify / Stop / Respond). The fix moves
+    // pre-hook dispatch before check_call_gates. This test verifies that matching_hooks
+    // correctly matches gate-intercepted tools so the hook system would observe them, and
+    // that internal focus/compress tools are excluded when the caller skips them explicitly.
+    #[test]
+    fn pre_tool_use_hook_matches_gate_intercepted_tools_but_not_internal() {
+        use zeph_config::{HookAction, HookDef, HookMatcher};
+        use zeph_subagent::matching_hooks;
+
+        let hook = HookDef {
+            action: HookAction::Command {
+                command: "true".to_owned(),
+            },
+            timeout_secs: 5,
+            fail_closed: false,
+        };
+        // A wildcard-style matcher that matches any tool name token.
+        let matchers = vec![HookMatcher {
+            matcher: "shell|read|write|retrieve_memory".to_owned(),
+            hooks: vec![hook],
+        }];
+
+        // Tools that a utility gate may intercept — pre-hook MUST fire for these.
+        assert!(!matching_hooks(&matchers, "retrieve_memory").is_empty());
+        assert!(!matching_hooks(&matchers, "shell").is_empty());
+
+        // Internal tools — they are skipped before the hook dispatch block, so
+        // matching_hooks is never called for them. Confirm they do NOT match the
+        // hook matchers in the first place (extra guard).
+        assert!(matching_hooks(&matchers, "compress_context").is_empty());
+        assert!(matching_hooks(&matchers, "start_focus").is_empty());
+        assert!(matching_hooks(&matchers, "complete_focus").is_empty());
     }
 }
