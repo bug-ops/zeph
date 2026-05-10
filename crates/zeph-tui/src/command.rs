@@ -114,6 +114,9 @@ pub enum TuiCommand {
     SubagentSpawn { command: String },
     // Sandbox egress status (#3294)
     SandboxStatus,
+    // Cocoon sidecar inspection (#3673)
+    CocoonStatus,
+    CocoonModels,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -675,6 +678,26 @@ fn build_graph_experiment_commands() -> Vec<CommandEntry> {
     ]
 }
 
+#[cfg(feature = "cocoon")]
+fn build_cocoon_commands() -> Vec<CommandEntry> {
+    vec![
+        CommandEntry {
+            id: "cocoon:status",
+            label: "Show Cocoon sidecar status (/cocoon status)",
+            category: "cocoon",
+            shortcut: None,
+            command: TuiCommand::CocoonStatus,
+        },
+        CommandEntry {
+            id: "cocoon:models",
+            label: "List Cocoon models (/cocoon models)",
+            category: "cocoon",
+            shortcut: None,
+            command: TuiCommand::CocoonModels,
+        },
+    ]
+}
+
 fn build_extra_commands() -> Vec<CommandEntry> {
     let mut cmds = build_infra_commands();
     cmds.extend(build_agent_plan_commands());
@@ -716,6 +739,8 @@ fn build_extra_commands() -> Vec<CommandEntry> {
             command: String::new(),
         },
     });
+    #[cfg(feature = "cocoon")]
+    cmds.extend(build_cocoon_commands());
     cmds
 }
 
@@ -821,7 +846,21 @@ mod tests {
         // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
         // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status
         // + 1 forgetting-sweep + 3 acp + 1 sandbox:status (#3294) = 43
-        assert_eq!(extra_command_registry().len(), 43);
+        // + 2 cocoon (#3673) when feature = "cocoon"
+        let mut expected = 43;
+        #[cfg(feature = "cocoon")]
+        {
+            expected += 2;
+        }
+        assert_eq!(extra_command_registry().len(), expected);
+    }
+
+    #[cfg(feature = "cocoon")]
+    #[test]
+    fn filter_cocoon_returns_cocoon_entries() {
+        let results = filter_commands("cocoon");
+        assert!(results.iter().any(|e| e.id == "cocoon:status"));
+        assert!(results.iter().any(|e| e.id == "cocoon:models"));
     }
 
     #[test]

@@ -244,7 +244,7 @@ profiling-pyroscope = ["profiling", "otel", "dep:pprof"]
 # NOTE: --all-features activates both, triggering compile_error! in zeph-db.
 # Use --features full or --features full,postgres instead.
 gonka = ["zeph-llm/gonka", "zeph-core/gonka"]
-cocoon = ["zeph-llm/cocoon", "zeph-core/cocoon"]
+cocoon = ["zeph-llm/cocoon", "zeph-core/cocoon", "zeph-tui?/cocoon"]
 index = ["zeph-core/index"]
 sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite"]
 postgres = ["zeph-db/postgres", "zeph-memory/postgres"]

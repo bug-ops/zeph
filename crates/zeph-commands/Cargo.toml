@@ -20,5 +20,8 @@ tracing.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 
+[features]
+cocoon = []
+
 [lints]
 workspace = true

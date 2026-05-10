@@ -12,6 +12,8 @@ pub(crate) mod agent_supervisor;
 mod autodream;
 mod builder;
 pub(crate) mod channel_impl;
+#[cfg(feature = "cocoon")]
+mod cocoon_cmd;
 mod command_context_impls;
 pub(super) mod compression_feedback;
 mod context;
@@ -1075,6 +1077,8 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(LoopCommand);
                 agent_reg.register(PluginsCommand);
                 agent_reg.register(AcpCommand);
+                #[cfg(feature = "cocoon")]
+                agent_reg.register(zeph_commands::handlers::cocoon::CocoonCommand);
                 agent_reg.register(TrajectoryCommand);
                 agent_reg.register(ScopeCommand);
                 agent_reg.register(GoalCommand);

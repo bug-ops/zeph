@@ -2640,6 +2640,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(all(feature = "tui", feature = "scheduler"))]
     let metrics_tx_for_sched = metrics_tx.clone();
+    #[cfg(all(feature = "tui", feature = "cocoon"))]
+    let metrics_tx_for_cocoon = metrics_tx.clone();
     let extended_context = config
         .llm
         .providers
@@ -2796,6 +2798,59 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                         _ = shutdown.changed() => break,
                     }
                 }
+            });
+        }
+        #[cfg(feature = "cocoon")]
+        if let Some(cocoon_cfg) = config
+            .llm
+            .providers
+            .iter()
+            .find(|p| p.provider_type == zeph_config::ProviderKind::Cocoon)
+        {
+            let base_url = cocoon_cfg
+                .cocoon_client_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:10000".to_owned());
+            let access_hash = config
+                .secrets
+                .cocoon_access_hash
+                .as_ref()
+                .map(|s| s.expose().to_owned());
+            let client = zeph_llm::cocoon::CocoonClient::new(
+                &base_url,
+                access_hash,
+                std::time::Duration::from_secs(5),
+            );
+            let metrics_tx_cocoon = metrics_tx_for_cocoon;
+            let mut shutdown = shutdown_rx.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            let span = tracing::info_span!("tui.cocoon.poll");
+                            let _enter = span.enter();
+                            let health = client.health_check().await;
+                            let models = client.list_models().await;
+                            metrics_tx_cocoon.send_modify(|m| {
+                                if let Ok(h) = &health {
+                                    m.cocoon_connected = Some(h.proxy_connected);
+                                    m.cocoon_worker_count = h.worker_count;
+                                    m.cocoon_ton_balance = h.ton_balance;
+                                } else {
+                                    m.cocoon_connected = Some(false);
+                                    m.cocoon_worker_count = 0;
+                                    m.cocoon_ton_balance = None;
+                                }
+                                m.cocoon_model_count =
+                                    models.as_ref().map_or(0, Vec::len);
+                            });
+                        }
+                        _ = shutdown.changed() => break,
+                    }
+                }
+                tracing::debug!("cocoon health poll task shutting down");
             });
         }
     } else {

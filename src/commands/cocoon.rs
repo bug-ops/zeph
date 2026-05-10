@@ -450,6 +450,7 @@ mod tests {
         let health = zeph_llm::cocoon::CocoonHealth {
             proxy_connected: false,
             worker_count: 0,
+            ton_balance: None,
         };
         check_proxy_connected(Some(&health), &mut results);
         assert_eq!(results[0].status, CheckStatus::Fail);
@@ -462,6 +463,7 @@ mod tests {
         let health = zeph_llm::cocoon::CocoonHealth {
             proxy_connected: true,
             worker_count: 0,
+            ton_balance: None,
         };
         check_workers_available(Some(&health), &mut results);
         assert_eq!(results[0].status, CheckStatus::Warn);
@@ -474,6 +476,7 @@ mod tests {
         let health = zeph_llm::cocoon::CocoonHealth {
             proxy_connected: true,
             worker_count: 3,
+            ton_balance: None,
         };
         check_workers_available(Some(&health), &mut results);
         assert_eq!(results[0].status, CheckStatus::Ok);

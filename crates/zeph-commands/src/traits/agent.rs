@@ -406,6 +406,21 @@ pub trait AgentAccess: Send {
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
 
+    // ----- /cocoon -----
+
+    /// Handle `/cocoon [status|models]` and return a user-visible result.
+    ///
+    /// Queries the Cocoon sidecar HTTP endpoints and returns formatted status or model listing.
+    /// No subcommand or empty args returns a short help text.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the sidecar is unreachable or an unknown subcommand is passed.
+    fn handle_cocoon<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
     // ----- /loop -----
 
     /// Handle `/loop <prompt> every <N> <unit>` or `/loop stop`.
@@ -677,6 +692,13 @@ impl AgentAccess for NullAgent {
     }
 
     fn handle_acp<'a>(
+        &'a mut self,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn handle_cocoon<'a>(
         &'a mut self,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {

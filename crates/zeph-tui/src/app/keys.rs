@@ -233,6 +233,14 @@ impl App {
             TuiCommand::TaskPanel => {
                 self.show_task_panel = !self.show_task_panel;
             }
+            TuiCommand::CocoonStatus => {
+                self.push_system_message("Querying Cocoon sidecar...".to_owned());
+                let _ = self.user_input_tx.try_send("/cocoon status".to_owned());
+            }
+            TuiCommand::CocoonModels => {
+                self.push_system_message("Querying Cocoon models...".to_owned());
+                let _ = self.user_input_tx.try_send("/cocoon models".to_owned());
+            }
             cmd => self.execute_plan_graph_command(cmd),
         }
     }

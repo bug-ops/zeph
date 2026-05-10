@@ -11,6 +11,8 @@
 
 pub mod acp;
 pub mod agent_cmd;
+#[cfg(feature = "cocoon")]
+pub mod cocoon;
 pub mod compaction;
 pub mod debug;
 pub mod experiment;

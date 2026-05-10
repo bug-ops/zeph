@@ -25,6 +25,9 @@ pub struct CocoonHealth {
     /// Number of TEE workers available through the proxy.
     #[serde(default)]
     pub worker_count: u32,
+    /// TON wallet balance in TON units. `None` when the sidecar does not report balance.
+    #[serde(default)]
+    pub ton_balance: Option<f64>,
 }
 
 /// HTTP client for the Cocoon C++ sidecar.

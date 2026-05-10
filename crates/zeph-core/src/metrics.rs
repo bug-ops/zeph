@@ -382,6 +382,15 @@ pub struct MetricsSnapshot {
     pub compaction_last_at_ms: u64,
     /// Active long-horizon goal for TUI display. `None` when no goal is active.
     pub active_goal: Option<crate::goal::GoalSnapshot>,
+    /// Cocoon sidecar connection state. `None` when Cocoon is not configured.
+    /// `Some(true)` = proxy connected, `Some(false)` = unreachable or disconnected.
+    pub cocoon_connected: Option<bool>,
+    /// Worker count reported by the Cocoon sidecar. `0` when not connected or not configured.
+    pub cocoon_worker_count: u32,
+    /// Number of models available through the Cocoon sidecar.
+    pub cocoon_model_count: usize,
+    /// TON wallet balance in TON units. `None` when unknown or Cocoon not configured.
+    pub cocoon_ton_balance: Option<f64>,
 }
 
 /// Snapshot of a single in-flight background shell run for TUI display.

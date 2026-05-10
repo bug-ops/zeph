@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(tui): Cocoon TUI integration — `/cocoon status` and `/cocoon models` palette commands
+  dispatch through the `CommandRegistry` (same as `/acp`) and display sidecar health and available
+  models. Status bar shows `Cocoon: healthy (N models, M workers, X TON)` or
+  `Cocoon: sidecar unreachable` updated every 30 seconds via a background poll task. `ton_balance`
+  field added to `CocoonHealth`. Background poll uses `MissedTickBehavior::Skip` to prevent burst
+  HTTP calls after executor starvation. All I/O paths instrumented with `tui.cocoon.poll`,
+  `tui.cocoon.status`, and `tui.cocoon.models` tracing spans. Requires `cocoon` + `tui` features.
+  (#3673)
+
 - feat(cli): `zeph cocoon doctor [--json] [--timeout-secs N]` diagnostic subcommand for Cocoon
   sidecar connectivity checks. Runs 6 ordered checks: config entry presence, sidecar HTTP
   reachability (`GET /stats`), proxy connection, worker count, model listing, and vault key

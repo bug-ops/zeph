@@ -868,6 +868,30 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         })
     }
 
+    // ----- /cocoon -----
+
+    #[cfg(feature = "cocoon")]
+    fn handle_cocoon<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.handle_cocoon_as_string(args)
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))
+        })
+    }
+
+    #[cfg(not(feature = "cocoon"))]
+    fn handle_cocoon<'a>(
+        &'a mut self,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async {
+            Ok("Cocoon support is not compiled in. Rebuild with `--features cocoon`.".to_owned())
+        })
+    }
+
     // ----- /loop -----
 
     fn handle_loop<'a>(

@@ -50,6 +50,7 @@ tokio-util.workspace = true
 
 [features]
 default = []
+cocoon = []
 
 [lints]
 workspace = true

@@ -8,9 +8,9 @@ use tokio_stream::StreamExt;
 use wiremock::matchers::{header_exists, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::cocoon::client::{CocoonClient, CocoonHealth};
+use crate::cocoon::client::CocoonClient;
 use crate::cocoon::provider::CocoonProvider;
-use crate::provider::{ChatResponse, LlmProvider, Message, MessageMetadata, Role, StreamChunk};
+use crate::provider::{LlmProvider, Message, MessageMetadata, Role, StreamChunk};
 
 fn make_client(base_url: &str, access_hash: Option<String>) -> Arc<CocoonClient> {
     Arc::new(CocoonClient::new(
@@ -46,7 +46,7 @@ const CHAT_RESPONSE: &str = r#"{
 const EMBED_RESPONSE: &str =
     r#"{"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}], "model": "embed-model"}"#;
 
-/// Test 1: health check success — parses CocoonHealth from /stats JSON.
+/// Test 1: health check success — parses `CocoonHealth` from `/stats` JSON.
 #[tokio::test]
 async fn cocoon_health_check_success() {
     let server = MockServer::start().await;
@@ -67,7 +67,7 @@ async fn cocoon_health_check_success() {
     assert_eq!(health.worker_count, 3);
 }
 
-/// Test 2: health check unavailable — returns LlmError::Unavailable on connection refused.
+/// Test 2: health check unavailable — returns `LlmError::Unavailable` on connection refused.
 #[tokio::test]
 async fn cocoon_health_check_unavailable() {
     let client = make_client("http://127.0.0.1:1", None);
@@ -75,7 +75,7 @@ async fn cocoon_health_check_unavailable() {
     assert!(result.is_err());
 }
 
-/// Test 4: list_models parses /v1/models response.
+/// Test 4: `list_models` parses `/v1/models` response.
 #[tokio::test]
 async fn cocoon_list_models_parses_response() {
     let server = MockServer::start().await;
@@ -95,7 +95,7 @@ async fn cocoon_list_models_parses_response() {
     assert_eq!(models, vec!["Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B"]);
 }
 
-/// Test 5: post with access hash attaches X-Access-Hash header.
+/// Test 5: post with access hash attaches `X-Access-Hash` header.
 #[tokio::test]
 async fn cocoon_post_with_access_hash() {
     let server = MockServer::start().await;
@@ -118,7 +118,7 @@ async fn cocoon_post_with_access_hash() {
     assert!(result.is_ok());
 }
 
-/// Test 6: post without access hash omits X-Access-Hash header.
+/// Test 6: post without access hash omits `X-Access-Hash` header.
 #[tokio::test]
 async fn cocoon_post_without_access_hash() {
     let server = MockServer::start().await;
@@ -165,7 +165,7 @@ async fn cocoon_chat_happy_path() {
     assert_eq!(result, "hello");
 }
 
-/// Test 8: chat_stream happy path — assembles SSE chunks into full text.
+/// Test 8: `chat_stream` happy path — assembles SSE chunks into full text.
 #[tokio::test]
 async fn cocoon_chat_stream_happy_path() {
     let sse_body = concat!(
@@ -218,7 +218,7 @@ async fn cocoon_embed_happy_path() {
     assert_eq!(embedding, vec![0.1f32, 0.2f32, 0.3f32]);
 }
 
-/// Test 10: embed returns EmbedUnsupported on 404.
+/// Test 10: embed returns `EmbedUnsupported` on 404.
 #[tokio::test]
 async fn cocoon_embed_returns_unsupported_on_404() {
     let server = MockServer::start().await;
@@ -237,7 +237,7 @@ async fn cocoon_embed_returns_unsupported_on_404() {
     );
 }
 
-/// Test 11: embed returns EmbedUnsupported when no embedding model configured.
+/// Test 11: embed returns `EmbedUnsupported` when no embedding model configured.
 #[tokio::test]
 async fn cocoon_embed_unsupported_without_model() {
     let server = MockServer::start().await;
@@ -254,7 +254,7 @@ async fn cocoon_embed_unsupported_without_model() {
     ));
 }
 
-/// Test 12: embed_batch happy path — sorts by index and returns correct vectors.
+/// Test 12: `embed_batch` happy path — sorts by index and returns correct vectors.
 #[tokio::test]
 async fn cocoon_embed_batch_happy_path() {
     let batch_response = r#"{
@@ -283,7 +283,7 @@ async fn cocoon_embed_batch_happy_path() {
     assert_eq!(embeddings[1], vec![0.4f32, 0.5f32]);
 }
 
-/// Test 13: embed_batch count mismatch returns error.
+/// Test 13: `embed_batch` count mismatch returns error.
 #[tokio::test]
 async fn cocoon_embed_batch_count_mismatch() {
     let mismatch_response = r#"{"data": [{"index": 0, "embedding": [0.1, 0.2]}]}"#;
@@ -308,7 +308,7 @@ async fn cocoon_embed_batch_count_mismatch() {
     );
 }
 
-/// Test 14: chat returns ContextLengthExceeded on 400 with context error body.
+/// Test 14: chat returns `ContextLengthExceeded` on 400 with context error body.
 #[tokio::test]
 async fn cocoon_chat_context_length_error() {
     let server = MockServer::start().await;
@@ -336,7 +336,7 @@ async fn cocoon_chat_context_length_error() {
     );
 }
 
-/// Test 17: clone independence — clone has independent UsageTracker, shares Arc<CocoonClient>.
+/// Test 17: clone independence — clone has independent `UsageTracker`, shares `Arc<CocoonClient>`.
 #[test]
 fn cocoon_provider_clone_independence() {
     let server_uri = "http://localhost:10000";
@@ -348,7 +348,7 @@ fn cocoon_provider_clone_independence() {
     assert!(cloned.supports_streaming());
 }
 
-/// Test 18: with_generation_overrides preserves model identifier.
+/// Test 18: `with_generation_overrides` preserves model identifier.
 #[test]
 fn cocoon_provider_with_generation_overrides() {
     let provider = make_provider("http://localhost:10000");
@@ -364,7 +364,7 @@ fn cocoon_provider_with_generation_overrides() {
     assert_eq!(patched.model_identifier(), model_before);
 }
 
-/// Test 19: chat returns ApiError on 500 response.
+/// Test 19: chat returns `ApiError` on 500 response.
 #[tokio::test]
 async fn cocoon_api_error_on_5xx() {
     let server = MockServer::start().await;
@@ -383,7 +383,7 @@ async fn cocoon_api_error_on_5xx() {
     );
 }
 
-/// Test 20: health check ignores unknown fields in /stats JSON.
+/// Test 20: health check ignores unknown fields in `/stats` JSON.
 #[tokio::test]
 async fn cocoon_health_check_unknown_fields_ignored() {
     let server = MockServer::start().await;

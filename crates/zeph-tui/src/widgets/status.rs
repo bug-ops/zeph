@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::fmt::Write as _;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -50,8 +52,9 @@ fn build_main_text(app: &App, metrics: &MetricsSnapshot, mode: &str) -> String {
         format!(" | ch:{}", metrics.active_channel)
     };
     let bg_segment = build_bg_segment(metrics);
+    let cocoon_segment = build_cocoon_segment(metrics);
     format!(
-        " [{mode}]{model}{channel_segment}{plan_mode_seg}{subagent_view_seg} | Skills: {active} active / {total} loaded | Tokens: {tok}{qdrant_segment}{filter_segment}{bg_segment}",
+        " [{mode}]{model}{channel_segment}{plan_mode_seg}{subagent_view_seg} | Skills: {active} active / {total} loaded | Tokens: {tok}{qdrant_segment}{filter_segment}{bg_segment}{cocoon_segment}",
         model = if metrics.model_name.is_empty() {
             String::new()
         } else {
@@ -61,6 +64,23 @@ fn build_main_text(app: &App, metrics: &MetricsSnapshot, mode: &str) -> String {
         total = metrics.total_skills,
         tok = format_tokens(metrics.total_tokens),
     )
+}
+
+fn build_cocoon_segment(metrics: &MetricsSnapshot) -> String {
+    match metrics.cocoon_connected {
+        None => String::new(),
+        Some(true) => {
+            let mut seg = format!(
+                " | Cocoon: healthy ({} models, {} workers)",
+                metrics.cocoon_model_count, metrics.cocoon_worker_count
+            );
+            if let Some(balance) = metrics.cocoon_ton_balance {
+                let _ = write!(seg, ", {balance:.2} TON");
+            }
+            seg
+        }
+        Some(false) => " | Cocoon: sidecar unreachable".to_owned(),
+    }
 }
 
 fn append_compaction_segment(spans: &mut Vec<Span<'_>>, metrics: &MetricsSnapshot, theme: &Theme) {
@@ -374,6 +394,40 @@ mod tests {
         assert!(
             output.contains("claude-sonnet-4-6"),
             "expected model name in status bar; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn cocoon_segment_none_is_empty() {
+        let metrics = MetricsSnapshot::default();
+        assert_eq!(build_cocoon_segment(&metrics), "");
+    }
+
+    #[test]
+    fn cocoon_segment_healthy() {
+        let metrics = MetricsSnapshot {
+            cocoon_connected: Some(true),
+            cocoon_worker_count: 12,
+            cocoon_model_count: 3,
+            cocoon_ton_balance: Some(42.5),
+            ..MetricsSnapshot::default()
+        };
+        let seg = build_cocoon_segment(&metrics);
+        assert!(seg.contains("healthy"), "got: {seg}");
+        assert!(seg.contains("3 models"), "got: {seg}");
+        assert!(seg.contains("12 workers"), "got: {seg}");
+        assert!(seg.contains("42.50 TON"), "got: {seg}");
+    }
+
+    #[test]
+    fn cocoon_segment_unreachable() {
+        let metrics = MetricsSnapshot {
+            cocoon_connected: Some(false),
+            ..MetricsSnapshot::default()
+        };
+        assert!(
+            build_cocoon_segment(&metrics).contains("unreachable"),
+            "expected 'unreachable' in segment"
         );
     }
 
