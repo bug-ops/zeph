@@ -324,3 +324,107 @@ impl App {
         self.confirm_state.as_ref()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use crate::event::AgentEvent;
+    use crate::types::MessageRole;
+
+    use super::super::{App, ChatMessage};
+
+    fn make_app() -> App {
+        let (user_tx, user_rx) = mpsc::channel(16);
+        let (_, agent_rx) = mpsc::channel(16);
+        let mut app = App::new(user_tx, agent_rx);
+        let _ = user_rx;
+        app.sessions.current_mut().messages.clear();
+        app
+    }
+
+    /// Push a streaming Tool message with a specific tool_call_id directly onto the session.
+    fn push_tool_msg(app: &mut App, id: &str) {
+        let msg = ChatMessage::new(MessageRole::Tool, format!("$ cmd_{id}\n"))
+            .streaming()
+            .with_tool_call_id(id.to_owned());
+        app.sessions.current_mut().messages.push(msg);
+    }
+
+    #[test]
+    fn tool_output_chunk_routes_by_id_out_of_order() {
+        let mut app = make_app();
+        push_tool_msg(&mut app, "a");
+        push_tool_msg(&mut app, "b");
+        push_tool_msg(&mut app, "c");
+
+        // Deliver chunks out of order: c, a, b, a, c
+        for (id, chunk) in [
+            ("c", "c1"),
+            ("a", "a1"),
+            ("b", "b1"),
+            ("a", "a2"),
+            ("c", "c2"),
+        ] {
+            app.handle_agent_event(AgentEvent::ToolOutputChunk {
+                tool_name: "bash".into(),
+                command: String::new(),
+                chunk: chunk.to_owned(),
+                tool_call_id: id.to_owned(),
+            });
+        }
+
+        let msgs = app.messages();
+        assert_eq!(msgs.len(), 3);
+        // Message order: a=0, b=1, c=2
+        assert_eq!(msgs[0].content, "$ cmd_a\na1a2");
+        assert_eq!(msgs[1].content, "$ cmd_b\nb1");
+        assert_eq!(msgs[2].content, "$ cmd_c\nc1c2");
+    }
+
+    #[test]
+    fn tool_output_chunk_with_unknown_id_is_dropped() {
+        let mut app = make_app();
+        push_tool_msg(&mut app, "known");
+
+        // Chunk for an id that has no matching message — must be silently dropped.
+        app.handle_agent_event(AgentEvent::ToolOutputChunk {
+            tool_name: "bash".into(),
+            command: String::new(),
+            chunk: "should-not-appear".to_owned(),
+            tool_call_id: "unknown-xyz".to_owned(),
+        });
+
+        // The known message must be unchanged.
+        assert_eq!(app.messages().len(), 1);
+        assert_eq!(app.messages()[0].content, "$ cmd_known\n");
+    }
+
+    #[test]
+    fn tool_output_finalizes_correct_message_by_id() {
+        let mut app = make_app();
+        push_tool_msg(&mut app, "t1");
+        push_tool_msg(&mut app, "t2");
+
+        // Finalize t1 with ToolOutput.
+        app.handle_agent_event(AgentEvent::ToolOutput {
+            tool_name: "bash".into(),
+            command: "$ cmd_t1\n".into(),
+            output: "final-output-t1".to_owned(),
+            success: true,
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            tool_call_id: "t1".to_owned(),
+        });
+
+        let msgs = app.messages();
+        assert_eq!(msgs.len(), 2);
+        // t1 must be finalized (not streaming) with the canonical output.
+        assert!(!msgs[0].streaming);
+        assert!(msgs[0].content.contains("final-output-t1"));
+        // t2 must still be streaming and unchanged.
+        assert!(msgs[1].streaming);
+        assert_eq!(msgs[1].content, "$ cmd_t2\n");
+    }
+}

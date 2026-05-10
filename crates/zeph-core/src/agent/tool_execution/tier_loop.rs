@@ -607,9 +607,17 @@ impl<C: Channel> Agent<C> {
             .task_execution_env
             .as_deref()
             .map(|name| ExecutionContext::default().with_name(name));
+        // Assign stable IDs before execution so ToolStart, ToolOutputChunk, and ToolOutput
+        // all share the same ID, enabling correct per-tool routing in parallel execution.
+        let tool_call_ids: Vec<String> = tool_calls
+            .iter()
+            .map(|_| uuid::Uuid::new_v4().to_string())
+            .collect();
+
         let calls: Vec<ToolCall> = tool_calls
             .iter()
-            .filter_map(|tc| {
+            .enumerate()
+            .filter_map(|(idx, tc)| {
                 let mut params: serde_json::Map<String, serde_json::Value> =
                     if let serde_json::Value::Object(map) = &tc.input {
                         map.clone()
@@ -625,16 +633,9 @@ impl<C: Channel> Agent<C> {
                     params,
                     caller_id: None,
                     context: task_ctx.clone(),
-
-                    tool_call_id: String::new(),
+                    tool_call_id: tool_call_ids[idx].clone(),
                 })
             })
-            .collect();
-
-        // Assign stable IDs before execution so ToolStart and ToolOutput share the same ID.
-        let tool_call_ids: Vec<String> = tool_calls
-            .iter()
-            .map(|_| uuid::Uuid::new_v4().to_string())
             .collect();
         // tool_started_ats is populated per-tier just before each tier's join_all so that
         // audit timestamps reflect actual execution start rather than pre-build time.

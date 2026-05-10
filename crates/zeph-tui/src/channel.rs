@@ -536,6 +536,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_tool_start_forwards_tool_call_id_value() {
+        use zeph_core::channel::ToolStartEvent;
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+        ch.send_tool_start(ToolStartEvent {
+            tool_name: "bash".into(),
+            tool_call_id: "uuid-abc-123".into(),
+            params: Some(serde_json::json!({"command": "echo hi"})),
+            parent_tool_use_id: None,
+            started_at: std::time::Instant::now(),
+            speculative: false,
+            sandbox_profile: None,
+        })
+        .await
+        .unwrap();
+        let evt = agent_rx.recv().await.unwrap();
+        match evt {
+            AgentEvent::ToolStart { tool_call_id, .. } => {
+                assert_eq!(tool_call_id, "uuid-abc-123");
+            }
+            other => panic!("expected ToolStart, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn send_tool_output_bundles_diff_atomically() {
         use zeph_core::channel::ToolOutputEvent;
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
