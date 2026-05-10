@@ -6,13 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-
-- fix(security): wire `ShadowProbeExecutor` into the agent executor chain (`src/runner.rs`).
-  `ShadowSentinel` is now instantiated when `security.shadow_sentinel.enabled = true` and
-  inserted between `ScopedToolExecutor` and `PolicyGateExecutor` as required by spec 050 §Phase 2.
-  Adds `ShadowSentinelProbeGateAdapter` bridge to avoid circular crate dependency. Wires
-  `sentinel.advance_turn()` into `begin_turn()`. Closes #3739.
+## [0.21.0] - 2026-05-11
 
 ### Added
 
@@ -27,7 +21,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Bot token is redacted in `Debug` output and stripped from `reqwest` errors via `.without_url()`.
   Unblocks Guest Mode (#3729), Bot-to-Bot communication (#3730), and reaction moderation (#3731).
   Closes #3728.
-
 - feat(channels): add Telegram Guest Mode and Bot-to-Bot communication (`zeph-channels`, `zeph-config`).
   Guest Mode spawns a transparent local axum HTTP proxy on an ephemeral port that intercepts
   `getUpdates` responses from `api.telegram.org`, extracts `guest_message` entries (which
@@ -43,7 +36,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ChannelMessage.is_guest_context` → `SessionState.is_guest_context` → volatile system prompt
   annotation. Fixed missing `is_guest_context`/`is_from_bot` fields in `gateway_spawn.rs` and
   `daemon.rs`. Closes #3729, #3730.
-
 - feat(memory): add BeliefMem probabilistic edge layer to APEX-MEM (`zeph-memory`). New
   `pending_beliefs` + `belief_evidence` SQLite tables (migration 084) store candidate facts with
   probability weights before commitment. Evidence accumulates via Noisy-OR with optional temporal
@@ -73,9 +65,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `● Explored N files` / `● Ran N commands` with a collapsible sub-list of primary args (capped
   at 8 in Inline density, unlimited in Block, hidden in Compact). Groups break on role change,
   streaming tool, or different `ToolKind`. Closes #3719. (#3724)
+- feat(hooks): `PreToolUse` and `PostToolUse` hook events for the main agent and subagent paths.
+  New `[[hooks.pre_tool_use]]` and `[[hooks.post_tool_use]]` config sections accept
+  `HookMatcher` entries (pipe-separated tool name patterns). Hooks fire with env vars:
+  `ZEPH_TOOL_NAME`, `ZEPH_TOOL_ARGS_JSON` (truncated at 64 KiB via `floor_char_boundary` to
+  avoid `E2BIG` and UTF-8 panic), `ZEPH_SESSION_ID` (main agent only; omitted in subagent),
+  and `ZEPH_TOOL_DURATION_MS` (post hooks only). PreToolUse fires before the `RuntimeLayer`
+  permission check (observers see all attempted calls). Hook dispatch is fail-open at the agent
+  level; `fail_closed` in a `HookDef` aborts the hook-chain sequence only. Closes #3698.
+- feat(tui): native terminal text selection without Shift modifier. `EnableMouseCapture` replaced
+  with alternate-scroll mode (`\x1b[?1007h`/`\x1b[?1007l`) so the terminal translates scroll-wheel
+  events into arrow keys. Chat scrolling is preserved; `AppEvent::MouseScroll` removed from the
+  event model. Panic hook updated to emit `DisableAlternateScroll` on crash. Closes #3685. (#3685)
+- feat(tui): clipboard shortcuts for copying assistant replies. New `clipboard` module with
+  `ClipboardHandle` backed by arboard (local) with OSC 52 fallback (SSH/tmux). SSH detected via
+  `SSH_TTY`, `SSH_CONNECTION`, `SSH_CLIENT`. `Ctrl+O` and `/copy` slash command copy the last
+  assistant message to clipboard. `clipboard` feature flag (default-on) gates the arboard
+  dependency for headless builds. Closes #3685. (#3685)
+- feat(tui): Two-tier tool rendering and `ToolDensity` config — replaces the boolean
+  `compact_tools` toggle with a three-state `ToolDensity` enum (`compact` / `inline` / `block`)
+  that cycles with the `c` key. `inline` (default) renders a head (2 lines) + ellipsis
+  (`... N hidden …`) + tail (2 lines) for outputs longer than 6 lines. `compact` shows a single
+  summary line; `block` shows full output. Tool messages display coloured success/failure bullets
+  (green `●` / red `●`); streaming messages show the braille spinner. `ToolKind` classifies tools
+  into Run / Explore / Edit / Web / Mcp / Other; consecutive Run and Explore calls are eligible for
+  future grouping. `tool_density` is configurable in the `[tui]` config section. (#3686)
+- feat(llm): Cocoon live integration tests — 6 `#[ignore]`-gated tests covering `health_check`,
+  `list_models`, `chat_round_trip`, `chat_stream`, `chat_with_tools`, and `doctor` checks.
+  Tests require `COCOON_TEST_URL` env var and skip gracefully without it; `#[ignore]` attributes
+  include reason strings. Requires `cocoon` feature. (#3675)
+- feat(tui): Cocoon TUI integration — `/cocoon status` and `/cocoon models` palette commands
+  dispatch through the `CommandRegistry` (same as `/acp`) and display sidecar health and available
+  models. Status bar shows `Cocoon: healthy (N models, M workers, X TON)` or
+  `Cocoon: sidecar unreachable` updated every 30 seconds via a background poll task. `ton_balance`
+  field added to `CocoonHealth`. Background poll uses `MissedTickBehavior::Skip` to prevent burst
+  HTTP calls after executor starvation. All I/O paths instrumented with `tui.cocoon.poll`,
+  `tui.cocoon.status`, and `tui.cocoon.models` tracing spans. Requires `cocoon` + `tui` features.
+  (#3673)
+- feat(cli): `zeph cocoon doctor [--json] [--timeout-secs N]` diagnostic subcommand for Cocoon
+  sidecar connectivity checks. Runs 6 ordered checks: config entry presence, sidecar HTTP
+  reachability (`GET /stats`), proxy connection, worker count, model listing, and vault key
+  resolution. Downstream checks gracefully skip (WARN) when the sidecar is unreachable. `--json`
+  emits a structured JSON envelope with `schema_version: 1`. Requires `cocoon` feature. (#3672)
 
 ### Fixed
 
+- fix(security): wire `ShadowProbeExecutor` into the agent executor chain (`src/runner.rs`).
+  `ShadowSentinel` is now instantiated when `security.shadow_sentinel.enabled = true` and
+  inserted between `ScopedToolExecutor` and `PolicyGateExecutor` as required by spec 050 §Phase 2.
+  Adds `ShadowSentinelProbeGateAdapter` bridge to avoid circular crate dependency. Wires
+  `sentinel.advance_turn()` into `begin_turn()`. Closes #3739.
 - fix(hooks): `pre_tool_use` hooks now fire for tool calls intercepted by the utility gate;
   previously the hook block was skipped because `check_call_gates` returned early with `continue`.
   Closes #3738.
@@ -92,62 +131,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `tool_call_id: String`. `ToolOutputChunk` lookup similarly uses id-based matching with a fallback
   to the last streaming Tool message for shell tools whose `ToolEvent::OutputChunk` lacks an id.
   `Channel::send_diff` gains a `tool_call_id: &str` parameter. (#3711)
-
 - fix(cli): `zeph cocoon doctor` now reports `[FAIL]` for `cocoon_client_url` with an invalid scheme
   (e.g. `ftp://`). `check_config_present` previously returned `[OK]` without calling
   `entry.validate()`, silently accepting any URL scheme. The fix adds a `validate()` guard that
   pushes a `CheckResult::fail` with the scheme error and returns early. (#3694)
-
-### Added
-
-- feat(hooks): `PreToolUse` and `PostToolUse` hook events for the main agent and subagent paths.
-  New `[[hooks.pre_tool_use]]` and `[[hooks.post_tool_use]]` config sections accept
-  `HookMatcher` entries (pipe-separated tool name patterns). Hooks fire with env vars:
-  `ZEPH_TOOL_NAME`, `ZEPH_TOOL_ARGS_JSON` (truncated at 64 KiB via `floor_char_boundary` to
-  avoid `E2BIG` and UTF-8 panic), `ZEPH_SESSION_ID` (main agent only; omitted in subagent),
-  and `ZEPH_TOOL_DURATION_MS` (post hooks only). PreToolUse fires before the `RuntimeLayer`
-  permission check (observers see all attempted calls). Hook dispatch is fail-open at the agent
-  level; `fail_closed` in a `HookDef` aborts the hook-chain sequence only. Closes #3698.
-
-- feat(tui): native terminal text selection without Shift modifier. `EnableMouseCapture` replaced
-  with alternate-scroll mode (`\x1b[?1007h`/`\x1b[?1007l`) so the terminal translates scroll-wheel
-  events into arrow keys. Chat scrolling is preserved; `AppEvent::MouseScroll` removed from the
-  event model. Panic hook updated to emit `DisableAlternateScroll` on crash. Closes #3685. (#3685)
-
-- feat(tui): clipboard shortcuts for copying assistant replies. New `clipboard` module with
-  `ClipboardHandle` backed by arboard (local) with OSC 52 fallback (SSH/tmux). SSH detected via
-  `SSH_TTY`, `SSH_CONNECTION`, `SSH_CLIENT`. `Ctrl+O` and `/copy` slash command copy the last
-  assistant message to clipboard. `clipboard` feature flag (default-on) gates the arboard
-  dependency for headless builds. Closes #3685. (#3685)
-
-- feat(tui): Two-tier tool rendering and `ToolDensity` config — replaces the boolean
-  `compact_tools` toggle with a three-state `ToolDensity` enum (`compact` / `inline` / `block`)
-  that cycles with the `c` key. `inline` (default) renders a head (2 lines) + ellipsis
-  (`... N hidden …`) + tail (2 lines) for outputs longer than 6 lines. `compact` shows a single
-  summary line; `block` shows full output. Tool messages display coloured success/failure bullets
-  (green `●` / red `●`); streaming messages show the braille spinner. `ToolKind` classifies tools
-  into Run / Explore / Edit / Web / Mcp / Other; consecutive Run and Explore calls are eligible for
-  future grouping. `tool_density` is configurable in the `[tui]` config section. (#3686)
-
-- feat(llm): Cocoon live integration tests — 6 `#[ignore]`-gated tests covering `health_check`,
-  `list_models`, `chat_round_trip`, `chat_stream`, `chat_with_tools`, and `doctor` checks.
-  Tests require `COCOON_TEST_URL` env var and skip gracefully without it; `#[ignore]` attributes
-  include reason strings. Requires `cocoon` feature. (#3675)
-
-- feat(tui): Cocoon TUI integration — `/cocoon status` and `/cocoon models` palette commands
-  dispatch through the `CommandRegistry` (same as `/acp`) and display sidecar health and available
-  models. Status bar shows `Cocoon: healthy (N models, M workers, X TON)` or
-  `Cocoon: sidecar unreachable` updated every 30 seconds via a background poll task. `ton_balance`
-  field added to `CocoonHealth`. Background poll uses `MissedTickBehavior::Skip` to prevent burst
-  HTTP calls after executor starvation. All I/O paths instrumented with `tui.cocoon.poll`,
-  `tui.cocoon.status`, and `tui.cocoon.models` tracing spans. Requires `cocoon` + `tui` features.
-  (#3673)
-
-- feat(cli): `zeph cocoon doctor [--json] [--timeout-secs N]` diagnostic subcommand for Cocoon
-  sidecar connectivity checks. Runs 6 ordered checks: config entry presence, sidecar HTTP
-  reachability (`GET /stats`), proxy connection, worker count, model listing, and vault key
-  resolution. Downstream checks gracefully skip (WARN) when the sidecar is unreachable. `--json`
-  emits a structured JSON envelope with `schema_version: 1`. Requires `cocoon` feature. (#3672)
+- fix(security): extend `classify_tool` to recognise bare shell and file-write tool IDs
+  (`bash`, `shell`, `write_file`, `write`, `create_file`) so `ShadowProbeExecutor` probes
+  trigger correctly when callers omit the `qualified::` prefix. Closes #3744.
 
 ### Changed
 
@@ -157,15 +147,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `GraphRecallParams`, `TokenCounting`, `ContextMemoryBackend`) to `zeph-common::memory`.
   Added `SemanticMemoryBackend` adapter and `build_memory_router()` in `zeph-agent-context`.
   `zeph-context` no longer imports `zeph-memory`. Exception note removed from `specs/constitution.md`.
-
 - build: add `profiling` and `sandbox` to default Cargo features — tracing spans are compiled by
   default for diagnostics; macOS Seatbelt / Linux Landlock sandbox is available without
   `--features sandbox` (still runtime-disabled unless `tools.sandbox.enabled = true`)
 - build: consolidate `self-check`, `env-vault`, and `task-metrics` as always-on — these were pure
   behavioral markers with no optional deps, violating the feature flag decision rule (spec 029 §2)
-
-### Fixed
-
 - docs(specs): update spec 001 §9 and spec 029 §3.1/§4/§5.3 to reflect actual default feature set
   (was documenting `default = ["scheduler", "sqlite"]` since v0.18 while reality had 5 features
   since v0.20)
@@ -5793,7 +5779,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.20.2...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/bug-ops/zeph/compare/v0.20.2...v0.21.0
 [0.20.2]: https://github.com/bug-ops/zeph/compare/v0.20.1...v0.20.2
 [0.20.1]: https://github.com/bug-ops/zeph/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/bug-ops/zeph/compare/v0.19.3...v0.20.0

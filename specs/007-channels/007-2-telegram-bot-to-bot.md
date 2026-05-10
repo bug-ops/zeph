@@ -11,7 +11,7 @@ tags:
   - bot-api-10
   - multi-agent
 created: 2026-05-10
-status: approved
+status: implemented
 related:
   - "[[007-channels/spec]]"
   - "[[007-channels/007-1-telegram-guest-mode]]"
@@ -376,18 +376,18 @@ max_bot_chain_depth = 3
 
 ---
 
-## 15. Acceptance Criteria (Issue #3730)
+## 15. Acceptance Criteria (Issue #3730) — Implemented in PR #3748
 
-- [ ] `bot_to_bot = false` (default): bot ignores messages from other bots (existing behavior preserved)
-- [ ] `bot_to_bot = true`: bot responds to bots in `allowed_bots` (or all bots if list is empty)
-- [ ] `setManagedBotAccessSettings` called at startup when `bot_to_bot = true`
-- [ ] `setManagedBotAccessSettings` NOT called when `bot_to_bot = false`
-- [ ] Reply chain depth tracked; responses dropped when depth ≥ `max_bot_chain_depth`
-- [ ] Warn log emitted when message dropped due to depth limit (includes depth, message ID, sender)
-- [ ] `is_from_bot` field available on `ChannelMessage`
-- [ ] `is_from_bot` field available on `IncomingMessage`
-- [ ] Unit tests: `bot_to_bot = false` drops, authorization pass, authorization fail, depth 0 processes, depth N-1 processes, depth N drops, `max_bot_chain_depth = 0` drops all
-- [ ] Live test: two bot instances communicate; loop terminates after `max_bot_chain_depth`
+- [x] `bot_to_bot = false` (default): bot ignores messages from other bots (existing behavior preserved)
+- [x] `bot_to_bot = true`: bot responds to bots in `allowed_bots` (or all bots if list is empty)
+- [x] `setManagedBotAccessSettings` called at startup when `bot_to_bot = true`
+- [x] `setManagedBotAccessSettings` NOT called when `bot_to_bot = false`
+- [x] Reply chain depth tracked; responses dropped when depth ≥ `max_bot_chain_depth`
+- [x] Warn log emitted when message dropped due to depth limit (includes depth, message ID, sender)
+- [x] `is_from_bot` field available on `ChannelMessage`
+- [x] `is_from_bot` field available on `IncomingMessage`
+- [x] Unit tests: `bot_to_bot = false` drops, authorization pass, authorization fail, depth 0 processes, depth N-1 processes, depth N drops, `max_bot_chain_depth = 0` drops all
+- [ ] Live test: two bot instances communicate; loop terminates after `max_bot_chain_depth` (pending live session)
 - [ ] Playbook updated: `.local/testing/playbooks/telegram.md`
 - [ ] Coverage-status updated
 

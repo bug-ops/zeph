@@ -45,6 +45,7 @@ agent lifecycle events. Five event types are supported:
 | `file_changed` | A watched file or directory subtree is modified on disk |
 | `permission_denied` | A tool execution is short-circuited by a `RuntimeLayer::before_tool` check |
 | `turn_complete` | An agent turn completes (after all tool calls and LLM response) |
+| `pre_tool_use` | Before any LLM-requested tool invocation — fires before the utility gate and `RuntimeLayer::before_tool` check (#3725) |
 | `post_tool_use` | After any tool invocation completes (carries `ZEPH_TOOL_DURATION_MS`) |
 
 Hooks are defined as arrays under `[hooks]` in `config.toml`. Each entry specifies
@@ -77,6 +78,10 @@ command = "echo 'tool $ZEPH_DENIED_TOOL blocked: $ZEPH_DENY_REASON'"
 [[hooks.turn_complete]]
 type = "command"
 command = "osascript -e 'display notification \"$ZEPH_TURN_PREVIEW\" with title \"Zeph\"'"
+
+[[hooks.pre_tool_use]]
+type = "command"
+command = "echo 'about to call $ZEPH_TOOL_NAME'"
 
 [[hooks.post_tool_use]]
 type = "command"
@@ -126,6 +131,9 @@ Hooks receive context via environment variables injected into the shell command:
 | `ZEPH_TURN_STATUS` | `turn_complete` | `"success"` or `"error"` |
 | `ZEPH_TURN_PREVIEW` | `turn_complete` | Redacted short preview of the LLM response |
 | `ZEPH_TURN_LLM_REQUESTS` | `turn_complete` | Number of LLM requests in the turn |
+| `ZEPH_TOOL_NAME` | `pre_tool_use`, `post_tool_use` | Name of the tool being invoked |
+| `ZEPH_TOOL_ARGS_JSON` | `pre_tool_use`, `post_tool_use` | JSON-serialized tool arguments, truncated to 64 KiB at a valid UTF-8 char boundary |
+| `ZEPH_SESSION_ID` | `pre_tool_use`, `post_tool_use` | Session identifier (main agent path only; absent in subagent path) |
 | `ZEPH_TOOL_DURATION_MS` | `post_tool_use` | Wall-clock duration of the tool call in milliseconds |
 
 > [!note] `turn_complete` gate
@@ -239,6 +247,9 @@ validating the new config. `HookRunner::replace_config` is an atomic swap using
 - `turn_complete` is added to `HooksConfig` and `HooksConfig::is_empty()` check (#3327)
 - `type = "mcp_tool"` action requires MCP manager active; must fail gracefully per `fail_closed` setting when unavailable (#3293)
 - `HookRunner` uses `ArcSwap<HooksConfig>` — live reload is atomic, no lock contention on hook dispatch
+- `pre_tool_use` fires for ALL LLM-requested tool calls including those intercepted by the utility gate (Retrieve/Verify/Stop) — dispatch is ordered **before** `check_call_gates` in `build_tier_call_futures` (#3738); internal tools (`compress_context`, `start_focus`, `complete_focus`) are excluded via the early-continue guard
+- `post_tool_use` fires after every tool invocation via `apply_tier_results`, matching `pre_tool_use` symmetry
+- `pre_tool_use` hook failures are fail-open: a non-zero exit aborts the hook chain but does NOT block the tool call
 - NEVER inject hook stdout into the agent's conversation context
 - NEVER run hooks with elevated privileges — they inherit the agent process permissions only
 - If `[hooks]` section is absent from config, all hook lists are empty and no hooks fire — zero-cost when unused

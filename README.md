@@ -10,6 +10,7 @@
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+  [![Tests](https://img.shields.io/badge/tests-9139-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 </div>
 
@@ -201,12 +202,12 @@ cargo build --release --features full
 
 | Area | Highlights |
 |---|---|
-| Memory | SQLite/PostgreSQL history, embedded SQLite vectors or Qdrant, graph memory, SYNAPSE, SleepGate, APEX-MEM write-quality gates, MemCoT Zoom-In/Out recall views, document RAG. |
+| Memory | SQLite/PostgreSQL history, embedded SQLite vectors or Qdrant, [graph memory](https://bug-ops.github.io/zeph/concepts/graph-memory.html), SYNAPSE, SleepGate, APEX-MEM write-quality gates, BeliefMem probabilistic edge layer, MemCoT Zoom-In/Out recall views, document RAG. |
 | Context | Goal-aware compaction, TypedPage assembler pipeline, TACO output compression, tool-output archive, session recap, active-goal injection. |
-| Skills | `SKILL.md` registry, hot reload, BM25 + embedding matching, trust levels, self-learning skill improvement. |
-| Providers | Ollama, Claude, OpenAI, Gemini, OpenAI-compatible APIs, Gonka native inference, Candle local inference, adaptive routing. |
-| Tools | Shell, file, web, MCP, tool quotas, approval gates, audit trail, sandboxing, output compression, speculative dispatch, TrajectorySentinel capability governance. |
-| Interfaces | CLI, TUI, Telegram, Discord, Slack, ACP, A2A, HTTP gateway, scheduler daemon. |
+| Skills | `SKILL.md` registry, hot reload, BM25 + embedding matching, trust levels, [self-learning skill improvement](https://bug-ops.github.io/zeph/guides/self-learning.html). |
+| Providers | Ollama, Claude, OpenAI, Gemini, OpenAI-compatible APIs, [Gonka](https://bug-ops.github.io/zeph/guides/gonka.html) native inference, [Cocoon](https://bug-ops.github.io/zeph/guides/cocoon.html) decentralized TEE inference, Candle local inference, adaptive routing. |
+| Tools | Shell, file, web, MCP, tool quotas, approval gates, audit trail, [sandboxing](https://bug-ops.github.io/zeph/reference/security/file-sandbox.html), output compression, speculative dispatch, [ShadowSentinel](https://bug-ops.github.io/zeph/reference/security/shadow-sentinel.html) safety probes, TrajectorySentinel capability governance. |
+| Interfaces | CLI, TUI, [Telegram](https://bug-ops.github.io/zeph/guides/telegram.html) (with Guest Mode and Bot-to-Bot), Discord, Slack, ACP, A2A, HTTP gateway, scheduler daemon. |
 | Code intelligence | Tree-sitter indexing, semantic repo map, LSP diagnostics and hover context through MCP. |
 | Observability | Debug dumps, JSONL mode, Prometheus metrics, OpenTelemetry traces, profiling builds. |
 

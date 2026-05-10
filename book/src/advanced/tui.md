@@ -218,7 +218,109 @@ When the agent uses write or edit tools, the TUI renders file changes as syntax-
 
 Syntax highlighting (via tree-sitter) is preserved within diff lines for supported languages (Rust, Python, JavaScript, JSON, TOML, Bash).
 
-### Compact and Expanded Modes
+## Tool Output Density
+
+Tool execution output (shell commands, file operations, web searches) can be displayed in three different densities to match your preferences. Control density with the `c` key, and configure default density in your config.
+
+### Compact Density
+
+Shows a single-line summary per tool:
+
+```text
+● Ran 3 commands
+● Explored 2 files  
+● Updated 5 lines
+```
+
+Consecutive tool calls of the same type are grouped together. Click to expand individual tool.
+
+### Inline Density (Default)
+
+Balances readability with screen space. Shows:
+- Tool name and primary arguments (first 2 lines)
+- Abbreviated middle section (ellipsis if >6 lines)
+- Last 2 lines of output
+
+```text
+● shell: git status
+  On branch main
+  ...
+  modified:   src/main.rs
+```
+
+Consecutive tools of the same category are grouped with a count badge:
+
+```text
+● Ran 3 commands
+  ├─ git status
+  ├─ cargo build --release
+  └─ cargo test
+```
+
+### Block Density
+
+Shows full tool output without truncation:
+
+```text
+● shell: cargo test
+  running 12 tests
+  test result: ok. 12 passed; 0 failed
+  ...
+  test_compression ... ok
+```
+
+### Configuration
+
+Set default density in your config:
+
+```toml
+[tui]
+tool_density = "inline"      # compact, inline, or block (default: inline)
+```
+
+Press `c` during a conversation to cycle through densities without config changes.
+
+### Tool Grouping
+
+Consecutive tool calls with the same category are automatically grouped when `tool_density = "inline"` or `"compact"`. Categories are:
+
+| Category | Tools |
+|----------|-------|
+| Run | shell, bash, sh |
+| Explore | ls, find, file_read, etc. |
+| Edit | write_file, edit_file, rename, delete |
+| Web | web_scrape, brave_search, etc. |
+| MCP | All MCP tools |
+| Other | Unrecognized tools |
+
+Groups break on role change (user message or system message), tool kind change, or when a tool is streaming.
+
+## Text Selection and Clipboard
+
+### Native Text Selection
+
+The TUI supports native terminal text selection without the Shift modifier. Select text by:
+
+1. Click and drag to select
+2. Use keyboard selection (Shift+Arrow) in compatible terminals
+3. Triple-click to select a full line or paragraph
+
+Selected text is automatically copied to the system clipboard when you release the mouse or press `Enter`.
+
+### Clipboard Shortcuts
+
+Copy the last assistant message to your system clipboard:
+
+- **`Ctrl+O`** — Copy last assistant response
+- **`/copy`** — Copy command (alternative method)
+
+SSH and tmux users: clipboard data is sent via OSC 52 escape sequences, allowing Zeph to write to your local clipboard even on remote machines.
+
+### SSH and Tmux Detection
+
+When running over SSH (detected via `SSH_TTY`, `SSH_CONNECTION`, `SSH_CLIENT` environment variables), clipboard operations automatically fall back to the OSC 52 protocol. This allows clipboard functionality to work in tmux sessions and SSH connections without needing a local xclip or pbcopy.
+
+### Compact and Expanded Modes for Diffs
 
 Diffs default to **compact mode**, showing a single-line summary (file path with added/removed line counts). Press `e` to toggle **expanded mode**, which renders the full line-by-line diff with syntax highlighting and colored backgrounds.
 

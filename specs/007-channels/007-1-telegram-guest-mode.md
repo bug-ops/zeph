@@ -10,7 +10,7 @@ tags:
   - telegram
   - bot-api-10
 created: 2026-05-10
-status: approved
+status: implemented
 related:
   - "[[007-channels/spec]]"
   - "[[007-channels/007-2-telegram-bot-to-bot]]"
@@ -319,18 +319,18 @@ guest-message authorization — no new field is needed.
 
 ---
 
-## 15. Acceptance Criteria (Issue #3729)
+## 15. Acceptance Criteria (Issue #3729) — Implemented in PR #3748
 
-- [ ] `telegram.guest_mode = false` disables the handler; bot ignores guest mentions
-- [ ] `telegram.guest_mode = true` registers handler; bot responds to @mentions
-- [ ] `allowed_users` check applied to `guest_bot_caller_user` before LLM call
-- [ ] Response routed through `answerGuestQuery`, not `sendMessage`
-- [ ] No `editMessageText` calls when `guest_query_id` is present
-- [ ] System prompt annotated with guest context string
-- [ ] `is_guest_context: bool` available on `ChannelMessage`
-- [ ] `guest_query_id: Option<String>` added to `IncomingMessage`
-- [ ] Unit tests: authorization pass, authorization fail, routing, config parsing
-- [ ] Live test: @mention bot in a group, verify response reaches caller
+- [x] `telegram.guest_mode = false` disables the handler; bot ignores guest mentions
+- [x] `telegram.guest_mode = true` registers handler; bot responds to @mentions
+- [x] `allowed_users` check applied to `guest_bot_caller_user` before LLM call
+- [x] Response routed through `answerGuestQuery`, not `sendMessage`
+- [x] No `editMessageText` calls when `guest_query_id` is present
+- [x] System prompt annotated with guest context string
+- [x] `is_guest_context: bool` available on `ChannelMessage`
+- [x] `guest_query_id: Option<String>` added to `IncomingMessage`
+- [x] Unit tests: authorization pass, authorization fail, routing, config parsing
+- [ ] Live test: @mention bot in a group, verify response reaches caller (pending live session)
 - [ ] Playbook updated: `.local/testing/playbooks/telegram.md`
 - [ ] Coverage-status updated
 

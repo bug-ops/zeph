@@ -717,7 +717,7 @@ are not rediscovered as bugs:
 
 ---
 
-## Phase 2: ShadowSentinel SafetyProbe (implemented 2026-05-10)
+## Phase 2: ShadowSentinel SafetyProbe (PR #3735 + #3739 + #3742 + #3745, merged 2026-05-10)
 
 ### Overview
 
@@ -736,6 +736,14 @@ ScopedToolExecutor → ShadowProbeExecutor → PolicyGateExecutor → ...
 for every structured tool call (`execute_tool_call` / `execute_tool_call_confirmed`).
 The legacy fenced-block path (`execute`) bypasses the probe — no structured tool id is
 available there.
+
+**Wiring implementation (#3742).** `ShadowSentinel` and `ShadowProbeExecutor` are
+instantiated in `src/runner.rs` when `config.security.shadow_sentinel.enabled = true`.
+A `ShadowSentinelProbeGateAdapter` bridges `ProbeVerdict` (returned by `zeph-core`) and
+`ProbeOutcome` (consumed by `zeph-tools`) without introducing a circular crate dependency.
+`shadow_sentinel` is added as a field on `SecurityState` with a `with_shadow_sentinel()`
+builder method. `sentinel.advance_turn()` is called in `begin_turn()` in the agent loop,
+ordered before gate evaluation (preserving the `TrajectorySentinel` invariant).
 
 ### New components
 
@@ -824,12 +832,37 @@ probe_patterns = ["builtin:shell*", "builtin:write", "builtin:edit", "mcp:*/file
 deny_on_timeout = false
 ```
 
+### `classify_tool` fast-path — bare tool IDs (fix #3744)
+
+`ShadowSentinel::classify_tool` originally checked only qualified ids
+(`"builtin:bash"`, `"builtin:shell"`) but `ShellExecutor` and `FileExecutor`
+register their tools **without** the `"builtin:"` prefix. As a result,
+`classify_tool("bash")` returned `ToolRiskCategory::Low` and
+`ProbeVerdict::Skip`, so the LLM safety probe never fired for any shell
+execution.
+
+The fast-path now covers both forms:
+
+| Input | Category |
+|-------|----------|
+| `"bash"`, `"shell"`, `"sh"`, `"builtin:bash"`, `"builtin:shell"`, `"builtin:sh"` | `Shell` |
+| `"write"`, `"edit"`, `"delete"`, `"builtin:write"`, `"builtin:edit"`, `"builtin:delete"` | `FileWrite` |
+| Anything matching `probe_patterns` globs | `ExfilCapable` or per-pattern category |
+| Anything else | `Low` |
+
+**Key invariant**: the fast-path bare-name entries MUST stay in sync with
+the actual tool IDs registered by `ShellExecutor` and `FileExecutor`. When
+either executor renames a tool, `classify_tool` must be updated in the same
+PR. A unit test enumerates `ShellExecutor::tool_definitions()` and asserts
+each id maps to `Shell` or `FileWrite` as appropriate.
+
 ### Acceptance criteria
 
 - `ShadowProbeExecutor`: Allow/Skip → delegate to inner; Deny → `ToolError::SafetyDenied`.
 - Legacy `execute()` path always bypasses the probe.
 - `is_tool_speculatable` returns `false` for all tool ids.
-- `ShadowSentinel::classify_tool`: `builtin:shell/bash` → `Shell`; `builtin:write/edit` → `FileWrite`; unmatched → `Low`.
+- `ShadowSentinel::classify_tool`: `"bash"` → `Shell`; `"builtin:bash"` → `Shell`; `"write"` → `FileWrite`; `"builtin:write"` → `FileWrite`; unmatched → `Low`.
+- `classify_tool` fast-path covers both bare and qualified ids for shell and file-write tools.
 - `advance_turn()` resets `probes_this_turn` to 0.
 - `parse_verdict`: `{"verdict":"allow"}` → Allow; `{"verdict":"deny","reason":"..."}` → Deny; unparseable → Allow (fail-open).
 - All unit tests pass. clippy `-D warnings` clean. fmt check passes.

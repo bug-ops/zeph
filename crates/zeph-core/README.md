@@ -43,6 +43,7 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `skill_loader` | `SkillLoaderExecutor` — `ToolExecutor` that exposes the `load_skill` tool to the LLM; accepts a skill name, looks it up in the shared `Arc<RwLock<SkillRegistry>>`, and returns the full SKILL.md body (truncated to `MAX_TOOL_OUTPUT_CHARS`); skill name is capped at 128 characters; unknown names return a human-readable error message rather than a hard error |
 | `skill_invoke` | `SkillInvokeExecutor` — `ToolExecutor` that exposes the `invoke_skill` tool with trust-aware sanitization; Blocked skills are refused; non-Trusted bodies pass through `sanitize_skill_text`; Quarantined bodies are additionally wrapped with `wrap_quarantined`; exempt from adversarial policy, VIGIL gate, and tool-schema filter |
 | `vigil` | `VigilGate` — regex tripwire that runs before `ContentSanitizer` on every tool output; configurable via `[security.vigil]`; `VigilRiskLevel` recorded in audit entries; `vigil_flags_total` / `vigil_blocks_total` counters in `MetricsSnapshot`; fail-open on invalid config; subagent sessions exempt |
+| `security::shadow_sentinel` | ShadowSentinel Phase 2 — `ShadowProbeExecutor` wraps the tool executor chain between `ScopedToolExecutor` and `PolicyGateExecutor`; issues pre-execution LLM probes (`SafetyProbe` trait, `LlmSafetyProbe` impl) before high-risk tool categories (shell, file write, exfil-capable MCP); results persisted in `safety_shadow_events` SQLite table (migration 085) for cross-session safety audit; fail-open by default; bounded by `max_probes_per_turn` and `probe_timeout_ms`; enabled via `[security.shadow_sentinel]` |
 | `scheduler_executor` | `SchedulerExecutor` — `ToolExecutor` that exposes three LLM-callable tools: `schedule_periodic` (add a recurring cron task), `schedule_deferred` (add a one-shot task at a specific ISO 8601 UTC time), and `cancel_task` (remove a task by name); communicates with the scheduler via `mpsc::Sender<SchedulerMessage>` and validates input lengths and cron expressions before forwarding; only present when the `scheduler` feature is enabled |
 | `debug_dump` | `DebugDumper` — writes numbered `{id:04}-request.json`, `{id:04}-response.txt`, and `{id:04}-tool-{name}.txt` files to a timestamped session directory; request dumps include model, token limit, tools, temperature, cache metadata, and message payloads in both `json` and `raw` formats; enabled via `--debug-dump [PATH]` CLI flag, `[debug] enabled = true` config, or `/debug-dump [path]` slash command; hooks into both streaming and non-streaming LLM paths and before `maybe_summarize_tool_output` |
 | `agent::log_commands` | `/log` slash command handler — displays current `LoggingConfig` (file path, level, rotation, max files) and tails the last 20 lines from the active log file |
@@ -368,6 +369,20 @@ timeout_ms         = 2000
 
 `GoalLifecycle` tracks active goals across turns. Tool outputs for completed or stale goals are compressed by the TACO (Tool-Aware Compaction Optimization) pipeline, which archives bodies to SQLite before the LLM compaction call and injects UUID back-references into the resulting summary.
 
+## ShadowSentinel safety probes
+
+`ShadowSentinel` (`[security.shadow_sentinel]`) intercepts high-risk tool calls before execution and issues a pre-execution LLM safety probe. Probe outcomes are recorded in the `safety_shadow_events` SQLite table, forming a persistent cross-session safety audit trail.
+
+```toml
+[security.shadow_sentinel]
+enabled            = false   # opt-in (default: false)
+max_probes_per_turn = 5      # max LLM probes issued per agent turn
+probe_timeout_ms   = 2000   # per-probe timeout; fail-open on expiry
+```
+
+> [!NOTE]
+> ShadowSentinel is fail-open by default — a timed-out or failed probe does not block execution. Set `fail_closed = true` to block tool calls when the probe cannot complete within `probe_timeout_ms`.
+
 ## Reactive hooks
 
 `[hooks]` in `config.toml` defines shell commands that fire on working-directory or file-change events. Hooks are now traced with `tracing` instrumentation and are propagated correctly through `reload_config` — hooks registered after a live config reload fire identically to those present at startup.
@@ -389,6 +404,24 @@ The `set_working_directory` tool is exposed to the LLM and updates the agent's c
 | `ZEPH_OLD_CWD` | `cwd_changed` | Previous working directory |
 | `ZEPH_NEW_CWD` | `cwd_changed` | New working directory |
 | `ZEPH_CHANGED_PATH` | `file_changed` | Absolute path of the changed file |
+| `ZEPH_TOOL_NAME` | `pre_tool_use`, `post_tool_use` | Name of the tool being called |
+| `ZEPH_TOOL_ARGS_JSON` | `pre_tool_use`, `post_tool_use` | JSON-encoded tool arguments (truncated at 64 KiB) |
+| `ZEPH_SESSION_ID` | `pre_tool_use`, `post_tool_use` | Session ID (main agent only; omitted in sub-agents) |
+| `ZEPH_TOOL_DURATION_MS` | `post_tool_use` | Tool execution duration in milliseconds |
+
+`[[hooks.pre_tool_use]]` and `[[hooks.post_tool_use]]` accept `HookMatcher` entries with pipe-separated tool name patterns. `pre_tool_use` fires before the `RuntimeLayer` permission check so observers see all attempted calls.
+
+```toml
+[[hooks.pre_tool_use]]
+match = "shell|bash"
+command = "echo tool=$ZEPH_TOOL_NAME args=$ZEPH_TOOL_ARGS_JSON"
+timeout_secs = 5
+
+[[hooks.post_tool_use]]
+match = "*"
+command = "echo finished $ZEPH_TOOL_NAME in ${ZEPH_TOOL_DURATION_MS}ms"
+timeout_secs = 5
+```
 
 ## Features
 

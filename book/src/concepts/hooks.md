@@ -1,8 +1,44 @@
 # Reactive Hooks
 
-Zeph can run shell commands automatically in response to environment changes. Two hook events are supported: working directory changes and file system changes.
+Zeph can run shell commands automatically in response to environment changes and tool execution events. Four hook events are supported: working directory changes, file system changes, tool execution before/after.
 
 ## Hook Types
+
+### `pre_tool_use` and `post_tool_use`
+
+Fires before and after a tool is executed. Useful for logging, monitoring, security auditing, or modifying the environment before/after tool runs.
+
+**Pre-execution (before tool runs):**
+
+```toml
+[[hooks.pre_tool_use]]
+tools = "shell|bash|sh"              # Pipe-separated tool name patterns (glob matching)
+command = "echo"
+args = ["About to run: $ZEPH_TOOL_NAME with args: $ZEPH_TOOL_ARGS_JSON"]
+```
+
+**Post-execution (after tool runs):**
+
+```toml
+[[hooks.post_tool_use]]
+tools = "write_file|edit_file"       # File write tools
+command = "git"
+args = ["add", "$ZEPH_TOOL_NAME"]
+fail_closed = false                  # If true, hook failure aborts the tool chain (default: false)
+```
+
+Environment variables available to hook processes:
+
+| Variable | Available in | Description |
+|----------|---|-------------|
+| `ZEPH_TOOL_NAME` | pre + post | Tool name (e.g., `shell`, `web_scrape`) |
+| `ZEPH_TOOL_ARGS_JSON` | pre + post | Tool arguments as JSON (truncated to 64 KiB via UTF-8 boundary) |
+| `ZEPH_TOOL_DURATION_MS` | post only | Time taken to execute the tool (milliseconds) |
+| `ZEPH_SESSION_ID` | pre + post (main agent only) | Session ID; omitted in subagent hooks |
+
+**Hook firing order:**
+
+Pre-hooks fire **before** utility gate and permission checks. This means observers can see all tool invocations, including those that would be blocked by policies. Post-hooks fire after successful execution.
 
 ### `cwd_changed`
 
@@ -70,6 +106,20 @@ The indicator disappears once all hook commands for that event have completed.
 ## Configuration Reference
 
 ```toml
+# Pre-tool-use hooks — run before any tool execution
+[[hooks.pre_tool_use]]
+tools = "shell|bash|sh"           # Tool name pattern (pipe-separated, glob matching)
+command = "echo"
+args = ["Running: $ZEPH_TOOL_NAME"]
+fail_closed = false               # If true, hook failure aborts the tool (default: false)
+
+# Post-tool-use hooks — run after tool execution completes
+[[hooks.post_tool_use]]
+tools = "write_file"
+command = "git"
+args = ["add", "$ZEPH_TOOL_NAME"]
+fail_closed = false               # If true, hook failure blocks subsequent tools
+
 # cwd_changed hooks — run in order when the working directory changes
 [[hooks.cwd_changed]]
 command = "echo"
@@ -87,12 +137,40 @@ args = ["check", "--quiet"]
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `hooks.pre_tool_use[].tools` | `string` | — | Pipe-separated tool name patterns to match |
+| `hooks.pre_tool_use[].command` | `string` | — | Executable to run |
+| `hooks.pre_tool_use[].args` | `Vec<String>` | `[]` | Arguments (env vars expanded) |
+| `hooks.pre_tool_use[].fail_closed` | `bool` | false | If true, hook failure aborts the tool chain |
+| `hooks.post_tool_use[].tools` | `string` | — | Pipe-separated tool name patterns to match |
+| `hooks.post_tool_use[].command` | `string` | — | Executable to run |
+| `hooks.post_tool_use[].args` | `Vec<String>` | `[]` | Arguments (env vars expanded) |
+| `hooks.post_tool_use[].fail_closed` | `bool` | false | If true, hook failure aborts the tool chain |
 | `hooks.cwd_changed[].command` | `string` | — | Executable to run |
 | `hooks.cwd_changed[].args` | `Vec<String>` | `[]` | Arguments (env vars expanded) |
 | `hooks.file_changed.watch_paths` | `Vec<String>` | `[]` | Paths to monitor |
 | `hooks.file_changed.debounce_ms` | `u64` | `500` | Debounce window in milliseconds |
 | `hooks.file_changed.handlers[].command` | `string` | — | Executable to run |
 | `hooks.file_changed.handlers[].args` | `Vec<String>` | `[]` | Arguments (env vars expanded) |
+
+### Tool Pattern Matching
+
+Tool name patterns support pipe-separated patterns and glob matching:
+
+```toml
+# Match exact tool names
+tools = "shell"                     # Only the shell tool
+
+# Match multiple tools
+tools = "shell|bash|sh"             # Any shell variant
+
+# Glob patterns (glob syntax)
+tools = "write_*"                   # write_file, write_dir, etc.
+
+# Combine exact and globs
+tools = "shell|*_file"              # shell tool or any *_file tool
+```
+
+Patterns are matched case-sensitively. An empty pattern matches no tools.
 
 ## Hook Tracing and Instrumentation
 

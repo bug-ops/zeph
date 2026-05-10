@@ -39,7 +39,7 @@ Spec IDs (001–044) follow a logical grouping:
 - **047**: CLI execution modes (--bare, --json, -y, /loop, /recap)
 - **048**: SLM cost metrics survey and CPS metric contract
 - **049**: Agent god-object decomposition (Services aggregator + AgentRuntime newtype)
-- **050**: Security capability governance (tool scoping + trajectory sentinel + CapSeal sketch)
+- **050**: Security capability governance (tool scoping + trajectory sentinel + Phase 2 ShadowSentinel safety probe + classify_tool bare-ID fix + CapSeal sketch) [Phase 1+2 implemented]
 - **051**: Gonka.ai Phase 1 — GonkaGate hosted gateway (CompatibleProvider, wizard, vault key) [implemented]
 - **052**: Gonka.ai Phase 2 — native network transport (GonkaProvider, ECDSA signing, EndpointPool, chat_with_tools, chat_typed) [implemented]
 - **053**: SpeculationEngine — speculative tool execution (SSE decoding path, PASTE skill activation, ToolStartEvent{speculative:true})
@@ -68,7 +68,7 @@ Spec IDs (001–044) follow a logical grouping:
 | `002-agent-loop/spec.md` | Agent loop, turn lifecycle, context pressure, HiAgent subgoal-aware compaction | `zeph-core` |
 | `003-llm-providers/spec.md` | LlmProvider trait, AnyProvider, prompt caching, configurable `CacheTtl` (ephemeral/1h) | `zeph-llm` |
 | `004-memory/spec.md` | SQLite + Qdrant, compaction, semantic response cache, anchored summarization, compaction probe, importance scoring, A-MAC admission control, MemScene consolidation, multi-vector chunking, GAAMA episode nodes, BATS budget hints, Focus compression, SleepGate forgetting pass, persona memory, trajectory memory, category-aware memory, TiMem tree, microcompact, autoDream, MagicDocs, embed backfill batching | `zeph-memory` |
-| `004-memory/004-7-memory-apex-magma.md` | APEX-MEM append-only MAGMA: edge supersession, ontology normalization, SYNAPSE conflict resolution (#3223) | `zeph-memory` |
+| `004-memory/004-7-memory-apex-magma.md` | APEX-MEM append-only MAGMA: edge supersession, ontology normalization, SYNAPSE conflict resolution (#3223); BeliefMem probabilistic pre-commitment edge layer with Noisy-OR accumulation, temporal decay, promotion threshold (#3706) | `zeph-memory` |
 | `004-memory/004-8-memory-typed-pages.md` | ClawVM typed page compaction: PageType classification, minimum-fidelity invariants, compaction audit log (#3221) | `zeph-context`, `zeph-memory` |
 | `004-memory/004-9-memory-write-gate.md` | MemReader write quality gate: three-signal scorer, rule-based MVP, optional LLM scoring (#3222) | `zeph-memory` |
 | `004-memory/004-10-memory-memmachine-retrieval.md` | MemMachine retrieval-depth-first memory: retrieval depth config, search prompt templates, query bias correction, episode preservation (#3325) | `zeph-memory` |
@@ -103,7 +103,7 @@ Spec IDs (001–044) follow a logical grouping:
 | `025-classifiers/spec.md` | Candle-backed ML classifiers: injection detection, PII detection, LlmClassifier for feedback, unified regex+NER sanitization pipeline | `zeph-classifiers` |
 | `026-tui-subagent-management/spec.md` | Interactive TUI subagent sidebar (a key), j/k navigation, Enter loads transcript, Esc returns, Tab cycling | `zeph-tui` |
 | `027-runtime-layer/spec.md` | RuntimeLayer middleware with before_chat/after_chat/before_tool/after_tool hooks, NoopLayer, LayerContext, unwind guards; plugin config overlay merge (tighten-only) | `zeph-core` |
-| `028-hooks/spec.md` | Reactive hooks: cwd_changed / file_changed events, set_working_directory tool, FileChangeWatcher, ZEPH_* env vars | `zeph-core` |
+| `028-hooks/spec.md` | Reactive hooks: cwd_changed / file_changed / permission_denied / turn_complete / pre_tool_use / post_tool_use events, set_working_directory tool, FileChangeWatcher, ZEPH_TOOL_NAME / ZEPH_TOOL_ARGS_JSON / ZEPH_SESSION_ID env vars (#3725); pre_tool_use fires before utility gate (#3738) | `zeph-core` |
 | `029-feature-flags/spec.md` | Feature flag decision rules, surviving flag inventory (22 flags), bundle definitions (desktop, ide, server, full) | `Cargo.toml`, cross-cutting |
 | `030-tui-slash-autocomplete/spec.md` | Inline autocomplete dropdown in TUI Insert mode, reuses filter_commands registry, Tab/Enter accepts, Esc dismisses | `zeph-tui` |
 | `031-database-abstraction/spec.md` | PostgreSQL backend, zeph-db crate, DatabaseDriver trait, Dialect trait, sql!() macro, migrations, CLI subcommands | `zeph-db`, cross-cutting |
@@ -127,7 +127,7 @@ Spec IDs (001–044) follow a logical grouping:
 | `UX/mention-routing.md` | @agent mention routing: Goose pattern analysis, feasibility for Zeph TUI/A2A, verdict to defer pending `AgentRegistry` infrastructure (#3327) | `zeph-core`, `zeph-tui`, `zeph-a2a` |
 | `048-slm-cost-metrics/spec.md` | SLM survey findings (arXiv:2510.03847), CPS (cost per successful task) metric contract, `record_successful_task()` / `cps()` API, daily reset semantics | `zeph-core` |
 | `049-agent-decomposition/spec.md` | Agent god-object Phase 2 (#3509): split `Agent<C>` 25+ direct sub-state fields into `services: Services` (background subsystems) and `runtime: AgentRuntime` (config, lifecycle, providers, metrics, debug, instructions); pure refactor, no API change, separately borrowable; `TurnContext` boundary sketched for P2-prereq-3 | `zeph-core` |
-| `050-security-capability-governance/spec.md` | Capability scoping (`ScopedToolExecutor` + per-task-type allow-lists, #3563), `TrajectorySentinel` multi-turn risk accumulator with decay (#3570), and CapSeal/SUDP `VaultBroker::propose_operation` Phase-3 research sketch (#3569) | `zeph-tools`, `zeph-core` |
+| `050-security-capability-governance/spec.md` | Capability scoping (`ScopedToolExecutor` + per-task-type allow-lists, #3563), `TrajectorySentinel` multi-turn risk accumulator with decay (#3570), Phase 2: `ShadowSentinel` safety probe — `SafetyProbe` trait, `LlmSafetyProbe`, `ShadowProbeExecutor`, `safety_shadow_events` table, `classify_tool` bare-ID fix (#3705, #3735, #3739, #3742, #3744, #3745), CapSeal/SUDP `VaultBroker::propose_operation` Phase-3 research sketch (#3569) | `zeph-tools`, `zeph-core` |
 | `051-gonka-gateway/spec.md` | Phase 1: gonka.ai inference via GonkaGate hosted gateway — zero new Rust code, `CompatibleProvider` reuse, wizard branch, vault key `ZEPH_COMPATIBLE_GONKAGATE_API_KEY` | `zeph-llm`, `zeph-config` |
 | `052-gonka-native/spec.md` | Phase 2: native gonka network transport — `GonkaProvider`, ECDSA secp256k1 signing (`RequestSigner`), `EndpointPool` round-robin fail-skip, `send_signed_with_retry`, `chat_with_tools`, `chat_typed`, `zeph gonka doctor` | `zeph-llm`, `zeph-config` |
 | `053-speculation-engine/spec.md` | `SpeculationEngine` — speculative tool execution: `PartialJsonParser` SSE decoding path, PASTE skill activation, `try_dispatch`/`try_commit`/`end_turn` API, `ToolStartEvent{speculative:true}`, `DynExecutor` confirmation delegation | `zeph-core`, `zeph-tools` |

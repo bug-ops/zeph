@@ -317,6 +317,8 @@ The `graph` module provides SQLite-backed entity-relationship tracking:
 - **Embedding-based entity resolution** — when `use_embedding_resolution = true`, entities are deduplicated via cosine similarity in Qdrant with a two-threshold approach (auto-merge at >= 0.85, LLM disambiguation at >= 0.70, new entity below); integrated after alias and canonical-name lookup steps; falls back to create-new on failure
 - **APEX-MEM append-only property graph** — migration 075 adds a `supersedes` column (append-only pointer to the prior head edge) and a `canonical_relation` column (normalized predicate). Superseded edges are never deleted; `insert_or_supersede` atomically creates the new head and links it to the prior. `check_supersede_depth` (recursive CTE, depth-capped at `SUPERSEDE_DEPTH_CAP`) detects runaway supersession chains. `OntologyTable` (ArcSwap + LRU-4096 cache) normalizes relation predicates with LLM fallback. `ConflictResolver` resolves contradictory edges via `recency`, `confidence`, or `llm` strategy. The `edge_reassertions` table records byte-identical reassertions for provenance.
 
+**BeliefMem probabilistic edge layer** — migration 084 adds `pending_beliefs` and `belief_evidence` tables that accumulate candidate facts with probability weights before committing them as APEX-MEM edges. Evidence is combined via Noisy-OR with optional temporal decay (`belief_decay_rate`). A belief is promoted to a committed edge when `max(prob) >= promote_threshold` (default 0.85). Uncertainty-preserving retrieval returns top-K candidates when no committed edge exists. Enabled via `[memory.graph.belief_mem]` (opt-in, default off).
+
 `GraphStore` provides CRUD methods over five SQLite tables (`graph_entities`, `graph_entity_aliases`, `graph_edges`, `graph_communities`, `graph_metadata`). Schema is created by migrations 021, 023, and 024.
 
 `SemanticMemory::spawn_graph_extraction()` runs LLM-powered extraction as a fire-and-forget background task with configurable timeout. `recall_graph()` performs fuzzy entity matching plus BFS edge traversal, returning composite-scored `GraphFact` values for context injection.
@@ -349,6 +351,20 @@ timeout_ms = 500                    # Activation timeout to prevent runaway trav
 [memory.graph]
 recall_timeout_ms = 1000            # Timeout for the full graph recall call (default: 1000)
 ```
+
+## BeliefMem probabilistic edges
+
+`BeliefMem` (`[memory.graph.belief_mem]`) stages candidate graph facts as probabilistic beliefs before committing them as permanent APEX-MEM edges. Evidence from multiple turns accumulates via Noisy-OR, and facts are only committed when confidence exceeds the promotion threshold.
+
+```toml
+[memory.graph.belief_mem]
+enabled           = false   # opt-in (default: false)
+promote_threshold = 0.85    # min probability to commit a belief as an APEX-MEM edge
+belief_decay_rate = 0.0     # temporal decay applied to evidence weights (0.0 = disabled)
+```
+
+> [!TIP]
+> Enable BeliefMem when the agent frequently extracts facts from uncertain or contradictory sources. Beliefs that never reach the threshold are discarded rather than polluting the committed graph.
 
 ## MemCoT semantic state accumulation
 

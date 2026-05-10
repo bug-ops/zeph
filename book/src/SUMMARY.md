@@ -32,6 +32,7 @@
 
 - [Use a Cloud Provider](guides/cloud-provider.md)
 - [Gonka Provider](guides/gonka.md)
+- [Cocoon Decentralized TEE](guides/cocoon.md)
 - [Configuration Recipes](guides/config-recipes.md)
 - [Run via Telegram](guides/telegram.md)
 - [Add Custom Skills](guides/custom-skills.md)
@@ -96,6 +97,7 @@
   - [MCP Security](reference/security/mcp.md)
   - [Untrusted Content Isolation](reference/security/untrusted-content-isolation.md)
   - [File Read Sandbox](reference/security/file-sandbox.md)
+  - [ShadowSentinel Safety Probing](reference/security/shadow-sentinel.md)
 
 # Development
 

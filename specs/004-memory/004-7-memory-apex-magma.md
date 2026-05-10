@@ -572,7 +572,7 @@ OCR-Memory renders agent trajectories as annotated images and uses a locate-and-
 ## §16 BeliefMem: Pre-Commitment Probabilistic Edge Layer
 
 **Tracking issue**: #3706
-**Status**: Implemented (PR pending)
+**Status**: Implemented (PR #3735, merged 2026-05-10)
 **Module**: `crates/zeph-memory/src/graph/belief.rs`
 
 ### 16.1 Overview
@@ -634,11 +634,11 @@ Both functions are pure and exported from `zeph_memory::graph::belief`:
 
 ### 16.8 Acceptance Criteria
 
-- [ ] `pending_beliefs` and `belief_evidence` tables created by migration 084.
-- [ ] `BeliefStore::record_evidence` applies temporal decay + Noisy-OR and returns `Some(PendingBelief)` when `prob >= promote_threshold`.
-- [ ] `BeliefStore::retrieve_candidates` returns beliefs ordered by `prob DESC` with correct `top_k`.
-- [ ] `BeliefStore::mark_promoted` sets `promoted_at` and `promoted_edge_id`.
-- [ ] `BeliefStore::evict_stale` deletes rows exceeding `max_candidates_per_group`.
-- [ ] `ExtractedEdge::confidence` is populated by the LLM extraction prompt.
-- [ ] All pure functions (`noisy_or`, `time_decayed_prob`) have passing unit tests.
-- [ ] `cargo build -p zeph-memory` and `cargo clippy -p zeph-memory -- -D warnings` pass.
+- [x] `pending_beliefs` and `belief_evidence` tables created by migration 084.
+- [x] `BeliefStore::record_evidence` applies temporal decay + Noisy-OR and returns `Some(PendingBelief)` when `prob >= promote_threshold`.
+- [x] `BeliefStore::retrieve_candidates` returns beliefs ordered by `prob DESC` with correct `top_k`.
+- [x] `BeliefStore::mark_promoted` sets `promoted_at` and `promoted_edge_id`.
+- [x] `BeliefStore::evict_stale` deletes rows exceeding `max_candidates_per_group`.
+- [x] `ExtractedEdge::confidence` is populated by the LLM extraction prompt.
+- [x] All pure functions (`noisy_or`, `time_decayed_prob`) have passing unit tests.
+- [x] `cargo build -p zeph-memory` and `cargo clippy -p zeph-memory -- -D warnings` pass.

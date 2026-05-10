@@ -333,6 +333,63 @@ Entity names, relations, and targets are escaped — newlines and angle brackets
 
 Graph facts receive 3% of the available context budget (carved from the semantic recall allocation, which drops from 8% to 5%). When the budget is zero (unlimited mode) or graph memory is disabled, no budget is allocated and no facts are injected.
 
+## BeliefMem: Probabilistic Edge Layer
+
+BeliefMem (Belief Memory) extends graph memory with a probabilistic layer for uncertain facts. Instead of immediately committing facts as edges, BeliefMem accumulates evidence and tracks confidence scores before promotion to the committed graph.
+
+**Use cases:**
+- Track emerging patterns that haven't yet been confirmed
+- Handle contradictory or uncertain information gracefully
+- Preserve uncertainty in retrieval — avoid treating unconfirmed facts as ground truth
+
+### How It Works
+
+BeliefMem maintains two parallel layers:
+
+1. **Pending beliefs** — candidate facts with probability weights from initial extraction
+2. **Belief evidence** — evidence accumulation via Noisy-OR with optional temporal decay
+
+When evidence for a fact accumulates and crosses a promotion threshold (default: 0.85 confidence), the pending belief is promoted to a committed edge in the main graph.
+
+**Example workflow:**
+- Extraction observes: "User might prefer Rust" (confidence: 0.6)
+- Extraction later observes: "User uses Rust for most projects" (confidence: 0.7)
+- Evidence combines via Noisy-OR: ~0.88 confidence
+- Belief is promoted and becomes a committed graph edge
+
+### Configuration
+
+Enable BeliefMem under `[memory.graph.belief_mem]`:
+
+```toml
+[memory.graph.belief_mem]
+enabled = true              # Enable probabilistic belief layer (default: false)
+promote_threshold = 0.85    # Min confidence for promotion to committed edge (default: 0.85)
+belief_decay_rate = 0.0     # Temporal decay on pending beliefs; 0.0 = disabled (default)
+                            # Range: [0.0, 10.0]. Formula: 1/(1 + age_days * rate)
+max_pending_beliefs = 1000  # Cap on pending beliefs to prevent unbounded growth
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | false | Enable BeliefMem (default: false) |
+| `promote_threshold` | 0.85 | Confidence threshold for edge promotion (range: 0.5–1.0) |
+| `belief_decay_rate` | 0.0 | Temporal decay factor for aging beliefs; 0.0 = disabled |
+| `max_pending_beliefs` | 1000 | Maximum pending beliefs before LRU eviction |
+
+### Uncertainty-Preserving Retrieval
+
+When BeliefMem is enabled and graph recall finds no committed edge between two entities, Zeph automatically queries pending beliefs and returns top-K candidates ranked by confidence. This provides graceful fallback behavior when facts are still being accumulated.
+
+### Storage
+
+BeliefMem uses two new SQLite tables (created by migration 084):
+
+- `pending_beliefs` — candidate facts with probability scores
+- `belief_evidence` — evidence records supporting promotion
+
+These tables are independent of the main graph layer and are automatically cleaned up during graph eviction.
+
 ## Configuration
 
 Enable graph memory in your `config.toml`:
@@ -341,6 +398,7 @@ Enable graph memory in your `config.toml`:
 [memory.graph]
 enabled = true               # Enable graph memory (default: false)
 extract_model = ""           # LLM model for extraction; empty = agent's model
+extract_provider = ""        # Provider name for extraction (bypasses quality gate)
 max_entities_per_message = 10
 max_edges_per_message = 15
 max_hops = 2                 # BFS traversal depth (default: 2)
@@ -357,6 +415,12 @@ max_entities = 0                  # Entity cap (0 = unlimited)
 temporal_decay_rate = 0.0         # Recency boost for graph recall; 0.0 = disabled (default)
                                   # Range: [0.0, 10.0]. Formula: 1/(1 + age_days * rate)
 edge_history_limit = 100          # Max versions returned by edge_history() per source+predicate pair
+
+[memory.graph.belief_mem]
+enabled = false                   # Enable probabilistic belief layer (default: false)
+promote_threshold = 0.85          # Confidence threshold for edge promotion (default: 0.85)
+belief_decay_rate = 0.0           # Temporal decay on pending beliefs (default: 0.0)
+max_pending_beliefs = 1000        # Max pending beliefs before eviction (default: 1000)
 
 [memory.graph.note_linking]
 # enabled = false                 # Enable A-MEM note linking after extraction (default: false)

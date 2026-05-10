@@ -32,6 +32,7 @@ related:
 |---|---|
 | `crates/zeph-core/src/channel.rs` | `Channel` trait, `ChannelMessage`, `ChannelError` |
 | `crates/zeph-channels/src/any.rs` | `AnyChannel` enum, `dispatch_channel!` macro |
+| `crates/zeph-channels/src/telegram_api_ext.rs` | `TelegramApiClient` — raw HTTP wrapper for Bot API 10.0 methods absent from teloxide 0.17 |
 | `crates/zeph-tui/src/channel.rs` | `TuiChannel` implementation |
 
 ---
@@ -184,6 +185,38 @@ Discord channel registers slash commands (`/reset`, `/skills`, `/agent`) at star
 - `send_thinking_chunk` must be forwarded even if the channel renders it as a no-op — the event must reach the channel impl
 - NEVER add a new `Channel` trait method without updating `AnyChannel`, `AppChannel`, and all channel implementations
 - Behavioral differences between channels (e.g. Telegram batching) are acceptable — method dropping is not
+
+---
+
+## TelegramApiClient — Raw HTTP Wrapper (Bot API 10.0)
+
+Issue #3728. `crates/zeph-channels/src/telegram_api_ext.rs`.
+
+`teloxide` 0.17 does not expose methods introduced in Bot API 10.0. `TelegramApiClient`
+is a thin `reqwest`-based raw HTTP client that covers these gap methods.
+
+### Covered methods
+
+| Method | Description |
+|--------|-------------|
+| `answer_guest_query(query_id, text, parse_mode)` | Respond to a `guest_message` update |
+| `get_managed_bot_access_settings()` | Read current `BotAccessSettings` |
+| `set_managed_bot_access_settings(settings)` | Enable/disable bot-to-bot messaging |
+| `delete_message_reaction(chat_id, message_id)` | Remove a bot's reaction |
+| `delete_all_message_reactions(chat_id, message_id)` | Remove all reactions from a message |
+
+### Design invariants
+
+- Bot token is redacted in `Debug` output and stripped from `reqwest` errors via `.without_url()`
+- All API calls share a single `#[tracing::instrument]` on the `post()` helper
+- `TelegramApiClient` is injected into `TelegramChannel` at construction; callers do not
+  instantiate it directly
+
+### Key Invariants
+
+- NEVER expose the bot token in `Debug`, `Display`, or log output
+- All methods must go through the shared `post()` helper — no ad-hoc `reqwest::Client` calls
+- New Bot API 10.0 methods that require raw HTTP must be added here, not as teloxide patches
 
 ---
 
