@@ -16,6 +16,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(channels): add configurable Telegram streaming edit interval (`stream_interval_ms`,
+  default 3000ms, minimum 500ms). Replaces the hardcoded 3-second delay in
+  `TelegramChannel::should_send_update()` with the new `with_stream_interval(Duration)` builder.
+  Fixes a silent data-loss bug where short LLM responses fitting within one interval window were
+  discarded by `flush_chunks`. Closes #3727.
+- feat(channels): add `TelegramApiClient` raw HTTP wrapper for Telegram Bot API 10.0 methods
+  unavailable in teloxide 0.17: `answer_guest_query`, `get_managed_bot_access_settings`,
+  `set_managed_bot_access_settings`, `delete_message_reaction`, `delete_all_message_reactions`.
+  Bot token is redacted in `Debug` output and stripped from `reqwest` errors via `.without_url()`.
+  Unblocks Guest Mode (#3729), Bot-to-Bot communication (#3730), and reaction moderation (#3731).
+  Closes #3728.
+
 - feat(memory): add BeliefMem probabilistic edge layer to APEX-MEM (`zeph-memory`). New
   `pending_beliefs` + `belief_evidence` SQLite tables (migration 084) store candidate facts with
   probability weights before commitment. Evidence accumulates via Noisy-OR with optional temporal
