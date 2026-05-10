@@ -1636,13 +1636,15 @@ mod tests {
         let mut config = Config::load(Path::new("/nonexistent")).unwrap();
         config.cost.enabled = true;
         config.cost.max_daily_cents = 100;
-        let mut entry = zeph_config::ProviderEntry::default();
-        entry.provider_type = zeph_config::ProviderKind::Cocoon;
-        entry.model = Some("Qwen/Qwen3-0.6B".into());
-        entry.cocoon_pricing = Some(zeph_config::CocoonPricing {
-            prompt_cents_per_1k: 0.01,
-            completion_cents_per_1k: 0.03,
-        });
+        let entry = zeph_config::ProviderEntry {
+            provider_type: zeph_config::ProviderKind::Cocoon,
+            model: Some("Qwen/Qwen3-0.6B".into()),
+            cocoon_pricing: Some(zeph_config::CocoonPricing {
+                prompt_cents_per_1k: 0.01,
+                completion_cents_per_1k: 0.03,
+            }),
+            ..zeph_config::ProviderEntry::default()
+        };
         config.llm.providers = vec![entry];
         let result = apply_cost_tracker(agent, &config);
         drop(result);
