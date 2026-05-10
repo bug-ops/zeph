@@ -544,6 +544,7 @@ mod tests {
             .unwrap();
         tool_tx
             .send(zeph_tools::ToolEvent::OutputChunk {
+                tool_call_id: String::new(),
                 tool_name: "shell".into(),
                 command: "ls".into(),
                 chunk: "file.txt\n".into(),

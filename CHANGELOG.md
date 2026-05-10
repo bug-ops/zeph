@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lookup when `tool_call_id` is non-empty; on miss it drops the chunk with a `warn!` log
   instead of falling back to the last streaming message (which was the source of the bug).
   The legacy empty-id path retains the old `rposition` fallback for backwards compatibility.
-  Closes #3688. (#3692)
+  Closes #3688. (#3708)
 
 - fix(cli): `zeph cocoon doctor` now reports `[FAIL]` for `cocoon_client_url` with an invalid scheme
   (e.g. `ftp://`). `check_config_present` previously returned `[OK]` without calling
