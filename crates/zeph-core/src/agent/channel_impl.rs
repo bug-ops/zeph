@@ -243,6 +243,8 @@ mod tests {
         let msg = ChannelMessage {
             text: "test".to_owned(),
             attachments: vec![],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         assert_eq!(msg.text, "test");
     }

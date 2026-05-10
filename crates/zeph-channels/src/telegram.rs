@@ -21,10 +21,19 @@
 //! [`Channel`]: zeph_core::channel::Channel
 //! [`utf8_chunks`]: crate::markdown::utf8_chunks
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::markdown::markdown_to_telegram;
-use crate::telegram_api_ext::TelegramApiClient;
+use crate::telegram_api_ext::{BotAccessSettings, GuestMessage, TelegramApiClient};
+use axum::Router;
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::{Request, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::any;
 use teloxide::prelude::*;
 use teloxide::types::{BotCommand, ChatAction, MessageId, ParseMode};
 use tokio::sync::mpsc;
@@ -36,6 +45,9 @@ use zeph_core::channel::{
 
 const MAX_MESSAGE_LEN: usize = 4096;
 const MAX_IMAGE_BYTES: u32 = 20 * 1024 * 1024;
+const MAX_TRACKED_CHATS: usize = 1000;
+
+type BotReplyCounters = Arc<Mutex<HashMap<ChatId, u32>>>;
 
 /// Telegram channel adapter using [teloxide](https://docs.rs/teloxide).
 ///
@@ -96,9 +108,28 @@ pub struct TelegramChannel {
     stream_interval: Duration,
     /// Raw Bot API 10.0 client for methods not yet covered by teloxide.
     api_ext: TelegramApiClient,
+    /// Enable Guest Mode: respond to @mentions via `answerGuestQuery`.
+    guest_mode: bool,
+    /// Active guest query ID for the current response cycle.
+    guest_query_id: Option<String>,
+    /// Enable bot-to-bot communication.
+    bot_to_bot: bool,
+    /// Set to `true` by the background task when `setManagedBotAccessSettings` succeeds.
+    /// Remains `false` if the API call fails, disabling bot-to-bot processing.
+    bot_to_bot_active: Arc<AtomicBool>,
+    /// Allowlist of bot usernames permitted when `bot_to_bot = true`. Empty = all bots.
+    allowed_bots: Vec<String>,
+    /// Maximum consecutive bot replies per chat before dropping.
+    max_bot_chain_depth: u32,
+    /// Per-chat consecutive bot reply counters for loop prevention.
+    bot_reply_counters: BotReplyCounters,
     /// Optional supervisor used to register the Telegram listener task in the
     /// workspace-wide task registry with automatic restart on panic.
     supervisor: Option<TaskSupervisor>,
+    /// Handle to the guest-mode axum proxy task. Kept alive for the lifetime
+    /// of the channel; dropped when `TelegramChannel` is dropped.
+    #[allow(dead_code)]
+    guest_proxy_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for TelegramChannel {
@@ -108,6 +139,14 @@ impl std::fmt::Debug for TelegramChannel {
             .field("allowed_users", &self.allowed_users)
             .field("accumulated_len", &self.accumulated.len())
             .field("stream_interval_ms", &self.stream_interval.as_millis())
+            .field("guest_mode", &self.guest_mode)
+            .field("bot_to_bot", &self.bot_to_bot)
+            .field(
+                "bot_to_bot_active",
+                &self.bot_to_bot_active.load(Ordering::Relaxed),
+            )
+            .field("allowed_bots_count", &self.allowed_bots.len())
+            .field("max_bot_chain_depth", &self.max_bot_chain_depth)
             .field("supervisor", &self.supervisor.is_some())
             .finish_non_exhaustive()
     }
@@ -118,6 +157,10 @@ struct IncomingMessage {
     chat_id: ChatId,
     text: String,
     attachments: Vec<Attachment>,
+    /// `Some(query_id)` when this message came from a `guest_message` update.
+    guest_query_id: Option<String>,
+    /// `true` when the sender is a Telegram bot (`from.is_bot = true`).
+    is_from_bot: bool,
 }
 
 impl TelegramChannel {
@@ -152,7 +195,15 @@ impl TelegramChannel {
             message_id: None,
             stream_interval: Duration::from_secs(3),
             api_ext,
+            guest_mode: false,
+            guest_query_id: None,
+            bot_to_bot: false,
+            bot_to_bot_active: Arc::new(AtomicBool::new(false)),
+            allowed_bots: Vec::new(),
+            max_bot_chain_depth: 1,
+            bot_reply_counters: Arc::new(Mutex::new(HashMap::new())),
             supervisor: None,
+            guest_proxy_handle: None,
         }
     }
 
@@ -195,6 +246,29 @@ impl TelegramChannel {
         self
     }
 
+    /// Enable Bot API 10.0 Guest Mode — respond to @mentions via `answerGuestQuery`.
+    ///
+    /// When enabled, an HTTP proxy is started on loopback that intercepts `getUpdates`
+    /// responses to extract `guest_message` updates before teloxide deserializes them.
+    #[must_use]
+    pub fn with_guest_mode(mut self, enabled: bool) -> Self {
+        self.guest_mode = enabled;
+        self
+    }
+
+    /// Enable bot-to-bot communication (Bot API 10.0).
+    ///
+    /// * `enabled` — whether to accept messages from other bots.
+    /// * `allowed` — bot usernames (with `@` prefix) allowed to interact. Empty = all bots.
+    /// * `max_depth` — maximum consecutive bot replies before dropping to prevent loops.
+    #[must_use]
+    pub fn with_bot_to_bot(mut self, enabled: bool, allowed: Vec<String>, max_depth: u32) -> Self {
+        self.bot_to_bot = enabled;
+        self.allowed_bots = allowed;
+        self.max_bot_chain_depth = max_depth;
+        self
+    }
+
     /// Spawn a task that registers bot commands in the Telegram menu.
     fn register_commands(bot: Bot) {
         tokio::spawn(async move {
@@ -215,6 +289,7 @@ impl TelegramChannel {
     /// # Errors
     ///
     /// Returns an error if the bot cannot be initialized.
+    #[allow(clippy::too_many_lines)]
     pub fn start(mut self) -> Result<Self, ChannelError> {
         if self.allowed_users.is_empty() {
             tracing::error!("telegram.allowed_users is empty; refusing to start an open bot");
@@ -223,26 +298,95 @@ impl TelegramChannel {
             ));
         }
 
+        // Bot-to-Bot: register capability with Telegram (non-fatal, fire-and-forget).
+        // bot_to_bot_active starts as false; the spawned task sets it to true only on success.
+        // If setManagedBotAccessSettings fails, bot messages are silently dropped (spec FR-003).
+        if self.bot_to_bot {
+            let api_ext = self.api_ext.clone();
+            let active_flag = self.bot_to_bot_active.clone();
+            tokio::spawn(async move {
+                let settings = BotAccessSettings {
+                    allow_user_messages: true,
+                    allow_bot_messages: true,
+                };
+                match api_ext.set_managed_bot_access_settings(&settings).await {
+                    Ok(_) => {
+                        active_flag.store(true, Ordering::Release);
+                        tracing::info!(
+                            "bot-to-bot communication enabled via setManagedBotAccessSettings"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "setManagedBotAccessSettings failed: {e}; bot-to-bot disabled"
+                        );
+                    }
+                }
+            });
+        }
+
         let (tx, rx) = mpsc::channel::<IncomingMessage>(64);
         self.rx = rx;
 
+        // Guest Mode: spawn a transparent axum proxy on a local ephemeral port.
+        // The proxy intercepts `getUpdates` responses to extract `guest_message` entries
+        // before teloxide deserializes them (teloxide-core 0.13 discards unknown update kinds).
+        // Redirecting `Bot` to the proxy via `set_api_url` avoids a second `getUpdates`
+        // connection — no 409 Conflict risk (C3 fix).
+        if self.guest_mode {
+            let token = self.bot.token().to_owned();
+            let (proxy_url, proxy_handle) =
+                spawn_guest_proxy(&token, tx.clone(), self.allowed_users.clone())?;
+            let proxy_url = reqwest::Url::parse(&proxy_url)
+                .map_err(|e| ChannelError::Other(format!("guest proxy URL parse error: {e}")))?;
+            self.bot = self.bot.clone().set_api_url(proxy_url);
+            self.guest_proxy_handle = Some(proxy_handle);
+        }
+
         let bot = self.bot.clone();
         let allowed = self.allowed_users.clone();
+        let bot_to_bot = self.bot_to_bot;
+        let bot_to_bot_active = self.bot_to_bot_active.clone();
+        let allowed_bots = self.allowed_bots.clone();
+        let max_bot_chain_depth = self.max_bot_chain_depth;
+        let bot_reply_counters = self.bot_reply_counters.clone();
 
         Self::register_commands(bot.clone());
 
         let bot_for_factory = bot.clone();
         let allowed_for_factory = allowed.clone();
         let tx_for_factory = tx.clone();
+        let bot_to_bot_active_for_factory = bot_to_bot_active.clone();
         let listener_factory = move || {
             let bot = bot_for_factory.clone();
             let allowed = allowed_for_factory.clone();
             let tx = tx_for_factory.clone();
+            let bot_to_bot = bot_to_bot;
+            let bot_to_bot_active = bot_to_bot_active_for_factory.clone();
+            let allowed_bots = allowed_bots.clone();
+            let max_bot_chain_depth = max_bot_chain_depth;
+            let bot_reply_counters = bot_reply_counters.clone();
             async move {
                 let handler = Update::filter_message().endpoint(move |msg: Message, bot: Bot| {
                     let tx = tx.clone();
                     let allowed = allowed.clone();
-                    async move { handle_telegram_message(bot, msg, tx, allowed).await }
+                    let allowed_bots = allowed_bots.clone();
+                    let bot_reply_counters = bot_reply_counters.clone();
+                    let bot_to_bot_active = bot_to_bot_active.clone();
+                    async move {
+                        handle_telegram_message(
+                            bot,
+                            msg,
+                            tx,
+                            allowed,
+                            bot_to_bot,
+                            bot_to_bot_active,
+                            allowed_bots,
+                            max_bot_chain_depth,
+                            bot_reply_counters,
+                        )
+                        .await
+                    }
                 });
 
                 Dispatcher::builder(bot, handler)
@@ -291,7 +435,15 @@ impl TelegramChannel {
             message_id: None,
             stream_interval: Duration::from_secs(3),
             api_ext: TelegramApiClient::new("test_token"),
+            guest_mode: false,
+            guest_query_id: None,
+            bot_to_bot: false,
+            bot_to_bot_active: Arc::new(AtomicBool::new(false)),
+            allowed_bots: Vec::new(),
+            max_bot_chain_depth: 1,
+            bot_reply_counters: Arc::new(Mutex::new(HashMap::new())),
             supervisor: None,
+            guest_proxy_handle: None,
         };
         (channel, tx)
     }
@@ -433,6 +585,253 @@ fn is_user_authorized(username: Option<&str>, allowed: &[String]) -> bool {
     allowed.is_empty() || username.is_some_and(|u| allowed.iter().any(|a| a == u))
 }
 
+/// Returns `true` when `username` is in `allowed_bots` or the list is empty.
+fn is_bot_authorized(username: Option<&str>, allowed_bots: &[String]) -> bool {
+    allowed_bots.is_empty()
+        || username.is_some_and(|u| {
+            allowed_bots.iter().any(|a| {
+                // Compare with or without "@" prefix
+                a.trim_start_matches('@') == u.trim_start_matches('@')
+            })
+        })
+}
+
+/// Increments the consecutive bot-reply counter for `chat_id` and returns the new depth.
+///
+/// Evicts one arbitrary entry when at capacity to bound memory usage.
+fn increment_bot_depth(counters: &BotReplyCounters, chat_id: ChatId) -> u32 {
+    let mut map = counters.lock().expect("bot_reply_counters poisoned");
+    if map.len() >= MAX_TRACKED_CHATS && !map.contains_key(&chat_id) {
+        // Evict one arbitrary entry to bound memory. HashMap has no insertion order,
+        // so we evict the first key returned by the iterator (effectively random).
+        // This prevents a flood of unique chat IDs from resetting all legitimate counters.
+        if let Some(&evict_key) = map.keys().next() {
+            map.remove(&evict_key);
+        }
+    }
+    let counter = map.entry(chat_id).or_insert(0);
+    *counter += 1;
+    *counter
+}
+
+/// Resets the bot-reply counter for `chat_id` on a non-bot message.
+fn reset_bot_depth(counters: &BotReplyCounters, chat_id: ChatId) {
+    counters
+        .lock()
+        .expect("bot_reply_counters poisoned")
+        .remove(&chat_id);
+}
+
+/// Shared state for the guest-mode axum proxy.
+#[derive(Clone)]
+struct GuestProxyState {
+    upstream: String,
+    client: reqwest::Client,
+    tx: mpsc::Sender<IncomingMessage>,
+    allowed_users: Vec<String>,
+}
+
+/// Guest Mode transparent HTTP proxy.
+///
+/// Binds an ephemeral TCP port on `127.0.0.1`, proxies all requests from the
+/// teloxide `Bot` to `https://api.telegram.org`. For `getUpdates` requests the
+/// proxy injects `"guest_message"` into `allowed_updates` so Telegram delivers
+/// these updates, extracts copies of `guest_message` entries from the response
+/// to forward them to the agent, and returns the **original unmodified** response
+/// to teloxide so its internal offset advances correctly — preventing duplicates.
+/// This guarantees a single `getUpdates` connection per bot token — no 409 Conflict.
+///
+/// Returns the local URL (`http://127.0.0.1:<port>`) to pass to
+/// `Bot::set_api_url()`, and a [`tokio::task::JoinHandle`] for the proxy task.
+fn spawn_guest_proxy(
+    token: &str,
+    tx: mpsc::Sender<IncomingMessage>,
+    allowed_users: Vec<String>,
+) -> Result<(String, tokio::task::JoinHandle<()>), ChannelError> {
+    let upstream = format!("https://api.telegram.org/bot{token}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_mins(1))
+        .build()
+        .map_err(|e| ChannelError::Other(format!("guest proxy client init failed: {e}")))?;
+
+    let state = GuestProxyState {
+        upstream,
+        client,
+        tx,
+        allowed_users,
+    };
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| ChannelError::Other(format!("guest proxy bind failed: {e}")))?;
+    let local_addr = listener
+        .local_addr()
+        .map_err(|e| ChannelError::Other(format!("guest proxy addr failed: {e}")))?;
+    let local_url = format!("http://127.0.0.1:{}/bot{token}", local_addr.port());
+
+    let app = Router::new()
+        .route("/{*path}", any(proxy_handler))
+        .with_state(state);
+
+    let handle = tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::from_std(listener)
+            .expect("guest proxy: TcpListener conversion failed");
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::warn!("guest proxy axum serve error: {e}");
+        }
+    });
+
+    Ok((local_url, handle))
+}
+
+/// Axum handler: proxies one request upstream and, on `getUpdates`, extracts
+/// `guest_message` entries from the Telegram API response.
+///
+/// For `getUpdates` requests the handler:
+/// 1. Injects `"guest_message"` into the outgoing `allowed_updates` array so
+///    Telegram actually delivers these updates (teloxide omits them by default).
+/// 2. Extracts a copy of any `guest_message` entries from the response and
+///    forwards them to the agent via `tx`.
+/// 3. Returns the **full** unmodified result array to teloxide — including the
+///    original `guest_message` objects — so teloxide's internal offset advances
+///    correctly and the same updates are never replayed.  Teloxide's
+///    `Update::filter_message()` handler simply ignores unknown `UpdateKind`
+///    variants, so the extra entries are silently dropped by the dispatcher.
+async fn proxy_handler(State(state): State<GuestProxyState>, req: Request<Body>) -> Response {
+    // Path structure from teloxide: /bot<TOKEN>/<method>
+    // proxy_url passed to Bot::set_api_url is http://127.0.0.1:<port>/bot<TOKEN>
+    // teloxide appends /<method> to base_url, so path is /bot<TOKEN>/<method>
+    let path = req.uri().path();
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
+    let method_part = path.splitn(4, '/').nth(3).unwrap_or("");
+    let upstream_url = format!("{}/{method_part}{query}", state.upstream);
+
+    let is_get_updates = method_part == "getUpdates";
+
+    let method = req.method().clone();
+    let headers = req.headers().clone();
+    let mut body_bytes = match axum::body::to_bytes(req.into_body(), 4 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("guest proxy: failed to read request body: {e}");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+
+    // Inject "guest_message" into allowed_updates so Telegram delivers these updates.
+    // teloxide only requests ["message"] by default; without this injection
+    // Telegram never sends guest_message entries and Guest Mode is silently broken.
+    if is_get_updates
+        && let Ok(mut body_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes)
+    {
+        let injected = serde_json::json!("guest_message");
+        match body_json
+            .get_mut("allowed_updates")
+            .and_then(|v| v.as_array_mut())
+        {
+            Some(arr) => {
+                if !arr.iter().any(|v| v.as_str() == Some("guest_message")) {
+                    arr.push(injected);
+                }
+            }
+            None => {
+                body_json["allowed_updates"] = serde_json::json!(["message", "guest_message"]);
+            }
+        }
+        if let Ok(b) = serde_json::to_vec(&body_json) {
+            body_bytes = b.into();
+        }
+    }
+
+    let mut upstream_req = state.client.request(method, &upstream_url);
+    for (name, value) in &headers {
+        upstream_req = upstream_req.header(name, value);
+    }
+    upstream_req = upstream_req.body(body_bytes);
+
+    let upstream_resp = match upstream_req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("guest proxy upstream error: {}", e.without_url());
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+
+    let status = upstream_resp.status();
+    let resp_headers = upstream_resp.headers().clone();
+    let resp_bytes = match upstream_resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(
+                "guest proxy: failed to read upstream response: {}",
+                e.without_url()
+            );
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+
+    // On getUpdates success: extract guest_message entries and forward copies to the
+    // agent, then return the original response unchanged to teloxide so its offset
+    // advances correctly (no duplicate delivery on the next poll).
+    if is_get_updates
+        && status.is_success()
+        && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&resp_bytes)
+        && let Some(result) = json.get("result").and_then(|r| r.as_array())
+    {
+        for update in result {
+            if let Some(gm_val) = update.get("guest_message") {
+                extract_and_forward_guest_message(gm_val, &state.tx, &state.allowed_users).await;
+            }
+        }
+    }
+
+    let mut response = Response::new(Body::from(resp_bytes));
+    *response.status_mut() = status;
+    for (name, value) in &resp_headers {
+        response.headers_mut().insert(name, value.clone());
+    }
+    response
+}
+
+/// Parse a raw `guest_message` JSON value and forward it to the agent.
+async fn extract_and_forward_guest_message(
+    gm_val: &serde_json::Value,
+    tx: &mpsc::Sender<IncomingMessage>,
+    allowed_users: &[String],
+) {
+    let gm: GuestMessage = match serde_json::from_value(gm_val.clone()) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("failed to parse guest_message: {e}");
+            return;
+        }
+    };
+
+    let caller_username = gm.guest_bot_caller_user.username.as_deref();
+    if !is_user_authorized(caller_username, allowed_users) {
+        tracing::warn!(
+            username = ?caller_username,
+            "guest_message from unauthorized user — dropped"
+        );
+        return;
+    }
+
+    let text = gm.text.unwrap_or_default();
+    let chat_id = ChatId(gm.guest_bot_caller_chat.id);
+    let _ = tx
+        .send(IncomingMessage {
+            chat_id,
+            text,
+            attachments: Vec::new(),
+            guest_query_id: Some(gm.guest_query_id),
+            is_from_bot: gm.guest_bot_caller_user.is_bot,
+        })
+        .await;
+}
+
 /// Extract the audio file identifier and byte size from a message, if present.
 ///
 /// Prefers a voice note over an audio file when both are present.
@@ -460,22 +859,87 @@ fn extract_photo_attachment(msg: &Message) -> Option<(String, u32)> {
     Some((photo.file.id.0.clone(), photo.file.size))
 }
 
+/// Walk `reply_to_message` links to compute structural chain depth (spec FR-007).
+///
+/// Returns the number of `reply_to_message` hops from `msg` up to and including
+/// the root, capped at `cap + 1` to bound recursion.  The Telegram API only
+/// exposes one level of nesting in the payload, so in practice this returns 0
+/// (no reply) or 1 (direct reply); the cap is a safeguard against future changes.
+fn compute_chain_depth(msg: &Message, cap: u32) -> u32 {
+    let mut depth = 0u32;
+    let mut current = msg.reply_to_message();
+    while current.is_some() && depth < cap + 1 {
+        depth += 1;
+        current = current.and_then(|m| m.reply_to_message());
+    }
+    depth
+}
+
 /// Process one incoming Telegram update inside the dispatcher endpoint.
 ///
-/// Checks authorization, downloads any media attachments, and forwards the
-/// assembled [`IncomingMessage`] to the agent via `tx`.  Returns
-/// `respond(())` in all branches so teloxide considers the update handled.
+/// Checks authorization, applies bot-to-bot policy (structural chain depth via
+/// [`compute_chain_depth`] + consecutive-reply counter), downloads any media
+/// attachments, and forwards the assembled [`IncomingMessage`] to the agent
+/// via `tx`.  Returns `respond(())` in all branches so teloxide considers the
+/// update handled.
+#[allow(clippy::too_many_arguments)]
 async fn handle_telegram_message(
     bot: Bot,
     msg: Message,
     tx: mpsc::Sender<IncomingMessage>,
     allowed: Vec<String>,
+    bot_to_bot: bool,
+    bot_to_bot_active: Arc<AtomicBool>,
+    allowed_bots: Vec<String>,
+    max_bot_chain_depth: u32,
+    bot_reply_counters: BotReplyCounters,
 ) -> Result<(), teloxide::RequestError> {
-    let username = msg.from.as_ref().and_then(|u| u.username.as_deref());
+    let sender_is_bot = msg.from.as_ref().is_some_and(|u| u.is_bot);
 
-    if !is_user_authorized(username, &allowed) {
-        tracing::warn!("rejected message from unauthorized user: {:?}", username);
-        return respond(());
+    if sender_is_bot {
+        if !bot_to_bot || !bot_to_bot_active.load(Ordering::Acquire) {
+            // Feature disabled — silently drop without logging
+            return respond(());
+        }
+        let sender_username = msg.from.as_ref().and_then(|u| u.username.as_deref());
+        if !is_bot_authorized(sender_username, &allowed_bots) {
+            tracing::warn!(sender = ?sender_username, "rejected message from unauthorized bot");
+            return respond(());
+        }
+        // Primary check: structural reply chain depth (spec FR-007).
+        // Telegram API only exposes 1 level, so this catches direct reply loops.
+        let chain_depth = compute_chain_depth(&msg, max_bot_chain_depth);
+        if chain_depth >= max_bot_chain_depth {
+            tracing::warn!(
+                chain_depth,
+                max = max_bot_chain_depth,
+                message_id = msg.id.0,
+                sender = ?sender_username,
+                "dropping bot message: reply chain depth limit reached"
+            );
+            return respond(());
+        }
+        // Secondary check: consecutive bot replies in this chat (defense-in-depth).
+        let consec_depth = increment_bot_depth(&bot_reply_counters, msg.chat.id);
+        if consec_depth >= max_bot_chain_depth {
+            tracing::warn!(
+                consec_depth,
+                max = max_bot_chain_depth,
+                message_id = msg.id.0,
+                sender = ?sender_username,
+                "dropping bot message: consecutive reply limit reached"
+            );
+            return respond(());
+        }
+    } else {
+        // Non-bot message: reset consecutive bot reply counter for this chat.
+        reset_bot_depth(&bot_reply_counters, msg.chat.id);
+
+        let username = msg.from.as_ref().and_then(|u| u.username.as_deref());
+        if !is_user_authorized(username, &allowed) {
+            tracing::warn!("rejected message from unauthorized user: {:?}", username);
+            return respond(());
+        }
     }
 
     let text = msg.text().unwrap_or_default().to_string();
@@ -520,6 +984,8 @@ async fn handle_telegram_message(
             chat_id: msg.chat.id,
             text,
             attachments,
+            guest_query_id: None,
+            is_from_bot: sender_is_bot,
         })
         .await;
 
@@ -556,9 +1022,13 @@ impl Channel for TelegramChannel {
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         self.rx.try_recv().ok().map(|incoming| {
             self.chat_id = Some(incoming.chat_id);
+            let is_guest = incoming.guest_query_id.is_some();
+            self.guest_query_id.clone_from(&incoming.guest_query_id);
             ChannelMessage {
                 text: incoming.text,
                 attachments: incoming.attachments,
+                is_guest_context: is_guest,
+                is_from_bot: incoming.is_from_bot,
             }
         })
     }
@@ -596,6 +1066,9 @@ impl Channel for TelegramChannel {
             self.last_edit = None;
             self.message_id = None;
 
+            let is_guest = incoming.guest_query_id.is_some();
+            self.guest_query_id.clone_from(&incoming.guest_query_id);
+
             if let Some(cmd) = Self::is_command(&incoming.text) {
                 match cmd {
                     "/start" => {
@@ -607,12 +1080,16 @@ impl Channel for TelegramChannel {
                         return Ok(Some(ChannelMessage {
                             text: "/reset".to_string(),
                             attachments: vec![],
+                            is_guest_context: false,
+                            is_from_bot: false,
                         }));
                     }
                     "/skills" => {
                         return Ok(Some(ChannelMessage {
                             text: "/skills".to_string(),
                             attachments: vec![],
+                            is_guest_context: false,
+                            is_from_bot: false,
                         }));
                     }
                     _ => {}
@@ -622,6 +1099,8 @@ impl Channel for TelegramChannel {
             return Ok(Some(ChannelMessage {
                 text: incoming.text,
                 attachments: incoming.attachments,
+                is_guest_context: is_guest,
+                is_from_bot: incoming.is_from_bot,
             }));
         }
     }
@@ -642,6 +1121,15 @@ impl Channel for TelegramChannel {
         tracing::instrument(name = "channel.telegram.send", skip_all, fields(msg_len = %text.len()))
     )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
+        // Guest context: accumulate full response — flush_chunks calls answerGuestQuery once.
+        if self.guest_query_id.is_some() {
+            if !self.accumulated.is_empty() {
+                self.accumulated.push('\n');
+            }
+            self.accumulated.push_str(text);
+            return Ok(());
+        }
+
         let Some(chat_id) = self.chat_id else {
             return Err(ChannelError::NoActiveSession);
         };
@@ -695,6 +1183,12 @@ impl Channel for TelegramChannel {
             self.accumulated.len()
         );
 
+        // In guest context, accumulate only — never call send_or_edit (NFR-005).
+        // The full accumulated text is sent via answerGuestQuery in flush_chunks.
+        if self.guest_query_id.is_some() {
+            return Ok(());
+        }
+
         if self.should_send_update() {
             tracing::debug!("sending update (should_send_update returned true)");
             self.send_or_edit().await?;
@@ -719,6 +1213,31 @@ impl Channel for TelegramChannel {
             self.message_id,
             self.accumulated.len()
         );
+
+        // Guest context: send accumulated text via answerGuestQuery (single call).
+        if let Some(query_id) = self.guest_query_id.take() {
+            let full_text = std::mem::take(&mut self.accumulated);
+            let text = full_text.trim();
+            if text.len() > MAX_MESSAGE_LEN {
+                tracing::warn!(
+                    query_id,
+                    bytes = text.len(),
+                    max = MAX_MESSAGE_LEN,
+                    "guest response exceeds 4096 bytes; Telegram truncates answerGuestQuery — consider shorter responses"
+                );
+            }
+            if !text.is_empty()
+                && let Err(e) = self
+                    .api_ext
+                    .answer_guest_query(&query_id, text, Some("HTML"))
+                    .await
+            {
+                tracing::warn!(query_id, "answer_guest_query failed: {e}");
+            }
+            self.last_edit = None;
+            self.message_id = None;
+            return Ok(());
+        }
 
         // Send if there is unsent accumulated text OR an existing message to finalize.
         // The `message_id.is_some()` guard alone would silently discard text that arrived
@@ -1008,7 +1527,15 @@ mod tests {
             message_id: None,
             stream_interval: Duration::from_secs(3),
             api_ext: TelegramApiClient::with_base_url(server.uri()),
+            guest_mode: false,
+            guest_query_id: None,
+            bot_to_bot: false,
+            bot_to_bot_active: Arc::new(AtomicBool::new(false)),
+            allowed_bots: Vec::new(),
+            max_bot_chain_depth: 1,
+            bot_reply_counters: Arc::new(Mutex::new(HashMap::new())),
             supervisor: None,
+            guest_proxy_handle: None,
         };
         (channel, tx)
     }
@@ -1018,6 +1545,8 @@ mod tests {
             chat_id: ChatId(1),
             text: text.to_string(),
             attachments: vec![],
+            guest_query_id: None,
+            is_from_bot: false,
         }
     }
 
@@ -1488,6 +2017,188 @@ mod tests {
         assert!(
             result.is_err(),
             "expected Err(Elapsed) for elicitation timeout, got recv result"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // is_bot_authorized — pure function tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn is_bot_authorized_empty_list_permits_all() {
+        assert!(is_bot_authorized(None, &[]));
+        assert!(is_bot_authorized(Some("@any_bot"), &[]));
+    }
+
+    #[test]
+    fn is_bot_authorized_known_bot_permitted() {
+        let allowed = vec!["@trusted".to_string()];
+        assert!(is_bot_authorized(Some("@trusted"), &allowed));
+        // Without @ prefix on the username side
+        assert!(is_bot_authorized(Some("trusted"), &allowed));
+    }
+
+    #[test]
+    fn is_bot_authorized_unknown_bot_rejected() {
+        let allowed = vec!["@trusted".to_string()];
+        assert!(!is_bot_authorized(Some("@evil"), &allowed));
+        assert!(!is_bot_authorized(None, &allowed));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Bot depth counter — pure function tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn bot_depth_counter_increments_per_call() {
+        let counters = BotReplyCounters::default();
+        let chat = ChatId(1);
+        assert_eq!(increment_bot_depth(&counters, chat), 1);
+        assert_eq!(increment_bot_depth(&counters, chat), 2);
+        assert_eq!(increment_bot_depth(&counters, chat), 3);
+    }
+
+    #[test]
+    fn bot_depth_counter_resets_on_human_message() {
+        let counters = BotReplyCounters::default();
+        let chat = ChatId(42);
+        increment_bot_depth(&counters, chat);
+        increment_bot_depth(&counters, chat);
+        reset_bot_depth(&counters, chat);
+        assert_eq!(increment_bot_depth(&counters, chat), 1);
+    }
+
+    #[test]
+    fn bot_depth_evicts_one_entry_when_at_capacity() {
+        let counters: BotReplyCounters = Arc::new(Mutex::new(HashMap::new()));
+        // Fill to capacity
+        {
+            let mut map = counters.lock().unwrap();
+            for i in 0..1000_i64 {
+                map.insert(ChatId(i), 1);
+            }
+        }
+        // New chat should trigger single-entry eviction, not clear all
+        let new_chat = ChatId(1001);
+        increment_bot_depth(&counters, new_chat);
+        let map = counters.lock().unwrap();
+        // Total entries must remain <= MAX_TRACKED_CHATS (one evicted, one added)
+        assert_eq!(map.len(), MAX_TRACKED_CHATS);
+        // New entry must be present
+        assert!(map.contains_key(&new_chat));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Guest context — recv() stores guest_query_id and sets is_guest_context
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn guest_context_stored_on_recv() {
+        let (mut channel, tx) = TelegramChannel::new_test(vec!["alice".to_string()]);
+        tx.send(IncomingMessage {
+            chat_id: ChatId(1),
+            text: "hello".to_string(),
+            attachments: vec![],
+            guest_query_id: Some("qid123".to_string()),
+            is_from_bot: false,
+        })
+        .await
+        .unwrap();
+        let msg = channel.recv().await.unwrap().unwrap();
+        assert!(msg.is_guest_context);
+        assert_eq!(channel.guest_query_id.as_deref(), Some("qid123"));
+    }
+
+    #[tokio::test]
+    async fn send_chunk_does_not_call_api_in_guest_context() {
+        let (mut channel, _tx) = TelegramChannel::new_test(vec![]);
+        channel.guest_query_id = Some("qid".to_string());
+        // Simulate interval elapsed so send_or_edit would fire if not guarded
+        channel.last_edit = None;
+
+        channel.send_chunk("part1").await.unwrap();
+        channel.send_chunk(" part2").await.unwrap();
+
+        // Accumulated text must be present (guard ran, no API call was possible anyway
+        // since there is no mock server — if send_or_edit were called, it would panic)
+        assert_eq!(channel.accumulated, "part1 part2");
+    }
+
+    #[tokio::test]
+    async fn flush_chunks_routes_to_answer_guest_query() {
+        use wiremock::matchers::{method, path};
+
+        let server = MockServer::start().await;
+
+        // Mount a scoped mock specifically for answerGuestQuery.
+        // SentGuestMessage deserializes {message_id: i64, chat_id: i64}.
+        let answer_mock = Mock::given(method("POST"))
+            .and(path("/answerGuestQuery"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "message_id": 1,
+                    "chat_id": 2
+                }
+            })));
+        let answer_handle = server.register_as_scoped(answer_mock).await;
+
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        channel.guest_query_id = Some("qid42".to_string());
+        channel.accumulated = "response text".to_string();
+
+        channel.flush_chunks().await.unwrap();
+
+        assert_eq!(
+            answer_handle.received_requests().await.len(),
+            1,
+            "answerGuestQuery must be called exactly once"
+        );
+        assert!(channel.guest_query_id.is_none());
+        assert!(channel.accumulated.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bot_to_bot_false_drops_bot_messages() {
+        // With bot_to_bot=false, messages from bots must be silently dropped.
+        let (tx, mut rx) = mpsc::channel::<IncomingMessage>(8);
+        let bot = Bot::new("test_token");
+        let bot_reply_counters: BotReplyCounters = Arc::new(Mutex::new(HashMap::new()));
+        let bot_to_bot_active = Arc::new(AtomicBool::new(false));
+
+        let msg_json = serde_json::json!({
+            "message_id": 1,
+            "date": 1_700_000_000_i64,
+            "chat": {"id": 1, "type": "private"},
+            "from": {
+                "id": 999,
+                "is_bot": true,
+                "first_name": "EvilBot",
+                "username": "evil_bot"
+            },
+            "text": "bot says hi"
+        });
+        let msg: teloxide::types::Message = serde_json::from_value(msg_json).unwrap();
+
+        handle_telegram_message(
+            bot,
+            msg,
+            tx.clone(),
+            vec!["human".to_string()],
+            false, // bot_to_bot disabled
+            bot_to_bot_active,
+            vec![],
+            3,
+            bot_reply_counters,
+        )
+        .await
+        .unwrap();
+
+        drop(tx);
+        // Channel must be empty: bot message was dropped before reaching tx.send().
+        assert!(
+            rx.recv().await.is_none(),
+            "bot message must be dropped when bot_to_bot=false"
         );
     }
 

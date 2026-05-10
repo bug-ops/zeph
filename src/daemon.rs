@@ -156,6 +156,8 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
                 .send(zeph_core::ChannelMessage {
                     text: user_text,
                     attachments: vec![],
+                    is_guest_context: false,
+                    is_from_bot: false,
                 })
                 .await
                 .map_err(|_| zeph_a2a::A2aError::Server("agent channel closed".to_owned()))?;

@@ -26,29 +26,55 @@ pub struct SentGuestMessage {
     pub chat_id: i64,
 }
 
-/// Access settings for a managed bot in Guest Mode.
+/// Access settings for a managed bot in Guest Mode (Bot API 10.0).
 ///
-/// # Note
-///
-/// Field names are based on the Bot API 10.0 specification draft and will be
-/// verified against real API responses when `#3732` migrates to native teloxide.
+/// Controls which message sources the managed bot is allowed to receive.
+/// Both fields default to `false`; set `allow_bot_messages = true` to enable
+/// bot-to-bot communication.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BotAccessSettings {
-    /// Whether the managed bot may receive private-chat messages.
-    pub allow_private_chats: bool,
-    /// Whether the managed bot may participate in group chats.
-    pub allow_group_chats: bool,
-    /// Whether the managed bot may receive channel posts.
-    pub allow_channel_posts: bool,
+    /// Whether the managed bot may receive messages from users.
+    pub allow_user_messages: bool,
+    /// Whether the managed bot may receive messages from other bots.
+    pub allow_bot_messages: bool,
 }
 
-/// A message received by a managed bot in Guest Mode.
+/// Minimal user info extracted from a guest message update.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GuestUser {
+    /// Telegram user identifier.
+    pub id: i64,
+    /// Whether this user is a bot.
+    pub is_bot: bool,
+    /// Telegram username, without `@`.
+    pub username: Option<String>,
+    /// Display name.
+    pub first_name: String,
+}
+
+/// Minimal chat info extracted from a guest message update.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GuestChat {
+    /// Telegram chat identifier.
+    pub id: i64,
+    /// Chat type (e.g. `"group"`, `"supergroup"`, `"channel"`).
+    #[serde(rename = "type")]
+    pub chat_type: String,
+}
+
+/// A guest message update from Bot API 10.0.
+///
+/// Received when a user @mentions the bot in a chat where the bot is not a
+/// member. The `guest_query_id` is required for responding via
+/// [`TelegramApiClient::answer_guest_query`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GuestMessage {
-    /// Telegram message identifier.
-    pub message_id: i64,
-    /// Identifier of the originating chat.
-    pub from_chat_id: i64,
+    /// Opaque identifier for this guest query, used in `answerGuestQuery`.
+    pub guest_query_id: String,
+    /// The user who @mentioned the bot.
+    pub guest_bot_caller_user: GuestUser,
+    /// The chat where the mention occurred.
+    pub guest_bot_caller_chat: GuestChat,
     /// Text content of the message, if any.
     pub text: Option<String>,
 }
@@ -89,6 +115,7 @@ pub enum TelegramApiError {
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Clone)]
 pub struct TelegramApiClient {
     client: reqwest::Client,
     /// `https://api.telegram.org/bot<TOKEN>` — includes the token, never log.
@@ -268,7 +295,7 @@ impl TelegramApiClient {
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let client = TelegramApiClient::new("TOKEN");
     /// let settings = client.get_managed_bot_access_settings().await?;
-    /// println!("private_chats={}", settings.allow_private_chats);
+    /// println!("bot_messages={}", settings.allow_bot_messages);
     /// # Ok(())
     /// # }
     /// ```
@@ -295,9 +322,8 @@ impl TelegramApiClient {
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let client = TelegramApiClient::new("TOKEN");
     /// let ok = client.set_managed_bot_access_settings(&BotAccessSettings {
-    ///     allow_private_chats: true,
-    ///     allow_group_chats: false,
-    ///     allow_channel_posts: false,
+    ///     allow_user_messages: true,
+    ///     allow_bot_messages: true,
     /// }).await?;
     /// assert!(ok);
     /// # Ok(())
@@ -444,9 +470,8 @@ mod tests {
     #[test]
     fn bot_access_settings_round_trip() {
         let original = BotAccessSettings {
-            allow_private_chats: true,
-            allow_group_chats: false,
-            allow_channel_posts: true,
+            allow_user_messages: true,
+            allow_bot_messages: false,
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: BotAccessSettings = serde_json::from_str(&json).unwrap();
@@ -456,8 +481,17 @@ mod tests {
     #[test]
     fn guest_message_round_trip() {
         let original = GuestMessage {
-            message_id: 7,
-            from_chat_id: 999,
+            guest_query_id: "qid_abc".into(),
+            guest_bot_caller_user: GuestUser {
+                id: 123,
+                is_bot: false,
+                username: Some("alice".into()),
+                first_name: "Alice".into(),
+            },
+            guest_bot_caller_chat: GuestChat {
+                id: 999,
+                chat_type: "group".into(),
+            },
             text: Some("hello".into()),
         };
         let json = serde_json::to_string(&original).unwrap();
@@ -468,8 +502,17 @@ mod tests {
     #[test]
     fn guest_message_round_trip_no_text() {
         let original = GuestMessage {
-            message_id: 1,
-            from_chat_id: 2,
+            guest_query_id: "qid_def".into(),
+            guest_bot_caller_user: GuestUser {
+                id: 1,
+                is_bot: false,
+                username: None,
+                first_name: "Bob".into(),
+            },
+            guest_bot_caller_chat: GuestChat {
+                id: 2,
+                chat_type: "supergroup".into(),
+            },
             text: None,
         };
         let json = serde_json::to_string(&original).unwrap();
@@ -555,9 +598,8 @@ mod tests {
             .and(path_regex(".*/getManagedBotAccessSettings$"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::json!({
-                    "allow_private_chats": true,
-                    "allow_group_chats": false,
-                    "allow_channel_posts": true
+                    "allow_user_messages": true,
+                    "allow_bot_messages": false
                 }))),
             )
             .mount(&server)
@@ -565,9 +607,8 @@ mod tests {
 
         let client = TelegramApiClient::with_base_url(server.uri());
         let settings = client.get_managed_bot_access_settings().await.unwrap();
-        assert!(settings.allow_private_chats);
-        assert!(!settings.allow_group_chats);
-        assert!(settings.allow_channel_posts);
+        assert!(settings.allow_user_messages);
+        assert!(!settings.allow_bot_messages);
     }
 
     #[tokio::test]
@@ -603,9 +644,8 @@ mod tests {
         let client = TelegramApiClient::with_base_url(server.uri());
         let ok = client
             .set_managed_bot_access_settings(&BotAccessSettings {
-                allow_private_chats: true,
-                allow_group_chats: true,
-                allow_channel_posts: false,
+                allow_user_messages: true,
+                allow_bot_messages: true,
             })
             .await
             .unwrap();
@@ -626,9 +666,8 @@ mod tests {
         let client = TelegramApiClient::with_base_url(server.uri());
         let err = client
             .set_managed_bot_access_settings(&BotAccessSettings {
-                allow_private_chats: false,
-                allow_group_chats: false,
-                allow_channel_posts: false,
+                allow_user_messages: false,
+                allow_bot_messages: false,
             })
             .await
             .unwrap_err();

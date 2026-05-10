@@ -41,6 +41,8 @@ async fn resolve_message_extracts_image_attachment() {
             data: vec![0u8; 16],
             filename: Some("test.jpg".into()),
         }],
+        is_guest_context: false,
+        is_from_bot: false,
     };
     let (text, parts) = agent.resolve_message(msg).await;
     assert_eq!(text, "look at this");
@@ -69,6 +71,8 @@ async fn resolve_message_drops_oversized_image() {
             data: vec![0u8; MAX_IMAGE_BYTES + 1],
             filename: Some("huge.png".into()),
         }],
+        is_guest_context: false,
+        is_from_bot: false,
     };
     let (text, parts) = agent.resolve_message(msg).await;
     assert_eq!(text, "big image");

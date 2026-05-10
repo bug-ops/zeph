@@ -128,6 +128,8 @@ impl Channel for TuiChannel {
                 Ok(Some(ChannelMessage {
                     text,
                     attachments: vec![],
+                    is_guest_context: false,
+                    is_from_bot: false,
                 }))
             }
             None => Ok(None),
@@ -140,6 +142,8 @@ impl Channel for TuiChannel {
             ChannelMessage {
                 text,
                 attachments: vec![],
+                is_guest_context: false,
+                is_from_bot: false,
             }
         })
     }

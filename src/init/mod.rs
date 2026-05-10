@@ -806,6 +806,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 allowed_users: state.telegram_users.clone(),
                 skills: ChannelSkillsConfig::default(),
                 stream_interval_ms: state.telegram_stream_interval_ms,
+                guest_mode: false,
+                bot_to_bot: false,
+                allowed_bots: vec![],
+                max_bot_chain_depth: 3,
             });
         }
         ChannelChoice::Discord => {

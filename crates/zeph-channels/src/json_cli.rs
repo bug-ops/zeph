@@ -98,6 +98,8 @@ impl Channel for JsonCliChannel {
                     return Ok(Some(ChannelMessage {
                         text,
                         attachments: Vec::new(),
+                        is_guest_context: false,
+                        is_from_bot: false,
                     }));
                 }
                 Some(None) | None => return Ok(None), // EOF
@@ -119,6 +121,8 @@ impl Channel for JsonCliChannel {
                 Some(ChannelMessage {
                     text: trimmed,
                     attachments: Vec::new(),
+                    is_guest_context: false,
+                    is_from_bot: false,
                 })
             }
             _ => None,

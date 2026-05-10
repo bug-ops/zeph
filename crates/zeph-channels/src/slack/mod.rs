@@ -139,6 +139,8 @@ impl Channel for SlackChannel {
         Some(ChannelMessage {
             text: incoming.text,
             attachments: vec![],
+            is_guest_context: false,
+            is_from_bot: false,
         })
     }
 
@@ -171,6 +173,8 @@ impl Channel for SlackChannel {
         Ok(Some(ChannelMessage {
             text: incoming.text,
             attachments,
+            is_guest_context: false,
+            is_from_bot: false,
         }))
     }
 

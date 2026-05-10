@@ -1098,6 +1098,16 @@ impl<C: Channel> Agent<C> {
         // Only injected when goal tracking is enabled and an active goal exists.
         self.inject_active_goal(&mut system_prompt).await;
 
+        // Inject guest-context annotation for Telegram guest_message queries.
+        // Kept in the volatile block so it does not pollute the prompt cache.
+        if self.services.session.is_guest_context {
+            system_prompt.push_str(
+                "\n\n[CONTEXT: This message comes from a Telegram guest query. \
+                 Provide a concise, self-contained response — \
+                 the recipient may not have prior conversation context.]",
+            );
+        }
+
         // If memory_save was used this session, remind the model to use memory_search
         // (not search_code) to recall user-provided facts (#2475).
         if self

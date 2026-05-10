@@ -162,6 +162,8 @@ impl Channel for DiscordChannel {
             return Some(ChannelMessage {
                 text: incoming.content,
                 attachments: vec![],
+                is_guest_context: false,
+                is_from_bot: false,
             });
         }
     }
@@ -188,6 +190,8 @@ impl Channel for DiscordChannel {
             return Ok(Some(ChannelMessage {
                 text: incoming.content,
                 attachments: vec![],
+                is_guest_context: false,
+                is_from_bot: false,
             }));
         }
     }

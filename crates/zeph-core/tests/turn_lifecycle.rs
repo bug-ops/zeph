@@ -53,6 +53,8 @@ impl Channel for TestChannel {
             Ok(Some(ChannelMessage {
                 text: self.inbox.remove(0),
                 attachments: vec![],
+                is_guest_context: false,
+                is_from_bot: false,
             }))
         }
     }
@@ -64,6 +66,8 @@ impl Channel for TestChannel {
             Some(ChannelMessage {
                 text: self.inbox.remove(0),
                 attachments: vec![],
+                is_guest_context: false,
+                is_from_bot: false,
             })
         }
     }

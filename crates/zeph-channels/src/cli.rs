@@ -135,6 +135,8 @@ async fn process_line(
     Ok(Some(ChannelMessage {
         text: trimmed.to_string(),
         attachments,
+        is_guest_context: false,
+        is_from_bot: false,
     }))
 }
 
@@ -771,6 +773,8 @@ mod tests {
         tx.send(ChannelMessage {
             text: "hello".to_string(),
             attachments: vec![],
+            is_guest_context: false,
+            is_from_bot: false,
         })
         .await
         .unwrap();

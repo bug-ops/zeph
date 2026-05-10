@@ -371,6 +371,8 @@ mod resolve_message_tests {
         let msg = ChannelMessage {
             text: "hello".into(),
             attachments: vec![],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         assert_eq!(agent.resolve_message(msg).await.0, "hello");
     }
@@ -381,6 +383,8 @@ mod resolve_message_tests {
         let msg = ChannelMessage {
             text: "hello".into(),
             attachments: vec![audio_attachment(b"audio-data")],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         assert_eq!(agent.resolve_message(msg).await.0, "hello");
     }
@@ -391,6 +395,8 @@ mod resolve_message_tests {
         let msg = ChannelMessage {
             text: "original".into(),
             attachments: vec![audio_attachment(b"audio-data")],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         let (result, _) = agent.resolve_message(msg).await;
         assert!(result.contains("[transcribed audio]"));
@@ -404,6 +410,8 @@ mod resolve_message_tests {
         let msg = ChannelMessage {
             text: String::new(),
             attachments: vec![audio_attachment(b"audio-data")],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         let (result, _) = agent.resolve_message(msg).await;
         assert_eq!(result, "transcribed text");
@@ -415,6 +423,8 @@ mod resolve_message_tests {
         let msg = ChannelMessage {
             text: "original".into(),
             attachments: vec![audio_attachment(b"audio-data")],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         assert_eq!(agent.resolve_message(msg).await.0, "original");
     }
@@ -429,6 +439,8 @@ mod resolve_message_tests {
                 audio_attachment(b"a2"),
                 audio_attachment(b"a3"),
             ],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         let (result, _) = agent.resolve_message(msg).await;
         assert_eq!(result, "chunk\nchunk\nchunk");
@@ -445,6 +457,8 @@ mod resolve_message_tests {
                 data: big,
                 filename: None,
             }],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         assert_eq!(agent.resolve_message(msg).await.0, "original");
     }

@@ -15,10 +15,10 @@ readme = "README.md"
 [features]
 profiling = []
 discord = ["dep:tokio-tungstenite", "dep:futures"]
-slack = ["dep:axum", "dep:hmac", "dep:sha2", "dep:subtle"]
+slack = ["dep:hmac", "dep:sha2", "dep:subtle"]
 
 [dependencies]
-axum = { workspace = true, optional = true }
+axum = { workspace = true }
 crossterm.workspace = true
 futures = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }

@@ -853,6 +853,8 @@ impl<C: Channel> Agent<C> {
                     let msg = crate::channel::ChannelMessage {
                         text: queued.text,
                         attachments: queued.raw_attachments,
+                        is_guest_context: false,
+                        is_from_bot: false,
                     };
                     self.resolve_message(msg).await
                 }
@@ -889,6 +891,8 @@ impl<C: Channel> Agent<C> {
                         let msg = crate::channel::ChannelMessage {
                             text,
                             attachments: Vec::new(),
+                            is_guest_context: false,
+                            is_from_bot: false,
                         };
                         self.drain_channel();
                         self.resolve_message(msg).await
@@ -901,6 +905,8 @@ impl<C: Channel> Agent<C> {
                         let msg = crate::channel::ChannelMessage {
                             text: injection.prompt,
                             attachments: Vec::new(),
+                            is_guest_context: false,
+                            is_from_bot: false,
                         };
                         self.drain_channel();
                         self.resolve_message(msg).await
@@ -910,6 +916,7 @@ impl<C: Channel> Agent<C> {
                         continue;
                     }
                     Some(LoopEvent::Message(msg)) => {
+                        self.services.session.is_guest_context = msg.is_guest_context;
                         self.drain_channel();
                         self.resolve_message(msg).await
                     }
@@ -1443,6 +1450,8 @@ impl<C: Channel> Agent<C> {
         self.flush_turn_timings();
         // Clear per-turn intent (FR-008): must not persist across turns.
         self.services.session.current_turn_intent = None;
+        // Clear guest context flag: each turn is independently classified.
+        self.services.session.is_guest_context = false;
         // Cancel all in-flight speculative handles at turn boundary.
         if let Some(ref engine) = self.services.speculation_engine {
             let metrics = engine.end_turn();

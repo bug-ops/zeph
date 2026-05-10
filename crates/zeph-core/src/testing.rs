@@ -81,6 +81,8 @@ impl Channel for MockChannel {
             Ok(Some(ChannelMessage {
                 text: msgs.remove(0),
                 attachments: vec![],
+                is_guest_context: false,
+                is_from_bot: false,
             }))
         }
     }
@@ -93,6 +95,8 @@ impl Channel for MockChannel {
             Some(ChannelMessage {
                 text: msgs.remove(0),
                 attachments: vec![],
+                is_guest_context: false,
+                is_from_bot: false,
             })
         }
     }

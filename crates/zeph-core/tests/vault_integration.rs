@@ -79,6 +79,10 @@ async fn age_vault_injects_token_into_existing_telegram_config() {
         allowed_users: vec!["test_user".to_owned()],
         skills: zeph_core::config::ChannelSkillsConfig::default(),
         stream_interval_ms: 3000,
+        guest_mode: false,
+        bot_to_bot: false,
+        allowed_bots: vec![],
+        max_bot_chain_depth: 3,
     });
     config.resolve_secrets(&vault).await.unwrap();
 

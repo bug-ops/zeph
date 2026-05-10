@@ -195,6 +195,10 @@ pub struct Attachment {
 pub struct ChannelMessage {
     pub text: String,
     pub attachments: Vec<Attachment>,
+    /// `true` when the message originated from a Telegram guest mention (`guest_message` update).
+    pub is_guest_context: bool,
+    /// `true` when the sender is a Telegram bot (`from.is_bot = true`).
+    pub is_from_bot: bool,
 }
 
 /// Bidirectional communication channel for the agent.
@@ -708,6 +712,8 @@ mod tests {
         let msg = ChannelMessage {
             text: "hello".to_string(),
             attachments: vec![],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         assert_eq!(msg.text, "hello");
         assert!(msg.attachments.is_empty());
@@ -776,6 +782,8 @@ mod tests {
         let msg = ChannelMessage {
             text: "test".to_string(),
             attachments: vec![],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         let cloned = msg.clone();
         assert_eq!(cloned.text, "test");
@@ -786,6 +794,8 @@ mod tests {
         let msg = ChannelMessage {
             text: "debug".to_string(),
             attachments: vec![],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         let debug = format!("{msg:?}");
         assert!(debug.contains("debug"));
@@ -818,6 +828,8 @@ mod tests {
                 data: vec![42],
                 filename: None,
             }],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         assert_eq!(msg.attachments.len(), 1);
         assert_eq!(msg.attachments[0].kind, AttachmentKind::Audio);
@@ -873,6 +885,8 @@ mod tests {
             .send(ChannelMessage {
                 text: "hello".to_owned(),
                 attachments: vec![],
+                is_guest_context: false,
+                is_from_bot: false,
             })
             .await
             .unwrap();

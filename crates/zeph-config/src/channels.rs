@@ -118,6 +118,33 @@ mod tests {
     }
 
     #[test]
+    fn telegram_config_defaults() {
+        // When all new fields are absent, defaults must be applied.
+        let src = r#"token = "test_token""#;
+        let cfg: TelegramConfig = toml::from_str(src).unwrap();
+        assert!(!cfg.guest_mode);
+        assert!(!cfg.bot_to_bot);
+        assert!(cfg.allowed_bots.is_empty());
+        assert_eq!(cfg.max_bot_chain_depth, 1);
+    }
+
+    #[test]
+    fn telegram_config_explicit_values() {
+        let src = r#"
+token = "test_token"
+guest_mode = true
+bot_to_bot = true
+allowed_bots = ["@bot_a", "@bot_b"]
+max_bot_chain_depth = 5
+"#;
+        let cfg: TelegramConfig = toml::from_str(src).unwrap();
+        assert!(cfg.guest_mode);
+        assert!(cfg.bot_to_bot);
+        assert_eq!(cfg.allowed_bots, vec!["@bot_a", "@bot_b"]);
+        assert_eq!(cfg.max_bot_chain_depth, 5);
+    }
+
+    #[test]
     fn test_default_output_schema_hint_bytes_is_1024() {
         assert_eq!(default_output_schema_hint_bytes(), 1024);
     }
@@ -279,6 +306,10 @@ fn default_stream_interval_ms() -> u64 {
     3000
 }
 
+fn default_max_bot_chain_depth() -> u32 {
+    1
+}
+
 /// Telegram channel configuration, nested under `[telegram]` in TOML.
 ///
 /// When present, Zeph connects to Telegram as a bot using the provided token.
@@ -290,6 +321,10 @@ fn default_stream_interval_ms() -> u64 {
 /// [telegram]
 /// allowed_users = ["myusername"]
 /// stream_interval_ms = 3000
+/// guest_mode = true
+/// bot_to_bot = true
+/// allowed_bots = ["@my_bot"]
+/// max_bot_chain_depth = 1
 /// ```
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TelegramConfig {
@@ -308,6 +343,33 @@ pub struct TelegramConfig {
     /// Bot API enforces a hard limit of ~30 edits/second per chat.
     #[serde(default = "default_stream_interval_ms")]
     pub stream_interval_ms: u64,
+    /// Enable responding to @mentions in any chat (Bot API 10.0 Guest Mode).
+    ///
+    /// When `false` (default), `guest_message` updates are ignored.
+    #[serde(default)]
+    pub guest_mode: bool,
+    /// Enable receiving messages from other bots (Bot API 10.0).
+    ///
+    /// When `false` (default), messages where `from.is_bot = true` are silently dropped.
+    #[serde(default)]
+    pub bot_to_bot: bool,
+    /// Bot usernames allowed to interact when `bot_to_bot = true`.
+    ///
+    /// Empty list (default) allows all bots. Include the `@` prefix (e.g. `"@my_bot"`).
+    #[serde(default)]
+    pub allowed_bots: Vec<String>,
+    /// Maximum reply chain depth before Zeph stops responding to bot messages.
+    ///
+    /// Prevents infinite loops between bots. Checked against both the structural
+    /// `reply_to_message` depth (spec FR-007) and the consecutive-reply counter
+    /// for the same chat. Default: 1.
+    ///
+    /// Note: Telegram API payloads only expose one level of `reply_to_message`
+    /// nesting, so values greater than 1 have no additional effect on structural
+    /// depth alone. The consecutive-reply counter provides secondary loop
+    /// prevention across multiple top-level exchanges.
+    #[serde(default = "default_max_bot_chain_depth")]
+    pub max_bot_chain_depth: u32,
 }
 
 impl std::fmt::Debug for TelegramConfig {
@@ -317,6 +379,10 @@ impl std::fmt::Debug for TelegramConfig {
             .field("allowed_users", &self.allowed_users)
             .field("skills", &self.skills)
             .field("stream_interval_ms", &self.stream_interval_ms)
+            .field("guest_mode", &self.guest_mode)
+            .field("bot_to_bot", &self.bot_to_bot)
+            .field("allowed_bots_count", &self.allowed_bots.len())
+            .field("max_bot_chain_depth", &self.max_bot_chain_depth)
             .finish()
     }
 }

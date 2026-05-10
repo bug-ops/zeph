@@ -1282,6 +1282,8 @@ impl ZephAcpAgentState {
             .send(ChannelMessage {
                 text: text.clone(),
                 attachments,
+                is_guest_context: false,
+                is_from_bot: false,
             })
             .await
             .map_err(|_| acp::Error::internal_error().data("agent channel closed"))?;
@@ -2005,6 +2007,8 @@ impl ZephAcpAgentState {
                     let _ = tx.try_send(ChannelMessage {
                         text: "/clear".to_owned(),
                         attachments: vec![],
+                        is_guest_context: false,
+                        is_from_bot: false,
                     });
                 }
                 "Session history cleared.".to_owned()
@@ -2067,6 +2071,8 @@ impl ZephAcpAgentState {
             .try_send(ChannelMessage {
                 text: review_prompt,
                 attachments: vec![],
+                is_guest_context: false,
+                is_from_bot: false,
             })
             .is_err()
         {

@@ -711,6 +711,11 @@ pub(crate) struct SessionState {
     pub(crate) policy_config: Option<zeph_tools::PolicyConfig>,
     /// `CwdChanged` hook definitions extracted from `[hooks]` config.
     pub(crate) hooks_config: HooksConfigSnapshot,
+    /// Whether the current turn originates from a Telegram guest query (`guest_message` update).
+    ///
+    /// When `true`, the agent prompt includes a brief guest-context annotation, and the response
+    /// is delivered via `answerGuestQuery` instead of `sendMessage`.
+    pub(crate) is_guest_context: bool,
 }
 
 /// Extracted hook lists from `[hooks]` config, stored in `SessionState`.
@@ -1043,6 +1048,7 @@ impl SessionState {
             lsp_hooks: None,
             policy_config: None,
             hooks_config: HooksConfigSnapshot::default(),
+            is_guest_context: false,
         }
     }
 }

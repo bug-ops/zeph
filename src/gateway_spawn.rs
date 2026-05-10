@@ -181,6 +181,8 @@ pub(crate) fn spawn_gateway_server(
             let msg = zeph_core::ChannelMessage {
                 text: payload,
                 attachments: vec![],
+                is_guest_context: false,
+                is_from_bot: false,
             };
             if agent_input_tx.send(msg).await.is_err() {
                 tracing::debug!("gateway: agent input channel closed, stopping webhook forwarder");
@@ -212,6 +214,8 @@ mod tests {
         let msg = ChannelMessage {
             text: "hello from webhook".into(),
             attachments: vec![],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         webhook_tx.try_send(msg).unwrap();
 
@@ -234,6 +238,8 @@ mod tests {
         let msg = ChannelMessage {
             text: "webhook payload".into(),
             attachments: vec![],
+            is_guest_context: false,
+            is_from_bot: false,
         };
         webhook_tx.send(msg).await.unwrap();
 

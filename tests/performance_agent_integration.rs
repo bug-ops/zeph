@@ -67,6 +67,8 @@ impl Channel for MockChannel {
         Ok(self.inputs.pop_front().map(|text| ChannelMessage {
             text,
             attachments: vec![],
+            is_guest_context: false,
+            is_from_bot: false,
         }))
     }
 

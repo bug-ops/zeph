@@ -68,6 +68,7 @@ fn make_session_state() -> SessionState {
         policy_config: None,
         hooks_config: HooksConfigSnapshot::default(),
         last_assistant_at: None,
+        is_guest_context: false,
     }
 }
 

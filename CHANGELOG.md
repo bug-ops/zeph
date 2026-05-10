@@ -28,6 +28,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Unblocks Guest Mode (#3729), Bot-to-Bot communication (#3730), and reaction moderation (#3731).
   Closes #3728.
 
+- feat(channels): add Telegram Guest Mode and Bot-to-Bot communication (`zeph-channels`, `zeph-config`).
+  Guest Mode spawns a transparent local axum HTTP proxy on an ephemeral port that intercepts
+  `getUpdates` responses from `api.telegram.org`, extracts `guest_message` entries (which
+  teloxide-core 0.13 discards as unknown update kinds), and forwards them to the agent — without
+  a second `getUpdates` connection (no 409 Conflict). The `Bot` is redirected to the proxy via
+  `Bot::set_api_url()`. Responds via `answerGuestQuery` in a single call from `flush_chunks`;
+  `send_chunk()` accumulates text only in guest context (NFR-005 compliance). Bot-to-Bot mode
+  registers via `setManagedBotAccessSettings` on startup; `bot_to_bot_active` is set only on
+  success via `Arc<AtomicBool>` (remains false if API call fails). Per-chat consecutive bot reply
+  depth tracked via `BotReplyCounters`; eviction removes one random entry at capacity (not
+  bulk-clear). New config fields: `telegram.guest_mode`, `telegram.bot_to_bot`,
+  `telegram.allowed_bots`, `telegram.max_bot_chain_depth`. Guest context propagated via
+  `ChannelMessage.is_guest_context` → `SessionState.is_guest_context` → volatile system prompt
+  annotation. Fixed missing `is_guest_context`/`is_from_bot` fields in `gateway_spawn.rs` and
+  `daemon.rs`. Closes #3729, #3730.
+
 - feat(memory): add BeliefMem probabilistic edge layer to APEX-MEM (`zeph-memory`). New
   `pending_beliefs` + `belief_evidence` SQLite tables (migration 084) store candidate facts with
   probability weights before commitment. Evidence accumulates via Noisy-OR with optional temporal
