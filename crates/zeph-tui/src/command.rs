@@ -847,11 +847,7 @@ mod tests {
         // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status
         // + 1 forgetting-sweep + 3 acp + 1 sandbox:status (#3294) = 43
         // + 2 cocoon (#3673) when feature = "cocoon"
-        let mut expected = 43;
-        #[cfg(feature = "cocoon")]
-        {
-            expected += 2;
-        }
+        let expected = 43 + if cfg!(feature = "cocoon") { 2 } else { 0 };
         assert_eq!(extra_command_registry().len(), expected);
     }
 
