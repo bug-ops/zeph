@@ -550,4 +550,33 @@ mod tests {
         };
         assert!(!report.has_failures());
     }
+
+    #[cfg(feature = "cocoon")]
+    #[tokio::test]
+    #[ignore = "requires running Cocoon sidecar (COCOON_TEST_URL)"]
+    async fn test_doctor_all_pass() {
+        let Some(url) = std::env::var("COCOON_TEST_URL").ok() else {
+            return;
+        };
+        let client = CocoonClient::new(&url, None, Duration::from_secs(5));
+        let mut results: Vec<CheckResult> = Vec::new();
+
+        let health_opt = check_sidecar_reachable(&client, &url, &mut results).await;
+        check_proxy_connected(health_opt.as_ref(), &mut results);
+        check_workers_available(health_opt.as_ref(), &mut results);
+
+        let mut entry = zeph_config::ProviderEntry::default();
+        entry.model = Some("Qwen/Qwen3-0.6B".into());
+        check_model_listed(&client, &entry, health_opt.as_ref(), &mut results).await;
+
+        for check in &results {
+            assert_ne!(
+                check.status,
+                CheckStatus::Fail,
+                "doctor check '{}' failed: {}",
+                check.name,
+                check.detail
+            );
+        }
+    }
 }

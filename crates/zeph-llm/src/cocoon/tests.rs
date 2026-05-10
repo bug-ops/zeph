@@ -448,3 +448,160 @@ async fn cocoon_malformed_json_response() {
         "expected Json parse error, got: {err:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Live integration tests — require a running Cocoon sidecar
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cocoon")]
+mod integration {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio_stream::StreamExt as _;
+
+    use crate::cocoon::client::CocoonClient;
+    use crate::cocoon::provider::CocoonProvider;
+    use crate::provider::{
+        ChatResponse, LlmProvider, Message, MessageMetadata, Role, ToolDefinition,
+    };
+
+    fn cocoon_test_url() -> Option<String> {
+        std::env::var("COCOON_TEST_URL").ok()
+    }
+
+    fn live_client(url: &str) -> Arc<CocoonClient> {
+        Arc::new(CocoonClient::new(url, None, Duration::from_secs(30)))
+    }
+
+    fn live_provider(url: &str) -> CocoonProvider {
+        CocoonProvider::new("Qwen/Qwen3-0.6B", 4096, None, live_client(url))
+    }
+
+    fn user_msg(text: &str) -> Vec<Message> {
+        vec![Message {
+            role: Role::User,
+            content: text.to_owned(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }]
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running Cocoon sidecar (COCOON_TEST_URL)"]
+    async fn test_health_check() {
+        let Some(url) = cocoon_test_url() else {
+            return;
+        };
+        let client = live_client(&url);
+        let result = client.health_check().await;
+        assert!(result.is_ok(), "health_check failed: {result:?}");
+        assert!(
+            result.unwrap().proxy_connected,
+            "expected proxy_connected == true"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running Cocoon sidecar (COCOON_TEST_URL)"]
+    async fn test_list_models() {
+        let Some(url) = cocoon_test_url() else {
+            return;
+        };
+        let client = live_client(&url);
+        let result = client.list_models().await;
+        assert!(result.is_ok(), "list_models failed: {result:?}");
+        assert!(!result.unwrap().is_empty(), "expected at least one model");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running Cocoon sidecar (COCOON_TEST_URL)"]
+    async fn test_chat_round_trip() {
+        let Some(url) = cocoon_test_url() else {
+            return;
+        };
+        let provider = live_provider(&url);
+        let result = provider.chat(&user_msg("Say hi")).await;
+        assert!(result.is_ok(), "chat failed: {result:?}");
+        assert!(!result.unwrap().is_empty(), "expected non-empty response");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running Cocoon sidecar (COCOON_TEST_URL)"]
+    async fn test_chat_stream() {
+        let Some(url) = cocoon_test_url() else {
+            return;
+        };
+        let provider = live_provider(&url);
+        let stream = provider
+            .chat_stream(&user_msg("Say hi"))
+            .await
+            .expect("chat_stream failed");
+
+        let chunks: Vec<_> = stream.collect::<Vec<_>>().await;
+        let text: String = chunks
+            .into_iter()
+            .filter_map(|c| match c {
+                Ok(crate::provider::StreamChunk::Content(t)) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !text.is_empty(),
+            "expected at least one non-empty content chunk"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running Cocoon sidecar (COCOON_TEST_URL)"]
+    async fn test_chat_with_tools() {
+        let Some(url) = cocoon_test_url() else {
+            return;
+        };
+        let provider = live_provider(&url);
+
+        let tool = ToolDefinition {
+            name: "get_weather".parse().expect("valid tool name"),
+            description: "Get current weather for a location".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "location": { "type": "string", "description": "City name" }
+                },
+                "required": ["location"]
+            }),
+            output_schema: None,
+        };
+
+        let result = provider
+            .chat_with_tools(&user_msg("What is the weather in London?"), &[tool])
+            .await;
+        assert!(result.is_ok(), "chat_with_tools failed: {result:?}");
+
+        match result.unwrap() {
+            ChatResponse::ToolUse { tool_calls, .. } => {
+                eprintln!(
+                    "tool test received: ToolUse with {} call(s)",
+                    tool_calls.len()
+                );
+                assert!(
+                    !tool_calls.is_empty(),
+                    "expected at least one tool call in ToolUse response"
+                );
+                assert_eq!(
+                    tool_calls[0].name.as_str(),
+                    "get_weather",
+                    "expected tool name 'get_weather', got '{}'",
+                    tool_calls[0].name
+                );
+            }
+            ChatResponse::Text(text) => {
+                eprintln!("tool test received: Text (model did not call tool): {text:?}");
+                assert!(
+                    !text.is_empty(),
+                    "expected non-empty text response in fallback path"
+                );
+            }
+        }
+    }
+}

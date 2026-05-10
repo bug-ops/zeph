@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(llm): Cocoon live integration tests — 6 `#[ignore]`-gated tests covering `health_check`,
+  `list_models`, `chat_round_trip`, `chat_stream`, `chat_with_tools`, and `doctor` checks.
+  Tests require `COCOON_TEST_URL` env var and skip gracefully without it; `#[ignore]` attributes
+  include reason strings. Requires `cocoon` feature. (#3675)
+
 - feat(tui): Cocoon TUI integration — `/cocoon status` and `/cocoon models` palette commands
   dispatch through the `CommandRegistry` (same as `/acp`) and display sidecar health and available
   models. Status bar shows `Cocoon: healthy (N models, M workers, X TON)` or
