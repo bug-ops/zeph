@@ -2423,8 +2423,7 @@ mod tests {
         );
         assert!(
             env.get("ZEPH_DENY_REASON")
-                .map(|r| r.contains("quota"))
-                .unwrap_or(false),
+                .is_some_and(|r| r.contains("quota")),
             "ZEPH_DENY_REASON should mention quota"
         );
     }
@@ -2471,8 +2470,7 @@ mod tests {
         );
         assert!(
             env.get("ZEPH_DENY_REASON")
-                .map(|r| r.contains("pre-execution verifier"))
-                .unwrap_or(false),
+                .is_some_and(|r| r.contains("pre-execution verifier")),
             "ZEPH_DENY_REASON should mention pre-execution verifier"
         );
     }
@@ -2489,8 +2487,7 @@ mod tests {
         );
         assert!(
             env.get("ZEPH_DENY_REASON")
-                .map(|r| r.contains("repeated identical call"))
-                .unwrap_or(false),
+                .is_some_and(|r| r.contains("repeated identical call")),
             "ZEPH_DENY_REASON should mention repeated identical call"
         );
     }
