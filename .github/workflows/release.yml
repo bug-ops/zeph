@@ -7,6 +7,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: ""
+  CARGO_INCREMENTAL: "0"
 
 permissions:
   contents: read

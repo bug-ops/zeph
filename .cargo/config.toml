@@ -1,0 +1,8 @@
+[build]
+incremental = true
+rustflags = ["-C", "codegen-units=16"]
+rustc-wrapper = "sccache"
+
+[profile.dev]
+[profile.dev.build-override]
+opt-level = 3

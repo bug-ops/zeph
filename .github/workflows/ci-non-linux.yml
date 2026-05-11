@@ -14,6 +14,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  RUSTC_WRAPPER: ""
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   build-tests:
