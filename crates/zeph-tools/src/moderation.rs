@@ -420,7 +420,7 @@ mod tests {
         let exec = ModerationExecutor::new(backend);
         let call = make_call(
             "telegram_delete_reaction",
-            serde_json::json!({
+            &serde_json::json!({
                 "chat_id": 100,
                 "message_id": 200,
                 "user_id": 300,
@@ -443,7 +443,7 @@ mod tests {
         let exec = ModerationExecutor::new(backend);
         let call = make_call(
             "telegram_delete_all_reactions",
-            serde_json::json!({
+            &serde_json::json!({
                 "chat_id": 100,
                 "message_id": 200,
                 "user_id": 300
@@ -463,7 +463,7 @@ mod tests {
         let exec = ModerationExecutor::new(backend);
         let call = make_call(
             "telegram_delete_reaction",
-            serde_json::json!({
+            &serde_json::json!({
                 "chat_id": 1,
                 "message_id": 2,
                 "user_id": 3,
@@ -483,7 +483,7 @@ mod tests {
         let exec = ModerationExecutor::new(backend);
         let call = make_call(
             "telegram_delete_all_reactions",
-            serde_json::json!({
+            &serde_json::json!({
                 "chat_id": 1,
                 "message_id": 2,
                 "user_id": 3
@@ -505,7 +505,7 @@ mod tests {
         // reaction field missing
         let call = make_call(
             "telegram_delete_reaction",
-            serde_json::json!({
+            &serde_json::json!({
                 "chat_id": 1,
                 "message_id": 2,
                 "user_id": 3
@@ -522,7 +522,7 @@ mod tests {
         // user_id field missing
         let call = make_call(
             "telegram_delete_all_reactions",
-            serde_json::json!({
+            &serde_json::json!({
                 "chat_id": 1,
                 "message_id": 2
             }),
@@ -539,7 +539,7 @@ mod tests {
         let exec = ModerationExecutor::new(backend);
         let call = make_call(
             "telegram_delete_reaction",
-            serde_json::json!({
+            &serde_json::json!({
                 "chat_id": 1, "message_id": 2, "user_id": 3, "reaction": "👍"
             }),
         );
@@ -552,7 +552,7 @@ mod tests {
         let exec = ModerationExecutor::new(backend);
         let call = make_call(
             "telegram_delete_all_reactions",
-            serde_json::json!({
+            &serde_json::json!({
                 "chat_id": 1, "message_id": 2, "user_id": 3
             }),
         );
@@ -597,7 +597,7 @@ mod tests {
         let exec = ModerationExecutor::new(backend);
         let call = make_call(
             "telegram_delete_reaction",
-            serde_json::json!({
+            &serde_json::json!({
                 "chat_id": 1,
                 "message_id": 2,
                 "user_id": 3,
@@ -617,7 +617,7 @@ mod tests {
         let exec = ModerationExecutor::new(backend);
         let call = make_call(
             "telegram_delete_reaction",
-            serde_json::json!({
+            &serde_json::json!({
                 "chat_id": 1,
                 "message_id": 2,
                 "user_id": 3,
