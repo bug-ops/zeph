@@ -1782,11 +1782,10 @@ impl<C: Channel> Agent<C> {
             notifier.fire(&summary);
         }
 
-        // 2) turn_complete hooks — fire-and-forget, matching the Notifier::fire pattern.
-        // MCP dispatch is omitted: turn_complete hooks are expected to be Command-type
-        // (shell scripts for desktop notifications, status-bar updates, etc.). McpTool
-        // hooks in this context would require a Send + 'static MCP handle; defer that
-        // extension if needed via a follow-up.
+        // 2) turn_complete hooks — fire-and-forget via supervisor.
+        // McpManagerDispatch wraps Arc<McpManager> and is 'static, so it can be moved
+        // into the async block satisfying tokio::spawn's bound. The &dyn McpDispatch
+        // borrow is created inside the future from the owned dispatch value.
         let hooks = self.services.session.hooks_config.turn_complete.clone();
         if !hooks.is_empty() && gate_ok {
             let mut env = std::collections::HashMap::new();
@@ -1803,15 +1802,16 @@ impl<C: Channel> Agent<C> {
                 "ZEPH_TURN_LLM_REQUESTS".to_owned(),
                 summary.llm_requests.to_string(),
             );
+            let dispatch = self.mcp_dispatch();
             let _span = tracing::info_span!("core.agent.turn_hooks").entered();
             let _accepted = self.runtime.lifecycle.supervisor.spawn(
                 agent_supervisor::TaskClass::Telemetry,
                 "turn-complete-hooks",
                 async move {
-                    // Explicitly 'static so the future satisfies tokio::spawn's bound.
-                    // None holds no actual reference; the annotation is vacuously satisfied.
-                    let no_mcp: Option<&'static dyn zeph_subagent::McpDispatch> = None;
-                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, no_mcp).await {
+                    let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
+                        .as_ref()
+                        .map(|d| d as &dyn zeph_subagent::McpDispatch);
+                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, mcp).await {
                         tracing::warn!(error = %e, "turn_complete hook failed");
                     }
                 },

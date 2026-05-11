@@ -14,7 +14,9 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, Role};
-use zeph_tools::executor::ErasedToolExecutor;
+use zeph_tools::FileExecutor;
+use zeph_tools::ToolCall;
+use zeph_tools::executor::{ErasedToolExecutor, ToolError, ToolOutput};
 
 use zeph_config::SubAgentConfig;
 
@@ -66,24 +68,116 @@ pub struct SpawnContext {
     pub seed_trajectory_score: Option<f32>,
 }
 
+/// Wraps an executor to allow file operations on the agent's memory directory.
+///
+/// When the inner executor returns `SandboxViolation` for a file tool call, this
+/// wrapper retries with a `FileExecutor` scoped to the memory directory. All path
+/// validation (canonicalization, traversal checks) is delegated to `FileExecutor`
+/// so no unsafe `starts_with` checks are performed on raw strings.
+struct MemoryAwareExecutor {
+    inner: Arc<dyn ErasedToolExecutor>,
+    memory_executor: FileExecutor,
+}
+
+impl MemoryAwareExecutor {
+    fn new(inner: Arc<dyn ErasedToolExecutor>, memory_dir: PathBuf) -> Self {
+        Self {
+            inner,
+            memory_executor: FileExecutor::new(vec![memory_dir]),
+        }
+    }
+}
+
+impl ErasedToolExecutor for MemoryAwareExecutor {
+    fn execute_erased<'a>(
+        &'a self,
+        response: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>,
+    > {
+        self.inner.execute_erased(response)
+    }
+
+    fn execute_confirmed_erased<'a>(
+        &'a self,
+        response: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>,
+    > {
+        self.inner.execute_confirmed_erased(response)
+    }
+
+    fn tool_definitions_erased(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        let mut defs = self.inner.tool_definitions_erased();
+        // Merge memory executor tool definitions, avoiding duplicates by tool ID.
+        let inner_ids: std::collections::HashSet<String> =
+            defs.iter().map(|d| d.id.as_ref().to_owned()).collect();
+        for def in self.memory_executor.tool_definitions_erased() {
+            if !inner_ids.contains(def.id.as_ref()) {
+                defs.push(def);
+            }
+        }
+        defs
+    }
+
+    fn execute_tool_call_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            match self.inner.execute_tool_call_erased(call).await {
+                Err(ToolError::SandboxViolation { .. }) => {
+                    // Retry via the memory-scoped executor; it performs its own
+                    // canonicalized path validation (symlink-safe, traversal-safe).
+                    self.memory_executor.execute_tool_call_erased(call).await
+                }
+                other => other,
+            }
+        })
+    }
+
+    fn is_tool_retryable_erased(&self, tool_id: &str) -> bool {
+        self.inner.is_tool_retryable_erased(tool_id)
+    }
+
+    fn is_tool_speculatable_erased(&self, tool_id: &str) -> bool {
+        self.inner.is_tool_speculatable_erased(tool_id)
+    }
+
+    fn requires_confirmation_erased(&self, call: &ToolCall) -> bool {
+        self.inner.requires_confirmation_erased(call)
+    }
+
+    fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
+        self.inner.set_skill_env(env);
+    }
+
+    fn set_effective_trust(&self, level: zeph_tools::SkillTrustLevel) {
+        self.inner.set_effective_trust(level);
+    }
+}
+
 fn build_filtered_executor(
     tool_executor: Arc<dyn ErasedToolExecutor>,
     permission_mode: PermissionMode,
     def: &SubAgentDef,
+    memory_dir: Option<PathBuf>,
 ) -> FilteredToolExecutor {
+    let base: Arc<dyn ErasedToolExecutor> = match memory_dir {
+        Some(dir) => Arc::new(MemoryAwareExecutor::new(tool_executor, dir)),
+        None => tool_executor,
+    };
     if permission_mode == PermissionMode::Plan {
-        let plan_inner = Arc::new(PlanModeExecutor::new(tool_executor));
+        let plan_inner = Arc::new(PlanModeExecutor::new(base));
         FilteredToolExecutor::with_disallowed(
             plan_inner,
             def.tools.clone(),
             def.disallowed_tools.clone(),
         )
     } else {
-        FilteredToolExecutor::with_disallowed(
-            tool_executor,
-            def.tools.clone(),
-            def.disallowed_tools.clone(),
-        )
+        FilteredToolExecutor::with_disallowed(base, def.tools.clone(), def.disallowed_tools.clone())
     }
 }
 
@@ -681,6 +775,12 @@ impl SubAgentManager {
         // be constructed AFTER this call to pick up the updated tool list.
         let system_prompt = build_system_prompt_with_memory(&mut def, effective_memory);
 
+        // Resolve the memory directory so MemoryAwareExecutor can enforce file access (#3771).
+        // Done after build_system_prompt_with_memory which already called ensure_memory_dir,
+        // so the directory exists at this point (or memory was disabled on error).
+        let memory_dir = effective_memory
+            .and_then(|scope| super::memory::resolve_memory_dir(scope, &def.name).ok());
+
         // Apply context injection: prepend last assistant turn to task prompt when configured.
         let effective_task_prompt = apply_context_injection(
             task_prompt,
@@ -695,7 +795,7 @@ impl SubAgentManager {
         let mcp_tool_names = ctx.mcp_tool_names;
         let parent_messages = ctx.parent_messages;
 
-        let executor = build_filtered_executor(tool_executor, permission_mode, &def);
+        let executor = build_filtered_executor(tool_executor, permission_mode, &def, memory_dir);
 
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
         let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
@@ -1167,7 +1267,9 @@ impl SubAgentManager {
         let agent_hooks = def.hooks.clone();
         let agent_name_clone = def.name.clone();
 
-        let executor = build_filtered_executor(tool_executor, permission_mode, &def);
+        // resume() does not re-resolve memory scope — resumed agents use the system prompt
+        // from the previous session which already contains memory instructions.
+        let executor = build_filtered_executor(tool_executor, permission_mode, &def, None);
 
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
         let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
@@ -3662,5 +3764,177 @@ mod tests {
             result.is_ok(),
             "loop should succeed with no MCP tools: {result:?}"
         );
+    }
+
+    // ── MemoryAwareExecutor tests (#3771) ─────────────────────────────────────
+
+    /// A stub executor that always returns SandboxViolation for any tool call.
+    struct SandboxExecutor;
+
+    impl ErasedToolExecutor for SandboxExecutor {
+        fn execute_erased<'a>(
+            &'a self,
+            _response: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Err(ToolError::SandboxViolation {
+                path: "/blocked".to_owned(),
+            })))
+        }
+
+        fn execute_confirmed_erased<'a>(
+            &'a self,
+            _response: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Err(ToolError::SandboxViolation {
+                path: "/blocked".to_owned(),
+            })))
+        }
+
+        fn tool_definitions_erased(&self) -> Vec<zeph_tools::registry::ToolDef> {
+            vec![]
+        }
+
+        fn execute_tool_call_erased<'a>(
+            &'a self,
+            _call: &'a ToolCall,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Err(ToolError::SandboxViolation {
+                path: "/blocked".to_owned(),
+            })))
+        }
+
+        fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+            false
+        }
+    }
+
+    fn make_write_call(path: &str, content: &str) -> ToolCall {
+        use zeph_common::ToolName;
+        let mut params = serde_json::Map::new();
+        params.insert("path".into(), serde_json::json!(path));
+        params.insert("content".into(), serde_json::json!(content));
+        ToolCall {
+            tool_id: ToolName::new("write"),
+            params,
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn memory_aware_executor_allows_write_to_memory_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("agent-memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+
+        let memory_file = memory_dir.join("MEMORY.md");
+        let executor = MemoryAwareExecutor::new(Arc::new(SandboxExecutor), memory_dir.clone());
+
+        let call = make_write_call(memory_file.to_str().unwrap(), "# Memory\ntest content");
+        let result = executor.execute_tool_call_erased(&call).await;
+        assert!(
+            result.is_ok(),
+            "write to memory dir should succeed, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn memory_aware_executor_blocks_write_outside_memory_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("agent-memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+
+        let outside_file = tmp.path().join("outside.txt");
+        let executor = MemoryAwareExecutor::new(Arc::new(SandboxExecutor), memory_dir);
+
+        let call = make_write_call(outside_file.to_str().unwrap(), "should be blocked");
+        let result = executor.execute_tool_call_erased(&call).await;
+        assert!(
+            matches!(result, Err(ToolError::SandboxViolation { .. })),
+            "write outside memory dir should be blocked, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn memory_aware_executor_blocks_path_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("agent-memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+
+        // Path traversal via `..` segments — FileExecutor canonicalizes and rejects.
+        let traversal_path = memory_dir.join("..").join("..").join("etc").join("passwd");
+        let executor = MemoryAwareExecutor::new(Arc::new(SandboxExecutor), memory_dir);
+
+        let call = make_write_call(traversal_path.to_str().unwrap(), "should never be written");
+        let result = executor.execute_tool_call_erased(&call).await;
+        assert!(
+            matches!(result, Err(ToolError::SandboxViolation { .. })),
+            "path traversal should be blocked, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn spawn_with_user_memory_scope_sets_memory_aware_executor() {
+        // Verify that spawn() with memory: user creates a directory in home and
+        // does not crash (build_filtered_executor wraps with MemoryAwareExecutor).
+        let mut mgr = make_manager();
+
+        let def = SubAgentDef::parse(indoc! {"
+            ---
+            name: user-mem-agent
+            description: Agent with user-scoped memory
+            memory: user
+            ---
+
+            System prompt.
+        "})
+        .unwrap();
+
+        mgr.definitions.push(def);
+
+        // spawn() returns Ok even when the agent is immediately cancellable.
+        let task_id = mgr
+            .spawn(
+                "user-mem-agent",
+                "do something",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+                SpawnContext::default(),
+            )
+            .unwrap();
+
+        assert!(!task_id.is_empty());
+        mgr.cancel(&task_id).unwrap();
+
+        // Verify memory directory was created under home.
+        if let Some(home) = dirs::home_dir() {
+            let mem_dir = home
+                .join(".zeph")
+                .join("agent-memory")
+                .join("user-mem-agent");
+            assert!(
+                mem_dir.exists(),
+                "user-scoped memory directory should be created at spawn"
+            );
+        }
     }
 }

@@ -441,6 +441,52 @@ mod tests {
         assert!(matches!(result, Err(HookError::McpUnavailable { .. })));
     }
 
+    // ── MCP dispatch tests (#3773) ────────────────────────────────────────────
+
+    /// Stub MCP dispatch that records how many times it was called.
+    struct CountingDispatch(std::sync::Arc<std::sync::atomic::AtomicU32>);
+
+    impl McpDispatch for CountingDispatch {
+        fn call_tool<'a>(
+            &'a self,
+            _server: &'a str,
+            _tool: &'a str,
+            _args: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>,
+        > {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(std::future::ready(Ok(serde_json::Value::Null)))
+        }
+    }
+
+    #[tokio::test]
+    async fn fire_hooks_mcp_dispatch_called_when_provided() {
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let dispatch = CountingDispatch(std::sync::Arc::clone(&call_count));
+
+        let hooks = vec![HookDef {
+            action: HookAction::McpTool {
+                server: "srv".into(),
+                tool: "t".into(),
+                args: serde_json::Value::Null,
+            },
+            timeout_secs: 5,
+            fail_closed: true,
+        }];
+        let env = HashMap::new();
+        let result = fire_hooks(&hooks, &env, Some(&dispatch)).await;
+        assert!(
+            result.is_ok(),
+            "fire_hooks should succeed with mcp dispatch"
+        );
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "MCP dispatch should have been called exactly once"
+        );
+    }
+
     // ── YAML parsing ──────────────────────────────────────────────────────────
 
     #[test]

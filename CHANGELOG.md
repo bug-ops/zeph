@@ -27,6 +27,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(core): pass live MCP dispatch to `on_turn_complete` hook dispatcher. The hook path
+  previously hardcoded `no_mcp = None`, causing every `mcp_tool` hook configured under
+  `on_turn_complete` to fail with `HookError::McpUnavailable`. Now calls `self.mcp_dispatch()`
+  before spawning the async task and moves the `McpManagerDispatch(Arc<McpManager>)` value into
+  the closure — matching the existing pattern in `check_cwd_changed` and `handle_file_changed`.
+  Closes #3773.
+- fix(subagent): allow sandbox writes to `~/.zeph/agent-memory/<name>/` when agent declares
+  `memory: user`. Sub-agents with `MemoryScope::User` previously received a sandbox `path not
+  allowed` error when writing memory files outside the project root. A new `MemoryAwareExecutor`
+  wraps the inner executor and, on `SandboxViolation`, retries through a `FileExecutor` scoped to
+  the resolved memory directory. Agent names are validated against `AGENT_NAME_RE` and paths are
+  canonicalized by `FileExecutor` before any write is permitted, preventing path traversal.
+  Closes #3771.
 - fix(core): prevent orphaned ToolUse/ToolResult pairs in subagent parent context window. When
   `extract_parent_messages` sliced the last N turns, pairs split across the slice boundary caused
   `split_messages_structured` to silently downgrade ToolResult blocks to flat text. The new
