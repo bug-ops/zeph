@@ -1832,10 +1832,19 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             use zeph_tools::executor::ToolExecutor as _;
             use zeph_tools::scope::build_scoped_executor;
             // Collect registered tool ids for glob pattern resolution.
+            // Built-in tools register unqualified ids ("bash", "read", etc.); qualify them
+            // with the "builtin:" namespace so scope patterns like `builtin:*` resolve correctly.
             let registry_ids: HashSet<String> = tool_executor
                 .tool_definitions()
                 .into_iter()
-                .map(|d| d.id.to_string())
+                .map(|d| {
+                    let id = d.id.to_string();
+                    if id.contains(':') {
+                        id
+                    } else {
+                        format!("builtin:{id}")
+                    }
+                })
                 .collect();
             match build_scoped_executor(tool_executor, &scopes_cfg, &registry_ids) {
                 Ok(scoped) => {

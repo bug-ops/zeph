@@ -31,8 +31,11 @@
 //! | MCP tools | `mcp:<server_id>/` |
 //! | ACP / A2A proxied tools | `acp:<peer>/` / `a2a:<peer>/` |
 //!
-//! An un-namespaced tool id returned by an executor at registration is a
-//! `ScopeError::UnqualifiedId`.
+//! Built-in executors register tools with unqualified ids (`"bash"`, `"read"`, etc.).
+//! At the scope boundary these are automatically normalised to `builtin:<id>` so that
+//! patterns like `builtin:*` or `builtin:bash` resolve correctly.  The caller of
+//! `build_scoped_executor` (see `runner.rs`) is responsible for pre-qualifying registry
+//! ids before passing them in.
 //!
 //! # Pattern strictness
 //!
@@ -449,7 +452,14 @@ impl<E: ToolExecutor> ToolExecutor for ScopedToolExecutor<E> {
             .into_iter()
             .filter(|d| {
                 let id = d.id.as_ref();
-                scope.admits(id)
+                let scope_id: String;
+                let qualified = if id.contains(':') {
+                    id
+                } else {
+                    scope_id = format!("builtin:{id}");
+                    scope_id.as_str()
+                };
+                scope.admits(qualified)
             })
             .collect()
     }
@@ -461,16 +471,18 @@ impl<E: ToolExecutor> ToolExecutor for ScopedToolExecutor<E> {
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         let scope = self.scope.load();
         let tool_id = call.tool_id.as_str();
+        // Built-in tools dispatch with unqualified ids ("bash", "read", etc.).
+        // Synthesize the "builtin:" prefix at the scope boundary so the admitted set
+        // (which contains "builtin:bash" etc.) resolves correctly.
+        let qualified_id: String;
+        let scope_id = if tool_id.contains(':') {
+            tool_id
+        } else {
+            qualified_id = format!("builtin:{tool_id}");
+            qualified_id.as_str()
+        };
 
-        // Reject un-namespaced tool ids (NEVER clause from spec 050).
-        if !tool_id.contains(':') {
-            return Err(ToolError::OutOfScope {
-                tool_id: tool_id.to_owned(),
-                task_type: scope.task_type.clone(),
-            });
-        }
-
-        if !scope.admits(tool_id) {
+        if !scope.admits(scope_id) {
             let scope_name = scope.task_type.clone();
             let scope_def = self.scope_at_definition.lock().clone();
             tracing::debug!(
@@ -529,7 +541,14 @@ impl<E: ToolExecutor> ToolExecutor for ScopedToolExecutor<E> {
     ) -> Result<Option<ToolOutput>, ToolError> {
         let scope = self.scope.load();
         let tool_id = call.tool_id.as_str();
-        if !tool_id.contains(':') || !scope.admits(tool_id) {
+        let qualified_id: String;
+        let scope_id = if tool_id.contains(':') {
+            tool_id
+        } else {
+            qualified_id = format!("builtin:{tool_id}");
+            qualified_id.as_str()
+        };
+        if !scope.admits(scope_id) {
             let scope_name = scope.task_type.clone();
             let scope_def = self.scope_at_definition.lock().clone();
             if let Some(ref q) = self.signal_queue {
@@ -623,13 +642,6 @@ pub fn build_scoped_executor<E: ToolExecutor, S: std::hash::BuildHasher>(
     cfg: &CapabilityScopesConfig,
     registry_ids: &HashSet<String, S>,
 ) -> Result<ScopedToolExecutor<E>, ScopeError> {
-    // Verify no un-namespaced ids in registry.
-    for id in registry_ids {
-        if !id.contains(':') {
-            return Err(ScopeError::UnqualifiedId { id: id.clone() });
-        }
-    }
-
     let default_scope_name = &cfg.default_scope;
     let strictness = cfg.pattern_strictness;
 
@@ -880,30 +892,113 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unnamespaced_tool_id_rejected() {
-        let scope = ToolScope::full();
+    async fn unnamespaced_tool_id_admitted_via_builtin_prefix() {
+        // Built-in tools dispatch with unqualified ids (e.g. "bash").
+        // ScopedToolExecutor must normalize "bash" → "builtin:bash" before the admits check.
+        let registry = make_registry(&["builtin:bash", "builtin:read"]);
+        let (scope, _) = ToolScope::try_compile(
+            "narrow",
+            &["builtin:bash".to_owned()],
+            &registry,
+            PatternStrictness::Strict,
+            false,
+        )
+        .unwrap();
         let inner = NullExecutor {
-            defs: vec![null_def("builtin:shell")],
+            defs: vec![null_def("bash"), null_def("read")],
         };
         let executor = ScopedToolExecutor::new(inner, scope);
-        let call = make_call("shell"); // no namespace
+        // "bash" (unqualified) must be admitted because admitted set contains "builtin:bash".
+        let call = make_call("bash");
         let result = executor.execute_tool_call(&call).await;
         assert!(
-            matches!(result, Err(ToolError::OutOfScope { .. })),
-            "un-namespaced id must be rejected"
+            result.is_ok(),
+            "builtin tool with unqualified id must be admitted"
+        );
+        // "read" is not in the narrow scope, so it must be rejected.
+        let call_read = make_call("read");
+        let result_read = executor.execute_tool_call(&call_read).await;
+        assert!(
+            matches!(result_read, Err(ToolError::OutOfScope { .. })),
+            "out-of-scope built-in tool must be rejected"
         );
     }
 
     #[test]
-    fn build_scoped_executor_rejects_unqualified_registry_id() {
+    fn build_scoped_executor_accepts_unqualified_registry_id() {
+        // registry_ids in runner.rs are pre-qualified; build_scoped_executor must not
+        // reject unqualified ids itself (caller responsibility).
         let cfg = CapabilityScopesConfig::default();
-        let registry = make_registry(&["shell"]); // no namespace
+        let registry = make_registry(&["shell"]); // no namespace — still accepted
         let inner = NullExecutor { defs: vec![] };
         let result = build_scoped_executor(inner, &cfg, &registry);
         assert!(
-            matches!(result, Err(ScopeError::UnqualifiedId { .. })),
-            "unqualified registry id must be rejected"
+            result.is_ok(),
+            "build_scoped_executor must accept unqualified registry ids"
         );
+    }
+
+    #[test]
+    fn build_scoped_executor_with_builtin_prefix_and_glob() {
+        let mut cfg = CapabilityScopesConfig::default();
+        cfg.scopes.insert(
+            "general".to_owned(),
+            ScopeConfig {
+                patterns: vec!["builtin:*".to_owned()],
+            },
+        );
+        cfg.default_scope = "general".to_owned();
+        let registry = make_registry(&["builtin:bash", "builtin:read", "builtin:fetch"]);
+        let inner = NullExecutor { defs: vec![] };
+        let result = build_scoped_executor(inner, &cfg, &registry);
+        assert!(
+            result.is_ok(),
+            "builtin:* glob must match all builtin tools"
+        );
+    }
+
+    #[tokio::test]
+    async fn unqualified_tool_out_of_scope_rejected() {
+        let registry = make_registry(&["builtin:bash", "builtin:read"]);
+        let (scope, _) = ToolScope::try_compile(
+            "narrow",
+            &["builtin:read".to_owned()],
+            &registry,
+            PatternStrictness::Strict,
+            false,
+        )
+        .unwrap();
+        let inner = NullExecutor {
+            defs: vec![null_def("bash"), null_def("read")],
+        };
+        let executor = ScopedToolExecutor::new(inner, scope);
+        let call = make_call("bash"); // unqualified; not in narrow scope
+        let result = executor.execute_tool_call(&call).await;
+        assert!(
+            matches!(result, Err(ToolError::OutOfScope { .. })),
+            "unqualified id not in scope must be rejected after normalization"
+        );
+    }
+
+    #[test]
+    fn tool_definitions_filtered_by_scope_with_unqualified_ids() {
+        // Built-in tool defs have unqualified ids; filtering must still work via builtin: prefix.
+        let registry = make_registry(&["builtin:bash", "builtin:read"]);
+        let (scope, _) = ToolScope::try_compile(
+            "narrow",
+            &["builtin:read".to_owned()],
+            &registry,
+            PatternStrictness::Strict,
+            false,
+        )
+        .unwrap();
+        let inner = NullExecutor {
+            defs: vec![null_def("bash"), null_def("read")],
+        };
+        let executor = ScopedToolExecutor::new(inner, scope);
+        let defs = executor.tool_definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].id.as_ref(), "read");
     }
 
     #[test]
