@@ -15,7 +15,14 @@
 //! [`TelegramChannel`]: crate::telegram::TelegramChannel
 //! [`TelegramChannel::api_ext`]: crate::telegram::TelegramChannel::api_ext
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
+
+/// Per-request timeout applied to every `reqwest::Client` created by
+/// [`TelegramApiClient`]. Matches the project's general policy for external
+/// HTTP calls that are not long-polling or streaming.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Response payload from the `answerGuestQuery` Bot API method.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -180,14 +187,17 @@ impl TelegramApiClient {
     /// The base URL is set to `https://api.telegram.org/bot<TOKEN>` so that each
     /// `post()` call appends only the method name (e.g., `/answerGuestQuery`).
     ///
-    /// Creates an independent `reqwest::Client` with its own connection pool.
-    /// To share a connection pool with an existing client, use
-    /// [`TelegramApiClient::with_client`].
+    /// Creates an independent `reqwest::Client` with its own connection pool and
+    /// a [`REQUEST_TIMEOUT`] per-request timeout. To share a connection pool with
+    /// an existing client, use [`TelegramApiClient::with_client`].
     #[must_use]
     pub fn new(token: impl Into<String>) -> Self {
         let token = token.into();
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .expect("reqwest TLS backend unavailable"),
             base_url: format!("https://api.telegram.org/bot{token}"),
         }
     }
@@ -261,7 +271,10 @@ impl TelegramApiClient {
     #[must_use]
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .expect("reqwest TLS backend unavailable"),
             base_url: base_url.into(),
         }
     }
@@ -975,6 +988,40 @@ mod tests {
         let me = client.get_me().await.unwrap();
         assert_eq!(me.id, 123_456);
         assert!(me.is_bot);
+    }
+
+    // ── Timeout enforcement ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn request_times_out_when_server_is_slow() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(".*/getMe$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(300))
+                    .set_body_json(ok_body(&serde_json::json!({
+                        "id": 1, "is_bot": true, "first_name": "Bot"
+                    }))),
+            )
+            .mount(&server)
+            .await;
+
+        // Use with_client() to inject a short timeout so the test stays fast.
+        let short_timeout_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .unwrap();
+        let client = TelegramApiClient::with_client(short_timeout_client, "TOKEN");
+        // Override base_url to point at the mock server.
+        let mut client = client;
+        client.base_url = server.uri();
+
+        let err = client.get_me().await.unwrap_err();
+        assert!(
+            matches!(err, TelegramApiError::Http(_)),
+            "expected Http (timeout) error, got {err:?}"
+        );
     }
 
     // ── HTTP status error surfacing ───────────────────────────────────────────

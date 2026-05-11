@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(channels): apply 30-second per-request timeout to `TelegramApiClient::new()` and
+  `TelegramApiClient::with_base_url()` to prevent indefinite stalls when `api.telegram.org`
+  is unreachable (issue #3777). The constant `REQUEST_TIMEOUT` is defined in
+  `telegram_api_ext.rs` and matches the project's general policy for external HTTP calls.
+
 ### Added
 
 - feat(channels,tools): add `telegram_delete_reaction` and `telegram_delete_all_reactions` tool
