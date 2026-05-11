@@ -13,7 +13,7 @@
 //!
 //! # Wiring
 //!
-//! In `src/agent_setup.rs`, build a [`TelegramModerationBackend`] (from
+//! In `src/agent_setup.rs`, build a `TelegramModerationBackend` (from
 //! `zeph-channels`) and wrap it with [`ModerationExecutor`]:
 //!
 //! ```ignore
