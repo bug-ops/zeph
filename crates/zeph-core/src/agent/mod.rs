@@ -2572,7 +2572,8 @@ impl<C: Channel> Agent<C> {
     /// Extract recent parent messages for history propagation (Section 5.7 in spec).
     ///
     /// Filters system messages, takes last `context_window_turns * 2` messages,
-    /// and applies a 25% context window cap using a 4-chars-per-token heuristic.
+    /// applies a 25% context window cap using a 4-chars-per-token heuristic, and
+    /// prunes orphaned `ToolUse`/`ToolResult` pairs at the slice boundary.
     fn extract_parent_messages(
         &self,
         config: &zeph_config::SubAgentConfig,
@@ -2592,26 +2593,16 @@ impl<C: Channel> Agent<C> {
         let start = non_system.len().saturating_sub(take_count);
         let mut msgs = non_system[start..].to_vec();
 
-        // Cap at 25% of model context window (rough 4-chars-per-token heuristic).
-        let max_chars = 128_000usize / 4; // conservative default; 25% of 128K tokens
-        let mut total_chars: usize = 0;
-        let mut keep = msgs.len();
-        for (i, m) in msgs.iter().enumerate() {
-            total_chars += m.content.len();
-            if total_chars > max_chars {
-                keep = i;
-                break;
-            }
-        }
-        if keep < msgs.len() {
+        // Cap at 25% of model context window and prune orphaned tool pairs.
+        let max_chars = 128_000usize / 4;
+        let requested = msgs.len();
+        trim_parent_messages(&mut msgs, max_chars);
+        if msgs.len() < requested {
             tracing::info!(
-                kept = keep,
-                requested = config.context_window_turns * 2,
-                "[subagent] truncated parent history from {} to {} turns due to token budget",
-                config.context_window_turns * 2,
-                keep
+                kept = msgs.len(),
+                requested,
+                "[subagent] truncated parent history due to token budget or orphan pruning"
             );
-            msgs.truncate(keep);
         }
         msgs
     }
@@ -3466,6 +3457,185 @@ impl<C: Channel> Agent<C> {
         }
     }
 }
+/// Estimates the JSON payload size of a single [`zeph_llm::provider::Message`] for token-budget
+/// accounting.
+///
+/// When `parts` is empty the message is a legacy text-only message and `content.len()` is used
+/// directly. Otherwise each part is measured individually so that structured variants (images,
+/// tool invocations, thinking blocks) are accounted for rather than relying on the already-flat
+/// `content` string, which may not reflect the actual API payload size.
+pub(crate) fn estimate_parts_size(m: &zeph_llm::provider::Message) -> usize {
+    use zeph_llm::provider::MessagePart;
+    if m.parts.is_empty() {
+        return m.content.len();
+    }
+    m.parts
+        .iter()
+        .map(|p| match p {
+            MessagePart::Text { text }
+            | MessagePart::Recall { text }
+            | MessagePart::CodeContext { text }
+            | MessagePart::Summary { text }
+            | MessagePart::CrossSession { text } => text.len(),
+            MessagePart::ToolOutput { body, .. } => body.len(),
+            MessagePart::ToolUse { id, name, input } => {
+                50 + id.len() + name.len() + input.to_string().len()
+            }
+            MessagePart::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => 50 + tool_use_id.len() + content.len(),
+            MessagePart::Image(img) => img.data.len() * 4 / 3,
+            MessagePart::ThinkingBlock {
+                thinking,
+                signature,
+            } => 50 + thinking.len() + signature.len(),
+            MessagePart::RedactedThinkingBlock { data } => data.len(),
+            MessagePart::Compaction { summary } => summary.len(),
+        })
+        .sum()
+}
+
+/// Applies token-budget truncation and orphaned-tool-pair pruning to a parent message slice.
+///
+/// Budget truncation keeps the **most recent** messages that fit within `max_chars`
+/// (a suffix), so the subagent always receives the freshest context.
+///
+/// Two passes are performed after budget truncation:
+///
+/// 1. Remove `ToolResult` parts from user messages whose matching `ToolUse` is no longer in the
+///    slice (truncated away).
+/// 2. Remove `ToolUse` parts from **interior** assistant messages whose matching `ToolResult`
+///    was removed in pass 1 or was already absent. The trailing assistant message is exempt —
+///    its unanswered `ToolUse` calls are not orphaned; the slice just ends before the result.
+///
+/// Messages that become fully empty after pruning are removed from `msgs`.
+///
+/// `rebuild_content` is called **only** when `retain` actually removed parts — preserving the
+/// existing `content` field (and any `ThinkingBlock` text embedded there) for unmodified
+/// messages.
+pub(crate) fn trim_parent_messages(msgs: &mut Vec<zeph_llm::provider::Message>, max_chars: usize) {
+    use zeph_llm::provider::{MessagePart, Role};
+
+    // Token-budget cap: keep the most recent messages that fit within max_chars.
+    // We iterate from the end (newest) and drain from the front once the budget is exceeded,
+    // so the subagent always receives the most recent context rather than stale early messages.
+    let mut total_chars = 0usize;
+    let mut drop_before = 0usize; // index of the first message to keep
+    for (i, m) in msgs.iter().enumerate().rev() {
+        total_chars += estimate_parts_size(m);
+        if total_chars > max_chars {
+            drop_before = i + 1;
+            break;
+        }
+    }
+    if drop_before > 0 {
+        msgs.drain(..drop_before);
+    }
+
+    // Pass 1: collect ToolUse IDs emitted by assistant messages; prune orphaned ToolResult
+    // parts from user messages that reference a ToolUse no longer present in the slice.
+    // Use owned Strings to avoid holding immutable borrows across the subsequent mutable loop.
+    let emitted_tool_ids: std::collections::HashSet<String> = msgs
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .flat_map(|m| m.parts.iter())
+        .filter_map(|p| {
+            if let MessagePart::ToolUse { id, .. } = p {
+                Some(id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut orphans_removed = 0usize;
+    for m in msgs.iter_mut() {
+        if m.role != Role::User || m.parts.is_empty() {
+            continue;
+        }
+        let before = m.parts.len();
+        m.parts.retain(|p| match p {
+            MessagePart::ToolResult { tool_use_id, .. } => {
+                emitted_tool_ids.contains(tool_use_id.as_str())
+            }
+            _ => true,
+        });
+        let dropped = before - m.parts.len();
+        if dropped > 0 {
+            orphans_removed += dropped;
+            if m.parts.is_empty() {
+                m.content.clear();
+            } else {
+                m.rebuild_content();
+            }
+        }
+    }
+
+    // Pass 2: collect ToolResult IDs present in user messages after pass 1; prune ToolUse
+    // parts from assistant messages whose result is confirmed absent.
+    //
+    // The trailing assistant message is exempt: it may legitimately contain unanswered
+    // ToolUse calls (the slice ends before the result arrives). Only interior assistant
+    // messages — those followed by at least one user message — can have provably orphaned
+    // ToolUse parts (the conversation moved on without answering them).
+    let consumed_tool_ids: std::collections::HashSet<String> = msgs
+        .iter()
+        .filter(|m| m.role == Role::User)
+        .flat_map(|m| m.parts.iter())
+        .filter_map(|p| {
+            if let MessagePart::ToolResult { tool_use_id, .. } = p {
+                Some(tool_use_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Index of the last assistant message — exempt from pass 2.
+    let last_assistant_idx = msgs
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, m)| m.role == Role::Assistant)
+        .map(|(i, _)| i);
+
+    for (idx, m) in msgs.iter_mut().enumerate() {
+        if m.role != Role::Assistant || m.parts.is_empty() {
+            continue;
+        }
+        // Skip the trailing assistant message — its unanswered ToolUse calls are not orphaned.
+        if Some(idx) == last_assistant_idx {
+            continue;
+        }
+        let before = m.parts.len();
+        m.parts.retain(|p| match p {
+            MessagePart::ToolUse { id, .. } => consumed_tool_ids.contains(id.as_str()),
+            _ => true,
+        });
+        let dropped = before - m.parts.len();
+        if dropped > 0 {
+            orphans_removed += dropped;
+            if m.parts.is_empty() {
+                m.content.clear();
+            } else {
+                m.rebuild_content();
+            }
+        }
+    }
+
+    // Remove messages that were emptied by orphan pruning.
+    msgs.retain(|m| !m.content.is_empty() || !m.parts.is_empty());
+
+    if orphans_removed > 0 {
+        tracing::debug!(
+            orphans = orphans_removed,
+            "[subagent] pruned orphaned ToolUse/ToolResult parts from parent context boundary"
+        );
+    }
+}
+
 /// Thin wrapper that implements [`zeph_subagent::McpDispatch`] over an [`Arc<zeph_mcp::McpManager>`].
 ///
 /// Used to pass MCP tool dispatch capability into `fire_hooks` without coupling

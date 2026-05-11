@@ -19,3 +19,5 @@ mod secret_reason_truncation;
 mod shutdown_summary_tests;
 #[cfg(test)]
 mod small_misc_tests;
+#[cfg(test)]
+mod trim_parent_messages_tests;
