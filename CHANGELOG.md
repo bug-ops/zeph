@@ -61,6 +61,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   per-part sizes accounting for ToolUse input JSON, ToolResult content, and image base64 overhead.
   Budget truncation now iterates from newest to oldest, keeping the most-recent messages that fit.
   Closes #3761.
+- fix(hooks): `permission_denied` hooks now fire for all gate and rate-limiter denials
+  (quota, pre-execution verifier, repeat-detection, utility gate, runtime layer denials).
+  Previously the hook was only reached via `RuntimeLayer.before_tool()` returning a denial;
+  `check_call_gates` denials bypassed `run_before_tool_hooks` entirely via `continue`.
+  New `fire_permission_denied_hooks` helper ensures hooks fire at every denial path with
+  `ZEPH_DENIED_TOOL` and `ZEPH_DENY_REASON` populated. Closes #3774.
 
 ## [0.21.0] - 2026-05-11
 

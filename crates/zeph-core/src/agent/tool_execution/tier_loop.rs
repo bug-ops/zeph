@@ -1255,23 +1255,8 @@ impl<C: Channel> Agent<C> {
             }
         }
         let r = sc_result?;
-        // Fire PermissionDenied hooks (fail_open: hook errors are logged, not fatal).
-        let pd_hooks = self.services.session.hooks_config.permission_denied.clone();
-        if !pd_hooks.is_empty() {
-            let _span =
-                tracing::info_span!("core.hooks.permission_denied", tool = %tc.name).entered();
-            let mut env = std::collections::HashMap::new();
-            env.insert("ZEPH_DENIED_TOOL".to_owned(), tc.name.to_string());
-            env.insert("ZEPH_DENY_REASON".to_owned(), r.reason.clone());
-            let dispatch = self.mcp_dispatch();
-            let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
-                .as_ref()
-                .map(|d| d as &dyn zeph_subagent::McpDispatch);
-            // TODO: implement retry-on-{"retry":true} stdout signal (#3292)
-            if let Err(e) = zeph_subagent::hooks::fire_hooks(&pd_hooks, &env, mcp).await {
-                tracing::warn!(error = %e, tool = %tc.name, "PermissionDenied hook failed");
-            }
-        }
+        // TODO: implement retry-on-{"retry":true} stdout signal (#3292)
+        self.fire_permission_denied_hooks(tc, &r.reason).await;
         Some((idx, Box::pin(std::future::ready(r.result))))
     }
 
@@ -1286,14 +1271,18 @@ impl<C: Channel> Agent<C> {
         utility_actions: &[zeph_tools::UtilityAction],
         repeat_blocked: &[bool],
         pending_system_hints: &mut Vec<String>,
-    ) -> Result<Option<(usize, ToolExecFut)>, crate::agent::error::AgentError> {
+    ) -> Result<Option<((usize, ToolExecFut), String)>, crate::agent::error::AgentError> {
         if has_failed_dep {
-            return Ok(Some(ready_fut(
-                idx,
-                skipped_output(
-                    tc.name.clone(),
-                    "[error] Skipped: a prerequisite tool failed or requires confirmation",
+            let reason = "prerequisite tool failed or requires confirmation".to_owned();
+            return Ok(Some((
+                ready_fut(
+                    idx,
+                    skipped_output(
+                        tc.name.clone(),
+                        "[error] Skipped: a prerequisite tool failed or requires confirmation",
+                    ),
                 ),
+                reason,
             )));
         }
         if quota_blocked {
@@ -1301,50 +1290,95 @@ impl<C: Channel> Agent<C> {
                 .tool_orchestrator
                 .max_tool_calls_per_session
                 .unwrap_or(0);
-            return Ok(Some(ready_fut(
-                idx,
-                skipped_output(
-                    tc.name.clone(),
-                    format!(
-                        "[error] Tool call quota exceeded (session limit: {max} calls). \
-                         No further tool calls are allowed this session."
+            let reason = format!("session tool call quota exceeded (limit: {max} calls)");
+            return Ok(Some((
+                ready_fut(
+                    idx,
+                    skipped_output(
+                        tc.name.clone(),
+                        format!(
+                            "[error] Tool call quota exceeded (session limit: {max} calls). \
+                             No further tool calls are allowed this session."
+                        ),
                     ),
                 ),
+                reason,
             )));
         }
         if pre_exec_blocked[idx] {
-            return Ok(Some(ready_fut(
-                idx,
-                skipped_output(
-                    tc.name.clone(),
-                    format!(
-                        "[error] Tool call to {} was blocked by pre-execution verifier. \
-                         The requested operation is not permitted.",
-                        tc.name
+            let reason = format!(
+                "blocked by pre-execution verifier: {} is not permitted",
+                tc.name
+            );
+            return Ok(Some((
+                ready_fut(
+                    idx,
+                    skipped_output(
+                        tc.name.clone(),
+                        format!(
+                            "[error] Tool call to {} was blocked by pre-execution verifier. \
+                             The requested operation is not permitted.",
+                            tc.name
+                        ),
                     ),
                 ),
+                reason,
             )));
         }
         if let Some(fut) = self
             .handle_utility_gate(idx, tc, utility_actions, pending_system_hints)
             .await?
         {
-            return Ok(Some(fut));
+            let reason = format!(
+                "utility gate ({:?}) intercepted {}",
+                utility_actions[idx], tc.name
+            );
+            return Ok(Some((fut, reason)));
         }
         if repeat_blocked[idx] {
-            return Ok(Some(ready_fut(
-                idx,
-                skipped_output(
-                    tc.name.clone(),
-                    format!(
-                        "[error] Repeated identical call to {} detected. \
-                         Use different arguments or a different approach.",
-                        tc.name
+            let reason = format!("repeated identical call to {} detected", tc.name);
+            return Ok(Some((
+                ready_fut(
+                    idx,
+                    skipped_output(
+                        tc.name.clone(),
+                        format!(
+                            "[error] Repeated identical call to {} detected. \
+                             Use different arguments or a different approach.",
+                            tc.name
+                        ),
                     ),
                 ),
+                reason,
             )));
         }
         Ok(None)
+    }
+
+    /// Fires `permission_denied` hooks (fail-open). Called at every gate/rate-limiter denial.
+    ///
+    /// Hooks run sequentially; slow or hanging hooks will stall tool dispatch for each denied
+    /// call. Hook authors should ensure hooks complete quickly or use a background process.
+    async fn fire_permission_denied_hooks(
+        &mut self,
+        tc: &zeph_llm::provider::ToolUseRequest,
+        reason: &str,
+    ) {
+        let pd_hooks = self.services.session.hooks_config.permission_denied.clone();
+        if pd_hooks.is_empty() {
+            return;
+        }
+        let _span = tracing::info_span!("core.hooks.permission_denied", tool = %tc.name).entered();
+        let mut env = std::collections::HashMap::new();
+        env.insert("ZEPH_DENIED_TOOL".to_owned(), tc.name.to_string());
+        env.insert("ZEPH_DENY_REASON".to_owned(), reason.to_owned());
+        let dispatch = self.mcp_dispatch();
+        let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
+            .as_ref()
+            .map(|d| d as &dyn zeph_subagent::McpDispatch);
+        if let Err(e) = zeph_subagent::hooks::fire_hooks(&pd_hooks, &env, mcp).await {
+            tracing::warn!(error = %e, tool = %tc.name, "PermissionDenied hook failed");
+        }
     }
 
     #[tracing::instrument(
@@ -1432,7 +1466,7 @@ impl<C: Channel> Agent<C> {
                 .string_values_for(idx)
                 .iter()
                 .any(|v| failed_ids.contains(v));
-            if let Some(fut) = self
+            if let Some((fut, reason)) = self
                 .check_call_gates(
                     idx,
                     tc,
@@ -1445,6 +1479,7 @@ impl<C: Channel> Agent<C> {
                 )
                 .await?
             {
+                self.fire_permission_denied_hooks(tc, &reason).await;
                 tier_futs.push(fut);
                 continue;
             }
@@ -1477,6 +1512,8 @@ impl<C: Channel> Agent<C> {
                         exceeded.limit
                     ),
                 );
+                self.fire_permission_denied_hooks(tc, &exceeded.to_error_message())
+                    .await;
                 tier_futs.push(ready_fut(
                     idx,
                     skipped_output(tc.name.clone(), exceeded.to_error_message()),
@@ -2361,5 +2398,125 @@ mod tests {
         assert!(matching_hooks(&matchers, "compress_context").is_empty());
         assert!(matching_hooks(&matchers, "start_focus").is_empty());
         assert!(matching_hooks(&matchers, "complete_focus").is_empty());
+    }
+
+    // Regression guard for issue #3774: permission_denied hook env must contain
+    // ZEPH_DENIED_TOOL and ZEPH_DENY_REASON for every gate/rate-limiter denial.
+    // These tests verify the env construction logic mirrored in fire_permission_denied_hooks.
+
+    fn make_pd_env(tool: &str, reason: &str) -> std::collections::HashMap<String, String> {
+        let mut env = std::collections::HashMap::new();
+        env.insert("ZEPH_DENIED_TOOL".to_owned(), tool.to_owned());
+        env.insert("ZEPH_DENY_REASON".to_owned(), reason.to_owned());
+        env
+    }
+
+    #[test]
+    fn permission_denied_env_contains_tool_name_and_reason_for_quota_denial() {
+        let tool = "shell";
+        let reason = "session tool call quota exceeded (limit: 10 calls)";
+        let env = make_pd_env(tool, reason);
+
+        assert_eq!(
+            env.get("ZEPH_DENIED_TOOL").map(String::as_str),
+            Some("shell")
+        );
+        assert!(
+            env.get("ZEPH_DENY_REASON")
+                .map(|r| r.contains("quota"))
+                .unwrap_or(false),
+            "ZEPH_DENY_REASON should mention quota"
+        );
+    }
+
+    #[test]
+    fn permission_denied_env_contains_tool_name_and_reason_for_rate_limit_denial() {
+        use crate::agent::rate_limiter::{RateLimitExceeded, ToolCategory};
+
+        let exceeded = RateLimitExceeded {
+            category: ToolCategory::Shell,
+            count: 5,
+            limit: 3,
+            cooldown_remaining_secs: 30,
+        };
+        let reason = exceeded.to_error_message();
+        let env = make_pd_env("bash", &reason);
+
+        assert_eq!(
+            env.get("ZEPH_DENIED_TOOL").map(String::as_str),
+            Some("bash")
+        );
+        let deny_reason = env
+            .get("ZEPH_DENY_REASON")
+            .expect("ZEPH_DENY_REASON missing");
+        assert!(
+            deny_reason.contains("rate-limited"),
+            "ZEPH_DENY_REASON should mention rate-limited, got: {deny_reason}"
+        );
+        assert!(
+            deny_reason.contains("3/min"),
+            "ZEPH_DENY_REASON should contain limit, got: {deny_reason}"
+        );
+    }
+
+    #[test]
+    fn permission_denied_env_contains_tool_name_and_reason_for_pre_exec_block() {
+        let tool = "write";
+        let reason = format!("blocked by pre-execution verifier: {tool} is not permitted");
+        let env = make_pd_env(tool, &reason);
+
+        assert_eq!(
+            env.get("ZEPH_DENIED_TOOL").map(String::as_str),
+            Some("write")
+        );
+        assert!(
+            env.get("ZEPH_DENY_REASON")
+                .map(|r| r.contains("pre-execution verifier"))
+                .unwrap_or(false),
+            "ZEPH_DENY_REASON should mention pre-execution verifier"
+        );
+    }
+
+    #[test]
+    fn permission_denied_env_contains_tool_name_and_reason_for_repeat_block() {
+        let tool = "read";
+        let reason = format!("repeated identical call to {tool} detected");
+        let env = make_pd_env(tool, &reason);
+
+        assert_eq!(
+            env.get("ZEPH_DENIED_TOOL").map(String::as_str),
+            Some("read")
+        );
+        assert!(
+            env.get("ZEPH_DENY_REASON")
+                .map(|r| r.contains("repeated identical call"))
+                .unwrap_or(false),
+            "ZEPH_DENY_REASON should mention repeated identical call"
+        );
+    }
+
+    #[test]
+    fn permission_denied_env_reason_includes_utility_action_variant() {
+        // Verify that utility gate reason strings include the UtilityAction Debug variant name
+        // so hook authors can distinguish Respond/Retrieve/Verify/Stop in ZEPH_DENY_REASON.
+        use zeph_tools::UtilityAction;
+
+        for action in [
+            UtilityAction::Respond,
+            UtilityAction::Retrieve,
+            UtilityAction::Verify,
+            UtilityAction::Stop,
+        ] {
+            let reason = format!("utility gate ({action:?}) intercepted memory_search");
+            let env = make_pd_env("memory_search", &reason);
+
+            let deny_reason = env
+                .get("ZEPH_DENY_REASON")
+                .expect("ZEPH_DENY_REASON missing");
+            assert!(
+                deny_reason.contains(&format!("{action:?}")),
+                "ZEPH_DENY_REASON should contain {action:?}, got: {deny_reason}"
+            );
+        }
     }
 }
