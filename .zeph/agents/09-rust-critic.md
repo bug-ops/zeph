@@ -8,8 +8,8 @@ skills:
     - rust-agent-handoff
 tools:
   allow:
-    - Read
-    - Write
+    - read
+    - write
     - Bash(cargo metadata *)
     - Bash(cargo tree *)
     - Bash(cargo audit *)

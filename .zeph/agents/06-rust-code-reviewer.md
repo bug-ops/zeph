@@ -8,7 +8,7 @@ skills:
     - rust-agent-handoff
 tools:
   allow:
-    - Read
+    - read
     - Bash(cargo *)
     - Bash(cargo-expand *)
     - Bash(cargo-semver-checks *)

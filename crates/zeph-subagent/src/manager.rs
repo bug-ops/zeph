@@ -22,7 +22,7 @@ use crate::agent_loop::{AgentLoopArgs, run_agent_loop};
 
 use super::def::{MemoryScope, PermissionMode, SubAgentDef, ToolPolicy};
 use super::error::SubAgentError;
-use super::filter::{FilteredToolExecutor, PlanModeExecutor};
+use super::filter::{self, FilteredToolExecutor, PlanModeExecutor};
 use super::grants::{PermissionGrants, SecretRequest};
 use super::hooks::fire_hooks;
 use super::memory::{ensure_memory_dir, escape_memory_content, load_memory_content};
@@ -326,13 +326,15 @@ pub(crate) fn build_system_prompt_with_memory(
 
     // HIGH-04: if all three file tools are blocked (via disallowed_tools OR DenyList),
     // disable memory entirely — the agent cannot use file tools so memory would be useless.
-    let file_tools = ["Read", "Write", "Edit"];
-    let blocked_by_except = file_tools
-        .iter()
-        .all(|t| def.disallowed_tools.iter().any(|d| d == t));
+    let file_tools = ["read", "write", "edit"];
+    let blocked_by_except = file_tools.iter().all(|t| {
+        def.disallowed_tools
+            .iter()
+            .any(|d| filter::normalize_tool_id(d) == *t)
+    });
     // REV-HIGH-02: also check ToolPolicy::DenyList (tools.deny) for complete coverage.
     let blocked_by_deny = matches!(&def.tools, ToolPolicy::DenyList(list)
-        if file_tools.iter().all(|t| list.iter().any(|d| d == t)));
+        if file_tools.iter().all(|t| list.iter().any(|d| filter::normalize_tool_id(d) == *t)));
     if blocked_by_except || blocked_by_deny {
         tracing::warn!(
             agent = %def.name,
@@ -359,7 +361,10 @@ pub(crate) fn build_system_prompt_with_memory(
     if let ToolPolicy::AllowList(ref mut allowed) = def.tools {
         let mut added = Vec::new();
         for tool in &file_tools {
-            if !allowed.iter().any(|a| a == tool) {
+            if !allowed
+                .iter()
+                .any(|a| filter::normalize_tool_id(a) == *tool)
+            {
                 allowed.push((*tool).to_owned());
                 added.push(*tool);
             }
@@ -2981,13 +2986,13 @@ mod tests {
 
         build_system_prompt_with_memory(&mut def, Some(MemoryScope::Project));
 
-        // Read/Write/Edit must be auto-added to the AllowList.
+        // read/write/edit must be auto-added to the AllowList.
         assert!(
             matches!(&def.tools, ToolPolicy::AllowList(list)
-                if list.contains(&"Read".to_owned())
-                    && list.contains(&"Write".to_owned())
-                    && list.contains(&"Edit".to_owned())),
-            "Read/Write/Edit must be auto-enabled in AllowList when memory is set"
+                if list.contains(&"read".to_owned())
+                    && list.contains(&"write".to_owned())
+                    && list.contains(&"edit".to_owned())),
+            "read/write/edit must be auto-enabled in AllowList when memory is set"
         );
 
         std::env::set_current_dir(orig_dir).unwrap();

@@ -38,6 +38,16 @@ fn collect_fenced_tags(executor: &dyn ErasedToolExecutor) -> Vec<&'static str> {
         .collect()
 }
 
+// ── Tool ID normalization ─────────────────────────────────────────────────────
+
+/// Normalize a tool ID for policy matching: lowercase, strip everything from the first `(` onward.
+///
+/// Examples: `"Read"` → `"read"`, `"Bash(cargo *)"` → `"bash"`, `"bash"` → `"bash"`.
+pub(crate) fn normalize_tool_id(s: &str) -> String {
+    let base = s.split('(').next().unwrap_or(s);
+    base.trim().to_lowercase()
+}
+
 // ── Tool filtering ────────────────────────────────────────────────────────────
 
 /// Wraps an [`ErasedToolExecutor`] and enforces a [`ToolPolicy`] plus an optional
@@ -100,16 +110,22 @@ impl FilteredToolExecutor {
 
     /// Check whether `tool_id` is allowed under the current policy and denylist.
     ///
-    /// Matching is exact string equality. MCP compound tool IDs (e.g. `mcp__server__tool`)
-    /// must be listed in full in `tools.except` — partial names or prefixes are not matched.
+    /// Matching is case-insensitive and strips argument suffixes (e.g. `"Bash(cargo *)"` matches
+    /// runtime ID `"bash"`). MCP compound tool IDs (`mcp__server__tool`) must still be listed in
+    /// full in `tools.except` — partial names or prefixes are not matched.
     fn is_allowed(&self, tool_id: &str) -> bool {
-        if self.disallowed.iter().any(|t| t == tool_id) {
+        let normalized = normalize_tool_id(tool_id);
+        if self
+            .disallowed
+            .iter()
+            .any(|t| normalize_tool_id(t) == normalized)
+        {
             return false;
         }
         match &self.policy {
             ToolPolicy::InheritAll => true,
-            ToolPolicy::AllowList(list) => list.iter().any(|t| t == tool_id),
-            ToolPolicy::DenyList(list) => !list.iter().any(|t| t == tool_id),
+            ToolPolicy::AllowList(list) => list.iter().any(|t| normalize_tool_id(t) == normalized),
+            ToolPolicy::DenyList(list) => !list.iter().any(|t| normalize_tool_id(t) == normalized),
         }
     }
 }
@@ -926,6 +942,42 @@ mod tests {
         assert_eq!(defs.len(), 2);
         assert!(defs.iter().any(|d| d.id == "shell"));
         assert!(defs.iter().any(|d| d.id == "web"));
+    }
+
+    // ── normalize_tool_id tests ────────────────────────────────────────────
+
+    #[test]
+    fn normalize_tool_id_lowercases() {
+        assert_eq!(normalize_tool_id("Read"), "read");
+        assert_eq!(normalize_tool_id("Write"), "write");
+        assert_eq!(normalize_tool_id("Edit"), "edit");
+    }
+
+    #[test]
+    fn normalize_tool_id_strips_args() {
+        assert_eq!(normalize_tool_id("Bash(cargo *)"), "bash");
+        assert_eq!(normalize_tool_id("Bash(git *)"), "bash");
+        assert_eq!(normalize_tool_id("bash"), "bash");
+    }
+
+    #[test]
+    fn allow_list_pascal_case_permits_lowercase_runtime_id() {
+        let exec = FilteredToolExecutor::new(
+            stub_box(&["read", "write", "bash"]),
+            ToolPolicy::AllowList(vec!["Read".into(), "Write".into(), "Bash(cargo *)".into()]),
+        );
+        // Runtime IDs are lowercase; policy entries use PascalCase / argument form.
+        assert!(exec.is_allowed("read"));
+        assert!(exec.is_allowed("write"));
+        assert!(exec.is_allowed("bash"));
+        assert!(!exec.is_allowed("web"));
+        // tool_definitions_erased must also filter correctly.
+        let defs = exec.tool_definitions_erased();
+        assert_eq!(
+            defs.len(),
+            3,
+            "read, write, bash must all appear in catalog"
+        );
     }
 
     // ── filter_skills tests ────────────────────────────────────────────────
