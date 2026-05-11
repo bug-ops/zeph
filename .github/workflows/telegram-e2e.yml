@@ -34,6 +34,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: ""
+  CARGO_INCREMENTAL: "0"
 
 # Prevent concurrent runs against the same bot — Telegram state is shared.
 concurrency:
@@ -150,6 +152,7 @@ jobs:
           TG_API_ID: ${{ secrets.TELEGRAM_TEST_API_ID }}
           TG_API_HASH: ${{ secrets.TELEGRAM_TEST_API_HASH }}
           TG_BOT_USERNAME: ${{ secrets.TELEGRAM_TEST_BOT_USERNAME }}
+          TG_BOT2_USERNAME: ${{ secrets.TELEGRAM_TEST_BOT2_USERNAME }}
           TG_SESSION_PATH: .local/testing/test_session.session
           PYTHONUNBUFFERED: "1"
         run: |

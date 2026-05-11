@@ -44,6 +44,11 @@ history_limit = 50
 # Token is injected via ZEPH_TELEGRAM_TOKEN env var (no token field needed in config).
 # Replace with the Telegram username of your test account (created by get_session.py).
 allowed_users = ["your_test_username"]
+guest_mode = false
+bot_to_bot = false
+allowed_bots = []
+max_bot_chain_depth = 1
+stream_interval_ms = 3000
 
 [tools]
 enabled = true
