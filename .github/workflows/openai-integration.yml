@@ -49,7 +49,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         if: steps.secrets-check.outputs.skip == 'false'
 
-      - uses: taiki-e/install-action@bec8f6c5a5fcbe8ac050aec15ee134d388c83f10 # nextest
+      - uses: taiki-e/install-action@6fb7e047ecef54aa053294f996a8feb3a5769baf # nextest
         if: steps.secrets-check.outputs.skip == 'false'
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2

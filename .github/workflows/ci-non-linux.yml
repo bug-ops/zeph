@@ -37,7 +37,7 @@ jobs:
         with:
           cache-targets: "false"
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-      - uses: taiki-e/install-action@bec8f6c5a5fcbe8ac050aec15ee134d388c83f10 # nextest
+      - uses: taiki-e/install-action@6fb7e047ecef54aa053294f996a8feb3a5769baf # nextest
       - name: Build and archive tests
         run: cargo nextest archive --config-file .github/nextest.toml --workspace --features full --lib --bins --archive-file nextest-archive.tar.zst
         env:
@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: taiki-e/install-action@bec8f6c5a5fcbe8ac050aec15ee134d388c83f10 # nextest
+      - uses: taiki-e/install-action@6fb7e047ecef54aa053294f996a8feb3a5769baf # nextest
       - name: Download test archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
