@@ -36,6 +36,7 @@ tracing.workspace = true
 unicode-width.workspace = true
 zeph-common.workspace = true
 zeph-core.workspace = true
+zeph-tools.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [[bench]]

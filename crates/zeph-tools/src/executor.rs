@@ -171,6 +171,8 @@ pub enum ClaimSource {
     Diagnostics,
     /// Memory retrieval (semantic search).
     Memory,
+    /// Telegram moderation action (reaction deletion).
+    Moderation,
 }
 
 /// Structured result from tool execution.

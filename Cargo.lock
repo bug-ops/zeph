@@ -10541,6 +10541,7 @@ dependencies = [
  "wiremock",
  "zeph-common",
  "zeph-core",
+ "zeph-tools",
 ]
 
 [[package]]

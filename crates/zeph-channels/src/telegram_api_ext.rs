@@ -79,6 +79,50 @@ pub struct GuestMessage {
     pub text: Option<String>,
 }
 
+/// Chat member status as returned by `getChatMember`.
+///
+/// Only the status variants relevant to admin checks are represented. Any
+/// unrecognised status string is captured by the `Other` variant.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatMemberStatus {
+    /// The user is the chat creator.
+    Creator,
+    /// The user is an administrator.
+    Administrator,
+    /// The user is a regular member.
+    Member,
+    /// The user is restricted.
+    Restricted,
+    /// The user has left the chat.
+    Left,
+    /// The user was kicked or banned.
+    Kicked,
+    /// Unknown or future status value.
+    #[serde(other)]
+    Other,
+}
+
+/// Minimal chat member info returned by `getChatMember`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatMember {
+    /// Membership status.
+    pub status: ChatMemberStatus,
+    /// The user this record describes.
+    pub user: GuestUser,
+}
+
+impl ChatMember {
+    /// Whether this member has admin-level privileges (creator or administrator).
+    #[must_use]
+    pub fn is_admin(&self) -> bool {
+        matches!(
+            self.status,
+            ChatMemberStatus::Creator | ChatMemberStatus::Administrator
+        )
+    }
+}
+
 /// Standard Telegram API JSON response envelope.
 #[derive(Deserialize)]
 struct TelegramResponse<T> {
@@ -171,6 +215,32 @@ impl TelegramApiClient {
             client,
             base_url: format!("https://api.telegram.org/bot{token}"),
         }
+    }
+
+    /// Fetch the bot's own user information via `getMe`.
+    ///
+    /// Returns the bot's Telegram user ID. This is the value to pass as
+    /// `bot_user_id` when constructing a `TelegramModerationBackend` for
+    /// pre-flight admin checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelegramApiError`] on HTTP failure or when `ok: false`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use zeph_channels::telegram_api_ext::TelegramApiClient;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = TelegramApiClient::new("TOKEN");
+    /// let me = client.get_me().await?;
+    /// println!("bot user id: {}", me.id);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_me(&self) -> Result<GuestUser, TelegramApiError> {
+        self.post("getMe", &serde_json::json!({})).await
     }
 
     /// Create a client with a fully-qualified custom base URL.
@@ -387,6 +457,45 @@ impl TelegramApiClient {
             },
         )
         .await
+    }
+
+    /// Retrieve the membership status of `user_id` in `chat_id`.
+    ///
+    /// Used for a pre-flight admin check before executing moderation actions. The
+    /// result is not cached — each call makes a live API request.
+    ///
+    /// # Arguments
+    ///
+    /// * `chat_id` — identifier of the chat to query.
+    /// * `user_id` — identifier of the user whose membership to retrieve.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelegramApiError`] on HTTP failure or when `ok: false`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use zeph_channels::telegram_api_ext::TelegramApiClient;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = TelegramApiClient::new("TOKEN");
+    /// let member = client.get_chat_member(123, 456).await?;
+    /// println!("is admin: {}", member.is_admin());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_chat_member(
+        &self,
+        chat_id: i64,
+        user_id: i64,
+    ) -> Result<ChatMember, TelegramApiError> {
+        #[derive(Serialize)]
+        struct Req {
+            chat_id: i64,
+            user_id: i64,
+        }
+        self.post("getChatMember", &Req { chat_id, user_id }).await
     }
 
     /// Delete all reactions left by `user_id` on a message.
@@ -753,6 +862,119 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, TelegramApiError::Api(_)));
+    }
+
+    // ── get_chat_member ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_chat_member_administrator_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(".*/getChatMember$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::json!({
+                    "status": "administrator",
+                    "user": {
+                        "id": 456,
+                        "is_bot": false,
+                        "first_name": "Alice",
+                        "username": "alice"
+                    }
+                }))),
+            )
+            .mount(&server)
+            .await;
+
+        let client = TelegramApiClient::with_base_url(server.uri());
+        let member = client.get_chat_member(123, 456).await.unwrap();
+        assert!(member.is_admin());
+        assert_eq!(member.user.id, 456);
+    }
+
+    #[tokio::test]
+    async fn get_chat_member_creator_is_admin() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(".*/getChatMember$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::json!({
+                    "status": "creator",
+                    "user": {
+                        "id": 1,
+                        "is_bot": false,
+                        "first_name": "Owner"
+                    }
+                }))),
+            )
+            .mount(&server)
+            .await;
+
+        let client = TelegramApiClient::with_base_url(server.uri());
+        let member = client.get_chat_member(100, 1).await.unwrap();
+        assert!(member.is_admin());
+    }
+
+    #[tokio::test]
+    async fn get_chat_member_regular_member_is_not_admin() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(".*/getChatMember$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::json!({
+                    "status": "member",
+                    "user": {
+                        "id": 99,
+                        "is_bot": false,
+                        "first_name": "Bob"
+                    }
+                }))),
+            )
+            .mount(&server)
+            .await;
+
+        let client = TelegramApiClient::with_base_url(server.uri());
+        let member = client.get_chat_member(100, 99).await.unwrap();
+        assert!(!member.is_admin());
+    }
+
+    #[tokio::test]
+    async fn get_chat_member_api_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(".*/getChatMember$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(err_body("Bad Request: user not found")),
+            )
+            .mount(&server)
+            .await;
+
+        let client = TelegramApiClient::with_base_url(server.uri());
+        let err = client.get_chat_member(1, 2).await.unwrap_err();
+        assert!(matches!(err, TelegramApiError::Api(_)));
+    }
+
+    // ── get_me ────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_me_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(".*/getMe$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::json!({
+                    "id": 123456,
+                    "is_bot": true,
+                    "first_name": "MyBot",
+                    "username": "my_bot"
+                }))),
+            )
+            .mount(&server)
+            .await;
+
+        let client = TelegramApiClient::with_base_url(server.uri());
+        let me = client.get_me().await.unwrap();
+        assert_eq!(me.id, 123456);
+        assert!(me.is_bot);
     }
 
     // ── HTTP status error surfacing ───────────────────────────────────────────

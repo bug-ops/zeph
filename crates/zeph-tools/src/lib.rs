@@ -71,6 +71,7 @@ pub mod execution_context;
 pub mod executor;
 pub mod file;
 pub mod filter;
+pub mod moderation;
 pub mod net;
 pub mod patterns;
 pub mod permissions;
@@ -122,6 +123,10 @@ pub use file::FileExecutor;
 pub use filter::{
     CommandMatcher, FilterConfidence, FilterMetrics, FilterResult, OutputFilter,
     OutputFilterRegistry, sanitize_output, strip_ansi,
+};
+pub use moderation::{
+    DeleteAllReactionsParams, DeleteReactionParams, ModerationError, ModerationExecutor,
+    ReactionModerationBackend,
 };
 pub use net::is_private_ip;
 pub use permissions::PermissionPolicy;

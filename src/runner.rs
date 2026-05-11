@@ -1005,7 +1005,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         let _backfill_handle = crate::bootstrap::spawn_embed_backfill(memory_arc, 300, None);
     }
     #[cfg(feature = "tui")]
-    let tool_setup = tui_status_scope!("Connecting tools...", {
+    let mut tool_setup = tui_status_scope!("Connecting tools...", {
         agent_setup::build_tool_setup(
             config,
             permission_policy.clone(),
@@ -1020,7 +1020,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .await
     });
     #[cfg(not(feature = "tui"))]
-    let tool_setup = agent_setup::build_tool_setup(
+    let mut tool_setup = agent_setup::build_tool_setup(
         config,
         permission_policy.clone(),
         with_tool_events,
@@ -1190,6 +1190,86 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let channel = channel_opt.expect("channel always set before use");
     #[cfg(not(feature = "tui"))]
     let (channel, json_sink) = create_channel_inner(app.config(), cli_history, exec_mode).await?;
+
+    // Wire the Telegram reaction moderation executor when the active channel is Telegram.
+    // The executor is added as the outermost layer of the CompositeExecutor chain so it
+    // handles `telegram_delete_reaction` / `telegram_delete_all_reactions` tool calls
+    // before they reach any other executor.
+    #[cfg(not(feature = "tui"))]
+    {
+        let telegram_api_client: Option<zeph_channels::telegram_api_ext::TelegramApiClient> =
+            if let AnyChannel::Telegram(ref tg) = channel {
+                Some(tg.api_ext().clone())
+            } else {
+                None
+            };
+        if let Some(api) = telegram_api_client {
+            match api.get_me().await {
+                Ok(me) => {
+                    let backend =
+                        zeph_channels::telegram_moderation::TelegramModerationBackend::new(
+                            api, me.id,
+                        );
+                    let moderation_executor = zeph_tools::ModerationExecutor::new(backend);
+                    let inner: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
+                        std::sync::Arc::new(tool_setup.executor);
+                    tool_setup.executor = zeph_tools::DynExecutor(std::sync::Arc::new(
+                        zeph_tools::CompositeExecutor::new(
+                            moderation_executor,
+                            zeph_tools::DynExecutor(inner),
+                        ),
+                    ));
+                    tracing::info!(
+                        bot_user_id = me.id,
+                        "telegram reaction moderation executor wired"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to resolve bot user ID via getMe; reaction moderation executor not wired");
+                }
+            }
+        }
+    }
+    #[cfg(feature = "tui")]
+    {
+        let telegram_api_client: Option<zeph_channels::telegram_api_ext::TelegramApiClient> =
+            match &channel {
+                AppChannel::Standard(c) => {
+                    if let AnyChannel::Telegram(ref tg) = **c {
+                        Some(tg.api_ext().clone())
+                    } else {
+                        None
+                    }
+                }
+                AppChannel::Tui(_) => None,
+            };
+        if let Some(api) = telegram_api_client {
+            match api.get_me().await {
+                Ok(me) => {
+                    let backend =
+                        zeph_channels::telegram_moderation::TelegramModerationBackend::new(
+                            api, me.id,
+                        );
+                    let moderation_executor = zeph_tools::ModerationExecutor::new(backend);
+                    let inner: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
+                        std::sync::Arc::new(tool_setup.executor);
+                    tool_setup.executor = zeph_tools::DynExecutor(std::sync::Arc::new(
+                        zeph_tools::CompositeExecutor::new(
+                            moderation_executor,
+                            zeph_tools::DynExecutor(inner),
+                        ),
+                    ));
+                    tracing::info!(
+                        bot_user_id = me.id,
+                        "telegram reaction moderation executor wired"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to resolve bot user ID via getMe; reaction moderation executor not wired");
+                }
+            }
+        }
+    }
 
     // Spawn deferred OAuth connections now that the UI channel is ready and can
     // display the authorization URL. Non-OAuth tools are already available from

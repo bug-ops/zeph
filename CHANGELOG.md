@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(channels,tools): add `telegram_delete_reaction` and `telegram_delete_all_reactions` tool
+  executors for Telegram reaction moderation (issue #3731). `ModerationExecutor<B>` in `zeph-tools`
+  dispatches both tool calls via the `ReactionModerationBackend` trait, keeping `zeph-tools`
+  independent of `zeph-channels`. `TelegramModerationBackend` in `zeph-channels` performs a
+  `getChatMember` pre-flight admin check before each mutation and returns
+  `ModerationError::Api("bot is not an administrator in this chat")` when the check fails.
+  Both tools require user confirmation (`requires_confirmation = true`) and are wired in `runner.rs`
+  when the active channel is Telegram; the bot user ID is resolved at startup via `getMe`.
+  Input validation rejects empty or overlong (>10 chars) `reaction` strings before the API call.
+  Transport failures map to `ToolError::Http { status: 502 }` (Bad Gateway).
+
 - feat(tui): automatic view switch to foreground subagent transcript on spawn. When a foreground
   subagent is started, the TUI switches to the subagent transcript view; when the subagent
   completes or fails, the TUI returns to the Main view and shows a status bar notification with
