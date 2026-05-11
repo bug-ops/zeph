@@ -214,6 +214,30 @@ impl App {
             AgentEvent::SetMetricsRx(rx) => {
                 self.set_metrics_rx(rx);
             }
+            AgentEvent::ForegroundSubagentStarted { id, name } => {
+                self.sessions.current_mut().status_label =
+                    Some(format!("Sub-agent '{name}' running..."));
+                self.set_view_target(super::AgentViewTarget::SubAgent { id, name });
+            }
+            AgentEvent::ForegroundSubagentCompleted { id, name, success } => {
+                // Only switch back to Main if we are still viewing this subagent.
+                // If the user manually navigated away, respect that choice.
+                if self.sessions.current().view_target.subagent_id() == Some(id.as_str()) {
+                    self.set_view_target(super::AgentViewTarget::Main);
+                }
+                let label = if success {
+                    format!("Sub-agent '{name}' completed")
+                } else {
+                    format!("Sub-agent '{name}' failed")
+                };
+                self.sessions.current_mut().status_label = Some(label.clone());
+                self.sessions
+                    .current_mut()
+                    .messages
+                    .push(ChatMessage::new(MessageRole::System, label));
+                self.trim_messages();
+                self.auto_scroll();
+            }
         }
     }
 
@@ -343,7 +367,7 @@ impl App {
 mod tests {
     use tokio::sync::mpsc;
 
-    use crate::app::App;
+    use crate::app::{AgentViewTarget, App};
     use crate::event::AgentEvent;
     use crate::types::{ChatMessage, MessageRole};
     use zeph_core::DiffData;
@@ -542,5 +566,133 @@ mod tests {
             msgs[2].diff_data.is_none(),
             "call-C must remain without diff"
         );
+    }
+
+    #[test]
+    fn foreground_subagent_started_switches_view_to_subagent() {
+        let mut app = make_app();
+        assert!(app.sessions.current().view_target.is_main());
+
+        app.handle_agent_event(AgentEvent::ForegroundSubagentStarted {
+            id: "sa-001".into(),
+            name: "planner".into(),
+        });
+
+        assert_eq!(
+            app.sessions.current().view_target.subagent_id(),
+            Some("sa-001"),
+            "view must switch to the started subagent"
+        );
+        assert_eq!(
+            app.sessions.current().status_label.as_deref(),
+            Some("Sub-agent 'planner' running...")
+        );
+    }
+
+    #[test]
+    fn foreground_subagent_completed_switches_back_when_viewing_subagent() {
+        let mut app = make_app();
+
+        app.handle_agent_event(AgentEvent::ForegroundSubagentStarted {
+            id: "sa-002".into(),
+            name: "coder".into(),
+        });
+        assert_eq!(
+            app.sessions.current().view_target.subagent_id(),
+            Some("sa-002")
+        );
+
+        app.handle_agent_event(AgentEvent::ForegroundSubagentCompleted {
+            id: "sa-002".into(),
+            name: "coder".into(),
+            success: true,
+        });
+
+        assert!(
+            app.sessions.current().view_target.is_main(),
+            "view must return to Main after completion"
+        );
+        assert_eq!(
+            app.sessions.current().status_label.as_deref(),
+            Some("Sub-agent 'coder' completed")
+        );
+        let system_msg = app
+            .sessions
+            .current()
+            .messages
+            .iter()
+            .find(|m| m.role == MessageRole::System);
+        assert!(
+            system_msg.is_some(),
+            "completion system message must be pushed"
+        );
+    }
+
+    #[test]
+    fn foreground_subagent_completed_respects_manual_navigation() {
+        let mut app = make_app();
+
+        app.handle_agent_event(AgentEvent::ForegroundSubagentStarted {
+            id: "sa-003".into(),
+            name: "researcher".into(),
+        });
+
+        // Simulate user manually navigating away to a different subagent.
+        app.set_view_target(AgentViewTarget::SubAgent {
+            id: "sa-other".into(),
+            name: "other".into(),
+        });
+
+        app.handle_agent_event(AgentEvent::ForegroundSubagentCompleted {
+            id: "sa-003".into(),
+            name: "researcher".into(),
+            success: false,
+        });
+
+        // View must NOT switch to Main because user is viewing a different subagent.
+        assert_eq!(
+            app.sessions.current().view_target.subagent_id(),
+            Some("sa-other"),
+            "user's manual navigation must be preserved"
+        );
+    }
+
+    #[test]
+    fn foreground_subagent_failed_shows_failed_label() {
+        let mut app = make_app();
+
+        app.handle_agent_event(AgentEvent::ForegroundSubagentStarted {
+            id: "sa-004".into(),
+            name: "builder".into(),
+        });
+        app.handle_agent_event(AgentEvent::ForegroundSubagentCompleted {
+            id: "sa-004".into(),
+            name: "builder".into(),
+            success: false,
+        });
+
+        assert_eq!(
+            app.sessions.current().status_label.as_deref(),
+            Some("Sub-agent 'builder' failed")
+        );
+    }
+
+    // Fast-completing subagents cause a Started then immediately Completed event.
+    // This results in a brief flash before returning to Main, which is acceptable.
+    #[test]
+    fn foreground_subagent_fast_complete_ends_on_main() {
+        let mut app = make_app();
+
+        app.handle_agent_event(AgentEvent::ForegroundSubagentStarted {
+            id: "sa-fast".into(),
+            name: "quick".into(),
+        });
+        app.handle_agent_event(AgentEvent::ForegroundSubagentCompleted {
+            id: "sa-fast".into(),
+            name: "quick".into(),
+            success: true,
+        });
+
+        assert!(app.sessions.current().view_target.is_main());
     }
 }

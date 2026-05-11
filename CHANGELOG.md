@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(tui): automatic view switch to foreground subagent transcript on spawn. When a foreground
+  subagent is started, the TUI switches to the subagent transcript view; when the subagent
+  completes or fails, the TUI returns to the Main view and shows a status bar notification with
+  the agent name and final state. Manual navigation is respected: if the user switches away while
+  the subagent is running, the automatic return-to-Main is suppressed. Closes #3762.
+
 ### Fixed
 
 - fix(core): prevent orphaned ToolUse/ToolResult pairs in subagent parent context window. When

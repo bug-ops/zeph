@@ -410,6 +410,41 @@ pub trait Channel: Send {
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
+
+    /// Notify channel that a foreground subagent has started. No-op by default.
+    ///
+    /// Called after the subagent is spawned and before polling begins. Channels
+    /// that support subagent views (e.g. TUI) should switch to the subagent
+    /// transcript view on receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn notify_foreground_subagent_started(
+        &mut self,
+        _id: &str,
+        _name: &str,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Notify channel that a foreground subagent has completed. No-op by default.
+    ///
+    /// Called after `poll_subagent_until_done` returns. Channels that support
+    /// subagent views should switch back to the main view and show a status
+    /// notification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn notify_foreground_subagent_completed(
+        &mut self,
+        _id: &str,
+        _name: &str,
+        _success: bool,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        async { Ok(()) }
+    }
 }
 
 /// Reason why the agent turn ended — carried by [`LoopbackEvent::Stop`].

@@ -2206,8 +2206,13 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Poll a sub-agent until it reaches a terminal state, bridging secret requests to the
-    /// channel. Returns a human-readable status string suitable for sending to the user.
-    async fn poll_subagent_until_done(&mut self, task_id: &str, label: &str) -> Option<String> {
+    /// channel. Returns a human-readable status string and success flag suitable for
+    /// sending to the user and emitting lifecycle events.
+    async fn poll_subagent_until_done(
+        &mut self,
+        task_id: &str,
+        label: &str,
+    ) -> Option<(String, bool)> {
         use zeph_subagent::SubAgentState;
         let result = loop {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -2246,22 +2251,22 @@ impl<C: Channel> Agent<C> {
             let mgr = self.services.orchestration.subagent_manager.as_ref()?;
             let statuses = mgr.statuses();
             let Some((_, status)) = statuses.iter().find(|(id, _)| id == task_id) else {
-                break format!("{label} completed (no status available).");
+                break (format!("{label} completed (no status available)."), true);
             };
             match status.state {
                 SubAgentState::Completed => {
                     let msg = status.last_message.clone().unwrap_or_else(|| "done".into());
-                    break format!("{label} completed: {msg}");
+                    break (format!("{label} completed: {msg}"), true);
                 }
                 SubAgentState::Failed => {
                     let msg = status
                         .last_message
                         .clone()
                         .unwrap_or_else(|| "unknown error".into());
-                    break format!("{label} failed: {msg}");
+                    break (format!("{label} failed: {msg}"), false);
                 }
                 SubAgentState::Canceled => {
-                    break format!("{label} was cancelled.");
+                    break (format!("{label} was cancelled."), false);
                 }
                 _ => {
                     let _ = self
@@ -2465,8 +2470,24 @@ impl<C: Channel> Agent<C> {
             .channel
             .send(&format!("Sub-agent '{name}' running... (id: {short})"))
             .await;
+        let _ = self
+            .channel
+            .notify_foreground_subagent_started(&task_id, name)
+            .await;
         let label = format!("Sub-agent '{name}'");
-        self.poll_subagent_until_done(&task_id, &label).await
+        let Some((result, success)) = self.poll_subagent_until_done(&task_id, &label).await else {
+            // Manager was dropped mid-poll; emit completed(false) so TUI does not stay stuck.
+            let _ = self
+                .channel
+                .notify_foreground_subagent_completed(&task_id, name, false)
+                .await;
+            return None;
+        };
+        let _ = self
+            .channel
+            .notify_foreground_subagent_completed(&task_id, name, success)
+            .await;
+        Some(result)
     }
 
     fn handle_agent_cancel(&mut self, id: &str) -> Option<String> {
@@ -2518,8 +2539,26 @@ impl<C: Channel> Agent<C> {
             .channel
             .send(&format!("Resuming sub-agent '{id}'... (new id: {short})"))
             .await;
-        self.poll_subagent_until_done(&task_id, "Resumed sub-agent")
+        let _ = self
+            .channel
+            .notify_foreground_subagent_started(&task_id, &def_name)
+            .await;
+        let Some((result, success)) = self
+            .poll_subagent_until_done(&task_id, "Resumed sub-agent")
             .await
+        else {
+            // Manager was dropped mid-poll; emit completed(false) so TUI does not stay stuck.
+            let _ = self
+                .channel
+                .notify_foreground_subagent_completed(&task_id, &def_name, false)
+                .await;
+            return None;
+        };
+        let _ = self
+            .channel
+            .notify_foreground_subagent_completed(&task_id, &def_name, success)
+            .await;
+        Some(result)
     }
 
     fn filtered_skills_for(&self, agent_name: &str) -> Option<Vec<String>> {

@@ -214,6 +214,22 @@ pub enum AgentEvent {
     SetCancelSignal(Arc<Notify>),
     /// Wire a metrics receiver into the TUI App after early startup (Phase 2).
     SetMetricsRx(watch::Receiver<MetricsSnapshot>),
+    /// A foreground subagent has been spawned; the TUI should switch view to its transcript.
+    ForegroundSubagentStarted {
+        /// Stable sub-agent identifier (`task_id` from `SubAgentManager`).
+        id: String,
+        /// Human-readable agent definition name.
+        name: String,
+    },
+    /// A foreground subagent has reached a terminal state; the TUI should return to Main view.
+    ForegroundSubagentCompleted {
+        /// Stable sub-agent identifier.
+        id: String,
+        /// Human-readable agent definition name.
+        name: String,
+        /// `true` if Completed state, `false` if Failed/Canceled.
+        success: bool,
+    },
 }
 
 /// Blocking event pump that forwards terminal events to the async [`AppEvent`] channel.

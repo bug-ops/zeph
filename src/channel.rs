@@ -117,6 +117,29 @@ impl Channel for AppChannel {
     async fn send_tool_start(&mut self, event: ToolStartEvent) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_tool_start, event)
     }
+
+    async fn notify_foreground_subagent_started(
+        &mut self,
+        id: &str,
+        name: &str,
+    ) -> Result<(), ChannelError> {
+        dispatch_app_channel!(self, notify_foreground_subagent_started, id, name)
+    }
+
+    async fn notify_foreground_subagent_completed(
+        &mut self,
+        id: &str,
+        name: &str,
+        success: bool,
+    ) -> Result<(), ChannelError> {
+        dispatch_app_channel!(
+            self,
+            notify_foreground_subagent_completed,
+            id,
+            name,
+            success
+        )
+    }
 }
 
 #[cfg(feature = "tui")]
@@ -353,6 +376,14 @@ mod tests {
         // 15. send_stop_hint
         ch.send_stop_hint(StopHint::MaxTurnRequests).await.unwrap();
         // 16. confirm — skipped (reads from stdin; covered by separate test)
+        // 17. notify_foreground_subagent_started
+        ch.notify_foreground_subagent_started("sa-id", "planner")
+            .await
+            .unwrap();
+        // 18. notify_foreground_subagent_completed
+        ch.notify_foreground_subagent_completed("sa-id", "planner", true)
+            .await
+            .unwrap();
     }
 }
 

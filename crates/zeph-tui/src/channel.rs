@@ -311,6 +311,38 @@ impl Channel for TuiChannel {
             .map_err(|_| ChannelError::ChannelClosed)?;
         rx.await.map_err(|_| ChannelError::ChannelClosed)
     }
+
+    async fn notify_foreground_subagent_started(
+        &mut self,
+        id: &str,
+        name: &str,
+    ) -> Result<(), ChannelError> {
+        // Non-critical: visual navigation only.
+        let _ = self
+            .agent_event_tx
+            .try_send(AgentEvent::ForegroundSubagentStarted {
+                id: id.to_owned(),
+                name: name.to_owned(),
+            });
+        Ok(())
+    }
+
+    async fn notify_foreground_subagent_completed(
+        &mut self,
+        id: &str,
+        name: &str,
+        success: bool,
+    ) -> Result<(), ChannelError> {
+        // Non-critical: visual navigation only.
+        let _ = self
+            .agent_event_tx
+            .try_send(AgentEvent::ForegroundSubagentCompleted {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                success,
+            });
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -635,6 +667,47 @@ mod tests {
 
     /// Verify that non-critical send methods return `Ok(())` without blocking
     /// when the channel is full (backpressure test).
+    #[tokio::test]
+    async fn notify_foreground_subagent_started_sends_event() {
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+        ch.notify_foreground_subagent_started("sa-1", "planner")
+            .await
+            .unwrap();
+        let evt = agent_rx.recv().await.unwrap();
+        assert!(
+            matches!(evt, AgentEvent::ForegroundSubagentStarted { ref id, ref name }
+                if id == "sa-1" && name == "planner"),
+            "expected ForegroundSubagentStarted"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_foreground_subagent_completed_sends_event_success() {
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+        ch.notify_foreground_subagent_completed("sa-2", "coder", true)
+            .await
+            .unwrap();
+        let evt = agent_rx.recv().await.unwrap();
+        assert!(
+            matches!(evt, AgentEvent::ForegroundSubagentCompleted { ref id, ref name, success }
+                if id == "sa-2" && name == "coder" && success),
+            "expected ForegroundSubagentCompleted with success=true"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_foreground_subagent_completed_sends_event_failure() {
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+        ch.notify_foreground_subagent_completed("sa-3", "builder", false)
+            .await
+            .unwrap();
+        let evt = agent_rx.recv().await.unwrap();
+        assert!(
+            matches!(evt, AgentEvent::ForegroundSubagentCompleted { success, .. } if !success),
+            "expected ForegroundSubagentCompleted with success=false"
+        );
+    }
+
     #[tokio::test]
     async fn non_critical_send_returns_ok_when_channel_full() {
         // Capacity 1 — fill it, then try to send non-critical events.
