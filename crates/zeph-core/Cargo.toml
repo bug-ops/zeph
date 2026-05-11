@@ -33,8 +33,10 @@ sysinfo = ["dep:sysinfo"]
 base64.workspace = true
 blake3.workspace = true
 chrono.workspace = true
+cpu-time.workspace = true
 dirs.workspace = true
 futures.workspace = true
+metrics.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
 ordered-float = { workspace = true, features = ["serde"] }
@@ -47,9 +49,9 @@ schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_norway.workspace = true
-tempfile.workspace = true
 sqlx.workspace = true
-zeph-db.workspace = true
+sysinfo = { workspace = true, features = ["system"], optional = true }
+tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "macros", "process", "rt-multi-thread", "sync", "time"] }
 tokio-stream.workspace = true
@@ -58,12 +60,8 @@ toml.workspace = true
 toml_edit.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["parking_lot", "registry"], optional = true }
-sysinfo = { workspace = true, optional = true }
-cpu-time.workspace = true
-metrics.workspace = true
 tree-sitter.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
-zeroize.workspace = true
 zeph-agent-context.workspace = true
 zeph-agent-feedback.workspace = true
 zeph-agent-persistence.workspace = true
@@ -72,18 +70,20 @@ zeph-commands.workspace = true
 zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-context.workspace = true
-zeph-vault.workspace = true
-zeph-orchestration.workspace = true
-zeph-sanitizer.workspace = true
-zeph-subagent.workspace = true
+zeph-db.workspace = true
 zeph-experiments.workspace = true
 zeph-index.workspace = true
 zeph-llm.workspace = true
-zeph-memory.workspace = true
 zeph-mcp.workspace = true
+zeph-memory.workspace = true
+zeph-orchestration.workspace = true
 zeph-plugins.workspace = true
+zeph-sanitizer.workspace = true
 zeph-skills = { workspace = true, features = ["qdrant"] }
+zeph-subagent.workspace = true
 zeph-tools.workspace = true
+zeph-vault.workspace = true
+zeroize.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [[bench]]
@@ -93,11 +93,11 @@ harness = false
 [dev-dependencies]
 age.workspace = true
 criterion.workspace = true
-metrics-util = { workspace = true, features = ["debugging"] }
-rmcp.workspace = true
 indoc.workspace = true
 insta.workspace = true
+metrics-util = { workspace = true, features = ["debugging"] }
 proptest.workspace = true
+rmcp.workspace = true
 schemars.workspace = true
 serial_test.workspace = true
 sqlx.workspace = true

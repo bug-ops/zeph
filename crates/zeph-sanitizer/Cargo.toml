@@ -13,14 +13,14 @@ description = "Content sanitization, exfiltration guard, PII filtering, and quar
 readme = "README.md"
 
 [dependencies]
+regex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
-regex.workspace = true
-zeph-config.workspace = true
 zeph-common.workspace = true
+zeph-config.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true
 zeph-tools.workspace = true
@@ -28,8 +28,8 @@ zeph-tools.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
-toml.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+toml.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
 
 [features]

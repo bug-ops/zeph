@@ -23,8 +23,8 @@ anyhow = { workspace = true, optional = true }
 blake3.workspace = true
 clap = { workspace = true, features = ["derive", "env"], optional = true }
 dirs = { workspace = true, optional = true }
-include_dir.workspace = true
 futures.workspace = true
+include_dir = { workspace = true, features = ["glob"] }
 notify.workspace = true
 notify-debouncer-mini.workspace = true
 qdrant-client = { workspace = true, features = ["serde"], optional = true }

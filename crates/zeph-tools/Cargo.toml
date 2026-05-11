@@ -13,11 +13,11 @@ description = "Tool executor trait with shell, web scrape, and composite executo
 readme = "README.md"
 
 [dependencies]
+arc-swap.workspace = true
 dashmap.workspace = true
 dirs.workspace = true
 glob.workspace = true
 globset.workspace = true
-arc-swap.workspace = true
 parking_lot.workspace = true
 regex.workspace = true
 reqwest = { workspace = true, features = ["rustls"] }
@@ -25,11 +25,12 @@ schemars.workspace = true
 scrape-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sqlx.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-toml.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 tokio-util.workspace = true
+toml.workspace = true
 tracing.workspace = true
 tree-sitter.workspace = true
 tree-sitter-bash.workspace = true
@@ -44,7 +45,6 @@ tree-sitter-typescript.workspace = true
 unicode-normalization.workspace = true
 url.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
-sqlx.workspace = true
 zeph-common = { workspace = true, features = ["treesitter"] }
 zeph-config.workspace = true
 zeph-db = { workspace = true, features = ["sqlite"] }
@@ -68,8 +68,8 @@ sandbox = ["dep:landlock", "dep:seccompiler"]
 nix = { workspace = true, features = ["signal", "process"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-landlock    = { version = "0.4.4", optional = true }
-seccompiler = { version = "0.5.0", optional = true }
+landlock    = { workspace = true, optional = true }
+seccompiler = { workspace = true, optional = true }
 
 [lints]
 workspace = true

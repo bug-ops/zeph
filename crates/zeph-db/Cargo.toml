@@ -23,15 +23,15 @@ postgres = ["sqlx/postgres"]
 test-utils = ["dep:testcontainers", "dep:testcontainers-modules", "postgres"]
 
 [dependencies]
+regex = { workspace = true }
 # "macros" required for sqlx::migrate! in driver implementations.
 sqlx = { workspace = true, features = ["macros", "migrate", "runtime-tokio-rustls"] }
-regex = { workspace = true }
+testcontainers = { workspace = true, optional = true }
+testcontainers-modules = { workspace = true, features = ["postgres"], optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 zeph-common.workspace = true
-testcontainers = { workspace = true, optional = true }
-testcontainers-modules = { workspace = true, features = ["postgres"], optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

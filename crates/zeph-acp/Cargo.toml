@@ -51,9 +51,9 @@ parking_lot.workspace = true
 reqwest = { workspace = true, features = ["rustls", "stream"] }
 rmcp.workspace = true
 schemars.workspace = true
-shell-words.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+shell-words.workspace = true
 subtle = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "sync", "macros", "rt", "test-util"] }
@@ -67,8 +67,8 @@ zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true
-zeph-memory.workspace = true
 zeph-mcp.workspace = true
+zeph-memory.workspace = true
 zeph-tools.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 

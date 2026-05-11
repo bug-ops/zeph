@@ -29,9 +29,9 @@ serde_json.workspace = true
 sha2 = { workspace = true, optional = true }
 subtle = { workspace = true, optional = true }
 teloxide = { workspace = true, features = ["rustls", "ctrlc_handler", "macros"] }
+thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
 tokio-tungstenite = { workspace = true, optional = true, features = ["connect", "rustls-tls-native-roots"] }
-thiserror.workspace = true
 tracing.workspace = true
 unicode-width.workspace = true
 zeph-common.workspace = true

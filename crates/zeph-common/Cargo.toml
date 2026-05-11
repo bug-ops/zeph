@@ -35,14 +35,14 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util.workspace = true
 tracing.workspace = true
-uuid = { workspace = true, features = ["v4"] }
-zeroize = { workspace = true, features = ["alloc", "derive", "serde"] }
 tree-sitter = { workspace = true, optional = true }
 tree-sitter-go = { workspace = true, optional = true }
 tree-sitter-javascript = { workspace = true, optional = true }
 tree-sitter-python = { workspace = true, optional = true }
 tree-sitter-rust = { workspace = true, optional = true }
 tree-sitter-typescript = { workspace = true, optional = true }
+uuid = { workspace = true, features = ["v4"] }
+zeroize = { workspace = true, features = ["alloc", "derive", "serde"] }
 
 [dev-dependencies]
 metrics-util = { workspace = true, features = ["debugging"] }

@@ -20,13 +20,13 @@ mock = []
 [dependencies]
 async-trait.workspace = true
 blake3.workspace = true
-futures.workspace = true
 dashmap.workspace = true
+futures.workspace = true
 glob.workspace = true
 http.workspace = true
-qdrant-client = { workspace = true, features = ["serde"] }
 open.workspace = true
 parking_lot.workspace = true
+qdrant-client = { workspace = true, features = ["serde"] }
 regex.workspace = true
 reqwest = { workspace = true, features = ["rustls", "json"] }
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }
@@ -34,7 +34,6 @@ schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-zeph-db = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true, features = ["process", "sync", "time", "rt", "net", "io-util"] }
 tokio-util.workspace = true
 tracing.workspace = true
@@ -42,6 +41,7 @@ url.workspace = true
 uuid = { workspace = true, features = ["v5"] }
 zeph-common.workspace = true
 zeph-config.workspace = true
+zeph-db = { workspace = true, features = ["sqlite"] }
 zeph-llm.workspace = true
 zeph-memory = { workspace = true, features = ["sqlite"] }
 zeph-tools.workspace = true

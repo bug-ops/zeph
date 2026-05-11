@@ -24,13 +24,13 @@ chrono = { workspace = true, features = ["std", "clock"] }
 cron.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls"] }
 rustix = { workspace = true, features = ["fs", "process", "std"], optional = true }
+semver.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-semver.workspace = true
 thiserror.workspace = true
-zeph-db = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tracing.workspace = true
+zeph-db = { workspace = true, features = ["sqlite"] }
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]

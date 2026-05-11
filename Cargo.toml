@@ -21,8 +21,10 @@ agent-client-protocol = "0.11.1"
 agent-client-protocol-tokio = "0.11.1"
 anyhow = "1.0.102"
 arboard = "3.6.1"
+arc-swap = "1.9.1"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
+audioadapter-buffers = "3.0"
 axum = "0.8.9"
 base64 = "0.22.1"
 bech32 = "0.9.1"
@@ -45,16 +47,23 @@ expectrl = "0.8"
 futures = "0.3.32"
 futures-core = "0.3.32"
 glob = "0.3.3"
-hf-hub = { version = "0.5", default-features = false }
+globset = "0.4.18"
 hex = "0.4.3"
+hf-hub = { version = "0.5", default-features = false }
+hmac = "0.13"
 http = "1.4"
-k256 = { version = "0.13", default-features = false }
 http-body-util = "0.1.3"
 ignore = "0.4.25"
-include_dir = { version = "0.7.4", features = ["glob"] }
+include_dir = "0.7.4"
 indexmap = "2.14.0"
 indoc = "2.0.7"
 insta = "1.47.2"
+k256 = { version = "0.13", default-features = false }
+landlock = "0.4.4"
+libsqlite3-sys = "0.37.0"
+lru = "0.18.0"
+metrics = "0.24.5"
+metrics-util = "0.20.3"
 nix = { version = "0.31.2", default-features = false }
 notify = "8.2.0"
 notify-debouncer-mini = "0.7"
@@ -65,14 +74,11 @@ opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31.1", default-features = false }
 opentelemetry_sdk = { version = "0.31", default-features = false }
 ordered-float = "5.3"
-pdf-extract = "0.10"
-metrics = "0.24.5"
-metrics-util = "0.20.3"
-arc-swap = "1.9.1"
-lru = "0.18.0"
 parking_lot = "0.12.5"
-prometheus-client = "0.24.1"
+pdf-extract = "0.10"
 petgraph = "0.8.3"
+pprof = { version = "0.15.0", default-features = false }
+prometheus-client = "0.24.1"
 proptest = "1.11"
 pulldown-cmark = "0.13.3"
 qdrant-client = { version = "1.18", default-features = false }
@@ -83,27 +89,23 @@ regex = "1.12.3"
 reqwest = { version = "0.13.3", default-features = false }
 ripemd = "0.2"
 rmcp = "1.6.0"
-rustix = { version = "1.1.4", default-features = false }
-audioadapter-buffers = "3.0"
 rubato = "2.0"
+rustix = { version = "1.1.4", default-features = false }
 schemars = "1.2.1"
-shell-words = "1.1.1"
-hmac = "0.13"
-sha2 = "0.11"
 scrape-core = "0.2.6"
+seccompiler = "0.5.0"
 semver = "1.0.28"
 serde = "1.0.228"
 serde_json = "1.0.149"
 serde_norway = "0.9.42"
 serial_test = "3.4"
-globset = "0.4.18"
+sha2 = "0.11"
+shell-words = "1.1.1"
 similar = "3.1"
 sqlx = { version = "0.8.6", default-features = false }
-libsqlite3-sys = { version = "0.37.0", features = ["bundled"] }
 subtle = "2.6"
-sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
-pprof = { version = "0.15.0", default-features = false }
 symphonia = { version = "0.5.5", default-features = false }
+sysinfo = { version = "0.38.4", default-features = false }
 teloxide = { version = "0.17", default-features = false }
 tempfile = "3.27"
 testcontainers = "0.27.3"
@@ -124,7 +126,7 @@ tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-chrome = "0.7.2"
 tracing-opentelemetry = "0.32.1"
-tracing-subscriber = { version = "0.3.23", default-features = false, features = ["parking_lot"] }
+tracing-subscriber = { version = "0.3.23", default-features = false }
 tracing-test = "0.2.6"
 tree-sitter = "0.26.8"
 tree-sitter-bash = "0.25.1"
@@ -143,36 +145,36 @@ url = "2.5.8"
 uuid = "1.23.1"
 walkdir = "2.5"
 wiremock = "0.6.5"
-zeroize = { version = "1.8.2", default-features = false }
 zeph-a2a = { path = "crates/zeph-a2a", version = "0.21.0" }
+zeph-acp = { path = "crates/zeph-acp", version = "0.21.0" }
 zeph-agent-context = { path = "crates/zeph-agent-context", version = "0.21.0" }
 zeph-agent-feedback = { path = "crates/zeph-agent-feedback", version = "0.21.0" }
 zeph-agent-persistence = { path = "crates/zeph-agent-persistence", version = "0.21.0" }
 zeph-agent-tools = { path = "crates/zeph-agent-tools", version = "0.21.0" }
 zeph-bench = { path = "crates/zeph-bench", version = "0.21.0" }
-zeph-acp = { path = "crates/zeph-acp", version = "0.21.0" }
-zeph-db = { path = "crates/zeph-db", default-features = false, version = "0.21.0" }
 zeph-channels = { path = "crates/zeph-channels", version = "0.21.0" }
+zeph-commands = { path = "crates/zeph-commands", version = "0.21.0" }
 zeph-common = { path = "crates/zeph-common", version = "0.21.0" }
 zeph-config = { path = "crates/zeph-config", version = "0.21.0" }
-zeph-commands = { path = "crates/zeph-commands", version = "0.21.0" }
 zeph-context = { path = "crates/zeph-context", version = "0.21.0" }
 zeph-core = { path = "crates/zeph-core", version = "0.21.0" }
+zeph-db = { path = "crates/zeph-db", default-features = false, version = "0.21.0" }
 zeph-experiments = { path = "crates/zeph-experiments", version = "0.21.0" }
 zeph-gateway = { path = "crates/zeph-gateway", version = "0.21.0" }
 zeph-index = { path = "crates/zeph-index", version = "0.21.0" }
 zeph-llm = { path = "crates/zeph-llm", version = "0.21.0" }
 zeph-mcp = { path = "crates/zeph-mcp", version = "0.21.0" }
 zeph-memory = { path = "crates/zeph-memory", default-features = false, version = "0.21.0" }
-zeph-scheduler = { path = "crates/zeph-scheduler", version = "0.21.0" }
-zeph-skills = { path = "crates/zeph-skills", version = "0.21.0" }
-zeph-tools = { path = "crates/zeph-tools", version = "0.21.0" }
-zeph-tui = { path = "crates/zeph-tui", version = "0.21.0" }
-zeph-vault = { path = "crates/zeph-vault", version = "0.21.0" }
 zeph-orchestration = { path = "crates/zeph-orchestration", version = "0.21.0" }
 zeph-plugins = { path = "crates/zeph-plugins", version = "0.21.0" }
 zeph-sanitizer = { path = "crates/zeph-sanitizer", version = "0.21.0" }
+zeph-scheduler = { path = "crates/zeph-scheduler", version = "0.21.0" }
+zeph-skills = { path = "crates/zeph-skills", version = "0.21.0" }
 zeph-subagent = { path = "crates/zeph-subagent", version = "0.21.0" }
+zeph-tools = { path = "crates/zeph-tools", version = "0.21.0" }
+zeph-tui = { path = "crates/zeph-tui", version = "0.21.0" }
+zeph-vault = { path = "crates/zeph-vault", version = "0.21.0" }
+zeroize = { version = "1.8.2", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
@@ -268,6 +270,7 @@ opentelemetry = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true, features = ["grpc-tonic", "trace"] }
 opentelemetry_sdk = { workspace = true, optional = true, features = ["trace"] }
 parking_lot.workspace = true
+pprof = { workspace = true, optional = true, features = ["prost-codec"] }
 prometheus-client = { workspace = true, optional = true }
 reqwest.workspace = true
 rmcp.workspace = true
@@ -275,8 +278,8 @@ schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 similar.workspace = true
+sysinfo = { workspace = true, optional = true }
 tempfile.workspace = true
-zeph-db.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util.workspace = true
 toml.workspace = true
@@ -285,34 +288,33 @@ tracing.workspace = true
 tracing-appender.workspace = true
 tracing-chrome = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
-sysinfo = { workspace = true, optional = true }
-pprof = { workspace = true, optional = true, features = ["prost-codec"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 uuid = { workspace = true, optional = true, features = ["v4"] }
-zeroize.workspace = true
 zeph-a2a = { workspace = true, optional = true }
 zeph-acp = { workspace = true, optional = true }
+zeph-bench = { workspace = true, optional = true }
 zeph-channels.workspace = true
 zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-context.workspace = true
 zeph-core.workspace = true
+zeph-db.workspace = true
+zeph-experiments.workspace = true
 zeph-gateway = { workspace = true, optional = true }
 zeph-index.workspace = true
 zeph-llm.workspace = true
-zeph-memory.workspace = true
 zeph-mcp.workspace = true
-zeph-sanitizer.workspace = true
-zeph-scheduler = { workspace = true, optional = true }
-zeph-experiments.workspace = true
+zeph-memory.workspace = true
 zeph-orchestration.workspace = true
 zeph-plugins.workspace = true
+zeph-sanitizer.workspace = true
+zeph-scheduler = { workspace = true, optional = true }
 zeph-skills.workspace = true
 zeph-subagent.workspace = true
 zeph-tools.workspace = true
 zeph-tui = { workspace = true, optional = true }
-zeph-bench = { workspace = true, optional = true }
+zeroize.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
