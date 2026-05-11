@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(core): prevent orphaned ToolUse/ToolResult pairs in subagent parent context window. When
+  `extract_parent_messages` sliced the last N turns, pairs split across the slice boundary caused
+  `split_messages_structured` to silently downgrade ToolResult blocks to flat text. The new
+  `trim_parent_messages` helper performs two-pass orphan pruning after budget truncation: pass 1
+  removes ToolResult parts with no matching ToolUse in the slice; pass 2 removes dangling ToolUse
+  parts (excluding the trailing assistant message, which may have pending calls). Messages emptied
+  by pruning are removed. `rebuild_content` is only called when parts were actually changed,
+  preventing ThinkingBlock content corruption. Closes #3760.
+- fix(core): fix token budget underestimation in subagent parent context. `extract_parent_messages`
+  summed `m.content.len()` from `flatten_parts()`, which compresses ToolUse/ToolResult to short
+  placeholders. The actual Claude API JSON is larger. The new `estimate_parts_size` helper sums
+  per-part sizes accounting for ToolUse input JSON, ToolResult content, and image base64 overhead.
+  Budget truncation now iterates from newest to oldest, keeping the most-recent messages that fit.
+  Closes #3761.
+
 ## [0.21.0] - 2026-05-11
 
 ### Added
