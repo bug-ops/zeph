@@ -20,16 +20,12 @@ name = "ZephTest"
 max_tool_iterations = 10
 auto_update_check = false
 
-[llm]
-provider = "openai"
-base_url = "https://api.openai.com/v1"
-model = "gpt-4o-mini"
-embedding_model = "text-embedding-3-small"
-
-[llm.openai]
-base_url = "https://api.openai.com/v1"
+[[llm.providers]]
+type = "openai"
 model = "gpt-4o-mini"
 max_tokens = 4096
+embedding_model = "text-embedding-3-small"
+default = true
 
 [skills]
 paths = [".local/testing/skills"]
