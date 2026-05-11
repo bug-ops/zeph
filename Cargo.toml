@@ -75,7 +75,7 @@ prometheus-client = "0.24.1"
 petgraph = "0.8.3"
 proptest = "1.11"
 pulldown-cmark = "0.13.3"
-qdrant-client = { version = "1.17", default-features = false }
+qdrant-client = { version = "1.18", default-features = false }
 rand = "0.10.1"
 rand_distr = "0.6"
 ratatui = "0.30"
