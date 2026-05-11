@@ -383,7 +383,7 @@ mod tests {
         }
     }
 
-    fn make_call(tool_id: &str, params: serde_json::Value) -> ToolCall {
+    fn make_call(tool_id: &str, params: &serde_json::Value) -> ToolCall {
         ToolCall {
             tool_id: ToolName::new(tool_id),
             params: params.as_object().cloned().unwrap_or_default(),
@@ -399,7 +399,7 @@ mod tests {
     async fn unknown_tool_returns_none() {
         let (backend, _, _) = MockBackend::new(false);
         let exec = ModerationExecutor::new(backend);
-        let call = make_call("unknown_tool", serde_json::json!({}));
+        let call = make_call("unknown_tool", &serde_json::json!({}));
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
     }
@@ -563,7 +563,7 @@ mod tests {
     fn does_not_require_confirmation_for_unknown_tool() {
         let (backend, _, _) = MockBackend::new(false);
         let exec = ModerationExecutor::new(backend);
-        let call = make_call("unknown", serde_json::json!({}));
+        let call = make_call("unknown", &serde_json::json!({}));
         assert!(!exec.requires_confirmation(&call));
     }
 
