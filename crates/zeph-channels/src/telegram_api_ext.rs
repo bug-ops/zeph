@@ -190,6 +190,12 @@ impl TelegramApiClient {
     /// Creates an independent `reqwest::Client` with its own connection pool and
     /// a [`REQUEST_TIMEOUT`] per-request timeout. To share a connection pool with
     /// an existing client, use [`TelegramApiClient::with_client`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the TLS backend cannot be initialised (i.e. `reqwest::ClientBuilder::build`
+    /// returns an error). This does not occur in practice when the crate is compiled with a
+    /// supported TLS backend.
     #[must_use]
     pub fn new(token: impl Into<String>) -> Self {
         let token = token.into();
@@ -266,6 +272,11 @@ impl TelegramApiClient {
     ///
     /// This method is primarily intended for testing (point at a wiremock server)
     /// or for deployments that proxy through a local Bot API server.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the TLS backend cannot be initialised. This does not occur in practice
+    /// when the crate is compiled with a supported TLS backend.
     ///
     /// [`new`]: TelegramApiClient::new
     #[must_use]
