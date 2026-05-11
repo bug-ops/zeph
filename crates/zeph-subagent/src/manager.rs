@@ -3768,7 +3768,7 @@ mod tests {
 
     // ── MemoryAwareExecutor tests (#3771) ─────────────────────────────────────
 
-    /// A stub executor that always returns SandboxViolation for any tool call.
+    /// A stub executor that always returns `SandboxViolation` for any tool call.
     struct SandboxExecutor;
 
     impl ErasedToolExecutor for SandboxExecutor {
