@@ -61,9 +61,9 @@ notify-debouncer-mini = "0.7"
 nucleo-matcher = "0.3.1"
 ollama-rs = { version = "0.3.4", default-features = false }
 open = "5.3.4"
-opentelemetry = "0.32.0"
-opentelemetry-otlp = { version = "0.32.0", default-features = false }
-opentelemetry_sdk = { version = "0.32.0", default-features = false }
+opentelemetry = "0.31"
+opentelemetry-otlp = { version = "0.31.1", default-features = false }
+opentelemetry_sdk = { version = "0.31", default-features = false }
 ordered-float = "5.3"
 pdf-extract = "0.10"
 metrics = "0.24.5"
