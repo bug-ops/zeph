@@ -962,7 +962,7 @@ mod tests {
             .and(path_regex(".*/getMe$"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::json!({
-                    "id": 123456,
+                    "id": 123_456,
                     "is_bot": true,
                     "first_name": "MyBot",
                     "username": "my_bot"
@@ -973,7 +973,7 @@ mod tests {
 
         let client = TelegramApiClient::with_base_url(server.uri());
         let me = client.get_me().await.unwrap();
-        assert_eq!(me.id, 123456);
+        assert_eq!(me.id, 123_456);
         assert!(me.is_bot);
     }
 
