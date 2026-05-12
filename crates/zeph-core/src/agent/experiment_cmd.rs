@@ -119,6 +119,10 @@ impl<C: Channel> Agent<C> {
         match &self.services.experiments.cancel {
             Some(token) if !token.is_cancelled() => {
                 token.cancel();
+                if let Some(h) = self.services.experiments.handle.take() {
+                    h.abort();
+                }
+                self.services.experiments.cancel = None;
                 "Experiment session cancelled. Results so far are saved.".to_owned()
             }
             _ => "No experiment is currently running.".to_owned(),
@@ -217,13 +221,14 @@ impl<C: Channel> Agent<C> {
         let cancel = engine.cancel_token();
         self.services.experiments.cancel = Some(cancel);
         let notify_tx = self.services.experiments.notify_tx.clone();
-        // intentionally untracked: long-running multi-minute LLM session with its own
-        // CancellationToken and single-instance invariant enforced by `experiments.cancel`.
+        // Not routed through BackgroundSupervisor: long-running multi-minute LLM session with its
+        // own CancellationToken and single-instance invariant enforced by `experiments.cancel`.
         // BackgroundSupervisor::spawn() returns bool (no JoinHandle), uses Drop-on-overflow
         // semantics, and has only small-fast task classes (Telemetry/Enrichment); routing an
         // experiment session through it would silently drop it when the Telemetry pool is full,
         // producing a misleading "starting" message with no experiment actually running.
-        drop(tokio::spawn(async move {
+        // The handle is stored in ExperimentState so shutdown() can abort it if needed.
+        let handle = tokio::spawn(async move {
             let mut engine = engine;
             let msg = match engine.run().await {
                 Ok(report) => {
@@ -245,7 +250,8 @@ impl<C: Channel> Agent<C> {
                 Err(e) => format!("Experiment session failed: {e}"),
             };
             let _ = notify_tx.send(msg).await;
-        }));
+        });
+        self.services.experiments.handle = Some(handle);
         format!(
             "Experiment session starting (max {max_n} experiments). \
              Use /experiment stop to cancel. Results will be shown when complete."

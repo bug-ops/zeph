@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use zeph_common::SkillTrustLevel;
 
+use crate::providers::ProviderName;
 use crate::tools::{AutonomyLevel, PreExecutionVerifierConfig};
 
 use crate::defaults::default_true;
@@ -354,7 +355,7 @@ pub struct ShadowSentinelConfig {
     /// Empty string means use the main/default provider. A fast, cheap provider
     /// (e.g. `gpt-4o-mini`) is strongly recommended to minimise turn latency.
     #[serde(default)]
-    pub probe_provider: String,
+    pub probe_provider: ProviderName,
     /// Maximum number of trajectory events to include in the probe context. Default: 50.
     #[serde(default = "default_shadow_max_context_events")]
     pub max_context_events: usize,
@@ -384,7 +385,7 @@ impl Default for ShadowSentinelConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            probe_provider: String::new(),
+            probe_provider: ProviderName::default(),
             max_context_events: default_shadow_max_context_events(),
             probe_timeout_ms: default_shadow_probe_timeout_ms(),
             max_probes_per_turn: default_shadow_max_probes_per_turn(),

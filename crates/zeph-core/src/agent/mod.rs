@@ -716,11 +716,16 @@ impl<C: Channel> Agent<C> {
         // startup strips the orphaned ToolUse and emits warnings.
         self.flush_orphaned_tool_use_on_shutdown().await;
 
-        // NOTE: forcibly aborts in-flight Enrichment and Telemetry tasks tracked by the
-        // supervisor. Before the sprint-1 refactor, experiment sessions were detached
-        // tokio::spawn calls that survived shutdown; they are now intentionally untracked
-        // (see experiment_cmd.rs) and will continue running until their own CancellationToken
-        // is triggered or the process exits.
+        // Signal the experiment CancellationToken first so the task can clean up gracefully,
+        // then abort the handle to guarantee it does not outlive the agent regardless.
+        if let Some(ref token) = self.services.experiments.cancel {
+            token.cancel();
+        }
+        if let Some(h) = self.services.experiments.handle.take() {
+            h.abort();
+        }
+
+        // Forcibly abort in-flight Enrichment and Telemetry tasks tracked by the supervisor.
         self.runtime.lifecycle.supervisor.abort_all();
 
         // Abort background task handles not tracked by BackgroundSupervisor.
@@ -881,6 +886,7 @@ impl<C: Channel> Agent<C> {
                     }
                     Some(LoopEvent::ExperimentCompleted(msg)) => {
                         self.services.experiments.cancel = None;
+                        self.services.experiments.handle = None;
                         if let Err(e) = self.channel.send(&msg).await {
                             tracing::warn!("failed to send experiment completion: {e}");
                         }

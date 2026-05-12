@@ -380,9 +380,17 @@ impl Config {
 
     /// Validate every required `*_provider` field references a declared provider.
     ///
-    /// The field table lists all 19 subsystem provider references. Each non-empty value must
+    /// The field table lists all subsystem provider references. Each non-empty value must
     /// match a name in `known`.
     fn validate_named_provider_refs(
+        &self,
+        known: &std::collections::HashSet<String>,
+    ) -> Result<(), ConfigError> {
+        self.validate_core_provider_refs(known)?;
+        self.validate_tool_and_quality_provider_refs(known)
+    }
+
+    fn validate_core_provider_refs(
         &self,
         known: &std::collections::HashSet<String>,
     ) -> Result<(), ConfigError> {
@@ -464,7 +472,44 @@ impl Config {
                 &self.memory.compression_spectrum.promotion_provider,
             ),
         ];
+        Self::check_provider_refs(fields, known)
+    }
 
+    fn validate_tool_and_quality_provider_refs(
+        &self,
+        known: &std::collections::HashSet<String>,
+    ) -> Result<(), ConfigError> {
+        let fields: &[(&str, &crate::providers::ProviderName)] = &[
+            (
+                "security.shadow_sentinel.probe_provider",
+                &self.security.shadow_sentinel.probe_provider,
+            ),
+            (
+                "tools.retry.parameter_reformat_provider",
+                &self.tools.retry.parameter_reformat_provider,
+            ),
+            (
+                "tools.adversarial_policy.policy_provider",
+                &self.tools.adversarial_policy.policy_provider,
+            ),
+            (
+                "tools.speculative.pattern.rerank_provider",
+                &self.tools.speculative.pattern.rerank_provider,
+            ),
+            (
+                "tools.compression.evolution_provider",
+                &self.tools.compression.evolution_provider,
+            ),
+            ("quality.proposer_provider", &self.quality.proposer_provider),
+            ("quality.checker_provider", &self.quality.checker_provider),
+        ];
+        Self::check_provider_refs(fields, known)
+    }
+
+    fn check_provider_refs(
+        fields: &[(&str, &crate::providers::ProviderName)],
+        known: &std::collections::HashSet<String>,
+    ) -> Result<(), ConfigError> {
         for (field, name) in fields {
             if !name.is_empty() && !known.contains(name.as_str()) {
                 return Err(ConfigError::Validation(format!(

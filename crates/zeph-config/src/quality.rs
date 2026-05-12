@@ -14,6 +14,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::providers::ProviderName;
+
 /// When to trigger the self-check pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -36,11 +38,11 @@ pub struct QualityConfig {
 
     /// Advisory: preferred provider for the Proposer role (MVP: no-op).
     #[serde(default)]
-    pub proposer_provider: String,
+    pub proposer_provider: ProviderName,
 
     /// Advisory: preferred provider for the Checker role (MVP: no-op).
     #[serde(default)]
-    pub checker_provider: String,
+    pub checker_provider: ProviderName,
 
     /// When to trigger the pipeline.
     #[serde(default)]
@@ -105,8 +107,8 @@ impl Default for QualityConfig {
     fn default() -> Self {
         Self {
             self_check: false,
-            proposer_provider: String::new(),
-            checker_provider: String::new(),
+            proposer_provider: ProviderName::default(),
+            checker_provider: ProviderName::default(),
             trigger: TriggerPolicy::default(),
             min_evidence: default_min_evidence(),
             async_run: false,

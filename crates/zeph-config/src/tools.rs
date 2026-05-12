@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::providers::ProviderName;
 use zeph_common::SkillTrustLevel;
 
 // ── Permissions ──────────────────────────────────────────────────────────────
@@ -703,7 +704,7 @@ pub struct RetryConfig {
     /// Provider name for LLM-based parameter reformatting on `InvalidParameters`/`TypeMismatch`.
     /// Empty string = disabled.
     #[serde(default)]
-    pub parameter_reformat_provider: String,
+    pub parameter_reformat_provider: ProviderName,
 }
 
 impl Default for RetryConfig {
@@ -713,7 +714,7 @@ impl Default for RetryConfig {
             base_ms: default_retry_base_ms(),
             max_ms: default_retry_max_ms(),
             budget_secs: default_retry_budget_secs(),
-            parameter_reformat_provider: String::new(),
+            parameter_reformat_provider: ProviderName::default(),
         }
     }
 }
@@ -730,7 +731,7 @@ pub struct AdversarialPolicyConfig {
     pub enabled: bool,
     /// Provider name for the policy validation LLM.
     #[serde(default)]
-    pub policy_provider: String,
+    pub policy_provider: ProviderName,
     /// Path to a plain-text policy file.
     pub policy_file: Option<String>,
     /// Whether to allow tool calls when the policy LLM fails. Default: `false` (fail-closed).
@@ -748,7 +749,7 @@ impl Default for AdversarialPolicyConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            policy_provider: String::new(),
+            policy_provider: ProviderName::default(),
             policy_file: None,
             fail_open: false,
             timeout_ms: default_adversarial_timeout_ms(),
@@ -1009,7 +1010,7 @@ pub struct SpeculativePatternConfig {
     pub half_life_days: f64,
     /// LLM provider name for optional reranking. Empty = disabled.
     #[serde(default)]
-    pub rerank_provider: String,
+    pub rerank_provider: ProviderName,
 }
 
 fn default_min_observations() -> u32 {
@@ -1026,7 +1027,7 @@ impl Default for SpeculativePatternConfig {
             enabled: false,
             min_observations: default_min_observations(),
             half_life_days: default_half_life_days(),
-            rerank_provider: String::new(),
+            rerank_provider: ProviderName::default(),
         }
     }
 }
@@ -1167,7 +1168,7 @@ pub struct ToolCompressionConfig {
     pub min_lines_to_compress: usize,
     /// LLM provider name for self-evolution. Empty string = evolution disabled. Default: `""`.
     #[serde(default)]
-    pub evolution_provider: String,
+    pub evolution_provider: ProviderName,
     /// Minimum interval in seconds between self-evolution runs. Default: `3600`.
     #[serde(default = "default_evolution_min_interval_secs")]
     pub evolution_min_interval_secs: u64,
@@ -1184,7 +1185,7 @@ impl Default for ToolCompressionConfig {
         Self {
             enabled: false,
             min_lines_to_compress: default_compression_min_lines(),
-            evolution_provider: String::new(),
+            evolution_provider: ProviderName::default(),
             evolution_min_interval_secs: default_evolution_min_interval_secs(),
             max_rules: default_compression_max_rules(),
             regex_compile_timeout_ms: default_regex_compile_timeout_ms(),

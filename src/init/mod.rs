@@ -998,11 +998,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     }
 
     config.tools.retry.max_attempts = state.retry_max_attempts;
-    config
-        .tools
-        .retry
-        .parameter_reformat_provider
-        .clone_from(&state.retry_parameter_reformat_provider);
+    config.tools.retry.parameter_reformat_provider =
+        zeph_config::ProviderName::new(&state.retry_parameter_reformat_provider);
 
     config.logging.file.clone_from(&state.log_file);
     config.logging.level.clone_from(&state.log_level);

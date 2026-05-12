@@ -615,6 +615,9 @@ pub(crate) struct ExperimentState {
     pub(crate) config: crate::config::ExperimentConfig,
     /// Cancellation token for a running experiment session. `Some` means an experiment is active.
     pub(crate) cancel: Option<tokio_util::sync::CancellationToken>,
+    /// `JoinHandle` for the background experiment task. Stored so shutdown can abort it if the
+    /// `CancellationToken` signal is not observed in time (e.g. the task is blocked on I/O).
+    pub(crate) handle: Option<tokio::task::JoinHandle<()>>,
     /// Pre-built config snapshot used as the experiment baseline (agent path).
     pub(crate) baseline: zeph_experiments::ConfigSnapshot,
     /// Dedicated judge provider for evaluation. When `Some`, the evaluator uses this provider
@@ -1170,6 +1173,7 @@ impl ExperimentState {
         Self {
             config: crate::config::ExperimentConfig::default(),
             cancel: None,
+            handle: None,
             baseline: zeph_experiments::ConfigSnapshot::default(),
             eval_provider: None,
             notify_rx: Some(notify_rx),

@@ -1750,7 +1750,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             }
 
             adv_policy_info = Some(zeph_core::AdversarialPolicyInfo {
-                provider: adv_cfg.policy_provider.clone(),
+                provider: adv_cfg.policy_provider.to_string(),
                 policy_count: policies.len(),
                 fail_open: adv_cfg.fail_open,
             });
@@ -1878,8 +1878,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             let probe_provider = if sentinel_cfg.probe_provider.is_empty() {
                 provider.clone()
             } else {
-                match crate::bootstrap::create_named_provider(&sentinel_cfg.probe_provider, config)
-                {
+                match crate::bootstrap::create_named_provider(
+                    sentinel_cfg.probe_provider.as_str(),
+                    config,
+                ) {
                     Ok(p) => p,
                     Err(e) => {
                         tracing::warn!(

@@ -134,7 +134,7 @@ impl AgentSessionConfig {
             max_retry_duration_secs: config.tools.retry.budget_secs,
             retry_base_ms: config.tools.retry.base_ms,
             retry_max_ms: config.tools.retry.max_ms,
-            parameter_reformat_provider: config.tools.retry.parameter_reformat_provider.clone(),
+            parameter_reformat_provider: config.tools.retry.parameter_reformat_provider.to_string(),
             tool_repeat_threshold: config.agent.tool_repeat_threshold,
             tool_summarization: config.tools.summarize_output,
             tool_call_cutoff: config.memory.tool_call_cutoff,
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(sc.retry_max_ms, config.tools.retry.max_ms);
         assert_eq!(
             sc.parameter_reformat_provider,
-            config.tools.retry.parameter_reformat_provider
+            config.tools.retry.parameter_reformat_provider.as_str()
         );
         assert_eq!(sc.tool_repeat_threshold, config.agent.tool_repeat_threshold);
         assert_eq!(sc.tool_summarization, config.tools.summarize_output);
