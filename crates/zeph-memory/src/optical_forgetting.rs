@@ -385,6 +385,7 @@ async fn summarize_content(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_config::providers::ProviderName;
 
     #[test]
     fn content_fidelity_round_trip() {
@@ -453,7 +454,7 @@ mod tests {
             summarize_after_turns: 500,
             sweep_interval_secs: 3600,
             sweep_batch_size: 50,
-            compress_provider: Default::default(),
+            compress_provider: ProviderName::default(),
         };
         let result = run_optical_forgetting_sweep(&store, &provider, &config, 0.0)
             .await
@@ -467,7 +468,7 @@ mod tests {
     }
 
     /// Verify that `run_optical_forgetting_sweep` compresses a Full message that is
-    /// old enough (compress_after_turns = 0).
+    /// old enough (`compress_after_turns` = 0).
     #[tokio::test]
     async fn sweep_compresses_eligible_full_message() {
         use std::sync::Arc;
@@ -502,7 +503,7 @@ mod tests {
             summarize_after_turns: 500,
             sweep_interval_secs: 3600,
             sweep_batch_size: 50,
-            compress_provider: Default::default(),
+            compress_provider: ProviderName::default(),
         };
         let result = run_optical_forgetting_sweep(&store, &provider, &config, 0.0)
             .await

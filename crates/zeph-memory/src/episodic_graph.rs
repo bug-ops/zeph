@@ -506,6 +506,7 @@ pub async fn recall_episodic_causal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_config::providers::ProviderName;
 
     #[test]
     fn parse_events_response_valid_json() {
@@ -653,7 +654,7 @@ mod tests {
 
         let config = EmGraphConfig {
             enabled: true,
-            extract_provider: Default::default(),
+            extract_provider: ProviderName::default(),
             max_chain_depth: 3,
         };
         let chain = recall_episodic_causal(&store, events[0].id, "sess", 3, &config)
@@ -689,7 +690,7 @@ mod tests {
             .expect("SqliteStore::new");
         let config = EmGraphConfig {
             enabled: false,
-            extract_provider: Default::default(),
+            extract_provider: ProviderName::default(),
             max_chain_depth: 3,
         };
         let result = recall_episodic_causal(&store, 1, "sess", 3, &config).await;
@@ -745,7 +746,7 @@ mod tests {
             created_at: 0,
         };
         // Insert twice — second must be ignored, not duplicated.
-        store_links(&store, &[link.clone()])
+        store_links(&store, std::slice::from_ref(&link))
             .await
             .expect("first store_links");
         store_links(&store, &[link])

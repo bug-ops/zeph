@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn parse_validation_response_missing_fields_defaults_to_sufficient() {
         // Neither "sufficient" nor "confidence" present → defaults: sufficient=true, confidence=1.0
-        let raw = r#"{}"#;
+        let raw = "{}";
         assert!(
             parse_validation_response(raw, 0.6),
             "missing fields must default to sufficient"
