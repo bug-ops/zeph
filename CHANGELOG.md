@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(memory): gate `checkpoint_wal` and `entity_community_ids` call sites with
+  `#[cfg(any(feature = "sqlite", feature = "postgres"))]` to fix compilation when
+  neither DB backend feature is enabled; add `HashMap::new()` fallback for
+  `community_ids` in `find_seed_entities` (issue #3784).
+
 ## [0.21.1] - 2026-05-12
 
 ### Added

@@ -297,7 +297,10 @@ pub(crate) async fn find_seed_entities(
     let structural_scores = store.entity_structural_scores(&entity_ids).await?;
 
     // Step 4: community IDs.
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
     let community_ids = store.entity_community_ids(&entity_ids).await?;
+    #[cfg(not(any(feature = "sqlite", feature = "postgres")))]
+    let community_ids: HashMap<i64, i64> = HashMap::new();
 
     // Step 5: compute hybrid scores.
     let fts_weight = 1.0 - structural_weight;

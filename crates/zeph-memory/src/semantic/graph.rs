@@ -390,6 +390,7 @@ pub async fn extract_and_store(
     let (entity_name_to_id, entities_upserted) = upsert_entities(&resolver, &result.entities).await;
     let edges_inserted = insert_edges(&resolver, &result.edges, &entity_name_to_id, &config).await;
 
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
     store.checkpoint_wal().await?;
 
     let new_entity_ids: Vec<i64> = entity_name_to_id.into_values().collect();

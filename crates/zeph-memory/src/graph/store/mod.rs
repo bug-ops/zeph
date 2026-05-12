@@ -1207,6 +1207,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
     pub async fn entity_community_ids(
         &self,
         entity_ids: &[i64],
