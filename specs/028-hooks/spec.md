@@ -43,7 +43,7 @@ agent lifecycle events. Five event types are supported:
 |---|---|
 | `cwd_changed` | Agent working directory changes (via `set_working_directory` tool) |
 | `file_changed` | A watched file or directory subtree is modified on disk |
-| `permission_denied` | A tool execution is short-circuited by a `RuntimeLayer::before_tool` check |
+| `permission_denied` | A tool execution is denied by any gate in the tier loop (policy gate, sandbox, quota, utility gate, dep-failure, or rate limiter) |
 | `turn_complete` | An agent turn completes (after all tool calls and LLM response) |
 | `pre_tool_use` | Before any LLM-requested tool invocation — fires before the utility gate and `RuntimeLayer::before_tool` check (#3725) |
 | `post_tool_use` | After any tool invocation completes (carries `ZEPH_TOOL_DURATION_MS`) |
@@ -243,8 +243,9 @@ validating the new config. `HookRunner::replace_config` is an atomic swap using
 - `FileChangeWatcher` debounce is mandatory — raw filesystem events must never bypass it
 - File change watcher is skipped in `--bare` mode — `with_hooks_config` is guarded by `!exec_mode.bare` in `runner.rs` (#3362)
 - Hook execution is never on the agent hot path — always background task
-- `permission_denied` hook fires when `RuntimeLayer::before_tool` short-circuits execution; `LayerDenial.reason` is propagated to `ZEPH_DENY_REASON` (#3310)
+- `permission_denied` hook fires at **all** gate denial points in the tier loop via the `fire_permission_denied_hooks` async helper (#3779): policy gate (`LayerDenial.reason`), sandbox violation, session quota exceeded, utility gate interception, dep-failure skip, and rate-limiter block; the utility gate reason includes the `UtilityAction` variant name for disambiguation. Prior to #3779 the hook was only reachable via `RuntimeLayer::before_tool` and never fired in practice.
 - `turn_complete` is added to `HooksConfig` and `HooksConfig::is_empty()` check (#3327)
+- `turn_complete` hooks receive a live `McpManagerDispatch` handle (via `self.mcp_dispatch()`) so `type = "mcp_tool"` entries in `[[hooks.turn_complete]]` function correctly (#3773); prior to #3776 the dispatch was hardcoded to `None`, causing every `McpTool` turn-complete hook to fail with `HookError::McpUnavailable`
 - `type = "mcp_tool"` action requires MCP manager active; must fail gracefully per `fail_closed` setting when unavailable (#3293)
 - `HookRunner` uses `ArcSwap<HooksConfig>` — live reload is atomic, no lock contention on hook dispatch
 - `pre_tool_use` fires for ALL LLM-requested tool calls including those intercepted by the utility gate (Retrieve/Verify/Stop) — dispatch is ordered **before** `check_call_gates` in `build_tier_call_futures` (#3738); internal tools (`compress_context`, `start_focus`, `complete_focus`) are excluded via the early-continue guard

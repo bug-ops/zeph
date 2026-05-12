@@ -675,6 +675,12 @@ cargo build --release --features tui
 
 When [sub-agent orchestration](sub-agents.md) is active, the SubAgents panel in the right sidebar shows each running sub-agent, its current status, and allows you to inspect the full execution transcript.
 
+### Automatic View Switching
+
+When you spawn a foreground sub-agent (one that blocks the main conversation), the TUI automatically switches the chat view to display the sub-agent's transcript in real time. This lets you monitor the sub-agent's progress without manually switching views. When the sub-agent completes, the view automatically switches back to the main conversation.
+
+To manually switch back before the sub-agent completes, press `Esc` in the transcript view or use keyboard navigation to return to the main chat.
+
 ### Keybindings
 
 | Key | Action |

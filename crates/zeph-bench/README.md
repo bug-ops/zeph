@@ -141,7 +141,7 @@ state between runs. Results accumulate into a `BenchRun` and are persisted by `R
 
 ```toml
 [dependencies]
-zeph-bench = "0.20"
+zeph-bench = "0.21"
 ```
 
 This crate is part of the [Zeph](https://github.com/bug-ops/zeph) workspace. See the

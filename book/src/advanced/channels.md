@@ -9,7 +9,7 @@ Zeph supports six I/O channels. Each implements the `Channel` trait and can be s
 | CLI | Default | Token-by-token to stdout | y/N prompt |
 | Discord | `ZEPH_DISCORD_TOKEN` (requires `discord` feature) | Edit-in-place every 1.5s | Reply "yes" |
 | Slack | `ZEPH_SLACK_BOT_TOKEN` (requires `slack` feature) | `chat.update` every 2s | Reply "yes" |
-| Telegram | `ZEPH_TELEGRAM_TOKEN` | Edit-in-place every 10s | Reply "yes" |
+| Telegram | `ZEPH_TELEGRAM_TOKEN` | Edit-in-place every 10s (30s request timeout) | Reply "yes" |
 | TUI | `--tui` flag (requires `tui` feature) | Real-time in chat panel | Auto-confirm |
 | Loopback | `--daemon` flag (requires `daemon` + `a2a` features) | Via `LoopbackEvent` mpsc | Auto-confirm |
 

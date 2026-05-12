@@ -12,7 +12,7 @@ Provides `ContextService` — a stateless façade for all context operations: sy
 
 ```toml
 [dependencies]
-zeph-agent-context = { version = "0.20", workspace = true }
+zeph-agent-context = { version = "0.21", workspace = true }
 ```
 
 > [!IMPORTANT]
@@ -92,7 +92,7 @@ The `self-check` feature was consolidated as always-on in v0.20.x — retrieved-
 compile unconditionally. Only `index` remains optional.
 
 ```toml
-zeph-agent-context = { version = "0.20", workspace = true, features = ["index"] }
+zeph-agent-context = { version = "0.21", workspace = true, features = ["index"] }
 ```
 
 ## License

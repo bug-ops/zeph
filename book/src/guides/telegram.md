@@ -111,11 +111,47 @@ max_bot_chain_depth = 3
 
 When enabled, Zeph registers with Telegram via `setManagedBotAccessSettings` on startup and tracks consecutive bot-to-bot reply depth to prevent circular loops. Messages from unauthorized bots are silently rejected.
 
+## Reaction Moderation Tools
+
+Group admins can remove reactions from messages using two tools. Both require the bot to be a group admin and will gracefully degrade to warnings if the admin check fails.
+
+### `telegram_delete_reaction`
+
+Remove a specific reaction from a message. The reaction field must be a non-empty string of up to 10 characters.
+
+```toml
+# Example tool invocation in agent code
+[tool.telegram_delete_reaction]
+chat_id = "-1001234567890"
+message_id = 123
+reaction = "👍"
+```
+
+### `telegram_delete_all_reactions`
+
+Remove all reactions from a message.
+
+```toml
+# Remove all reactions from a message
+[tool.telegram_delete_all_reactions]
+chat_id = "-1001234567890"
+message_id = 123
+```
+
+Both tools require:
+- Bot to be a member of the group
+- Bot to have admin privileges in the group
+- Valid chat ID and message ID
+
 ## Voice and Image Support
 
 - **Voice notes**: automatically transcribed via STT when `stt` feature is enabled
 - **Photos**: forwarded to the LLM for visual reasoning (requires vision-capable model)
 - See [Audio & Vision](../advanced/multimodal.md) for backend configuration
+
+## Network Timeouts
+
+All Telegram API client connections are subject to a 30-second timeout. This ensures that slow or unresponsive server connections fail fast rather than blocking indefinitely. If you experience timeout errors, check your network connectivity and Telegram's API status at [Telegram Bot API Changelog](https://core.telegram.org/bots/api-changelog).
 
 ## Other Channels
 

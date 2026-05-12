@@ -17,7 +17,7 @@ Detects when a user is implicitly correcting a previous agent response — witho
 
 ```toml
 [dependencies]
-zeph-agent-feedback = { version = "0.20", workspace = true }
+zeph-agent-feedback = { version = "0.21", workspace = true }
 ```
 
 **Note:** Requires Rust 1.95 or later (Edition 2024).

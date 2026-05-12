@@ -326,19 +326,29 @@ When a `[notifications]` block is configured, `turn_complete` hooks share the sa
 
 ### `PermissionDenied`
 
-Fires when a tool execution is blocked by a `RuntimeLayer::before_tool` permission check. This allows you to log or audit blocked tool calls before they reach the user or external systems.
+Fires when a tool execution is blocked by any gate check: policy gates, sandbox restrictions, permission layers, rate limiters, quota limits, utility action restrictions, or dependency failures. This comprehensive hook allows you to log or audit all blocked tool calls before they reach the user or external systems.
 
 Hook commands receive:
 
 | Variable | Description |
 |----------|-------------|
 | `ZEPH_DENIED_TOOL` | Name of the blocked tool |
-| `ZEPH_DENY_REASON` | Reason the tool was denied (e.g., `"blocked by before_tool layer"`) |
+| `ZEPH_DENY_REASON` | Reason the tool was denied (e.g., `"quota exceeded"`, `"policy gate: untrusted_model"`, `"utility action: ModelSwitch"`) |
+
+**Denial reasons include:**
+- `quota exceeded` — tool execution quota exhausted
+- `policy gate: <name>` — blocked by a named policy gate
+- `sandbox violation: <type>` — sandbox restriction violated
+- `rate limit exceeded` — API rate limit hit
+- `dependency failed` — dependent tool or resource unavailable
+- `utility action: <action>` — blocked by a utility gate (e.g., `ModelSwitch`, `ConfigReload`)
+- `blocked by before_tool layer` — pre-execution permission check
 
 **Use cases:**
 - Log security audit events to a central system
 - Alert on suspicious tool invocation patterns
 - Track which policies are enforcing restrictions
+- Monitor quota exhaustion
 
 ```toml
 [[hooks.permission_denied]]
