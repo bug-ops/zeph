@@ -71,13 +71,16 @@ pub mod compression;
 pub mod compression_guidelines;
 pub mod consolidation;
 pub mod document;
+pub mod episodic_graph;
 pub mod facade;
 pub mod forgetting;
 pub mod hebbian_consolidation;
+pub mod optical_forgetting;
 pub mod reasoning;
 pub mod recall_view;
 pub mod retrieval_failure_logger;
 pub mod scenes;
+pub mod tiered_retrieval;
 pub mod tiers;
 
 pub mod db_vector_store;
@@ -133,6 +136,10 @@ pub use embedding_registry::{
     EmbedFuture, Embeddable, EmbeddingRegistry, EmbeddingRegistryError, SyncStats,
 };
 pub use embedding_store::ensure_qdrant_collection;
+pub use episodic_graph::{
+    CausalLink, EmGraphConfig, EpisodicEvent, extract_events, fetch_recent_events, link_events,
+    recall_episodic_causal, store_events, store_links,
+};
 pub use error::MemoryError;
 pub use eviction::{EbbinghausPolicy, EvictionPolicy, start_eviction_loop};
 pub use facade::{
@@ -151,6 +158,10 @@ pub use hebbian_consolidation::{
     GraphRule, HebbianConsolidationCandidate, HebbianConsolidationOutcome,
     run_consolidation_sweep as run_hebbian_consolidation_sweep,
     spawn_consolidation_loop as spawn_hebbian_consolidation_loop,
+};
+pub use optical_forgetting::{
+    ContentFidelity, OpticalForgettingConfig, OpticalForgettingResult,
+    run_optical_forgetting_sweep, start_optical_forgetting_loop,
 };
 pub use qdrant_ops::QdrantOps;
 pub use reasoning::{
@@ -187,6 +198,9 @@ pub use store::persona::PersonaFactRow;
 pub use store::retrieval_failures::{RetrievalFailureRecord, RetrievalFailureType};
 pub use store::session_digest::SessionDigest;
 pub use store::trajectory::{NewTrajectoryEntry, TrajectoryEntryRow};
+pub use tiered_retrieval::{
+    IntentClass, TieredRetrievalConfig, TieredRetrievalResult, recall_tiered, recall_tiered_async,
+};
 pub use tiers::{TierPromotionConfig, start_tier_promotion_loop};
 pub use token_counter::TokenCounter;
 pub use tokio_util::sync::CancellationToken;

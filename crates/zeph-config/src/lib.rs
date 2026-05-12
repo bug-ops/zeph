@@ -137,12 +137,12 @@ pub use mcp_security::{CapabilityClass, DataSensitivity, FlaggedParameter, ToolS
 pub use memory::{
     AdmissionConfig, AdmissionStrategy, AdmissionWeights, AutoDreamConfig, BeliefRevisionConfig,
     CategoryConfig, CompressionConfig, CompressionStrategy, ContextFormat, ContextStrategy,
-    DigestConfig, DocumentConfig, ForgettingConfig, GraphConfig, HebbianConfig, MagicDocsConfig,
-    MemCotConfig, MemoryConfig, MicrocompactConfig, NoteLinkingConfig, PersonaConfig,
-    PruningStrategy, ReasoningConfig, RecallViewConfig, RetrievalConfig, RetrievalFailuresConfig,
-    RpeConfig, SemanticConfig, SessionsConfig, SidequestConfig, StoreRoutingConfig,
-    StoreRoutingStrategy, TierConfig, TrajectoryConfig, TreeConfig, TypedPagesConfig,
-    TypedPagesEnforcement, VectorBackend,
+    DigestConfig, DocumentConfig, EmGraphConfig, ForgettingConfig, GraphConfig, HebbianConfig,
+    MagicDocsConfig, MemCotConfig, MemoryConfig, MicrocompactConfig, NoteLinkingConfig,
+    OpticalForgettingConfig, PersonaConfig, PruningStrategy, ReasoningConfig, RecallViewConfig,
+    RetrievalConfig, RetrievalFailuresConfig, RpeConfig, SemanticConfig, SessionsConfig,
+    SidequestConfig, StoreRoutingConfig, StoreRoutingStrategy, TierConfig, TieredRetrievalConfig,
+    TrajectoryConfig, TreeConfig, TypedPagesConfig, TypedPagesEnforcement, VectorBackend,
 };
 pub use metrics::MetricsConfig;
 pub use notifications::NotificationsConfig;

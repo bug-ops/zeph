@@ -954,6 +954,170 @@ pub struct MemoryConfig {
     /// writes are rejected before persistence. Evaluated after A-MAC admission control.
     #[serde(default)]
     pub quality_gate: WriteQualityGateConfig,
+    /// `MemFlow` tiered intent-driven retrieval (issue #3712).
+    ///
+    /// When `tiered_retrieval.enabled = true`, recall queries are classified by intent and
+    /// dispatched to the cheapest sufficient tier (`ProfileLookup` → `TargetedRetrieval` →
+    /// `DeepReasoning`) with optional validation and tier escalation.
+    #[serde(default)]
+    pub tiered_retrieval: TieredRetrievalConfig,
+    /// `ScrapMem` optical forgetting (issue #3713).
+    ///
+    /// When `optical_forgetting.enabled = true`, a background sweep progressively compresses
+    /// old messages: `Full` → `Compressed` → `SummaryOnly`, saving token budget in context assembly.
+    #[serde(default)]
+    pub optical_forgetting: OpticalForgettingConfig,
+    /// EM-Graph episodic event extraction and causal linking (issue #3713).
+    ///
+    /// When `em_graph.enabled = true`, episodic events are extracted from conversation turns
+    /// and linked via causal relationships, enabling causal-chain retrieval.
+    #[serde(default)]
+    pub em_graph: EmGraphConfig,
+}
+
+// ── MemFlow tiered retrieval config (issue #3712) ──────────────────────────────
+
+/// `MemFlow` tiered intent-driven retrieval configuration.
+///
+/// Classifies each recall query into one of three intent tiers (`ProfileLookup`,
+/// `TargetedRetrieval`, `DeepReasoning`) and dispatches to the cheapest sufficient backend.
+/// An optional validation step can escalate to a heavier tier when evidence confidence is low.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.tiered_retrieval]
+/// enabled = false
+/// classifier_provider = ""
+/// validator_provider = ""
+/// token_budget = 4096
+/// validation_enabled = false
+/// validation_threshold = 0.6
+/// max_escalations = 1
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TieredRetrievalConfig {
+    /// Enable `MemFlow` tiered retrieval. Default: `false`.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for intent classification.
+    ///
+    /// When empty, the `HeuristicRouter` is used (no LLM call). When a provider
+    /// is set but the call fails, falls back to the heuristic (fail-open).
+    pub classifier_provider: ProviderName,
+    /// Provider name from `[[llm.providers]]` for evidence validation.
+    ///
+    /// When empty or when `validation_enabled = false`, no validation call is made.
+    pub validator_provider: ProviderName,
+    /// Maximum tokens to gather for evidence per query. Default: `4096`.
+    pub token_budget: usize,
+    /// Enable evidence validation and tier escalation. Default: `false`.
+    pub validation_enabled: bool,
+    /// Confidence threshold below which validation triggers tier escalation. Default: `0.6`.
+    pub validation_threshold: f32,
+    /// Maximum tier escalations per query. Default: `1`.
+    pub max_escalations: u8,
+}
+
+impl Default for TieredRetrievalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            classifier_provider: ProviderName::default(),
+            validator_provider: ProviderName::default(),
+            token_budget: 4096,
+            validation_enabled: false,
+            validation_threshold: 0.6,
+            max_escalations: 1,
+        }
+    }
+}
+
+// ── ScrapMem optical forgetting config (issue #3713) ───────────────────────────
+
+/// `ScrapMem` optical forgetting configuration.
+///
+/// Controls progressive content-fidelity decay: `Full` → `Compressed` → `SummaryOnly`.
+/// The sweep is orthogonal to `SleepGate` (which decays importance scores); optical
+/// forgetting compresses content in place based on age.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.optical_forgetting]
+/// enabled = false
+/// compress_provider = ""
+/// compress_after_turns = 100
+/// summarize_after_turns = 500
+/// sweep_interval_secs = 3600
+/// sweep_batch_size = 50
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OpticalForgettingConfig {
+    /// Enable optical forgetting sweep. Default: `false`.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for LLM-based content compression.
+    /// Falls back to the primary provider when empty.
+    pub compress_provider: ProviderName,
+    /// Number of conversation turns after which `Full` messages are compressed. Default: `100`.
+    pub compress_after_turns: u32,
+    /// Number of conversation turns after which `Compressed` messages become `SummaryOnly`. Default: `500`.
+    pub summarize_after_turns: u32,
+    /// How often the sweep runs, in seconds. Default: `3600`.
+    pub sweep_interval_secs: u64,
+    /// Maximum messages to compress per sweep iteration. Default: `50`.
+    pub sweep_batch_size: usize,
+}
+
+impl Default for OpticalForgettingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            compress_provider: ProviderName::default(),
+            compress_after_turns: 100,
+            summarize_after_turns: 500,
+            sweep_interval_secs: 3600,
+            sweep_batch_size: 50,
+        }
+    }
+}
+
+// ── EM-Graph config (issue #3713) ──────────────────────────────────────────────
+
+/// EM-Graph episodic event extraction and causal linking configuration.
+///
+/// When enabled, episodic events are extracted from conversation turns and linked
+/// via causal relationships stored in `episodic_events` and `causal_links` tables.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.em_graph]
+/// enabled = false
+/// extract_provider = ""
+/// max_chain_depth = 3
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct EmGraphConfig {
+    /// Enable EM-Graph event extraction and causal linking. Default: `false`.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for event extraction.
+    /// Falls back to the primary provider when empty.
+    pub extract_provider: ProviderName,
+    /// Maximum hops when traversing causal chains during recall. Default: `3`.
+    pub max_chain_depth: u32,
+}
+
+impl Default for EmGraphConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            extract_provider: ProviderName::default(),
+            max_chain_depth: 3,
+        }
+    }
 }
 
 fn default_retrieval_failures_low_confidence_threshold() -> f32 {

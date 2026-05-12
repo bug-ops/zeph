@@ -6,7 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- feat(memory): implement MemFlow tiered intent-driven retrieval (issue #3712). New
+  `tiered_retrieval` module in `zeph-memory` classifies incoming queries into three tiers —
+  `ProfileLookup`, `TargetedRetrieval`, and `DeepReasoning` — via the existing `MemoryRouter`
+  trait and dispatches to `SemanticMemory` with per-tier token budgets. Optional LLM validation
+  step (configurable via `[memory.tiered_retrieval]`) re-scores retrieved messages and can
+  escalate to the next tier when evidence is insufficient. Configuration fields:
+  `enabled`, `classifier_provider`, `validator_provider`, `token_budget`, `validation_enabled`,
+  `validation_threshold`, `max_escalations`.
+
+- feat(memory): implement ScrapMem optical forgetting and EM-Graph (issue #3713). New
+  `optical_forgetting` module progressively compresses old messages through three fidelity
+  levels — `Full` → `Compressed` → `SummaryOnly` — by scheduling background LLM sweeps.
+  The sweep skips messages below the `SleepGate` forgetting floor. New `episodic_graph`
+  module extracts episodic events from conversation turns and builds a causal graph
+  (`episodic_events` + `causal_links` tables added via migration 086, including
+  `UNIQUE(cause_event_id, effect_event_id)` for idempotent insertion). Both features are
+  off by default; enabled via `[memory.optical_forgetting]` and `[memory.em_graph]`
+  config sections.
+
 ### Fixed
+
+- fix(memory): correct SQL placeholder mismatch in `recall_episodic_causal` — `IN(frontier)`
+  and `NOT IN(visited)` were using the same `{placeholders}` string despite `frontier` and
+  `visited` having different sizes after the first hop, causing sqlx binding errors or wrong
+  results on multi-hop causal chains.
+
+- fix(memory): add `UNIQUE(cause_event_id, effect_event_id)` to `causal_links` table in
+  migration 086 so `INSERT OR IGNORE` correctly deduplicates repeated extractions of the
+  same event pair.
+
+- fix(memory): replace `MAX(id) - ?` with `COALESCE(MAX(id), 0) - ?` in optical forgetting
+  candidate queries to make NULL-arithmetic behavior explicit when the messages table is empty.
+
+- fix(memory): remove invalid `focus_pinned` column reference from optical forgetting SQL
+  queries — `focus_pinned` is a runtime `MessageMetadata` field, not a DB column.
+
+- fix(memory): cap `visited` Vec in `recall_episodic_causal` at 400 entries to prevent
+  exceeding SQLite's `SQLITE_MAX_VARIABLE_NUMBER = 999` bind parameter limit with deeply
+  connected graphs.
+
+- fix(memory): gate `BEGIN IMMEDIATE; ... COMMIT;` removed from migration 086 — sqlx wraps
+  each migration in its own transaction; explicit transaction statements caused a nested
+  transaction error.
 
 - fix(memory): gate `checkpoint_wal` and `entity_community_ids` call sites with
   `#[cfg(any(feature = "sqlite", feature = "postgres"))]` to fix compilation when
