@@ -180,3 +180,133 @@ impl ExperienceStore {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::store::GraphStore;
+    use crate::graph::types::EntityType;
+    use crate::store::SqliteStore;
+    use zeph_db::sql;
+
+    async fn setup() -> (ExperienceStore, GraphStore, DbPool) {
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let pool = store.pool().clone();
+        let exp = ExperienceStore::new(pool.clone());
+        let gs = GraphStore::new(pool.clone());
+        (exp, gs, pool)
+    }
+
+    #[tokio::test]
+    async fn record_tool_outcome_inserts_experience_node() {
+        let (exp, _gs, pool) = setup().await;
+        let id = exp
+            .record_tool_outcome("sess1", 1, "shell", "success", Some("exit 0"), None)
+            .await
+            .unwrap();
+        assert!(id > 0);
+
+        let (sid, turn, tool, outcome): (String, i64, String, String) = sqlx::query_as(sql!(
+            "SELECT session_id, turn, tool_name, outcome
+                 FROM experience_nodes WHERE id = ?1"
+        ))
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(sid, "sess1");
+        assert_eq!(turn, 1);
+        assert_eq!(tool, "shell");
+        assert_eq!(outcome, "success");
+    }
+
+    #[tokio::test]
+    async fn link_sequential_creates_experience_edge() {
+        let (exp, _gs, pool) = setup().await;
+        let id1 = exp
+            .record_tool_outcome("sess1", 1, "shell", "success", None, None)
+            .await
+            .unwrap();
+        let id2 = exp
+            .record_tool_outcome("sess1", 2, "web_scrape", "success", None, None)
+            .await
+            .unwrap();
+
+        exp.link_sequential(id1, id2).await.unwrap();
+
+        let (src, tgt, rel): (i64, i64, String) = sqlx::query_as(sql!(
+            "SELECT source_exp_id, target_exp_id, relation
+             FROM experience_edges WHERE source_exp_id = ?1"
+        ))
+        .bind(id1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(src, id1);
+        assert_eq!(tgt, id2);
+        assert_eq!(rel, "followed_by");
+    }
+
+    #[tokio::test]
+    async fn evolution_sweep_prunes_self_loops() {
+        let (exp, gs, pool) = setup().await;
+
+        let e1 = gs
+            .upsert_entity("Alice", "alice", EntityType::Person, Some("person"))
+            .await
+            .unwrap();
+        let e2 = gs
+            .upsert_entity("Bob", "bob", EntityType::Person, Some("person"))
+            .await
+            .unwrap();
+
+        // Drop the self-loop trigger so we can insert a test self-loop.
+        sqlx::query(sql!("DROP TRIGGER IF EXISTS graph_edges_no_self_loops"))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query(sql!(
+            "INSERT INTO graph_edges
+             (source_entity_id, target_entity_id, relation, fact, confidence, edge_type)
+             VALUES (?1, ?1, 'knows', 'self', 0.5, 'semantic')"
+        ))
+        .bind(e1)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Restore the trigger with the original SQL from migration 044.
+        sqlx::query(sql!(
+            "CREATE TRIGGER IF NOT EXISTS graph_edges_no_self_loops
+             BEFORE INSERT ON graph_edges
+             BEGIN
+                 SELECT RAISE(ABORT, 'self-loop edge rejected: source and target entity must differ')
+                 WHERE NEW.source_entity_id = NEW.target_entity_id;
+             END"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert a normal edge that must survive the sweep.
+        gs.insert_edge(e1, e2, "knows", "Alice knows Bob", 0.9, None)
+            .await
+            .unwrap();
+
+        let stats = exp.evolution_sweep(&gs, 0.3).await.unwrap();
+        assert_eq!(stats.pruned_self_loops, 1);
+        assert_eq!(stats.pruned_low_confidence, 0);
+
+        let count: i64 = sqlx::query_scalar(sql!(
+            "SELECT COUNT(*) FROM graph_edges
+             WHERE source_entity_id = ?1 AND target_entity_id = ?2"
+        ))
+        .bind(e1)
+        .bind(e2)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+    }
+}

@@ -592,4 +592,110 @@ mod tests {
         let root_warm = det.primary_root(TaskId(2), &g);
         assert_eq!(root_cold, root_warm);
     }
+
+    // --- evaluate_abort ---
+
+    #[test]
+    fn evaluate_abort_none_when_no_outcomes_recorded() {
+        // rate_threshold > 0 but region_health is empty — the `if let Some` arm returns None.
+        let g = graph_from(vec![make_node(0, &[]), make_node(1, &[0])]);
+        let mut det = CascadeDetector::new(cfg(0.5));
+        assert!(matches!(
+            det.evaluate_abort(&g, TaskId(1), 0.5),
+            AbortDecision::None
+        ));
+    }
+
+    #[test]
+    fn evaluate_abort_none_when_threshold_zero() {
+        let g = graph_from(vec![make_node(0, &[])]);
+        let mut det = CascadeDetector::new(cfg(0.5));
+        assert!(matches!(
+            det.evaluate_abort(&g, TaskId(0), 0.0),
+            AbortDecision::None
+        ));
+        // Negative threshold also short-circuits.
+        assert!(matches!(
+            det.evaluate_abort(&g, TaskId(0), -1.0),
+            AbortDecision::None
+        ));
+        // Exact EPSILON boundary — rate_threshold <= EPSILON is true.
+        assert!(matches!(
+            det.evaluate_abort(&g, TaskId(0), f32::EPSILON),
+            AbortDecision::None
+        ));
+    }
+
+    #[test]
+    fn evaluate_abort_fan_out_cascade_when_rate_exceeds_threshold() {
+        // 0 -> {1, 2, 3}: 3 children all fail — rate 1.0 >= 0.5, region_size = 3.
+        let g = graph_from(vec![
+            make_node(0, &[]),
+            make_node(1, &[0]),
+            make_node(2, &[0]),
+            make_node(3, &[0]),
+        ]);
+        let mut det = CascadeDetector::new(cfg(0.5));
+        det.record_outcome(TaskId(1), false, &g);
+        det.record_outcome(TaskId(2), false, &g);
+        det.record_outcome(TaskId(3), false, &g);
+        match det.evaluate_abort(&g, TaskId(1), 0.5) {
+            AbortDecision::FanOutCascade {
+                region_root,
+                failure_rate,
+                region_size,
+            } => {
+                assert_eq!(region_root, TaskId(0));
+                assert!((failure_rate - 1.0_f32).abs() < f32::EPSILON);
+                assert_eq!(region_size, 3);
+            }
+            AbortDecision::None => panic!("expected FanOutCascade, got None"),
+        }
+    }
+
+    #[test]
+    fn evaluate_abort_none_when_region_too_small() {
+        // 0 -> {1, 2}: 2 children, both fail — rate 1.0 >= 0.5 but region_size = 2 < 3.
+        let g = graph_from(vec![
+            make_node(0, &[]),
+            make_node(1, &[0]),
+            make_node(2, &[0]),
+        ]);
+        let mut det = CascadeDetector::new(cfg(0.5));
+        det.record_outcome(TaskId(1), false, &g);
+        det.record_outcome(TaskId(2), false, &g);
+        assert!(matches!(
+            det.evaluate_abort(&g, TaskId(1), 0.5),
+            AbortDecision::None
+        ));
+    }
+
+    #[test]
+    fn evaluate_abort_boundary_rate_equals_threshold() {
+        // 0 -> {1, 2, 3, 4}: 4 children, 2 fail, 2 succeed — rate exactly 0.5 = threshold.
+        let g = graph_from(vec![
+            make_node(0, &[]),
+            make_node(1, &[0]),
+            make_node(2, &[0]),
+            make_node(3, &[0]),
+            make_node(4, &[0]),
+        ]);
+        let mut det = CascadeDetector::new(cfg(0.5));
+        det.record_outcome(TaskId(1), false, &g);
+        det.record_outcome(TaskId(2), false, &g);
+        det.record_outcome(TaskId(3), true, &g);
+        det.record_outcome(TaskId(4), true, &g);
+        match det.evaluate_abort(&g, TaskId(1), 0.5) {
+            AbortDecision::FanOutCascade {
+                region_root,
+                failure_rate,
+                region_size,
+            } => {
+                assert_eq!(region_root, TaskId(0));
+                assert!((failure_rate - 0.5).abs() < f32::EPSILON);
+                assert_eq!(region_size, 4);
+            }
+            AbortDecision::None => panic!("expected FanOutCascade at exact boundary, got None"),
+        }
+    }
 }
